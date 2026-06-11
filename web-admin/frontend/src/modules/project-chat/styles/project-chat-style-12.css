@@ -46,18 +46,6 @@
   background: rgba(245, 246, 248, 0.86);
 }
 
-.message-process-toggle {
-  padding: 10px 12px;
-  color: #374151;
-  font-size: 12px;
-}
-
-.message-process-pre {
-  padding: 0 12px 12px;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
 .message-audit {
   margin-top: 14px;
   padding: 12px 14px;

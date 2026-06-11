@@ -3719,6 +3719,14 @@
 </template>
 
 <script setup>
+// ============================================================
+// ProjectChat.vue — AI 员工工厂项目聊天主页面（路由编排页）
+// 职责：路由参数读取、模块级 composable 初始化、跨模块事件编排
+// 业务逻辑已迁入 src/modules/project-chat/ 下各 composable/service/mapper
+// CSS 通过 15 个 scoped 外部文件加载（src/modules/project-chat/styles/）
+// ============================================================
+// 基础框架 & UI 库
+// ============================================================
 import {
   computed,
   onMounted,
@@ -3748,8 +3756,15 @@ import CodePreviewDialog from "@/modules/project-chat/components/code-preview/Co
 import SkillResourceDialog from "@/modules/project-chat/components/skill-resource/SkillResourceDialog.vue";
 import { useProjectChatComposer } from "@/modules/project-chat/composables/useProjectChatComposer.js";
 import { useProjectChatPendingRequests } from "@/modules/project-chat/composables/useProjectChatPendingRequests.js";
+import { useProjectChatNativeAgent } from "@/modules/project-chat/composables/useProjectChatNativeAgent.js";
+import { useProjectChatWorkspaceFiles } from "@/modules/project-chat/composables/useProjectChatWorkspaceFiles.js";
+import { useProjectChatSettings } from "@/modules/project-chat/composables/useProjectChatSettings.js";
+import { useProjectChatTerminal } from "@/modules/project-chat/composables/useProjectChatTerminal.js";
 import { useProjectChatTransport } from "@/modules/project-chat/composables/useProjectChatTransport.js";
 import api from "@/utils/api.js";
+// ============================================================
+// 权限、认证、字典、项目
+// ============================================================
 import { hasPermission, isSuperAdmin } from "@/utils/permissions.js";
 import {
   clearAuthSession,
@@ -3917,6 +3932,7 @@ import {
   nativeExternalAgentRecordSummary,
   nativeExternalAgentRecordTagType,
   nativeExternalAgentRecordTime,
+  nativeExecutorOptionLabel,
   normalizeNativeExternalAgentRuntimeSnapshot,
   normalizeNativeExternalAgentSessionId,
   normalizeNativeRunnerSelfCheckItem,
@@ -4009,6 +4025,7 @@ import {
   hasTerminalChoiceControlSignal,
   inferTerminalChoiceType,
   parseTerminalChoiceLine,
+  sanitizeTerminalOutputLines,
   stripTerminalControlSequences,
   terminalChoiceDescription,
   TERMINAL_CHOICE_FALLBACK_PROVIDERS,
@@ -4068,11 +4085,11 @@ function applyLocalConnectorRuntimeSettings(baseSettings) {
   );
 }
 
+// ============================================================
+// 页面级状态（加载、项目、提供方、连接器）
+// ============================================================
 const loading = ref(false);
 const chatLoading = ref(false);
-const settingsSaving = ref(false);
-const workspacePathSaving = ref(false);
-const workspacePathTesting = ref(false);
 const workspaceTrustSaving = ref(false);
 const projectWorkspaceSaving = ref(false);
 const autoSaveState = ref("idle");
@@ -4218,10 +4235,8 @@ const activeMcpSource = ref("system");
 const activeSettingsPanel = ref("chat");
 const activeSystemScope = ref("project_related");
 const selectedProjectToolNames = ref([]);
-const projectChatSettings = ref({ ...CHAT_SETTINGS_DEFAULTS });
 const projectWorkspacePath = ref("");
 const projectWorkspaceDraft = ref("");
-const workspacePathDraft = ref("");
 const projectAiEntryFile = ref("");
 const aiEntryFileDraft = ref("");
 const singleRoundAnswerOnly = ref(false);
@@ -4245,7 +4260,6 @@ const deletingChatSessionId = ref("");
 const downloadingDesktopArtifactKey = ref("");
 const localConnectorRefreshing = ref(false);
 const localConnectorPairing = ref(false);
-const workspacePathPicking = ref(false);
 const aiEntryFilePicking = ref(false);
 const aiEntryFileSaving = ref(false);
 let connectorPollTimer = null;
@@ -4259,16 +4273,91 @@ let terminalRestoreAttemptKey = "";
 let terminalStructuredInteractionRefreshPending = false;
 let externalAgentStatusRefreshKey = "";
 
+// ============================================================
+// Composable 初始化（pending requests、native agent、workspace、terminal、settings、transport）
+// 各模块的状态管理已迁入 src/modules/project-chat/composables/
+// ============================================================
 const {
   pendingRequests,
   activeGenerationRequestId,
   hasPendingRequestForChatSession,
   getActiveRequestId,
   trackPendingRequest,
-  clearTrackedPendingRequest,
+  cleanupRequest,
+  rejectAndCleanupRequest,
+  rejectAndCleanupAllRequests,
 } = useProjectChatPendingRequests({
   currentChatSessionId,
 });
+const {
+  projectChatSettings,
+  settingsSaving,
+} = useProjectChatSettings();
+const {
+  nativeExternalAgentLaunchingChatSessionIds,
+  nativeExternalAgentBackgroundedChatSessionIds,
+  nativeExternalAgentPersistedSessions,
+  nativeExternalAgentFinalizedSessionIds,
+  nativeExternalAgentFastKilledSessionIds,
+  nativeExternalAgentCancelledSessionIds,
+  nativeExternalAgentDeferredCleanupTimers,
+  nativeExternalAgentSession,
+  nativeExternalAgentSessionLogs,
+  nativeExternalAgentMessageId,
+  nativeExternalAgentChatSessionId,
+  nativeExternalAgentSessionsById,
+  nativeExternalAgentSessionLogsById,
+  nativeExternalAgentRunnerSessionByChatSessionId,
+  nativeExternalAgentChatSessionByRunnerSessionId,
+  nativeExternalAgentMessageByRunnerSessionId,
+  setExternalAgentLaunching,
+  setExternalAgentBackgrounded,
+  rememberNativeExternalAgentSessionBinding,
+  getNativeExternalAgentRunnerSessionIdForChatSession,
+  getNativeExternalAgentChatSessionIdForRunnerSession,
+  getNativeExternalAgentMessageIdForRunnerSession,
+  clearAgentSessionBinding,
+  computeRunningFlag,
+  syncSessionPanel,
+} = useProjectChatNativeAgent();
+const {
+  workspaceFileTreeLoading,
+  workspaceFileTreePath,
+  workspaceFileItems,
+  workspaceFileLoading,
+  workspaceFileSaving,
+  activeWorkspaceFilePath,
+  workspaceFileDraft,
+  workspaceFileOriginal,
+  workspaceDiffLoading,
+  workspaceDiffPreview,
+  workspacePathDraft,
+  workspacePathPicking,
+  workspacePathSaving,
+  workspacePathTesting,
+  workspacePathDraftNormalized,
+  resetWorkspaceFilePanel,
+} = useProjectChatWorkspaceFiles();
+const {
+  terminalPanelExpanded,
+  terminalPanelLines,
+  terminalPanelStatus,
+  terminalPanelRef,
+  terminalMirrorConnected,
+  hostTerminalSessionId,
+  hostTerminalWorkspacePath,
+  activeTerminalMirrorAssistantIndex,
+  terminalApprovalDialogVisible,
+  terminalApprovalHandledKey,
+  terminalApprovalFallbackPrompt,
+  terminalStructuredInteraction,
+  terminalStructuredFormModel,
+  terminalDismissedStructuredInteractionKeys,
+  terminalStructuredSubmissionHint,
+  clearExecutionTransportState,
+  appendTerminalPanelLineState,
+  resetTerminalPanelState,
+} = useProjectChatTerminal();
 const {
   wsConnected,
   wsClient,
@@ -4312,22 +4401,6 @@ const nativeRunnerSelfCheckResults = ref([]);
 const nativeExternalAgentLaunchPlanning = ref(false);
 const nativeExternalAgentLaunchPlan = ref(null);
 const nativeExternalAgentRunning = ref(false);
-const nativeExternalAgentSession = ref(null);
-const nativeExternalAgentSessionLogs = ref([]);
-const nativeExternalAgentMessageId = ref("");
-const nativeExternalAgentChatSessionId = ref("");
-const nativeExternalAgentSessionsById = reactive(new Map());
-const nativeExternalAgentSessionLogsById = reactive(new Map());
-const nativeExternalAgentRunnerSessionByChatSessionId = reactive(new Map());
-const nativeExternalAgentChatSessionByRunnerSessionId = reactive(new Map());
-const nativeExternalAgentMessageByRunnerSessionId = reactive(new Map());
-const nativeExternalAgentLaunchingChatSessionIds = ref(new Set());
-const nativeExternalAgentBackgroundedChatSessionIds = ref(new Set());
-const nativeExternalAgentPersistedSessions = ref(new Set());
-const nativeExternalAgentFinalizedSessionIds = new Set();
-const nativeExternalAgentFastKilledSessionIds = new Set();
-const nativeExternalAgentCancelledSessionIds = new Set();
-const nativeExternalAgentDeferredCleanupTimers = new Map();
 let nativeExternalAgentSessionPollTimer = null;
 const nativeExternalAgentSessionPollTimers = new Map();
 let nativeExternalAgentSessionEventUnlisten = null;
@@ -4349,35 +4422,11 @@ const nativeExternalAgentInteractionDismissedKey = ref("");
 const nativeExternalAgentInteractionSubmittedKey = ref("");
 const nativeRunnerPermissionRecords = ref([]);
 const nativeRunnerPermissionRecordsLoading = ref(false);
-const terminalPanelExpanded = ref(false);
-const terminalPanelLines = ref([]);
-const terminalPanelRef = ref(null);
-const terminalPanelStatus = ref("idle");
-const terminalMirrorConnected = ref(false);
-const hostTerminalSessionId = ref("");
-const hostTerminalWorkspacePath = ref("");
-const activeTerminalMirrorAssistantIndex = ref(-1);
-const terminalApprovalDialogVisible = ref(false);
-const terminalApprovalHandledKey = ref("");
-const terminalApprovalFallbackPrompt = ref(null);
-const terminalStructuredInteraction = ref(null);
-const terminalStructuredFormModel = ref({ choices: [], choice: "" });
-const terminalDismissedStructuredInteractionKeys = ref(new Set());
-const terminalStructuredSubmissionHint = ref(null);
 const operationInteractionFormModels = ref({});
 const dismissedOperationInteractionIds = ref(new Set());
 const operationInteractionSubmissionHints = ref({});
 const terminalActiveCommand = ref("");
-const workspaceFileTreeLoading = ref(false);
-const workspaceFileLoading = ref(false);
-const workspaceFileSaving = ref(false);
-const workspaceFileTreePath = ref("");
-const workspaceFileItems = ref([]);
-const activeWorkspaceFilePath = ref("");
-const workspaceFileDraft = ref("");
-const workspaceFileOriginal = ref("");
-const workspaceDiffLoading = ref(false);
-const workspaceDiffPreview = ref(null);
+
 const inlineEditingMessageIndex = ref(-1);
 const inlineEditingMessageId = ref("");
 const inlineEditingDraft = ref("");
@@ -4475,9 +4524,6 @@ const canTrustAgentRuntimeWorkspace = computed(
   () =>
     hasSelectedProject.value && Boolean(agentRuntimeWorkspaceTrustPath.value),
 );
-const workspacePathDraftNormalized = computed(() =>
-  String(workspacePathDraft.value || "").trim(),
-);
 const executionWorkspacePath = computed(() =>
   String(
     workspacePathDraftNormalized.value ||
@@ -4487,231 +4533,48 @@ const executionWorkspacePath = computed(() =>
   ).trim(),
 );
 
+/** 页面包装：标记 chatSession 的 external agent 启动状态 + 同步运行标记和加载态 */
 function setNativeExternalAgentLaunching(chatSessionId, launching) {
-  const normalizedChatSessionId = String(chatSessionId || "").trim();
-  if (!normalizedChatSessionId) return;
-  const next = new Set(nativeExternalAgentLaunchingChatSessionIds.value);
-  if (launching) {
-    next.add(normalizedChatSessionId);
-  } else {
-    next.delete(normalizedChatSessionId);
-  }
-  nativeExternalAgentLaunchingChatSessionIds.value = next;
+  setExternalAgentLaunching(chatSessionId, launching);
   syncNativeExternalAgentRunningFlag();
   syncChatLoadingWithCurrentSession();
 }
 
+/** 页面包装：标记 chatSession 的 external agent 后台状态 + 同步运行标记和加载态 */
 function setNativeExternalAgentBackgrounded(chatSessionId, backgrounded) {
-  const normalizedChatSessionId = String(chatSessionId || "").trim();
-  if (!normalizedChatSessionId) return;
-  const next = new Set(nativeExternalAgentBackgroundedChatSessionIds.value);
-  if (backgrounded) {
-    next.add(normalizedChatSessionId);
-  } else {
-    next.delete(normalizedChatSessionId);
-  }
-  nativeExternalAgentBackgroundedChatSessionIds.value = next;
+  setExternalAgentBackgrounded(chatSessionId, backgrounded);
   syncNativeExternalAgentRunningFlag();
   syncChatLoadingWithCurrentSession();
-}
-
-function rememberNativeExternalAgentSessionBinding({
-  sessionId = "",
-  chatSessionId = "",
-  messageId = "",
-} = {}) {
-  const normalizedSessionId = String(sessionId || "").trim();
-  if (!normalizedSessionId) return;
-  const normalizedChatSessionId = String(chatSessionId || "").trim();
-  const normalizedMessageId = String(messageId || "").trim();
-  if (normalizedChatSessionId) {
-    nativeExternalAgentChatSessionByRunnerSessionId.set(
-      normalizedSessionId,
-      normalizedChatSessionId,
-    );
-    nativeExternalAgentRunnerSessionByChatSessionId.set(
-      normalizedChatSessionId,
-      normalizedSessionId,
-    );
-  }
-  if (normalizedMessageId) {
-    nativeExternalAgentMessageByRunnerSessionId.set(
-      normalizedSessionId,
-      normalizedMessageId,
-    );
-  }
-}
-
-function getNativeExternalAgentRunnerSessionIdForChatSession(chatSessionId) {
-  const normalizedChatSessionId = String(chatSessionId || "").trim();
-  if (!normalizedChatSessionId) return "";
-  const mapped = String(
-    nativeExternalAgentRunnerSessionByChatSessionId.get(
-      normalizedChatSessionId,
-    ) || "",
-  ).trim();
-  if (mapped) return mapped;
-  if (
-    String(nativeExternalAgentChatSessionId.value || "").trim() ===
-    normalizedChatSessionId
-  ) {
-    return normalizeNativeExternalAgentSessionId(
-      nativeExternalAgentSession.value,
-    );
-  }
-  return "";
-}
-
-function getNativeExternalAgentChatSessionIdForRunnerSession(sessionId) {
-  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
-  if (!normalizedSessionId) return "";
-  const mapped = String(
-    nativeExternalAgentChatSessionByRunnerSessionId.get(normalizedSessionId) ||
-      "",
-  ).trim();
-  if (mapped) return mapped;
-  if (
-    normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value) ===
-    normalizedSessionId
-  ) {
-    return String(nativeExternalAgentChatSessionId.value || "").trim();
-  }
-  return "";
-}
-
-function getNativeExternalAgentMessageIdForRunnerSession(sessionId) {
-  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
-  if (!normalizedSessionId) return "";
-  const mapped = String(
-    nativeExternalAgentMessageByRunnerSessionId.get(normalizedSessionId) || "",
-  ).trim();
-  if (mapped) return mapped;
-  if (
-    normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value) ===
-    normalizedSessionId
-  ) {
-    return String(nativeExternalAgentMessageId.value || "").trim();
-  }
-  return "";
 }
 
 function clearActiveNativeExternalAgentSessionBinding(
   sessionId = "",
   chatSessionId = "",
 ) {
-  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
-  const normalizedChatSessionId = String(
-    chatSessionId ||
-      getNativeExternalAgentChatSessionIdForRunnerSession(
-        normalizedSessionId,
-      ) ||
-      "",
-  ).trim();
-  if (!normalizedSessionId || !normalizedChatSessionId) return;
-  const mappedSessionId = normalizeNativeExternalAgentSessionId(
-    nativeExternalAgentRunnerSessionByChatSessionId.get(
-      normalizedChatSessionId,
-    ),
-  );
-  if (mappedSessionId === normalizedSessionId) {
-    nativeExternalAgentRunnerSessionByChatSessionId.delete(
-      normalizedChatSessionId,
-    );
-  }
-  if (
-    String(nativeExternalAgentChatSessionId.value || "").trim() ===
-      normalizedChatSessionId &&
-    normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value) ===
-      normalizedSessionId
-  ) {
-    nativeExternalAgentChatSessionId.value = "";
-    nativeExternalAgentMessageId.value = "";
-  }
+  clearAgentSessionBinding(sessionId, chatSessionId);
   syncNativeExternalAgentRunningFlag();
   syncChatLoadingWithCurrentSession();
 }
 
 function clearActiveExecutionTransportState(assistantIndex = -1) {
-  terminalPanelStatus.value = "idle";
-  terminalMirrorConnected.value = false;
-  hostTerminalSessionId.value = "";
-  terminalStructuredInteraction.value = null;
+  clearExecutionTransportState(assistantIndex);
   terminalStructuredInteractionRefreshPending = false;
-  const normalizedAssistantIndex = Number(assistantIndex);
-  if (
-    !Number.isFinite(normalizedAssistantIndex) ||
-    normalizedAssistantIndex < 0 ||
-    normalizedAssistantIndex ===
-      Number(activeTerminalMirrorAssistantIndex.value)
-  ) {
-    activeTerminalMirrorAssistantIndex.value = -1;
-  }
 }
 
+/** 同步 nativeExternalAgentRunning 标记：当前 chatSession 是否正在运行 native external agent */
 function syncNativeExternalAgentRunningFlag() {
-  const currentChatSessionIdValue = String(
-    currentChatSessionId.value || "",
-  ).trim();
-  const currentRunnerSessionId =
-    getNativeExternalAgentRunnerSessionIdForChatSession(
-      currentChatSessionIdValue,
-    );
-  const currentSnapshot = currentRunnerSessionId
-    ? nativeExternalAgentSessionsById.get(currentRunnerSessionId)
-    : null;
-  const isBackgrounded =
-    nativeExternalAgentBackgroundedChatSessionIds.value.has(
-      currentChatSessionIdValue,
-    );
-  nativeExternalAgentRunning.value =
-    !isBackgrounded &&
-    (isLiveNativeExternalAgentStatus(currentSnapshot?.status) ||
-      nativeExternalAgentLaunchingChatSessionIds.value.has(
-        currentChatSessionIdValue,
-      ) ||
-      (currentChatSessionIdValue &&
-        String(nativeExternalAgentChatSessionId.value || "").trim() ===
-          currentChatSessionIdValue &&
-        isLiveNativeExternalAgentStatus(
-          nativeExternalAgentSession.value?.status,
-        )));
+  nativeExternalAgentRunning.value = computeRunningFlag(
+    currentChatSessionId.value,
+  );
 }
 
+/** 同步 native external agent 会话面板：选择当前活跃 session 并回填 session/logs/messageId/chatSessionId */
 function syncNativeExternalAgentSessionPanel(preferredSessionId = "") {
-  const normalizedPreferredSessionId =
-    normalizeNativeExternalAgentSessionId(preferredSessionId);
-  const currentRunnerSessionId =
-    getNativeExternalAgentRunnerSessionIdForChatSession(
-      currentChatSessionId.value,
-    );
-  const selectedSessionId = String(
-    selectedNativeExternalAgentRecordId.value || "",
-  ).trim();
-  const sessionId =
-    normalizedPreferredSessionId ||
-    currentRunnerSessionId ||
-    (selectedSessionId && nativeExternalAgentSessionsById.has(selectedSessionId)
-      ? selectedSessionId
-      : "");
-  if (!sessionId) {
-    nativeExternalAgentSession.value = null;
-    nativeExternalAgentSessionLogs.value = [];
-    nativeExternalAgentMessageId.value = "";
-    nativeExternalAgentChatSessionId.value = "";
-    syncNativeExternalAgentRunningFlag();
-    return;
-  }
-  const snapshot = nativeExternalAgentSessionsById.get(sessionId) || null;
-  nativeExternalAgentSession.value = snapshot;
-  nativeExternalAgentSessionLogs.value = Array.isArray(
-    nativeExternalAgentSessionLogsById.get(sessionId),
-  )
-    ? nativeExternalAgentSessionLogsById.get(sessionId)
-    : [];
-  nativeExternalAgentMessageId.value =
-    getNativeExternalAgentMessageIdForRunnerSession(sessionId);
-  nativeExternalAgentChatSessionId.value =
-    getNativeExternalAgentChatSessionIdForRunnerSession(sessionId);
+  syncSessionPanel(
+    currentChatSessionId.value,
+    selectedNativeExternalAgentRecordId.value,
+    preferredSessionId,
+  );
   syncNativeExternalAgentRunningFlag();
 }
 
@@ -5975,6 +5838,7 @@ async function runNativeRunnerSelfCheck(options = {}) {
   }
 }
 
+/** 清除 external agent 状态刷新定时器 */
 function clearExternalAgentStatusRefreshTimer() {
   if (externalAgentStatusRefreshTimer !== null) {
     window.clearTimeout(externalAgentStatusRefreshTimer);
@@ -5982,6 +5846,7 @@ function clearExternalAgentStatusRefreshTimer() {
   }
 }
 
+/** 构建 external agent 状态刷新的去重 key（基于项目/模式/agent类型/工作区/桥接状态） */
 function buildExternalAgentStatusRefreshKey() {
   return JSON.stringify({
     projectId: String(selectedProjectId.value || "").trim(),
@@ -5995,6 +5860,7 @@ function buildExternalAgentStatusRefreshKey() {
   });
 }
 
+/** 静默刷新 external agent 状态：检测桌面桥接可用性 → runner 自检（key 去重） */
 async function refreshExternalAgentStatusSilently({ force = false } = {}) {
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   if (!nativeDesktopBridgeAvailable.value) {
@@ -6014,6 +5880,7 @@ async function refreshExternalAgentStatusSilently({ force = false } = {}) {
   await runNativeRunnerSelfCheck({ silent: true });
 }
 
+/** 延迟调度 external agent 状态刷新（默认 250ms），多次调用去重 */
 function scheduleExternalAgentStatusRefresh(options = {}) {
   clearExternalAgentStatusRefreshTimer();
   externalAgentStatusRefreshTimer = window.setTimeout(
@@ -6145,6 +6012,7 @@ function getNativeExternalAgentSessionLogs(sessionId = "") {
     : [];
 }
 
+/** 将 native external agent 运行态快照应用到组件状态（session/logs/sessionsById 回填） */
 function applyNativeExternalAgentSessionSnapshot(snapshot, options = {}) {
   const sessionId = normalizeNativeExternalAgentSessionId(snapshot);
   if (!sessionId) return;
@@ -6216,6 +6084,7 @@ function shouldApplyNativeExternalAgentSessionEvent(event) {
   return true;
 }
 
+/** 终结 native external agent 会话：finalized 集合去重、标记持久化、清理启动/后台标记、触发任务恢复 */
 function finalizeNativeExternalAgentSessionOnce(snapshot, chatSessionId = "") {
   const sessionId = String(snapshot?.sessionId || "").trim();
   if (!sessionId) {
@@ -6334,6 +6203,7 @@ function buildNativeExternalAgentDiagnosticPreview(
   return `${text.slice(text.length - limit)}\n[diagnostic output truncated]`;
 }
 
+/** 解析 native external agent 最终输出：提取 session 日志最后 N 行作为对话展示 */
 function resolveNativeExternalAgentFinalOutput(snapshot) {
   const explicit = String(snapshot?.finalOutput || "").trim();
   if (explicit) return explicit;
@@ -7914,13 +7784,6 @@ const autoSaveStatusText = computed(() => {
   if (autoSaveUpdatedAt.value) return `已自动保存 ${autoSaveUpdatedAt.value}`;
   return "修改后自动保存";
 });
-function nativeExecutorOptionLabel(baseLabel, status) {
-  const label = String(baseLabel || "外部 Agent").trim() || "外部 Agent";
-  if (!status?.installed) return label;
-  const version = String(status.version || "").trim();
-  return version ? `${label} · ${version}` : `${label} · 已安装`;
-}
-
 const externalAgentOptions = computed(() => {
   const optionsByType = new Map();
   for (const item of DESKTOP_EXTERNAL_AGENT_OPTIONS) {
@@ -11008,19 +10871,7 @@ async function openExternalUrlViaSystem(url) {
 }
 
 function appendTerminalPanelLine(text) {
-  const linesToAppend = sanitizeTerminalOutputLines(text);
-  if (!linesToAppend.length) return;
-  const lines = Array.isArray(terminalPanelLines.value)
-    ? terminalPanelLines.value.slice()
-    : [];
-  linesToAppend.forEach((line) => {
-    if (!line || (lines.length && lines[lines.length - 1] === line)) return;
-    lines.push(line);
-  });
-  if (lines.length > 400) {
-    lines.splice(0, lines.length - 400);
-  }
-  terminalPanelLines.value = lines;
+  appendTerminalPanelLineState(text);
   scrollTerminalPanelBottom();
 }
 
@@ -11030,25 +10881,9 @@ function clearTerminalPanel() {
 }
 
 function resetTerminalPanel() {
-  terminalPanelLines.value = [];
-  terminalPanelStatus.value = "idle";
-  terminalMirrorConnected.value = false;
-  hostTerminalSessionId.value = "";
-  hostTerminalWorkspacePath.value = "";
-  activeTerminalMirrorAssistantIndex.value = -1;
-  terminalApprovalDialogVisible.value = false;
-  terminalApprovalHandledKey.value = "";
+  resetTerminalPanelState();
   clearTerminalApprovalFallback();
   scrollTerminalPanelBottom();
-}
-
-function resetWorkspaceFilePanel() {
-  workspaceFileTreePath.value = "";
-  workspaceFileItems.value = [];
-  activeWorkspaceFilePath.value = "";
-  workspaceFileDraft.value = "";
-  workspaceFileOriginal.value = "";
-  workspaceDiffPreview.value = null;
 }
 
 async function openWorkspaceDirectory(path = "") {
@@ -11960,6 +11795,7 @@ function agentRuntimePermissionOperationId(
   return `agent-runtime-permission:${normalizedRunId}:${normalizedCallId}`;
 }
 
+/** 向消息行追加/更新 operation 状态（授权、工作流、终端等），按 operationId 去重覆盖 */
 function upsertMessageOperation(row, source = {}) {
   if (!row) return null;
   const operation = buildMessageOperation(source);
@@ -12282,6 +12118,7 @@ function hasOpenAgentRuntimeExecution(row) {
   });
 }
 
+/** 完成后台 pending request 中的 operation，标记为 completed 阶段 */
 function completeBackgroundPendingRequestOperation(
   row,
   { taskId = "", chatSessionId = "", phase = "completed", summary = "" } = {},
@@ -13028,6 +12865,7 @@ function isTransientAuthOperationContent(content) {
   );
 }
 
+/** 替换消息行中临时的授权操作提示内容（如"等待授权..."）为完成消息 */
 function replaceTransientAuthOperationContent(row, message) {
   if (!row) return false;
   const normalizedMessage = String(message || "").trim();
@@ -15005,29 +14843,6 @@ async function trustAgentRuntimeWorkspace() {
   } finally {
     workspaceTrustSaving.value = false;
   }
-}
-
-function sanitizeTerminalOutputLines(text) {
-  const raw = String(text || "");
-  if (!raw) return [];
-  const clean = raw
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b[PX^_].*?\x1b\\/gs, "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[@-Z\\-_]/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
-  return clean
-    .split("\n")
-    .map((line) => line.replace(/\s+$/g, "").trim())
-    .filter((line) => {
-      if (!line) return false;
-      if (/^[%$#>]$/.test(line)) return false;
-      if (/^[^\s@]+@[^\s]+\s+[^%]*%$/.test(line)) return false;
-      if (/^[^\s@]+@[^\s]+\s+[^%]*%\s+.+/.test(line)) return false;
-      return true;
-    });
 }
 
 function appendTerminalLog(row, text, options = {}) {
@@ -19393,6 +19208,10 @@ function isIntentOnlyReply(text) {
   );
 }
 
+// ============================================================
+// WebSocket 事件分发主入口（~1333行，待迁入 realtimeEventMappers.js / composable）
+// 处理：心跳、后台操作、pending request 结算、终端镜像、agent 就绪、工作流状态
+// ============================================================
 async function handleSocketMessage(eventData) {
   const { eventType, requestId } = normalizeProjectChatWsEvent(eventData);
   if (isProjectChatHeartbeatEvent(eventType)) {
@@ -19899,10 +19718,8 @@ async function handleSocketMessage(eventData) {
   if (!pending) return;
   const row = resolvePendingRequestRow(pending);
   if (!row) {
-    pendingRequests.delete(requestId);
-    clearTrackedPendingRequest(requestId);
+    rejectAndCleanupRequest(requestId, pending, new Error("消息上下文已失效"));
     syncChatLoadingWithCurrentSession();
-    pending.reject(new Error("消息上下文已失效"));
     return;
   }
   const isPendingCurrentSession = isCurrentChatSession(
@@ -20730,14 +20547,13 @@ async function handleSocketMessage(eventData) {
 
 function resolvePendingRequest(requestId, pending, content = "") {
   if (!pending || !requestId) return;
-  pendingRequests.delete(requestId);
-  clearTrackedPendingRequest(requestId);
-  if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
-    clearWorkingStatusStartForChatSession(pending.chatSessionId);
+  const { chatSessionId } = cleanupRequest(requestId, pending);
+  if (!hasPendingRequestForChatSession(chatSessionId)) {
+    clearWorkingStatusStartForChatSession(chatSessionId);
   }
   persistRememberedChatSessionMessages(
     pending.projectId,
-    pending.chatSessionId,
+    chatSessionId,
   );
   syncChatLoadingWithCurrentSession();
   pending.resolve(String(content || "").trim());
@@ -20745,32 +20561,25 @@ function resolvePendingRequest(requestId, pending, content = "") {
 
 function rejectPendingRequest(requestId, pending, error) {
   if (!pending || !requestId) return;
-  pendingRequests.delete(requestId);
-  clearTrackedPendingRequest(requestId);
-  if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
-    clearWorkingStatusStartForChatSession(pending.chatSessionId);
+  const { chatSessionId } = rejectAndCleanupRequest(requestId, pending, error);
+  if (!hasPendingRequestForChatSession(chatSessionId)) {
+    clearWorkingStatusStartForChatSession(chatSessionId);
   }
   persistRememberedChatSessionMessages(
     pending.projectId,
-    pending.chatSessionId,
+    chatSessionId,
   );
   syncChatLoadingWithCurrentSession();
-  pending.reject(
-    error instanceof Error ? error : new Error(String(error || "未知错误")),
-  );
 }
 
 function rejectPendingRequests(reason) {
   const message = String(reason || "连接已断开").trim();
-  const items = Array.from(pendingRequests.entries());
-  for (const [requestId, pending] of items) {
+  const items = rejectAndCleanupAllRequests(reason);
+  for (const { requestId, pending } of items) {
     const row = resolvePendingRequestRow(pending);
     if (row && !String(row.content || "").trim()) {
       row.content = `请求失败：${message}`;
     }
-    pending.reject(new Error(message));
-    pendingRequests.delete(requestId);
-    clearTrackedPendingRequest(requestId);
     if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
       clearWorkingStatusStartForChatSession(pending.chatSessionId);
     }
@@ -20995,6 +20804,7 @@ async function saveProjectAiEntryFile(aiEntryFileOverride = null) {
   }
 }
 
+/** 保存项目工作区路径配置到服务端，同步更新本地运行时上下文和执行工作区路径 */
 async function saveProjectWorkspacePath(workspacePathOverride = null) {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) {
@@ -21422,15 +21232,14 @@ async function sendProjectChatRequest({
 
 function resolvePendingRequestFast(requestId, pending, content = "") {
   if (!pending || !requestId) return;
-  pendingRequests.delete(requestId);
-  clearTrackedPendingRequest(requestId);
-  if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
-    clearWorkingStatusStartForChatSession(pending.chatSessionId);
+  const { chatSessionId } = cleanupRequest(requestId, pending);
+  if (!hasPendingRequestForChatSession(chatSessionId)) {
+    clearWorkingStatusStartForChatSession(chatSessionId);
   }
   syncChatLoadingWithCurrentSession();
   persistRememberedChatSessionMessages(
     pending.projectId,
-    pending.chatSessionId,
+    chatSessionId,
   );
   pending.resolve(String(content || "").trim());
 }

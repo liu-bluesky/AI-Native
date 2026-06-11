@@ -283,16 +283,6 @@
   color: #ffffff !important;
 }
 
-.message-text-terminal {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
 .message-process {
   margin-bottom: 14px;
   border: 1px solid rgba(229, 231, 235, 0.95);
@@ -375,55 +365,13 @@
   padding: 0 16px 16px;
 }
 
-.message-process-shell__summary {
-  display: grid;
-  gap: 8px;
-  padding: 0 16px 16px;
-}
-
-.message-process-shell__summary-actions {
-  display: flex;
-  justify-content: flex-start;
-  padding: 0 16px 16px;
-}
-
-.message-process-shell__summary-item {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.message-process-shell__summary-dot {
-  width: 8px;
-  height: 8px;
-  margin-top: 6px;
-  border-radius: 999px;
-  background: #94a3b8;
-}
-
 .message-process-shell__summary-item.is-info
-  .message-process-shell__summary-dot {
-  background: #0ea5e9;
-}
 
 .message-process-shell__summary-item.is-success
-  .message-process-shell__summary-dot {
-  background: #10b981;
-}
 
 .message-process-shell__summary-item.is-warning
-  .message-process-shell__summary-dot {
-  background: #f59e0b;
-}
 
 .message-process-shell__summary-item.is-error
-  .message-process-shell__summary-dot {
-  background: #ef4444;
-}
 
 .message-live-progress {
   display: grid;

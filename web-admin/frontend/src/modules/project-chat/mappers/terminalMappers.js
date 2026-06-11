@@ -135,3 +135,26 @@ export function parseTerminalChoiceLine(line) {
     highlighted: Boolean(cursor),
   };
 }
+
+export function sanitizeTerminalOutputLines(text) {
+  const raw = String(text || "");
+  if (!raw) return [];
+  const clean = raw
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b[PX^_].*?\x1b\\/gs, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[@-Z\\-_]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+  return clean
+    .split("\n")
+    .map((line) => line.replace(/\s+$/g, "").trim())
+    .filter((line) => {
+      if (!line) return false;
+      if (/^[%$#>]$/.test(line)) return false;
+      if (/^[^\s@]+@[^\s]+\s+[^%]*%$/.test(line)) return false;
+      if (/^[^\s@]+@[^\s]+\s+[^%]*%\s+.+/.test(line)) return false;
+      return true;
+    });
+}

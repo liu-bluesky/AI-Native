@@ -13,13 +13,15 @@
 
 ## 当前执行快照
 
-更新时间：2026-06-10。
+更新时间：2026-06-11。
 
-- `ProjectChat.vue` 当前约 23,096 行，仍是路由页和大量业务逻辑混合状态。
-- `src/modules/project-chat/` 下已有 62 个拆分文件，包含组件、composable、service、mapper、constants 和 styles。
+- `ProjectChat.vue` 当前约 22,587 行，仍是路由页和大量业务逻辑混合状态。
+- `src/modules/project-chat/` 下已有 70 个拆分文件，包含组件（18）、composable（9）、service（13）、mapper（9）、constants（4）和 styles（15）。
 - 已完成文件规模规则调整：固定行数不再作为拆分硬门槛，`check:file-size` 只做已登记大文件的回涨检查。
+- `useProjectChatPendingRequests.js` 已承接 pending request 核心 cleanup/resolve/reject 逻辑；`useProjectChatNativeAgent.js` 已承接 native agent 状态管理、会话绑定和运行标记计算（212→240行）；**`useProjectChatWorkspaceFiles.js`（56行）、`useProjectChatTerminal.js`（52行）、`useProjectChatSettings.js`（16行）已新建承接 workspace、终端和设置表单状态。**
+- `handleSocketMessage` 主流程（~1333行）、native agent launch 编排、runner 权限、terminal mirror 状态机、workspace file 读写编排仍留在页面。
 - 已迁出部分消息、会话、输入区、任务树面板、任务树恢复提示与节点草稿 mapper、技能资源弹窗、代码预览、终端审批弹窗、mapper、storage、markdown 和样式文件。
-- `services/projectChatWsProtocol.js` 已承接部分 WebSocket 事件归一化、后台操作事件分类、done/guard 状态归一化和 operation payload 构造；`composables/useProjectChatPendingRequests.js` 已承接 pending request Map、当前活动请求 ID 与按会话查询逻辑；pending request 的消息行副作用、设置中心、native agent、terminal、workspace file 等核心逻辑仍大量留在 `ProjectChat.vue`。
+- `services/projectChatWsProtocol.js` 已承接部分 WebSocket 事件归一化、后台操作事件分类、done/guard 状态归一化和 operation payload 构造；`composables/useProjectChatPendingRequests.js` 已承接 pending request Map、当前活动请求 ID、按会话查询逻辑、以及 **pending request 的 cleanup/resolve/reject/rejectAll 核心逻辑**（2026-06-11 切片迁入 `cleanupRequest` / `rejectAndCleanupRequest` / `rejectAndCleanupAllRequests`）；`handleSocketMessage` 主流程、设置中心、native agent、terminal、workspace file 等核心逻辑仍大量留在 `ProjectChat.vue`。
 - `composables/useProjectChatTaskTreeActions.js` 已承接任务树加载、恢复、删除、节点保存和工作轨迹同步编排；`services/projectChatWorkspaceApi.js` 已承接工作区文件 Web API 边界；`services/projectChatSettingsApi.js` 已承接设置中心 providers/settings API 边界；`services/projectChatEmployeeDraftApi.js` 和 `services/projectChatMaterialsApi.js` 已承接员工草稿与素材保存 API 边界。
 - 后续重构必须优先保持 UI/CSS 不漂移；组件或样式迁移前先确认类名、DOM 结构和 scoped 行为。
 
@@ -234,10 +236,10 @@ mapper 必须是纯函数，便于单元测试。
 | 阶段 0：冻结增量入口 | 部分完成 | 文档规则和回涨检查已建立；PR 模板或 review 自动引用未确认。 |
 | 阶段 1：低风险纯函数和常量迁移 | 部分完成 | storage、markdown、constants、message/task/native/terminal/workspace mapper 已迁出一批；仍需继续清理页面内纯函数。 |
 | 阶段 2：消息与会话模块拆分 | 部分完成 | 会话侧栏、消息列表、输入区等已拆到模块目录；消息渲染 DOM 仍有大量内容留在页面，后续需谨慎避免 UI 回归。 |
-| 阶段 3：传输与实时协议拆分 | 部分完成 | `useProjectChatTransport.js`、`useProjectChatPendingRequests.js` 和 `projectChatWsProtocol.js` 已存在，部分协议归一化、后台操作映射、done/guard 状态归一化、pending request Map 与活动请求 ID 选择已迁出；`handleSocketMessage`、pending request resolve/reject 副作用和大量实时事件处理仍主要在页面内。 |
+| 阶段 3：传输与实时协议拆分 | 部分完成 | `useProjectChatTransport.js`、`useProjectChatPendingRequests.js`（含 cleanup/resolve/reject/rejectAll）和 `projectChatWsProtocol.js` 已存在；`handleSocketMessage` 主流程（~1333行）仍在页面内。 |
 | 阶段 4：任务树、工作流和需求记录拆分 | 部分完成 | 任务树面板、状态 composable、actions composable、API service、恢复提示 mapper、节点草稿 mapper 和保存节点 payload/校验 mapper 已存在；任务树主流程已基本迁出，需求记录和部分面板联动仍在页面。 |
-| 阶段 5：外部 Agent、终端和工作区文件拆分 | 部分完成 | native/terminal/workspace mapper、工作区文件 Web API service 和终端审批弹窗已拆出；native agent、terminal mirror、runner 权限、workspace file 主状态机仍在页面。 |
-| 阶段 6：设置中心、员工草稿、技能资源拆分 | 部分完成 | 技能资源弹窗、设置中心 API service、员工草稿 API service 和素材保存 API service 已拆出；设置中心表单状态、员工草稿匹配/弹窗状态、素材弹窗状态、统一 MCP 弹窗仍主要在页面。 |
+| 阶段 5：外部 Agent、终端和工作区文件拆分 | 部分完成 | mapper、工作区 API、终端审批弹窗已拆出；**`useProjectChatNativeAgent.js`（状态+绑定+运行标记）、`useProjectChatWorkspaceFiles.js`（文件状态）、`useProjectChatTerminal.js`（终端/审批/交互状态）已新建（2026-06-11）**；native agent launch 编排、terminal mirror 状态机、workspace file 读写编排仍在页面。 |
+| 阶段 6：设置中心、员工草稿、技能资源拆分 | 部分完成 | 技能资源弹窗、设置中心 API service、员工草稿 API service 和素材保存 API service 已拆出；**`useProjectChatSettings.js`（表单状态）已新建（2026-06-11）**；员工草稿匹配/弹窗状态、素材弹窗状态、统一 MCP 弹窗仍主要在页面。 |
 | 阶段 7：样式拆分 | 部分完成 | 大段 scoped CSS 已迁到 15 个外部 scoped style 文件；还未按业务域命名和 owner 收敛。 |
 
 后续优先级：
@@ -254,7 +256,7 @@ mapper 必须是纯函数，便于单元测试。
 - 新需求默认不得直接向 `ProjectChat.vue` 增加业务逻辑。
 - 只允许在原文件做 bug 修复、事件接线和迁移过渡。
 - 新增业务必须进入 `src/modules/project-chat/` 对应目录。
-- 为 `ProjectChat.vue` 建立当前回涨检查基线：23,809 行。
+- 为 `ProjectChat.vue` 建立当前回涨检查基线：22,720 行。
 
 验收：
 
@@ -465,7 +467,7 @@ mapper 必须是纯函数，便于单元测试。
 
 ```js
 const regressionBaselines = {
-  "src/views/projects/ProjectChat.vue": 23809,
+  "src/views/projects/ProjectChat.vue": 22501,
 };
 ```
 
@@ -478,7 +480,7 @@ const regressionBaselines = {
 过渡期可以给 `ProjectChat.vue` 配置临时基线，但只允许相对基线下降或持平：
 
 ```text
-ProjectChat.vue baseline: 23809
+ProjectChat.vue baseline: 22501
 规则：允许修改后行数 <= baseline；不允许继续增加。
 退出条件：该页面已经收敛为清晰的路由编排页，并且后续维护不再依赖行数脚本兜底。
 ```

@@ -364,35 +364,6 @@
   letter-spacing: -0.02em;
 }
 
-.settings-center-context-bar__desc {
-  max-width: 720px;
-  color: #475569;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.settings-center-context-bar__meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 8px;
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.settings-center-context-bar__meta span {
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  background: rgba(255, 255, 255, 0.68);
-}
-
-.settings-center-context-bar__meta span:not(:last-child)::after {
-  display: none;
-}
-
 .settings-center-stage__body {
   flex: 1;
   min-height: 0;
@@ -420,72 +391,6 @@
 
 .settings-chat-main--wide {
   width: 100%;
-}
-
-.settings-chat-hero-card {
-  display: grid;
-  gap: 10px;
-  padding: 22px 24px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 30px;
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(103, 232, 249, 0.12),
-      transparent 34%
-    ),
-    radial-gradient(
-      circle at top left,
-      rgba(125, 211, 252, 0.12),
-      transparent 28%
-    ),
-    rgba(255, 255, 255, 0.74);
-  box-shadow: var(--settings-surface-shadow);
-  backdrop-filter: blur(20px);
-}
-
-.settings-chat-hero-card__eyebrow {
-  color: #7c8aa0;
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.settings-chat-hero-card__title {
-  color: #0f172a;
-  font-size: clamp(28px, 3vw, 36px);
-  line-height: 1.06;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  font-family:
-    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
-
-.settings-chat-hero-card__text {
-  margin: 0;
-  max-width: 860px;
-  color: #475569;
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-.settings-chat-hero-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.settings-chat-hero-card__meta span {
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.72);
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.4;
-  font-weight: 600;
 }
 
 .settings-chat-quick-overview {

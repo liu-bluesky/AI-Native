@@ -56,10 +56,6 @@
     scroll-padding-bottom: 22px;
   }
 
-  .workspace-guide-banner {
-    width: calc(100% - 36px);
-  }
-
   .settings-center-shell {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
@@ -133,16 +129,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .settings-summary-overview,
-  .settings-tools-overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .message-employee-draft__meta {
-    grid-template-columns: 1fr;
-  }
-
-  .employee-draft-dialog__grid {
     grid-template-columns: 1fr;
   }
 
@@ -176,15 +163,6 @@
 
   .agent-workflow-status__side {
     justify-content: flex-start;
-  }
-
-  .chat-project-switcher {
-    padding: 13px 40px 13px 13px;
-    border-radius: 16px;
-  }
-
-  :deep(.chat-project-switcher-menu) {
-    min-width: min(320px, calc(100vw - 24px));
   }
 
   .message-row {
@@ -237,28 +215,6 @@
     align-items: flex-start;
   }
 
-  .employee-draft-dialog__section-head {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .chat-restore-banner {
-    flex-direction: column;
-    align-items: flex-start;
-    padding: 14px;
-    border-radius: 22px;
-  }
-
-  .chat-restore-banner__actions,
-  .chat-restore-banner__meta {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .chat-restore-banner__meta span:not(:last-child)::after {
-    display: none;
-  }
-
   .input-footer {
     align-items: stretch;
     gap: 10px;
@@ -288,69 +244,6 @@
   .settings-center-nav-item {
     padding: 12px;
     border-radius: 18px;
-  }
-
-  .settings-chat-sidebar-card,
-  .settings-chat-main-card {
-    padding: 16px;
-    border-radius: 24px;
-  }
-
-  .settings-chat-hero-card {
-    padding: 18px;
-    border-radius: 24px;
-  }
-
-  .settings-chat-sidebar-card__title {
-    font-size: 28px;
-  }
-
-  .settings-chat-hero-card__title {
-    font-size: 28px;
-  }
-
-  .settings-chat-sidebar-card__actions,
-  .settings-chat-overview-grid,
-  .settings-chat-quick-overview,
-  .settings-summary-overview,
-  .settings-tools-overview {
-    width: 100%;
-  }
-
-  .settings-chat-sidebar-card__actions > * {
-    width: 100%;
-  }
-
-  .settings-summary-sync-button,
-  .settings-summary-sync-button--hero {
-    width: 100%;
-  }
-
-  .settings-center-context-bar__meta {
-    gap: 6px;
-  }
-
-  .settings-summary-card {
-    padding: 18px;
-  }
-
-  .settings-summary-headline {
-    font-size: 28px;
-  }
-
-  .settings-summary-overview,
-  .settings-chat-overview-grid,
-  .settings-chat-quick-overview,
-  .settings-tools-overview,
-  .settings-constraint-grid,
-  .runner-session-detail__grid,
-  .runner-session-detail__diagnostic-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .runner-session-detail__hero,
-  .runner-session-detail__section-head {
-    flex-direction: column;
   }
 
   .runner-session-detail__tabs :deep(.el-tabs__nav) {
@@ -394,10 +287,6 @@
   .settings-tabs :deep(.el-tabs__item) {
     flex: 1 1 auto;
     min-width: max-content;
-  }
-
-  .settings-chat-sidebar-card__actions {
-    justify-content: flex-start;
   }
 
 }

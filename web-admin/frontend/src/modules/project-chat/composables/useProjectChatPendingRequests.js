@@ -64,6 +64,57 @@ export function useProjectChatPendingRequests({ currentChatSessionId }) {
     activeGenerationRequestId.value = getActiveRequestId() || "";
   }
 
+  /**
+   * 清理单个 pending request 的 Map 条目和追踪状态，不处理页面 UI 副作用。
+   * 返回 { chatSessionId } 供调用方自行执行会话级清理（如 clearWorkingStatus、persist 消息）。
+   * @param {string} requestId
+   * @param {object} pending
+   * @returns {{ chatSessionId: string }}
+   */
+  function cleanupRequest(requestId, pending) {
+    pendingRequests.delete(requestId);
+    clearTrackedPendingRequest(requestId);
+    return {
+      chatSessionId: String(pending?.chatSessionId || "").trim(),
+    };
+  }
+
+  /**
+   * 清理单个 pending request 并 reject，不处理页面 UI 副作用。
+   * @param {string} requestId
+   * @param {object} pending
+   * @param {Error|string} error
+   * @returns {{ chatSessionId: string }}
+   */
+  function rejectAndCleanupRequest(requestId, pending, error) {
+    pendingRequests.delete(requestId);
+    clearTrackedPendingRequest(requestId);
+    pending.reject(
+      error instanceof Error ? error : new Error(String(error || "未知错误")),
+    );
+    return {
+      chatSessionId: String(pending?.chatSessionId || "").trim(),
+    };
+  }
+
+  /**
+   * 批量清理所有 pending request（reject + 删除 Map 条目 + 清除追踪），不处理页面 UI 副作用。
+   * @param {string} reason
+   * @returns {Array<{ requestId: string, pending: object }>} 原 pending 条目列表，供页面做消息行更新等副作用
+   */
+  function rejectAndCleanupAllRequests(reason) {
+    const message = String(reason || "连接已断开").trim();
+    const items = Array.from(pendingRequests.entries()).map(
+      ([requestId, pending]) => ({ requestId, pending }),
+    );
+    for (const { requestId, pending } of items) {
+      pending.reject(new Error(message));
+      pendingRequests.delete(requestId);
+      clearTrackedPendingRequest(requestId);
+    }
+    return items;
+  }
+
   return {
     pendingRequests,
     activeGenerationRequestId,
@@ -71,5 +122,8 @@ export function useProjectChatPendingRequests({ currentChatSessionId }) {
     getActiveRequestId,
     trackPendingRequest,
     clearTrackedPendingRequest,
+    cleanupRequest,
+    rejectAndCleanupRequest,
+    rejectAndCleanupAllRequests,
   };
 }

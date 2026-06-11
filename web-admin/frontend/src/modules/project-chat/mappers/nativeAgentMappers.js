@@ -1,5 +1,12 @@
 import { formatRelativeDateTime } from "@/utils/date.js";
 
+export function nativeExecutorOptionLabel(baseLabel, status) {
+  const label = String(baseLabel || "外部 Agent").trim() || "外部 Agent";
+  if (!status?.installed) return label;
+  const version = String(status.version || "").trim();
+  return version ? `${label} · ${version}` : `${label} · 已安装`;
+}
+
 export function normalizeNativeExternalAgentSessionId(value) {
   if (value && typeof value === "object") {
     return String(value.sessionId || value.session_id || "").trim();
