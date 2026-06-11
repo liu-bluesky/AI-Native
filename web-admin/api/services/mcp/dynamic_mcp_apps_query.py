@@ -1109,7 +1109,7 @@ def _query_mcp_clarity_confirm_threshold() -> int:
         return 3
 
 
-def _query_mcp_clarity_instruction_lines() -> tuple[str, str, str, str]:
+def _query_mcp_clarity_instruction_lines() -> tuple[str, str, str, str, str]:
     threshold = _query_mcp_clarity_confirm_threshold()
     threshold_text = f"当前全局清晰度确认阈值为 {threshold}/5"
     return (
@@ -1117,6 +1117,7 @@ def _query_mcp_clarity_instruction_lines() -> tuple[str, str, str, str]:
         f"若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {threshold}，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。",
         f"若清晰度分数 < {threshold}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行。",
         "同一轮中用户已确认当前理解和计划或已明确要求执行后，后续不要重复确认，除非用户目标、范围或约束发生变化；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。",
+        "一旦用户已确认计划或已明确要求执行，后续按已生成计划连续推进到完成；阶段之间只更新任务树、工作事实、验证结果和必要进度，不再停下来请求“是否继续”。只有遇到破坏性/不可逆操作、权限或环境阻塞、需求范围变化、验证无法推进，或必须由用户做业务决策时，才暂停并明确说明阻塞点。",
     )
 
 
@@ -2906,6 +2907,7 @@ def build_query_client_profile_text(client_name: str) -> str:
         clarity_direct_line,
         clarity_confirm_line,
         clarity_repeat_line,
+        continuous_execution_line,
     ) = _query_mcp_clarity_instruction_lines()
     if normalized == "claude-code":
         title = "Claude Code"
@@ -2922,6 +2924,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             f"- 交互约束: {clarity_direct_line}",
             f"- 交互约束: {clarity_confirm_line}",
             f"- 交互约束: {clarity_repeat_line}",
+            f"- 交互约束: {continuous_execution_line}",
             "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
             "- 任务树约束: 任务树节点必须描述面向用户目标的真实工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 或候选代理工具名直接写成节点。",
@@ -2956,6 +2959,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             f"- 交互约束: {clarity_direct_line}",
             f"- 交互约束: {clarity_confirm_line}",
             f"- 交互约束: {clarity_repeat_line}",
+            f"- 交互约束: {continuous_execution_line}",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall_project_memory / recall_employee_memory。",
             "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
@@ -2987,6 +2991,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             f"- 交互约束: {clarity_direct_line}",
             f"- 交互约束: {clarity_confirm_line}",
             f"- 交互约束: {clarity_repeat_line}",
+            f"- 交互约束: {continuous_execution_line}",
             "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
             "- 任务树约束: 若宿主会展示任务树，节点必须直接对应用户目标，不要把内部检索工具、规划工具或候选代理工具直接展示成节点。",
@@ -3016,6 +3021,7 @@ def build_query_usage_guide_text() -> str:
         clarity_direct_line,
         clarity_confirm_line,
         clarity_repeat_line,
+        continuous_execution_line,
     ) = _query_mcp_clarity_instruction_lines()
     if template:
         return _render_query_prompt_template(
@@ -3025,6 +3031,7 @@ def build_query_usage_guide_text() -> str:
                 "clarity_direct_line": clarity_direct_line,
                 "clarity_confirm_line": clarity_confirm_line,
                 "clarity_repeat_line": clarity_repeat_line,
+                "continuous_execution_line": continuous_execution_line,
             },
         )
     return (
@@ -3058,6 +3065,7 @@ def build_query_usage_guide_text() -> str:
         f"7.0.4 {clarity_direct_line}\n"
         f"7.0.5 {clarity_confirm_line}\n"
         f"7.0.6 {clarity_repeat_line}\n"
+        f"7.0.7 {continuous_execution_line}\n"
         "7.1 记忆检索不是每轮固定步骤；仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，再调用 recall_project_memory 或 recall_employee_memory。\n"
         "7.2 同一任务轮若已生成任务树并进入执行，后续默认依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。\n"
         "8. 实现型需求必须遵守任务树闭环：先 analyze_task -> resolve_relevant_context -> generate_execution_plan，再 get_current_task_tree 确认节点；执行中用 update_task_node_status 回写状态，完成时必须 complete_task_node_with_verification 填写验证结果。\n"

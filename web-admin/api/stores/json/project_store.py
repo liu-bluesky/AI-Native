@@ -52,6 +52,23 @@ class ProjectUserMember:
     joined_at: str = field(default_factory=_now_iso)
 
 
+@dataclass
+class ProjectCodeRepository:
+    id: str
+    project_id: str
+    name: str
+    repo_url: str
+    repo_type: str = "git"
+    default_branch: str = "main"
+    description: str = ""
+    local_path: str = ""
+    credential_ref: str = ""
+    enabled: bool = True
+    created_by: str = ""
+    created_at: str = field(default_factory=_now_iso)
+    updated_at: str = field(default_factory=_now_iso)
+
+
 class ProjectStore:
     def __init__(self, data_dir: Path) -> None:
         self._projects_dir = data_dir / "projects"
@@ -60,6 +77,8 @@ class ProjectStore:
         self._members_dir.mkdir(parents=True, exist_ok=True)
         self._user_members_dir = data_dir / "project-user-members"
         self._user_members_dir.mkdir(parents=True, exist_ok=True)
+        self._code_repositories_dir = data_dir / "project-code-repositories"
+        self._code_repositories_dir.mkdir(parents=True, exist_ok=True)
 
     def _project_path(self, project_id: str) -> Path:
         return self._projects_dir / f"{project_id}.json"
@@ -69,6 +88,9 @@ class ProjectStore:
 
     def _user_members_path(self, project_id: str) -> Path:
         return self._user_members_dir / f"{project_id}.json"
+
+    def _code_repositories_path(self, project_id: str) -> Path:
+        return self._code_repositories_dir / f"{project_id}.json"
 
     def save(self, project: ProjectConfig) -> None:
         self._project_path(project.id).write_text(
@@ -99,10 +121,16 @@ class ProjectStore:
         user_members_path = self._user_members_path(project_id)
         if user_members_path.exists():
             user_members_path.unlink()
+        code_repositories_path = self._code_repositories_path(project_id)
+        if code_repositories_path.exists():
+            code_repositories_path.unlink()
         return True
 
     def new_id(self) -> str:
         return f"proj-{uuid.uuid4().hex[:8]}"
+
+    def new_code_repository_id(self) -> str:
+        return f"repo-{uuid.uuid4().hex[:8]}"
 
     def list_members(self, project_id: str) -> list[ProjectMember]:
         path = self._members_path(project_id)
@@ -246,3 +274,37 @@ class ProjectStore:
             if self.remove_user_member(project.id, username):
                 removed_project_ids.append(project.id)
         return removed_project_ids
+
+    def list_code_repositories(self, project_id: str) -> list[ProjectCodeRepository]:
+        path = self._code_repositories_path(project_id)
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return [ProjectCodeRepository(**item) for item in data]
+
+    def get_code_repository(self, project_id: str, repository_id: str) -> ProjectCodeRepository | None:
+        for repository in self.list_code_repositories(project_id):
+            if repository.id == repository_id:
+                return repository
+        return None
+
+    def upsert_code_repository(self, repository: ProjectCodeRepository) -> None:
+        items = self.list_code_repositories(repository.project_id)
+        updated = [item for item in items if item.id != repository.id]
+        updated.append(repository)
+        updated.sort(key=lambda item: (not item.enabled, item.name.lower(), item.id))
+        self._code_repositories_path(repository.project_id).write_text(
+            json.dumps([asdict(item) for item in updated], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def remove_code_repository(self, project_id: str, repository_id: str) -> bool:
+        items = self.list_code_repositories(project_id)
+        updated = [item for item in items if item.id != repository_id]
+        if len(updated) == len(items):
+            return False
+        self._code_repositories_path(project_id).write_text(
+            json.dumps([asdict(item) for item in updated], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return True

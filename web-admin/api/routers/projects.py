@@ -177,6 +177,9 @@ from models.requests import (
     ProjectChatSettingsUpdateReq,
     ProjectChatTaskNodeUpdateReq,
     ProjectChatTaskTreeGenerateReq,
+    ProjectCodeRepositoryCreateReq,
+    ProjectCodeRepositoryInitializeReq,
+    ProjectCodeRepositoryUpdateReq,
     ProjectCreateReq,
     ProjectWorkspaceFileWriteReq,
     ProjectWorkflowSkillUpdateReq,
@@ -211,7 +214,7 @@ from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChat
 from stores.json.project_experience_summary_store import ProjectExperienceSummaryJob
 from stores.json.project_material_store import ProjectMaterialAsset
 from stores.json.project_studio_export_store import ProjectStudioExportJob
-from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
+from stores.json.project_store import ProjectCodeRepository, ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
 from stores.json.work_session_store import WorkSessionEvent
 from stores.json.system_config_store import (
     DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
@@ -9377,11 +9380,12 @@ def _build_query_mcp_cli_prompt(
         f"12. 当前全局清晰度确认阈值为 {normalized_clarity_threshold}/5；先按 1-5 分估计用户需求清晰度。",
         f"13. 若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {normalized_clarity_threshold}，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。",
         f"14. 若清晰度分数 < {normalized_clarity_threshold}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认或用户已明确要求执行后不要重复确认；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。",
-        "15. 长任务先调用 `start_work_session` 获取 `session_id`，后续复用同一个 `chat_session_id/session_id`，并用 `save_work_facts`、`append_session_event` 维护轨迹。",
-        "16. 如宿主支持任务树，`bind_project_context(...)` 后立刻读取 `get_current_task_tree`，核对 `root_goal/title/current_node` 是否属于当前问题；若明显属于旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。",
-        "17. 真正进入执行前，再读取一次 `get_current_task_tree` 确认当前节点；开始节点用 `update_task_node_status`，完成节点必须用 `complete_task_node_with_verification` 补验证结果后再结束。",
-        "18. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。",
-        "19. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
+        "15. 一旦用户已确认计划或已明确要求执行，后续按已生成计划连续推进到完成；阶段之间只更新任务树、工作事实、验证结果和必要进度，不再停下来请求“是否继续”。只有遇到破坏性/不可逆操作、权限或环境阻塞、需求范围变化、验证无法推进，或必须由用户做业务决策时，才暂停并明确说明阻塞点。",
+        "16. 长任务先调用 `start_work_session` 获取 `session_id`，后续复用同一个 `chat_session_id/session_id`，并用 `save_work_facts`、`append_session_event` 维护轨迹。",
+        "17. 如宿主支持任务树，`bind_project_context(...)` 后立刻读取 `get_current_task_tree`，核对 `root_goal/title/current_node` 是否属于当前问题；若明显属于旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。",
+        "18. 真正进入执行前，再读取一次 `get_current_task_tree` 确认当前节点；开始节点用 `update_task_node_status`，完成节点必须用 `complete_task_node_with_verification` 补验证结果后再结束。",
+        "19. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。",
+        "20. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
         "",
         "当前接入上下文：",
     ]
@@ -11587,6 +11591,447 @@ async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(req
     )
     _sync_feedback_project_flag(project.id, project.feedback_upgrade_enabled)
     return {"status": "created", "project": _serialize_project(project, auth_payload)}
+
+
+def _normalize_project_code_repository_text(value: Any, *, limit: int = 500) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _normalize_project_code_repository_name(value: Any) -> str:
+    name = _normalize_project_code_repository_text(value, limit=120)
+    if not name:
+        raise HTTPException(400, "仓库名称不能为空")
+    return name
+
+
+def _normalize_project_code_repository_url(value: Any) -> str:
+    repo_url = _normalize_project_code_repository_text(value, limit=1000)
+    if not repo_url:
+        raise HTTPException(400, "Git 地址不能为空")
+    parsed = urlparse(repo_url)
+    is_http_git = parsed.scheme in {"http", "https", "ssh"} and bool(parsed.netloc)
+    is_scp_like_git = bool(re.match(r"^[\w.-]+@[\w.-]+:.+/.+", repo_url))
+    is_local_absolute = repo_url.startswith("/")
+    if not (is_http_git or is_scp_like_git or is_local_absolute):
+        raise HTTPException(400, "Git 地址格式不正确")
+    return repo_url
+
+
+def _normalize_project_code_repository_branch(value: Any) -> str:
+    branch = _normalize_project_code_repository_text(value, limit=160)
+    return branch or "main"
+
+
+def _normalize_project_code_repository_type(value: Any) -> str:
+    normalized = str(value or "git").strip().lower()
+    if normalized != "git":
+        raise HTTPException(400, "repo_type 目前仅支持 git")
+    return "git"
+
+
+def _serialize_project_code_repository(repository: ProjectCodeRepository) -> dict[str, Any]:
+    return asdict(repository)
+
+
+def _run_project_code_repository_git_command(workspace_path: Path, args: list[str]) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(workspace_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(400, "当前环境未安装 git，无法初始化仓库信息") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(400, "读取 Git 仓库信息超时") from exc
+    output = str(completed.stdout or "").strip()
+    if completed.returncode != 0:
+        detail = str(completed.stderr or "").strip() or "读取 Git 仓库信息失败"
+        raise HTTPException(400, detail[:300])
+    return output
+
+
+def _try_project_code_repository_git_command(workspace_path: Path, args: list[str]) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(workspace_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return str(completed.stdout or "").strip()
+
+
+def _infer_project_code_repository_name(workspace_path: Path, repo_url: str) -> str:
+    tail = str(repo_url or "").strip().rstrip("/").rsplit("/", 1)[-1]
+    if ":" in tail and not tail.startswith("/"):
+        tail = tail.rsplit(":", 1)[-1]
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    return tail.strip() or workspace_path.name
+
+
+def _project_code_repository_path_depth(path: Path, root: Path) -> int:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return 0
+    if str(relative) == ".":
+        return 0
+    return len(relative.parts)
+
+
+def _project_code_repository_is_hidden_or_vendor_dir(path: Path) -> bool:
+    name = path.name
+    return name.startswith(".") or name in {
+        "__pycache__",
+        "dist",
+        "build",
+        "node_modules",
+        "vendor",
+    }
+
+
+def _find_project_code_repository_git_roots(root: Path, *, max_depth: int = 3) -> list[Path]:
+    normalized_depth = max(0, min(int(max_depth or 0), 5))
+    seen: set[Path] = set()
+    roots: list[Path] = []
+
+    def visit(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        if (resolved / ".git").exists():
+            roots.append(resolved)
+            return
+        if _project_code_repository_path_depth(resolved, root) >= normalized_depth:
+            return
+        try:
+            children = sorted(
+                (child for child in resolved.iterdir() if child.is_dir()),
+                key=lambda child: child.name.lower(),
+            )
+        except OSError:
+            return
+        for child in children:
+            if _project_code_repository_is_hidden_or_vendor_dir(child):
+                continue
+            visit(child)
+
+    visit(root.resolve())
+    return roots
+
+
+def _resolve_project_code_repository_workspace_root(project: ProjectConfig) -> Path:
+    chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
+    workspace_path = _resolve_project_workspace_for_chat(project, chat_settings)
+    if not workspace_path:
+        raise HTTPException(400, "项目未配置本机工作区或项目工作区路径")
+    root = Path(workspace_path).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(400, "项目本机工作区不存在或不是目录")
+    return root
+
+
+def _resolve_project_code_repository_init_path(project: ProjectConfig, raw_path: Any = "") -> Path:
+    root = _resolve_project_code_repository_workspace_root(project)
+    raw_value = str(raw_path or "").strip()
+    if not raw_value:
+        return root
+    candidate = Path(raw_value).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(400, "初始化路径必须位于项目工作区内") from exc
+    return resolved
+
+
+def _list_project_code_repository_remote_urls(git_root: Path) -> list[tuple[str, str]]:
+    remote_config = _try_project_code_repository_git_command(
+        git_root,
+        ["config", "--get-regexp", r"^remote\..*\.url$"],
+    )
+    remotes: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for line in remote_config.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        key, repo_url = parts
+        repo_url = repo_url.strip()
+        if not repo_url or repo_url in seen_urls:
+            continue
+        remote_name = key.removeprefix("remote.").removesuffix(".url")
+        seen_urls.add(repo_url)
+        remotes.append((remote_name or "origin", repo_url))
+    return remotes
+
+
+def _build_project_code_repository_candidate(
+    project: ProjectConfig,
+    git_root: Path,
+    repo_url: str,
+    remote_name: str = "",
+) -> dict[str, Any]:
+    project_root = _resolve_project_code_repository_workspace_root(project)
+    try:
+        git_root.relative_to(project_root)
+    except ValueError as exc:
+        raise HTTPException(400, "Git 仓库必须位于项目工作区内") from exc
+    branch = _try_project_code_repository_git_command(
+        git_root,
+        ["branch", "--show-current"],
+    )
+    return {
+        "name": _infer_project_code_repository_name(git_root, repo_url),
+        "repo_url": repo_url,
+        "repo_type": "git",
+        "default_branch": branch or "main",
+        "description": "",
+        "local_path": str(git_root),
+        "credential_ref": "",
+        "enabled": True,
+        "source": "local_git",
+        "remote_name": remote_name or "origin",
+    }
+
+
+def _build_project_code_repository_initialization(
+    project: ProjectConfig,
+    raw_path: Any = "",
+    scan_depth: int = 3,
+) -> dict[str, Any]:
+    workspace_path = _resolve_project_code_repository_init_path(project, raw_path)
+    if not workspace_path.exists() or not workspace_path.is_dir():
+        raise HTTPException(400, "初始化路径不存在或不是目录")
+    project_root = _resolve_project_code_repository_workspace_root(project)
+    git_roots = _find_project_code_repository_git_roots(workspace_path, max_depth=scan_depth)
+    if not git_roots:
+        try:
+            git_root_text = _run_project_code_repository_git_command(
+                workspace_path,
+                ["rev-parse", "--show-toplevel"],
+            )
+        except HTTPException as exc:
+            raise HTTPException(400, "初始化路径下未找到 Git 仓库，请选择具体仓库目录或手动添加") from exc
+        git_roots = [Path(git_root_text).expanduser().resolve()]
+
+    candidates: list[dict[str, Any]] = []
+    seen_roots: set[str] = set()
+    for git_root in git_roots:
+        resolved_root = git_root.expanduser().resolve()
+        try:
+            resolved_root.relative_to(project_root)
+        except ValueError as exc:
+            raise HTTPException(400, "Git 仓库必须位于项目工作区内") from exc
+        root_key = str(resolved_root)
+        if root_key in seen_roots:
+            continue
+        seen_roots.add(root_key)
+        for remote_name, repo_url in _list_project_code_repository_remote_urls(resolved_root):
+            candidates.append(
+                _build_project_code_repository_candidate(
+                    project,
+                    resolved_root,
+                    repo_url,
+                    remote_name,
+                )
+            )
+
+    candidates.sort(key=lambda item: (str(item.get("local_path") or "").lower(), str(item.get("name") or "").lower()))
+    repository = candidates[0] if candidates else {}
+    return {
+        "repository": repository,
+        "repositories": candidates,
+        "candidates": candidates,
+        "selection_required": len(candidates) > 1,
+        "workspace_path": str(workspace_path),
+    }
+
+
+def _apply_project_code_repository_update(
+    repository: ProjectCodeRepository,
+    updates: dict[str, Any],
+) -> ProjectCodeRepository:
+    normalized_updates: dict[str, Any] = {}
+    if "name" in updates:
+        normalized_updates["name"] = _normalize_project_code_repository_name(updates.get("name"))
+    if "repo_url" in updates:
+        normalized_updates["repo_url"] = _normalize_project_code_repository_url(updates.get("repo_url"))
+    if "repo_type" in updates:
+        normalized_updates["repo_type"] = _normalize_project_code_repository_type(updates.get("repo_type"))
+    if "default_branch" in updates:
+        normalized_updates["default_branch"] = _normalize_project_code_repository_branch(updates.get("default_branch"))
+    if "description" in updates:
+        normalized_updates["description"] = _normalize_project_code_repository_text(updates.get("description"), limit=1000)
+    if "local_path" in updates:
+        normalized_updates["local_path"] = _normalize_project_code_repository_text(updates.get("local_path"), limit=1000)
+    if "credential_ref" in updates:
+        normalized_updates["credential_ref"] = _normalize_project_code_repository_text(updates.get("credential_ref"), limit=240)
+    if "enabled" in updates:
+        normalized_updates["enabled"] = bool(updates.get("enabled"))
+    normalized_updates["updated_at"] = _now_iso()
+    return replace(repository, **normalized_updates)
+
+
+@router.get("/{project_id}/code-repositories")
+async def list_project_code_repositories(project_id: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_access(project_id, auth_payload)
+    repositories = project_store.list_code_repositories(project.id)
+    return {
+        "project_id": project.id,
+        "repositories": [_serialize_project_code_repository(item) for item in repositories],
+        "total": len(repositories),
+    }
+
+
+@router.post("/{project_id}/code-repositories/initialize")
+async def initialize_project_code_repository(
+    project_id: str,
+    req: ProjectCodeRepositoryInitializeReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    initialization = await run_in_threadpool(
+        _build_project_code_repository_initialization,
+        project,
+        req.local_path,
+        req.scan_depth,
+    )
+    discovered_repositories = list(initialization.get("repositories") or [])
+    existing_by_repo_url = {
+        str(item.repo_url or "").strip(): item
+        for item in project_store.list_code_repositories(project.id)
+        if str(item.repo_url or "").strip()
+    }
+    created_repositories: list[dict[str, Any]] = []
+    skipped_repositories: list[dict[str, Any]] = []
+    seen_repo_urls: set[str] = set()
+    now = _now_iso()
+    for item in discovered_repositories:
+        repo_url = _normalize_project_code_repository_url(item.get("repo_url"))
+        if repo_url in seen_repo_urls:
+            continue
+        seen_repo_urls.add(repo_url)
+        if repo_url in existing_by_repo_url:
+            skipped_repositories.append(_serialize_project_code_repository(existing_by_repo_url[repo_url]))
+            continue
+        repository = ProjectCodeRepository(
+            id=project_store.new_code_repository_id(),
+            project_id=project.id,
+            name=_normalize_project_code_repository_name(item.get("name")),
+            repo_url=repo_url,
+            repo_type=_normalize_project_code_repository_type(item.get("repo_type")),
+            default_branch=_normalize_project_code_repository_branch(item.get("default_branch")),
+            description=_normalize_project_code_repository_text(item.get("description"), limit=1000),
+            local_path=_normalize_project_code_repository_text(item.get("local_path"), limit=1000),
+            credential_ref=_normalize_project_code_repository_text(item.get("credential_ref"), limit=240),
+            enabled=bool(item.get("enabled", True)),
+            created_by=_current_username(auth_payload),
+            created_at=now,
+            updated_at=now,
+        )
+        project_store.upsert_code_repository(repository)
+        existing_by_repo_url[repo_url] = repository
+        created_repositories.append(_serialize_project_code_repository(repository))
+    saved_repositories = [*created_repositories, *skipped_repositories]
+    return {
+        "status": "initialized",
+        "project_id": project.id,
+        **initialization,
+        "repository": initialization.get("repository", {}),
+        "saved_repositories": saved_repositories,
+        "created_repositories": created_repositories,
+        "skipped_repositories": skipped_repositories,
+        "created_count": len(created_repositories),
+        "skipped_count": len(skipped_repositories),
+        "selection_required": False,
+    }
+
+
+@router.post("/{project_id}/code-repositories")
+async def create_project_code_repository(
+    project_id: str,
+    req: ProjectCodeRepositoryCreateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    now = _now_iso()
+    repository = ProjectCodeRepository(
+        id=project_store.new_code_repository_id(),
+        project_id=project.id,
+        name=_normalize_project_code_repository_name(req.name),
+        repo_url=_normalize_project_code_repository_url(req.repo_url),
+        repo_type=_normalize_project_code_repository_type(req.repo_type),
+        default_branch=_normalize_project_code_repository_branch(req.default_branch),
+        description=_normalize_project_code_repository_text(req.description, limit=1000),
+        local_path=_normalize_project_code_repository_text(req.local_path, limit=1000),
+        credential_ref=_normalize_project_code_repository_text(req.credential_ref, limit=240),
+        enabled=bool(req.enabled),
+        created_by=_current_username(auth_payload),
+        created_at=now,
+        updated_at=now,
+    )
+    project_store.upsert_code_repository(repository)
+    return {
+        "status": "created",
+        "repository": _serialize_project_code_repository(repository),
+    }
+
+
+@router.put("/{project_id}/code-repositories/{repository_id}")
+async def update_project_code_repository(
+    project_id: str,
+    repository_id: str,
+    req: ProjectCodeRepositoryUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    repository = project_store.get_code_repository(project.id, repository_id)
+    if repository is None:
+        raise HTTPException(404, f"Repository {repository_id} not found")
+    updates = req.model_dump(exclude_none=True)
+    if not updates:
+        return {
+            "status": "no_change",
+            "repository": _serialize_project_code_repository(repository),
+        }
+    updated = _apply_project_code_repository_update(repository, updates)
+    project_store.upsert_code_repository(updated)
+    return {
+        "status": "updated",
+        "repository": _serialize_project_code_repository(updated),
+    }
+
+
+@router.delete("/{project_id}/code-repositories/{repository_id}")
+async def delete_project_code_repository(
+    project_id: str,
+    repository_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    if not project_store.remove_code_repository(project.id, repository_id):
+        raise HTTPException(404, f"Repository {repository_id} not found")
+    return {"status": "deleted", "repository_id": repository_id}
 
 
 @router.get("/{project_id}")

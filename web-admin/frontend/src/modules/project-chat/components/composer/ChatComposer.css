@@ -497,6 +497,11 @@
   white-space: nowrap;
 }
 
+.chat-model-pill.is-loading {
+  color: #64748b;
+  background: rgba(248, 250, 252, 0.92);
+}
+
 .hint-text {
   display: none;
   color: #6b7280;
@@ -517,8 +522,10 @@
   box-shadow: 0 14px 24px rgba(15, 23, 42, 0.18) !important;
 }
 
-.send-message-button:disabled {
+.send-message-button.is-blocked {
   background: #d4d4d8 !important;
+  box-shadow: none !important;
+  color: #71717a !important;
 }
 
 @keyframes workingPulse {

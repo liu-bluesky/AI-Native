@@ -32,6 +32,7 @@ export async function pickWorkspaceDirectory(currentPath = '', options = {}) {
   const title = String(options?.title || '选择工作区目录').trim() || '选择工作区目录'
   const fallbackPlaceholder =
     String(options?.placeholder || '/Users/yourname/project').trim() || '/Users/yourname/project'
+  const manualFallback = options?.manualFallback !== false
 
   try {
     const nativePicked = await pickNativeWorkspaceDirectory({
@@ -56,7 +57,12 @@ export async function pickWorkspaceDirectory(currentPath = '', options = {}) {
       return picked
     }
   } catch (err) {
-    ElMessage.warning(err?.detail || err?.message || '系统目录选择器不可用，改为手动填写路径')
+    const fallbackMessage = manualFallback ? '系统目录选择器不可用，改为手动填写路径' : '系统目录选择器不可用'
+    ElMessage.warning(err?.detail || err?.message || fallbackMessage)
+  }
+
+  if (!manualFallback) {
+    return null
   }
 
   try {

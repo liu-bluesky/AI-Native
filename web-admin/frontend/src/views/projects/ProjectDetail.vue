@@ -305,6 +305,154 @@
             </div>
           </el-tab-pane>
 
+          <el-tab-pane name="repositories">
+            <template #label>
+              <span class="project-detail-tab-label">
+                <span class="project-detail-tab-label__title">代码仓库</span>
+                <span class="project-detail-tab-label__meta">
+                  {{ repositoryTabMeta }}
+                </span>
+              </span>
+            </template>
+
+            <div class="project-detail-tab-pane">
+              <ProjectWorkspaceBlock eyebrow="Code Repositories" title="代码仓库">
+                <template #actions>
+                  <div class="block-header__actions">
+                    <el-button
+                      size="small"
+                      :loading="repositoryLoading"
+                      @click="fetchCodeRepositories()"
+                      >刷新</el-button
+                    >
+                    <el-button
+                      size="small"
+                      :disabled="!canInitializeRepository"
+                      :loading="repositoryInitializing"
+                      @click="initializeRepositoryFromWorkspace"
+                      >初始化仓库</el-button
+                    >
+                    <el-button
+                      type="primary"
+                      size="small"
+                      :disabled="!canManageProject"
+                      @click="openRepositoryDialog()"
+                      >添加仓库</el-button
+                    >
+                  </div>
+                </template>
+
+                <el-alert
+                  class="section-alert"
+                  title="这里维护项目关联的代码仓库元数据；凭据只保存引用标识，后续自动提交会基于仓库、分支和凭据引用做独立确认。"
+                  type="info"
+                  :closable="false"
+                  show-icon
+                />
+
+                <el-table
+                  v-loading="repositoryLoading"
+                  :data="codeRepositories"
+                  stripe
+                  class="section-table"
+                >
+                  <el-table-column label="仓库" min-width="220">
+                    <template #default="{ row }">
+                      <div class="repository-table-main">
+                        <div class="repository-table-main__head">
+                          <strong>{{ row.name || row.id }}</strong>
+                          <el-tag
+                            size="small"
+                            effect="plain"
+                            :type="row.enabled ? 'success' : 'info'"
+                          >
+                            {{ row.enabled ? "启用" : "停用" }}
+                          </el-tag>
+                        </div>
+                        <span>{{ row.description || "未填写说明" }}</span>
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="Git 地址" min-width="300">
+                    <template #default="{ row }">
+                      <div class="repository-url-cell">
+                        <code>{{ row.repo_url || "-" }}</code>
+                        <el-button
+                          text
+                          size="small"
+                          :disabled="!row.repo_url"
+                          @click="copyRepositoryUrl(row)"
+                          >复制</el-button
+                        >
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="默认分支" width="130">
+                    <template #default="{ row }">
+                      <el-tag effect="plain" type="info">
+                        {{ row.default_branch || "main" }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column
+                    label="本地路径"
+                    min-width="180"
+                    show-overflow-tooltip
+                  >
+                    <template #default="{ row }">
+                      {{ row.local_path || "-" }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column
+                    label="凭据引用"
+                    min-width="150"
+                    show-overflow-tooltip
+                  >
+                    <template #default="{ row }">
+                      {{ row.credential_ref || "-" }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="更新时间" min-width="150">
+                    <template #default="{ row }">
+                      {{ formatRelativeTime(row.updated_at) }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column
+                    label="操作"
+                    min-width="160"
+                    fixed="right"
+                    class-name="table-action-column"
+                  >
+                    <template #default="{ row }">
+                      <el-button
+                        text
+                        type="primary"
+                        size="small"
+                        :disabled="!canManageProject"
+                        @click="openRepositoryDialog(row)"
+                        >编辑</el-button
+                      >
+                      <el-button
+                        text
+                        type="danger"
+                        size="small"
+                        :disabled="!canManageProject"
+                        @click="deleteCodeRepository(row)"
+                        >删除</el-button
+                      >
+                    </template>
+                  </el-table-column>
+                </el-table>
+
+                <el-empty
+                  v-if="!repositoryLoading && !codeRepositories.length"
+                  description="当前项目还没有维护代码仓库"
+                  :image-size="60"
+                />
+              </ProjectWorkspaceBlock>
+            </div>
+          </el-tab-pane>
+
           <el-tab-pane name="access">
             <template #label>
               <span class="project-detail-tab-label">
@@ -764,6 +912,76 @@
           </el-tab-pane>
         </el-tabs>
       </ProjectAppSection>
+
+      <el-dialog
+        v-model="showRepositoryDialog"
+        :title="editingRepositoryId ? '编辑代码仓库' : '添加代码仓库'"
+        width="640px"
+      >
+        <el-form :model="repositoryForm" label-width="104px">
+          <el-form-item label="仓库名称" required>
+            <el-input
+              v-model="repositoryForm.name"
+              placeholder="例如 PC 后台 / 移动端 / API 服务"
+            />
+          </el-form-item>
+          <el-form-item label="Git 地址" required>
+            <el-input
+              v-model="repositoryForm.repo_url"
+              placeholder="https://github.com/org/repo.git 或 git@host:org/repo.git"
+            />
+          </el-form-item>
+          <el-form-item label="默认分支">
+            <el-input
+              v-model="repositoryForm.default_branch"
+              placeholder="main / master / develop"
+            />
+          </el-form-item>
+          <el-form-item label="本地路径">
+            <el-input
+              v-model="repositoryForm.local_path"
+              readonly
+              placeholder="可选，用于后续自动提交定位工作区"
+              @click="selectRepositoryLocalPath"
+            >
+              <template #append>
+                <el-button @click.stop="selectRepositoryLocalPath">
+                  选择
+                </el-button>
+              </template>
+            </el-input>
+          </el-form-item>
+          <el-form-item label="凭据引用">
+            <el-input
+              v-model="repositoryForm.credential_ref"
+              placeholder="可选，例如 github-main-token"
+            />
+            <div class="ui-rule-help">
+              这里只保存凭据引用，不保存真实 token 或密码。
+            </div>
+          </el-form-item>
+          <el-form-item label="仓库说明">
+            <el-input
+              v-model="repositoryForm.description"
+              type="textarea"
+              :rows="3"
+              placeholder="补充仓库用途、端类型或提交注意事项"
+            />
+          </el-form-item>
+          <el-form-item label="启用">
+            <el-switch v-model="repositoryForm.enabled" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="showRepositoryDialog = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="repositorySaving"
+            @click="saveCodeRepository"
+            >保存</el-button
+          >
+        </template>
+      </el-dialog>
 
       <el-dialog v-model="showAddDialog" title="添加项目成员" width="520px">
         <el-form :model="addForm" label-width="100px">
@@ -2264,6 +2482,7 @@ const showAddDialog = ref(false);
 const showAddUserDialog = ref(false);
 const showUiRuleDialog = ref(false);
 const showExperienceRuleBindingDialog = ref(false);
+const showRepositoryDialog = ref(false);
 const showEditDialog = ref(false);
 const showManualDialog = ref(false);
 const showExperienceSummaryDialog = ref(false);
@@ -2298,8 +2517,17 @@ const memoryLoading = ref(false);
 const workSessionLoading = ref(false);
 const uiRuleSaving = ref(false);
 const taskSessionsLoading = ref(false);
+const repositoryLoading = ref(false);
+const repositorySaving = ref(false);
+const repositoryInitializing = ref(false);
+const repositoryWorkspaceLoading = ref(false);
 
 const project = ref({});
+const repositoryWorkspace = ref({
+  path: "",
+  source: "",
+});
+const codeRepositories = ref([]);
 const projectUsers = ref([]);
 const members = ref([]);
 const employeeOptions = ref([]);
@@ -2332,6 +2560,7 @@ const requirementRoundTaskTreeLoadingMap = ref({});
 const workSessionDetailLoading = ref(false);
 const requirementRecordDeleting = ref(false);
 const requirementRecordsLoaded = ref(false);
+const editingRepositoryId = ref("");
 const projectUsersPage = ref(1);
 const projectUsersPageSize = ref(10);
 const membersPage = ref(1);
@@ -2345,11 +2574,13 @@ const canManageProjectUsers = ref(false);
 const tabDataLoaded = ref({
   overview: false,
   access: false,
+  repositories: false,
   memory: false,
 });
 const tabDataPromises = {
   overview: null,
   access: null,
+  repositories: null,
   memory: null,
 };
 const memoryLimitOptions = [20, 50, 100];
@@ -2387,6 +2618,16 @@ const userForm = ref({
   enabled: true,
 });
 
+const repositoryForm = ref({
+  name: "",
+  repo_url: "",
+  default_branch: "main",
+  description: "",
+  local_path: "",
+  credential_ref: "",
+  enabled: true,
+});
+
 const editForm = ref({
   name: "",
   description: "",
@@ -2411,6 +2652,11 @@ let experienceSummaryPollingTimer = 0;
 function resetProjectScopedState() {
   stopExperienceSummaryPolling();
   project.value = {};
+  repositoryWorkspace.value = {
+    path: "",
+    source: "",
+  };
+  codeRepositories.value = [];
   projectUsers.value = [];
   members.value = [];
   lastExperienceSummaryResult.value = null;
@@ -2431,13 +2677,17 @@ function resetProjectScopedState() {
   expandedRequirementRecordId.value = "";
   requirementRoundTaskTreeLoadingMap.value = {};
   requirementRecordsLoaded.value = false;
+  editingRepositoryId.value = "";
+  showRepositoryDialog.value = false;
   tabDataLoaded.value = {
     overview: false,
     access: false,
+    repositories: false,
     memory: false,
   };
   tabDataPromises.overview = null;
   tabDataPromises.access = null;
+  tabDataPromises.repositories = null;
   tabDataPromises.memory = null;
 }
 
@@ -2578,6 +2828,14 @@ const projectHeroStats = computed(() => [
     meta: "当前访问范围",
   },
   {
+    key: "repositories",
+    label: "代码仓库",
+    value: codeRepositories.value.length,
+    meta: tabDataLoaded.value.repositories
+      ? "当前已加载"
+      : "切到代码仓库页签后可细看",
+  },
+  {
     key: "records",
     label: "需求记录",
     value: requirementRecords.value.length,
@@ -2636,8 +2894,23 @@ const accessTabMeta = computed(
   () => `${projectUserCount.value} 用户 · ${projectMemberCount.value} 成员`,
 );
 
+const repositoryTabMeta = computed(() => {
+  const total = codeRepositories.value.length;
+  const enabled = codeRepositories.value.filter((item) => item.enabled).length;
+  return total ? `${enabled}/${total} 启用` : "待维护";
+});
+
+const canInitializeRepository = computed(
+  () =>
+    canManageProject.value &&
+    Boolean(getDefaultRepositoryLocalPath()) &&
+    !repositoryWorkspaceLoading.value &&
+    !repositoryInitializing.value &&
+    !repositorySaving.value,
+);
+
 const availableProjectDetailTabs = computed(() => {
-  const tabs = ["overview", "access", "memory"];
+  const tabs = ["overview", "repositories", "access", "memory"];
   if (showProjectAddressFields) {
     tabs.push("mcp");
   }
@@ -4725,6 +4998,115 @@ async function fetchProject(targetProjectId = projectId.value) {
   ensureExperienceRuleOptionCoverage();
 }
 
+function normalizeRepositoryWorkspaceContext(data = {}) {
+  const chatSettings =
+    data?.chat_settings && typeof data.chat_settings === "object"
+      ? data.chat_settings
+      : {};
+  const externalAgent =
+    data?.external_agent && typeof data.external_agent === "object"
+      ? data.external_agent
+      : {};
+  const connectorWorkspace = String(
+    chatSettings.connector_workspace_path || "",
+  ).trim();
+  const effectiveWorkspace = String(data?.workspace_path || "").trim();
+  const externalAgentWorkspace = String(
+    externalAgent.workspace_path || "",
+  ).trim();
+  const projectWorkspace = String(data?.project_workspace_path || "").trim();
+  const path =
+    connectorWorkspace ||
+    effectiveWorkspace ||
+    externalAgentWorkspace ||
+    projectWorkspace;
+  return {
+    path,
+    source: connectorWorkspace
+      ? "connector_workspace_path"
+      : effectiveWorkspace
+        ? "effective_workspace_path"
+        : externalAgentWorkspace
+          ? "external_agent_workspace_path"
+          : projectWorkspace
+            ? "project_workspace_path"
+            : "",
+  };
+}
+
+async function fetchRepositoryWorkspaceContext(
+  targetProjectId = projectId.value,
+) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) {
+    repositoryWorkspace.value = {
+      path: "",
+      source: "",
+    };
+    return;
+  }
+  repositoryWorkspaceLoading.value = true;
+  try {
+    const data = await api.get(`/projects/${effectiveProjectId}/chat/providers`);
+    if (effectiveProjectId !== projectId.value) return;
+    repositoryWorkspace.value = normalizeRepositoryWorkspaceContext(data);
+  } catch {
+    if (effectiveProjectId !== projectId.value) return;
+    repositoryWorkspace.value = {
+      path: String(project.value?.workspace_path || "").trim(),
+      source: "project_workspace_path",
+    };
+  } finally {
+    if (effectiveProjectId === projectId.value) {
+      repositoryWorkspaceLoading.value = false;
+    }
+  }
+}
+
+function normalizeCodeRepository(item) {
+  return {
+    id: String(item?.id || "").trim(),
+    project_id: String(item?.project_id || "").trim(),
+    name: String(item?.name || "").trim(),
+    repo_url: String(item?.repo_url || "").trim(),
+    repo_type: String(item?.repo_type || "git").trim() || "git",
+    default_branch:
+      String(item?.default_branch || "").trim() || "main",
+    description: String(item?.description || "").trim(),
+    local_path: String(item?.local_path || "").trim(),
+    credential_ref: String(item?.credential_ref || "").trim(),
+    enabled: item?.enabled !== false,
+    created_by: String(item?.created_by || "").trim(),
+    created_at: String(item?.created_at || "").trim(),
+    updated_at: String(item?.updated_at || "").trim(),
+  };
+}
+
+async function fetchCodeRepositories(targetProjectId = projectId.value) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) {
+    codeRepositories.value = [];
+    return;
+  }
+  repositoryLoading.value = true;
+  try {
+    const data = await api.get(
+      `/projects/${effectiveProjectId}/code-repositories`,
+    );
+    if (effectiveProjectId !== projectId.value) return;
+    codeRepositories.value = (data.repositories || [])
+      .map((item) => normalizeCodeRepository(item))
+      .filter((item) => item.id);
+  } catch (err) {
+    codeRepositories.value = [];
+    ElMessage.error(err?.detail || err?.message || "加载代码仓库失败");
+  } finally {
+    if (effectiveProjectId === projectId.value) {
+      repositoryLoading.value = false;
+    }
+  }
+}
+
 async function fetchExperienceProviders() {
   experienceProvidersLoading.value = true;
   try {
@@ -6313,6 +6695,26 @@ async function ensureAccessTabData(
   return tabDataPromises.access;
 }
 
+async function ensureRepositoriesTabData(
+  targetProjectId = projectId.value,
+  options = {},
+) {
+  const force = Boolean(options?.force);
+  if (!force && tabDataLoaded.value.repositories) {
+    return;
+  }
+  if (tabDataPromises.repositories) {
+    return tabDataPromises.repositories;
+  }
+  tabDataPromises.repositories = (async () => {
+    await fetchCodeRepositories(targetProjectId);
+    setTabDataLoaded("repositories", true);
+  })().finally(() => {
+    tabDataPromises.repositories = null;
+  });
+  return tabDataPromises.repositories;
+}
+
 async function ensureMemoryTabData(
   targetProjectId = projectId.value,
   options = {},
@@ -6354,6 +6756,10 @@ async function ensureProjectTabData(
     await ensureAccessTabData(effectiveProjectId, options);
     return;
   }
+  if (normalizedTab === "repositories") {
+    await ensureRepositoriesTabData(effectiveProjectId, options);
+    return;
+  }
   await ensureOverviewTabData(effectiveProjectId, options);
 }
 
@@ -6363,6 +6769,7 @@ async function refresh(targetProjectId = projectId.value) {
   loading.value = true;
   try {
     await fetchProject(effectiveProjectId);
+    await fetchRepositoryWorkspaceContext(effectiveProjectId);
     await restoreExperienceSummaryJob(effectiveProjectId);
     await ensureProjectTabData(
       route.query.tab || activeProjectTab.value,
@@ -6836,6 +7243,18 @@ async function selectWorkspaceDirectory() {
   editForm.value.workspace_path = picked;
 }
 
+async function selectRepositoryLocalPath() {
+  const picked = await openWorkspaceDirectoryPicker(
+    repositoryForm.value.local_path,
+    {
+      title: "选择代码仓库本地路径",
+      manualFallback: false,
+    },
+  );
+  if (picked === null) return;
+  repositoryForm.value.local_path = picked;
+}
+
 async function selectAiEntryFile() {
   const picked = await pickAiEntryFile(
     editForm.value.ai_entry_file,
@@ -6881,10 +7300,188 @@ async function saveEdit() {
     ElMessage.success("项目已更新");
     showEditDialog.value = false;
     await fetchProject();
+    await fetchRepositoryWorkspaceContext();
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "更新失败");
   } finally {
     saving.value = false;
+  }
+}
+
+function resetRepositoryForm() {
+  editingRepositoryId.value = "";
+  repositoryForm.value = {
+    name: "",
+    repo_url: "",
+    default_branch: "main",
+    description: "",
+    local_path: getDefaultRepositoryLocalPath(),
+    credential_ref: "",
+    enabled: true,
+  };
+}
+
+function getDefaultRepositoryLocalPath() {
+  return (
+    String(repositoryWorkspace.value?.path || "").trim() ||
+    String(project.value?.workspace_path || "").trim()
+  );
+}
+
+async function initializeRepositoryFromWorkspace() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  const localPath = getDefaultRepositoryLocalPath();
+  if (!localPath) {
+    ElMessage.warning("项目未配置本机工作区或项目工作区路径");
+    return;
+  }
+  repositoryInitializing.value = true;
+  try {
+    const data = await api.post(
+      `/projects/${projectId.value}/code-repositories/initialize`,
+      { local_path: localPath },
+    );
+    const createdCount = Number(data?.created_count || 0);
+    const skippedCount = Number(data?.skipped_count || 0);
+    await fetchCodeRepositories();
+    setTabDataLoaded("repositories", true);
+    if (createdCount > 0) {
+      const skippedText = skippedCount ? `，已存在 ${skippedCount} 个` : "";
+      ElMessage.success(`已自动保存 ${createdCount} 个代码仓库${skippedText}`);
+      return;
+    }
+    if (skippedCount > 0) {
+      ElMessage.info(`检测到 ${skippedCount} 个仓库地址已存在，无需重复保存`);
+      return;
+    }
+    ElMessage.warning("当前目录下未扫描到可保存的 Git 远程地址");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "初始化仓库失败");
+  } finally {
+    repositoryInitializing.value = false;
+  }
+}
+
+function openRepositoryDialog(repository = null) {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  if (repository?.id) {
+    const normalized = normalizeCodeRepository(repository);
+    editingRepositoryId.value = normalized.id;
+    repositoryForm.value = {
+      name: normalized.name,
+      repo_url: normalized.repo_url,
+      default_branch: normalized.default_branch || "main",
+      description: normalized.description,
+      local_path: normalized.local_path,
+      credential_ref: normalized.credential_ref,
+      enabled: normalized.enabled,
+    };
+  } else {
+    resetRepositoryForm();
+  }
+  showRepositoryDialog.value = true;
+}
+
+function buildRepositoryPayload() {
+  return {
+    name: String(repositoryForm.value.name || "").trim(),
+    repo_url: String(repositoryForm.value.repo_url || "").trim(),
+    repo_type: "git",
+    default_branch:
+      String(repositoryForm.value.default_branch || "").trim() || "main",
+    description: String(repositoryForm.value.description || "").trim(),
+    local_path: String(repositoryForm.value.local_path || "").trim(),
+    credential_ref: String(repositoryForm.value.credential_ref || "").trim(),
+    enabled: repositoryForm.value.enabled !== false,
+  };
+}
+
+async function saveCodeRepository() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    showRepositoryDialog.value = false;
+    return;
+  }
+  const payload = buildRepositoryPayload();
+  if (!payload.name) {
+    ElMessage.warning("请输入仓库名称");
+    return;
+  }
+  if (!payload.repo_url) {
+    ElMessage.warning("请输入 Git 地址");
+    return;
+  }
+  repositorySaving.value = true;
+  try {
+    if (editingRepositoryId.value) {
+      await api.put(
+        `/projects/${projectId.value}/code-repositories/${editingRepositoryId.value}`,
+        payload,
+      );
+      ElMessage.success("代码仓库已更新");
+    } else {
+      await api.post(`/projects/${projectId.value}/code-repositories`, payload);
+      ElMessage.success("代码仓库已添加");
+    }
+    showRepositoryDialog.value = false;
+    resetRepositoryForm();
+    await fetchCodeRepositories();
+    setTabDataLoaded("repositories", true);
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存代码仓库失败");
+  } finally {
+    repositorySaving.value = false;
+  }
+}
+
+async function deleteCodeRepository(repository) {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  const repositoryId = String(repository?.id || "").trim();
+  if (!repositoryId) return;
+  try {
+    await ElMessageBox.confirm(
+      `确定删除代码仓库「${repository?.name || repositoryId}」吗？这只会删除项目里的仓库元数据，不会删除真实 Git 仓库。`,
+      "删除代码仓库",
+      {
+        type: "warning",
+        confirmButtonText: "删除",
+      },
+    );
+  } catch {
+    return;
+  }
+  repositorySaving.value = true;
+  try {
+    await api.delete(
+      `/projects/${projectId.value}/code-repositories/${repositoryId}`,
+    );
+    ElMessage.success("代码仓库已删除");
+    await fetchCodeRepositories();
+    setTabDataLoaded("repositories", true);
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "删除代码仓库失败");
+  } finally {
+    repositorySaving.value = false;
+  }
+}
+
+async function copyRepositoryUrl(repository) {
+  const repoUrl = String(repository?.repo_url || "").trim();
+  if (!repoUrl) return;
+  try {
+    await navigator.clipboard.writeText(repoUrl);
+    ElMessage.success("Git 地址已复制");
+  } catch {
+    ElMessage.error("复制失败");
   }
 }
 
@@ -7545,6 +8142,45 @@ onBeforeUnmount(() => {
 .section-table {
   margin-top: 8px;
   width: 100%;
+}
+
+.repository-table-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.repository-table-main__head,
+.repository-url-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.repository-table-main__head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repository-table-main span {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.repository-url-cell code {
+  min-width: 0;
+  overflow: hidden;
+  color: #334155;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .block :deep(.el-table),

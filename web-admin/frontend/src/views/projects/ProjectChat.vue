@@ -2069,6 +2069,7 @@
             :format-file-type="formatFileType"
             :composer-placeholder="composerPlaceholder"
             :is-composer-disabled="isComposerDisabled"
+            :is-chat-settings-display-ready="isChatSettingsDisplayReady"
             :is-slash-command-menu-visible="isSlashCommandMenuVisible"
             :filtered-slash-commands="filteredSlashCommands"
             :slash-command-highlight-index="slashCommandHighlightIndex"
@@ -2506,7 +2507,14 @@
                       </div>
 
                       <el-form-item label="执行方式">
+                        <div
+                          v-if="!isChatSettingsDisplayReady"
+                          class="settings-loading-placeholder"
+                        >
+                          正在加载项目配置...
+                        </div>
                         <el-select
+                          v-else
                           v-model="projectChatSettings.chat_mode"
                           class="full-width"
                           :disabled="!selectedProjectId"
@@ -2774,7 +2782,7 @@
                         :label="
                           nativeDesktopBridgeAvailable
                             ? '本机工作区'
-                            : '连接器工作区'
+                            : '本地连接器工作区'
                         "
                       >
                         <div class="workspace-path-editor">
@@ -2816,7 +2824,7 @@
                               {{
                                 nativeDesktopBridgeAvailable
                                   ? "当前还没有配置本机工作区。"
-                                  : "当前还没有配置连接器工作区。"
+                                  : "当前还没有配置本地连接器工作区。"
                               }}
                             </template>
                             这是执行器所在电脑上的绝对路径。
@@ -4095,6 +4103,7 @@ const projectWorkspaceSaving = ref(false);
 const autoSaveState = ref("idle");
 const autoSaveUpdatedAt = ref("");
 const projectSettingsHydrating = ref(false);
+const projectSettingsHydratedProjectId = ref("");
 
 const projects = ref([]);
 const providers = ref([]);
@@ -4310,8 +4319,8 @@ const {
   nativeExternalAgentRunnerSessionByChatSessionId,
   nativeExternalAgentChatSessionByRunnerSessionId,
   nativeExternalAgentMessageByRunnerSessionId,
-  setExternalAgentLaunching,
-  setExternalAgentBackgrounded,
+  setNativeExternalAgentLaunching: markNativeExternalAgentLaunching,
+  setNativeExternalAgentBackgrounded: markNativeExternalAgentBackgrounded,
   rememberNativeExternalAgentSessionBinding,
   getNativeExternalAgentRunnerSessionIdForChatSession,
   getNativeExternalAgentChatSessionIdForRunnerSession,
@@ -4495,14 +4504,24 @@ const canUseExternalAgent = computed(
     Boolean(externalAgentInfo.value.implemented) &&
     externalAgentOptions.value.some((item) => item?.implemented),
 );
+const isChatSettingsDisplayReady = computed(() => {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) return true;
+  return (
+    !projectSettingsHydrating.value &&
+    projectSettingsHydratedProjectId.value === projectId
+  );
+});
 const isExternalAgentMode = computed(
   () =>
+    isChatSettingsDisplayReady.value &&
     canUseExternalAgent.value &&
     String(projectChatSettings.value.chat_mode || "").trim() ===
       "external_agent",
 );
 const chatModeLabel = computed(() => {
   if (isLocalRunnerSurface.value) return "本地运行";
+  if (!isChatSettingsDisplayReady.value) return "";
   if (isExternalAgentMode.value) return "外部 Agent";
   return "系统对话";
 });
@@ -4535,14 +4554,14 @@ const executionWorkspacePath = computed(() =>
 
 /** 页面包装：标记 chatSession 的 external agent 启动状态 + 同步运行标记和加载态 */
 function setNativeExternalAgentLaunching(chatSessionId, launching) {
-  setExternalAgentLaunching(chatSessionId, launching);
+  markNativeExternalAgentLaunching(chatSessionId, launching);
   syncNativeExternalAgentRunningFlag();
   syncChatLoadingWithCurrentSession();
 }
 
 /** 页面包装：标记 chatSession 的 external agent 后台状态 + 同步运行标记和加载态 */
 function setNativeExternalAgentBackgrounded(chatSessionId, backgrounded) {
-  setExternalAgentBackgrounded(chatSessionId, backgrounded);
+  markNativeExternalAgentBackgrounded(chatSessionId, backgrounded);
   syncNativeExternalAgentRunningFlag();
   syncChatLoadingWithCurrentSession();
 }
@@ -4977,6 +4996,7 @@ const externalAgentStatusSummary = computed(() => {
 });
 const executionRuntimeTitle = computed(() => {
   if (!hasSelectedProject.value) return "未选择项目";
+  if (!isChatSettingsDisplayReady.value) return "项目配置加载中";
   if (!isExternalAgentMode.value) return "系统对话";
   if (
     externalAgentConnectorRequired.value &&
@@ -4984,7 +5004,11 @@ const executionRuntimeTitle = computed(() => {
   ) {
     return "外部 Agent 未就绪";
   }
-  if (!workspacePathConfigured.value) return "待选择本机工作区";
+  if (!workspacePathConfigured.value) {
+    return nativeDesktopBridgeAvailable.value
+      ? "待选择本机工作区"
+      : "待配置本地连接器工作区";
+  }
   if (workspacePathDirty.value) return "工作区未保存";
   if (externalAgentWarmupLoading.value) return "外部 Agent 预热中";
   if (externalAgentInfo.value.ready) {
@@ -4997,6 +5021,9 @@ const executionRuntimeTitle = computed(() => {
 });
 const executionRuntimeDescription = computed(() => {
   if (!hasSelectedProject.value) return "选择项目后才能绑定执行环境。";
+  if (!isChatSettingsDisplayReady.value) {
+    return "正在读取项目执行方式，加载完成前不会显示系统对话或外部 Agent 状态。";
+  }
   if (!isExternalAgentMode.value) {
     return currentModelSummary.value || "使用服务端模型和项目工具回答。";
   }
@@ -5026,6 +5053,7 @@ const executionRuntimeDescription = computed(() => {
 });
 const executionRuntimeActionLabel = computed(() => {
   if (!hasSelectedProject.value) return "选择项目";
+  if (!isChatSettingsDisplayReady.value) return "加载中";
   if (!isExternalAgentMode.value) return "切换执行方式";
   if (externalAgentConnectorRequired.value) return "连接本机";
   if (!workspacePathConfigured.value || workspacePathDirty.value)
@@ -5041,6 +5069,7 @@ const composerExecutionStatusTagType = computed(() => {
   return "info";
 });
 const composerExecutionStatusLabel = computed(() => {
+  if (!isChatSettingsDisplayReady.value) return "加载中";
   if (!isExternalAgentMode.value) return "系统对话";
   if (externalAgentUnavailable.value) return "不可用";
   if (externalAgentConnectorRequired.value || !workspacePathConfigured.value) {
@@ -5056,6 +5085,7 @@ const composerExecutionStatusLabel = computed(() => {
   return "待检查";
 });
 const composerExecutionRuntimeLocation = computed(() => {
+  if (!isChatSettingsDisplayReady.value) return "读取配置";
   if (!isExternalAgentMode.value) return "服务端模型";
   if (nativeDesktopBridgeAvailable.value) return "桌面端原生桥";
   if (usingLocalConnector.value) return "本地连接器";
@@ -5091,6 +5121,7 @@ const nativeRunnerSelfCheckPassed = computed(() => {
   );
 });
 const externalAgentUnavailable = computed(() => {
+  if (!isChatSettingsDisplayReady.value) return false;
   if (!isExternalAgentMode.value) return false;
   if (externalAgentWarmupLoading.value || externalAgentInfo.value.ready) {
     return false;
@@ -5116,6 +5147,7 @@ const externalAgentUnavailable = computed(() => {
 });
 const executionRuntimeToneClass = computed(() => {
   if (!hasSelectedProject.value) return "is-muted";
+  if (!isChatSettingsDisplayReady.value) return "is-muted";
   if (!isExternalAgentMode.value) return "is-system";
   if (externalAgentUnavailable.value) return "is-danger";
   if (
@@ -5134,6 +5166,7 @@ const executionRuntimeToneClass = computed(() => {
   return "is-pending";
 });
 const composerExecutionChipLabel = computed(() => {
+  if (!isChatSettingsDisplayReady.value) return "项目配置加载中";
   if (!isExternalAgentMode.value)
     return `系统对话 · ${currentModelSummary.value}`;
   if (externalAgentInfo.value.ready) {
@@ -5281,6 +5314,7 @@ const executionPermissionItems = computed(() => [
   },
 ]);
 const chatHeaderStatusText = computed(() => {
+  if (!isChatSettingsDisplayReady.value) return "配置加载中";
   if (!isExternalAgentMode.value) return wsStatusText.value;
   if (externalAgentConnectorRequired.value) return "未选择本地连接器";
   if (nativeDesktopBridgeAvailable.value && !workspacePathConfigured.value)
@@ -5292,6 +5326,7 @@ const chatHeaderStatusText = computed(() => {
   return "未就绪";
 });
 const chatHeaderStatusType = computed(() => {
+  if (!isChatSettingsDisplayReady.value) return "info";
   if (!isExternalAgentMode.value) return wsStatusType.value;
   if (externalAgentConnectorRequired.value) return "warning";
   if (!workspacePathConfigured.value || workspacePathDirty.value)
@@ -5308,6 +5343,9 @@ const chatHeaderSubtext = computed(() => {
     return ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
       ? "当前是通用对话；选择项目后可切换到项目上下文"
       : "请先在顶部选择项目后开始对话";
+  }
+  if (!isChatSettingsDisplayReady.value) {
+    return "正在加载项目执行配置";
   }
   if (!isExternalAgentMode.value) {
     const provider = String(
@@ -6145,6 +6183,11 @@ async function handleNativeExternalAgentSessionEvent(event) {
     return;
   }
   stopNativeExternalAgentSessionPolling(snapshot.sessionId);
+  releaseNativeExternalAgentTurnIfTerminal(
+    snapshot.sessionId,
+    getNativeExternalAgentChatSessionIdForRunnerSession(snapshot.sessionId),
+    snapshot,
+  );
   syncChatLoadingWithCurrentSession();
   finalizeNativeExternalAgentSessionOnce(
     snapshot,
@@ -6547,6 +6590,27 @@ function buildFastKilledNativeExternalAgentSnapshot(sessionId = "") {
   };
 }
 
+function buildUnavailableNativeExternalAgentSnapshot(
+  sessionId = "",
+  reason = "",
+) {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  const existing =
+    nativeExternalAgentSessionsById.get(normalizedSessionId) ||
+    nativeExternalAgentSession.value ||
+    {};
+  const label = String(existing.label || "外部 Agent").trim();
+  const blockedReason = String(reason || "Runner 会话状态不可确认").trim();
+  return {
+    ...existing,
+    sessionId: normalizedSessionId,
+    status: "unavailable",
+    blockedReason,
+    summary: `${label} Runner 会话状态不可确认`,
+    updatedAtEpochMs: Date.now(),
+  };
+}
+
 function scheduleNativeExternalAgentDeferredCleanup(
   sessionId = "",
   chatSessionId = "",
@@ -6586,6 +6650,31 @@ function scheduleNativeExternalAgentDeferredCleanup(
     ]);
   }, 650);
   nativeExternalAgentDeferredCleanupTimers.set(normalizedSessionId, timer);
+}
+
+function releaseNativeExternalAgentTurnIfTerminal(
+  sessionId = "",
+  chatSessionId = "",
+  snapshot = null,
+) {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(
+    sessionId || snapshot,
+  );
+  const normalizedChatSessionId = String(
+    chatSessionId ||
+      snapshot?.chatSessionId ||
+      snapshot?.chat_session_id ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(
+        normalizedSessionId,
+      ) ||
+      currentChatSessionId.value ||
+      "",
+  ).trim();
+  if (normalizedChatSessionId) {
+    setNativeExternalAgentLaunching(normalizedChatSessionId, false);
+  }
+  syncNativeExternalAgentRunningFlag();
+  syncChatLoadingWithCurrentSession();
 }
 
 function applyNativeExternalAgentFastKilledSession(
@@ -6975,6 +7064,11 @@ async function pollNativeExternalAgentSession(sessionId) {
       }
       return;
     }
+    releaseNativeExternalAgentTurnIfTerminal(
+      normalizedSessionId,
+      getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId),
+      snapshot,
+    );
     syncChatLoadingWithCurrentSession();
     finalizeNativeExternalAgentSessionOnce(
       snapshot,
@@ -6983,6 +7077,17 @@ async function pollNativeExternalAgentSession(sessionId) {
     await refreshNativeRunnerPermissionRecords();
     await refreshNativeExternalAgentSessionRecords({ silent: true });
   } catch (err) {
+    const unavailableSnapshot = buildUnavailableNativeExternalAgentSnapshot(
+      normalizedSessionId,
+      err?.message || "读取 Runner 会话失败",
+    );
+    applyNativeExternalAgentSessionSnapshot(unavailableSnapshot);
+    upsertNativeExternalAgentMessageOperation(unavailableSnapshot);
+    releaseNativeExternalAgentTurnIfTerminal(
+      normalizedSessionId,
+      getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId),
+      unavailableSnapshot,
+    );
     syncChatLoadingWithCurrentSession();
     ElMessage.warning(err?.message || "读取 Runner 会话失败");
   }
@@ -7135,6 +7240,11 @@ async function startNativeExternalAgentSession(
       void pollNativeExternalAgentSession(snapshot.sessionId);
       return true;
     }
+    releaseNativeExternalAgentTurnIfTerminal(
+      snapshot.sessionId,
+      effectiveChatSessionId,
+      snapshot,
+    );
     syncChatLoadingWithCurrentSession();
     finalizeNativeExternalAgentSessionOnce(snapshot, effectiveChatSessionId);
     ElMessage.warning(
@@ -7142,6 +7252,7 @@ async function startNativeExternalAgentSession(
     );
     return false;
   } catch (err) {
+    releaseNativeExternalAgentTurnIfTerminal("", effectiveChatSessionId);
     syncChatLoadingWithCurrentSession();
     ElMessage.error(err?.message || "外部 Agent Runner 启动失败");
     return false;
@@ -7924,6 +8035,8 @@ const composerPlaceholder = computed(() =>
                       : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
                         ? "直接输入问题开始通用对话；如需项目上下文，再从顶部选择项目。"
                         : "请先从顶部选择项目；如需快速创建员工，也可直接点击“创建员工”。"
+                    : !isChatSettingsDisplayReady.value
+                      ? "正在加载项目配置，完成后即可发送。"
                     : "输入你的问题，按 Enter 发送，Shift + Enter 换行。输入 / 可查看可用命令。",
 );
 const composerHintText = computed(() => {
@@ -7950,6 +8063,9 @@ const composerHintText = computed(() => {
   }
   if (isAwaitingUserInteraction.value) {
     return "当前处于交互等待状态，可补充下一条消息";
+  }
+  if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
+    return "正在加载项目执行配置";
   }
   if (!hasAccessibleProjects.value) {
     return activeComposerAssistMeta.value?.id === "employee_create"
@@ -9814,6 +9930,11 @@ async function restoreNativeExternalAgentRuntime(
         void pollNativeExternalAgentSession(restoredSessionId);
         continue;
       }
+      releaseNativeExternalAgentTurnIfTerminal(
+        restoredSessionId,
+        activeChatSessionId,
+        snapshot,
+      );
       syncChatLoadingWithCurrentSession();
       completeNativeExternalAgentRunningOperations(
         restoredSessionId,
@@ -9824,10 +9945,25 @@ async function restoreNativeExternalAgentRuntime(
     }
 
     if (runtimeSnapshot?.running) {
+      const unavailableSnapshot = buildUnavailableNativeExternalAgentSnapshot(
+        restoredSessionId,
+        "外部 Agent Runner 会话状态不可确认，已停止恢复为进行中",
+      );
+      applyNativeExternalAgentSessionSnapshot(unavailableSnapshot, {
+        chatSessionId: activeChatSessionId,
+        messageId: restoredMessage.id,
+        select: true,
+      });
+      upsertNativeExternalAgentMessageOperation(unavailableSnapshot);
       restoredMessage.displayMode = "";
       restoredMessage.content =
         String(restoredMessage.content || "").trim() ||
         "外部 Agent Runner 会话状态不可确认，已停止恢复为进行中。";
+      releaseNativeExternalAgentTurnIfTerminal(
+        restoredSessionId,
+        activeChatSessionId,
+        unavailableSnapshot,
+      );
       syncChatLoadingWithCurrentSession();
       completeNativeExternalAgentRunningOperations(
         restoredSessionId,
@@ -10616,6 +10752,9 @@ const canSend = computed(() => {
       String(draftText.value || "").trim() || hasLiveTerminalSession.value,
     );
   }
+  if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
+    return false;
+  }
   if (
     isExternalAgentMode.value &&
     isNativeExternalAgentRunningForChatSession(currentChatSessionId.value)
@@ -10649,6 +10788,9 @@ const isProjectOptionalEmployeeCreate = computed(
 const isComposerDisabled = computed(() => {
   if (isTerminalInteractionMode.value) return false;
   if (isProjectOptionalEmployeeCreate.value) return false;
+  if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
+    return true;
+  }
   if (!ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT) {
     return !selectedProjectId.value;
   }
@@ -17983,8 +18125,15 @@ async function handleProjectCreated(event) {
 }
 
 async function fetchProvidersByProject(projectId) {
+  const normalizedProjectId = String(projectId || "").trim();
   projectSettingsHydrating.value = true;
-  if (!projectId) {
+  if (
+    projectSettingsHydratedProjectId.value &&
+    projectSettingsHydratedProjectId.value !== normalizedProjectId
+  ) {
+    projectSettingsHydratedProjectId.value = "";
+  }
+  if (!normalizedProjectId) {
     projectEmployees.value = [];
     externalAgentInfo.value = normalizeExternalAgentInfo({});
     mcpModules.value = normalizeMcpModules({});
@@ -18011,6 +18160,7 @@ async function fetchProvidersByProject(projectId) {
     autoSaveState.value = "idle";
     autoSaveUpdatedAt.value = "";
     lastAutoSavedFingerprint = "";
+    projectSettingsHydratedProjectId.value = "";
     await fetchGlobalProviders();
     projectChatSettings.value = applyLocalConnectorRuntimeSettings({
       ...CHAT_SETTINGS_DEFAULTS,
@@ -18020,7 +18170,7 @@ async function fetchProvidersByProject(projectId) {
   }
   let hydrated = false;
   try {
-    const data = await fetchProjectChatProviders(projectId);
+    const data = await fetchProjectChatProviders(normalizedProjectId);
     const rawSettings =
       data?.chat_settings && typeof data.chat_settings === "object"
         ? data.chat_settings
@@ -18128,13 +18278,17 @@ async function fetchProvidersByProject(projectId) {
     );
     hydrated = true;
   } finally {
-    projectSettingsHydrating.value = false;
-    if (hydrated) {
+    if (
+      hydrated &&
+      normalizedProjectId === String(selectedProjectId.value || "").trim()
+    ) {
       await nextTick();
       markAutoSaveSynced();
+      projectSettingsHydratedProjectId.value = normalizedProjectId;
       autoSaveState.value = "saved";
       scheduleExternalAgentStatusRefresh({ force: true });
     }
+    projectSettingsHydrating.value = false;
   }
 }
 
@@ -18278,6 +18432,7 @@ function buildProjectChatSettingsPayload() {
 const autoSaveFingerprint = computed(() => {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId || projectSettingsHydrating.value) return "";
+  if (projectSettingsHydratedProjectId.value !== projectId) return "";
   return JSON.stringify(buildProjectChatSettingsPayload());
 });
 
@@ -18296,7 +18451,9 @@ function markAutoSaveSynced() {
 }
 
 function scheduleAutoSave() {
-  if (!selectedProjectId.value || projectSettingsHydrating.value) return;
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId || projectSettingsHydrating.value) return;
+  if (projectSettingsHydratedProjectId.value !== projectId) return;
   const fingerprint = autoSaveFingerprint.value;
   if (!fingerprint || fingerprint === lastAutoSavedFingerprint) return;
   clearAutoSaveTimer();
@@ -18312,6 +18469,15 @@ async function saveProjectChatSettings(silent = false) {
   if (!projectId) {
     if (!silent) {
       ElMessage.warning("请先选择项目");
+    }
+    return;
+  }
+  if (
+    projectSettingsHydrating.value ||
+    projectSettingsHydratedProjectId.value !== projectId
+  ) {
+    if (!silent) {
+      ElMessage.warning("项目对话设置仍在加载，请稍后再保存");
     }
     return;
   }
@@ -20811,6 +20977,13 @@ async function saveProjectWorkspacePath(workspacePathOverride = null) {
     ElMessage.warning("请先选择项目");
     return;
   }
+  if (
+    projectSettingsHydrating.value ||
+    projectSettingsHydratedProjectId.value !== projectId
+  ) {
+    ElMessage.warning("项目对话设置仍在加载，请稍后再保存");
+    return;
+  }
   const normalizedOverride =
     typeof Event !== "undefined" && workspacePathOverride instanceof Event
       ? null
@@ -20863,10 +21036,10 @@ async function saveProjectWorkspacePath(workspacePathOverride = null) {
       workspacePath
         ? nativeDesktopBridgeAvailable.value
           ? "本机工作区路径已保存"
-          : "连接器工作区路径已保存"
+          : "本地连接器工作区路径已保存"
         : nativeDesktopBridgeAvailable.value
           ? "已清空本机工作区路径"
-          : "已清空连接器工作区路径",
+          : "已清空本地连接器工作区路径",
     );
   } catch (err) {
     autoSaveState.value = "error";
@@ -20946,11 +21119,7 @@ async function prepareExternalAgentSession({
       "",
   ).trim();
   if (!preparedWorkspacePath) {
-    throw new Error(
-      nativeDesktopBridgeAvailable.value
-        ? "请先配置本机工作区"
-        : "请先配置连接器工作区",
-    );
+    throw new Error("浏览器模式请先配置本地连接器工作区");
   }
 
   const warmupKey = buildExternalAgentWarmupKey({
@@ -21537,8 +21706,32 @@ async function sendGlobalChatWithoutProject() {
   }
 }
 
+function explainBlockedSend() {
+  if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
+    ElMessage.warning("项目配置仍在加载，请稍后再发送");
+    return;
+  }
+  if (
+    isExternalAgentMode.value &&
+    isNativeExternalAgentRunningForChatSession(currentChatSessionId.value)
+  ) {
+    ElMessage.warning("外部 Agent 仍在处理或状态恢复中，请先暂停或稍后再发送");
+    return;
+  }
+  if (!String(selectedProjectId.value || "").trim()) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  if (!String(draftText.value || "").trim() && !uploadFiles.value.length) {
+    ElMessage.warning("请输入消息内容");
+  }
+}
+
 async function doSend(options = {}) {
-  if (!canSend.value) return;
+  if (!canSend.value) {
+    explainBlockedSend();
+    return;
+  }
 
   if (isTerminalInteractionMode.value) {
     if (uploadFiles.value.length) {
@@ -22320,6 +22513,7 @@ async function loadSelectedProjectConversation(projectId) {
 
 watch(selectedProjectId, async (value) => {
   const projectId = String(value || "").trim();
+  projectSettingsHydratedProjectId.value = "";
   if (projectId) {
     writeSelectedProjectId(projectId);
   } else {

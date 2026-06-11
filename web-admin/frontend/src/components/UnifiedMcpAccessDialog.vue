@@ -137,9 +137,10 @@ function buildFallbackCliPrompt() {
     '10. 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`。',
     '11. 若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。',
     '12. 若目标、对象、范围或预期结果不清晰，仍需先输出需求理解、计划摘要和可能误解点并请求确认；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认。',
-    '13. 长任务先调用 `start_work_session` 获取 `session_id`，后续复用同一个 `chat_session_id/session_id`，并用 `save_work_facts`、`append_session_event` 维护轨迹。',
-    '14. 如宿主支持任务树，执行前先读取 `get_current_task_tree`；开始节点用 `update_task_node_status`，完成节点时必须用 `complete_task_node_with_verification` 补验证结果后再结束。',
-    '15. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。',
+    '13. 一旦用户已确认计划或已明确要求执行，后续按已生成计划连续推进到完成；阶段之间只更新任务树、工作事实、验证结果和必要进度，不再停下来请求“是否继续”。只有遇到破坏性/不可逆操作、权限或环境阻塞、需求范围变化、验证无法推进，或必须由用户做业务决策时，才暂停并明确说明阻塞点。',
+    '14. 长任务先调用 `start_work_session` 获取 `session_id`，后续复用同一个 `chat_session_id/session_id`，并用 `save_work_facts`、`append_session_event` 维护轨迹。',
+    '15. 如宿主支持任务树，执行前先读取 `get_current_task_tree`；开始节点用 `update_task_node_status`，完成节点时必须用 `complete_task_node_with_verification` 补验证结果后再结束。',
+    '16. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。',
     '',
     '当前接入上下文：',
   ]

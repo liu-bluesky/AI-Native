@@ -393,6 +393,7 @@ def test_query_mcp_runtime_upgrades_legacy_default_bootstrap_template(tmp_path, 
     assert "不能替代当前 CLI 工作区初始化" in runtime["cli_prompt"]
     assert "`list_mcp_resources` 只用于发现资源目录" in runtime["cli_prompt"]
     assert "直接调用对应业务工具" in runtime["cli_prompt"]
+    assert "不再停下来请求“是否继续”" in runtime["cli_prompt"]
 
 
 def test_query_mcp_runtime_upgrades_legacy_clarity_confirmation_lines(tmp_path, monkeypatch):
@@ -433,6 +434,8 @@ def test_query_mcp_runtime_upgrades_legacy_clarity_confirmation_lines(tmp_path, 
     assert "查询型、客服型问题不要默认升级成计划审批流程" not in cli_prompt
     assert "“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认" in cli_prompt
     assert "不要再次请求一般计划确认" in cli_prompt
+    assert "按已生成计划连续推进到完成" in cli_prompt
+    assert "不再停下来请求“是否继续”" in cli_prompt
     assert "任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象" in cli_prompt
 
 
@@ -441,6 +444,7 @@ def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():
     expected_source_marker = "mcp-skills/knowledge/skills/query-mcp-workflow.json"
     expected_repo_marker = "只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时"
     expected_root_cause_marker = "禁止以兜底、兼容、静默降级"
+    expected_continuous_marker = "不再停下来请求“是否继续”"
 
     prompt_surface_files = [
         "AGENTS.md",
@@ -456,6 +460,7 @@ def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():
         assert expected_source_marker in content, relative_path
         assert expected_repo_marker in content, relative_path
         assert expected_root_cause_marker in content, relative_path
+        assert expected_continuous_marker in content, relative_path
 
     skill_package_content = (
         REPO_ROOT / "mcp-skills/knowledge/skill-packages/query-mcp-workflow/SKILL.md"
@@ -463,6 +468,7 @@ def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():
     assert ".ai-employee/skills/query-mcp-workflow/" in skill_package_content
     assert "system source repo" in skill_package_content
     assert expected_root_cause_marker in skill_package_content
+    assert expected_continuous_marker in skill_package_content
 
 
 def test_query_mcp_sync_rule_file_exists_in_rules_directory():
@@ -470,6 +476,7 @@ def test_query_mcp_sync_rule_file_exists_in_rules_directory():
     rule_content = (REPO_ROOT / "rules/query-mcp-prompt-sync.md").read_text(encoding="utf-8")
     assert "需求一开始就要在当前 CLI 工作区完成本地初始化、创建 requirement 与 canonical session 状态" in agents_content
     assert "必须同步更新相关提示词入口、技能说明与回归测试" in rule_content
+    assert "不得停下来请求“是否继续”" in rule_content
     assert ".ai-employee/skills/query-mcp-workflow/" in rule_content
     assert "mcp-skills/knowledge/skills/query-mcp-workflow.json" in rule_content
     assert "每个需求都必须在开始时创建并持续更新本地 requirement" in rule_content

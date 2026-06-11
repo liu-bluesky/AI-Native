@@ -283,12 +283,6 @@ function playLoginMotion() {
         ".auth-desktop__hero-copy",
         ".auth-desktop__feature",
         ".auth-desktop__dock",
-        ".auth-desktop__panel",
-        ".login-panel__header",
-        ".server-connect",
-        ".login-form .el-form-item",
-        ".login-form__options",
-        ".login-panel__footer",
       ];
 
       if (reduceMotion) {
@@ -307,27 +301,15 @@ function playLoginMotion() {
           ".auth-desktop__hero-copy",
           ".auth-desktop__feature",
           ".auth-desktop__dock",
-          ".auth-desktop__panel",
-          ".login-panel__header",
-          ".server-connect",
-          ".login-form .el-form-item",
-          ".login-form__options",
-          ".login-panel__footer",
         ],
         { autoAlpha: 0 },
       );
-      gsap.set(".auth-desktop__panel", { y: 22, scale: 0.985 });
       gsap.set(
         [
           ".auth-desktop__brand",
           ".auth-desktop__hero-copy",
           ".auth-desktop__feature",
           ".auth-desktop__dock",
-          ".login-panel__header",
-          ".server-connect",
-          ".login-form .el-form-item",
-          ".login-form__options",
-          ".login-panel__footer",
         ],
         { y: 14 },
       );
@@ -345,24 +327,7 @@ function playLoginMotion() {
           { autoAlpha: 1, y: 0, stagger: 0.07 },
           "-=0.32",
         )
-        .to(".auth-desktop__dock", { autoAlpha: 1, y: 0 }, "-=0.34")
-        .to(
-          ".auth-desktop__panel",
-          { autoAlpha: 1, y: 0, scale: 1, duration: 0.72 },
-          0.14,
-        )
-        .to(".login-panel__header", { autoAlpha: 1, y: 0 }, "-=0.42")
-        .to(".server-connect", { autoAlpha: 1, y: 0 }, "-=0.34")
-        .to(
-          ".login-form .el-form-item",
-          { autoAlpha: 1, y: 0, stagger: 0.055 },
-          "-=0.28",
-        )
-        .to(
-          [".login-form__options", ".login-panel__footer"],
-          { autoAlpha: 1, y: 0, stagger: 0.05 },
-          "-=0.24",
-        );
+        .to(".auth-desktop__dock", { autoAlpha: 1, y: 0 }, "-=0.34");
 
       gsap
         .timeline({ repeat: -1, yoyo: true, defaults: { ease: "sine.inOut" } })

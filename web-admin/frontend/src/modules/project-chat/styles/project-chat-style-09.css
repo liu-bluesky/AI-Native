@@ -471,3 +471,18 @@
   line-height: 1.35;
   font-weight: 800;
 }
+
+.settings-loading-placeholder {
+  min-height: 32px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0 12px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.92);
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.3;
+}

@@ -135,7 +135,7 @@
         <div class="input-footer">
           <div class="footer-left">
             <el-select
-              v-if="!isExternalAgentMode"
+              v-if="isChatSettingsDisplayReady && !isExternalAgentMode"
               v-model="selectedModelOptionValueModel"
               class="chat-model-select"
               popper-class="chat-model-select-dropdown"
@@ -171,8 +171,11 @@
                 </el-option>
               </el-option-group>
             </el-select>
-            <div v-else class="chat-model-pill">
+            <div v-else-if="isExternalAgentMode" class="chat-model-pill">
               {{ externalAgentDisplayLabel }}
+            </div>
+            <div v-else class="chat-model-pill is-loading">
+              项目配置加载中
             </div>
             <ChatExecutionStatusPopover
               :visible="hasSelectedProject"
@@ -243,8 +246,9 @@
             </el-tooltip>
             <el-button
               class="send-message-button"
+              :class="{ 'is-blocked': !canSend }"
               type="primary"
-              :disabled="!canSend"
+              :aria-disabled="!canSend"
               circle
               @click="$emit('send')"
             >
@@ -291,6 +295,7 @@ const props = defineProps([
   "formatFileType",
   "hasSelectedProject",
   "inputFocused",
+  "isChatSettingsDisplayReady",
   "isComposerDisabled",
   "isDragging",
   "isExternalAgentMode",

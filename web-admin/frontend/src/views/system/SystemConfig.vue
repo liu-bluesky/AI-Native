@@ -1304,11 +1304,12 @@ const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MC
 12. 当前全局清晰度确认阈值为 {{clarity_threshold}}/5；先按 1-5 分估计用户需求清晰度。
 13. 若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {{clarity_threshold}}，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。
 14. 若清晰度分数 < {{clarity_threshold}}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认或用户已明确要求执行后不要重复确认；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。
-15. 长任务先调用 \`start_work_session\` 获取 \`session_id\`，后续复用同一个 \`chat_session_id/session_id\`，并用 \`save_work_facts\`、\`append_session_event\` 维护轨迹。
-16. 如宿主支持任务树，\`bind_project_context(...)\` 后立刻读取 \`get_current_task_tree\`，核对 \`root_goal/title/current_node\` 是否属于当前问题；若明显属于旧任务树，停止复用当前 \`chat_session_id\`，改为新建并持久化新的 \`chat_session_id\` 后重新绑定。
-17. 真正进入执行前，再读取一次 \`get_current_task_tree\` 确认当前节点；开始节点用 \`update_task_node_status\`，完成节点必须用 \`complete_task_node_with_verification\` 补验证结果后再结束。
-18. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。
-19. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。
+15. 一旦用户已确认计划或已明确要求执行，后续按已生成计划连续推进到完成；阶段之间只更新任务树、工作事实、验证结果和必要进度，不再停下来请求“是否继续”。只有遇到破坏性/不可逆操作、权限或环境阻塞、需求范围变化、验证无法推进，或必须由用户做业务决策时，才暂停并明确说明阻塞点。
+16. 长任务先调用 \`start_work_session\` 获取 \`session_id\`，后续复用同一个 \`chat_session_id/session_id\`，并用 \`save_work_facts\`、\`append_session_event\` 维护轨迹。
+17. 如宿主支持任务树，\`bind_project_context(...)\` 后立刻读取 \`get_current_task_tree\`，核对 \`root_goal/title/current_node\` 是否属于当前问题；若明显属于旧任务树，停止复用当前 \`chat_session_id\`，改为新建并持久化新的 \`chat_session_id\` 后重新绑定。
+18. 真正进入执行前，再读取一次 \`get_current_task_tree\` 确认当前节点；开始节点用 \`update_task_node_status\`，完成节点必须用 \`complete_task_node_with_verification\` 补验证结果后再结束。
+19. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。
+20. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。
 
 当前接入上下文：
 {{project_context_block}}

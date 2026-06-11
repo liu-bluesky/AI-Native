@@ -32,81 +32,98 @@
       </div>
     </div>
 
-    <el-table :data="rules" stripe>
-      <el-table-column prop="title" label="标题" show-overflow-tooltip />
-      <el-table-column prop="domain" label="领域" />
-      <el-table-column label="创建人" width="120">
-        <template #default="{ row }">
-          {{ formatRecordOwner(row) }}
-        </template>
-      </el-table-column>
-      <el-table-column label="可见范围" width="140">
-        <template #default="{ row }">
-          {{ formatRecordVisibility(row) }}
-        </template>
-      </el-table-column>
+    <div class="rule-table-wrap">
+      <el-table :data="rules" stripe class="rule-table">
+        <el-table-column
+          prop="title"
+          label="标题"
+          min-width="300"
+          show-overflow-tooltip
+        />
+        <el-table-column
+          prop="domain"
+          label="领域"
+          min-width="160"
+          show-overflow-tooltip
+        />
+        <el-table-column label="创建人" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ formatRecordOwner(row) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="可见范围" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ formatRecordVisibility(row) }}
+          </template>
+        </el-table-column>
 
-      <el-table-column prop="severity" label="级别" width="100">
-        <template #default="{ row }">
-          <el-tag :type="sevColor(row.severity)" size="small">{{
-            row.severity
-          }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column
-        prop="confidence"
-        label="置信度"
-        width="90"
-        align="center"
-      />
-      <el-table-column
-        prop="use_count"
-        label="使用次数"
-        width="90"
-        align="center"
-      />
-      <el-table-column
-        prop="bound_employee_count"
-        label="绑定员工"
-        width="90"
-        align="center"
-      />
-      <el-table-column prop="version" label="版本" width="80" />
-      <el-table-column label="操作" width="320" fixed="right">
-        <template #default="{ row }">
-          <el-button
-            v-for="action in getPrimaryRuleActions(row)"
-            :key="`${row.id}-${action.key}`"
-            text
-            :type="action.type"
-            size="small"
-            :disabled="action.disabled"
-            @click="handleRuleAction(row, action.key)"
-          >
-            {{ action.label }}
-          </el-button>
-          <el-dropdown
-            v-if="getOverflowRuleActions(row).length"
-            trigger="click"
-            @command="(actionKey) => handleRuleAction(row, actionKey)"
-          >
-            <el-button text type="primary" size="small">更多</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item
-                  v-for="action in getOverflowRuleActions(row)"
-                  :key="`${row.id}-${action.key}`"
-                  :command="action.key"
-                  :disabled="action.disabled"
-                >
-                  {{ action.label }}
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </template>
-      </el-table-column>
-    </el-table>
+        <el-table-column prop="severity" label="级别" width="100">
+          <template #default="{ row }">
+            <el-tag :type="sevColor(row.severity)" size="small">{{
+              row.severity
+            }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column
+          prop="confidence"
+          label="置信度"
+          width="90"
+          align="center"
+        />
+        <el-table-column
+          prop="use_count"
+          label="使用次数"
+          width="90"
+          align="center"
+        />
+        <el-table-column
+          prop="bound_employee_count"
+          label="绑定员工"
+          width="90"
+          align="center"
+        />
+        <el-table-column prop="version" label="版本" width="80" />
+        <el-table-column
+          label="操作"
+          width="300"
+          fixed="right"
+          class-name="table-action-column"
+        >
+          <template #default="{ row }">
+            <el-button
+              v-for="action in getPrimaryRuleActions(row)"
+              :key="`${row.id}-${action.key}`"
+              text
+              :type="action.type"
+              size="small"
+              :disabled="action.disabled"
+              @click="handleRuleAction(row, action.key)"
+            >
+              {{ action.label }}
+            </el-button>
+            <el-dropdown
+              v-if="getOverflowRuleActions(row).length"
+              trigger="click"
+              @command="(actionKey) => handleRuleAction(row, actionKey)"
+            >
+              <el-button text type="primary" size="small">更多</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="action in getOverflowRuleActions(row)"
+                    :key="`${row.id}-${action.key}`"
+                    :command="action.key"
+                    :disabled="action.disabled"
+                  >
+                    {{ action.label }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
 
     <el-empty v-if="!rules.length && !loading" description="暂无规则" />
 
@@ -494,6 +511,24 @@ onMounted(() => {
 
 .filter-keyword {
   width: 180px;
+}
+
+.rule-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.rule-table {
+  min-width: 1490px;
+}
+
+.rule-table :deep(.el-table__cell) {
+  vertical-align: top;
+}
+
+.rule-table :deep(.el-table__body .cell) {
+  min-width: 0;
 }
 
 .mcp-desc {

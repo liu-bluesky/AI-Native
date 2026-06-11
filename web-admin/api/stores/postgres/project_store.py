@@ -9,7 +9,7 @@ from dataclasses import asdict
 from stores.postgres._connection import connect
 from psycopg.rows import dict_row
 
-from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember
+from stores.json.project_store import ProjectCodeRepository, ProjectConfig, ProjectMember, ProjectUserMember
 
 
 class ProjectStorePostgres:
@@ -48,6 +48,17 @@ class ProjectStorePostgres:
 
                 CREATE INDEX IF NOT EXISTS idx_project_user_members_project
                 ON project_user_members (project_id, joined_at DESC);
+
+                CREATE TABLE IF NOT EXISTS project_code_repositories (
+                    project_id TEXT NOT NULL,
+                    repository_id TEXT NOT NULL,
+                    payload JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (project_id, repository_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_project_code_repositories_project
+                ON project_code_repositories (project_id, updated_at DESC);
                 """
             )
 
@@ -83,11 +94,15 @@ class ProjectStorePostgres:
             with self._conn.cursor() as cur:
                 cur.execute("DELETE FROM project_members WHERE project_id = %s", (project_id,))
                 cur.execute("DELETE FROM project_user_members WHERE project_id = %s", (project_id,))
+                cur.execute("DELETE FROM project_code_repositories WHERE project_id = %s", (project_id,))
                 cur.execute("DELETE FROM projects WHERE id = %s", (project_id,))
                 return cur.rowcount > 0
 
     def new_id(self) -> str:
         return f"proj-{uuid.uuid4().hex[:8]}"
+
+    def new_code_repository_id(self) -> str:
+        return f"repo-{uuid.uuid4().hex[:8]}"
 
     def list_members(self, project_id: str) -> list[ProjectMember]:
         with self._conn.cursor() as cur:
@@ -303,3 +318,58 @@ class ProjectStorePostgres:
             )
             rows = cur.fetchall()
         return [str(row["project_id"]) for row in rows if str(row.get("project_id") or "").strip()]
+
+    def list_code_repositories(self, project_id: str) -> list[ProjectCodeRepository]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT payload
+                FROM project_code_repositories
+                WHERE project_id = %s
+                ORDER BY COALESCE((payload->>'enabled')::boolean, TRUE) DESC,
+                         LOWER(COALESCE(payload->>'name', '')) ASC,
+                         repository_id ASC
+                """,
+                (project_id,),
+            )
+            rows = cur.fetchall()
+        return [ProjectCodeRepository(**row["payload"]) for row in rows]
+
+    def get_code_repository(self, project_id: str, repository_id: str) -> ProjectCodeRepository | None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT payload
+                FROM project_code_repositories
+                WHERE project_id = %s AND repository_id = %s
+                """,
+                (project_id, repository_id),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return ProjectCodeRepository(**row["payload"])
+
+    def upsert_code_repository(self, repository: ProjectCodeRepository) -> None:
+        payload = json.dumps(asdict(repository), ensure_ascii=False)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO project_code_repositories (project_id, repository_id, payload, updated_at)
+                VALUES (%s, %s, %s::jsonb, NOW())
+                ON CONFLICT (project_id, repository_id) DO UPDATE
+                SET payload = EXCLUDED.payload, updated_at = NOW()
+                """,
+                (repository.project_id, repository.id, payload),
+            )
+
+    def remove_code_repository(self, project_id: str, repository_id: str) -> bool:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM project_code_repositories
+                WHERE project_id = %s AND repository_id = %s
+                """,
+                (project_id, repository_id),
+            )
+            return cur.rowcount > 0

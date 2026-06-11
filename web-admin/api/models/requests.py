@@ -319,6 +319,33 @@ class ProjectUpdateReq(BaseModel):
     feedback_upgrade_enabled: bool | None = None
 
 
+class ProjectCodeRepositoryCreateReq(BaseModel):
+    name: str
+    repo_url: str
+    repo_type: Literal["git"] = "git"
+    default_branch: str = "main"
+    description: str = ""
+    local_path: str = ""
+    credential_ref: str = ""
+    enabled: bool = True
+
+
+class ProjectCodeRepositoryUpdateReq(BaseModel):
+    name: str | None = None
+    repo_url: str | None = None
+    repo_type: Literal["git"] | None = None
+    default_branch: str | None = None
+    description: str | None = None
+    local_path: str | None = None
+    credential_ref: str | None = None
+    enabled: bool | None = None
+
+
+class ProjectCodeRepositoryInitializeReq(BaseModel):
+    local_path: str = ""
+    scan_depth: int = 3
+
+
 class ProjectWorkflowSkillUpdateReq(BaseModel):
     skill_id: str
 
