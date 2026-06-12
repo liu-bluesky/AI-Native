@@ -9,6 +9,7 @@ const permissionStateVersion = ref(0)
 const PATH_PERMISSION_MAP = [
   { prefix: '/ai/chat', permission: 'menu.ai.chat' },
   { prefix: '/user/settings', permission: '' },
+  { prefix: '/work-logs', permission: 'menu.projects' },
   { prefix: '/users', permission: 'menu.users' },
   { prefix: '/departments', permission: 'menu.departments' },
   { prefix: '/roles', permission: 'menu.roles' },
@@ -22,6 +23,7 @@ const PATH_PERMISSION_MAP = [
   { prefix: '/skills', permission: 'menu.skills' },
   { prefix: '/rules', permission: 'menu.rules' },
   { prefix: '/system/bot-connectors', permission: 'menu.system.config' },
+  { prefix: '/system/ftp-credentials', permission: ['menu.projects', 'menu.system.config'] },
   { prefix: '/system/config', permission: 'menu.system.config' },
   { prefix: '/changelog-entries', permission: 'menu.system.changelog' },
   { prefix: '/work-sessions', permission: 'menu.system.work_sessions' },

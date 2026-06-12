@@ -21,6 +21,7 @@ const routes = [
     redirect: '/loading',
     children: [
       { path: 'workbench', component: () => import('../views/desktop/DesktopWorkbench.vue') },
+      { path: 'work-logs', component: () => import('../views/desktop/ProjectWorkLog.vue') },
       { path: 'tasks', component: () => import('../views/tasks/TaskManager.vue') },
       { path: 'settings-center', component: () => import('../views/desktop/SettingsLauncher.vue') },
       { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
@@ -35,6 +36,7 @@ const routes = [
           { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
           { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
           { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
+          { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
           { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
           { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
           { path: 'work-sessions', component: () => import('../views/system/WorkSessionManager.vue') },
@@ -90,6 +92,7 @@ const routes = [
       },
       { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
       { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
+      { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
       { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
       { path: 'work-sessions', component: () => import('../views/system/WorkSessionManager.vue') },
       { path: 'statistics', component: () => import('../views/system/StatisticsDashboard.vue') },

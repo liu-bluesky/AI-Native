@@ -213,6 +213,21 @@ def _create_project_chat_task_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_project_deploy_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import ProjectDeployStore
+
+        return ProjectDeployStore(_data_dir())
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.project_deploy_store import ProjectDeployStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return ProjectDeployStorePostgres(settings.database_url, _data_dir())
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_project_material_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -292,6 +307,21 @@ def _create_bot_connector_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_ftp_credential_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import FtpCredentialStore
+
+        return FtpCredentialStore(_data_dir())
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.ftp_credential_store import FtpCredentialStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return FtpCredentialStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_external_mcp_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -367,6 +397,21 @@ def _create_work_session_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_work_log_template_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import WorkLogTemplateStore
+
+        return WorkLogTemplateStore(_data_dir())
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.work_log_template_store import WorkLogTemplateStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return WorkLogTemplateStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_task_tree_evolution_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -386,16 +431,19 @@ project_store = _StoreProxy(_create_project_store)
 project_chat_store = _StoreProxy(_create_project_chat_store)
 project_chat_runtime_store = _StoreProxy(_create_project_chat_runtime_store)
 project_chat_task_store = _StoreProxy(_create_project_chat_task_store)
+project_deploy_store = _StoreProxy(_create_project_deploy_store)
 project_material_store = _StoreProxy(_create_project_material_store)
 project_experience_summary_store = _StoreProxy(_create_project_experience_summary_store)
 project_studio_export_store = _StoreProxy(_create_project_studio_export_store)
 system_config_store = _StoreProxy(_create_system_config_store)
 bot_connector_store = _StoreProxy(_create_bot_connector_store)
+ftp_credential_store = _StoreProxy(_create_ftp_credential_store)
 usage_store = _StoreProxy(_create_usage_store)
 external_mcp_store = _StoreProxy(_create_external_mcp_store)
 local_connector_store = _StoreProxy(_create_local_connector_store)
 cli_plugin_profile_store = _StoreProxy(_create_cli_plugin_profile_store)
 work_session_store = _StoreProxy(_create_work_session_store)
+work_log_template_store = _StoreProxy(_create_work_log_template_store)
 task_tree_evolution_store = _StoreProxy(_create_task_tree_evolution_store)
 
 
@@ -410,14 +458,17 @@ __all__ = [
     "project_chat_store",
     "project_chat_runtime_store",
     "project_chat_task_store",
+    "project_deploy_store",
     "project_material_store",
     "project_studio_export_store",
     "system_config_store",
     "bot_connector_store",
+    "ftp_credential_store",
     "usage_store",
     "external_mcp_store",
     "local_connector_store",
     "cli_plugin_profile_store",
     "work_session_store",
+    "work_log_template_store",
     "task_tree_evolution_store",
 ]

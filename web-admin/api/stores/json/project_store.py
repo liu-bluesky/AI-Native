@@ -30,6 +30,7 @@ class ProjectConfig:
     mcp_enabled: bool = True
     feedback_upgrade_enabled: bool = True
     chat_settings: dict[str, object] = field(default_factory=dict)
+    deploy_settings: dict[str, object] = field(default_factory=dict)
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 

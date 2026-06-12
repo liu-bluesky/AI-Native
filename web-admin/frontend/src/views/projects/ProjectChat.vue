@@ -293,9 +293,7 @@
                             <button
                               type="button"
                               class="message-process-shell__toggle"
-                              @click="
-                                item.processExpanded = !item.processExpanded
-                              "
+                              @click="toggleMessageProcessExpanded(item)"
                             >
                               <span class="message-process-shell__title-wrap">
                                 <span class="message-process-shell__eyebrow">
@@ -6050,6 +6048,48 @@ function getNativeExternalAgentSessionLogs(sessionId = "") {
     : [];
 }
 
+function nativeExternalAgentProcessLogLevel(log = {}) {
+  const stream = String(log?.stream || "stdout")
+    .trim()
+    .toLowerCase();
+  if (stream === "stderr") return "warning";
+  return "info";
+}
+
+function nativeExternalAgentProcessLogText(log = {}) {
+  const stream = String(log?.stream || "stdout")
+    .trim()
+    .toLowerCase();
+  const content = stripTerminalControlSequences(
+    String(log?.content || "").trim(),
+  ).trim();
+  if (!content || stream === "final") return "";
+  if (isNativeExternalAgentInternalDiagnostic(stream, content)) return "";
+  const summary = clipText(content.replace(/\s+/g, " ").trim(), 260);
+  if (!summary) return "";
+  if (stream === "stderr") return `运行提示：${summary}`;
+  if (stream === "stdin") return `输入已发送：${summary}`;
+  if (stream === "system") return `Runner 状态：${summary}`;
+  return `执行输出：${summary}`;
+}
+
+function appendNativeExternalAgentProcessLogs(row, snapshot = {}, logs = []) {
+  if (!row || !Array.isArray(logs) || !logs.length) return;
+  const sessionId = normalizeNativeExternalAgentSessionId(snapshot);
+  logs.slice(-20).forEach((log, index) => {
+    const text = nativeExternalAgentProcessLogText(log);
+    if (!text) return;
+    appendMessageProcessLog(row, {
+      id:
+        String(log?.seq || "").trim()
+          ? `native-agent-log-${sessionId || "active"}-${String(log.seq).trim()}`
+          : `native-agent-log-${sessionId || "active"}-${index}`,
+      level: nativeExternalAgentProcessLogLevel(log),
+      text,
+    });
+  });
+}
+
 /** 将 native external agent 运行态快照应用到组件状态（session/logs/sessionsById 回填） */
 function applyNativeExternalAgentSessionSnapshot(snapshot, options = {}) {
   const sessionId = normalizeNativeExternalAgentSessionId(snapshot);
@@ -6090,6 +6130,21 @@ function applyNativeExternalAgentSessionSnapshot(snapshot, options = {}) {
       sessionId,
       [...existingLogs, ...nextLogs].slice(-500),
     );
+  }
+  const row = findNativeExternalAgentMessage(sessionId);
+  if (row) {
+    appendNativeExternalAgentProcessLogs(
+      row,
+      snapshot,
+      nextLogs.length
+        ? nextLogs
+        : !existingLogs.length && Array.isArray(snapshot.logs)
+          ? snapshot.logs.slice(-20)
+          : [],
+    );
+    if (isLiveNativeExternalAgentStatus(snapshot.status)) {
+      openMessageProcessForActiveRun(row);
+    }
   }
   const shouldSyncPanel =
     Boolean(options.select) ||
@@ -6868,6 +6923,7 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
   row.displayMode = "";
   row.time = nowText();
   upsertNativeExternalAgentMessageOperation(snapshot);
+  collapseMessageProcessAfterFinalAnswer(row);
   persistNativeExternalAgentRowsForSession(normalizedChatSessionId);
   if (isCurrentChatSession(selectedProjectId.value, normalizedChatSessionId)) {
     scrollToBottom();
@@ -11501,9 +11557,7 @@ function appendAssistantStatusNote(row, text) {
   }
   notes.push(note);
   row.statusNotes = notes;
-  if (row.processExpanded !== false) {
-    row.processExpanded = true;
-  }
+  openMessageProcessForActiveRun(row);
 }
 
 function removeAssistantStatusNotes(row, predicate) {
@@ -11566,10 +11620,28 @@ function appendMessageProcessLog(row, source = {}) {
     logs.splice(0, logs.length - 80);
   }
   row.processLog = logs;
-  if (row.processExpanded !== false) {
-    row.processExpanded = true;
+  if (source?.autoExpand !== false) {
+    openMessageProcessForActiveRun(row);
   }
   return entry;
+}
+
+function toggleMessageProcessExpanded(row) {
+  if (!row) return;
+  row.processExpanded = !Boolean(row.processExpanded);
+  row.processExpandedUserToggled = true;
+}
+
+function openMessageProcessForActiveRun(row, options = {}) {
+  if (!row) return;
+  if (!options.force && row.processExpandedUserToggled) return;
+  row.processExpanded = true;
+}
+
+function collapseMessageProcessAfterFinalAnswer(row) {
+  if (!row || hasNonTerminalUserWaitingOperation(row)) return;
+  row.processExpanded = false;
+  row.processExpandedUserToggled = false;
 }
 
 function isCompletedDoneProcessLog(entry) {
@@ -12001,9 +12073,13 @@ function upsertMessageOperation(row, source = {}) {
   row.operations = items.slice(-24);
   const phase = normalizeOperationPhase(operation?.phase);
   if (["waiting_user", "blocked", "failed"].includes(phase)) {
-    row.processExpanded = true;
+    openMessageProcessForActiveRun(row, {
+      force: phase === "waiting_user" || phase === "blocked",
+    });
+  } else if (phase === "running") {
+    openMessageProcessForActiveRun(row);
   } else if (typeof row.processExpanded !== "boolean") {
-    row.processExpanded = phase === "running";
+    row.processExpanded = false;
   }
   return operation;
 }
@@ -20669,6 +20745,7 @@ async function handleSocketMessage(eventData) {
         completeTerminalInputOperations(row, "本轮执行已结束");
         completeFinishedMessageOperations(row, doneState.summary);
         closeOpenAgentRuntimeOperationsForCompletedTurn(row, doneState.summary);
+        collapseMessageProcessAfterFinalAnswer(row);
         if (
           Number(activeTerminalMirrorAssistantIndex.value) ===
           Number(pending?.assistantIndex ?? -1)
@@ -20706,6 +20783,7 @@ async function handleSocketMessage(eventData) {
     });
     appendTerminalPanelLine(`! ${message}`);
     row.content = `对话失败：${message}`;
+    collapseMessageProcessAfterFinalAnswer(row);
     rejectPendingRequest(requestId, pending, new Error(message));
     scrollToBottom();
   }
@@ -20745,6 +20823,7 @@ function rejectPendingRequests(reason) {
     const row = resolvePendingRequestRow(pending);
     if (row && !String(row.content || "").trim()) {
       row.content = `请求失败：${message}`;
+      collapseMessageProcessAfterFinalAnswer(row);
     }
     if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
       clearWorkingStatusStartForChatSession(pending.chatSessionId);
@@ -21442,7 +21521,9 @@ function cancelPendingChatRequestFast(requestId, pending) {
     appendMessageProcessLog(row, {
       level: "info",
       text: message,
+      autoExpand: false,
     });
+    collapseMessageProcessAfterFinalAnswer(row);
   }
   clearActiveExecutionTransportState(pending?.assistantIndex ?? -1);
   resolvePendingRequestFast(requestId, pending, row?.content || message);

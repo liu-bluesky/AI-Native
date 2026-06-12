@@ -53,6 +53,7 @@ from services.mcp.dynamic_mcp_profiles import (
     query_project_rules_runtime,
     query_rules_by_employee as _query_rules_by_employee,
 )
+from services.mcp.dynamic_mcp_prompt_tools import project_prompt_tool_descriptors
 from services.mcp.dynamic_mcp_skill_proxies import (
     build_project_proxy_specs as _shared_build_project_proxy_specs,
     resolve_project_proxy_tool_spec as _shared_resolve_project_proxy_tool_spec,
@@ -485,6 +486,11 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
         )
     if COLLABORATION_TOOL_NAME not in existing_names:
         tools.append(collaboration_tool_descriptor(employee_id_value))
+        existing_names.add(COLLABORATION_TOOL_NAME)
+    for descriptor in project_prompt_tool_descriptors(employee_id_value):
+        if str(descriptor.get("tool_name") or "") not in existing_names:
+            tools.append(descriptor)
+            existing_names.add(str(descriptor.get("tool_name") or ""))
     return tools
 
 

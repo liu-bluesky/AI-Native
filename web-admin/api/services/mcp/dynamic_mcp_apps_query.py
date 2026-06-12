@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime, timezone
-import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import uuid
 
@@ -33,6 +32,10 @@ from services.mcp.dynamic_mcp_profiles import (
     project_ui_rule_summary,
     query_project_rules_runtime,
     query_rules_by_employee,
+)
+from services.mcp.dynamic_mcp_prompt_tools import (
+    get_query_mcp_cli_prompt_preview_runtime,
+    sync_query_mcp_cli_prompt_to_local_file_runtime,
 )
 from stores.mcp_bridge import (
     Classification,
@@ -4389,6 +4392,40 @@ def create_query_mcp(
     @mcp.resource("query://client-profile/generic-cli")
     def query_client_profile_generic_cli() -> str:
         return build_query_client_profile_text("generic-cli")
+
+    @mcp.tool()
+    def get_query_mcp_cli_prompt_preview(
+        project_id: str = "",
+        chat_session_id: str = "",
+        clarity_threshold: int = 3,
+    ) -> dict:
+        """获取与统一 MCP 接入弹窗“展开引导提示词预览”一致的 CLI 引导提示词。"""
+        return get_query_mcp_cli_prompt_preview_runtime(
+            project_id=_resolve_query_project_id(project_id),
+            chat_session_id=chat_session_id,
+            clarity_threshold=clarity_threshold,
+        )
+
+    @mcp.tool()
+    def sync_query_mcp_cli_prompt_to_local_file(
+        project_id: str = "",
+        chat_session_id: str = "",
+        workspace_path: str = "",
+        target_file: str = "AGENTS.md",
+        backup: bool = True,
+        dry_run: bool = False,
+        clarity_threshold: int = 3,
+    ) -> dict:
+        """把服务器渲染出的 runtime.cli_prompt 写入当前项目工作区内的目标文件。"""
+        return sync_query_mcp_cli_prompt_to_local_file_runtime(
+            project_id=_resolve_query_project_id(project_id),
+            chat_session_id=chat_session_id,
+            workspace_path=workspace_path,
+            target_file=target_file,
+            backup=backup,
+            dry_run=dry_run,
+            clarity_threshold=clarity_threshold,
+        )
 
     @mcp.tool()
     def bind_project_context(

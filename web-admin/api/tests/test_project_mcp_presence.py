@@ -176,6 +176,7 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
         "for simple project queries with a known project_id, call the matching business tool directly instead of listing resources",
         "initialize local .ai-employee state in the current CLI workspace and ensure query-mcp-workflow is available there",
         "treat project-local .ai-employee/skills/query-mcp-workflow as the default skill location; use mcp-skills/knowledge only when maintaining the workflow source repo",
+        "when the user asks to update or sync prompts, call sync_query_mcp_cli_prompt_to_local_file and overwrite the current workspace AGENTS.md with backup and hash verification",
         "generate and persist chat_session_id",
         "bind_project_context with project_id/chat_session_id/root_goal",
         "get_current_task_tree and verify the bound tree matches the current request",
@@ -210,6 +211,10 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert "通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`" in runtime["cli_prompt"]
     assert "只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时" in runtime["cli_prompt"]
     assert "不能替代当前 CLI 工作区初始化" in runtime["cli_prompt"]
+    assert "sync_query_mcp_cli_prompt_to_local_file" in runtime["cli_prompt"]
+    assert "覆盖当前项目根目录提示词文件" in runtime["cli_prompt"]
+    assert "target_file" in runtime["cli_prompt"]
+    assert "content_hash" in runtime["cli_prompt"]
     assert "仅在缺少明确的 `project_id` / `employee_id` / `rule_id`" in runtime["cli_prompt"]
     assert "禁止以兜底、兼容、静默降级" in runtime["cli_prompt"]
     assert "优先定位并修正根因" in runtime["cli_prompt"]
@@ -394,6 +399,8 @@ def test_query_mcp_runtime_upgrades_legacy_default_bootstrap_template(tmp_path, 
     assert "`list_mcp_resources` 只用于发现资源目录" in runtime["cli_prompt"]
     assert "直接调用对应业务工具" in runtime["cli_prompt"]
     assert "不再停下来请求“是否继续”" in runtime["cli_prompt"]
+    assert "sync_query_mcp_cli_prompt_to_local_file" in runtime["cli_prompt"]
+    assert "覆盖当前项目根目录提示词文件" in runtime["cli_prompt"]
 
 
 def test_query_mcp_runtime_upgrades_legacy_clarity_confirmation_lines(tmp_path, monkeypatch):
@@ -437,6 +444,8 @@ def test_query_mcp_runtime_upgrades_legacy_clarity_confirmation_lines(tmp_path, 
     assert "按已生成计划连续推进到完成" in cli_prompt
     assert "不再停下来请求“是否继续”" in cli_prompt
     assert "任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象" in cli_prompt
+    assert "sync_query_mcp_cli_prompt_to_local_file" in cli_prompt
+    assert "覆盖当前项目根目录提示词文件" in cli_prompt
 
 
 def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():

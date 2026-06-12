@@ -14,6 +14,31 @@ from services.mcp.dynamic_mcp_profiles import (
 from services.mcp.dynamic_mcp_skill_proxies import list_project_proxy_tools_runtime
 from stores.mcp_bridge import rule_store, skill_store
 
+_DEPLOY_SECRET_KEY_PARTS = (
+    "password",
+    "passphrase",
+    "token",
+    "secret",
+    "private_key",
+    "authorization",
+    "cookie",
+)
+
+
+def _redact_deploy_settings_for_runtime(value):
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            key_text = str(key or "")
+            if any(secret_key in key_text.lower() for secret_key in _DEPLOY_SECRET_KEY_PARTS):
+                result[key_text] = "***"
+            else:
+                result[key_text] = _redact_deploy_settings_for_runtime(item)
+        return result
+    if isinstance(value, list):
+        return [_redact_deploy_settings_for_runtime(item) for item in value]
+    return value
+
 
 def _serialize_employee_detail_runtime(employee) -> dict:
     payload = asdict(employee)
@@ -38,6 +63,7 @@ def get_project_detail_runtime(project_id: str) -> dict:
     members = project_store.list_members(project_id)
     user_members = project_store.list_user_members(project_id)
     payload = asdict(project)
+    payload["deploy_settings"] = _redact_deploy_settings_for_runtime(payload.get("deploy_settings") or {})
     payload["members"] = [asdict(item) for item in members]
     payload["user_members"] = [asdict(item) for item in user_members]
     payload["member_count"] = len(members)

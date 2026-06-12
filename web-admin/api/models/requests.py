@@ -302,6 +302,7 @@ class ProjectCreateReq(BaseModel):
     ai_entry_file: str = ""
     mcp_enabled: bool = True
     feedback_upgrade_enabled: bool = True
+    deploy_settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectUpdateReq(BaseModel):
@@ -317,6 +318,35 @@ class ProjectUpdateReq(BaseModel):
     ai_entry_file: str | None = None
     mcp_enabled: bool | None = None
     feedback_upgrade_enabled: bool | None = None
+    deploy_settings: dict | None = None
+
+
+class ProjectDeploySettingsValidateReq(BaseModel):
+    deploy_settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectDeployCommandGenerateReq(BaseModel):
+    profile: dict[str, Any] = Field(default_factory=dict)
+    component: dict[str, Any] = Field(default_factory=dict)
+    target: dict[str, Any] = Field(default_factory=dict)
+    artifact_name: str = ""
+    artifact_path: str = ""
+    artifact_kind: str = "source-bundle"
+    provider_id: str = ""
+    model_name: str = ""
+
+
+class ProjectDeployArtifactPushReq(BaseModel):
+    profile: str = "prod"
+    component: str = ""
+    artifact_name: str
+    artifact_kind: str = "source-bundle"
+    manifest: dict[str, Any] = Field(default_factory=dict)
+    artifact_path: str = ""
+    artifact_content_base64: str = ""
+    auto_deploy: bool = True
+    chat_session_id: str = ""
+    task_tree_node_id: str = ""
 
 
 class ProjectCodeRepositoryCreateReq(BaseModel):
@@ -854,6 +884,32 @@ class SystemConfigUpdateReq(BaseModel):
 
 class BotConnectorCollectionReq(BaseModel):
     items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class FtpCredentialCreateReq(BaseModel):
+    name: str = ""
+    host: str = ""
+    port: str = ""
+    username: str = ""
+    password: str = ""
+    enabled: bool = True
+
+
+class FtpCredentialUpdateReq(BaseModel):
+    name: str | None = None
+    host: str | None = None
+    port: str | None = None
+    username: str | None = None
+    password: str | None = None
+    enabled: bool | None = None
+
+
+class FtpCredentialTestReq(BaseModel):
+    credential_id: str = ""
+    host: str = ""
+    port: str = ""
+    username: str = ""
+    password: str = ""
 
 
 class GlobalAssistantSpeechReq(BaseModel):

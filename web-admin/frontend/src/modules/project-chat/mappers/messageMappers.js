@@ -322,6 +322,13 @@ export function mergeMessageOperations(existingOperations, nextOperations) {
   return merged.slice(-24);
 }
 
+function shouldExpandProcessByDefault(processLog, operations) {
+  const phases = (Array.isArray(operations) ? operations : []).map((item) =>
+    normalizeOperationPhase(item?.phase || item?.status),
+  );
+  return phases.includes("running") || phases.includes("waiting_user");
+}
+
 export function mapHistoryMessage(item) {
   const attachments = Array.isArray(item?.attachments) ? item.attachments : [];
   const images = Array.isArray(item?.images) ? item.images : [];
@@ -349,7 +356,7 @@ export function mapHistoryMessage(item) {
           .map((line) => String(line || "").trim())
           .filter(Boolean)
       : [],
-    processExpanded: Boolean(processLog.length || operations.length),
+    processExpanded: shouldExpandProcessByDefault(processLog, operations),
     audit: null,
     taskTreeAudit: null,
     processLog,

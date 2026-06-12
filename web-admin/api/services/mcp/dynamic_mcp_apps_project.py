@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 
+from fastapi import HTTPException
 from mcp.server.fastmcp import FastMCP
 
 from core.deps import employee_store, project_store, usage_store
@@ -36,6 +37,10 @@ from services.mcp.dynamic_mcp_profiles import (
     query_project_members_runtime,
     query_project_rules_runtime,
     query_rules_by_employee as _query_rules_by_employee,
+)
+from services.mcp.dynamic_mcp_prompt_tools import (
+    get_query_mcp_cli_prompt_preview_runtime,
+    sync_query_mcp_cli_prompt_to_local_file_runtime,
 )
 from services.mcp.dynamic_mcp_skill_executor import execute_skill_proxy as _execute_skill_proxy
 from services.mcp.dynamic_mcp_skill_proxies import (
@@ -155,7 +160,10 @@ def create_project_mcp(
         if not username:
             api_key = current_api_key_ctx.get("").strip()
             if api_key:
-                get_key = getattr(usage_store, "get_key", None)
+                try:
+                    get_key = getattr(usage_store, "get_key", None)
+                except Exception:
+                    get_key = None
                 if callable(get_key):
                     try:
                         record = get_key(api_key) or {}
@@ -425,7 +433,9 @@ def create_project_mcp(
         project = _get_project()
         if not project:
             return {"error": "Project not found"}
-        payload = asdict(project)
+        payload = get_project_detail_runtime(project.id)
+        payload.pop("members", None)
+        payload.pop("user_members", None)
         payload["usage_guide_resource"] = f"project://{project.id}/usage-guide"
         payload["manual_resource"] = f"project://{project.id}/manual"
         payload["proxy_tools_resource"] = f"project://{project.id}/proxy-tools"
@@ -689,9 +699,121 @@ def create_project_mcp(
         return list_project_proxy_tools_runtime(project_id, "")
 
     @mcp.tool()
+    def get_query_mcp_cli_prompt_preview(
+        chat_session_id: str = "",
+        clarity_threshold: int = 3,
+    ) -> dict:
+        """获取当前项目与统一 MCP 接入弹窗一致的 CLI 引导提示词。"""
+        _, fallback_chat_session_id = _resolve_task_tree_context()
+        return get_query_mcp_cli_prompt_preview_runtime(
+            project_id=project_id,
+            chat_session_id=str(chat_session_id or "").strip() or fallback_chat_session_id,
+            clarity_threshold=clarity_threshold,
+        )
+
+    @mcp.tool()
+    def sync_query_mcp_cli_prompt_to_local_file(
+        chat_session_id: str = "",
+        workspace_path: str = "",
+        target_file: str = "AGENTS.md",
+        backup: bool = True,
+        dry_run: bool = False,
+        clarity_threshold: int = 3,
+    ) -> dict:
+        """把当前项目服务器渲染出的 runtime.cli_prompt 写入本地工作区文件。"""
+        _, fallback_chat_session_id = _resolve_task_tree_context()
+        return sync_query_mcp_cli_prompt_to_local_file_runtime(
+            project_id=project_id,
+            chat_session_id=str(chat_session_id or "").strip() or fallback_chat_session_id,
+            workspace_path=workspace_path,
+            target_file=target_file,
+            backup=backup,
+            dry_run=dry_run,
+            clarity_threshold=clarity_threshold,
+        )
+
+    @mcp.tool()
     def list_external_mcp_tools() -> list[dict]:
         """列出当前项目可用的外部 MCP 工具"""
         return list_project_external_tools_runtime(project_id)
+
+    @mcp.tool()
+    def push_project_deploy_artifact(
+        profile: str = "prod",
+        component: str = "",
+        artifact_name: str = "",
+        artifact_kind: str = "source-bundle",
+        manifest: dict | None = None,
+        artifact_path: str = "",
+        artifact_content_base64: str = "",
+        auto_deploy: bool = True,
+        chat_session_id: str = "",
+        task_tree_node_id: str = "",
+    ) -> dict:
+        """推送项目部署产物；服务端校验 ready 后按项目配置创建部署运行记录。"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        from models.requests import ProjectDeployArtifactPushReq
+        from routers.projects import _push_project_deploy_artifact_payload
+
+        try:
+            return _push_project_deploy_artifact_payload(
+                project=project,
+                req=ProjectDeployArtifactPushReq(
+                    profile=profile,
+                    component=component,
+                    artifact_name=artifact_name,
+                    artifact_kind=artifact_kind,
+                    manifest=manifest or {},
+                    artifact_path=artifact_path,
+                    artifact_content_base64=artifact_content_base64,
+                    auto_deploy=auto_deploy,
+                    chat_session_id=chat_session_id,
+                    task_tree_node_id=task_tree_node_id,
+                ),
+                uploaded_by=current_developer_name_ctx.get("").strip() or "mcp",
+            )
+        except HTTPException as exc:
+            return {"status": "failed", "error": str(exc.detail)}
+        except Exception as exc:
+            return {"status": "failed", "error": str(exc)}
+
+    @mcp.tool()
+    def get_project_deploy_upload_status(artifact_id: str = "", limit: int = 20) -> dict:
+        """查询当前项目部署产物与自动部署运行状态。"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        from core.deps import project_deploy_store
+        from routers.projects import _serialize_project_deploy_artifact, _serialize_project_deploy_run
+
+        artifact_id_value = str(artifact_id or "").strip()
+        if artifact_id_value:
+            artifact = project_deploy_store.get_artifact(project.id, artifact_id_value)
+            if artifact is None:
+                return {"error": f"Artifact {artifact_id_value} not found"}
+            run = project_deploy_store.get_run(project.id, artifact.deployment_id) if artifact.deployment_id else None
+            return {
+                "project_id": project.id,
+                "artifact": _serialize_project_deploy_artifact(artifact),
+                "deployment": _serialize_project_deploy_run(run) if run else None,
+            }
+        try:
+            limit_value = max(1, min(int(limit or 20), 100))
+        except (TypeError, ValueError):
+            limit_value = 20
+        return {
+            "project_id": project.id,
+            "artifacts": [
+                _serialize_project_deploy_artifact(item)
+                for item in project_deploy_store.list_artifacts(project.id, limit=limit_value)
+            ],
+            "runs": [
+                _serialize_project_deploy_run(item)
+                for item in project_deploy_store.list_runs(project.id, limit=limit_value)
+            ],
+        }
 
     @mcp.tool()
     def invoke_external_mcp_tool(

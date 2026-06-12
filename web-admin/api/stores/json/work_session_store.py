@@ -81,7 +81,7 @@ class WorkSessionEvent:
         self.step = _normalize_text(self.step, 80)
         self.status = _normalize_text(self.status, 40)
         self.goal = _normalize_text(self.goal, 400)
-        self.content = _normalize_text(self.content, 4000)
+        self.content = _normalize_text(self.content, 12000)
         self.facts = _normalize_list(self.facts, item_limit=400, max_items=50)
         self.changed_files = _normalize_list(self.changed_files, item_limit=240, max_items=50)
         self.verification = _normalize_list(self.verification, item_limit=400, max_items=50)
@@ -120,6 +120,16 @@ class WorkSessionStore:
         if not path.exists():
             return None
         return WorkSessionEvent(**json.loads(path.read_text(encoding="utf-8")))
+
+    def delete(self, event_id: str) -> bool:
+        normalized_id = _normalize_text(event_id, 80)
+        if not normalized_id:
+            return False
+        path = self._path(normalized_id)
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
 
     def list_all(self) -> list[WorkSessionEvent]:
         items: list[WorkSessionEvent] = []

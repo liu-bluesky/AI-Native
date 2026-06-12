@@ -74,6 +74,14 @@ class WorkSessionStorePostgres:
             return None
         return WorkSessionEvent(**row["payload"])
 
+    def delete(self, event_id: str) -> bool:
+        normalized_id = str(event_id or "").strip()
+        if not normalized_id:
+            return False
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM work_session_events WHERE id = %s", (normalized_id,))
+            return cur.rowcount > 0
+
     def list_all(self) -> list[WorkSessionEvent]:
         with self._conn.cursor() as cur:
             cur.execute("SELECT payload FROM work_session_events")

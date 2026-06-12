@@ -8,9 +8,24 @@ const componentPath = resolve(
   scriptDir,
   "../src/views/projects/ProjectChat.vue",
 );
+const pendingRequestsComposablePath = resolve(
+  scriptDir,
+  "../src/modules/project-chat/composables/useProjectChatPendingRequests.js",
+);
+const terminalComposablePath = resolve(
+  scriptDir,
+  "../src/modules/project-chat/composables/useProjectChatTerminal.js",
+);
+const composerComponentPath = resolve(
+  scriptDir,
+  "../src/modules/project-chat/components/composer/ChatComposer.vue",
+);
 const tauriMainPath = resolve(scriptDir, "../src-tauri/src/main.rs");
 const apiProjectsPath = resolve(scriptDir, "../../api/routers/projects.py");
 const source = readFileSync(componentPath, "utf8");
+const pendingRequestsSource = readFileSync(pendingRequestsComposablePath, "utf8");
+const terminalSource = readFileSync(terminalComposablePath, "utf8");
+const composerSource = readFileSync(composerComponentPath, "utf8");
 const tauriSource = readFileSync(tauriMainPath, "utf8");
 const apiProjectsSource = readFileSync(apiProjectsPath, "utf8");
 
@@ -63,14 +78,14 @@ assert.match(
 );
 
 assert.match(
-  source,
+  pendingRequestsSource,
   /activeRequestId !== normalizedRequestId &&\s*pendingRequests\.has\(activeRequestId\)/,
   "clearTrackedPendingRequest must not preserve stale activeGenerationRequestId values",
 );
 
 assert.match(
   source,
-  /function resolvePendingRequestFast[\s\S]*?persistRememberedChatSessionMessages\(pending\.projectId, pending\.chatSessionId\);[\s\S]*?pending\.resolve/,
+  /function resolvePendingRequestFast[\s\S]*?persistRememberedChatSessionMessages\(\s*pending\.projectId,\s*chatSessionId,\s*\);[\s\S]*?pending\.resolve/,
   "fast pause must persist the stopped runtime before the caller continues",
 );
 
@@ -117,14 +132,20 @@ assert.match(
 );
 
 assert.match(
+  terminalSource,
+  /function clearExecutionTransportState\(assistantIndex = -1\)[\s\S]*?terminalPanelStatus\.value = "idle";[\s\S]*?terminalMirrorConnected\.value = false;[\s\S]*?hostTerminalSessionId\.value = "";[\s\S]*?terminalStructuredInteraction\.value = null;/,
+  "terminal transport cleanup helper must clear terminal transport state",
+);
+
+assert.match(
   source,
-  /function clearActiveExecutionTransportState\(assistantIndex = -1\)[\s\S]*?terminalPanelStatus\.value = "idle";[\s\S]*?terminalMirrorConnected\.value = false;[\s\S]*?hostTerminalSessionId\.value = "";[\s\S]*?terminalStructuredInteraction\.value = null;[\s\S]*?terminalStructuredInteractionRefreshPending = false;/,
+  /function clearActiveExecutionTransportState\(assistantIndex = -1\)[\s\S]*?clearExecutionTransportState\(assistantIndex\);[\s\S]*?terminalStructuredInteractionRefreshPending = false;/,
   "pause paths must share a synchronous terminal transport cleanup helper",
 );
 
 assert.match(
   source,
-  /function applyNativeExternalAgentFastKilledSession\(sessionId = "", chatSessionId = ""\)[\s\S]*?nativeExternalAgentLaunchingChatSessionIds\.value[\s\S]*?nativeExternalAgentBackgroundedChatSessionIds\.value[\s\S]*?clearActiveExecutionTransportState\(rowIndex\);[\s\S]*?clearActiveNativeExternalAgentSessionBinding\([\s\S]*?normalizedSessionId,[\s\S]*?normalizedChatSessionId,[\s\S]*?\);[\s\S]*?syncChatLoadingWithCurrentSession\(\);/,
+  /function applyNativeExternalAgentFastKilledSession\(\s*sessionId = "",\s*chatSessionId = "",\s*\)[\s\S]*?nativeExternalAgentLaunchingChatSessionIds\.value[\s\S]*?nativeExternalAgentBackgroundedChatSessionIds\.value[\s\S]*?clearActiveExecutionTransportState\(rowIndex\);[\s\S]*?clearActiveNativeExternalAgentSessionBinding\(\s*normalizedSessionId,\s*normalizedChatSessionId,\s*\);[\s\S]*?syncChatLoadingWithCurrentSession\(\);/,
   "Runner fast pause must clear launch/background bindings and transport state before resync",
 );
 
@@ -141,9 +162,15 @@ assert.doesNotMatch(
 );
 
 assert.match(
-  source,
-  /content="暂停当前回答"[\s\S]*?class="pause-generation-button"[\s\S]*?@click="stopGeneration"[\s\S]*?<span>暂停<\/span>/,
+  composerSource,
+  /content="暂停当前回答"[\s\S]*?class="pause-generation-button"[\s\S]*?\$emit\('stop-generation'\)[\s\S]*?<span>暂停<\/span>/,
   "composer pause button must remain the single visible pause entry",
+);
+
+assert.match(
+  source,
+  /@stop-generation="stopGeneration"/,
+  "ProjectChat must bind the composer pause event to stopGeneration",
 );
 
 assert.match(

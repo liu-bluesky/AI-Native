@@ -453,6 +453,27 @@
             </div>
           </el-tab-pane>
 
+          <el-tab-pane name="deploy">
+            <template #label>
+              <span class="project-detail-tab-label">
+                <span class="project-detail-tab-label__title">部署配置</span>
+                <span class="project-detail-tab-label__meta">
+                  {{ deployTabMeta }}
+                </span>
+              </span>
+            </template>
+
+            <div class="project-detail-tab-pane">
+              <ProjectDeployPanel
+                :project-id="projectId"
+                :project="project"
+                :can-manage-project="canManageProject"
+                :manage-blocked-message="manageBlockedMessage()"
+                @project-updated="handleDeployProjectUpdated"
+              />
+            </div>
+          </el-tab-pane>
+
           <el-tab-pane name="access">
             <template #label>
               <span class="project-detail-tab-label">
@@ -2427,6 +2448,7 @@ import { marked } from "marked";
 import ModelProviderPickerDialog from "@/components/ModelProviderPickerDialog.vue";
 import ProjectAppHeader from "@/components/project-workspace/ProjectAppHeader.vue";
 import ProjectAppSection from "@/components/project-workspace/ProjectAppSection.vue";
+import ProjectDeployPanel from "@/components/project-workspace/ProjectDeployPanel.vue";
 import ProjectWorkspaceMetricStrip from "@/components/project-workspace/ProjectWorkspaceMetricStrip.vue";
 import ProjectWorkspaceBlock from "@/components/project-workspace/ProjectWorkspaceBlock.vue";
 import ProjectWorkspaceToolbar from "@/components/project-workspace/ProjectWorkspaceToolbar.vue";
@@ -2574,12 +2596,14 @@ const canManageProjectUsers = ref(false);
 const tabDataLoaded = ref({
   overview: false,
   access: false,
+  deploy: false,
   repositories: false,
   memory: false,
 });
 const tabDataPromises = {
   overview: null,
   access: null,
+  deploy: null,
   repositories: null,
   memory: null,
 };
@@ -2682,11 +2706,13 @@ function resetProjectScopedState() {
   tabDataLoaded.value = {
     overview: false,
     access: false,
+    deploy: false,
     repositories: false,
     memory: false,
   };
   tabDataPromises.overview = null;
   tabDataPromises.access = null;
+  tabDataPromises.deploy = null;
   tabDataPromises.repositories = null;
   tabDataPromises.memory = null;
 }
@@ -2836,6 +2862,12 @@ const projectHeroStats = computed(() => [
       : "切到代码仓库页签后可细看",
   },
   {
+    key: "deploy",
+    label: "部署配置",
+    value: isProjectDeployEnabled.value ? "开" : "关",
+    meta: deployTabMeta.value,
+  },
+  {
     key: "records",
     label: "需求记录",
     value: requirementRecords.value.length,
@@ -2900,6 +2932,20 @@ const repositoryTabMeta = computed(() => {
   return total ? `${enabled}/${total} 启用` : "待维护";
 });
 
+const deployTabMeta = computed(() => {
+  const settings = project.value?.deploy_settings || {};
+  const settingsEnabled = Boolean(settings.enabled);
+  const profileCount = Array.isArray(settings.profiles)
+    ? settings.profiles.length
+    : 0;
+  if (!settingsEnabled) return "未启用";
+  return profileCount ? `${profileCount} 个档位` : "待补档位";
+});
+
+const isProjectDeployEnabled = computed(
+  () => Boolean(project.value?.deploy_settings?.enabled),
+);
+
 const canInitializeRepository = computed(
   () =>
     canManageProject.value &&
@@ -2910,7 +2956,7 @@ const canInitializeRepository = computed(
 );
 
 const availableProjectDetailTabs = computed(() => {
-  const tabs = ["overview", "repositories", "access", "memory"];
+  const tabs = ["overview", "repositories", "deploy", "access", "memory"];
   if (showProjectAddressFields) {
     tabs.push("mcp");
   }
@@ -6760,6 +6806,9 @@ async function ensureProjectTabData(
     await ensureRepositoriesTabData(effectiveProjectId, options);
     return;
   }
+  if (normalizedTab === "deploy") {
+    return;
+  }
   await ensureOverviewTabData(effectiveProjectId, options);
 }
 
@@ -7306,6 +7355,10 @@ async function saveEdit() {
   } finally {
     saving.value = false;
   }
+}
+
+async function handleDeployProjectUpdated() {
+  await fetchProject();
 }
 
 function resetRepositoryForm() {

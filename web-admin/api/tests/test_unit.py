@@ -1728,6 +1728,225 @@ def test_normalize_cli_plugin_host_skill_layout_uses_shared_root(tmp_path, monke
     assert any(item["action"] == "collapsed_alias_tree" for item in result["actions"])
 
 
+def test_work_log_templates_are_global_not_project_bound(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in ("work_log_template_store", "work_session_store"):
+        getattr(store_factory, proxy_name)._instance = None
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: {"sub": "tester", "role": "admin"}
+    client = TestClient(app)
+
+    response = client.put(
+        "/api/projects/_global/work-log-templates/leadership_work_plan",
+        json={
+            "label": "全局领导周报",
+            "description": "所有项目共用的日志模板",
+            "fields": 9,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["scope"] == "global"
+
+    response_without_fields = client.put(
+        "/api/projects/_global/work-log-templates/leadership_work_plan",
+        json={
+            "label": "全局领导周报",
+            "description": "按指定模板格式生成领导口径日志",
+        },
+    )
+    assert response_without_fields.status_code == 200
+
+    list_response = client.get("/api/projects/_global/work-log-templates")
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert payload["scope"] == "global"
+    assert payload["items"] == [
+        {
+            "value": "leadership_work_plan",
+            "label": "全局领导周报",
+            "description": "按指定模板格式生成领导口径日志",
+            "fields": 9,
+            "createdAt": payload["items"][0]["createdAt"],
+            "updatedAt": payload["items"][0]["updatedAt"],
+            "updatedBy": "tester",
+        }
+    ]
+
+    assert store_factory.work_log_template_store.get("leadership_work_plan") is not None
+    assert (
+        store_factory.work_session_store.list_events(
+            project_id="proj-a",
+            limit=10,
+        )
+        == []
+    )
+
+
+def test_project_work_log_is_saved_once_per_generation_and_listed_globally(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+    from stores.json.project_store import ProjectConfig
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in ("project_store", "work_session_store"):
+        getattr(store_factory, proxy_name)._instance = None
+
+    store_factory.project_store.save(ProjectConfig(id="proj-a", name="项目A"))
+    store_factory.project_store.save(ProjectConfig(id="proj-b", name="项目B"))
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: {"sub": "tester", "role": "admin"}
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/api/projects/proj-a/work-logs",
+        json={
+            "title": "多项目 周报",
+            "content": "本次生成的合并日志",
+            "report_type": "weekly",
+            "template_key": "leadership_work_plan",
+            "template_label": "领导周报",
+            "start_date": "2026-06-01",
+            "end_date": "2026-06-07",
+            "project_ids": ["proj-a", "proj-b"],
+            "project_names": ["项目A", "项目B"],
+            "provider_id": "provider-1",
+            "model_name": "model-1",
+        },
+    )
+    assert create_response.status_code == 200
+    created = create_response.json()["item"]
+    assert created["projectIds"] == ["proj-a", "proj-b"]
+    assert created["projectLabel"] == "项目A、项目B"
+    assert created["providerId"] == "provider-1"
+    assert created["modelName"] == "model-1"
+
+    global_list = client.get("/api/projects/_global/work-logs")
+    list_a = client.get("/api/projects/proj-a/work-logs")
+    assert global_list.status_code == 200
+    assert list_a.status_code == 200
+    assert global_list.json()["scope"] == "global"
+    assert [item["id"] for item in global_list.json()["items"]] == [created["id"]]
+    assert [item["id"] for item in list_a.json()["items"]] == [created["id"]]
+
+    delete_response = client.delete(f"/api/projects/_global/work-logs/{created['id']}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["status"] == "deleted"
+    assert delete_response.json()["scope"] == "global"
+
+    assert client.get("/api/projects/_global/work-logs").json()["items"] == []
+    assert client.get("/api/projects/proj-a/work-logs").json()["items"] == []
+
+
+def test_project_work_log_global_chat_disables_tools_and_runtime_snapshot(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+
+    captured: dict[str, object] = {}
+
+    class FakeLlmService:
+        pass
+
+    class FakeConversationManager:
+        def __init__(self, redis_client):
+            self.redis_client = redis_client
+
+        async def create_session(self, project_id, employee_id):
+            return "conv-work-log"
+
+        async def delete_session(self, session_id):
+            captured["deleted_session_id"] = session_id
+
+    class FakeOrchestrator:
+        async def run(self, **kwargs):
+            captured["run_kwargs"] = kwargs
+            yield {"type": "done", "content": "只包含所选项目的周报"}
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in ("system_config_store", "role_store", "user_store"):
+        getattr(store_factory, proxy_name)._instance = None
+
+    from routers import projects as projects_router
+
+    monkeypatch.setattr(
+        "services.providers.llm_provider_service.get_llm_provider_service",
+        lambda: FakeLlmService(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "_resolve_global_assistant_chat_runtime",
+        AsyncMock(
+            return_value=projects_router.ResolvedProviderRuntime(
+                provider_mode="provider",
+                provider={"id": "provider-1"},
+                providers=[],
+                provider_id="provider-1",
+                model_name="model-1",
+            )
+        ),
+    )
+    monkeypatch.setattr(projects_router, "get_redis_client", AsyncMock(return_value=object()))
+    monkeypatch.setattr(projects_router, "ConversationManager", FakeConversationManager)
+    monkeypatch.setattr(
+        projects_router,
+        "build_agent_orchestrator",
+        lambda *args, **kwargs: FakeOrchestrator(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "_build_global_assistant_runtime_snapshot",
+        AsyncMock(side_effect=AssertionError("work log summary must not load global runtime snapshot")),
+    )
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: {
+        "sub": "tester",
+        "role": "admin",
+        "permissions": ["menu.ai.chat"],
+    }
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/projects/chat/global",
+        json={
+            "message": "原始结构化草稿如下：项目：南京嘉华、jx_crm5",
+            "chat_surface": "project-work-log",
+            "chat_session_id": "work-log-test",
+            "source_context": {"strict_source_only": True},
+            "auto_use_tools": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "只包含所选项目的周报"
+    run_kwargs = captured["run_kwargs"]
+    assert run_kwargs["tools"] == []
+    assert run_kwargs["assistant_workflow"]["requires_tooling"] is False
+    assert run_kwargs["assistant_workflow"]["execution_mode"] == "direct_answer"
+    messages = run_kwargs["messages"]
+    assert [item["role"] for item in messages] == ["user"]
+    assert "原始结构化草稿如下" in messages[0]["content"]
+
+
 def test_run_project_host_command_includes_cli_plugin_runtime_paths(monkeypatch, tmp_path):
     from services.connectors import project_host_command_service as host_command_svc
 
@@ -6474,7 +6693,6 @@ def test_save_project_memory_entries_defaults_to_single_team_shared_record(monke
             },
         )(),
     )
-
     result = query_mcp_svc._save_project_memory_entries(
         project_id="proj-1",
         content="问题：提交代码到远程仓库\n结论：远程大文件阻塞",
@@ -7609,7 +7827,6 @@ def test_query_mcp_save_project_memory_without_employee_id_stays_single_shared(m
             },
         )(),
     )
-
     query_mcp_svc.create_query_mcp()
 
     result = registered_tools["save_project_memory"](
@@ -9130,6 +9347,8 @@ def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(mo
 
     assert "get_project_detail" in tool_names
     assert "get_project_employee_detail" in tool_names
+    assert "get_query_mcp_cli_prompt_preview" in tool_names
+    assert "sync_query_mcp_cli_prompt_to_local_file" in tool_names
     assert "execute_project_collaboration" in tool_names
     assert project_result["tool_name"] == "get_project_detail"
     assert project_result["id"] == "proj-test"
@@ -9140,6 +9359,52 @@ def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(mo
     assert collaboration_result["tool_name"] == "execute_project_collaboration"
     assert collaboration_result["task"] == "实现一个新页面"
     assert collaboration_result["selected_employee_ids"] == ["emp-9"]
+
+
+def test_project_builtin_prompt_tools_preview_and_dry_run(monkeypatch, tmp_path):
+    from services.mcp import dynamic_mcp_collaboration as collab_svc
+    from services.mcp import dynamic_mcp_prompt_tools as prompt_tools_svc
+
+    monkeypatch.setattr(
+        prompt_tools_svc,
+        "project_store",
+        type("DummyProjectStore", (), {"get": staticmethod(lambda project_id: object())})(),
+    )
+    monkeypatch.setattr(
+        "routers.projects.system_config_store",
+        type(
+            "DummySystemConfigStore",
+            (),
+            {"get_global": staticmethod(lambda: type("DummyConfig", (), {"query_mcp_bootstrap_prompt_template": ""})())},
+        )(),
+    )
+
+    preview = collab_svc.invoke_project_builtin_tool(
+        "proj-test",
+        "get_query_mcp_cli_prompt_preview",
+        args={"chat_session_id": "chat-session-1"},
+    )
+    dry_run = collab_svc.invoke_project_builtin_tool(
+        "proj-test",
+        "sync_query_mcp_cli_prompt_to_local_file",
+        args={
+            "chat_session_id": "chat-session-1",
+            "workspace_path": str(tmp_path),
+            "target_file": "AGENTS.md",
+            "dry_run": True,
+        },
+    )
+
+    assert preview is not None
+    assert preview["tool_name"] == "get_query_mcp_cli_prompt_preview"
+    assert preview["status"] == "preview"
+    assert preview["project_id"] == "proj-test"
+    assert "chat_session_id=chat-session-1" in preview["rendered_cli_prompt"]
+    assert dry_run is not None
+    assert dry_run["tool_name"] == "sync_query_mcp_cli_prompt_to_local_file"
+    assert dry_run["status"] == "dry_run"
+    assert dry_run["target_file"] == str(tmp_path / "AGENTS.md")
+    assert not (tmp_path / "AGENTS.md").exists()
 
 
 def test_project_collaboration_runtime_selects_members_and_executes_safe_tools(monkeypatch):
@@ -9707,6 +9972,761 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     experience_result = registered_tools["resolve_project_experience_rules"]("开发登录页面", limit=2)
     assert experience_result["experience_rule_count"] == 1
     assert experience_result["items"][0]["id"] == "rule-exp"
+    assert "push_project_deploy_artifact" in registered_tools
+    assert "get_project_deploy_upload_status" in registered_tools
+    assert "get_query_mcp_cli_prompt_preview" in registered_tools
+    assert "sync_query_mcp_cli_prompt_to_local_file" in registered_tools
+
+
+from stores.json.ftp_credential_store import FtpCredential as _TestFtpCredential
+
+
+class _FakeFtpCredential(_TestFtpCredential):
+    def __init__(self, credential_id="ftp-1", *, created_by="owner", enabled=True):
+        super().__init__(
+            id=credential_id,
+            name="生产 FTP",
+            host="ftp.example.com",
+            port="21",
+            username="ftp-user",
+            password="ftp-password",
+            created_by=created_by,
+            enabled=enabled,
+            created_at="2026-06-12T00:00:00+00:00",
+            updated_at="2026-06-12T00:00:00+00:00",
+        )
+
+
+class _FakeFtpCredentialStore:
+    def __init__(self, items=None):
+        self.items = {item.id: item for item in (items or [_FakeFtpCredential()])}
+
+    def get(self, credential_id):
+        return self.items.get(str(credential_id or "").strip())
+
+    def list_all(self):
+        return list(self.items.values())
+
+    def new_id(self):
+        return "ftp-new"
+
+    def save(self, item):
+        self.items[item.id] = item
+        return item
+
+    def delete(self, credential_id):
+        return self.items.pop(str(credential_id or "").strip(), None) is not None
+
+
+def test_project_deploy_settings_validation_requires_global_ftp_credential(monkeypatch):
+    from routers import projects as projects_router
+
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+    payload = projects_router._validate_project_deploy_settings_payload(
+        {
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "transport": {
+                        "mode": "scp",
+                        "host": "deploy.example.com",
+                        "credential_ref": "secret://deploy/prod",
+                        "ftp_credential_id": "ftp-1",
+                        "remote_path": "/opt/app",
+                    },
+                    "remote_executor": {"deploy_command": "./deploy.sh up"},
+                    "safety": {"auto_deploy_on_artifact_update": True},
+                }
+            ],
+        }
+    )
+
+    assert payload["valid"] is True
+    profile = payload["deploy_settings"]["profiles"][0]
+    assert profile["transport"]["mode"] == "ftp"
+    assert "credential_ref" not in profile["transport"]
+    component = profile["components"][0]
+    assert component["targets"][0]["transport_mode"] == "ftp"
+    assert component["targets"][0]["ftp_credential_id"] == "ftp-1"
+    assert "ftp_username" not in component["targets"][0]
+    assert "ftp_password" not in component["targets"][0]
+    assert "credential_ref" not in component["targets"][0]
+
+
+def test_project_deploy_settings_validation_supports_components_and_multi_targets(monkeypatch):
+    from routers import projects as projects_router
+
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+    payload = projects_router._validate_project_deploy_settings_payload(
+        {
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "name": "生产环境",
+                    "components": [
+                        {
+                            "id": "api",
+                            "name": "后端 API",
+                            "artifact_kind": "source-bundle",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "notify": {
+                                "enabled": True,
+                                "targets": [{"platform": "feishu", "connector_id": "bot-1", "chat_id": "chat-1"}],
+                            },
+                            "targets": [
+                                {
+                                    "id": "api-1",
+                                    "name": "API 主服务器",
+                                    "host": "10.0.0.1",
+                                    "transport_mode": "scp",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app/api",
+                                    "deploy_command": "./deploy-api.sh",
+                                },
+                                {
+                                    "id": "api-2",
+                                    "name": "API 备服务器",
+                                    "host": "10.0.0.2",
+                                    "transport_mode": "sftp",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app/api",
+                                    "deploy_command": "./deploy-api.sh",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert payload["valid"] is True
+    profile = payload["deploy_settings"]["profiles"][0]
+    component = profile["components"][0]
+    assert component["id"] == "api"
+    assert len(component["targets"]) == 2
+    assert component["targets"][0]["transport_mode"] == "ftp"
+    assert component["targets"][1]["transport_mode"] == "ftp"
+    assert "host" not in component["targets"][0]
+    assert "port" not in component["targets"][0]
+    assert "credential_ref" not in component["targets"][0]
+
+
+def test_project_deploy_settings_validation_reports_required_ftp_target_fields(monkeypatch):
+    from routers import projects as projects_router
+
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore([]))
+    payload = projects_router._validate_project_deploy_settings_payload(
+        {
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "name": "生产环境",
+                    "components": [
+                        {
+                            "id": "api",
+                            "name": "后端 API",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [
+                                {
+                                    "id": "api-1",
+                                    "name": "API 主服务器",
+                                    "port": "abc",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    messages = [item["message"] for item in payload["issues"]]
+    assert payload["valid"] is False
+    assert "生产环境 / 后端 API / API 主服务器：请选择 FTP 连接" in messages
+    assert "生产环境 / 后端 API / API 主服务器：远端目录必填" in messages
+    assert "生产环境 / 后端 API / API 主服务器：自动部署需要填写部署命令" in messages
+
+
+def test_project_deploy_settings_validation_rejects_invisible_ftp_credential(monkeypatch):
+    from routers import projects as projects_router
+
+    monkeypatch.setattr(
+        projects_router,
+        "ftp_credential_store",
+        _FakeFtpCredentialStore([_FakeFtpCredential("ftp-1", created_by="other")]),
+    )
+    payload = projects_router._validate_project_deploy_settings_payload(
+        {
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "app",
+                            "targets": [
+                                {
+                                    "id": "target-1",
+                                    "host": "10.0.0.1",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app",
+                                    "deploy_command": "./deploy.sh",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+        {"sub": "owner", "roles": ["user"]},
+    )
+
+    assert payload["valid"] is False
+    assert "FTP 连接不存在、未配置服务器地址/密码、已停用或当前账号无权使用" in payload["issues"][0]["message"]
+
+
+def test_project_deploy_artifact_push_creates_ready_artifact_and_queued_run(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+
+    from routers import projects as projects_router
+    from models.requests import ProjectDeployArtifactPushReq
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    content = b"release-content"
+    checksum = "sha256:" + hashlib.sha256(content).hexdigest()
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "artifact_kind": "source-bundle",
+                    "transport": {
+                        "mode": "scp",
+                        "credential_ref": "secret://deploy/prod",
+                        "host": "10.0.0.1",
+                        "ftp_credential_id": "ftp-1",
+                        "remote_path": "/opt/app",
+                    },
+                    "remote_executor": {"deploy_command": "./deploy.sh up"},
+                    "notify": {
+                        "enabled": True,
+                        "targets": [{"platform": "feishu", "connector_id": "bot-1", "chat_id": "chat-1"}],
+                    },
+                    "safety": {"auto_deploy_on_artifact_update": True},
+                }
+            ],
+        },
+    )
+
+    result = projects_router._push_project_deploy_artifact_payload(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            artifact_name="release.tar.gz",
+            manifest={"checksum": checksum, "size": len(content), "version": "2026.06.12.1"},
+            artifact_content_base64=base64.b64encode(content).decode("ascii"),
+            auto_deploy=True,
+        ),
+        uploaded_by="tester",
+    )
+
+    assert result["status"] == "deploy_queued"
+    assert result["checksum_verified"] is True
+    assert result["artifact"]["status"] == "deploy_queued"
+    assert result["deployment"]["status"] == "queued"
+    assert result["deployment"]["notify_result"][0]["status"] == "preview"
+    assert Path(result["artifact"]["storage_path"]).read_bytes() == content
+
+
+def test_project_deploy_artifact_push_uses_selected_component_targets(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+
+    from routers import projects as projects_router
+    from models.requests import ProjectDeployArtifactPushReq
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    content = b"api-release-content"
+    checksum = "sha256:" + hashlib.sha256(content).hexdigest()
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "api",
+                            "name": "后端 API",
+                            "artifact_kind": "source-bundle",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "notify": {
+                                "enabled": True,
+                                "targets": [{"platform": "feishu", "connector_id": "bot-api", "chat_id": "chat-api"}],
+                            },
+                            "targets": [
+                                {
+                                    "id": "api-1",
+                                    "transport_mode": "scp",
+                                    "host": "10.0.0.1",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app/api",
+                                    "deploy_command": "./deploy-api.sh",
+                                },
+                                {
+                                    "id": "api-2",
+                                    "transport_mode": "sftp",
+                                    "host": "10.0.0.2",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app/api",
+                                    "deploy_command": "./deploy-api.sh",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    result = projects_router._push_project_deploy_artifact_payload(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="api",
+            artifact_name="api.tar.gz",
+            manifest={"checksum": checksum, "size": len(content)},
+            artifact_content_base64=base64.b64encode(content).decode("ascii"),
+            auto_deploy=True,
+        ),
+        uploaded_by="tester",
+    )
+
+    assert result["status"] == "deploy_queued"
+    assert result["component"] == "api"
+    assert result["artifact"]["component"] == "api"
+    assert result["deployment"]["component"] == "api"
+    assert result["deployment"]["artifact_summary"]["target_count"] == 2
+    assert result["deployment"]["artifact_summary"]["deployable_target_count"] == 2
+    snapshot_target = result["deployment"]["config_snapshot"]["profiles"][0]["components"][0]["targets"][0]
+    assert snapshot_target["transport_mode"] == "ftp"
+    assert "credential_ref" not in snapshot_target
+
+
+def test_project_deploy_artifact_push_blocks_checksum_mismatch(tmp_path, monkeypatch):
+    import base64
+
+    from fastapi import HTTPException
+    from routers import projects as projects_router
+    from models.requests import ProjectDeployArtifactPushReq
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    monkeypatch.setattr(projects_router, "project_deploy_store", ProjectDeployStore(tmp_path))
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [{"id": "prod", "transport": {"mode": "ftp"}}],
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        projects_router._push_project_deploy_artifact_payload(
+            project=project,
+            req=ProjectDeployArtifactPushReq(
+                profile="prod",
+                artifact_name="release.tar.gz",
+                manifest={"checksum": "sha256:bad", "size": 7},
+                artifact_content_base64=base64.b64encode(b"content").decode("ascii"),
+            ),
+            uploaded_by="tester",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "checksum" in str(exc_info.value.detail)
+
+
+def test_project_deploy_command_output_cleaner_accepts_json_and_markdown():
+    from routers import projects as projects_router
+
+    assert (
+        projects_router._clean_project_deploy_command_output(
+            '{"deploy_command":"set -e\\n./deploy.sh up"}'
+        )
+        == "set -e\n./deploy.sh up"
+    )
+    assert (
+        projects_router._clean_project_deploy_command_output(
+            "```bash\nset -e\n./deploy.sh up\n```"
+        )
+        == "set -e\n./deploy.sh up"
+    )
+
+
+def test_project_deploy_command_prompt_omits_ftp_account_secrets():
+    from models.requests import ProjectDeployCommandGenerateReq
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    messages = projects_router._build_project_deploy_command_prompt(
+        project=ProjectConfig(id="proj-1", name="项目一"),
+        req=ProjectDeployCommandGenerateReq(
+            profile={"id": "prod", "name": "生产环境", "environment": "prod"},
+            component={"id": "web", "name": "前端", "package": {"artifact_path": "web-admin/frontend/dist"}},
+            target={
+                "id": "server-1",
+                "name": "公司数转服务器",
+                "remote_path": "/opt/app/web",
+                "ftp_credential_id": "ftp-1",
+                "ftp_username": "bluesky",
+                "ftp_password": "super-secret",
+                "password": "super-secret",
+            },
+            artifact_kind="static-assets",
+            artifact_path="web-admin/frontend/dist",
+        ),
+    )
+    prompt_text = "\n".join(item["content"] for item in messages)
+
+    assert "公司数转服务器" in prompt_text
+    assert "/opt/app/web" in prompt_text
+    assert "bluesky" not in prompt_text
+    assert "super-secret" not in prompt_text
+    assert "ftp_credential_id" not in prompt_text
+
+
+def test_project_deploy_store_factory_supports_postgres_backend(tmp_path, monkeypatch):
+    from core import config as core_config
+    import stores.factory as store_factory
+
+    created: dict[str, object] = {}
+
+    class FakeProjectDeployStorePostgres:
+        def __init__(self, database_url, data_dir):
+            created["database_url"] = database_url
+            created["data_dir"] = data_dir
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "postgres")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unit-test/db")
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    monkeypatch.setattr(
+        "stores.postgres.project_deploy_store.ProjectDeployStorePostgres",
+        FakeProjectDeployStorePostgres,
+    )
+
+    store = store_factory._create_project_deploy_store()
+
+    assert isinstance(store, FakeProjectDeployStorePostgres)
+    assert created == {"database_url": "postgresql://unit-test/db", "data_dir": tmp_path}
+
+
+def test_ftp_credential_store_factory_supports_postgres_backend(tmp_path, monkeypatch):
+    from core import config as core_config
+    import stores.factory as store_factory
+
+    created: dict[str, object] = {}
+
+    class FakeFtpCredentialStorePostgres:
+        def __init__(self, database_url):
+            created["database_url"] = database_url
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "postgres")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unit-test/db")
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    monkeypatch.setattr(
+        "stores.postgres.ftp_credential_store.FtpCredentialStorePostgres",
+        FakeFtpCredentialStorePostgres,
+    )
+
+    store = store_factory._create_ftp_credential_store()
+
+    assert isinstance(store, FakeFtpCredentialStorePostgres)
+    assert created == {"database_url": "postgresql://unit-test/db"}
+
+
+def test_ftp_credential_route_lists_visible_items_without_password(monkeypatch):
+    import asyncio
+    from routers import ftp_credentials
+
+    store = _FakeFtpCredentialStore(
+        [
+            _FakeFtpCredential("ftp-owned", created_by="alice"),
+            _FakeFtpCredential("ftp-hidden", created_by="bob"),
+        ]
+    )
+    monkeypatch.setattr(ftp_credentials, "ftp_credential_store", store)
+    monkeypatch.setattr(ftp_credentials, "_require_ftp_credential_permission", lambda _payload: None)
+    monkeypatch.setattr(
+        ftp_credentials,
+        "can_view_username_data",
+        lambda _payload, owner: owner == "alice",
+    )
+    monkeypatch.setattr(
+        ftp_credentials,
+        "can_manage_username_data",
+        lambda _payload, owner: owner == "alice",
+    )
+
+    result = asyncio.run(ftp_credentials.list_ftp_credentials({"sub": "alice", "roles": ["user"]}))
+
+    assert [item["id"] for item in result["items"]] == ["ftp-owned"]
+    assert "password" not in result["items"][0]
+    assert result["items"][0]["host"] == "ftp.example.com"
+    assert result["items"][0]["port"] == "21"
+    assert result["items"][0]["has_password"] is True
+
+
+def test_ftp_credential_route_create_then_list_keeps_host_with_empty_port(monkeypatch):
+    import asyncio
+    from models.requests import FtpCredentialCreateReq
+    from routers import ftp_credentials
+
+    store = _FakeFtpCredentialStore([])
+    monkeypatch.setattr(ftp_credentials, "ftp_credential_store", store)
+    monkeypatch.setattr(ftp_credentials, "_require_ftp_credential_permission", lambda _payload: None)
+    monkeypatch.setattr(
+        ftp_credentials,
+        "can_view_username_data",
+        lambda _payload, owner: owner == "alice",
+    )
+    monkeypatch.setattr(
+        ftp_credentials,
+        "can_manage_username_data",
+        lambda _payload, owner: owner == "alice",
+    )
+
+    created = asyncio.run(
+        ftp_credentials.create_ftp_credential(
+            FtpCredentialCreateReq(
+                name="公司数转服务器",
+                host="121.37.250.228",
+                port="",
+                username="bluesky",
+                password="ftp-password",
+                enabled=True,
+            ),
+            {"sub": "alice", "roles": ["user"]},
+        )
+    )
+    listed = asyncio.run(ftp_credentials.list_ftp_credentials({"sub": "alice", "roles": ["user"]}))
+
+    assert created["item"]["host"] == "121.37.250.228"
+    assert created["item"]["port"] == ""
+    assert "password" not in created["item"]
+    assert listed["items"][0]["name"] == "公司数转服务器"
+    assert listed["items"][0]["host"] == "121.37.250.228"
+    assert listed["items"][0]["port"] == ""
+    assert listed["items"][0]["username"] == "bluesky"
+    assert listed["items"][0]["has_password"] is True
+
+
+def test_ftp_credential_route_validates_host_and_port(monkeypatch):
+    import asyncio
+    from fastapi import HTTPException
+    from models.requests import FtpCredentialCreateReq
+    from routers import ftp_credentials
+
+    monkeypatch.setattr(ftp_credentials, "ftp_credential_store", _FakeFtpCredentialStore([]))
+    monkeypatch.setattr(ftp_credentials, "_require_ftp_credential_permission", lambda _payload: None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            ftp_credentials.create_ftp_credential(
+                FtpCredentialCreateReq(
+                    name="生产 FTP",
+                    host="ftp.example.com",
+                    port="70000",
+                    username="ftp-user",
+                    password="ftp-password",
+                ),
+                {"sub": "alice"},
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "端口号" in str(exc_info.value.detail)
+
+
+def test_ftp_credential_route_tests_connection_with_form_password(monkeypatch):
+    import asyncio
+    from models.requests import FtpCredentialTestReq
+    from routers import ftp_credentials
+
+    captured: dict[str, object] = {}
+
+    class FakeFtpClient:
+        def __init__(self, timeout=0):
+            captured["timeout"] = timeout
+
+        def connect(self, host, port, timeout):
+            captured["host"] = host
+            captured["port"] = port
+            captured["connect_timeout"] = timeout
+
+        def login(self, user, passwd):
+            captured["user"] = user
+            captured["password"] = passwd
+
+        def getwelcome(self):
+            return "welcome"
+
+        def quit(self):
+            captured["quit"] = True
+
+    monkeypatch.setattr(ftp_credentials, "ftp_client_factory", FakeFtpClient)
+    monkeypatch.setattr(ftp_credentials, "_require_ftp_credential_permission", lambda _payload: None)
+
+    result = asyncio.run(
+        ftp_credentials.test_ftp_credential(
+            FtpCredentialTestReq(
+                host="121.37.250.228",
+                port="",
+                username="bluesky",
+                password="ftp-password",
+            ),
+            {"sub": "alice"},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["host"] == "121.37.250.228"
+    assert result["port"] == "21"
+    assert captured["host"] == "121.37.250.228"
+    assert captured["port"] == 21
+    assert captured["user"] == "bluesky"
+    assert captured["password"] == "ftp-password"
+    assert captured["quit"] is True
+
+
+def test_ftp_credential_route_tests_connection_with_saved_password(monkeypatch):
+    import asyncio
+    from models.requests import FtpCredentialTestReq
+    from routers import ftp_credentials
+
+    captured: dict[str, object] = {}
+    store = _FakeFtpCredentialStore([_FakeFtpCredential("ftp-owned", created_by="alice")])
+
+    class FakeFtpClient:
+        def __init__(self, timeout=0):
+            pass
+
+        def connect(self, host, port, timeout):
+            captured["host"] = host
+            captured["port"] = port
+
+        def login(self, user, passwd):
+            captured["user"] = user
+            captured["password"] = passwd
+
+        def getwelcome(self):
+            return ""
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(ftp_credentials, "ftp_credential_store", store)
+    monkeypatch.setattr(ftp_credentials, "ftp_client_factory", FakeFtpClient)
+    monkeypatch.setattr(ftp_credentials, "_require_ftp_credential_permission", lambda _payload: None)
+    monkeypatch.setattr(
+        ftp_credentials,
+        "can_view_username_data",
+        lambda _payload, owner: owner == "alice",
+    )
+    monkeypatch.setattr(
+        ftp_credentials,
+        "can_manage_username_data",
+        lambda _payload, owner: owner == "alice",
+    )
+
+    result = asyncio.run(
+        ftp_credentials.test_ftp_credential(
+            FtpCredentialTestReq(
+                credential_id="ftp-owned",
+                host="ftp.changed.example.com",
+                port="2121",
+                username="changed-user",
+                password="",
+            ),
+            {"sub": "alice", "roles": ["user"]},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["host"] == "ftp.changed.example.com"
+    assert result["port"] == "2121"
+    assert captured["host"] == "ftp.changed.example.com"
+    assert captured["port"] == 2121
+    assert captured["user"] == "changed-user"
+    assert captured["password"] == "ftp-password"
+
+
+def test_ftp_credential_route_test_connection_reports_login_failure(monkeypatch):
+    import asyncio
+    import ftplib
+    from models.requests import FtpCredentialTestReq
+    from routers import ftp_credentials
+
+    class FakeFtpClient:
+        def __init__(self, timeout=0):
+            pass
+
+        def connect(self, host, port, timeout):
+            pass
+
+        def login(self, user, passwd):
+            raise ftplib.error_perm("530 Login incorrect")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ftp_credentials, "ftp_client_factory", FakeFtpClient)
+    monkeypatch.setattr(ftp_credentials, "_require_ftp_credential_permission", lambda _payload: None)
+
+    result = asyncio.run(
+        ftp_credentials.test_ftp_credential(
+            FtpCredentialTestReq(
+                host="ftp.example.com",
+                username="ftp-user",
+                password="bad-password",
+            ),
+            {"sub": "alice"},
+        )
+    )
+
+    assert result["ok"] is False
+    assert "账号或密码错误" in result["message"]
 
 
 def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
@@ -9809,6 +10829,23 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
             },
         )(),
     )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "system_config_store",
+        type(
+            "DummySystemConfigStore",
+            (),
+            {"get_global": staticmethod(lambda: type("DummyConfig", (), {"query_mcp_clarity_confirm_threshold": 3})())},
+        )(),
+    )
+    monkeypatch.setattr(
+        "routers.projects.system_config_store",
+        type(
+            "DummySystemConfigStore",
+            (),
+            {"get_global": staticmethod(lambda: type("DummyConfig", (), {"query_mcp_bootstrap_prompt_template": ""})())},
+        )(),
+    )
 
     query_mcp_svc.create_query_mcp()
 
@@ -9819,6 +10856,8 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert "list_project_proxy_tools" in registered_tools
     assert "invoke_project_skill_tool" in registered_tools
     assert "execute_project_collaboration" in registered_tools
+    assert "get_query_mcp_cli_prompt_preview" in registered_tools
+    assert "sync_query_mcp_cli_prompt_to_local_file" in registered_tools
     assert "query://usage-guide" in registered_resources
     query_usage_guide = registered_resources["query://usage-guide"]()
     assert "execute_project_collaboration" in query_usage_guide
@@ -9876,6 +10915,11 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
             auto_execute=False,
             timeout_sec=20,
         )
+        prompt_preview = registered_tools["get_query_mcp_cli_prompt_preview"](
+            "proj-1",
+            "chat-session-1",
+            clarity_threshold=4,
+        )
     finally:
         if original_runtime_module is None:
             sys.modules.pop("services.mcp.dynamic_mcp_runtime", None)
@@ -9925,6 +10969,75 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert collaboration_result["tool_name"] == "execute_project_collaboration"
     assert collaboration_result["task"] == "完成页面协作"
     assert collaboration_result["selected_employee_ids"] == ["emp-1"]
+    assert prompt_preview["status"] == "preview"
+    assert prompt_preview["rendered_field"] == "runtime.cli_prompt"
+    assert "默认项目: `proj-1`" in prompt_preview["rendered_cli_prompt"]
+    assert "chat_session_id=chat-session-1" in prompt_preview["rendered_cli_prompt"]
+
+
+def test_query_mcp_sync_cli_prompt_dry_run_and_blocks_path_escape(monkeypatch, tmp_path):
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_prompt_tools as prompt_tools_svc
+
+    registered_tools: dict[str, object] = {}
+
+    class FakeMcp:
+        def tool(self, name=None, description=None):
+            def decorator(fn):
+                registered_tools[name or fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri, **_kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    class DummyProject:
+        id = "proj-1"
+        name = "项目一"
+
+    monkeypatch.setattr(query_mcp_svc, "_new_mcp", lambda _service_name: FakeMcp())
+    dummy_project_store = type(
+        "DummyProjectStore",
+        (),
+        {"get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None)},
+    )()
+    monkeypatch.setattr(query_mcp_svc, "project_store", dummy_project_store)
+    monkeypatch.setattr(prompt_tools_svc, "project_store", dummy_project_store)
+    monkeypatch.setattr(
+        "routers.projects.system_config_store",
+        type(
+            "DummySystemConfigStore",
+            (),
+            {"get_global": staticmethod(lambda: type("DummyConfig", (), {"query_mcp_bootstrap_prompt_template": ""})())},
+        )(),
+    )
+
+    query_mcp_svc.create_query_mcp()
+
+    dry_run = registered_tools["sync_query_mcp_cli_prompt_to_local_file"](
+        "proj-1",
+        "chat-session-1",
+        workspace_path=str(tmp_path),
+        target_file="AGENTS.md",
+        dry_run=True,
+    )
+    blocked = registered_tools["sync_query_mcp_cli_prompt_to_local_file"](
+        "proj-1",
+        "chat-session-1",
+        workspace_path=str(tmp_path),
+        target_file="../AGENTS.md",
+        dry_run=True,
+    )
+
+    assert dry_run["status"] == "dry_run"
+    assert dry_run["changed"] is True
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert blocked["status"] == "blocked"
+    assert "inside workspace_path" in blocked["reason"]
 
 
 def test_query_mcp_proxy_app_handles_sse_and_streamable_routes(monkeypatch):
@@ -13175,6 +14288,8 @@ def test_query_mcp_system_config_migrates_legacy_active_state_prompts():
     assert "`.ai-employee/query-mcp/active/<project_id>.json`" not in config.query_mcp_bootstrap_prompt_template
     assert "`list_mcp_resources` 只用于发现资源目录" in config.query_mcp_bootstrap_prompt_template
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
+    assert "sync_query_mcp_cli_prompt_to_local_file" in config.query_mcp_bootstrap_prompt_template
+    assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
 
 
 def test_query_mcp_system_config_completes_partial_resource_discovery_prompt_rules():
@@ -13202,6 +14317,8 @@ def test_query_mcp_system_config_completes_partial_resource_discovery_prompt_rul
 
     assert config.query_mcp_bootstrap_prompt_template.count("`list_mcp_resources` 只用于发现资源目录") == 1
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
+    assert config.query_mcp_bootstrap_prompt_template.count("sync_query_mcp_cli_prompt_to_local_file") == 1
+    assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
     assert config.query_mcp_usage_guide_template.count("`list_mcp_resources` 只用于发现资源目录") == 1
     assert "简单查询直达业务工具" in config.query_mcp_usage_guide_template
 
@@ -13216,6 +14333,8 @@ def test_query_mcp_system_config_inserts_resource_discovery_prompt_rules_without
 
     assert "`list_mcp_resources` 只用于发现资源目录" in config.query_mcp_bootstrap_prompt_template
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
+    assert "sync_query_mcp_cli_prompt_to_local_file" in config.query_mcp_bootstrap_prompt_template
+    assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
     assert "`list_mcp_resources` 只用于发现资源目录" in config.query_mcp_usage_guide_template
     assert "简单查询直达业务工具" in config.query_mcp_usage_guide_template
 
@@ -17705,6 +18824,38 @@ def test_build_project_chat_operation_event_preserves_interaction_schema():
     assert event["meta"]["workflow_state"]["workflow_kind"] == "generic_form"
 
 
+def test_build_project_chat_operation_event_authorization_waiting_with_form_stays_waiting_user():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "authorization_waiting",
+            "workflow_kind": "auth_login",
+            "workflow_label": "网页登录授权",
+            "task_id": "operation-wait-form",
+            "chat_session_id": "chat-auth",
+            "status_label": "等待选择授权域",
+            "interaction_schema": {
+                "title": "选择 lark-cli 授权业务域",
+                "schema": [
+                    {
+                        "label": "授权域",
+                        "prop": "domains",
+                        "componentName": "ElCheckboxGroup",
+                    }
+                ],
+                "model": {"domains": []},
+            },
+        }
+    )
+
+    assert event is not None
+    assert event["operation_id"] == "auth:operation-wait-form"
+    assert event["phase"] == "waiting_user"
+    assert event["action_type"] == "interaction_form"
+    assert event["meta"]["interaction_schema"]["title"] == "选择 lark-cli 授权业务域"
+
+
 def test_build_project_chat_interaction_request_payload():
     from routers.projects import _build_project_chat_interaction_request_payload
 
@@ -17815,6 +18966,69 @@ def test_build_project_chat_interaction_request_payload_uses_pending_interaction
         "workflow-form-1"
     )
     assert payload["request_kind"] == "interaction_continuation"
+
+
+def test_build_project_chat_interaction_request_payload_skips_latest_non_pending_history(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_chat_store import ProjectChatStore
+
+    monkeypatch.setattr(projects_router, "project_chat_store", ProjectChatStore(tmp_path))
+
+    projects_router._append_chat_record(
+        project_id="proj-test",
+        username="tester",
+        role="assistant",
+        content="请填写环境和备注后继续",
+        chat_session_id="chat-form",
+        source_context={
+            "pending_interaction": {
+                "operation_id": "workflow:generic_form:workflow-form-1",
+                "interaction_id": "workflow:generic_form:workflow-form-1",
+                "title": "补充参数",
+                "action_type": "select",
+                "workflow_kind": "generic_form",
+                "resume_command": "resume --form workflow-form-1",
+                "interaction_schema": {
+                    "title": "补充参数",
+                    "schema": [
+                        {"label": "环境", "prop": "environment"},
+                    ],
+                },
+                "workflow_state": {
+                    "workflow_kind": "generic_form",
+                    "workflow_id": "workflow-form-1",
+                    "status": "waiting_user_action",
+                },
+            }
+        },
+    )
+    projects_router._append_chat_record(
+        project_id="proj-test",
+        username="tester",
+        role="assistant",
+        content="收到，等待你提交。",
+        chat_session_id="chat-form",
+        source_context={"assistant_workflow": {"status": "pending"}},
+    )
+
+    payload = projects_router._build_project_chat_interaction_request_payload(
+        "proj-test",
+        "tester",
+        {
+            "type": "interaction_submit",
+            "chat_session_id": "chat-form",
+            "interaction_operation_id": "workflow:generic_form:workflow-form-1",
+            "interaction_data": {"environment": "staging"},
+        },
+    )
+
+    assert payload["source_context"]["pending_interaction"]["operation_id"] == (
+        "workflow:generic_form:workflow-form-1"
+    )
+    assert payload["source_context"]["interaction_submission"]["resume_command"] == (
+        "resume --form workflow-form-1"
+    )
+    assert payload["source_context"]["interaction_submission"]["interaction_schema"]["title"] == "补充参数"
 
 
 def test_operation_interaction_submit_for_auth_task_is_handled_without_model_continuation():
@@ -18041,6 +19255,108 @@ def test_cli_plugin_login_task_claim_resume_allows_agent_runtime_metadata(tmp_pa
     claimed = login_task_svc.claim_login_task_resume("cli-plugin-login-claim-runtime")
     assert claimed is not None
     assert str(claimed["metadata"]["resume_dispatched_at"]).strip()
+
+
+def test_project_deploy_notify_connectors_filter_project_and_hide_secret(monkeypatch):
+    from routers import projects
+
+    monkeypatch.setattr(
+        projects,
+        "list_bot_connectors",
+        lambda: [
+            {
+                "id": "bot-global",
+                "platform": "feishu",
+                "name": "全局飞书",
+                "agent_name": "部署助手",
+                "app_secret": "secret-value",
+                "enabled": True,
+                "project_id": "",
+            },
+            {
+                "id": "bot-current",
+                "platform": "feishu",
+                "name": "当前项目飞书",
+                "enabled": True,
+                "project_id": "proj-1",
+            },
+            {
+                "id": "bot-other",
+                "platform": "feishu",
+                "name": "其他项目飞书",
+                "enabled": True,
+                "project_id": "proj-2",
+            },
+            {
+                "id": "bot-disabled",
+                "platform": "wechat",
+                "name": "停用微信",
+                "enabled": False,
+            },
+        ],
+    )
+
+    items = projects._list_project_deploy_notify_connectors("proj-1")
+
+    assert [item["id"] for item in items] == ["bot-current", "bot-global"]
+    assert all("app_secret" not in item for item in items)
+    assert items[0]["project_id"] == "proj-1"
+
+
+def test_project_deploy_notify_chats_from_project_sessions(monkeypatch):
+    from routers import projects
+    from stores.json.project_chat_store import ProjectChatSession
+
+    class FakeProjectChatStore:
+        def list_sessions(self, project_id, username, limit=50):
+            assert project_id == "proj-1"
+            assert username == "tester"
+            assert limit == 200
+            return [
+                ProjectChatSession(
+                    id="chat-1",
+                    project_id=project_id,
+                    username=username,
+                    source_type="group_message",
+                    platform="feishu",
+                    connector_id="bot-1",
+                    external_chat_id="oc_123",
+                    external_chat_name="部署通知群",
+                ),
+                ProjectChatSession(
+                    id="chat-duplicate",
+                    project_id=project_id,
+                    username=username,
+                    source_type="group_message",
+                    platform="feishu",
+                    connector_id="bot-1",
+                    external_chat_id="oc_123",
+                    external_chat_name="部署通知群",
+                ),
+                ProjectChatSession(
+                    id="chat-empty",
+                    project_id=project_id,
+                    username=username,
+                    source_type="manual_ai_chat",
+                    platform="feishu",
+                    connector_id="bot-1",
+                ),
+            ]
+
+    monkeypatch.setattr(projects, "project_chat_store", FakeProjectChatStore())
+
+    items = projects._list_project_deploy_notify_chats("proj-1", "tester")
+
+    assert items == [
+        {
+            "platform": "feishu",
+            "connector_id": "bot-1",
+            "chat_id": "oc_123",
+            "chat_name": "部署通知群",
+            "session_id": "chat-1",
+            "source_type": "group_message",
+        }
+    ]
 
 
 if __name__ == "__main__":

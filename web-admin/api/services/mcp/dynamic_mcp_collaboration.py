@@ -25,6 +25,12 @@ from services.mcp.dynamic_mcp_profiles import (
     query_project_members_runtime,
     query_project_rules_runtime,
 )
+from services.mcp.dynamic_mcp_prompt_tools import (
+    PROMPT_PREVIEW_TOOL_NAME,
+    PROMPT_SYNC_TOOL_NAME,
+    get_query_mcp_cli_prompt_preview_runtime,
+    sync_query_mcp_cli_prompt_to_local_file_runtime,
+)
 from services.mcp.dynamic_mcp_skill_proxies import list_project_proxy_tools_runtime
 
 COLLABORATION_TOOL_NAME = "execute_project_collaboration"
@@ -667,6 +673,40 @@ def invoke_project_builtin_tool(
         return {
             "tool_name": "get_project_employee_detail",
             "employee_id": target_employee_id,
+            **result,
+        }
+
+    if normalized_tool_name == PROMPT_PREVIEW_TOOL_NAME:
+        payload, err = parse_object_args(args=args, args_json=args_json)
+        if payload is None:
+            return {"error": err}
+        result = get_query_mcp_cli_prompt_preview_runtime(
+            project_id=project_id,
+            chat_session_id=str(payload.get("chat_session_id") or chat_session_id).strip(),
+            clarity_threshold=payload.get("clarity_threshold", 3),
+        )
+        return {
+            "tool_name": PROMPT_PREVIEW_TOOL_NAME,
+            "employee_id": employee_id_value,
+            **result,
+        }
+
+    if normalized_tool_name == PROMPT_SYNC_TOOL_NAME:
+        payload, err = parse_object_args(args=args, args_json=args_json)
+        if payload is None:
+            return {"error": err}
+        result = sync_query_mcp_cli_prompt_to_local_file_runtime(
+            project_id=project_id,
+            chat_session_id=str(payload.get("chat_session_id") or chat_session_id).strip(),
+            workspace_path=str(payload.get("workspace_path") or "").strip(),
+            target_file=str(payload.get("target_file") or "AGENTS.md").strip() or "AGENTS.md",
+            backup=bool(payload.get("backup", True)),
+            dry_run=bool(payload.get("dry_run", False)),
+            clarity_threshold=payload.get("clarity_threshold", 3),
+        )
+        return {
+            "tool_name": PROMPT_SYNC_TOOL_NAME,
+            "employee_id": employee_id_value,
             **result,
         }
 

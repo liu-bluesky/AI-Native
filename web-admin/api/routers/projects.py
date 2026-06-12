@@ -42,7 +42,8 @@ from core.config import get_api_data_dir, get_project_root, get_settings
 from core.data_scope import can_view_username_data, filter_records_by_data_scope
 from core.ownership import can_view_record
 from core.redis_client import get_redis_client
-from core.deps import employee_store, ensure_any_permission, ensure_permission, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_experience_summary_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
+from core.deps import employee_store, ensure_any_permission, ensure_permission, external_mcp_store, ftp_credential_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_deploy_store, project_experience_summary_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_log_template_store, work_session_store
+from stores.json.work_log_template_store import WorkLogTemplate
 from services.feedback_service import get_feedback_service
 from services.assistant.global_assistant_service import (
     build_global_assistant_builtin_tools,
@@ -181,6 +182,9 @@ from models.requests import (
     ProjectCodeRepositoryInitializeReq,
     ProjectCodeRepositoryUpdateReq,
     ProjectCreateReq,
+    ProjectDeployArtifactPushReq,
+    ProjectDeployCommandGenerateReq,
+    ProjectDeploySettingsValidateReq,
     ProjectWorkspaceFileWriteReq,
     ProjectWorkflowSkillUpdateReq,
     ProjectMaterialAssetCreateReq,
@@ -215,6 +219,7 @@ from stores.json.project_experience_summary_store import ProjectExperienceSummar
 from stores.json.project_material_store import ProjectMaterialAsset
 from stores.json.project_studio_export_store import ProjectStudioExportJob
 from stores.json.project_store import ProjectCodeRepository, ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
+from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployRun
 from stores.json.work_session_store import WorkSessionEvent
 from stores.json.system_config_store import (
     DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
@@ -313,6 +318,27 @@ class ProjectDesktopAuditEventReq(BaseModel):
     verification: list[str] = Field(default_factory=list, max_length=20)
     risks: list[str] = Field(default_factory=list, max_length=20)
     next_steps: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ProjectWorkLogCreateReq(BaseModel):
+    title: str = Field("", max_length=240)
+    content: str = Field("", max_length=12000)
+    report_type: str = Field("", max_length=40)
+    template_key: str = Field("", max_length=80)
+    template_label: str = Field("", max_length=120)
+    summary_focus: str = Field("", max_length=120)
+    start_date: str = Field("", max_length=20)
+    end_date: str = Field("", max_length=20)
+    project_ids: list[str] = Field(default_factory=list, max_length=80)
+    project_names: list[str] = Field(default_factory=list, max_length=80)
+    provider_id: str = Field("", max_length=120)
+    model_name: str = Field("", max_length=160)
+
+
+class ProjectWorkLogTemplateUpdateReq(BaseModel):
+    label: str = Field("", max_length=120)
+    description: str = Field("", max_length=4000)
+    fields: int | None = Field(None, ge=1, le=50)
 
 
 _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
@@ -487,6 +513,777 @@ _PROJECT_STUDIO_CHARACTER_VIEW_LABELS = {
     "left": "左侧",
     "right": "右侧",
 }
+_PROJECT_DEPLOY_ARTIFACT_STATUSES = {"uploading", "ready", "deploy_queued", "deployed", "failed", "blocked"}
+_PROJECT_DEPLOY_RUN_STATUSES = {"queued", "running", "success", "failed", "blocked", "cancelled"}
+_PROJECT_DEPLOY_SECRET_KEYS = {
+    "password",
+    "passphrase",
+    "token",
+    "secret",
+    "private_key",
+    "private_key_path",
+    "authorization",
+    "cookie",
+}
+_PROJECT_DEPLOY_REDACTED_SECRET = "***"
+
+
+def _normalize_project_deploy_text(value: Any, *, limit: int = 500) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _normalize_project_deploy_notify(value: Any) -> dict[str, Any]:
+    notify = value if isinstance(value, dict) else {}
+    raw_targets = notify.get("targets") if isinstance(notify.get("targets"), list) else []
+    targets: list[dict[str, Any]] = []
+    for target in raw_targets:
+        if not isinstance(target, dict):
+            continue
+        targets.append(
+            {
+                **target,
+                "platform": _normalize_project_deploy_text(target.get("platform"), limit=40) or "feishu",
+                "connector_id": _normalize_project_deploy_text(target.get("connector_id"), limit=120),
+                "chat_id": _normalize_project_deploy_text(target.get("chat_id"), limit=200),
+            }
+        )
+    return {
+        **notify,
+        "enabled": bool(notify.get("enabled", False)),
+        "targets": targets,
+    }
+
+
+def _normalize_project_deploy_safety(value: Any) -> dict[str, Any]:
+    safety = value if isinstance(value, dict) else {}
+    return {
+        **safety,
+        "auto_deploy_on_artifact_update": bool(safety.get("auto_deploy_on_artifact_update", False)),
+        "dry_run_default": bool(safety.get("dry_run_default", False)),
+    }
+
+
+def _normalize_project_deploy_legacy_transport(value: Any) -> dict[str, Any]:
+    transport = dict(value) if isinstance(value, dict) else {}
+    transport.pop("credential_ref", None)
+    transport.pop("username", None)
+    transport.pop("password", None)
+    transport.pop("ftp_username", None)
+    transport.pop("ftp_password", None)
+    if transport:
+        transport["mode"] = "ftp"
+    return transport
+
+
+def _normalize_project_deploy_target(value: Any, *, fallback_id: str) -> dict[str, Any]:
+    target = value if isinstance(value, dict) else {}
+    transport = target.get("transport") if isinstance(target.get("transport"), dict) else {}
+    target_id = _normalize_project_deploy_text(target.get("id"), limit=80) or fallback_id
+    remote_path = _normalize_project_deploy_text(target.get("remote_path"), limit=1000) or _normalize_project_deploy_text(
+        transport.get("remote_path"),
+        limit=1000,
+    )
+    deploy_command = _normalize_project_deploy_text(target.get("deploy_command"), limit=1000)
+    remote_executor = target.get("remote_executor") if isinstance(target.get("remote_executor"), dict) else {}
+    if not deploy_command:
+        deploy_command = _normalize_project_deploy_text(remote_executor.get("deploy_command"), limit=1000)
+    ftp_credential_id = _normalize_project_deploy_text(
+        target.get("ftp_credential_id") or target.get("ftpCredentialId") or transport.get("ftp_credential_id"),
+        limit=120,
+    )
+    normalized = {
+        **target,
+        "id": target_id,
+        "name": _normalize_project_deploy_text(target.get("name"), limit=160) or target_id,
+        "enabled": bool(target.get("enabled", True)),
+        "transport_mode": "ftp",
+        "ftp_credential_id": ftp_credential_id,
+        "remote_path": remote_path,
+        "deploy_command": deploy_command,
+        "health_check": target.get("health_check") if isinstance(target.get("health_check"), dict) else {},
+    }
+    normalized.pop("credential_ref", None)
+    normalized.pop("ftp_username", None)
+    normalized.pop("ftp_password", None)
+    normalized.pop("username", None)
+    normalized.pop("password", None)
+    normalized.pop("host", None)
+    normalized.pop("port", None)
+    return normalized
+
+
+def _legacy_project_deploy_target_from_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    transport = profile.get("transport") if isinstance(profile.get("transport"), dict) else {}
+    remote_executor = profile.get("remote_executor") if isinstance(profile.get("remote_executor"), dict) else {}
+    return _normalize_project_deploy_target(
+        {
+            "id": "primary",
+            "name": "主服务器",
+            "host": transport.get("host", ""),
+            "port": transport.get("port", ""),
+            "transport_mode": "ftp",
+            "ftp_credential_id": transport.get("ftp_credential_id", ""),
+            "remote_path": transport.get("remote_path", ""),
+            "deploy_command": remote_executor.get("deploy_command", ""),
+        },
+        fallback_id="primary",
+    )
+
+
+def _normalize_project_deploy_component(
+    value: Any,
+    *,
+    fallback_id: str,
+    legacy_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    component = value if isinstance(value, dict) else {}
+    legacy_profile = legacy_profile or {}
+    component_id = _normalize_project_deploy_text(component.get("id"), limit=80) or fallback_id
+    raw_targets = component.get("targets") if isinstance(component.get("targets"), list) else []
+    targets = [
+        _normalize_project_deploy_target(target, fallback_id=f"target-{index + 1}")
+        for index, target in enumerate(raw_targets)
+        if isinstance(target, dict)
+    ]
+    if not targets and legacy_profile:
+        targets = [_legacy_project_deploy_target_from_profile(legacy_profile)]
+    return {
+        **component,
+        "id": component_id,
+        "name": _normalize_project_deploy_text(component.get("name"), limit=160) or component_id,
+        "enabled": bool(component.get("enabled", True)),
+        "artifact_kind": _normalize_project_deploy_text(
+            component.get("artifact_kind") or legacy_profile.get("artifact_kind"),
+            limit=80,
+        )
+        or "source-bundle",
+        "package": component.get("package") if isinstance(component.get("package"), dict) else {},
+        "safety": _normalize_project_deploy_safety(component.get("safety") or legacy_profile.get("safety")),
+        "notify": _normalize_project_deploy_notify(component.get("notify") or legacy_profile.get("notify")),
+        "targets": targets,
+    }
+
+
+def _normalize_project_deploy_settings(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise HTTPException(400, "deploy_settings must be an object")
+    settings = dict(value)
+    normalized: dict[str, Any] = {
+        "version": _normalize_project_deploy_text(settings.get("version"), limit=40) or "1",
+        "enabled": bool(settings.get("enabled", False)),
+        "default_profile": _normalize_project_deploy_text(settings.get("default_profile"), limit=80) or "prod",
+        "profiles": [],
+    }
+    raw_profiles = settings.get("profiles") or []
+    if not isinstance(raw_profiles, list):
+        raise HTTPException(400, "deploy_settings.profiles must be a list")
+    seen_profile_ids: set[str] = set()
+    for index, raw_profile in enumerate(raw_profiles):
+        if not isinstance(raw_profile, dict):
+            raise HTTPException(400, f"deploy_settings.profiles[{index}] must be an object")
+        profile = dict(raw_profile)
+        profile_id = _normalize_project_deploy_text(profile.get("id"), limit=80)
+        if not profile_id:
+            raise HTTPException(400, f"deploy_settings.profiles[{index}].id is required")
+        if profile_id in seen_profile_ids:
+            raise HTTPException(400, f"duplicate deploy profile id: {profile_id}")
+        seen_profile_ids.add(profile_id)
+        normalized["profiles"].append(
+            {
+                **profile,
+                "id": profile_id,
+                "name": _normalize_project_deploy_text(profile.get("name"), limit=160) or profile_id,
+                "environment": _normalize_project_deploy_text(profile.get("environment"), limit=80) or profile_id,
+                "artifact_kind": _normalize_project_deploy_text(profile.get("artifact_kind"), limit=80) or "source-bundle",
+                "enabled": bool(profile.get("enabled", True)),
+                "package": profile.get("package") if isinstance(profile.get("package"), dict) else {},
+                "transport": _normalize_project_deploy_legacy_transport(profile.get("transport")),
+                "remote_executor": profile.get("remote_executor") if isinstance(profile.get("remote_executor"), dict) else {},
+                "notify": _normalize_project_deploy_notify(profile.get("notify")),
+                "safety": _normalize_project_deploy_safety(profile.get("safety")),
+                "components": (
+                    [
+                        _normalize_project_deploy_component(component, fallback_id=f"component-{component_index + 1}")
+                        for component_index, component in enumerate(profile.get("components") or [])
+                        if isinstance(component, dict)
+                    ]
+                    if isinstance(profile.get("components"), list) and profile.get("components")
+                    else [
+                        _normalize_project_deploy_component(
+                            {
+                                "id": "app",
+                                "name": "默认服务",
+                                "artifact_kind": profile.get("artifact_kind"),
+                                "package": profile.get("package") if isinstance(profile.get("package"), dict) else {},
+                                "safety": profile.get("safety"),
+                                "notify": profile.get("notify"),
+                            },
+                            fallback_id="app",
+                            legacy_profile=profile,
+                        )
+                    ]
+                ),
+            }
+        )
+    if normalized["profiles"] and normalized["default_profile"] not in seen_profile_ids:
+        normalized["default_profile"] = normalized["profiles"][0]["id"]
+    return normalized
+
+
+def _redact_project_deploy_value(key: str, value: Any) -> Any:
+    key_lower = str(key or "").strip().lower()
+    if any(secret_key in key_lower for secret_key in _PROJECT_DEPLOY_SECRET_KEYS):
+        return "***"
+    if isinstance(value, dict):
+        return {
+            str(item_key): _redact_project_deploy_value(str(item_key), item_value)
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_project_deploy_value(key_lower, item) for item in value]
+    return value
+
+
+def _public_project_deploy_settings(value: Any) -> dict[str, Any]:
+    return _redact_project_deploy_value("deploy_settings", _normalize_project_deploy_settings(value))
+
+
+def _merge_project_deploy_secret_placeholders(existing_value: Any, incoming_value: Any) -> Any:
+    if isinstance(existing_value, dict) and isinstance(incoming_value, dict):
+        merged: dict[str, Any] = {}
+        keys = set(incoming_value.keys())
+        for key in keys:
+            incoming_item = incoming_value.get(key)
+            existing_item = existing_value.get(key)
+            key_lower = str(key or "").lower()
+            if (
+                isinstance(incoming_item, str)
+                and incoming_item.strip() == _PROJECT_DEPLOY_REDACTED_SECRET
+                and any(secret_key in key_lower for secret_key in _PROJECT_DEPLOY_SECRET_KEYS)
+            ):
+                merged[key] = existing_item
+            else:
+                merged[key] = _merge_project_deploy_secret_placeholders(existing_item, incoming_item)
+        return {**incoming_value, **merged}
+    if isinstance(existing_value, list) and isinstance(incoming_value, list):
+        existing_by_id = {
+            str(item.get("id") or "").strip(): item
+            for item in existing_value
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
+        merged_items: list[Any] = []
+        for index, incoming_item in enumerate(incoming_value):
+            existing_item: Any = existing_value[index] if index < len(existing_value) else None
+            if isinstance(incoming_item, dict):
+                incoming_id = str(incoming_item.get("id") or "").strip()
+                existing_item = existing_by_id.get(incoming_id, existing_item)
+            merged_items.append(_merge_project_deploy_secret_placeholders(existing_item, incoming_item))
+        return merged_items
+    return incoming_value
+
+
+def _find_project_deploy_profile(project: ProjectConfig, profile_id: str) -> dict[str, Any] | None:
+    settings = _normalize_project_deploy_settings(getattr(project, "deploy_settings", {}) or {})
+    normalized_profile_id = _normalize_project_deploy_text(profile_id, limit=80) or str(
+        settings.get("default_profile") or "prod"
+    )
+    for profile in settings.get("profiles", []) or []:
+        if str(profile.get("id") or "").strip() == normalized_profile_id:
+            return dict(profile)
+    return None
+
+
+def _find_project_deploy_component(profile: dict[str, Any], component_id: str = "") -> dict[str, Any] | None:
+    components = profile.get("components") if isinstance(profile.get("components"), list) else []
+    normalized_component_id = _normalize_project_deploy_text(component_id, limit=80)
+    if not normalized_component_id and components:
+        normalized_component_id = str(components[0].get("id") or "").strip()
+    for component in components:
+        if isinstance(component, dict) and str(component.get("id") or "").strip() == normalized_component_id:
+            return dict(component)
+    return None
+
+
+def _resolve_visible_ftp_credential(credential_id: str, auth_payload: dict | None) -> Any | None:
+    normalized_id = _normalize_project_deploy_text(credential_id, limit=120)
+    if not normalized_id:
+        return None
+    item = ftp_credential_store.get(normalized_id)
+    if (
+        item is None
+        or not bool(getattr(item, "enabled", True))
+        or not _normalize_project_deploy_text(getattr(item, "host", ""), limit=300)
+        or not _normalize_project_deploy_text(getattr(item, "password", ""), limit=1000)
+    ):
+        return None
+    port = _normalize_project_deploy_text(getattr(item, "port", ""), limit=20)
+    if port:
+        try:
+            port_value = int(port)
+        except (TypeError, ValueError):
+            return None
+        if port_value < 1 or port_value > 65535:
+            return None
+    if auth_payload is not None and not can_view_username_data(auth_payload, getattr(item, "created_by", "")):
+        return None
+    return item
+
+
+def _serialize_project_deploy_notify_connector(item: dict[str, Any], project_id: str) -> dict[str, Any] | None:
+    if not isinstance(item, dict) or not bool(item.get("enabled", True)):
+        return None
+    connector_id = _normalize_project_deploy_text(item.get("id"), limit=120)
+    platform = _normalize_project_chat_platform(item.get("platform"))
+    if not connector_id or not platform:
+        return None
+    connector_project_id = _normalize_project_deploy_text(item.get("project_id"), limit=120)
+    if connector_project_id and connector_project_id != str(project_id or "").strip():
+        return None
+    return {
+        "id": connector_id,
+        "platform": platform,
+        "name": _normalize_project_deploy_text(item.get("name"), limit=120) or connector_id,
+        "agent_name": _normalize_project_deploy_text(item.get("agent_name"), limit=120),
+        "description": _normalize_project_deploy_text(item.get("description"), limit=300),
+        "reply_identity": _normalize_project_deploy_text(item.get("reply_identity"), limit=20) or "bot",
+        "project_id": connector_project_id,
+    }
+
+
+def _list_project_deploy_notify_connectors(project_id: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for raw in list_bot_connectors():
+        item = _serialize_project_deploy_notify_connector(dict(raw or {}), project_id)
+        if item is not None:
+            items.append(item)
+    items.sort(
+        key=lambda item: (
+            0 if item.get("project_id") == str(project_id or "").strip() else 1,
+            str(item.get("platform") or ""),
+            str(item.get("name") or ""),
+        )
+    )
+    return items
+
+
+def _list_project_deploy_notify_chats(
+    project_id: str,
+    username: str,
+    *,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        sessions = project_chat_store.list_sessions(project_id, username, limit=limit)
+    except Exception:
+        sessions = []
+    for session in sessions:
+        context = _project_chat_session_context(session)
+        platform = _normalize_project_chat_platform(context.get("platform"))
+        connector_id = _normalize_project_deploy_text(context.get("connector_id"), limit=120)
+        chat_id = _normalize_project_deploy_text(context.get("external_chat_id"), limit=200)
+        if not platform or not connector_id or not chat_id:
+            continue
+        key = f"{platform}|{connector_id}|{chat_id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        chat_name = _normalize_project_deploy_text(context.get("external_chat_name"), limit=200)
+        items.append(
+            {
+                "platform": platform,
+                "connector_id": connector_id,
+                "chat_id": chat_id,
+                "chat_name": chat_name,
+                "session_id": _normalize_project_deploy_text(getattr(session, "id", ""), limit=120),
+                "source_type": _normalize_project_deploy_text(context.get("source_type"), limit=80),
+            }
+        )
+    return items
+
+
+def _validate_project_deploy_settings_payload(value: Any, auth_payload: dict | None = None) -> dict[str, Any]:
+    settings = _normalize_project_deploy_settings(value)
+    issues: list[dict[str, Any]] = []
+    profile_ids = {str(item.get("id") or "").strip() for item in settings.get("profiles", []) or []}
+    if settings.get("enabled") and not profile_ids:
+        issues.append({"path": "profiles", "message": "启用部署配置时至少需要一个部署档位"})
+    if settings.get("default_profile") and profile_ids and str(settings.get("default_profile")) not in profile_ids:
+        issues.append({"path": "default_profile", "message": "默认部署档位不存在"})
+    for profile_index, profile in enumerate(settings.get("profiles", []) or []):
+        prefix = f"profiles[{profile_index}]"
+        profile_name = _normalize_project_deploy_text(profile.get("name"), limit=160) or str(profile.get("id") or prefix)
+        components = profile.get("components") if isinstance(profile.get("components"), list) else []
+        if profile.get("enabled", True) and settings.get("enabled") and not components:
+            issues.append({"path": f"{prefix}.components", "message": "部署档位启用时至少需要一个部署单元"})
+        for component_index, component in enumerate(components):
+            if not isinstance(component, dict):
+                continue
+            component_prefix = f"{prefix}.components[{component_index}]"
+            component_name = _normalize_project_deploy_text(component.get("name"), limit=160) or str(
+                component.get("id") or component_prefix
+            )
+            targets = component.get("targets") if isinstance(component.get("targets"), list) else []
+            safety = component.get("safety") if isinstance(component.get("safety"), dict) else {}
+            if profile.get("enabled", True) and component.get("enabled", True) and settings.get("enabled") and not targets:
+                issues.append({"path": f"{component_prefix}.targets", "message": "部署单元启用时至少需要一个服务器目标"})
+            notify = component.get("notify") if isinstance(component.get("notify"), dict) else {}
+            notify_targets = notify.get("targets") if isinstance(notify.get("targets"), list) else []
+            if settings.get("enabled") and profile.get("enabled", True) and component.get("enabled", True) and bool(
+                notify.get("enabled", False)
+            ):
+                if not notify_targets:
+                    issues.append({"path": f"{component_prefix}.notify.targets", "message": f"{profile_name} / {component_name}：请选择通知机器人和通知群"})
+                for notify_index, notify_target in enumerate(notify_targets):
+                    if not isinstance(notify_target, dict):
+                        continue
+                    notify_prefix = f"{component_prefix}.notify.targets[{notify_index}]"
+                    notify_label = f"{profile_name} / {component_name}"
+                    if not _normalize_project_deploy_text(notify_target.get("platform"), limit=40):
+                        issues.append({"path": f"{notify_prefix}.platform", "message": f"{notify_label}：请选择通知平台"})
+                    if not _normalize_project_deploy_text(notify_target.get("connector_id"), limit=120):
+                        issues.append({"path": f"{notify_prefix}.connector_id", "message": f"{notify_label}：请选择通知机器人"})
+                    if not _normalize_project_deploy_text(notify_target.get("chat_id"), limit=200):
+                        issues.append({"path": f"{notify_prefix}.chat_id", "message": f"{notify_label}：请选择通知群，或输入飞书群名称后解析"})
+            for target_index, target in enumerate(targets):
+                if not isinstance(target, dict) or not bool(target.get("enabled", True)):
+                    continue
+                target_prefix = f"{component_prefix}.targets[{target_index}]"
+                target_name = _normalize_project_deploy_text(target.get("name"), limit=160) or str(
+                    target.get("id") or f"服务器 {target_index + 1}"
+                )
+                target_label = f"{profile_name} / {component_name} / {target_name}"
+                if settings.get("enabled") and profile.get("enabled", True) and component.get("enabled", True):
+                    credential_id = _normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120)
+                    if not credential_id:
+                        issues.append({"path": f"{target_prefix}.ftp_credential_id", "message": f"{target_label}：请选择 FTP 连接"})
+                    elif _resolve_visible_ftp_credential(credential_id, auth_payload) is None:
+                        issues.append({"path": f"{target_prefix}.ftp_credential_id", "message": f"{target_label}：FTP 连接不存在、未配置服务器地址/密码、已停用或当前账号无权使用"})
+                    if not _normalize_project_deploy_text(target.get("remote_path"), limit=1000):
+                        issues.append({"path": f"{target_prefix}.remote_path", "message": f"{target_label}：远端目录必填"})
+                if bool(safety.get("auto_deploy_on_artifact_update", False)) and not _normalize_project_deploy_text(
+                    target.get("deploy_command"),
+                    limit=1000,
+                ):
+                    issues.append({"path": f"{target_prefix}.deploy_command", "message": f"{target_label}：自动部署需要填写部署命令"})
+    return {
+        "valid": not issues,
+        "issues": issues,
+        "deploy_settings": _public_project_deploy_settings(settings),
+    }
+
+
+def _serialize_project_deploy_artifact(artifact: ProjectDeployArtifact) -> dict[str, Any]:
+    return asdict(artifact)
+
+
+def _serialize_project_deploy_run(run: ProjectDeployRun) -> dict[str, Any]:
+    data = asdict(run)
+    data["config_snapshot"] = _redact_project_deploy_value("config_snapshot", data.get("config_snapshot") or {})
+    data["log_excerpt"] = _redact_project_deploy_log(data.get("log_excerpt") or "")
+    return data
+
+
+def _redact_project_deploy_log(value: Any) -> str:
+    text = str(value or "")
+    patterns = [
+        r"(?i)(authorization\s*[:=]\s*)\S+",
+        r"(?i)(token\s*[:=]\s*)\S+",
+        r"(?i)(password\s*[:=]\s*)\S+",
+        r"(?i)(secret\s*[:=]\s*)\S+",
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, r"\1***", text, flags=re.DOTALL)
+    text = re.sub(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        "***PRIVATE KEY REDACTED***",
+        text,
+        flags=re.DOTALL,
+    )
+    return text[:4000]
+
+
+def _verify_project_deploy_artifact_manifest(
+    *,
+    artifact_name: str,
+    artifact_content: bytes,
+    manifest: dict[str, Any],
+) -> tuple[str, int, str]:
+    if not artifact_name:
+        raise HTTPException(400, "artifact_name is required")
+    if not isinstance(manifest, dict):
+        raise HTTPException(400, "manifest must be an object")
+    size = len(artifact_content)
+    expected_size = manifest.get("size")
+    if expected_size not in (None, ""):
+        try:
+            if int(expected_size) != size:
+                raise HTTPException(400, "artifact size does not match manifest.size")
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "manifest.size must be an integer") from exc
+    sha256_digest = hashlib.sha256(artifact_content).hexdigest()
+    checksum = _normalize_project_deploy_text(manifest.get("checksum"), limit=200)
+    normalized_checksum = checksum.removeprefix("sha256:") if checksum else ""
+    if normalized_checksum and normalized_checksum.lower() != sha256_digest:
+        raise HTTPException(400, "artifact checksum does not match manifest.checksum")
+    return f"sha256:{sha256_digest}", size, _normalize_project_deploy_text(manifest.get("version"), limit=120)
+
+
+def _create_project_deploy_run_for_artifact(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    requested_by: str,
+    chat_session_id: str,
+    task_tree_node_id: str,
+) -> ProjectDeployRun | None:
+    settings = _normalize_project_deploy_settings(getattr(project, "deploy_settings", {}) or {})
+    if not bool(settings.get("enabled", False)):
+        return None
+    profile = _find_project_deploy_profile(project, artifact.profile)
+    if profile is None:
+        return None
+    component = _find_project_deploy_component(profile, artifact.component)
+    if component is None:
+        return None
+    safety = component.get("safety") if isinstance(component.get("safety"), dict) else {}
+    if not bool(safety.get("auto_deploy_on_artifact_update", False)):
+        return None
+    targets = [
+        target
+        for target in (component.get("targets") if isinstance(component.get("targets"), list) else [])
+        if isinstance(target, dict) and bool(target.get("enabled", True))
+    ]
+    deployable_targets = [
+        target
+        for target in targets
+        if _resolve_visible_ftp_credential(_normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120), None)
+        and _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
+        and _normalize_project_deploy_text(target.get("deploy_command"), limit=1000)
+    ]
+    run_status = "queued" if deployable_targets else "blocked"
+    stage = "queued" if deployable_targets else "blocked_missing_target_ftp_config"
+    run = ProjectDeployRun(
+        id=project_deploy_store.new_run_id(),
+        project_id=project.id,
+        profile=artifact.profile,
+        component=artifact.component,
+        status=run_status,
+        requested_by=requested_by,
+        chat_session_id=chat_session_id,
+        task_tree_node_id=task_tree_node_id,
+        stage=stage,
+        dry_run=bool(safety.get("dry_run_default", False)),
+        config_version=str(settings.get("version") or ""),
+        config_snapshot=_public_project_deploy_settings(
+            {
+                "profiles": [{**profile, "components": [component]}],
+                "default_profile": artifact.profile,
+            }
+        ),
+        artifact_id=artifact.id,
+        artifact_summary={
+            "artifact_name": artifact.artifact_name,
+            "artifact_kind": artifact.artifact_kind,
+            "component": artifact.component,
+            "version": artifact.version,
+            "checksum": artifact.checksum,
+            "size": artifact.size,
+            "target_count": len(targets),
+            "deployable_target_count": len(deployable_targets),
+        },
+        log_excerpt="" if deployable_targets else "blocked: missing target ftp credential, remote_path, or deploy_command",
+        notify_result=_build_project_deploy_notification_preview(project, artifact, status=run_status),
+    )
+    return project_deploy_store.save_run(run)
+
+
+def _build_project_deploy_notification_preview(
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    *,
+    status: str,
+) -> list[dict[str, Any]]:
+    profile = _find_project_deploy_profile(project, artifact.profile) or {}
+    component = _find_project_deploy_component(profile, artifact.component) or {}
+    notify = component.get("notify") if isinstance(component.get("notify"), dict) else {}
+    targets = notify.get("targets") if isinstance(notify.get("targets"), list) else []
+    if not bool(notify.get("enabled", False)) or not targets:
+        return []
+    results: list[dict[str, Any]] = []
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        platform = _normalize_project_deploy_text(target.get("platform"), limit=40)
+        target_payload = {
+            "platform": platform,
+            "connector_id": _normalize_project_deploy_text(target.get("connector_id"), limit=120),
+            "chat_id": _normalize_project_deploy_text(target.get("chat_id"), limit=200),
+            "status": "preview" if platform == "feishu" else "unsupported",
+            "message": f"{project.name} {artifact.profile} 部署状态：{status}，产物：{artifact.artifact_name}",
+        }
+        if platform in {"wechat", "qq"}:
+            target_payload["reason"] = f"{platform} notification sender is not implemented"
+        results.append(target_payload)
+    return results
+
+
+def _clean_project_deploy_command_output(content: Any) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    parsed: Any = None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        text = str(parsed.get("deploy_command") or parsed.get("command") or "").strip()
+    if "```" in text:
+        blocks = re.findall(r"```(?:bash|sh|shell)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+        if blocks:
+            text = str(blocks[0] or "").strip()
+    lines = [line.rstrip() for line in text.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    text = "\n".join(lines).strip()
+    if text.startswith("{") and "deploy_command" in text:
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            text = str(parsed.get("deploy_command") or "").strip()
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(text) > 1000:
+        text = text[:1000].rstrip()
+    return text
+
+
+def _build_project_deploy_command_prompt(
+    *,
+    project: ProjectConfig,
+    req: ProjectDeployCommandGenerateReq,
+) -> list[dict[str, str]]:
+    profile = req.profile if isinstance(req.profile, dict) else {}
+    component = req.component if isinstance(req.component, dict) else {}
+    target = req.target if isinstance(req.target, dict) else {}
+    payload = {
+        "project": {
+            "id": project.id,
+            "name": project.name,
+            "description": getattr(project, "description", ""),
+            "workspace_path": getattr(project, "workspace_path", ""),
+        },
+        "deploy_profile": {
+            "id": _normalize_project_deploy_text(profile.get("id"), limit=80),
+            "name": _normalize_project_deploy_text(profile.get("name"), limit=160),
+            "environment": _normalize_project_deploy_text(profile.get("environment"), limit=80),
+        },
+        "deploy_component": {
+            "id": _normalize_project_deploy_text(component.get("id"), limit=80),
+            "name": _normalize_project_deploy_text(component.get("name"), limit=160),
+            "artifact_kind": _normalize_project_deploy_text(component.get("artifact_kind"), limit=80),
+            "package": component.get("package") if isinstance(component.get("package"), dict) else {},
+            "auto_deploy_on_artifact_update": bool(
+                (component.get("safety") if isinstance(component.get("safety"), dict) else {}).get(
+                    "auto_deploy_on_artifact_update",
+                    False,
+                )
+            ),
+        },
+        "deploy_target": {
+            "id": _normalize_project_deploy_text(target.get("id"), limit=80),
+            "name": _normalize_project_deploy_text(target.get("name"), limit=160),
+            "transport_mode": "ftp",
+            "remote_path": _normalize_project_deploy_text(target.get("remote_path"), limit=1000),
+            "existing_deploy_command": _normalize_project_deploy_text(target.get("deploy_command"), limit=1000),
+        },
+        "artifact": {
+            "artifact_name": _normalize_project_deploy_text(req.artifact_name, limit=240),
+            "artifact_path": _normalize_project_deploy_text(req.artifact_path, limit=1000),
+            "artifact_kind": _normalize_project_deploy_text(req.artifact_kind, limit=80) or "source-bundle",
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是谨慎的部署工程师。请基于输入信息生成一段适合保存到部署配置的 Linux shell 部署命令。"
+                "命令将在服务端把产物上传到目标 remote_path 后执行。只生成幂等、可重复执行、失败即停止的命令。"
+                "不要输出解释、Markdown 或多余文本。必须输出 JSON：{\"deploy_command\":\"...\"}。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "约束：\n"
+                "- 当前只支持 FTP 上传，服务器连接和密码已由系统全局 FTP 账户管理，命令里不要包含账号、密码、token、密钥。\n"
+                "- 命令应尽量使用相对当前远端目录或 payload.remote_path 的路径。\n"
+                "- 如果无法确定具体重启命令，生成保守命令：校验目录、解压/同步产物、输出下一步提示，不要编造 systemctl 服务名。\n"
+                "- 如果 artifact_path 类似 frontend/dist，倾向于静态资源发布命令；如果是 source-bundle，倾向于解压后执行已有 deploy.sh（存在时）。\n"
+                "- 最终 deploy_command 不超过 1000 字符。\n\n"
+                f"输入：\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+            ),
+        },
+    ]
+
+
+async def _generate_project_deploy_command_payload(
+    *,
+    project: ProjectConfig,
+    req: ProjectDeployCommandGenerateReq,
+    auth_payload: dict,
+) -> dict[str, Any]:
+    from services.providers.llm_provider_service import get_llm_provider_service
+
+    runtime_settings = {
+        "provider_id": _normalize_project_deploy_text(req.provider_id, limit=120),
+        "model_name": _normalize_project_deploy_text(req.model_name, limit=160),
+    }
+    resolved_runtime = await _resolve_global_assistant_chat_runtime(runtime_settings, auth_payload)
+    messages = _build_project_deploy_command_prompt(project=project, req=req)
+    if resolved_runtime.provider_mode == "local_connector":
+        connector = _resolve_accessible_local_connector_for_llm(resolved_runtime.connector_id, auth_payload)
+        if connector is None:
+            raise HTTPException(400, "本地连接器不可用")
+        response = await chat_completion_via_connector(
+            connector,
+            model_name=resolved_runtime.model_name,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=500,
+            timeout=30,
+        )
+    else:
+        llm_service = get_llm_provider_service()
+        llm_runtime = _resolve_chat_llm_service_runtime(llm_service, resolved_runtime, auth_payload)
+        response = await llm_runtime.chat_completion(
+            resolved_runtime.provider_id,
+            resolved_runtime.model_name,
+            messages,
+            temperature=0.1,
+            max_tokens=500,
+            timeout=30,
+        )
+    response_payload = response if isinstance(response, dict) else {}
+    command = _clean_project_deploy_command_output(response_payload.get("content"))
+    if not command:
+        raise HTTPException(502, "模型没有返回可用部署命令")
+    return {
+        "status": "generated",
+        "project_id": project.id,
+        "deploy_command": command,
+        "provider_id": str(response_payload.get("provider_id") or resolved_runtime.provider_id).strip(),
+        "model_name": str(response_payload.get("model_name") or resolved_runtime.model_name).strip(),
+        "token_usage": response_payload.get("usage"),
+        "persisted": False,
+    }
 
 
 def _project_creator_username(project_id: str, project: ProjectConfig | None = None) -> str:
@@ -530,6 +1327,7 @@ def _serialize_project(
 ) -> dict:
     data = asdict(project)
     data.pop("chat_settings", None)
+    data["deploy_settings"] = _public_project_deploy_settings(getattr(project, "deploy_settings", {}) or {})
     normalized_type = _normalize_project_type(getattr(project, "type", "mixed"))
     resolved_creator_username = str(creator_username or "").strip() or _project_creator_username(project.id, project)
     data["type"] = normalized_type
@@ -591,6 +1389,7 @@ def _serialize_project_list_item(
         "user_count": int(user_count) if user_count is not None else len(project_store.list_user_members(project.id)),
         "mcp_enabled": bool(getattr(project, "mcp_enabled", True)),
         "feedback_upgrade_enabled": bool(getattr(project, "feedback_upgrade_enabled", True)),
+        "deploy_enabled": bool((_normalize_project_deploy_settings(getattr(project, "deploy_settings", {}) or {})).get("enabled", False)),
         "created_at": str(getattr(project, "created_at", "") or ""),
         "updated_at": str(getattr(project, "updated_at", "") or ""),
         "ui_rule_count": len(_normalize_project_ui_rule_ids(getattr(project, "ui_rule_ids", []) or [])),
@@ -3799,6 +4598,10 @@ def _normalize_chat_history(history: list[dict] | None, *, limit: int = 20) -> l
     return normalized[-safe_limit:]
 
 
+def _is_project_work_log_chat_surface(chat_surface: Any) -> bool:
+    return str(chat_surface or "").strip().lower() == "project-work-log"
+
+
 def _filter_project_tools_by_names(
     tools: list[dict[str, Any]],
     enabled_tool_names: list[str] | None,
@@ -5480,12 +6283,19 @@ def _build_project_chat_operation_event(
         }
     elif event_type in {"authorization_waiting", "operation_waiting"}:
         authorization_url = str(payload.get("authorization_url") or "").strip()
+        interaction_schema = (
+            payload.get("interaction_schema")
+            if isinstance(payload.get("interaction_schema"), dict)
+            else None
+        )
         waiting_message = str(payload.get("message") or "").strip()
         raw_detail = str(payload.get("detail") or "").strip()
         workflow_kind = str(payload.get("workflow_kind") or "").strip().lower()
         action_type = str(payload.get("action_type") or "").strip().lower()
         if action_type == "open_url" and not authorization_url:
             action_type = "none"
+        if not action_type and interaction_schema:
+            action_type = "interaction_form"
         is_auth_operation = event_type == "authorization_waiting" or workflow_kind == "auth_login" or bool(authorization_url)
         operation = {
             "operation_id": (
@@ -5511,8 +6321,8 @@ def _build_project_chat_operation_event(
                 for item in [authorization_url, waiting_message]
                 if str(item or "").strip()
             ).strip(),
-            "phase": "running" if is_auth_operation and not authorization_url else "waiting_user",
-            "action_type": action_type or ("open_url" if authorization_url else "none"),
+            "phase": "running" if is_auth_operation and not authorization_url and not interaction_schema else "waiting_user",
+            "action_type": action_type or ("open_url" if authorization_url else "interaction_form" if interaction_schema else "none"),
             "meta": {
                 "task_id": str(payload.get("task_id") or "").strip(),
                 "chat_session_id": chat_session_id,
@@ -5520,11 +6330,7 @@ def _build_project_chat_operation_event(
                 "authorization_url": authorization_url,
                 "workflow_kind": str(payload.get("workflow_kind") or "").strip(),
                 "workflow_id": str(payload.get("workflow_id") or "").strip(),
-                "interaction_schema": (
-                    payload.get("interaction_schema")
-                    if isinstance(payload.get("interaction_schema"), dict)
-                    else None
-                ),
+                "interaction_schema": interaction_schema,
                 "workflow_state": dict(payload),
             },
         }
@@ -5834,6 +6640,17 @@ def _build_global_chat_messages(
     assistant_workflow_state: dict[str, Any] | None = None,
     tools: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    if _is_project_work_log_chat_surface(chat_surface):
+        return assemble_chat_messages(
+            system_messages=[],
+            history=[],
+            user_message=user_message,
+            images=images,
+            history_limit=1,
+            normalize_history=_normalize_chat_history,
+            normalize_images=_normalize_image_inputs,
+        )
+
     base_prompt = (custom_system_prompt or "").strip()
     if not base_prompt:
         if _normalize_project_chat_surface(chat_surface) == "global-assistant":
@@ -6703,6 +7520,120 @@ def _serialize_project_work_session_event(item: Any, employee_names: dict[str, s
         **asdict(item),
         "employee_name": employee_names.get(employee_id, employee_id) if employee_id else "团队协作",
     }
+
+
+def _project_work_log_metadata(item: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for raw in getattr(item, "facts", []) or []:
+        text = _normalize_project_record_token(raw, limit=400)
+        if "=" not in text:
+            continue
+        key, value = text.split("=", 1)
+        normalized_key = _normalize_project_record_token(key, limit=80)
+        if not normalized_key:
+            continue
+        normalized_value = _normalize_project_record_token(value, limit=240)
+        if normalized_key in {"project_ids", "project_names"}:
+            metadata[normalized_key] = [
+                _normalize_project_record_token(part, limit=120)
+                for part in normalized_value.split(",")
+                if _normalize_project_record_token(part, limit=120)
+            ]
+        else:
+            metadata[normalized_key] = normalized_value
+    return metadata
+
+
+def _serialize_project_work_log(item: Any, employee_names: dict[str, str]) -> dict[str, Any]:
+    employee_id = _normalize_project_record_token(getattr(item, "employee_id", ""), limit=80)
+    metadata = _project_work_log_metadata(item)
+    title = _normalize_project_record_token(getattr(item, "goal", ""), limit=240)
+    created_at = _normalize_project_record_token(getattr(item, "created_at", ""), limit=40)
+    project_ids = metadata.get("project_ids")
+    if not isinstance(project_ids, list):
+        project_ids = [_normalize_project_record_token(getattr(item, "project_id", ""), limit=80)]
+    project_names = metadata.get("project_names")
+    if not isinstance(project_names, list):
+        project_names = [_normalize_project_record_token(getattr(item, "project_name", ""), limit=120)]
+    project_label = "、".join([name for name in project_names if name])
+    return {
+        "id": _normalize_project_record_token(getattr(item, "id", ""), limit=80),
+        "title": title or "项目工作日志",
+        "projectId": _normalize_project_record_token(getattr(item, "project_id", ""), limit=80),
+        "projectName": _normalize_project_record_token(getattr(item, "project_name", ""), limit=120),
+        "projectIds": project_ids,
+        "projectNames": project_names,
+        "projectLabel": project_label or _normalize_project_record_token(getattr(item, "project_name", ""), limit=120),
+        "templateKey": metadata.get("template_key", ""),
+        "templateLabel": metadata.get("template_label", "")
+        or _normalize_project_record_token(getattr(item, "step", ""), limit=120),
+        "reportType": metadata.get("report_type", "")
+        or _normalize_project_record_token(getattr(item, "phase", ""), limit=40),
+        "summaryFocus": metadata.get("summary_focus", ""),
+        "startDate": metadata.get("start_date", ""),
+        "endDate": metadata.get("end_date", ""),
+        "createdAt": created_at,
+        "updatedAt": _normalize_project_record_token(getattr(item, "updated_at", ""), limit=40),
+        "createdBy": employee_id,
+        "createdByName": employee_names.get(employee_id, employee_id) if employee_id else "团队协作",
+        "providerId": metadata.get("provider_id", ""),
+        "modelName": metadata.get("model_name", ""),
+        "content": _normalize_project_record_token(getattr(item, "content", ""), limit=12000),
+    }
+
+
+def _serialize_project_work_log_template(item: Any) -> dict[str, Any]:
+    try:
+        fields = max(1, min(int(getattr(item, "fields", 1) or 1), 50))
+    except (TypeError, ValueError):
+        fields = 1
+    return {
+        "value": _normalize_project_record_token(getattr(item, "value", ""), limit=80),
+        "label": _normalize_project_record_token(getattr(item, "label", ""), limit=120),
+        "description": _normalize_project_record_token(getattr(item, "description", ""), limit=600),
+        "fields": fields,
+        "createdAt": _normalize_project_record_token(getattr(item, "created_at", ""), limit=40),
+        "updatedAt": _normalize_project_record_token(getattr(item, "updated_at", ""), limit=40),
+        "updatedBy": _normalize_project_record_token(getattr(item, "updated_by", ""), limit=80),
+    }
+
+
+def _list_project_work_log_items(
+    *,
+    auth_payload: dict,
+    limit: int,
+    project_id: str = "",
+) -> list[Any]:
+    safe_limit = max(1, min(int(limit or 50), 200))
+    normalized_project_id = _normalize_project_record_token(project_id, limit=80)
+    items = []
+    seen_ids: set[str] = set()
+    for item in work_session_store.list_events(limit=500):
+        event_id = _normalize_project_record_token(getattr(item, "id", ""), limit=80)
+        if event_id in seen_ids:
+            continue
+        if _normalize_project_record_token(getattr(item, "source_kind", ""), limit=80) != "project_work_log":
+            continue
+        if _normalize_project_record_token(getattr(item, "event_type", ""), limit=80) != "generated_work_log":
+            continue
+        if not can_view_username_data(auth_payload, _normalize_project_record_token(getattr(item, "employee_id", ""), limit=80)):
+            continue
+        metadata = _project_work_log_metadata(item)
+        project_ids = metadata.get("project_ids")
+        if not isinstance(project_ids, list):
+            project_ids = [_normalize_project_record_token(getattr(item, "project_id", ""), limit=80)]
+        if normalized_project_id and normalized_project_id not in project_ids:
+            continue
+        seen_ids.add(event_id)
+        items.append(item)
+    items.sort(
+        key=lambda item: (
+            _normalize_project_record_token(getattr(item, "created_at", ""), limit=40),
+            _normalize_project_record_token(getattr(item, "id", ""), limit=80),
+        ),
+        reverse=True,
+    )
+    return items[:safe_limit]
 
 
 def _normalize_desktop_audit_items(values: Any, *, item_limit: int = 400, max_items: int = 20) -> list[str]:
@@ -7977,13 +8908,13 @@ def _resolve_project_chat_latest_pending_interaction(
         )
         pending_interaction = source_context.get("pending_interaction")
         if not isinstance(pending_interaction, dict) or not pending_interaction:
-            return None
+            continue
         pending_operation_id = str(pending_interaction.get("operation_id") or "").strip()
         pending_interaction_id = str(pending_interaction.get("interaction_id") or "").strip()
         if normalized_operation_id and normalized_operation_id != pending_operation_id:
-            return None
+            continue
         if normalized_interaction_id and normalized_interaction_id != pending_interaction_id:
-            return None
+            continue
         return dict(pending_interaction)
     return None
 
@@ -9372,6 +10303,7 @@ def _build_query_mcp_cli_prompt(
         "4. 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；核心文件优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。",
         "5. 若系统曾把 `.ai-employee` 或 `query-mcp-workflow` 隐式落到其他子目录，只能视为历史状态，不能替代当前 CLI 工作区初始化；当前入口仍要在当前工作区补齐。",
         "6. 若当前任务是更新工作流规范或技能包，优先在本地技能副本、提示词模板和同步策略上修改；只有本地缺失或需要回源比对时，才从服务端技能库同步。",
+        "6.1 若用户明确要求“更新提示词”“同步提示词”“刷新 AGENTS.md”或类似操作，且 `project_id`、`chat_session_id` 与当前 CLI 工作区明确，直接调用 `sync_query_mcp_cli_prompt_to_local_file(project_id=<当前项目>, chat_session_id=<当前会话>, workspace_path=<当前 CLI 工作区>, target_file=\"AGENTS.md\", backup=true, dry_run=false)`，用服务端渲染的 `runtime.cli_prompt` 覆盖当前项目根目录提示词文件；不要只预览或只口头说明。完成后保留工具返回的 `target_file`、`backup_file`、`content_hash` 作为验证记录；若 workspace_path 不明确或目标路径不在当前工作区，先说明阻塞。",
         "7. 实现型需求优先调用 `start_project_workflow(...)` 作为固定入口；若宿主暂不适合走固定入口，至少按 `search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan` 的顺序补齐前置步骤。",
         "8. 仅在缺少明确的 `project_id` / `employee_id` / `rule_id`，或需要跨项目检索时，再调用 `search_ids(keyword=\"<用户原始问题>\")`；已明确当前项目且在项目内执行时可直接读取上下文或进入本地实现。",
         "9. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 `bind_project_context(...)`。",
@@ -9450,6 +10382,7 @@ async def get_query_mcp_runtime(
                 "for simple project queries with a known project_id, call the matching business tool directly instead of listing resources",
                 "initialize local .ai-employee state in the current CLI workspace and ensure query-mcp-workflow is available there",
                 "treat project-local .ai-employee/skills/query-mcp-workflow as the default skill location; use mcp-skills/knowledge only when maintaining the workflow source repo",
+                "when the user asks to update or sync prompts, call sync_query_mcp_cli_prompt_to_local_file and overwrite the current workspace AGENTS.md with backup and hash verification",
                 "generate and persist chat_session_id",
                 "bind_project_context with project_id/chat_session_id/root_goal",
                 "get_current_task_tree and verify the bound tree matches the current request",
@@ -10738,18 +11671,24 @@ async def chat_without_project(
         effective_user_message = (
             f"我上传了附件：{'、'.join(attachment_names)}。请先给我处理建议。"
         )
-    runtime_snapshot = await _build_global_assistant_runtime_snapshot(
-        auth_payload,
-        route_path=req.route_path,
-        route_title=req.route_title,
+    is_project_work_log = _is_project_work_log_chat_surface(req.chat_surface)
+    runtime_snapshot = (
+        {}
+        if is_project_work_log
+        else await _build_global_assistant_runtime_snapshot(
+            auth_payload,
+            route_path=req.route_path,
+            route_title=req.route_title,
+        )
     )
-    global_assistant_tools = build_global_assistant_builtin_tools()
+    global_assistant_tools = [] if is_project_work_log else build_global_assistant_builtin_tools()
+    auto_use_tools = False if is_project_work_log else True
     assistant_workflow_state = prepare_assistant_workflow_state(
         user_message=effective_user_message,
         source_context=req.source_context if isinstance(req.source_context, dict) else {},
         previous_state={},
         chat_surface=str(req.chat_surface or "global-assistant").strip() or "global-assistant",
-        auto_use_tools=True,
+        auto_use_tools=auto_use_tools,
     )
     global_assistant_tools = apply_capability_routing(
         global_assistant_tools,
@@ -11576,6 +12515,7 @@ async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(req
         ai_entry_file=_normalize_ai_entry_file_for_save(req.ai_entry_file),
         mcp_enabled=req.mcp_enabled,
         feedback_upgrade_enabled=req.feedback_upgrade_enabled,
+        deploy_settings=_normalize_project_deploy_settings(req.deploy_settings),
     )
     if not project.name:
         raise HTTPException(400, "name is required")
@@ -12039,6 +12979,268 @@ async def get_project(project_id: str, auth_payload: dict = Depends(require_auth
     _ensure_permission(auth_payload, "menu.projects")
     project = _ensure_project_access(project_id, auth_payload)
     return {"project": _serialize_project(project, auth_payload)}
+
+
+@router.post("/{project_id}/deploy-settings/validate")
+async def validate_project_deploy_settings(
+    project_id: str,
+    req: ProjectDeploySettingsValidateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    return {
+        "project_id": project_id,
+        **_validate_project_deploy_settings_payload(req.deploy_settings, auth_payload),
+    }
+
+
+@router.post("/{project_id}/deploy-command/generate")
+async def generate_project_deploy_command(
+    project_id: str,
+    req: ProjectDeployCommandGenerateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    return await _generate_project_deploy_command_payload(
+        project=project,
+        req=req,
+        auth_payload=auth_payload,
+    )
+
+
+@router.get("/{project_id}/deploy-notify-options")
+async def get_project_deploy_notify_options(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    return {
+        "project_id": project_id,
+        "connectors": _list_project_deploy_notify_connectors(project_id),
+        "chats": _list_project_deploy_notify_chats(project_id, username),
+    }
+
+
+@router.post("/{project_id}/deploy-notify-chat/resolve")
+async def resolve_project_deploy_notify_chat(
+    project_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+    auth_payload: dict = Depends(require_auth),
+):
+    from services.feishu.feishu_bot_service import resolve_feishu_chat_by_name
+
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    body = payload if isinstance(payload, dict) else {}
+    platform = _normalize_project_chat_platform(body.get("platform"))
+    connector_id = _normalize_project_deploy_text(body.get("connector_id"), limit=120)
+    chat_name = _normalize_project_deploy_text(body.get("chat_name") or body.get("name"), limit=200)
+    if platform != "feishu":
+        raise HTTPException(400, "当前只支持解析飞书群 ID")
+    if not connector_id:
+        raise HTTPException(400, "请选择通知机器人")
+    if not chat_name:
+        raise HTTPException(400, "请输入飞书群名称")
+    connector = get_bot_connector(connector_id)
+    visible_connector = _serialize_project_deploy_notify_connector(dict(connector or {}), project_id)
+    if connector is None or visible_connector is None or visible_connector.get("platform") != "feishu":
+        raise HTTPException(404, "飞书机器人连接器不存在、未启用或当前项目不可用")
+    resolve_identity = _normalize_project_deploy_text(
+        body.get("identity") or visible_connector.get("reply_identity") or "bot",
+        limit=20,
+    ).lower()
+    if resolve_identity not in {"bot", "user"}:
+        resolve_identity = "bot"
+    try:
+        chat = resolve_feishu_chat_by_name(dict(connector), chat_name, identity=resolve_identity)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+    chat_id = _normalize_project_deploy_text(chat.get("chat_id"), limit=200)
+    if not chat_id:
+        raise HTTPException(404, "未解析到飞书群 ID")
+    resolved_name = _normalize_project_deploy_text(chat.get("name"), limit=200) or chat_name
+    return {
+        "status": "resolved",
+        "project_id": project_id,
+        "chat": {
+            "platform": "feishu",
+            "connector_id": connector_id,
+            "chat_id": chat_id,
+            "chat_name": resolved_name,
+            "resolve_identity": resolve_identity,
+        },
+    }
+
+
+def _read_project_deploy_artifact_content(req: ProjectDeployArtifactPushReq) -> bytes:
+    encoded = str(req.artifact_content_base64 or "").strip()
+    if encoded:
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except Exception as exc:
+            raise HTTPException(400, "artifact_content_base64 is not valid base64") from exc
+    artifact_path = _normalize_project_deploy_text(req.artifact_path, limit=2000)
+    if not artifact_path:
+        raise HTTPException(400, "artifact_content_base64 or artifact_path is required")
+    path = Path(artifact_path).expanduser().resolve()
+    if not path.exists() or not path.is_file():
+        raise HTTPException(400, "artifact_path does not exist or is not a file")
+    if path.stat().st_size > 200 * 1024 * 1024:
+        raise HTTPException(413, "artifact is larger than 200MB")
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise HTTPException(400, f"failed to read artifact_path: {exc}") from exc
+
+
+def _push_project_deploy_artifact_payload(
+    *,
+    project: ProjectConfig,
+    req: ProjectDeployArtifactPushReq,
+    uploaded_by: str,
+) -> dict[str, Any]:
+    profile_id = _normalize_project_deploy_text(req.profile, limit=80) or "prod"
+    component_id = _normalize_project_deploy_text(req.component, limit=80)
+    profile = _find_project_deploy_profile(project, profile_id)
+    if profile is None:
+        raise HTTPException(400, f"deploy profile not found: {profile_id}")
+    if not bool(profile.get("enabled", True)):
+        raise HTTPException(400, f"deploy profile disabled: {profile_id}")
+    component = _find_project_deploy_component(profile, component_id)
+    if component is None:
+        raise HTTPException(400, f"deploy component not found: {component_id or 'default'}")
+    if not bool(component.get("enabled", True)):
+        raise HTTPException(400, f"deploy component disabled: {component.get('id')}")
+    content = _read_project_deploy_artifact_content(req)
+    manifest = dict(req.manifest or {})
+    checksum, size, version = _verify_project_deploy_artifact_manifest(
+        artifact_name=_normalize_project_deploy_text(req.artifact_name, limit=240),
+        artifact_content=content,
+        manifest=manifest,
+    )
+    artifact = ProjectDeployArtifact(
+        id=project_deploy_store.new_artifact_id(),
+        project_id=project.id,
+        profile=profile_id,
+        artifact_name=_normalize_project_deploy_text(req.artifact_name, limit=240),
+        component=_normalize_project_deploy_text(component.get("id"), limit=80),
+        artifact_kind=_normalize_project_deploy_text(req.artifact_kind, limit=80)
+        or _normalize_project_deploy_text(component.get("artifact_kind"), limit=80)
+        or _normalize_project_deploy_text(profile.get("artifact_kind"), limit=80)
+        or "source-bundle",
+        version=version,
+        checksum=checksum,
+        size=size,
+        status="ready",
+        manifest=manifest,
+        uploaded_by=uploaded_by,
+        ready_at=_now_iso(),
+    )
+    file_dir = project_deploy_store.artifact_file_dir(project.id, artifact.id)
+    file_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(artifact.artifact_name).name or f"{artifact.id}.bin"
+    storage_path = file_dir / safe_name
+    try:
+        storage_path.write_bytes(content)
+    except OSError as exc:
+        raise HTTPException(400, f"failed to store artifact: {exc}") from exc
+    artifact.storage_path = str(storage_path)
+    project_deploy_store.save_artifact(artifact)
+    run = None
+    if bool(req.auto_deploy):
+        run = _create_project_deploy_run_for_artifact(
+            project=project,
+            artifact=artifact,
+            requested_by=uploaded_by,
+            chat_session_id=_normalize_project_deploy_text(req.chat_session_id, limit=120),
+            task_tree_node_id=_normalize_project_deploy_text(req.task_tree_node_id, limit=120),
+        )
+        if run is not None:
+            artifact.deployment_id = run.id
+            artifact.status = "deploy_queued" if run.status == "queued" else "blocked"
+            project_deploy_store.save_artifact(artifact)
+    return {
+        "status": artifact.status,
+        "project_id": project.id,
+        "profile": profile_id,
+        "component": artifact.component,
+        "artifact": _serialize_project_deploy_artifact(artifact),
+        "deployment": _serialize_project_deploy_run(run) if run else None,
+        "checksum_verified": True,
+        "auto_deploy": bool(req.auto_deploy),
+    }
+
+
+@router.post("/{project_id}/deploy-artifacts")
+async def push_project_deploy_artifact(
+    project_id: str,
+    req: ProjectDeployArtifactPushReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    return _push_project_deploy_artifact_payload(
+        project=project,
+        req=req,
+        uploaded_by=_current_username(auth_payload) or "unknown",
+    )
+
+
+@router.get("/{project_id}/deploy-artifacts")
+async def list_project_deploy_artifacts(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+    limit: int = Query(50, ge=1, le=100),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    return {
+        "project_id": project_id,
+        "artifacts": [
+            _serialize_project_deploy_artifact(item)
+            for item in project_deploy_store.list_artifacts(project_id, limit=limit)
+        ],
+    }
+
+
+@router.get("/{project_id}/deploy-artifacts/{artifact_id}")
+async def get_project_deploy_artifact(
+    project_id: str,
+    artifact_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    artifact = project_deploy_store.get_artifact(project_id, artifact_id)
+    if artifact is None:
+        raise HTTPException(404, f"Artifact {artifact_id} not found")
+    run = project_deploy_store.get_run(project_id, artifact.deployment_id) if artifact.deployment_id else None
+    return {
+        "project_id": project_id,
+        "artifact": _serialize_project_deploy_artifact(artifact),
+        "deployment": _serialize_project_deploy_run(run) if run else None,
+    }
+
+
+@router.get("/{project_id}/deploy-runs")
+async def list_project_deploy_runs(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+    limit: int = Query(50, ge=1, le=100),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    return {
+        "project_id": project_id,
+        "runs": [
+            _serialize_project_deploy_run(item)
+            for item in project_deploy_store.list_runs(project_id, limit=limit)
+        ],
+    }
 
 
 def _ensure_workflow_skill_exists(skill_id: str):
@@ -13532,6 +14734,13 @@ def _apply_project_update(project_id: str, req: ProjectUpdateReq, auth_payload: 
     if "default_workflow_skill_id" in updates:
         updates["default_workflow_skill_id"] = _normalize_project_default_workflow_skill_id(
             updates.get("default_workflow_skill_id")
+        )
+    if "deploy_settings" in updates:
+        incoming_deploy_settings = _normalize_project_deploy_settings(updates.get("deploy_settings"))
+        existing_deploy_settings = _normalize_project_deploy_settings(getattr(project, "deploy_settings", {}) or {})
+        updates["deploy_settings"] = _merge_project_deploy_secret_placeholders(
+            existing_deploy_settings,
+            incoming_deploy_settings,
         )
     updates["updated_at"] = _now_iso()
     updated = replace(project, **updates)
@@ -16648,7 +17857,190 @@ async def list_project_work_sessions(
         "items": sessions[:safe_limit],
         "project_id": project.id,
         "project_name": project.name,
-}
+    }
+
+
+@router.get("/_global/work-logs")
+async def list_global_project_work_logs(
+    limit: int = Query(50, ge=1, le=200),
+    auth_payload: dict = Depends(require_auth),
+):
+    return {
+        "items": [
+            _serialize_project_work_log(item, _project_employee_name_map(getattr(item, "project_id", "")))
+            for item in _list_project_work_log_items(auth_payload=auth_payload, limit=limit)
+        ],
+        "scope": "global",
+    }
+
+
+@router.get("/{project_id}/work-logs")
+async def list_project_work_logs(
+    project_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_access(project_id, auth_payload)
+    employee_names = _project_employee_name_map(project.id)
+    items = _list_project_work_log_items(auth_payload=auth_payload, limit=limit, project_id=project.id)
+    return {
+        "items": [_serialize_project_work_log(item, employee_names) for item in items],
+        "project_id": project.id,
+        "project_name": project.name,
+    }
+
+
+@router.get("/_global/work-log-templates")
+async def list_work_log_templates(
+    auth_payload: dict = Depends(require_auth),
+):
+    return {
+        "items": [
+            _serialize_project_work_log_template(item)
+            for item in work_log_template_store.list_all()
+        ],
+        "scope": "global",
+    }
+
+
+@router.put("/_global/work-log-templates/{template_key}")
+async def update_work_log_template(
+    template_key: str,
+    req: ProjectWorkLogTemplateUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    username = _current_username(auth_payload)
+    normalized_template_key = _normalize_project_record_token(template_key, limit=80)
+    if not normalized_template_key:
+        raise HTTPException(400, "template_key is required")
+    label = _normalize_project_record_token(req.label, limit=120)
+    description = _normalize_project_record_token(req.description, limit=4000)
+    if not label:
+        raise HTTPException(400, "label is required")
+    now = _now_iso()
+    existing = work_log_template_store.get(normalized_template_key)
+    template = WorkLogTemplate(
+        value=normalized_template_key,
+        label=label,
+        description=description,
+        fields=max(1, min(int(req.fields or getattr(existing, "fields", 1) or 1), 50)),
+        updated_by=username,
+        created_at=getattr(existing, "created_at", "") or now,
+        updated_at=now,
+    )
+    work_log_template_store.save(template)
+    return {
+        "item": _serialize_project_work_log_template(template),
+        "scope": "global",
+    }
+
+
+@router.post("/{project_id}/work-logs")
+async def create_project_work_log(
+    project_id: str,
+    req: ProjectWorkLogCreateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    content = _normalize_project_record_token(req.content, limit=12000)
+    if not content:
+        raise HTTPException(400, "content is required")
+    title = _normalize_project_record_token(req.title, limit=240) or "项目工作日志"
+    normalized_project_ids = []
+    for raw_project_id in req.project_ids or []:
+        normalized_id = _normalize_project_record_token(raw_project_id, limit=80)
+        if normalized_id and normalized_id not in normalized_project_ids:
+            _ensure_project_access(normalized_id, auth_payload)
+            normalized_project_ids.append(normalized_id)
+    if project.id not in normalized_project_ids:
+        normalized_project_ids.insert(0, project.id)
+    project_name_by_id = {
+        item.id: item.name
+        for item in (
+            _ensure_project_access(normalized_project_id, auth_payload)
+            for normalized_project_id in normalized_project_ids
+        )
+    }
+    normalized_project_names = []
+    for normalized_project_id in normalized_project_ids:
+        normalized_name = _normalize_project_record_token(
+            project_name_by_id.get(normalized_project_id, "") or normalized_project_id,
+            limit=120,
+        )
+        if normalized_name:
+            normalized_project_names.append(normalized_name)
+    now = _now_iso()
+    event = WorkSessionEvent(
+        id=work_session_store.new_id(),
+        project_id=project.id,
+        project_name="、".join(normalized_project_names) or project.name,
+        employee_id=username,
+        session_id=f"project-work-log-{uuid.uuid4().hex[:12]}",
+        source_kind="project_work_log",
+        event_type="generated_work_log",
+        phase=_normalize_project_record_token(req.report_type, limit=40),
+        step=_normalize_project_record_token(req.template_label, limit=120),
+        status="done",
+        goal=title,
+        content=content,
+        facts=[
+            f"report_type={_normalize_project_record_token(req.report_type, limit=40)}",
+            f"template_key={_normalize_project_record_token(req.template_key, limit=80)}",
+            f"template_label={_normalize_project_record_token(req.template_label, limit=120)}",
+            f"summary_focus={_normalize_project_record_token(req.summary_focus, limit=120)}",
+            f"start_date={_normalize_project_record_token(req.start_date, limit=20)}",
+            f"end_date={_normalize_project_record_token(req.end_date, limit=20)}",
+            f"project_ids={','.join(normalized_project_ids)}",
+            f"project_names={','.join(normalized_project_names)}",
+            f"provider_id={_normalize_project_record_token(req.provider_id, limit=120)}",
+            f"model_name={_normalize_project_record_token(req.model_name, limit=160)}",
+        ],
+        created_at=now,
+        updated_at=now,
+    )
+    work_session_store.save(event)
+    return {
+        "item": _serialize_project_work_log(event, _project_employee_name_map(project.id)),
+        "project_id": project.id,
+        "project_name": project.name,
+    }
+
+
+@router.delete("/_global/work-logs/{record_id}")
+async def delete_global_project_work_log(
+    record_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    normalized_record_id = _normalize_project_record_token(record_id, limit=80)
+    if not normalized_record_id:
+        raise HTTPException(400, "record_id is required")
+    event = work_session_store.get(normalized_record_id)
+    if event is None:
+        raise HTTPException(404, "日志记录不存在")
+    if _normalize_project_record_token(getattr(event, "source_kind", ""), limit=80) != "project_work_log":
+        raise HTTPException(404, "日志记录不存在")
+    if _normalize_project_record_token(getattr(event, "event_type", ""), limit=80) != "generated_work_log":
+        raise HTTPException(404, "日志记录不存在")
+    if not can_view_username_data(auth_payload, _normalize_project_record_token(getattr(event, "employee_id", ""), limit=80)):
+        raise HTTPException(403, "无权删除该日志记录")
+    if not work_session_store.delete(normalized_record_id):
+        raise HTTPException(404, "日志记录不存在")
+    return {
+        "status": "deleted",
+        "scope": "global",
+        "record_id": normalized_record_id,
+    }
+
+
+@router.delete("/{project_id}/work-logs/{record_id}")
+async def delete_project_work_log(
+    project_id: str,
+    record_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_project_access(project_id, auth_payload)
+    return await delete_global_project_work_log(record_id, auth_payload)
 
 
 @router.get("/{project_id}/work-session-events")

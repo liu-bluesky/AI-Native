@@ -14,10 +14,12 @@ from stores.factory import (
     department_store,
     employee_store,
     external_mcp_store,
+    ftp_credential_store,
     local_connector_store,
     project_chat_store,
     project_chat_runtime_store,
     project_chat_task_store,
+    project_deploy_store,
     project_experience_summary_store,
     project_material_store,
     project_studio_export_store,
@@ -27,6 +29,7 @@ from stores.factory import (
     task_tree_evolution_store,
     usage_store,
     user_store,
+    work_log_template_store,
     work_session_store,
 )
 
