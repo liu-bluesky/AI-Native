@@ -333,6 +333,38 @@
         <el-table-column label="上传时间" min-width="150">
           <template #default="{ row }">{{ formatRelativeTime(row.uploaded_at) }}</template>
         </el-table-column>
+        <el-table-column label="操作" width="150" fixed="right">
+          <template #default="{ row }">
+            <div class="project-deploy-panel__row-actions">
+              <el-button
+                text
+                type="primary"
+                :loading="deployingArtifactId === row.id"
+                :disabled="!canManageProject || deletingArtifactId === row.id"
+                @click="deployArtifact(row)"
+              >
+                部署
+              </el-button>
+              <el-popconfirm
+                title="确定删除这个打包产物文件吗？"
+                confirm-button-text="删除"
+                cancel-button-text="取消"
+                @confirm="deleteDeployArtifact(row)"
+              >
+                <template #reference>
+                  <el-button
+                    text
+                    type="danger"
+                    :loading="deletingArtifactId === row.id"
+                    :disabled="!canManageProject || deployingArtifactId === row.id"
+                  >
+                    删除
+                  </el-button>
+                </template>
+              </el-popconfirm>
+            </div>
+          </template>
+        </el-table-column>
       </el-table>
       <el-empty
         v-if="!deployArtifactsLoading && !deployArtifacts.length"
@@ -425,6 +457,8 @@ const ftpCredentialsLoading = ref(false);
 const deployNotifyOptionsLoading = ref(false);
 const deployNotifyResolving = ref(false);
 const deployCommandGeneratingKey = ref("");
+const deletingArtifactId = ref("");
+const deployingArtifactId = ref("");
 const deployArtifacts = ref([]);
 const deployRuns = ref([]);
 const ftpCredentials = ref([]);
@@ -759,6 +793,8 @@ function normalizeDeployNotifyChat(item) {
     chat_name: String(source.chat_name || "").trim(),
     session_id: String(source.session_id || "").trim(),
     source_type: String(source.source_type || "").trim(),
+    chat_type: String(source.chat_type || "").trim(),
+    scanned_at: String(source.scanned_at || "").trim(),
   };
 }
 
@@ -1001,6 +1037,55 @@ async function fetchDeployArtifacts() {
   }
 }
 
+async function deleteDeployArtifact(row) {
+  const artifactId = String(row?.id || "").trim();
+  if (!artifactId || !props.projectId) {
+    return;
+  }
+  deletingArtifactId.value = artifactId;
+  try {
+    await api.delete(`/projects/${props.projectId}/deploy-artifacts/${encodeURIComponent(artifactId)}`);
+    deployArtifacts.value = deployArtifacts.value.filter((item) => item.id !== artifactId);
+    ElMessage.success("打包产物文件已删除");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "删除打包产物失败");
+  } finally {
+    deletingArtifactId.value = "";
+  }
+}
+
+async function deployArtifact(row) {
+  if (!props.canManageProject) {
+    ElMessage.warning(props.manageBlockedMessage);
+    return;
+  }
+  const artifactId = String(row?.id || "").trim();
+  if (!artifactId || !props.projectId) {
+    return;
+  }
+  deployingArtifactId.value = artifactId;
+  try {
+    const data = await api.post(
+      `/projects/${props.projectId}/deploy-artifacts/${encodeURIComponent(artifactId)}/deploy`,
+      {},
+    );
+    const status = String(data?.deployment?.status || data?.status || "").trim().toLowerCase();
+    const statusLabel = getDeployStatusLabel(status);
+    if (status === "failed") {
+      ElMessage.error(`部署失败：${statusLabel}`);
+    } else if (status === "blocked") {
+      ElMessage.warning(`部署已阻塞：${statusLabel}`);
+    } else {
+      ElMessage.success(`已触发部署：${statusLabel}`);
+    }
+    await Promise.all([fetchDeployArtifacts(), fetchDeployRuns()]);
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "触发部署失败");
+  } finally {
+    deployingArtifactId.value = "";
+  }
+}
+
 async function fetchDeployRuns() {
   if (!props.projectId) {
     deployRuns.value = [];
@@ -1090,6 +1175,7 @@ async function resolveNotifyChatByName() {
     notifyTargetForm.value.resolve_identity = data?.chat?.resolve_identity || connector?.reply_identity || "bot";
     notifyChatName.value = notifyTargetForm.value.chat_name;
     applyNotifyTargetToActiveComponent();
+    await fetchDeployNotifyOptions();
     ElMessage.success("飞书群已解析");
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "解析飞书群失败");
@@ -1431,6 +1517,13 @@ onMounted(() => {
   color: #64748b;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.project-deploy-panel__row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 
 @media (max-width: 980px) {

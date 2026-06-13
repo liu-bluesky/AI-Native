@@ -58,6 +58,18 @@
 
 后端校验层必须负责约束任务归属、会话连续性、状态流转是否合法，以及验证结果是否齐全。
 
+## 部署产物技能入口
+
+当用户请求打包、部署、自动部署、手动部署或推送构建产物时，先加载 `.ai-employee/skills/project-deploy-artifact/` 技能；如果本地缺失，再从 `mcp-skills/knowledge/skill-packages/project-deploy-artifact/` 同步。
+
+通用工作流只保留边界：客户端 AI 只负责打包、计算 artifact 元数据并调用 `push_project_deploy_artifact` 推送到 MCP/服务端；服务端按项目 `deploy_settings` 创建 `ProjectDeployArtifact` / `ProjectDeployRun` 并执行部署。自动部署关闭时，告知用户到部署产物列表点击该产物的“部署”按钮，或在明确授权后调用 `deploy_project_deploy_artifact`。
+
+部署任务禁止把历史发布配置、CI 配置、本地凭据、远端脚本或环境变量当作执行依据；缺少工具、登录态、项目部署配置、远端路径、部署命令或执行器能力时，直接报告服务端返回的 `blocked` / `missing` 信息。
+
+当前系统删除打包文件时，只删除服务端保存的部署 artifact 文件及对应 artifact 记录；不删除外部平台消息，也不删除远端服务器已部署目录。
+
+机器人通知群选择优先使用机器人连接器扫描到的群列表。飞书支持通过开放平台扫描机器人所在群；微信/QQ 若返回 `unsupported`，客户端必须提示平台缺少群列表 API/适配能力。
+
 ## 面向用户的反馈要求
 
 如果存在可恢复任务，要明确告诉用户“可以继续”，并指出当前阶段或下一步动作。

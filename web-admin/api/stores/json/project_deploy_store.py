@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -102,6 +103,20 @@ class ProjectDeployStore:
         except Exception:
             return None
         return ProjectDeployArtifact(**data)
+
+    def delete_artifact(self, project_id: str, artifact_id: str, *, delete_file: bool = True) -> bool:
+        artifact = self.get_artifact(project_id, artifact_id)
+        path = self._artifact_path(project_id, artifact_id)
+        deleted = False
+        if path.exists():
+            path.unlink()
+            deleted = True
+        if delete_file and artifact is not None:
+            artifact_dir = self.artifact_file_dir(project_id, artifact_id).resolve()
+            root = self._files_dir.resolve()
+            if root in artifact_dir.parents and artifact_dir.exists():
+                shutil.rmtree(artifact_dir)
+        return deleted
 
     def list_artifacts(self, project_id: str, *, limit: int = 50) -> list[ProjectDeployArtifact]:
         project_dir = self._artifacts_dir / _safe_token(project_id)

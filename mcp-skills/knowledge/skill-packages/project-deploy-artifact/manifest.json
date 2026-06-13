@@ -1,0 +1,12 @@
+{
+  "name": "项目部署产物工作流",
+  "description": "约束客户端 AI 只负责打包、计算产物元数据并推送到 MCP/服务端，由服务端按项目 deploy_settings 执行部署。",
+  "version": "1.0.0",
+  "tags": [
+    "deployment",
+    "artifact",
+    "mcp",
+    "workflow"
+  ],
+  "mcp_service": "query-center-project"
+}

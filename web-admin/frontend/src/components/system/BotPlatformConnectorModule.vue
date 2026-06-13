@@ -126,6 +126,13 @@
           >
             安装诊断
           </el-button>
+          <el-button
+            plain
+            :loading="scanningConnectorId === connector.id"
+            @click="openChatScan(connector)"
+          >
+            扫描群列表
+          </el-button>
           <el-button @click="openDialog(connector.platform, connector)">
             编辑配置
           </el-button>
@@ -459,6 +466,59 @@
         <el-button @click="diagnoseDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="chatScanDialogVisible"
+      title="机器人所在群"
+      width="760px"
+      append-to-body
+      destroy-on-close
+    >
+      <div class="diagnose-dialog" v-if="chatScanPayload">
+        <el-alert
+          :title="chatScanPayload.message || scanStatusLabel(chatScanPayload.status)"
+          :type="chatScanPayload.status === 'scanned' ? 'success' : 'warning'"
+          :closable="false"
+          show-icon
+        />
+        <div class="diagnose-dialog__summary">
+          <span>平台：{{ chatScanPayload.platform || '-' }}</span>
+          <span>连接器：{{ chatScanPayload.connector_id || '-' }}</span>
+          <span>群数量：{{ chatScanPayload.count || 0 }}</span>
+        </div>
+        <el-table
+          v-if="chatScanPayload.items?.length"
+          :data="chatScanPayload.items"
+          stripe
+          class="bot-chat-scan-table"
+        >
+          <el-table-column label="群名称" min-width="180">
+            <template #default="{ row }">{{ row.chat_name || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="群 ID" min-width="220">
+            <template #default="{ row }">
+              <code>{{ row.chat_id }}</code>
+            </template>
+          </el-table-column>
+          <el-table-column label="类型" width="120">
+            <template #default="{ row }">{{ row.chat_type || row.chat_mode || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="来源" width="160">
+            <template #default="{ row }">{{ row.source || '-' }}</template>
+          </el-table-column>
+        </el-table>
+        <div v-if="chatScanPayload.missing?.length" class="diagnose-dialog__next">
+          <h4>缺少信息</h4>
+          <ul>
+            <li v-for="item in chatScanPayload.missing" :key="item">{{ item }}</li>
+          </ul>
+        </div>
+      </div>
+      <el-empty v-else description="暂无扫描结果" />
+      <template #footer>
+        <el-button @click="chatScanDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -771,6 +831,9 @@ const showAutoStartWorkerField = computed(
 const diagnoseDialogVisible = ref(false);
 const diagnosePayload = ref(null);
 const diagnosingConnectorId = ref("");
+const chatScanDialogVisible = ref(false);
+const chatScanPayload = ref(null);
+const scanningConnectorId = ref("");
 const canSaveDraft = computed(
   () =>
     Boolean(
@@ -852,6 +915,35 @@ async function openDiagnose(connector) {
   } finally {
     diagnosingConnectorId.value = "";
   }
+}
+
+async function openChatScan(connector) {
+  const connectorId = String(connector?.id || "").trim();
+  if (!connectorId) {
+    ElMessage.warning("请先保存机器人配置");
+    return;
+  }
+  scanningConnectorId.value = connectorId;
+  try {
+    chatScanPayload.value = await api.post(`/bot-connectors/${encodeURIComponent(connectorId)}/chats/scan`, {});
+    chatScanDialogVisible.value = true;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "扫描机器人所在群失败");
+  } finally {
+    scanningConnectorId.value = "";
+  }
+}
+
+function scanStatusLabel(status) {
+  const normalized = String(status || "").trim();
+  const labels = {
+    scanned: "群列表扫描完成",
+    unsupported: "当前平台暂不支持全量扫描",
+    missing_credentials: "缺少平台凭证",
+    missing_connector: "机器人配置不存在",
+    disabled: "机器人配置已停用",
+  };
+  return labels[normalized] || "群列表扫描未完成";
 }
 
 function findProjectLabel(projectId) {

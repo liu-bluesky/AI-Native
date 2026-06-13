@@ -571,6 +571,60 @@ def _select_feishu_chat_search_candidate(items: list[dict[str, str]], query: str
     return candidates[0]
 
 
+def _normalize_feishu_chat_list_item(raw: Any) -> dict[str, str]:
+    item = raw if isinstance(raw, dict) else {}
+    return {
+        "chat_id": str(item.get("chat_id") or item.get("chatId") or "").strip(),
+        "chat_name": str(item.get("name") or item.get("chat_name") or item.get("chatName") or "").strip(),
+        "description": str(item.get("description") or "").strip(),
+        "owner_id": str(item.get("owner_id") or item.get("ownerId") or "").strip(),
+        "chat_mode": str(item.get("chat_mode") or item.get("chatMode") or "").strip(),
+        "chat_type": str(item.get("chat_type") or item.get("chatType") or "").strip(),
+        "external": str(item.get("external") or "").strip(),
+    }
+
+
+def list_feishu_bot_joined_chats(connector: dict[str, Any], *, page_size: int = 100) -> dict[str, Any]:
+    normalized_page_size = max(1, min(int(page_size or 100), 100))
+    token = _get_feishu_tenant_access_token(connector)
+    page_token = ""
+    chats: list[dict[str, str]] = []
+    while True:
+        params: dict[str, Any] = {
+            "user_id_type": "open_id",
+            "page_size": normalized_page_size,
+        }
+        if page_token:
+            params["page_token"] = page_token
+        response = requests.get(
+            _feishu_open_api_url("/open-apis/im/v1/chats"),
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if int(payload.get("code") or 0) != 0:
+            raise RuntimeError(str(payload.get("msg") or "飞书群列表获取失败"))
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        for raw in data.get("items") or []:
+            item = _normalize_feishu_chat_list_item(raw)
+            if item.get("chat_id"):
+                chats.append(item)
+        if not bool(data.get("has_more")):
+            break
+        page_token = str(data.get("page_token") or "").strip()
+        if not page_token:
+            break
+    return {
+        "status": "scanned",
+        "platform": "feishu",
+        "source": "feishu.im.v1.chats",
+        "items": chats,
+        "count": len(chats),
+    }
+
+
 def _format_lark_cli_chat_search_error(output: str, *, identity: str) -> str:
     text = str(output or "").strip()
     try:

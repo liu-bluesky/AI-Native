@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -2922,6 +2924,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: 每个 CLI 会话都应自行生成唯一 `chat_session_id`；如能解析项目工作区，优先持久化到项目目录 `.ai-employee/query-mcp/`，否则再退回 CLI 自己的本地存储。同一轮任务内固定复用，只有新开的并行 CLI 或新任务才重新生成。",
             "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
+            "- 部署约束: 遇到打包、部署、自动部署、手动部署或推送构建产物任务，必须先加载 `.ai-employee/skills/project-deploy-artifact/`；客户端只调用 `push_project_deploy_artifact` 推送产物，由服务端按 `deploy_settings` 部署，禁止扫描本地发布配置、凭据、脚本或环境变量。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall。",
             f"- 交互约束: {clarity_threshold_line}",
             f"- 交互约束: {clarity_direct_line}",
@@ -2953,6 +2956,9 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`。",
             "- 接入约束: 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；缺失时从系统技能库同步或创建到本地，已存在则直接复用，并优先读取本地副本。",
             "- 接入约束: 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。",
+            "- 部署约束: 遇到打包、部署、自动部署、手动部署或推送构建产物任务，必须先加载 `.ai-employee/skills/project-deploy-artifact/`；本地缺失时从 `mcp-skills/knowledge/skill-packages/project-deploy-artifact/` 同步。",
+            "- 部署约束: 客户端只打包、计算 artifact 元数据并调用 `push_project_deploy_artifact` 推送产物；服务端按项目 `deploy_settings` 部署。自动部署关闭时只提示用户在部署产物列表点击“部署”，或在明确授权后调用 `deploy_project_deploy_artifact`。",
+            "- 部署约束: 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；缺少工具、登录态或服务端部署配置时直接报告 `blocked` / `missing`。",
             "- 接入约束: 每个 Codex CLI 会话都应先持久化自己生成的 `chat_session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Codex 自己的本地存储。同一进程整轮任务固定复用，只有新开的并行任务或全新需求才重新生成。",
             "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
             "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`。",
@@ -3050,6 +3056,8 @@ def build_query_usage_guide_text() -> str:
         "1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。\n"
         "1.2 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；若不存在，再从系统技能库同步或创建到本地；已存在则直接复用，禁止重复创建。\n"
         "1.3 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。\n"
+        "1.4 部署产物任务必须先加载 `.ai-employee/skills/project-deploy-artifact/`；本地缺失时从 `mcp-skills/knowledge/skill-packages/project-deploy-artifact/` 同步。客户端只打包、计算 artifact 元数据并调用 `push_project_deploy_artifact` 推送产物；服务端按 `deploy_settings` 部署。自动部署关闭时只提示用户在部署产物列表手动点击“部署”，或在明确授权后调用 `deploy_project_deploy_artifact`。\n"
+        "1.5 部署任务禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；缺少推送工具、登录态、项目部署配置、远端路径、部署命令或执行器能力时，直接报告 `blocked` / `missing`。\n"
         "2. MCP 配置里的 description、项目说明、\"当前项目\" 这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文，以及 bind_project_context(...) 写入的 MCP 会话绑定。\n"
         "3. 若接入地址缺少 project_id，或需要续接任务树但缺少 chat_session_id，首轮立即调用 bind_project_context(project_id, chat_session_id?, root_goal?)；不要只依赖 description 里的项目说明。\n"
         "4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。\n"
@@ -4400,11 +4408,31 @@ def create_query_mcp(
         clarity_threshold: int = 3,
     ) -> dict:
         """获取与统一 MCP 接入弹窗“展开引导提示词预览”一致的 CLI 引导提示词。"""
-        return get_query_mcp_cli_prompt_preview_runtime(
-            project_id=_resolve_query_project_id(project_id),
-            chat_session_id=chat_session_id,
-            clarity_threshold=clarity_threshold,
+        project_id_value = _resolve_query_project_id(project_id)
+        if project_id_value and project_store.get(project_id_value) is None:
+            return {"error": f"Project {project_id_value} not found"}
+        chat_session_id_value = str(chat_session_id or "").strip()
+        try:
+            threshold_value = max(1, min(5, int(clarity_threshold or 3)))
+        except (TypeError, ValueError):
+            threshold_value = 3
+
+        from routers.projects import _build_query_mcp_cli_prompt
+
+        rendered = _build_query_mcp_cli_prompt(
+            project_id=project_id_value,
+            chat_session_id=chat_session_id_value,
+            clarity_confirm_threshold=threshold_value,
         )
+        return {
+            "status": "preview",
+            "project_id": project_id_value,
+            "chat_session_id": chat_session_id_value,
+            "template_source": "system_config.query_mcp_bootstrap_prompt_template",
+            "rendered_field": "runtime.cli_prompt",
+            "rendered_cli_prompt": rendered,
+            "content_hash": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+        }
 
     @mcp.tool()
     def sync_query_mcp_cli_prompt_to_local_file(

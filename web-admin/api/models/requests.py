@@ -349,6 +349,11 @@ class ProjectDeployArtifactPushReq(BaseModel):
     task_tree_node_id: str = ""
 
 
+class ProjectDeployArtifactDeployReq(BaseModel):
+    chat_session_id: str = ""
+    task_tree_node_id: str = ""
+
+
 class ProjectCodeRepositoryCreateReq(BaseModel):
     name: str
     repo_url: str

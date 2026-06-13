@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -113,6 +114,24 @@ class ProjectDeployStorePostgres:
             )
             row = cur.fetchone()
         return _coerce_payload(row, ProjectDeployArtifact)
+
+    def delete_artifact(self, project_id: str, artifact_id: str, *, delete_file: bool = True) -> bool:
+        artifact = self.get_artifact(project_id, artifact_id)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM project_deploy_artifacts
+                WHERE project_id = %s AND id = %s
+                """,
+                (str(project_id or "").strip(), str(artifact_id or "").strip()),
+            )
+            deleted = bool(cur.rowcount)
+        if delete_file and artifact is not None:
+            artifact_dir = self.artifact_file_dir(project_id, artifact_id).resolve()
+            root = self._files_dir.resolve()
+            if root in artifact_dir.parents and artifact_dir.exists():
+                shutil.rmtree(artifact_dir)
+        return deleted
 
     def list_artifacts(self, project_id: str, *, limit: int = 50) -> list[ProjectDeployArtifact]:
         query = """

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import ftplib
 import hashlib
 import io
 import json
@@ -35,6 +36,7 @@ from services.conversation_manager import ConversationManager
 from core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
+project_deploy_ftp_client_factory = ftplib.FTP
 
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
@@ -153,7 +155,11 @@ from services.chat.project_chat_realtime_service import (
     unregister_project_chat_ws,
 )
 from services.task_tree_guard.task_tree_evolution import build_task_tree_evolution_summary
-from services.connectors.bot_connector_service import get_bot_connector, list_bot_connectors
+from services.connectors.bot_connector_service import (
+    get_bot_connector,
+    list_bot_connectors,
+    save_bot_connector_scanned_chat,
+)
 from services.operation_wait_task_service import (
     claim_operation_wait_task_resume,
     continue_cli_plugin_auth_operation_task_with_interaction,
@@ -182,6 +188,7 @@ from models.requests import (
     ProjectCodeRepositoryInitializeReq,
     ProjectCodeRepositoryUpdateReq,
     ProjectCreateReq,
+    ProjectDeployArtifactDeployReq,
     ProjectDeployArtifactPushReq,
     ProjectDeployCommandGenerateReq,
     ProjectDeploySettingsValidateReq,
@@ -876,6 +883,41 @@ def _list_project_deploy_notify_chats(
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
+    project_id_text = str(project_id or "").strip()
+    for connector in list_bot_connectors():
+        connector_payload = _serialize_project_deploy_notify_connector(dict(connector or {}), project_id_text)
+        if connector_payload is None:
+            continue
+        connector_id = _normalize_project_deploy_text(connector_payload.get("id"), limit=120)
+        platform = _normalize_project_chat_platform(connector_payload.get("platform"))
+        scanned_chats = connector.get("scanned_chats") if isinstance(connector, dict) else []
+        if not isinstance(scanned_chats, list):
+            continue
+        for raw_chat in scanned_chats:
+            if not isinstance(raw_chat, dict):
+                continue
+            chat_id = _normalize_project_deploy_text(raw_chat.get("chat_id"), limit=200)
+            if not platform or not connector_id or not chat_id:
+                continue
+            key = f"{platform}|{connector_id}|{chat_id}"
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(
+                {
+                    "platform": platform,
+                    "connector_id": connector_id,
+                    "chat_id": chat_id,
+                    "chat_name": _normalize_project_deploy_text(
+                        raw_chat.get("chat_name") or raw_chat.get("name"),
+                        limit=200,
+                    ),
+                    "session_id": "",
+                    "source_type": "bot_connector_scan",
+                    "chat_type": _normalize_project_deploy_text(raw_chat.get("chat_type"), limit=80),
+                    "scanned_at": _normalize_project_deploy_text(raw_chat.get("scanned_at"), limit=80),
+                }
+            )
     try:
         sessions = project_chat_store.list_sessions(project_id, username, limit=limit)
     except Exception:
@@ -987,6 +1029,159 @@ def _serialize_project_deploy_run(run: ProjectDeployRun) -> dict[str, Any]:
     return data
 
 
+def _project_deploy_target_missing_fields(target: dict[str, Any], auth_payload: dict | None) -> list[str]:
+    missing: list[str] = []
+    credential_id = _normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120)
+    if not credential_id or _resolve_visible_ftp_credential(credential_id, auth_payload) is None:
+        missing.append("ftp_credential_id")
+    if not _normalize_project_deploy_text(target.get("remote_path"), limit=1000):
+        missing.append("remote_path")
+    if not _normalize_project_deploy_text(target.get("deploy_command"), limit=1000):
+        missing.append("deploy_command")
+    return missing
+
+
+def _project_deploy_target_supports_remote_command(target: dict[str, Any]) -> bool:
+    executor = target.get("remote_executor") if isinstance(target.get("remote_executor"), dict) else {}
+    mode = _normalize_project_deploy_text(
+        target.get("remote_command_mode") or executor.get("mode"),
+        limit=80,
+    ).lower()
+    return mode in {"ssh", "project_host_command", "local_connector"}
+
+
+def _build_project_deploy_missing_target_report(
+    *,
+    targets: list[dict[str, Any]],
+    auth_payload: dict | None,
+) -> list[dict[str, Any]]:
+    report: list[dict[str, Any]] = []
+    for target in targets:
+        if not isinstance(target, dict) or not bool(target.get("enabled", True)):
+            continue
+        missing = _project_deploy_target_missing_fields(target, auth_payload)
+        if _normalize_project_deploy_text(target.get("deploy_command"), limit=1000) and not _project_deploy_target_supports_remote_command(target):
+            missing.append("remote_command_executor")
+        if missing:
+            report.append(
+                {
+                    "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
+                    "target_name": _normalize_project_deploy_text(target.get("name"), limit=160),
+                    "missing": missing,
+                }
+            )
+    return report
+
+
+def _ftp_ensure_remote_dir(ftp: Any, remote_path: str) -> None:
+    parts = [part for part in str(remote_path or "").strip().split("/") if part]
+    if str(remote_path or "").startswith("/"):
+        with contextlib.suppress(Exception):
+            ftp.cwd("/")
+    for part in parts:
+        try:
+            ftp.cwd(part)
+        except Exception:
+            ftp.mkd(part)
+            ftp.cwd(part)
+
+
+def _upload_project_deploy_artifact_to_ftp(
+    *,
+    artifact: ProjectDeployArtifact,
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    credential_id = _normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120)
+    credential = _resolve_visible_ftp_credential(credential_id, None)
+    if credential is None:
+        raise RuntimeError("缺少可用 FTP 连接")
+    source_path = Path(artifact.storage_path).expanduser().resolve()
+    if not source_path.exists() or not source_path.is_file():
+        raise RuntimeError("服务端 artifact 文件不存在")
+    remote_path = _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
+    if not remote_path:
+        raise RuntimeError("缺少远端目录 remote_path")
+    ftp = project_deploy_ftp_client_factory(timeout=30)
+    host = _normalize_project_deploy_text(getattr(credential, "host", ""), limit=300)
+    port = int(str(getattr(credential, "port", "") or "21").strip() or "21")
+    try:
+        ftp.connect(host=host, port=port, timeout=30)
+        ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
+        _ftp_ensure_remote_dir(ftp, remote_path)
+        remote_name = Path(artifact.artifact_name).name or source_path.name
+        with source_path.open("rb") as handle:
+            ftp.storbinary(f"STOR {remote_name}", handle)
+        return {
+            "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
+            "remote_path": remote_path,
+            "remote_file": f"{remote_path.rstrip('/')}/{remote_name}",
+            "size": artifact.size,
+        }
+    finally:
+        try:
+            ftp.quit()
+        except Exception:
+            with contextlib.suppress(Exception):
+                ftp.close()
+
+
+def _execute_project_deploy_run_for_artifact(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    run: ProjectDeployRun,
+    targets: list[dict[str, Any]],
+) -> ProjectDeployRun:
+    deployable_targets = [
+        target
+        for target in targets
+        if not _project_deploy_target_missing_fields(target, None)
+    ]
+    upload_results: list[dict[str, Any]] = []
+    for target in deployable_targets:
+        try:
+            upload_results.append(_upload_project_deploy_artifact_to_ftp(artifact=artifact, target=target))
+        except Exception as exc:
+            run.status = "failed"
+            run.stage = "upload_failed"
+            run.log_excerpt = f"upload failed: {exc}"
+            run.artifact_summary = {
+                **(run.artifact_summary or {}),
+                "uploaded_target_count": len(upload_results),
+                "failed_target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
+            }
+            run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
+            return project_deploy_store.save_run(run)
+    command_targets = [
+        target
+        for target in deployable_targets
+        if _normalize_project_deploy_text(target.get("deploy_command"), limit=1000)
+        and _project_deploy_target_supports_remote_command(target)
+    ]
+    if not command_targets:
+        run.status = "blocked"
+        run.stage = "blocked_missing_remote_executor"
+        run.log_excerpt = (
+            "artifact uploaded; missing remote_command_executor for deploy_command. "
+            "当前配置只有 FTP 上传能力，无法在远端执行部署命令。请为目标配置 remote_command_mode=ssh/project_host_command/local_connector。"
+        )
+        artifact.status = "blocked"
+    else:
+        run.status = "queued"
+        run.stage = "queued_remote_command"
+        run.log_excerpt = "artifact uploaded; remote command execution is queued"
+        artifact.status = "deploy_queued"
+    run.artifact_summary = {
+        **(run.artifact_summary or {}),
+        "uploaded_target_count": len(upload_results),
+        "upload_results": upload_results,
+        "remote_command_target_count": len(command_targets),
+    }
+    run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
+    project_deploy_store.save_artifact(artifact)
+    return project_deploy_store.save_run(run)
+
+
 def _redact_project_deploy_log(value: Any) -> str:
     text = str(value or "")
     patterns = [
@@ -1039,6 +1234,7 @@ def _create_project_deploy_run_for_artifact(
     requested_by: str,
     chat_session_id: str,
     task_tree_node_id: str,
+    require_auto_deploy_enabled: bool = True,
 ) -> ProjectDeployRun | None:
     settings = _normalize_project_deploy_settings(getattr(project, "deploy_settings", {}) or {})
     if not bool(settings.get("enabled", False)):
@@ -1050,22 +1246,17 @@ def _create_project_deploy_run_for_artifact(
     if component is None:
         return None
     safety = component.get("safety") if isinstance(component.get("safety"), dict) else {}
-    if not bool(safety.get("auto_deploy_on_artifact_update", False)):
+    if require_auto_deploy_enabled and not bool(safety.get("auto_deploy_on_artifact_update", False)):
         return None
     targets = [
         target
         for target in (component.get("targets") if isinstance(component.get("targets"), list) else [])
         if isinstance(target, dict) and bool(target.get("enabled", True))
     ]
-    deployable_targets = [
-        target
-        for target in targets
-        if _resolve_visible_ftp_credential(_normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120), None)
-        and _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
-        and _normalize_project_deploy_text(target.get("deploy_command"), limit=1000)
-    ]
+    deployable_targets = [target for target in targets if not _project_deploy_target_missing_fields(target, None)]
+    missing_target_report = _build_project_deploy_missing_target_report(targets=targets, auth_payload=None)
     run_status = "queued" if deployable_targets else "blocked"
-    stage = "queued" if deployable_targets else "blocked_missing_target_ftp_config"
+    stage = "queued" if deployable_targets else "blocked_missing_target_config"
     run = ProjectDeployRun(
         id=project_deploy_store.new_run_id(),
         project_id=project.id,
@@ -1094,6 +1285,7 @@ def _create_project_deploy_run_for_artifact(
             "size": artifact.size,
             "target_count": len(targets),
             "deployable_target_count": len(deployable_targets),
+            "missing_targets": missing_target_report,
         },
         log_excerpt="" if deployable_targets else "blocked: missing target ftp credential, remote_path, or deploy_command",
         notify_result=_build_project_deploy_notification_preview(project, artifact, status=run_status),
@@ -1178,7 +1370,6 @@ def _build_project_deploy_command_prompt(
             "id": project.id,
             "name": project.name,
             "description": getattr(project, "description", ""),
-            "workspace_path": getattr(project, "workspace_path", ""),
         },
         "deploy_profile": {
             "id": _normalize_project_deploy_text(profile.get("id"), limit=80),
@@ -1224,6 +1415,7 @@ def _build_project_deploy_command_prompt(
             "content": (
                 "约束：\n"
                 "- 当前只支持 FTP 上传，服务器连接和密码已由系统全局 FTP 账户管理，命令里不要包含账号、密码、token、密钥。\n"
+                "- 只能依据本次输入里的部署配置、目标路径和产物信息生成命令；不要扫描、读取或引用仓库里的历史发布配置，也不要把历史发布链路当作当前执行依据。\n"
                 "- 命令应尽量使用相对当前远端目录或 payload.remote_path 的路径。\n"
                 "- 如果无法确定具体重启命令，生成保守命令：校验目录、解压/同步产物、输出下一步提示，不要编造 systemctl 服务名。\n"
                 "- 如果 artifact_path 类似 frontend/dist，倾向于静态资源发布命令；如果是 source-bundle，倾向于解压后执行已有 deploy.sh（存在时）。\n"
@@ -1234,6 +1426,103 @@ def _build_project_deploy_command_prompt(
     ]
 
 
+def _project_deploy_command_messages_to_prompt(messages: list[dict[str, str]]) -> str:
+    parts: list[str] = []
+    for item in messages:
+        role = str(item.get("role") or "user").strip() or "user"
+        content = str(item.get("content") or "").strip()
+        if content:
+            parts.append(f"[{role}]\n{content}")
+    parts.append("只返回 JSON，不要输出 Markdown 或解释：{\"deploy_command\":\"...\"}")
+    return "\n\n".join(parts)
+
+
+def _resolve_project_deploy_command_chat_settings(
+    project: ProjectConfig,
+    req: ProjectDeployCommandGenerateReq,
+) -> dict[str, Any]:
+    settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
+    requested_provider_id = _normalize_project_deploy_text(req.provider_id, limit=120)
+    requested_model_name = _normalize_project_deploy_text(req.model_name, limit=160)
+    if requested_provider_id:
+        settings["provider_id"] = requested_provider_id
+    if requested_model_name:
+        settings["model_name"] = requested_model_name
+    chat_mode = str(settings.get("chat_mode") or "system").strip().lower()
+    settings["chat_mode"] = "external_agent" if chat_mode == "external_agent" else "system"
+    return settings
+
+
+async def _generate_project_deploy_command_via_external_agent(
+    *,
+    project: ProjectConfig,
+    auth_payload: dict,
+    messages: list[dict[str, str]],
+    chat_settings: dict[str, Any],
+) -> dict[str, Any]:
+    workspace_path = _resolve_project_workspace_for_chat(project, chat_settings)
+    external_agent_info = await _build_project_external_agent_info(
+        project=project,
+        auth_payload=auth_payload,
+        settings=chat_settings,
+        workspace_path=workspace_path,
+    )
+    connector = _resolve_accessible_local_connector(
+        str(chat_settings.get("local_connector_id") or "").strip(),
+        auth_payload,
+    )
+    if connector is None:
+        raise HTTPException(400, "项目 AI 对话已选择外部 Agent，但缺少可用本地连接器")
+    if not external_agent_info.get("available"):
+        reason = str(external_agent_info.get("reason") or "外部 Agent 不可用").strip()
+        raise HTTPException(400, f"项目 AI 对话外部 Agent 不可用：{reason}")
+    agent_type = str(chat_settings.get("external_agent_type") or "codex_cli").strip().lower()
+    if agent_type != "codex_cli":
+        raise HTTPException(400, "当前服务端部署命令生成仅支持通过本地连接器运行 Codex CLI 外部 Agent")
+
+    prompt = _project_deploy_command_messages_to_prompt(messages)
+    sandbox_mode = str(chat_settings.get("connector_sandbox_mode") or "workspace-write").strip() or "workspace-write"
+    cmd = ["codex", "exec", "--sandbox", sandbox_mode, prompt]
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    exit_code: int | None = None
+    async for raw_event in exec_stream_via_connector(
+        connector,
+        cmd=cmd,
+        cwd=workspace_path,
+        env={},
+    ):
+        raw_type = str(raw_event.get("type") or "").strip().lower()
+        message = str(raw_event.get("message") or raw_event.get("data") or raw_event.get("content") or "")
+        if raw_type in {"stdout", "chunk"} and message:
+            stdout_chunks.append(message)
+        elif raw_type == "stderr" and message:
+            stderr_chunks.append(message)
+        elif raw_type == "exit":
+            try:
+                exit_code = int(raw_event.get("returncode"))
+            except (TypeError, ValueError):
+                exit_code = 1
+    if exit_code not in (None, 0):
+        stderr_text = "".join(stderr_chunks).strip()
+        raise HTTPException(502, f"外部 Agent 生成部署命令失败：{stderr_text or f'exit={exit_code}'}")
+    command = _clean_project_deploy_command_output("".join(stdout_chunks))
+    if not command:
+        raise HTTPException(502, "外部 Agent 没有返回可用部署命令")
+    agent_model_name = str(external_agent_info.get("runtime_model_name") or agent_type).strip()
+    return {
+        "status": "generated",
+        "project_id": project.id,
+        "deploy_command": command,
+        "provider_id": "external-agent",
+        "model_name": agent_model_name,
+        "chat_mode": "external_agent",
+        "external_agent_type": agent_type,
+        "token_usage": None,
+        "persisted": False,
+    }
+
+
 async def _generate_project_deploy_command_payload(
     *,
     project: ProjectConfig,
@@ -1242,12 +1531,16 @@ async def _generate_project_deploy_command_payload(
 ) -> dict[str, Any]:
     from services.providers.llm_provider_service import get_llm_provider_service
 
-    runtime_settings = {
-        "provider_id": _normalize_project_deploy_text(req.provider_id, limit=120),
-        "model_name": _normalize_project_deploy_text(req.model_name, limit=160),
-    }
-    resolved_runtime = await _resolve_global_assistant_chat_runtime(runtime_settings, auth_payload)
+    chat_settings = _resolve_project_deploy_command_chat_settings(project, req)
     messages = _build_project_deploy_command_prompt(project=project, req=req)
+    if str(chat_settings.get("chat_mode") or "").strip().lower() == "external_agent":
+        return await _generate_project_deploy_command_via_external_agent(
+            project=project,
+            auth_payload=auth_payload,
+            messages=messages,
+            chat_settings=chat_settings,
+        )
+    resolved_runtime = await _resolve_project_chat_runtime(chat_settings, auth_payload)
     if resolved_runtime.provider_mode == "local_connector":
         connector = _resolve_accessible_local_connector_for_llm(resolved_runtime.connector_id, auth_payload)
         if connector is None:
@@ -1281,6 +1574,7 @@ async def _generate_project_deploy_command_payload(
         "deploy_command": command,
         "provider_id": str(response_payload.get("provider_id") or resolved_runtime.provider_id).strip(),
         "model_name": str(response_payload.get("model_name") or resolved_runtime.model_name).strip(),
+        "chat_mode": "system",
         "token_usage": response_payload.get("usage"),
         "persisted": False,
     }
@@ -10319,6 +10613,14 @@ def _build_query_mcp_cli_prompt(
         "19. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。",
         "20. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
         "",
+        "部署产物技能入口：",
+        "1. 遇到打包、部署、自动部署、手动部署或推送构建产物任务时，必须先加载 `.ai-employee/skills/project-deploy-artifact/`；本地缺失时从 `mcp-skills/knowledge/skill-packages/project-deploy-artifact/` 同步。",
+        "2. 客户端 AI 只负责打包、计算 artifact 元数据并调用项目 MCP 工具 `push_project_deploy_artifact`（或服务端 artifact 推送 HTTP 入口）推送产物；服务端按项目 `deploy_settings` 创建 `ProjectDeployArtifact` / `ProjectDeployRun` 并执行部署。",
+        "3. 自动部署关闭时，客户端完成产物推送后告知用户可在部署配置的“部署产物”列表点击该产物的“部署”按钮手动触发；用户明确授权时才调用 `deploy_project_deploy_artifact`。",
+        "4. 部署任务禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；缺少工具、登录态、项目部署配置、远端路径、部署命令或执行器能力时，直接报告服务端返回的 `blocked` / `missing` 信息。",
+        "5. 当前删除打包文件只删除服务端保存的部署 artifact 文件及 artifact 记录；不删除外部平台消息，也不删除远端服务器已部署目录。",
+        "6. 机器人通知群优先使用机器人连接器扫描结果；飞书支持扫描机器人所在群，微信/QQ 若返回 `unsupported`，客户端必须提示平台缺少群列表 API/适配能力。",
+        "",
         "当前接入上下文：",
     ]
     sections.extend(project_context_block.splitlines())
@@ -13063,14 +13365,29 @@ async def resolve_project_deploy_notify_chat(
     if not chat_id:
         raise HTTPException(404, "未解析到飞书群 ID")
     resolved_name = _normalize_project_deploy_text(chat.get("name"), limit=200) or chat_name
+    save_bot_connector_scanned_chat(
+        connector_id,
+        {
+            "platform": "feishu",
+            "connector_id": connector_id,
+            "chat_id": chat_id,
+            "chat_name": resolved_name,
+            "chat_type": _normalize_project_deploy_text(chat.get("chat_type"), limit=80) or "group",
+            "chat_mode": _normalize_project_deploy_text(chat.get("chat_mode"), limit=80),
+            "description": _normalize_project_deploy_text(chat.get("description"), limit=300),
+            "source": "deploy_notify_resolve",
+        },
+    )
     return {
         "status": "resolved",
         "project_id": project_id,
+        "saved": True,
         "chat": {
             "platform": "feishu",
             "connector_id": connector_id,
             "chat_id": chat_id,
             "chat_name": resolved_name,
+            "chat_type": _normalize_project_deploy_text(chat.get("chat_type"), limit=80) or "group",
             "resolve_identity": resolve_identity,
         },
     }
@@ -13160,8 +13477,21 @@ def _push_project_deploy_artifact_payload(
             task_tree_node_id=_normalize_project_deploy_text(req.task_tree_node_id, limit=120),
         )
         if run is not None:
+            if run.status == "queued":
+                component_targets = component.get("targets") if isinstance(component.get("targets"), list) else []
+                targets = [
+                    target
+                    for target in component_targets
+                    if isinstance(target, dict) and bool(target.get("enabled", True))
+                ]
+                run = _execute_project_deploy_run_for_artifact(
+                    project=project,
+                    artifact=artifact,
+                    run=run,
+                    targets=targets,
+                )
             artifact.deployment_id = run.id
-            artifact.status = "deploy_queued" if run.status == "queued" else "blocked"
+            artifact.status = "deploy_queued" if run.status == "queued" else run.status
             project_deploy_store.save_artifact(artifact)
     return {
         "status": artifact.status,
@@ -13172,6 +13502,65 @@ def _push_project_deploy_artifact_payload(
         "deployment": _serialize_project_deploy_run(run) if run else None,
         "checksum_verified": True,
         "auto_deploy": bool(req.auto_deploy),
+    }
+
+
+def _deploy_project_deploy_artifact_payload(
+    *,
+    project: ProjectConfig,
+    artifact_id: str,
+    requested_by: str,
+    chat_session_id: str = "",
+    task_tree_node_id: str = "",
+) -> dict[str, Any]:
+    artifact_id_value = _normalize_project_deploy_text(artifact_id, limit=120)
+    if not artifact_id_value:
+        raise HTTPException(400, "artifact_id is required")
+    artifact = project_deploy_store.get_artifact(project.id, artifact_id_value)
+    if artifact is None:
+        raise HTTPException(404, f"Artifact {artifact_id_value} not found")
+    storage_path = Path(artifact.storage_path).expanduser() if artifact.storage_path else None
+    if storage_path is None or not storage_path.exists() or not storage_path.is_file():
+        artifact.status = "failed"
+        artifact.error = "artifact storage file is missing"
+        project_deploy_store.save_artifact(artifact)
+        raise HTTPException(400, "服务端 artifact 文件不存在，请重新推送打包产物")
+    run = _create_project_deploy_run_for_artifact(
+        project=project,
+        artifact=artifact,
+        requested_by=requested_by,
+        chat_session_id=_normalize_project_deploy_text(chat_session_id, limit=120),
+        task_tree_node_id=_normalize_project_deploy_text(task_tree_node_id, limit=120),
+        require_auto_deploy_enabled=False,
+    )
+    if run is None:
+        artifact.status = "blocked"
+        artifact.error = "deploy settings disabled or artifact profile/component not found"
+        project_deploy_store.save_artifact(artifact)
+        raise HTTPException(400, "项目部署配置未启用，或产物所属环境/部署单元不存在")
+    if run.status == "queued":
+        profile = _find_project_deploy_profile(project, artifact.profile) or {}
+        component = _find_project_deploy_component(profile, artifact.component) or {}
+        component_targets = component.get("targets") if isinstance(component.get("targets"), list) else []
+        targets = [
+            target
+            for target in component_targets
+            if isinstance(target, dict) and bool(target.get("enabled", True))
+        ]
+        run = _execute_project_deploy_run_for_artifact(
+            project=project,
+            artifact=artifact,
+            run=run,
+            targets=targets,
+        )
+    artifact.deployment_id = run.id
+    artifact.status = "deploy_queued" if run.status == "queued" else run.status
+    project_deploy_store.save_artifact(artifact)
+    return {
+        "status": artifact.status,
+        "project_id": project.id,
+        "artifact": _serialize_project_deploy_artifact(artifact),
+        "deployment": _serialize_project_deploy_run(run),
     }
 
 
@@ -13187,6 +13576,25 @@ async def push_project_deploy_artifact(
         project=project,
         req=req,
         uploaded_by=_current_username(auth_payload) or "unknown",
+    )
+
+
+@router.post("/{project_id}/deploy-artifacts/{artifact_id}/deploy")
+async def deploy_project_deploy_artifact(
+    project_id: str,
+    artifact_id: str,
+    req: ProjectDeployArtifactDeployReq | None = None,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    payload = req or ProjectDeployArtifactDeployReq()
+    return _deploy_project_deploy_artifact_payload(
+        project=project,
+        artifact_id=artifact_id,
+        requested_by=_current_username(auth_payload) or "unknown",
+        chat_session_id=payload.chat_session_id,
+        task_tree_node_id=payload.task_tree_node_id,
     )
 
 
@@ -13223,6 +13631,31 @@ async def get_project_deploy_artifact(
         "project_id": project_id,
         "artifact": _serialize_project_deploy_artifact(artifact),
         "deployment": _serialize_project_deploy_run(run) if run else None,
+    }
+
+
+@router.delete("/{project_id}/deploy-artifacts/{artifact_id}")
+async def delete_project_deploy_artifact(
+    project_id: str,
+    artifact_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    artifact = project_deploy_store.get_artifact(project_id, artifact_id)
+    if artifact is None:
+        raise HTTPException(404, f"Artifact {artifact_id} not found")
+    storage_path = artifact.storage_path
+    storage_file = Path(storage_path).expanduser() if storage_path else None
+    deleted = project_deploy_store.delete_artifact(project_id, artifact_id, delete_file=True)
+    if not deleted:
+        raise HTTPException(404, f"Artifact {artifact_id} not found")
+    return {
+        "status": "deleted",
+        "project_id": project_id,
+        "artifact_id": artifact_id,
+        "deleted_file": bool(storage_file and not storage_file.exists()),
+        "storage_path": storage_path,
     }
 
 

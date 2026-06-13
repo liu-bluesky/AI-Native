@@ -71,6 +71,7 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 4. 项目本地工作流技能默认位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。
 5. 只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。
 6. 如果本地技能已存在且可用，直接复用，不要重复创建。
+7. 遇到打包、部署、自动部署、手动部署或推送构建产物任务时，必须先加载 `.ai-employee/skills/project-deploy-artifact/`；本地缺失时从 `mcp-skills/knowledge/skill-packages/project-deploy-artifact/` 同步。
 
 ## 适用场景
 
@@ -89,6 +90,14 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 8. 中断恢复顺序固定为：`bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`。
 9. 开始节点前先调用 `update_task_node_status(...)`；完成节点时必须调用 `complete_task_node_with_verification(...)`。
 10. 如果宿主拿不到任务树读取或推进工具，只能明确说明“任务树闭环未完成”，不能把自然语言进度当成已完成。
+
+## 部署产物技能入口
+
+客户端 AI 只负责打包、计算 artifact 元数据并调用 `push_project_deploy_artifact` 推送产物；服务端按项目 `deploy_settings` 创建 `ProjectDeployArtifact` / `ProjectDeployRun` 并执行部署。
+
+自动部署关闭时，只告知用户可在部署产物列表点击该产物的“部署”按钮；用户明确授权时才调用 `deploy_project_deploy_artifact`。
+
+部署任务禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；缺少工具、登录态、项目部署配置、远端路径、部署命令或执行器能力时，直接报告服务端返回的 `blocked` / `missing` 信息。
 
 ## 任务树生成约束
 

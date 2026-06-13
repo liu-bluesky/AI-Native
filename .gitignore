@@ -9,6 +9,8 @@
 __pycache__/
 *.py[cod]
 skills
+!mcp-skills/knowledge/skills/
+!mcp-skills/knowledge/skills/*.json
 # Frontend build artifacts
 web-admin/frontend/dist/
 rules

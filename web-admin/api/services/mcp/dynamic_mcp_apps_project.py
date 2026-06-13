@@ -780,6 +780,31 @@ def create_project_mcp(
             return {"status": "failed", "error": str(exc)}
 
     @mcp.tool()
+    def deploy_project_deploy_artifact(
+        artifact_id: str,
+        chat_session_id: str = "",
+        task_tree_node_id: str = "",
+    ) -> dict:
+        """手动部署当前项目已推送的部署产物；用于自动部署关闭后的人工触发。"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        from routers.projects import _deploy_project_deploy_artifact_payload
+
+        try:
+            return _deploy_project_deploy_artifact_payload(
+                project=project,
+                artifact_id=artifact_id,
+                requested_by=current_developer_name_ctx.get("").strip() or "mcp",
+                chat_session_id=chat_session_id,
+                task_tree_node_id=task_tree_node_id,
+            )
+        except HTTPException as exc:
+            return {"status": "failed", "error": str(exc.detail)}
+        except Exception as exc:
+            return {"status": "failed", "error": str(exc)}
+
+    @mcp.tool()
     def get_project_deploy_upload_status(artifact_id: str = "", limit: int = 20) -> dict:
         """查询当前项目部署产物与自动部署运行状态。"""
         project = _get_project()

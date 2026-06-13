@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 
 from core.deps import ensure_permission, require_auth, system_config_store
 from models.requests import BotConnectorCollectionReq
-from services.connectors.bot_connector_service import list_bot_connectors, replace_bot_connectors
+from services.connectors.bot_connector_service import list_bot_connectors, replace_bot_connectors, scan_bot_connector_chats
 from services.connectors.bot_connector_installer_service import (
     bot_connector_platform_manifests,
     diagnose_bot_connector,
@@ -68,3 +68,8 @@ async def diagnose_bot_connector_route(connector_id: str, request: Request):
     supervisor = getattr(request.app.state, "feishu_long_connection_supervisor", None)
     workers = supervisor.status() if supervisor is not None else {}
     return diagnose_bot_connector(connector_id, worker_status=workers.get(connector_id))
+
+
+@router.post("/{connector_id}/chats/scan")
+async def scan_bot_connector_chats_route(connector_id: str):
+    return scan_bot_connector_chats(connector_id)
