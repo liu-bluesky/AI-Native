@@ -60,11 +60,15 @@
 
 ## 部署产物技能入口
 
-当用户请求打包、部署、自动部署、手动部署或推送构建产物时，先加载 `.ai-employee/skills/project-deploy-artifact/` 技能；如果本地缺失，再从 `mcp-skills/knowledge/skill-packages/project-deploy-artifact/` 同步。
+当用户请求打包部署、发布测试环境、推送部署产物，或指定 zip/压缩包推送服务端时，先加载 `.ai-employee/skills/project-deploy-artifact/` 技能；如果本地缺失，再从 `mcp-skills/knowledge/skill-packages/project-deploy-artifact/` 同步。
 
-通用工作流只保留边界：客户端 AI 只负责打包、计算 artifact 元数据并调用 `push_project_deploy_artifact` 推送到 MCP/服务端；服务端按项目 `deploy_settings` 创建 `ProjectDeployArtifact` / `ProjectDeployRun` 并执行部署。自动部署关闭时，告知用户到部署产物列表点击该产物的“部署”按钮，或在明确授权后调用 `deploy_project_deploy_artifact`。
+通用工作流只保留边界：客户端 AI 只负责打包或读取用户指定压缩包，并通过 MCP/项目能力把产物推送到服务端项目详情的部署产物模块；自动部署由服务端部署产物模块/部署产物 AI 基于项目部署配置执行。
 
-部署任务禁止把历史发布配置、CI 配置、本地凭据、远端脚本或环境变量当作执行依据；缺少工具、登录态、项目部署配置、远端路径、部署命令或执行器能力时，直接报告服务端返回的 `blocked` / `missing` 信息。
+Codex/Claude/远程 MCP 这类客户端场景必须把本地压缩包内容推送成服务端 artifact；不要要求用户提供“MCP 可访问地址”，也不要把客户端本地 FTP 当作主流程。若本地技能副本提供 `.ai-employee/skills/project-deploy-artifact/scripts/push_local_artifact.py`，优先用该脚本从客户端/Runner 本机读取文件并上传；否则才手动读取文件并传 `artifact_content_base64`。`artifact_path` 只作为 REST 后端同机/共享文件系统且服务端明确可读时的兼容字段，不属于 MCP 远程客户端主流程。
+
+如果入口当前接入上下文、URL 默认上下文或渲染出的 CLI 提示词已提供 `project_id`，部署、上传或推送部署产物时把它视为明确项目 ID；不要因为用户回复“确认部署”时未重复 project_id 就暂停。
+
+部署任务禁止把历史发布配置、CI 配置、本地凭据、远端脚本或环境变量当作执行依据；客户端不得扫描或读取 FTP/SSH 凭据。缺少本地打包执行器、部署产物上传能力、服务端 artifact 记录、项目部署配置、远端路径或部署产物自动部署能力时，直接报告 `blocked` / `missing` 信息。
 
 当前系统删除打包文件时，只删除服务端保存的部署 artifact 文件及对应 artifact 记录；不删除外部平台消息，也不删除远端服务器已部署目录。
 

@@ -133,6 +133,16 @@ class ProjectDeployStorePostgres:
                 shutil.rmtree(artifact_dir)
         return deleted
 
+    def delete_run(self, project_id: str, run_id: str, *, deleted_by: str = "", reason: str = "") -> bool:
+        run = self.get_run(project_id, run_id)
+        if run is None:
+            return False
+        run.deleted_at = _now_iso()
+        run.deleted_by = str(deleted_by or "").strip()
+        run.delete_reason = str(reason or "").strip()
+        self.save_run(run)
+        return True
+
     def list_artifacts(self, project_id: str, *, limit: int = 50) -> list[ProjectDeployArtifact]:
         query = """
             SELECT payload
@@ -197,4 +207,8 @@ class ProjectDeployStorePostgres:
         with self._conn.cursor() as cur:
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
-        return [item for row in rows if (item := _coerce_payload(row, ProjectDeployRun)) is not None]
+        return [
+            item
+            for row in rows
+            if (item := _coerce_payload(row, ProjectDeployRun)) is not None and not item.deleted_at
+        ]

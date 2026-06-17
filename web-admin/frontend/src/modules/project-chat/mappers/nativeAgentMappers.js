@@ -189,6 +189,7 @@ export function isNativeExternalAgentInternalDiagnostic(stream, content) {
   const text = String(content || "").trim();
   if (!text) return true;
   if (normalizedStream !== "stderr") return false;
+  if (isNativeExternalAgentMacosSystemNoise(text)) return true;
   // 外部 Runner 会输出 Codex 内部诊断，这些内容不应进入用户可见终端流。
   return (
     /^tokens used\b/i.test(text) ||
@@ -196,6 +197,16 @@ export function isNativeExternalAgentInternalDiagnostic(stream, content) {
     /failed to record rollout items/i.test(text) ||
     /codex_core::session/i.test(text) ||
     /^202\d-\d\d-\d\dT.*\bERROR\b/.test(text)
+  );
+}
+
+export function isNativeExternalAgentMacosSystemNoise(content) {
+  const text = String(content || "").trim();
+  if (!text) return false;
+  return (
+    /TSM AdjustCapsLockLEDForKeyTransitionHandling/.test(text) ||
+    /_ISSetPhysicalKeyboardCapsLockLED/.test(text) ||
+    /IMKCFRunLoopWakeUpReliable/.test(text)
   );
 }
 

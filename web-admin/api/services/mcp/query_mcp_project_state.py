@@ -71,7 +71,7 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 4. 项目本地工作流技能默认位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。
 5. 只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。
 6. 如果本地技能已存在且可用，直接复用，不要重复创建。
-7. 遇到打包、部署、自动部署、手动部署或推送构建产物任务时，必须先加载 `.ai-employee/skills/project-deploy-artifact/`；本地缺失时从 `mcp-skills/knowledge/skill-packages/project-deploy-artifact/` 同步。
+7. 遇到“打包部署”“发布测试环境”“执行部署命令”等打包、部署或发布任务时，必须先加载 `.ai-employee/skills/project-deploy-artifact/`；本地缺失时从 `mcp-skills/knowledge/skill-packages/project-deploy-artifact/` 同步。
 
 ## 适用场景
 
@@ -91,13 +91,17 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 9. 开始节点前先调用 `update_task_node_status(...)`；完成节点时必须调用 `complete_task_node_with_verification(...)`。
 10. 如果宿主拿不到任务树读取或推进工具，只能明确说明“任务树闭环未完成”，不能把自然语言进度当成已完成。
 
-## 部署产物技能入口
+## 项目聊天打包部署命令约束
 
-客户端 AI 只负责打包、计算 artifact 元数据并调用 `push_project_deploy_artifact` 推送产物；服务端按项目 `deploy_settings` 创建 `ProjectDeployArtifact` / `ProjectDeployRun` 并执行部署。
+打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。
 
-自动部署关闭时，只告知用户可在部署产物列表点击该产物的“部署”按钮；用户明确授权时才调用 `deploy_project_deploy_artifact`。
+执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。
 
-部署任务禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；缺少工具、登录态、项目部署配置、远端路径、部署命令或执行器能力时，直接报告服务端返回的 `blocked` / `missing` 信息。
+未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact。
+
+如果入口当前接入上下文、URL 默认上下文或渲染出的 CLI 提示词已提供 `project_id`，部署、上传或推送部署产物时把它视为明确项目 ID；不要因为用户回复“确认部署”时未重复 project_id 就暂停。
+
+部署任务禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 `blocked` / `missing`。
 
 ## 任务树生成约束
 

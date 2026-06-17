@@ -282,6 +282,43 @@ class LlmProviderService:
             return configured_id
         return str(providers[0].get("id") or "").strip()
 
+    def _resolve_default_user_model_name(
+        self,
+        providers: list[dict[str, Any]],
+        owner_username: str = "",
+    ) -> str:
+        if not providers:
+            return ""
+        from stores.factory import user_store
+
+        normalized_owner = self._normalize_owner_username(owner_username)
+        if normalized_owner:
+            user = user_store.get(normalized_owner)
+            configured_provider_id = str(getattr(user, "default_ai_provider_id", "") or "").strip() if user else ""
+            configured_model_name = str(getattr(user, "default_ai_model_name", "") or "").strip() if user else ""
+            if configured_provider_id:
+                provider = next(
+                    (item for item in providers if str(item.get("id") or "").strip() == configured_provider_id),
+                    None,
+                )
+                if provider is None or not bool(provider.get("enabled", True)):
+                    return ""
+                valid_models = self._normalize_models(provider.get("models") or [])
+                default_model = str(provider.get("default_model") or "").strip()
+                if default_model and default_model not in valid_models:
+                    valid_models = [default_model, *valid_models]
+                if configured_model_name:
+                    return configured_model_name if configured_model_name in valid_models else ""
+                if default_model:
+                    return default_model
+                return valid_models[0] if valid_models else ""
+        first_provider = providers[0] if providers else {}
+        default_model = str(first_provider.get("default_model") or "").strip()
+        if default_model:
+            return default_model
+        models = self._normalize_models(first_provider.get("models") or [])
+        return models[0] if models else ""
+
     def _filter_providers_for_actor(
         self,
         providers: list[dict[str, Any]],
@@ -507,6 +544,47 @@ class LlmProviderService:
                     }
                 )
         return {"providers": providers, "options": options}
+
+    def get_default_user_llm_target(
+        self,
+        *,
+        owner_username: str = "",
+        include_all: bool = False,
+        include_secret: bool = True,
+    ) -> dict[str, Any] | None:
+        from stores.factory import user_store
+
+        normalized_owner = self._normalize_owner_username(owner_username)
+        if not normalized_owner:
+            return None
+        user = user_store.get(normalized_owner)
+        configured_provider_id = str(getattr(user, "default_ai_provider_id", "") or "").strip() if user else ""
+        if not configured_provider_id:
+            return None
+        providers = [
+            self._hydrate_provider_models(item)
+            for item in self._store.list_providers(include_secret=include_secret, enabled_only=True)
+        ]
+        visible_providers = self._filter_providers_for_actor(
+            providers,
+            owner_username=owner_username,
+            include_all=include_all,
+            include_shared=True,
+        )
+        provider = next(
+            (item for item in visible_providers if str(item.get("id") or "").strip() == configured_provider_id),
+            None,
+        )
+        if provider is None:
+            return None
+        model_name = self._resolve_default_user_model_name(visible_providers, owner_username=owner_username)
+        if not model_name:
+            return None
+        return {
+            "provider": provider,
+            "provider_id": configured_provider_id,
+            "model_name": model_name,
+        }
 
     def resolve_reflection_target(
         self,
@@ -1973,9 +2051,9 @@ class LlmProviderService:
 
         # 检测流式响应（SSE 格式）
         if raw.strip().startswith("data:"):
-            content = LlmProviderService._parse_sse_content(raw)
-            if content:
-                return {"choices": [{"message": {"content": content}}]}
+            payload = LlmProviderService._parse_sse_response_payload(raw)
+            if payload:
+                return payload
             raise RuntimeError(f"LLM SSE response parse failed: {raw[:300]}")
 
         try:
@@ -2091,7 +2169,14 @@ class LlmProviderService:
 
     @staticmethod
     def _parse_sse_content(raw: str) -> str:
+        payload = LlmProviderService._parse_sse_response_payload(raw)
+        return LlmProviderService._extract_content(payload)
+
+    @staticmethod
+    def _parse_sse_response_payload(raw: str) -> dict[str, Any]:
         parts: list[str] = []
+        usage: dict[str, Any] = {}
+        model_name = ""
         for line in str(raw or "").splitlines():
             text = line.strip()
             if not text or not text.startswith("data:"):
@@ -2103,10 +2188,24 @@ class LlmProviderService:
                 payload = json.loads(payload_text)
             except json.JSONDecodeError:
                 continue
+            if not model_name:
+                model_name = str(payload.get("model") or "").strip()
             chunk = LlmProviderService._extract_content(payload)
             if chunk:
                 parts.append(chunk)
-        return "".join(parts).strip()
+            usage_payload = LlmProviderService._normalize_usage_payload(payload.get("usage"))
+            if usage_payload:
+                usage = usage_payload
+
+        result: dict[str, Any] = {}
+        content = "".join(parts).strip()
+        if content:
+            result["choices"] = [{"message": {"content": content}}]
+        if usage:
+            result["usage"] = usage
+        if model_name:
+            result["model"] = model_name
+        return result
 
     @staticmethod
     def _build_sse_headers(headers: dict[str, str]) -> dict[str, str]:

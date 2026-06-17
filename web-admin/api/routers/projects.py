@@ -15,14 +15,16 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 import uuid
 import wave
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import asdict, replace
 from collections.abc import AsyncIterator
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Any
 from urllib.parse import quote, urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -54,11 +56,9 @@ from services.assistant.global_assistant_service import (
 from services.connectors.local_connector_service import (
     build_local_connector_file_tools,
     chat_completion_via_connector,
-    exec_stream_via_connector,
     parse_local_connector_provider_id,
     probe_connector_workspace,
 )
-from services.agent_runtime.integrations import CodexRunnerStreamAdapter
 from services.catalogs.llm_chat_parameter_catalog import (
     get_chat_parameter_default_value,
     normalize_chat_parameter_value,
@@ -188,7 +188,9 @@ from models.requests import (
     ProjectCodeRepositoryInitializeReq,
     ProjectCodeRepositoryUpdateReq,
     ProjectCreateReq,
+    ProjectDeployArtifactAiExecuteReq,
     ProjectDeployArtifactDeployReq,
+    ProjectDeployArtifactPlanGenerateReq,
     ProjectDeployArtifactPushReq,
     ProjectDeployCommandGenerateReq,
     ProjectDeploySettingsValidateReq,
@@ -426,6 +428,19 @@ _EXTERNAL_AGENT_TYPE_CATALOG: dict[str, dict[str, str]] = {
     },
 }
 
+
+def _build_codex_exec_command(*, sandbox_mode: str, prompt: str) -> list[str]:
+    normalized_sandbox = str(sandbox_mode or "workspace-write").strip() or "workspace-write"
+    return [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        normalized_sandbox,
+        str(prompt or ""),
+    ]
+
+
 _PROJECT_TYPE_VALUES = {"image", "storyboard_video", "mixed"}
 _PROJECT_TYPE_LABELS = {
     "image": "图片项目",
@@ -521,6 +536,9 @@ _PROJECT_STUDIO_CHARACTER_VIEW_LABELS = {
     "right": "右侧",
 }
 _PROJECT_DEPLOY_ARTIFACT_STATUSES = {"uploading", "ready", "deploy_queued", "deployed", "failed", "blocked"}
+_PROJECT_DEPLOY_ARTIFACT_MAX_BYTES = 200 * 1024 * 1024
+_PROJECT_DEPLOY_ARTIFACT_MAX_FILES = 20000
+_PROJECT_DEPLOY_ARTIFACT_MANIFEST_MAX_CHARS = 16 * 1024 * 1024
 _PROJECT_DEPLOY_RUN_STATUSES = {"queued", "running", "success", "failed", "blocked", "cancelled"}
 _PROJECT_DEPLOY_SECRET_KEYS = {
     "password",
@@ -631,6 +649,7 @@ def _legacy_project_deploy_target_from_profile(profile: dict[str, Any]) -> dict[
             "transport_mode": "ftp",
             "ftp_credential_id": transport.get("ftp_credential_id", ""),
             "remote_path": transport.get("remote_path", ""),
+            "remote_command_mode": remote_executor.get("mode", ""),
             "deploy_command": remote_executor.get("deploy_command", ""),
         },
         fallback_id="primary",
@@ -1006,11 +1025,17 @@ def _validate_project_deploy_settings_payload(value: Any, auth_payload: dict | N
                         issues.append({"path": f"{target_prefix}.ftp_credential_id", "message": f"{target_label}：FTP 连接不存在、未配置服务器地址/密码、已停用或当前账号无权使用"})
                     if not _normalize_project_deploy_text(target.get("remote_path"), limit=1000):
                         issues.append({"path": f"{target_prefix}.remote_path", "message": f"{target_label}：远端目录必填"})
-                if bool(safety.get("auto_deploy_on_artifact_update", False)) and not _normalize_project_deploy_text(
-                    target.get("deploy_command"),
-                    limit=1000,
+                if (
+                    bool(safety.get("auto_deploy_on_artifact_update", False))
+                    and _project_deploy_target_deploy_command(target)
+                    and not _project_deploy_target_supports_remote_command(target)
                 ):
-                    issues.append({"path": f"{target_prefix}.deploy_command", "message": f"{target_label}：自动部署需要填写部署命令"})
+                    issues.append(
+                        {
+                            "path": f"{target_prefix}.remote_command_mode",
+                            "message": f"{target_label}：已填写部署命令时需要配置远端命令执行方式",
+                        }
+                    )
     return {
         "valid": not issues,
         "issues": issues,
@@ -1022,11 +1047,27 @@ def _serialize_project_deploy_artifact(artifact: ProjectDeployArtifact) -> dict[
     return asdict(artifact)
 
 
+def _serialize_project_deploy_artifact_with_deployment(artifact: ProjectDeployArtifact) -> dict[str, Any]:
+    data = _serialize_project_deploy_artifact(artifact)
+    run = project_deploy_store.get_run(artifact.project_id, artifact.deployment_id) if artifact.deployment_id else None
+    data["deployment"] = _serialize_project_deploy_run(run) if run else None
+    return data
+
+
 def _serialize_project_deploy_run(run: ProjectDeployRun) -> dict[str, Any]:
     data = asdict(run)
     data["config_snapshot"] = _redact_project_deploy_value("config_snapshot", data.get("config_snapshot") or {})
     data["log_excerpt"] = _redact_project_deploy_log(data.get("log_excerpt") or "")
     return data
+
+
+def _project_deploy_artifact_status_for_run(run_status: str) -> str:
+    status = str(run_status or "").strip()
+    if status == "queued":
+        return "deploy_queued"
+    if status == "success":
+        return "deployed"
+    return status or "blocked"
 
 
 def _project_deploy_target_missing_fields(target: dict[str, Any], auth_payload: dict | None) -> list[str]:
@@ -1036,8 +1077,6 @@ def _project_deploy_target_missing_fields(target: dict[str, Any], auth_payload: 
         missing.append("ftp_credential_id")
     if not _normalize_project_deploy_text(target.get("remote_path"), limit=1000):
         missing.append("remote_path")
-    if not _normalize_project_deploy_text(target.get("deploy_command"), limit=1000):
-        missing.append("deploy_command")
     return missing
 
 
@@ -1050,6 +1089,22 @@ def _project_deploy_target_supports_remote_command(target: dict[str, Any]) -> bo
     return mode in {"ssh", "project_host_command", "local_connector"}
 
 
+def _project_deploy_target_remote_command_mode(target: dict[str, Any]) -> str:
+    executor = target.get("remote_executor") if isinstance(target.get("remote_executor"), dict) else {}
+    return _normalize_project_deploy_text(
+        target.get("remote_command_mode") or executor.get("mode"),
+        limit=80,
+    ).lower()
+
+
+def _project_deploy_target_deploy_command(target: dict[str, Any]) -> str:
+    executor = target.get("remote_executor") if isinstance(target.get("remote_executor"), dict) else {}
+    return _normalize_project_deploy_text(
+        target.get("deploy_command") or executor.get("deploy_command"),
+        limit=1000,
+    )
+
+
 def _build_project_deploy_missing_target_report(
     *,
     targets: list[dict[str, Any]],
@@ -1060,7 +1115,7 @@ def _build_project_deploy_missing_target_report(
         if not isinstance(target, dict) or not bool(target.get("enabled", True)):
             continue
         missing = _project_deploy_target_missing_fields(target, auth_payload)
-        if _normalize_project_deploy_text(target.get("deploy_command"), limit=1000) and not _project_deploy_target_supports_remote_command(target):
+        if _project_deploy_target_deploy_command(target) and not _project_deploy_target_supports_remote_command(target):
             missing.append("remote_command_executor")
         if missing:
             report.append(
@@ -1086,37 +1141,519 @@ def _ftp_ensure_remote_dir(ftp: Any, remote_path: str) -> None:
             ftp.cwd(part)
 
 
-def _upload_project_deploy_artifact_to_ftp(
+def _project_deploy_remote_path_join(base_path: str, relative_path: str) -> str:
+    base = str(base_path or "").rstrip("/")
+    relative = str(relative_path or "").replace("\\", "/").strip("/")
+    if not base:
+        return f"/{relative}" if str(base_path or "").startswith("/") and relative else relative
+    if not relative:
+        return base
+    if base == "/":
+        return f"/{relative}"
+    return f"{base}/{relative}"
+
+
+def _project_deploy_archive_suffix(source_path: Path | str) -> str:
+    name = Path(str(source_path or "")).name.lower()
+    if name.endswith(".tar.gz") or name.endswith(".tgz"):
+        return ".tar.gz"
+    if name.endswith(".tar.bz2"):
+        return ".tar.bz2"
+    if name.endswith(".tar.xz"):
+        return ".tar.xz"
+    if name.endswith(".tar"):
+        return ".tar"
+    if name.endswith(".zip"):
+        return ".zip"
+    return ""
+
+
+def _project_deploy_is_archive_path(source_path: Path) -> bool:
+    return _project_deploy_archive_suffix(source_path) != ""
+
+
+def _project_deploy_artifact_archive_suffix(artifact: ProjectDeployArtifact, source_path: Path) -> str:
+    manifest = artifact.manifest if isinstance(artifact.manifest, dict) else {}
+    manifest_suffix = _normalize_project_deploy_text(manifest.get("archive_suffix"), limit=40).lower()
+    if manifest_suffix in {".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz"}:
+        return manifest_suffix
+    return _project_deploy_archive_suffix(artifact.artifact_name) or _project_deploy_archive_suffix(source_path)
+
+
+def _project_deploy_detect_archive_suffix_from_content(content: bytes) -> str:
+    if not content:
+        return ""
+    buffer = io.BytesIO(content)
+    if zipfile.is_zipfile(buffer):
+        return ".zip"
+    buffer.seek(0)
+    try:
+        with tarfile.open(fileobj=buffer, mode="r:*"):
+            return ".tar"
+    except (tarfile.TarError, OSError, EOFError):
+        return ""
+    return ""
+
+
+def _project_deploy_archive_behavior_label(archive_suffix: str) -> str:
+    normalized = str(archive_suffix or "").strip().lower()
+    if not normalized:
+        return "none"
+    return "upload_archive"
+
+
+def _project_deploy_classify_archive_upload_policy_text(value: str) -> str:
+    text = str(value or "").lower()
+    if re.search(
+        r"(不解压|不要解压|无需解压|不自动解压|不默认解压|不会(?:自动|默认|进行)?解压|没有明确解压|未明确解压|没有要求解压|未要求解压|原样上传|上传压缩包|保留压缩包|keep archive|upload archive|no extract|without extract)",
+        text,
+    ):
+        return "upload_archive"
+    if re.search(r"(解压|拆包|extract|unzip|untar)", text):
+        return "extract_before_upload"
+    return "auto"
+
+
+def _project_deploy_parse_structured_plan(value: str) -> dict[str, Any]:
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+class _ProjectDeployAiExecutionPlanError(RuntimeError):
+    def __init__(self, message: str, *, stage: str = "invalid_ai_execution_plan") -> None:
+        super().__init__(message)
+        self.stage = stage
+
+
+_PROJECT_DEPLOY_AI_ACTION_ALIASES = {
+    "backup": "backup_remote_target",
+    "backup_remote": "backup_remote_target",
+    "backup_remote_target": "backup_remote_target",
+    "extract": "extract_artifact",
+    "unzip": "extract_artifact",
+    "extract_archive": "extract_artifact",
+    "extract_artifact": "extract_artifact",
+    "copy_extracted_files_to_path": "copy_extracted_to_path",
+    "copy_extracted_to_path": "copy_extracted_to_path",
+    "upload_extracted": "upload_extracted_files",
+    "upload_extracted_files": "upload_extracted_files",
+    "upload_directory": "upload_extracted_files",
+    "upload_original_archive": "upload_original_archive",
+    "upload_archive": "upload_original_archive",
+    "upload_artifact_file": "upload_original_archive",
+    "upload_file": "upload_original_archive",
+    "create_deploy_log_file": "write_deploy_log_file",
+    "create_log_file": "write_deploy_log_file",
+    "write_deploy_log_file": "write_deploy_log_file",
+    "write_log_file": "write_deploy_log_file",
+    "write_text_file": "write_deploy_log_file",
+    "run_configured_remote_command": "run_configured_remote_command",
+    "run_deploy_command": "run_configured_remote_command",
+}
+
+_PROJECT_DEPLOY_AI_ALLOWED_ACTIONS = set(_PROJECT_DEPLOY_AI_ACTION_ALIASES.values())
+_PROJECT_DEPLOY_AI_UPLOAD_ACTIONS = {"upload_extracted_files", "upload_original_archive"}
+
+
+def _project_deploy_parse_json_object_from_model(content: Any) -> dict[str, Any]:
+    text = str(content or "").strip()
+    if not text:
+        raise _ProjectDeployAiExecutionPlanError("模型没有返回 AI 部署执行计划")
+    if "```" in text:
+        blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+        if blocks:
+            text = str(blocks[0] or "").strip()
+    candidates = [text]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+        raise _ProjectDeployAiExecutionPlanError("AI 部署执行计划必须是 JSON object")
+    raise _ProjectDeployAiExecutionPlanError("AI 部署执行计划不是有效 JSON")
+
+
+def _project_deploy_normalize_ai_action_type(value: Any) -> str:
+    action_type = str(value or "").strip().lower().replace("-", "_")
+    return _PROJECT_DEPLOY_AI_ACTION_ALIASES.get(action_type, action_type)
+
+
+def _project_deploy_action_extract_to_path(action: dict[str, Any]) -> str:
+    for key in ("extract_to_path", "path", "destination_path", "local_path"):
+        value = _normalize_project_deploy_text(action.get(key), limit=1000)
+        if value:
+            return _project_deploy_normalize_extract_to_path(value)
+    return ""
+
+
+def _project_deploy_normalize_log_filename(value: Any) -> str:
+    filename = _normalize_project_deploy_text(value, limit=160) or "deploy.log"
+    if "/" in filename or "\\" in filename or filename in {".", ".."}:
+        raise _ProjectDeployAiExecutionPlanError(
+            f"AI 部署日志文件名非法：{filename}",
+            stage="unsupported_ai_deploy_action",
+        )
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".log", ".txt"}:
+        raise _ProjectDeployAiExecutionPlanError(
+            "AI 部署文件写入只允许 .log/.txt 文本日志文件",
+            stage="unsupported_ai_deploy_action",
+        )
+    return filename
+
+
+def _project_deploy_normalize_log_file_action(
+    action: dict[str, Any],
+    *,
+    fallback_directory: str = "",
+) -> dict[str, Any]:
+    raw_file_path = _normalize_project_deploy_text(
+        action.get("file_path") or action.get("path"),
+        limit=1000,
+    )
+    raw_directory = _normalize_project_deploy_text(
+        action.get("directory") or action.get("target_directory") or action.get("extract_to_path"),
+        limit=1000,
+    )
+    filename = _project_deploy_normalize_log_filename(action.get("filename"))
+    if raw_file_path:
+        full_path = Path(_project_deploy_normalize_extract_to_path(raw_file_path))
+        filename = _project_deploy_normalize_log_filename(full_path.name)
+        directory = full_path.parent.as_posix()
+    else:
+        directory = raw_directory or fallback_directory
+        if not directory:
+            raise _ProjectDeployAiExecutionPlanError(
+                "AI 部署日志文件缺少写入目录",
+                stage="unsupported_ai_deploy_action",
+            )
+        directory = _project_deploy_normalize_extract_to_path(directory)
+    content = _normalize_project_deploy_text(action.get("content"), limit=4000)
+    return {
+        "type": "write_deploy_log_file",
+        "directory": directory,
+        "filename": filename,
+        "file_path": (Path(directory) / filename).as_posix(),
+        "content": content,
+    }
+
+
+def _project_deploy_validate_ai_execution_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise _ProjectDeployAiExecutionPlanError("AI 部署执行计划必须是 JSON object")
+    if (
+        str(payload.get("source") or "").strip() == "llm_controlled_tool_plan"
+        and isinstance(payload.get("controlled_actions"), list)
+    ):
+        if not bool(payload.get("upload_extracted_files")) and not bool(payload.get("upload_original_archive")):
+            raise _ProjectDeployAiExecutionPlanError(
+                "AI 部署执行计划没有包含任何受控上传动作",
+                stage="unsupported_ai_deploy_action",
+            )
+        return {
+            **payload,
+            "archive_upload_policy": (
+                "extract_before_upload" if bool(payload.get("upload_extracted_files")) else "upload_archive"
+            ),
+            "extract_to_path": _normalize_project_deploy_text(payload.get("extract_to_path"), limit=1000),
+            "copy_extracted_to_path": bool(payload.get("copy_extracted_to_path")),
+            "file_operations": payload.get("file_operations") if isinstance(payload.get("file_operations"), list) else [],
+        }
+    unsupported = payload.get("unsupported_requirements")
+    if isinstance(unsupported, str):
+        unsupported_items = [unsupported] if unsupported.strip() else []
+    elif isinstance(unsupported, list):
+        unsupported_items = [
+            _normalize_project_deploy_text(item, limit=300)
+            for item in unsupported
+            if _normalize_project_deploy_text(item, limit=300)
+        ]
+    else:
+        unsupported_items = []
+    if unsupported_items:
+        raise _ProjectDeployAiExecutionPlanError(
+            "AI 部署计划包含不支持的要求：" + "；".join(unsupported_items[:5]),
+            stage="unsupported_ai_deploy_requirement",
+        )
+    actions_payload = payload.get("actions")
+    if not isinstance(actions_payload, list) or not actions_payload:
+        raise _ProjectDeployAiExecutionPlanError("AI 部署执行计划缺少 actions")
+    normalized_actions: list[dict[str, Any]] = []
+    action_types: list[str] = []
+    upload_extracted_files = False
+    upload_original_archive = False
+    copy_extracted_to_path = False
+    file_operations: list[dict[str, Any]] = []
+    extract_to_path = _normalize_project_deploy_text(payload.get("extract_to_path"), limit=1000)
+    if extract_to_path:
+        extract_to_path = _project_deploy_normalize_extract_to_path(extract_to_path)
+    for raw_action in actions_payload:
+        if not isinstance(raw_action, dict):
+            raise _ProjectDeployAiExecutionPlanError("AI 部署 actions 中存在非对象动作")
+        action_type = _project_deploy_normalize_ai_action_type(raw_action.get("type") or raw_action.get("action"))
+        if action_type not in _PROJECT_DEPLOY_AI_ALLOWED_ACTIONS:
+            raise _ProjectDeployAiExecutionPlanError(
+                f"AI 部署计划包含未授权动作：{action_type or '<empty>'}",
+                stage="unsupported_ai_deploy_action",
+            )
+        if _normalize_project_deploy_text(raw_action.get("command") or raw_action.get("deploy_command"), limit=1000):
+            raise _ProjectDeployAiExecutionPlanError(
+                "AI 部署计划不能携带自定义命令，只能请求 run_configured_remote_command",
+                stage="unsupported_ai_deploy_action",
+            )
+        action_extract_to_path = _project_deploy_action_extract_to_path(raw_action)
+        if action_extract_to_path:
+            extract_to_path = action_extract_to_path
+        target_id = _normalize_project_deploy_text(raw_action.get("target_id"), limit=80)
+        normalized_action = {
+            "type": action_type,
+            **({"target_id": target_id} if target_id else {}),
+            **({"extract_to_path": action_extract_to_path} if action_extract_to_path else {}),
+            **(
+                {
+                    "source": _normalize_project_deploy_text(raw_action.get("source"), limit=80),
+                }
+                if _normalize_project_deploy_text(raw_action.get("source"), limit=80)
+                else {}
+            ),
+        }
+        normalized_actions.append(normalized_action)
+        action_types.append(action_type)
+        if action_type == "upload_extracted_files":
+            upload_extracted_files = True
+        if action_type == "upload_original_archive":
+            upload_original_archive = True
+        if action_type == "copy_extracted_to_path":
+            copy_extracted_to_path = True
+        if action_type == "write_deploy_log_file":
+            file_operations.append(
+                _project_deploy_normalize_log_file_action(
+                    raw_action,
+                    fallback_directory=extract_to_path,
+                )
+            )
+    if "extract_artifact" in action_types and not upload_extracted_files and "copy_extracted_to_path" not in action_types:
+        upload_extracted_files = True
+        action_types.append("upload_extracted_files")
+        normalized_actions.append({"type": "upload_extracted_files"})
+    if not upload_extracted_files and not upload_original_archive:
+        raise _ProjectDeployAiExecutionPlanError(
+            "AI 部署执行计划没有包含任何受控上传动作",
+            stage="unsupported_ai_deploy_action",
+        )
+    archive_upload_policy = "extract_before_upload" if upload_extracted_files else "upload_archive"
+    return {
+        "source": "llm_controlled_tool_plan",
+        "version": int(payload.get("version") or 1) if str(payload.get("version") or "1").isdigit() else 1,
+        "archive_upload_policy": archive_upload_policy,
+        "extract_to_path": extract_to_path,
+        "copy_extracted_to_path": copy_extracted_to_path,
+        "file_operations": file_operations,
+        "upload_extracted_files": upload_extracted_files,
+        "upload_original_archive": upload_original_archive,
+        "actions": action_types,
+        "controlled_actions": normalized_actions,
+        "unsupported_requirements": [],
+        "model_notes": _normalize_project_deploy_text(payload.get("notes") or payload.get("reasoning_summary"), limit=1000),
+    }
+
+
+def _project_deploy_target_ids_from_execution_plan(execution_plan: dict[str, Any]) -> set[str]:
+    target_ids: set[str] = set()
+    actions = execution_plan.get("controlled_actions")
+    if not isinstance(actions, list):
+        return target_ids
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        action_type = _normalize_project_deploy_text(action.get("type"), limit=80)
+        if action_type not in _PROJECT_DEPLOY_AI_UPLOAD_ACTIONS:
+            continue
+        target_id = _normalize_project_deploy_text(action.get("target_id"), limit=80)
+        if target_id and target_id.lower() not in {"all", "*"}:
+            target_ids.add(target_id)
+    return target_ids
+
+
+class _ProjectDeployAgentError(RuntimeError):
+    def __init__(self, message: str, *, stage: str = "ai_deploy_agent_failed") -> None:
+        super().__init__(message)
+        self.stage = stage
+
+
+def _project_deploy_requirement_uploads_specific_file(value: str) -> bool:
+    text = _normalize_project_deploy_text(value, limit=2000)
+    if not text or not re.search(r"(上传|部署|upload)", text, flags=re.IGNORECASE):
+        return False
+    return bool(
+        re.search(
+            r"[^/\s，,。；;]+(?:\.(?:md|txt|log|json|html?|css|js|mjs|cjs|png|jpe?g|gif|webp|svg|pdf|csv|xlsx?|docx?|zip|tar|gz|tgz))\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _project_deploy_agent_json(content: Any) -> dict[str, Any]:
+    text = str(content or "").strip()
+    if not text:
+        raise _ProjectDeployAgentError("模型没有返回 AI 部署 Agent 动作", stage="ai_deploy_agent_invalid_response")
+    if "```" in text:
+        blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+        if blocks:
+            text = str(blocks[0] or "").strip()
+    candidates = [text]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        raise _ProjectDeployAgentError("AI 部署 Agent 响应必须是 JSON object", stage="ai_deploy_agent_invalid_response")
+    raise _ProjectDeployAgentError("AI 部署 Agent 响应不是有效 JSON", stage="ai_deploy_agent_invalid_response")
+
+
+def _project_deploy_agent_allowed_roots(
+    *,
+    artifact: ProjectDeployArtifact,
+    scratch_dir: Path,
+    extract_to_path: str = "",
+) -> list[Path]:
+    roots = [scratch_dir.resolve()]
+    storage_path = Path(artifact.storage_path).expanduser().resolve() if artifact.storage_path else None
+    if storage_path is not None:
+        roots.append(storage_path if storage_path.is_dir() else storage_path.parent)
+    if extract_to_path:
+        roots.append(Path(_project_deploy_normalize_extract_to_path(extract_to_path)).resolve(strict=False))
+    return roots
+
+
+def _project_deploy_agent_resolve_path(
+    value: Any,
+    *,
+    roots: list[Path],
+    default_root: Path,
+    must_exist: bool = False,
+    allow_new_safe_path: bool = False,
+) -> Path:
+    text = _normalize_project_deploy_text(value, limit=1000)
+    path = Path(text).expanduser() if text else default_root
+    if not path.is_absolute():
+        path = default_root / path
+    resolved = path.resolve(strict=False)
+    if must_exist and not resolved.exists():
+        raise _ProjectDeployAgentError(f"path does not exist: {resolved}", stage="ai_deploy_agent_tool_failed")
+    for root in roots:
+        root_resolved = root.resolve(strict=False)
+        if resolved == root_resolved or root_resolved in resolved.parents:
+            return resolved
+    if allow_new_safe_path and not must_exist:
+        return Path(_project_deploy_normalize_extract_to_path(resolved.as_posix())).resolve(strict=False)
+    raise _ProjectDeployAgentError(f"path outside deploy agent workspace: {resolved}", stage="ai_deploy_agent_tool_blocked")
+
+
+def _project_deploy_agent_resolve_existing_path(
+    value: Any,
+    *,
+    roots: list[Path],
+    default_root: Path,
+    fallback_root: Path,
+) -> Path:
+    text = _normalize_project_deploy_text(value, limit=1000)
+    try:
+        return _project_deploy_agent_resolve_path(text, roots=roots, default_root=default_root, must_exist=True)
+    except _ProjectDeployAgentError as exc:
+        if not text or Path(text).expanduser().is_absolute() or exc.stage != "ai_deploy_agent_tool_failed":
+            raise
+        return _project_deploy_agent_resolve_path(text, roots=roots, default_root=fallback_root, must_exist=True)
+
+
+def _project_deploy_agent_text_file_name(path: Path) -> None:
+    if path.name in {"", ".", ".."}:
+        raise _ProjectDeployAgentError("invalid file name", stage="ai_deploy_agent_tool_blocked")
+    suffix = path.suffix.lower()
+    if suffix and suffix not in {".txt", ".log", ".json", ".md", ".env"}:
+        raise _ProjectDeployAgentError(
+            f"write_text_file only supports text files, got {suffix}",
+            stage="ai_deploy_agent_tool_blocked",
+        )
+
+
+def _project_deploy_agent_extract_artifact(
+    *,
+    artifact: ProjectDeployArtifact,
+    destination: Path,
+) -> dict[str, Any]:
+    source_path = Path(artifact.storage_path).expanduser().resolve()
+    if source_path.is_dir():
+        nested_archive = _project_deploy_single_archive_file_from_directory(source_path)
+        if nested_archive is None:
+            raise _ProjectDeployAgentError("目录产物内没有唯一可解压归档", stage="ai_deploy_agent_tool_failed")
+        source_path = nested_archive
+    destination.mkdir(parents=True, exist_ok=True)
+    if zipfile.is_zipfile(source_path):
+        entries = _project_deploy_extract_zip_archive(source_path, destination)
+    elif tarfile.is_tarfile(source_path):
+        entries = _project_deploy_extract_tar_archive(source_path, destination)
+    else:
+        raise _ProjectDeployAgentError("artifact 不是可安全解压的 zip/tar 归档", stage="ai_deploy_agent_tool_failed")
+    return {
+        "ok": True,
+        "extracted_to": destination.as_posix(),
+        "file_count": len(entries),
+        "entries": entries[:100],
+    }
+
+
+def _project_deploy_agent_ftp_upload_file(
     *,
     artifact: ProjectDeployArtifact,
     target: dict[str, Any],
+    local_path: Path,
+    action: str,
+    remote_name: str | None = None,
 ) -> dict[str, Any]:
     credential_id = _normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120)
     credential = _resolve_visible_ftp_credential(credential_id, None)
     if credential is None:
-        raise RuntimeError("缺少可用 FTP 连接")
-    source_path = Path(artifact.storage_path).expanduser().resolve()
-    if not source_path.exists() or not source_path.is_file():
-        raise RuntimeError("服务端 artifact 文件不存在")
+        raise _ProjectDeployAgentError("缺少可用 FTP 连接", stage="ai_deploy_agent_tool_failed")
     remote_path = _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
     if not remote_path:
-        raise RuntimeError("缺少远端目录 remote_path")
+        raise _ProjectDeployAgentError("缺少远端目录 remote_path", stage="ai_deploy_agent_tool_failed")
     ftp = project_deploy_ftp_client_factory(timeout=30)
-    host = _normalize_project_deploy_text(getattr(credential, "host", ""), limit=300)
-    port = int(str(getattr(credential, "port", "") or "21").strip() or "21")
     try:
-        ftp.connect(host=host, port=port, timeout=30)
+        ftp.connect(
+            host=_normalize_project_deploy_text(getattr(credential, "host", ""), limit=300),
+            port=int(str(getattr(credential, "port", "") or "21").strip() or "21"),
+            timeout=30,
+        )
         ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
-        _ftp_ensure_remote_dir(ftp, remote_path)
-        remote_name = Path(artifact.artifact_name).name or source_path.name
-        with source_path.open("rb") as handle:
-            ftp.storbinary(f"STOR {remote_name}", handle)
-        return {
-            "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
-            "remote_path": remote_path,
-            "remote_file": f"{remote_path.rstrip('/')}/{remote_name}",
-            "size": artifact.size,
-        }
+        return _project_deploy_upload_prepared_file_to_ftp(
+            ftp=ftp,
+            artifact=artifact,
+            target=target,
+            remote_path=remote_path,
+            prepared_path=local_path,
+            action=action,
+            remote_name=remote_name,
+        )
     finally:
         try:
             ftp.quit()
@@ -1125,12 +1662,1010 @@ def _upload_project_deploy_artifact_to_ftp(
                 ftp.close()
 
 
+def _project_deploy_agent_ftp_upload_directory(
+    *,
+    artifact: ProjectDeployArtifact,
+    target: dict[str, Any],
+    local_path: Path,
+) -> dict[str, Any]:
+    credential_id = _normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120)
+    credential = _resolve_visible_ftp_credential(credential_id, None)
+    if credential is None:
+        raise _ProjectDeployAgentError("缺少可用 FTP 连接", stage="ai_deploy_agent_tool_failed")
+    remote_path = _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
+    if not remote_path:
+        raise _ProjectDeployAgentError("缺少远端目录 remote_path", stage="ai_deploy_agent_tool_failed")
+    ftp = project_deploy_ftp_client_factory(timeout=30)
+    try:
+        ftp.connect(
+            host=_normalize_project_deploy_text(getattr(credential, "host", ""), limit=300),
+            port=int(str(getattr(credential, "port", "") or "21").strip() or "21"),
+            timeout=30,
+        )
+        ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
+        return _project_deploy_upload_prepared_directory_to_ftp(
+            ftp=ftp,
+            artifact=artifact,
+            target=target,
+            remote_path=remote_path,
+            prepared_path=local_path,
+            prepared_entries=[],
+            execution_plan={"source": "ai_deploy_agent_loop"},
+        )
+    finally:
+        try:
+            ftp.quit()
+        except Exception:
+            with contextlib.suppress(Exception):
+                ftp.close()
+
+
+def _project_deploy_agent_run_configured_remote_command(
+    *,
+    project: ProjectConfig,
+    target: dict[str, Any],
+    args: dict[str, Any],
+    requested_by: str,
+) -> dict[str, Any]:
+    if _normalize_project_deploy_text(args.get("command") or args.get("deploy_command"), limit=1000):
+        raise _ProjectDeployAgentError(
+            "run_configured_remote_command 只能触发部署配置里已保存的 deploy_command，不能携带自定义命令",
+            stage="ai_deploy_agent_tool_blocked",
+        )
+    command = _project_deploy_target_deploy_command(target)
+    target_id = _normalize_project_deploy_text(target.get("id"), limit=80)
+    if not command:
+        raise _ProjectDeployAgentError("部署目标没有配置 deploy_command", stage="ai_deploy_agent_tool_failed")
+    mode = _project_deploy_target_remote_command_mode(target)
+    if not mode:
+        raise _ProjectDeployAgentError("部署目标没有配置 remote_command_mode", stage="ai_deploy_agent_tool_failed")
+    if mode == "project_host_command":
+        executor = target.get("remote_executor") if isinstance(target.get("remote_executor"), dict) else {}
+        workspace_path = _normalize_project_deploy_text(
+            executor.get("workspace_path") or executor.get("cwd") or getattr(project, "workspace_path", ""),
+            limit=1000,
+        )
+        cwd = _normalize_project_deploy_text(executor.get("cwd") if executor.get("workspace_path") else "", limit=1000)
+        result = run_project_host_command(
+            workspace_path=workspace_path,
+            command=command,
+            owner_username=requested_by,
+            cwd=cwd,
+            timeout_sec=int(args.get("timeout_sec") or executor.get("timeout_sec") or 120),
+            max_output_chars=12000,
+        )
+        return {
+            "ok": bool((result or {}).get("ok")),
+            "tool": "run_configured_remote_command",
+            "target_id": target_id,
+            "remote_command_mode": mode,
+            **(result or {}),
+        }
+    return {
+        "ok": False,
+        "blocked": True,
+        "tool": "run_configured_remote_command",
+        "target_id": target_id,
+        "remote_command_mode": mode,
+        "error": (
+            f"remote_command_mode={mode} 已配置，但当前服务端部署 Agent 尚未接入该执行器；"
+            "请使用 project_host_command，或在专用远端执行器接入后重试"
+        ),
+    }
+
+
+def _project_deploy_agent_target(
+    *,
+    targets: list[dict[str, Any]],
+    target_id: Any = "",
+) -> dict[str, Any]:
+    deployable_targets = [
+        target for target in targets if isinstance(target, dict) and not _project_deploy_target_missing_fields(target, None)
+    ]
+    if not deployable_targets:
+        raise _ProjectDeployAgentError("没有可部署目标", stage="ai_deploy_agent_tool_failed")
+    requested = _normalize_project_deploy_text(target_id, limit=80)
+    if requested:
+        for target in deployable_targets:
+            if _normalize_project_deploy_text(target.get("id"), limit=80) == requested:
+                return target
+        raise _ProjectDeployAgentError(f"部署目标不存在或配置不完整：{requested}", stage="ai_deploy_agent_tool_failed")
+    return deployable_targets[0]
+
+
+def _project_deploy_agent_execute_tool(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    targets: list[dict[str, Any]],
+    scratch_dir: Path,
+    state: dict[str, Any],
+    tool_name: str,
+    args: dict[str, Any],
+    requested_by: str,
+) -> dict[str, Any]:
+    tool = _normalize_project_deploy_text(tool_name, limit=80)
+    args = args if isinstance(args, dict) else {}
+    extract_to_path = _normalize_project_deploy_text(state.get("extract_to_path"), limit=1000)
+    roots = _project_deploy_agent_allowed_roots(
+        artifact=artifact,
+        scratch_dir=scratch_dir,
+        extract_to_path=extract_to_path,
+    )
+    default_root = Path(state.get("current_dir") or scratch_dir).resolve(strict=False)
+    target = (
+        _project_deploy_agent_target(targets=targets, target_id=args.get("target_id"))
+        if tool.startswith("upload_") or tool == "run_configured_remote_command"
+        else {}
+    )
+    if tool == "finish":
+        final_status = _normalize_project_deploy_text(args.get("status"), limit=40).lower()
+        if final_status not in {"success", "failed", "blocked"}:
+            final_status = "success"
+        return {
+            "ok": final_status == "success",
+            "finished": True,
+            "status": final_status,
+            "summary": _normalize_project_deploy_text(args.get("summary"), limit=1000),
+        }
+    if tool == "list_directory":
+        path = _project_deploy_agent_resolve_existing_path(
+            args.get("path"),
+            roots=roots,
+            default_root=default_root,
+            fallback_root=scratch_dir,
+        )
+        if not path.is_dir():
+            raise _ProjectDeployAgentError(f"not a directory: {path}", stage="ai_deploy_agent_tool_failed")
+        items = []
+        for child in sorted(path.iterdir(), key=lambda item: item.name)[:200]:
+            items.append({"name": child.name, "path": child.as_posix(), "type": "directory" if child.is_dir() else "file"})
+        return {"ok": True, "path": path.as_posix(), "items": items}
+    if tool == "read_text_file":
+        path = _project_deploy_agent_resolve_existing_path(
+            args.get("path"),
+            roots=roots,
+            default_root=default_root,
+            fallback_root=scratch_dir,
+        )
+        if not path.is_file():
+            raise _ProjectDeployAgentError(f"not a file: {path}", stage="ai_deploy_agent_tool_failed")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return {"ok": True, "path": path.as_posix(), "content": text[:8000], "truncated": len(text) > 8000}
+    if tool == "write_text_file":
+        path = _project_deploy_agent_resolve_path(args.get("path"), roots=roots, default_root=default_root, allow_new_safe_path=True)
+        _project_deploy_agent_text_file_name(path)
+        content = _normalize_project_deploy_text(args.get("content"), limit=12000)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return {"ok": True, "path": path.as_posix(), "size": path.stat().st_size}
+    if tool == "create_directory":
+        path = _project_deploy_agent_resolve_path(args.get("path"), roots=roots, default_root=default_root, allow_new_safe_path=True)
+        path.mkdir(parents=True, exist_ok=True)
+        state["current_dir"] = path.as_posix()
+        return {"ok": True, "path": path.as_posix()}
+    if tool == "extract_artifact":
+        if bool(state.get("forbid_default_extract")):
+            raise _ProjectDeployAgentError(
+                "用户没有填写部署要求，压缩包产物默认必须原样上传，禁止默认解压；请改用 upload_original_archive。",
+                stage="ai_deploy_agent_tool_blocked",
+            )
+        destination_text = _normalize_project_deploy_text(args.get("destination"), limit=1000)
+        destination = _project_deploy_agent_resolve_path(
+            destination_text or "extracted",
+            roots=roots,
+            default_root=scratch_dir,
+            allow_new_safe_path=bool(destination_text),
+        )
+        result = _project_deploy_agent_extract_artifact(artifact=artifact, destination=destination)
+        state["extract_to_path"] = destination.as_posix()
+        state["current_dir"] = destination.as_posix()
+        return result
+    if tool == "upload_original_archive":
+        if bool(state.get("forbid_original_archive_upload")):
+            raise _ProjectDeployAgentError(
+                "用户要求解压后处理或上传解压后的内容，且没有要求上传压缩包本身；禁止上传原压缩包，请按要求使用 upload_file 或 upload_directory。",
+                stage="ai_deploy_agent_tool_blocked",
+            )
+        original_path = _project_deploy_original_archive_upload_path(artifact)
+        return _project_deploy_agent_ftp_upload_file(
+            artifact=artifact,
+            target=target,
+            local_path=original_path,
+            action="upload_original_archive",
+            remote_name=Path(artifact.artifact_name).name or original_path.name,
+        )
+    if tool == "upload_file":
+        path = _project_deploy_agent_resolve_existing_path(
+            args.get("path"),
+            roots=roots,
+            default_root=default_root,
+            fallback_root=scratch_dir,
+        )
+        if not path.is_file():
+            raise _ProjectDeployAgentError(f"not a file: {path}", stage="ai_deploy_agent_tool_failed")
+        return _project_deploy_agent_ftp_upload_file(
+            artifact=artifact,
+            target=target,
+            local_path=path,
+            action="upload_file",
+            remote_name=path.name,
+        )
+    if tool == "upload_directory":
+        if bool(state.get("requires_specific_file_upload")):
+            raise _ProjectDeployAgentError(
+                "用户要求上传指定文件，禁止上传整个目录；请使用 upload_file 并传入指定文件路径。",
+                stage="ai_deploy_agent_tool_blocked",
+            )
+        path = _project_deploy_agent_resolve_existing_path(
+            args.get("path") or state.get("extract_to_path"),
+            roots=roots,
+            default_root=default_root,
+            fallback_root=scratch_dir,
+        )
+        if not path.is_dir():
+            raise _ProjectDeployAgentError(f"not a directory: {path}", stage="ai_deploy_agent_tool_failed")
+        return _project_deploy_agent_ftp_upload_directory(artifact=artifact, target=target, local_path=path)
+    if tool == "run_command":
+        command = _normalize_project_deploy_text(args.get("command"), limit=4000)
+        if not command:
+            raise _ProjectDeployAgentError("command is required", stage="ai_deploy_agent_tool_failed")
+        cwd = _project_deploy_agent_resolve_existing_path(
+            args.get("cwd") or state.get("current_dir"),
+            roots=roots,
+            default_root=default_root,
+            fallback_root=scratch_dir,
+        )
+        result = run_project_host_command(
+            workspace_path=cwd.as_posix(),
+            command=command,
+            owner_username=requested_by,
+            cwd="",
+            timeout_sec=int(args.get("timeout_sec") or 120),
+            max_output_chars=12000,
+        )
+        return {"ok": bool((result or {}).get("ok")), "tool": "run_command", **(result or {})}
+    if tool == "run_configured_remote_command":
+        return _project_deploy_agent_run_configured_remote_command(
+            project=project,
+            target=target,
+            args=args,
+            requested_by=requested_by,
+        )
+    raise _ProjectDeployAgentError(f"未知 AI 部署工具：{tool}", stage="ai_deploy_agent_tool_blocked")
+
+
+def _project_deploy_structured_archive_upload_policy(value: str) -> str:
+    payload = _project_deploy_parse_structured_plan(value)
+    policy = str(
+        payload.get("archive_upload_policy")
+        or payload.get("archive_policy")
+        or ""
+    ).strip().lower()
+    return policy if policy in {"extract_before_upload", "upload_archive", "auto"} else ""
+
+
+def _project_deploy_resolve_archive_upload_policy(*, requirement: str = "", plan: str = "") -> str:
+    requirement_policy = _project_deploy_classify_archive_upload_policy_text(requirement)
+    if requirement_policy != "auto":
+        return requirement_policy
+    plan_policy = _project_deploy_structured_archive_upload_policy(plan)
+    if plan_policy and plan_policy != "auto":
+        return plan_policy
+    return _project_deploy_classify_archive_upload_policy_text(plan)
+
+
+def _project_deploy_bool_from_structured_plan(payload: dict[str, Any], *keys: str) -> bool | None:
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value or "").strip().lower()
+        if text in {"true", "yes", "1", "on"}:
+            return True
+        if text in {"false", "no", "0", "off"}:
+            return False
+    return None
+
+
+def _project_deploy_extract_path_from_structured_plan(payload: dict[str, Any]) -> str:
+    candidates = [
+        payload.get("extract_to_path"),
+        payload.get("extract_path"),
+        payload.get("local_extract_path"),
+        payload.get("destination_path"),
+    ]
+    actions = payload.get("actions")
+    if isinstance(actions, list):
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            action_type = str(action.get("type") or action.get("action") or "").strip().lower()
+            if action_type in {"extract", "unzip", "extract_archive", "extract_to_path"}:
+                candidates.extend(
+                    [
+                        action.get("extract_to_path"),
+                        action.get("path"),
+                        action.get("destination_path"),
+                    ]
+                )
+    for candidate in candidates:
+        text = _normalize_project_deploy_text(candidate, limit=1000)
+        if text:
+            return text
+    return ""
+
+
+def _project_deploy_extract_path_from_text(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    patterns = [
+        r"(?:解压到|解压至|解压后(?:的)?文件(?:放到|放在|保存到)|文件(?:放到|放在|保存到)|放到|放在|保存到)\s*([~/][^\s，,。；;]+)",
+        r"(?:extract(?:ed)?\s+(?:to|into)|unzip\s+(?:to|into))\s*([~/][^\s，,。；;]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        path_text = match.group(1).strip().strip("\"'“”‘’")
+        path_text = re.sub(r"(?:目录|文件夹|里面|下)$", "", path_text).strip()
+        if path_text:
+            return _normalize_project_deploy_text(path_text, limit=1000)
+    return ""
+
+
+def _project_deploy_wants_original_archive_upload(value: str) -> bool:
+    text = str(value or "").lower()
+    return bool(
+        re.search(
+            r"(压缩包(?:也|都|一起|同时)?上传|原(?:始)?压缩包(?:也|都|一起|同时)?上传|跟\s*压缩包\s*都上传|同时上传(?:解压后的文件|文件).*压缩包|archive\s+(?:too|also|and)|upload\s+original\s+archive)",
+            text,
+        )
+    )
+
+
+def _project_deploy_wants_extracted_files_upload(value: str) -> bool:
+    text = str(value or "").lower()
+    return bool(re.search(r"(解压后(?:的)?(?:文件|内容).*(?:上传|部署)|上传解压后(?:的)?(?:文件|内容)|extracted\s+files?.*upload)", text))
+
+
+def _project_deploy_normalize_extract_to_path(value: str) -> str:
+    text = _normalize_project_deploy_text(value, limit=1000)
+    if not text:
+        return ""
+    if "\x00" in text:
+        raise RuntimeError("invalid extract_to_path")
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        raise RuntimeError("extract_to_path must be an absolute path")
+    resolved = path.resolve(strict=False)
+    if resolved == Path("/"):
+        raise RuntimeError("extract_to_path cannot be filesystem root")
+    blocked_roots = [
+        Path("/bin"),
+        Path("/sbin"),
+        Path("/usr"),
+        Path("/etc"),
+        Path("/System"),
+        Path("/Library"),
+    ]
+    if any(resolved == root or root in resolved.parents for root in blocked_roots):
+        raise RuntimeError("extract_to_path points to a protected system directory")
+    return resolved.as_posix()
+
+
+def _project_deploy_resolve_execution_plan(
+    *,
+    requirement: str = "",
+    plan: str = "",
+    archive_upload_policy: str = "",
+) -> dict[str, Any]:
+    requirement_text = _normalize_project_deploy_text(requirement, limit=2000)
+    plan_text = _normalize_project_deploy_text(plan, limit=4000)
+    structured_plan = _project_deploy_parse_structured_plan(plan_text)
+    policy = str(archive_upload_policy or "").strip().lower()
+    if policy not in {"extract_before_upload", "upload_archive", "auto"}:
+        policy = _project_deploy_resolve_archive_upload_policy(requirement=requirement_text, plan=plan_text)
+
+    extract_to_path = (
+        _project_deploy_extract_path_from_structured_plan(structured_plan)
+        or _project_deploy_extract_path_from_text(requirement_text)
+        or _project_deploy_extract_path_from_text(plan_text)
+    )
+    if extract_to_path:
+        extract_to_path = _project_deploy_normalize_extract_to_path(extract_to_path)
+        if policy == "auto":
+            policy = "extract_before_upload"
+
+    structured_upload_extracted = _project_deploy_bool_from_structured_plan(
+        structured_plan,
+        "upload_extracted_files",
+        "upload_extracted",
+        "deploy_extracted_files",
+    )
+    structured_upload_archive = _project_deploy_bool_from_structured_plan(
+        structured_plan,
+        "upload_original_archive",
+        "upload_archive",
+        "include_original_archive",
+    )
+    text_wants_archive = _project_deploy_wants_original_archive_upload(requirement_text) or _project_deploy_wants_original_archive_upload(plan_text)
+    text_wants_extracted = _project_deploy_wants_extracted_files_upload(requirement_text) or _project_deploy_wants_extracted_files_upload(plan_text)
+
+    upload_extracted_files = (
+        bool(structured_upload_extracted)
+        if structured_upload_extracted is not None
+        else policy == "extract_before_upload" or text_wants_extracted
+    )
+    upload_original_archive = (
+        bool(structured_upload_archive)
+        if structured_upload_archive is not None
+        else policy == "upload_archive" or text_wants_archive
+    )
+    if not upload_extracted_files and not upload_original_archive:
+        upload_original_archive = True
+    if upload_extracted_files and policy == "auto":
+        policy = "extract_before_upload"
+    if policy == "upload_archive" and not text_wants_extracted and structured_upload_extracted is None:
+        upload_extracted_files = False
+
+    actions: list[str] = []
+    if upload_extracted_files:
+        actions.append("extract_archive")
+        if extract_to_path:
+            actions.append("copy_extracted_files_to_path")
+        actions.append("upload_extracted_files")
+    if upload_original_archive:
+        actions.append("upload_original_archive")
+    return {
+        "source": "ai_natural_language_controlled_plan",
+        "archive_upload_policy": policy,
+        "extract_to_path": extract_to_path,
+        "copy_extracted_to_path": bool(extract_to_path and upload_extracted_files),
+        "upload_extracted_files": upload_extracted_files,
+        "upload_original_archive": upload_original_archive,
+        "actions": actions,
+    }
+
+
+def _project_deploy_backup_label() -> str:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y年%m月%d日_%H时%M分%S秒")
+
+
+def _project_deploy_remote_backup_name(remote_path: str) -> str:
+    base = str(remote_path or "").rstrip("/")
+    return f"{base}_备份_{_project_deploy_backup_label()}"
+
+
+def _project_deploy_backup_remote_target(ftp: Any, remote_path: str) -> dict[str, Any]:
+    remote_path = str(remote_path or "").strip()
+    if not remote_path:
+        return {"backup_status": "missing", "backup_path": "", "backup_at": "", "backup_reason": "missing remote path"}
+    backup_path = _project_deploy_remote_backup_name(remote_path)
+    try:
+        ftp.rename(remote_path, backup_path)
+    except Exception as exc:
+        if _project_deploy_is_ftp_missing_error(exc):
+            return {
+                "backup_status": "missing",
+                "backup_path": "",
+                "backup_at": "",
+                "backup_reason": "remote target not found",
+            }
+        raise RuntimeError(f"failed to backup remote target: {exc}") from exc
+    return {
+        "backup_status": "renamed",
+        "backup_path": backup_path,
+        "backup_at": _now_iso(),
+        "backup_reason": "",
+    }
+
+
+def _project_deploy_is_ftp_missing_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return (
+        "550" in message
+        or "not found" in message
+        or "no such file" in message
+        or "cannot find" in message
+        or "does not exist" in message
+    )
+
+
+def _validate_project_deploy_archive_member_path(value: Any) -> str:
+    text = str(value or "").replace("\\", "/").strip()
+    if not text or text.startswith("/") or re.match(r"^[A-Za-z]:", text):
+        raise HTTPException(400, f"invalid artifact archive path: {text or '<empty>'}")
+    parts = [part.strip() for part in text.split("/")]
+    if any(not part or part in {".", ".."} for part in parts):
+        raise HTTPException(400, f"invalid artifact archive path: {text}")
+    return _safe_project_deploy_relative_path(text)
+
+
+def _is_project_deploy_archive_directory_entry(value: Any) -> bool:
+    text = str(value or "").replace("\\", "/").strip()
+    return bool(text) and text.endswith("/")
+
+
+def _project_deploy_invalid_archive_entry_from_exception(exc: Exception) -> str:
+    detail = str(getattr(exc, "detail", "") or str(exc or "")).strip()
+    marker = "invalid artifact archive path:"
+    if marker not in detail:
+        return ""
+    return detail.split(marker, 1)[1].strip()[:1000]
+
+
+def _project_deploy_extract_zip_archive(source_path: Path, destination_dir: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    total_size = 0
+    with zipfile.ZipFile(source_path) as archive:
+        members = [
+            info
+            for info in archive.infolist()
+            if not info.is_dir() and not _is_project_deploy_archive_directory_entry(info.filename)
+        ]
+        if len(members) > _PROJECT_DEPLOY_ARTIFACT_MAX_FILES:
+            raise HTTPException(413, f"too many artifact files; maximum is {_PROJECT_DEPLOY_ARTIFACT_MAX_FILES}")
+        for info in members:
+            is_symlink = ((info.external_attr >> 16) & 0o170000) == 0o120000
+            if is_symlink:
+                raise HTTPException(400, "artifact archive contains unsupported file type")
+            relative_path = _validate_project_deploy_archive_member_path(info.filename)
+            if not relative_path:
+                continue
+            total_size += int(info.file_size or 0)
+            if total_size > _PROJECT_DEPLOY_ARTIFACT_MAX_BYTES:
+                raise HTTPException(413, "artifact is larger than 200MB")
+            destination = (destination_dir / relative_path).resolve()
+            if destination_dir.resolve() not in destination.parents:
+                raise HTTPException(400, f"invalid artifact archive path: {relative_path}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as handle:
+                content = handle.read()
+            destination.write_bytes(content)
+            entries.append({"path": relative_path, "name": Path(relative_path).name, "size": len(content)})
+    if not entries:
+        raise HTTPException(400, "artifact archive is empty")
+    return entries
+
+
+def _project_deploy_extract_tar_archive(source_path: Path, destination_dir: Path) -> list[dict[str, Any]]:
+    try:
+        with tarfile.open(source_path, mode="r:*") as archive:
+            members = [
+                member
+                for member in archive.getmembers()
+                if member.isfile() and not _is_project_deploy_archive_directory_entry(member.name)
+            ]
+            if len(members) > _PROJECT_DEPLOY_ARTIFACT_MAX_FILES:
+                raise HTTPException(413, f"too many artifact files; maximum is {_PROJECT_DEPLOY_ARTIFACT_MAX_FILES}")
+            entries: list[dict[str, Any]] = []
+            total_size = 0
+            for member in members:
+                relative_path = _validate_project_deploy_archive_member_path(member.name)
+                if not relative_path:
+                    continue
+                total_size += int(member.size or 0)
+                if total_size > _PROJECT_DEPLOY_ARTIFACT_MAX_BYTES:
+                    raise HTTPException(413, "artifact is larger than 200MB")
+                destination = (destination_dir / relative_path).resolve()
+                if destination_dir.resolve() not in destination.parents:
+                    raise HTTPException(400, f"invalid artifact archive path: {relative_path}")
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    continue
+                content = extracted.read()
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(content)
+                entries.append({"path": relative_path, "name": Path(relative_path).name, "size": len(content)})
+            if not entries:
+                raise HTTPException(400, "artifact archive is empty")
+            return entries
+    except HTTPException:
+        raise
+    except (tarfile.TarError, OSError, EOFError, UnicodeError) as exc:
+        raise HTTPException(400, f"invalid artifact archive: {exc}") from exc
+
+
+def _project_deploy_extract_archive_to_directory(source_path: Path, destination_dir: Path) -> list[dict[str, Any]]:
+    suffix = _project_deploy_archive_suffix(source_path)
+    if suffix == ".zip":
+        return _project_deploy_extract_zip_archive(source_path, destination_dir)
+    return _project_deploy_extract_tar_archive(source_path, destination_dir)
+
+
+def _project_deploy_single_archive_file_from_directory(source_path: Path) -> Path | None:
+    if not source_path.is_dir():
+        return None
+    files = sorted(item for item in source_path.rglob("*") if item.is_file())
+    if len(files) != 1:
+        return None
+    candidate = files[0]
+    if zipfile.is_zipfile(candidate) or tarfile.is_tarfile(candidate):
+        return candidate
+    return None
+
+
+def _project_deploy_copy_directory_contents(source_dir: Path, destination_dir: Path) -> None:
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    for source_file in sorted(source_dir.rglob("*")):
+        if not source_file.is_file():
+            continue
+        relative_path = source_file.relative_to(source_dir)
+        destination_file = destination_dir / relative_path
+        destination_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_file, destination_file)
+
+
+def _project_deploy_prepare_ftp_upload_source(
+    artifact: ProjectDeployArtifact,
+    *,
+    archive_upload_policy: str = "auto",
+    extract_to_path: str = "",
+) -> tuple[Path, str, list[dict[str, Any]], Any]:
+    source_path = Path(artifact.storage_path).expanduser().resolve()
+    if not source_path.exists() or not (source_path.is_file() or source_path.is_dir()):
+        raise RuntimeError("服务端 artifact 文件不存在")
+    requested_extract_path = _project_deploy_normalize_extract_to_path(extract_to_path) if extract_to_path else ""
+    if source_path.is_dir():
+        nested_archive = (
+            _project_deploy_single_archive_file_from_directory(source_path)
+            if archive_upload_policy == "extract_before_upload"
+            else None
+        )
+        if nested_archive is not None:
+            temp_dir = TemporaryDirectory(prefix="project-deploy-upload-")
+            destination_dir = Path(temp_dir.name)
+            entries = _project_deploy_extract_archive_to_directory(nested_archive, destination_dir)
+            if requested_extract_path:
+                _project_deploy_copy_directory_contents(destination_dir, Path(requested_extract_path))
+            return destination_dir, "directory", entries, temp_dir
+        if archive_upload_policy == "extract_before_upload":
+            raise RuntimeError("用户要求解压后部署，但服务端目录产物内没有唯一可安全解包的 zip/tar 归档")
+        return source_path, "directory", [], None
+    if archive_upload_policy == "extract_before_upload":
+        archive_suffix = _project_deploy_artifact_archive_suffix(artifact, source_path)
+        if zipfile.is_zipfile(source_path):
+            temp_dir = TemporaryDirectory(prefix="project-deploy-upload-")
+            destination_dir = Path(temp_dir.name)
+            entries = _project_deploy_extract_zip_archive(source_path, destination_dir)
+            if requested_extract_path:
+                _project_deploy_copy_directory_contents(destination_dir, Path(requested_extract_path))
+            return destination_dir, "directory", entries, temp_dir
+        if archive_suffix != ".zip" and tarfile.is_tarfile(source_path):
+            temp_dir = TemporaryDirectory(prefix="project-deploy-upload-")
+            destination_dir = Path(temp_dir.name)
+            entries = _project_deploy_extract_tar_archive(source_path, destination_dir)
+            if requested_extract_path:
+                _project_deploy_copy_directory_contents(destination_dir, Path(requested_extract_path))
+            return destination_dir, "directory", entries, temp_dir
+        raise RuntimeError("用户要求解压后部署，但服务端产物不是可安全解包的 zip/tar 归档")
+    return source_path, "file", [], None
+
+
+def _project_deploy_original_archive_upload_path(artifact: ProjectDeployArtifact) -> Path:
+    source_path = Path(artifact.storage_path).expanduser().resolve()
+    if source_path.is_file():
+        return source_path
+    nested_archive = _project_deploy_single_archive_file_from_directory(source_path)
+    if nested_archive is not None:
+        return nested_archive
+    raise RuntimeError("用户要求上传原压缩包，但服务端产物不是文件，也没有唯一可上传的压缩包")
+
+
+def _project_deploy_execute_file_operations(
+    *,
+    artifact: ProjectDeployArtifact,
+    execution_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    operations = execution_plan.get("file_operations")
+    if not isinstance(operations, list):
+        return []
+    created_files: list[dict[str, Any]] = []
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        action_type = _normalize_project_deploy_text(operation.get("type"), limit=80)
+        if action_type != "write_deploy_log_file":
+            continue
+        file_path = Path(_project_deploy_normalize_extract_to_path(operation.get("file_path"))).resolve(strict=False)
+        filename = _project_deploy_normalize_log_filename(file_path.name)
+        if file_path.name != filename:
+            raise RuntimeError("invalid deploy log file path")
+        content = _normalize_project_deploy_text(operation.get("content"), limit=4000)
+        if not content:
+            content = "\n".join(
+                [
+                    f"artifact_id={artifact.id}",
+                    f"artifact_name={artifact.artifact_name}",
+                    f"version={artifact.version or '-'}",
+                    f"created_at={_now_iso()}",
+                    "source=ai_deploy_controlled_file_operation",
+                ]
+            )
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content.rstrip() + "\n", encoding="utf-8")
+        created_files.append(
+            {
+                "action": "write_deploy_log_file",
+                "file_path": file_path.as_posix(),
+                "size": file_path.stat().st_size,
+            }
+        )
+    return created_files
+
+
+def _project_deploy_upload_prepared_directory_to_ftp(
+    *,
+    ftp: Any,
+    artifact: ProjectDeployArtifact,
+    target: dict[str, Any],
+    remote_path: str,
+    prepared_path: Path,
+    prepared_entries: list[dict[str, Any]],
+    execution_plan: dict[str, Any],
+) -> dict[str, Any]:
+    backup_result = _project_deploy_backup_remote_target(ftp, remote_path)
+    uploaded_files: list[dict[str, Any]] = []
+    for local_file in sorted(prepared_path.rglob("*")):
+        if not local_file.is_file():
+            continue
+        relative_path = local_file.relative_to(prepared_path).as_posix()
+        relative_parent = Path(relative_path).parent.as_posix()
+        remote_dir = remote_path.rstrip("/")
+        if relative_parent and relative_parent != ".":
+            remote_dir = f"{remote_dir}/{relative_parent}"
+        _ftp_ensure_remote_dir(ftp, remote_dir)
+        with local_file.open("rb") as handle:
+            ftp.storbinary(f"STOR {local_file.name}", handle)
+        uploaded_files.append(
+            {
+                "path": relative_path,
+                "remote_file": f"{remote_dir.rstrip('/')}/{local_file.name}",
+                "size": local_file.stat().st_size,
+            }
+        )
+    return {
+        "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
+        "action": "upload_extracted_files",
+        "remote_path": remote_path,
+        "storage_kind": "directory",
+        "prepared_storage_kind": "directory",
+        "prepared_file_count": len(prepared_entries) or len(uploaded_files),
+        "file_count": len(uploaded_files),
+        "size": artifact.size,
+        "extract_to_path": _normalize_project_deploy_text(execution_plan.get("extract_to_path"), limit=1000),
+        "files": uploaded_files[:200],
+        **backup_result,
+    }
+
+
+def _project_deploy_upload_prepared_file_to_ftp(
+    *,
+    ftp: Any,
+    artifact: ProjectDeployArtifact,
+    target: dict[str, Any],
+    remote_path: str,
+    prepared_path: Path,
+    action: str,
+    remote_name: str | None = None,
+) -> dict[str, Any]:
+    effective_remote_name = Path(remote_name or artifact.artifact_name or prepared_path.name).name or prepared_path.name
+    remote_file = _project_deploy_remote_path_join(remote_path, effective_remote_name)
+    backup_result = _project_deploy_backup_remote_target(ftp, remote_file)
+    _ftp_ensure_remote_dir(ftp, remote_path)
+    with prepared_path.open("rb") as handle:
+        ftp.storbinary(f"STOR {effective_remote_name}", handle)
+    return {
+        "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
+        "action": action,
+        "remote_path": remote_path,
+        "remote_file": remote_file,
+        "storage_kind": "file",
+        "prepared_storage_kind": "file",
+        "size": prepared_path.stat().st_size if prepared_path.exists() else artifact.size,
+        **backup_result,
+    }
+
+
+def _upload_project_deploy_artifact_to_ftp(
+    *,
+    artifact: ProjectDeployArtifact,
+    target: dict[str, Any],
+    archive_upload_policy: str = "auto",
+    execution_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    credential_id = _normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120)
+    credential = _resolve_visible_ftp_credential(credential_id, None)
+    if credential is None:
+        raise RuntimeError("缺少可用 FTP 连接")
+    source_path = Path(artifact.storage_path).expanduser().resolve()
+    if not source_path.exists() or not (source_path.is_file() or source_path.is_dir()):
+        raise RuntimeError("服务端 artifact 文件不存在")
+    remote_path = _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
+    if not remote_path:
+        raise RuntimeError("缺少远端目录 remote_path")
+    ftp = project_deploy_ftp_client_factory(timeout=30)
+    host = _normalize_project_deploy_text(getattr(credential, "host", ""), limit=300)
+    port = int(str(getattr(credential, "port", "") or "21").strip() or "21")
+    prepared_path: Path | None = None
+    prepared_kind = "file"
+    prepared_entries: list[dict[str, Any]] = []
+    prepared_cleanup: Any = None
+    resolved_plan = execution_plan or _project_deploy_resolve_execution_plan(
+        archive_upload_policy=archive_upload_policy,
+    )
+    if (
+        source_path.is_dir()
+        and str(resolved_plan.get("archive_upload_policy") or "").strip() == "auto"
+        and bool(resolved_plan.get("upload_original_archive"))
+        and not bool(resolved_plan.get("upload_extracted_files"))
+    ):
+        resolved_plan = {
+            **resolved_plan,
+            "upload_original_archive": False,
+            "actions": [],
+        }
+    upload_results: list[dict[str, Any]] = []
+    file_operation_results: list[dict[str, Any]] = []
+    try:
+        ftp.connect(host=host, port=port, timeout=30)
+        ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
+        if bool(resolved_plan.get("upload_extracted_files")):
+            prepared_path, prepared_kind, prepared_entries, prepared_cleanup = _project_deploy_prepare_ftp_upload_source(
+                artifact,
+                archive_upload_policy="extract_before_upload",
+                extract_to_path=_normalize_project_deploy_text(resolved_plan.get("extract_to_path"), limit=1000),
+            )
+            if prepared_kind != "directory":
+                raise RuntimeError("用户要求上传解压后的文件，但服务端没有可上传的解压目录")
+            upload_results.append(
+                _project_deploy_upload_prepared_directory_to_ftp(
+                    ftp=ftp,
+                    artifact=artifact,
+                    target=target,
+                    remote_path=remote_path,
+                    prepared_path=prepared_path,
+                    prepared_entries=prepared_entries,
+                    execution_plan=resolved_plan,
+                    )
+                )
+        elif bool(resolved_plan.get("copy_extracted_to_path")) and _normalize_project_deploy_text(resolved_plan.get("extract_to_path"), limit=1000):
+            prepared_path, prepared_kind, prepared_entries, prepared_cleanup = _project_deploy_prepare_ftp_upload_source(
+                artifact,
+                archive_upload_policy="extract_before_upload",
+                extract_to_path=_normalize_project_deploy_text(resolved_plan.get("extract_to_path"), limit=1000),
+            )
+            if prepared_kind != "directory":
+                raise RuntimeError("用户要求复制解压后的文件，但服务端没有可复制的解压目录")
+        file_operation_results = _project_deploy_execute_file_operations(
+            artifact=artifact,
+            execution_plan=resolved_plan,
+        )
+        if bool(resolved_plan.get("upload_original_archive")):
+            original_archive_path = _project_deploy_original_archive_upload_path(artifact)
+            upload_results.append(
+                _project_deploy_upload_prepared_file_to_ftp(
+                    ftp=ftp,
+                    artifact=artifact,
+                    target=target,
+                    remote_path=remote_path,
+                    prepared_path=original_archive_path,
+                    action="upload_original_archive",
+                )
+            )
+        if not upload_results:
+            prepared_path, prepared_kind, prepared_entries, prepared_cleanup = _project_deploy_prepare_ftp_upload_source(
+                artifact,
+                archive_upload_policy=archive_upload_policy,
+            )
+            if prepared_kind == "directory":
+                upload_results.append(
+                    _project_deploy_upload_prepared_directory_to_ftp(
+                        ftp=ftp,
+                        artifact=artifact,
+                        target=target,
+                        remote_path=remote_path,
+                        prepared_path=prepared_path,
+                        prepared_entries=prepared_entries,
+                        execution_plan=resolved_plan,
+                    )
+                )
+            else:
+                upload_results.append(
+                    _project_deploy_upload_prepared_file_to_ftp(
+                        ftp=ftp,
+                        artifact=artifact,
+                        target=target,
+                        remote_path=remote_path,
+                        prepared_path=prepared_path,
+                        action="upload_file",
+                    )
+                )
+        if len(upload_results) == 1:
+            return {
+                **upload_results[0],
+                "execution_plan": resolved_plan,
+                "upload_actions": [upload_results[0].get("action")],
+                "file_operations": file_operation_results,
+            }
+        prepared_kinds = {
+            str(item.get("prepared_storage_kind") or item.get("storage_kind") or "").strip()
+            for item in upload_results
+            if isinstance(item, dict)
+        }
+        return {
+            "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
+            "remote_path": remote_path,
+            "storage_kind": "mixed",
+            "prepared_storage_kind": "mixed" if len(prepared_kinds) > 1 else next(iter(prepared_kinds), ""),
+            "upload_actions": [item.get("action") for item in upload_results],
+            "upload_results": upload_results,
+            "file_count": sum(int(item.get("file_count") or (1 if item.get("remote_file") else 0)) for item in upload_results),
+            "size": artifact.size,
+            "execution_plan": resolved_plan,
+            "file_operations": file_operation_results,
+        }
+    finally:
+        if callable(getattr(prepared_cleanup, "cleanup", None)):
+            with contextlib.suppress(Exception):
+                prepared_cleanup.cleanup()
+        try:
+            ftp.quit()
+        except Exception:
+            with contextlib.suppress(Exception):
+                ftp.close()
+
+
+def _project_deploy_upload_log_prefix(
+    *,
+    upload_results: list[dict[str, Any]],
+    archive_upload_policy: str,
+) -> str:
+    actions = {
+        str(action or "").strip()
+        for item in upload_results
+        if isinstance(item, dict)
+        for action in (
+            item.get("upload_actions")
+            if isinstance(item.get("upload_actions"), list)
+            else [item.get("action")]
+        )
+    }
+    prepared_kinds = {
+        str(item.get("prepared_storage_kind") or item.get("storage_kind") or "").strip()
+        for item in upload_results
+        if isinstance(item, dict)
+    }
+    for item in upload_results:
+        if not isinstance(item, dict) or not isinstance(item.get("upload_results"), list):
+            continue
+        for nested_item in item["upload_results"]:
+            if isinstance(nested_item, dict):
+                prepared_kinds.add(str(nested_item.get("prepared_storage_kind") or nested_item.get("storage_kind") or "").strip())
+    if "upload_extracted_files" in actions and "upload_original_archive" in actions:
+        return "artifact extracted and original archive uploaded by FTP"
+    if "directory" in prepared_kinds:
+        if archive_upload_policy == "extract_before_upload":
+            return "artifact extracted and uploaded by FTP"
+        return "artifact directory uploaded by FTP"
+    if archive_upload_policy == "upload_archive":
+        return "archive uploaded by FTP without extraction"
+    return "artifact file uploaded by FTP"
+
+
 def _execute_project_deploy_run_for_artifact(
     *,
     project: ProjectConfig,
     artifact: ProjectDeployArtifact,
     run: ProjectDeployRun,
     targets: list[dict[str, Any]],
+    execution_plan: dict[str, Any] | None = None,
 ) -> ProjectDeployRun:
     deployable_targets = [
         target
@@ -1138,44 +2673,168 @@ def _execute_project_deploy_run_for_artifact(
         if not _project_deploy_target_missing_fields(target, None)
     ]
     upload_results: list[dict[str, Any]] = []
+    summary = run.artifact_summary if isinstance(run.artifact_summary, dict) else {}
+    if execution_plan is None:
+        execution_plan = _project_deploy_resolve_execution_plan(
+            requirement=_normalize_project_deploy_text(summary.get("user_requirement"), limit=2000),
+            plan=_normalize_project_deploy_text(summary.get("ai_deploy_plan"), limit=4000),
+        )
+    else:
+        try:
+            execution_plan = _project_deploy_validate_ai_execution_plan(execution_plan)
+            requested_target_ids = _project_deploy_target_ids_from_execution_plan(execution_plan)
+            if requested_target_ids:
+                available_target_ids = {
+                    _normalize_project_deploy_text(target.get("id"), limit=80)
+                    for target in deployable_targets
+                }
+                missing_target_ids = sorted(requested_target_ids - available_target_ids)
+                if missing_target_ids:
+                    raise _ProjectDeployAiExecutionPlanError(
+                        "AI 部署计划引用了不存在或不可部署的目标：" + ", ".join(missing_target_ids),
+                        stage="unsupported_ai_deploy_action",
+                    )
+                deployable_targets = [
+                    target
+                    for target in deployable_targets
+                    if _normalize_project_deploy_text(target.get("id"), limit=80) in requested_target_ids
+                ]
+        except _ProjectDeployAiExecutionPlanError as exc:
+            run.status = "failed"
+            run.stage = exc.stage
+            run.log_excerpt = f"AI deployment plan rejected: {exc}"
+            run.artifact_summary = {
+                **(run.artifact_summary or {}),
+                "uploaded_target_count": 0,
+                "ai_execution_plan": execution_plan,
+                "ai_execution_plan_error": str(exc),
+            }
+            artifact.status = "failed"
+            artifact.error = run.log_excerpt
+            run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
+            project_deploy_store.save_artifact(artifact)
+            return project_deploy_store.save_run(run)
+    archive_upload_policy = str(execution_plan.get("archive_upload_policy") or "auto")
     for target in deployable_targets:
         try:
-            upload_results.append(_upload_project_deploy_artifact_to_ftp(artifact=artifact, target=target))
+            upload_results.append(
+                _upload_project_deploy_artifact_to_ftp(
+                    artifact=artifact,
+                    target=target,
+                    archive_upload_policy=archive_upload_policy,
+                    execution_plan=execution_plan,
+                )
+            )
         except Exception as exc:
+            invalid_archive_entry = _project_deploy_invalid_archive_entry_from_exception(exc)
             run.status = "failed"
-            run.stage = "upload_failed"
+            run.stage = "invalid_artifact_archive" if invalid_archive_entry else "upload_failed"
             run.log_excerpt = f"upload failed: {exc}"
             run.artifact_summary = {
                 **(run.artifact_summary or {}),
                 "uploaded_target_count": len(upload_results),
                 "failed_target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
+                "ai_execution_plan": execution_plan,
+                **({"invalid_archive_entry": invalid_archive_entry} if invalid_archive_entry else {}),
             }
             run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
             return project_deploy_store.save_run(run)
     command_targets = [
         target
         for target in deployable_targets
-        if _normalize_project_deploy_text(target.get("deploy_command"), limit=1000)
+        if _project_deploy_target_deploy_command(target)
         and _project_deploy_target_supports_remote_command(target)
     ]
-    if not command_targets:
+    blocked_command_targets = [
+        target
+        for target in deployable_targets
+        if _project_deploy_target_deploy_command(target)
+        and not _project_deploy_target_supports_remote_command(target)
+    ]
+    upload_log_prefix = _project_deploy_upload_log_prefix(
+        upload_results=upload_results,
+        archive_upload_policy=archive_upload_policy,
+    )
+    if blocked_command_targets:
         run.status = "blocked"
         run.stage = "blocked_missing_remote_executor"
         run.log_excerpt = (
-            "artifact uploaded; missing remote_command_executor for deploy_command. "
+            f"{upload_log_prefix}; missing remote_command_executor for deploy_command. "
             "当前配置只有 FTP 上传能力，无法在远端执行部署命令。请为目标配置 remote_command_mode=ssh/project_host_command/local_connector。"
         )
         artifact.status = "blocked"
-    else:
+    elif command_targets:
         run.status = "queued"
         run.stage = "queued_remote_command"
-        run.log_excerpt = "artifact uploaded; remote command execution is queued"
+        run.log_excerpt = f"{upload_log_prefix}; remote command execution is queued"
         artifact.status = "deploy_queued"
+    else:
+        run.status = "success"
+        run.stage = "ftp_upload_completed"
+        run.log_excerpt = f"{upload_log_prefix}; remote target was backed up before upload"
+        artifact.status = "deployed"
+    prepared_kinds = {
+        str(item.get("prepared_storage_kind") or item.get("storage_kind") or "").strip()
+        for item in upload_results
+        if isinstance(item, dict)
+    }
+    upload_actions = {
+        str(action or "").strip()
+        for item in upload_results
+        if isinstance(item, dict)
+        for action in (
+            item.get("upload_actions")
+            if isinstance(item.get("upload_actions"), list)
+            else [item.get("action")]
+        )
+    }
+    file_operation_results: list[dict[str, Any]] = []
+    for item in upload_results:
+        if isinstance(item, dict) and isinstance(item.get("file_operations"), list):
+            file_operation_results.extend(
+                operation for operation in item["file_operations"] if isinstance(operation, dict)
+            )
+    for item in upload_results:
+        if not isinstance(item, dict) or not isinstance(item.get("upload_results"), list):
+            continue
+        for nested_item in item["upload_results"]:
+            if isinstance(nested_item, dict):
+                prepared_kinds.add(str(nested_item.get("prepared_storage_kind") or nested_item.get("storage_kind") or "").strip())
+                upload_actions.add(str(nested_item.get("action") or "").strip())
+                if isinstance(nested_item.get("file_operations"), list):
+                    file_operation_results.extend(
+                        operation for operation in nested_item["file_operations"] if isinstance(operation, dict)
+                    )
+    manifest = artifact.manifest if isinstance(artifact.manifest, dict) else {}
     run.artifact_summary = {
         **(run.artifact_summary or {}),
         "uploaded_target_count": len(upload_results),
         "upload_results": upload_results,
         "remote_command_target_count": len(command_targets),
+        "blocked_remote_command_target_count": len(blocked_command_targets),
+        "prepared_storage_kind": "directory" if "directory" in prepared_kinds else ("file" if "file" in prepared_kinds else ""),
+        "archive_upload_policy": archive_upload_policy,
+        "ai_execution_plan": execution_plan,
+        "upload_actions": sorted(action for action in upload_actions if action),
+        "file_operations": file_operation_results,
+        "created_deploy_log_files": [
+            item.get("file_path")
+            for item in file_operation_results
+            if isinstance(item, dict) and item.get("action") == "write_deploy_log_file"
+        ],
+        "uploaded_extracted_files": "upload_extracted_files" in upload_actions,
+        "uploaded_original_archive": "upload_original_archive" in upload_actions,
+        "extract_to_path": _normalize_project_deploy_text(execution_plan.get("extract_to_path"), limit=1000),
+        "copied_extracted_to_path": bool(execution_plan.get("copy_extracted_to_path")),
+        "archive_behavior": (
+            archive_upload_policy
+            if archive_upload_policy != "auto"
+            else _project_deploy_archive_behavior_label(
+            _normalize_project_deploy_text(manifest.get("archive_suffix"), limit=40)
+            or _project_deploy_artifact_archive_suffix(artifact, Path(artifact.storage_path or artifact.artifact_name or ""))
+            )
+        ),
+        "archive_suffix": _normalize_project_deploy_text(manifest.get("archive_suffix"), limit=40),
     }
     run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
     project_deploy_store.save_artifact(artifact)
@@ -1185,7 +2844,7 @@ def _execute_project_deploy_run_for_artifact(
 def _redact_project_deploy_log(value: Any) -> str:
     text = str(value or "")
     patterns = [
-        r"(?i)(authorization\s*[:=]\s*)\S+",
+        r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s\r\n]+",
         r"(?i)(token\s*[:=]\s*)\S+",
         r"(?i)(password\s*[:=]\s*)\S+",
         r"(?i)(secret\s*[:=]\s*)\S+",
@@ -1287,7 +2946,7 @@ def _create_project_deploy_run_for_artifact(
             "deployable_target_count": len(deployable_targets),
             "missing_targets": missing_target_report,
         },
-        log_excerpt="" if deployable_targets else "blocked: missing target ftp credential, remote_path, or deploy_command",
+        log_excerpt="" if deployable_targets else "blocked: missing target ftp credential or remote_path",
         notify_result=_build_project_deploy_notification_preview(project, artifact, status=run_status),
     )
     return project_deploy_store.save_run(run)
@@ -1365,6 +3024,12 @@ def _build_project_deploy_command_prompt(
     profile = req.profile if isinstance(req.profile, dict) else {}
     component = req.component if isinstance(req.component, dict) else {}
     target = req.target if isinstance(req.target, dict) else {}
+    artifact_name = _normalize_project_deploy_text(req.artifact_name, limit=240)
+    artifact_path = _normalize_project_deploy_text(req.artifact_path, limit=1000)
+    artifact_source = Path(artifact_name or artifact_path)
+    artifact_upload_shape = "directory" if _project_deploy_is_archive_path(artifact_source) else "file"
+    if "/" in artifact_path.rstrip("/") or artifact_path.endswith("/"):
+        artifact_upload_shape = "directory" if not Path(artifact_path).suffix else artifact_upload_shape
     payload = {
         "project": {
             "id": project.id,
@@ -1396,9 +3061,14 @@ def _build_project_deploy_command_prompt(
             "existing_deploy_command": _normalize_project_deploy_text(target.get("deploy_command"), limit=1000),
         },
         "artifact": {
-            "artifact_name": _normalize_project_deploy_text(req.artifact_name, limit=240),
-            "artifact_path": _normalize_project_deploy_text(req.artifact_path, limit=1000),
+            "artifact_name": artifact_name,
+            "artifact_path": artifact_path,
             "artifact_kind": _normalize_project_deploy_text(req.artifact_kind, limit=80) or "source-bundle",
+            "upload_shape": artifact_upload_shape,
+            "server_prepare_behavior": (
+                "zip/tar/tar.gz/tgz 产物默认按单文件原样上传；只有部署要求明确解压时才由服务端安全解压后上传；目录产物直接按目录上传。"
+            ),
+            "ftp_backup_behavior": "FTP 上传前服务端会先把远端目标在线重命名为 中文时间戳 备份名，再上传新内容。",
         },
     }
     return [
@@ -1415,10 +3085,11 @@ def _build_project_deploy_command_prompt(
             "content": (
                 "约束：\n"
                 "- 当前只支持 FTP 上传，服务器连接和密码已由系统全局 FTP 账户管理，命令里不要包含账号、密码、token、密钥。\n"
+                "- 产物上传、目录递归上传、FTP 在线备份都由服务端自动完成；只有部署要求明确解压时服务端才会解压压缩包。命令不要再重复上传、下载、解压本次产物，也不要要求用户判断压缩包或目录。\n"
                 "- 只能依据本次输入里的部署配置、目标路径和产物信息生成命令；不要扫描、读取或引用仓库里的历史发布配置，也不要把历史发布链路当作当前执行依据。\n"
                 "- 命令应尽量使用相对当前远端目录或 payload.remote_path 的路径。\n"
-                "- 如果无法确定具体重启命令，生成保守命令：校验目录、解压/同步产物、输出下一步提示，不要编造 systemctl 服务名。\n"
-                "- 如果 artifact_path 类似 frontend/dist，倾向于静态资源发布命令；如果是 source-bundle，倾向于解压后执行已有 deploy.sh（存在时）。\n"
+                "- 如果无法确定具体重启命令，生成保守命令：校验目录和必要文件、输出下一步提示，不要编造 systemctl 服务名。\n"
+                "- 如果 artifact_path 类似 frontend/dist，倾向于静态资源发布校验命令；如果是 source-bundle，倾向于在远端目录执行已有 deploy.sh（存在时）。\n"
                 "- 最终 deploy_command 不超过 1000 字符。\n\n"
                 f"输入：\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
             ),
@@ -1460,65 +3131,44 @@ async def _generate_project_deploy_command_via_external_agent(
     messages: list[dict[str, str]],
     chat_settings: dict[str, Any],
 ) -> dict[str, Any]:
-    workspace_path = _resolve_project_workspace_for_chat(project, chat_settings)
-    external_agent_info = await _build_project_external_agent_info(
-        project=project,
-        auth_payload=auth_payload,
-        settings=chat_settings,
-        workspace_path=workspace_path,
-    )
-    connector = _resolve_accessible_local_connector(
-        str(chat_settings.get("local_connector_id") or "").strip(),
-        auth_payload,
-    )
-    if connector is None:
-        raise HTTPException(400, "项目 AI 对话已选择外部 Agent，但缺少可用本地连接器")
-    if not external_agent_info.get("available"):
-        reason = str(external_agent_info.get("reason") or "外部 Agent 不可用").strip()
-        raise HTTPException(400, f"项目 AI 对话外部 Agent 不可用：{reason}")
-    agent_type = str(chat_settings.get("external_agent_type") or "codex_cli").strip().lower()
-    if agent_type != "codex_cli":
-        raise HTTPException(400, "当前服务端部署命令生成仅支持通过本地连接器运行 Codex CLI 外部 Agent")
-
-    prompt = _project_deploy_command_messages_to_prompt(messages)
-    sandbox_mode = str(chat_settings.get("connector_sandbox_mode") or "workspace-write").strip() or "workspace-write"
-    cmd = ["codex", "exec", "--sandbox", sandbox_mode, prompt]
-    stdout_chunks: list[str] = []
-    stderr_chunks: list[str] = []
-    exit_code: int | None = None
-    async for raw_event in exec_stream_via_connector(
-        connector,
-        cmd=cmd,
-        cwd=workspace_path,
-        env={},
-    ):
-        raw_type = str(raw_event.get("type") or "").strip().lower()
-        message = str(raw_event.get("message") or raw_event.get("data") or raw_event.get("content") or "")
-        if raw_type in {"stdout", "chunk"} and message:
-            stdout_chunks.append(message)
-        elif raw_type == "stderr" and message:
-            stderr_chunks.append(message)
-        elif raw_type == "exit":
-            try:
-                exit_code = int(raw_event.get("returncode"))
-            except (TypeError, ValueError):
-                exit_code = 1
-    if exit_code not in (None, 0):
-        stderr_text = "".join(stderr_chunks).strip()
-        raise HTTPException(502, f"外部 Agent 生成部署命令失败：{stderr_text or f'exit={exit_code}'}")
-    command = _clean_project_deploy_command_output("".join(stdout_chunks))
+    fallback_settings = dict(chat_settings)
+    fallback_settings["chat_mode"] = "system"
+    resolved_runtime = await _resolve_project_chat_runtime(fallback_settings, auth_payload)
+    if resolved_runtime.provider_mode == "local_connector":
+        connector = _resolve_accessible_local_connector_for_llm(resolved_runtime.connector_id, auth_payload)
+        if connector is None:
+            raise HTTPException(400, "本地连接器不可用")
+        response = await chat_completion_via_connector(
+            connector,
+            model_name=resolved_runtime.model_name,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=500,
+            timeout=30,
+        )
+    else:
+        llm_runtime = _resolve_chat_llm_service_runtime(None, resolved_runtime, auth_payload)
+        response = await llm_runtime.chat_completion(
+            resolved_runtime.provider_id,
+            resolved_runtime.model_name,
+            messages,
+            temperature=0.1,
+            max_tokens=500,
+            timeout=30,
+        )
+    response_payload = response if isinstance(response, dict) else {}
+    command = _clean_project_deploy_command_output(response_payload.get("content"))
     if not command:
-        raise HTTPException(502, "外部 Agent 没有返回可用部署命令")
-    agent_model_name = str(external_agent_info.get("runtime_model_name") or agent_type).strip()
+        raise HTTPException(502, "模型没有返回可用部署命令")
     return {
         "status": "generated",
         "project_id": project.id,
         "deploy_command": command,
-        "provider_id": "external-agent",
-        "model_name": agent_model_name,
-        "chat_mode": "external_agent",
-        "external_agent_type": agent_type,
-        "token_usage": None,
+        "provider_id": str(response_payload.get("provider_id") or resolved_runtime.provider_id).strip(),
+        "model_name": str(response_payload.get("model_name") or resolved_runtime.model_name).strip(),
+        "chat_mode": "system_fallback",
+        "requested_chat_mode": "external_agent",
+        "token_usage": response_payload.get("usage"),
         "persisted": False,
     }
 
@@ -1529,8 +3179,6 @@ async def _generate_project_deploy_command_payload(
     req: ProjectDeployCommandGenerateReq,
     auth_payload: dict,
 ) -> dict[str, Any]:
-    from services.providers.llm_provider_service import get_llm_provider_service
-
     chat_settings = _resolve_project_deploy_command_chat_settings(project, req)
     messages = _build_project_deploy_command_prompt(project=project, req=req)
     if str(chat_settings.get("chat_mode") or "").strip().lower() == "external_agent":
@@ -1554,8 +3202,7 @@ async def _generate_project_deploy_command_payload(
             timeout=30,
         )
     else:
-        llm_service = get_llm_provider_service()
-        llm_runtime = _resolve_chat_llm_service_runtime(llm_service, resolved_runtime, auth_payload)
+        llm_runtime = _resolve_chat_llm_service_runtime(None, resolved_runtime, auth_payload)
         response = await llm_runtime.chat_completion(
             resolved_runtime.provider_id,
             resolved_runtime.model_name,
@@ -1577,6 +3224,992 @@ async def _generate_project_deploy_command_payload(
         "chat_mode": "system",
         "token_usage": response_payload.get("usage"),
         "persisted": False,
+    }
+
+
+def _infer_project_deploy_artifact_application_type(
+    *,
+    artifact: ProjectDeployArtifact,
+    component: dict[str, Any],
+) -> str:
+    haystack = " ".join(
+        str(item or "").strip().lower()
+        for item in (
+            artifact.artifact_kind,
+            artifact.artifact_name,
+            artifact.component,
+            component.get("artifact_kind"),
+            component.get("id"),
+            component.get("name"),
+        )
+        if str(item or "").strip()
+    )
+    if re.search(r"(frontend|front-end|web|dist|h5|vue|react|next|nuxt|static|spa)", haystack):
+        return "frontend"
+    if re.search(r"(backend|back-end|api|server|service|java|spring|node|nestjs|python|fastapi|django|go|gin)", haystack):
+        return "backend"
+    if re.search(r"(fullstack|full-stack|monorepo|source-bundle|source)", haystack):
+        return "fullstack_or_source_bundle"
+    return "unknown"
+
+
+def _project_deploy_artifact_is_archive(artifact: ProjectDeployArtifact) -> bool:
+    manifest = artifact.manifest if isinstance(artifact.manifest, dict) else {}
+    if _normalize_project_deploy_text(manifest.get("archive_suffix"), limit=40):
+        return True
+    name = str(artifact.artifact_name or "").strip().lower()
+    return bool(re.search(r"\.(zip|tar|tgz|tar\.gz|tar\.bz2|tar\.xz)$", name))
+
+
+def _build_project_deploy_artifact_plan_messages(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    req: ProjectDeployArtifactPlanGenerateReq,
+) -> list[dict[str, str]]:
+    profile = _find_project_deploy_profile(project, artifact.profile) or {}
+    component = _find_project_deploy_component(profile, artifact.component) or {}
+    targets = [
+        {
+            "id": _normalize_project_deploy_text(target.get("id"), limit=80),
+            "name": _normalize_project_deploy_text(target.get("name"), limit=120),
+            "remote_path": _normalize_project_deploy_text(target.get("remote_path"), limit=1000),
+            "has_deploy_command": bool(_normalize_project_deploy_text(target.get("deploy_command"), limit=1000)),
+            "remote_command_mode": _normalize_project_deploy_text(
+                target.get("remote_command_mode")
+                or (target.get("remote_executor") if isinstance(target.get("remote_executor"), dict) else {}).get("mode"),
+                limit=80,
+            ),
+        }
+        for target in (component.get("targets") if isinstance(component.get("targets"), list) else [])
+        if isinstance(target, dict) and bool(target.get("enabled", True))
+    ]
+    file_tree = artifact.file_tree if isinstance(artifact.file_tree, list) else []
+    manifest = artifact.manifest if isinstance(artifact.manifest, dict) else {}
+    context = {
+        "source": "deploy_artifact_panel",
+        "project": {
+            "id": project.id,
+            "name": _normalize_project_deploy_text(project.name, limit=200),
+        },
+        "deploy_profile": {
+            "id": _normalize_project_deploy_text(profile.get("id") or artifact.profile, limit=80),
+            "name": _normalize_project_deploy_text(profile.get("name"), limit=120),
+            "environment": _normalize_project_deploy_text(profile.get("environment"), limit=120),
+        },
+        "deploy_component": {
+            "id": _normalize_project_deploy_text(component.get("id") or artifact.component, limit=80),
+            "name": _normalize_project_deploy_text(component.get("name"), limit=120),
+            "artifact_kind": _normalize_project_deploy_text(component.get("artifact_kind") or artifact.artifact_kind, limit=120),
+            "application_type": _infer_project_deploy_artifact_application_type(
+                artifact=artifact,
+                component=component,
+            ),
+            "auto_deploy_on_artifact_update": bool((component.get("safety") if isinstance(component.get("safety"), dict) else {}).get("auto_deploy_on_artifact_update")),
+        },
+        "artifact": {
+            "id": artifact.id,
+            "name": artifact.artifact_name,
+            "artifact_kind": artifact.artifact_kind,
+            "version": artifact.version,
+            "status": artifact.status,
+            "storage_kind": artifact.storage_kind,
+            "is_archive": _project_deploy_artifact_is_archive(artifact),
+            "file_count": int(manifest.get("file_count") or len(file_tree) or 0),
+            "size": artifact.size,
+            "checksum": artifact.checksum,
+            "uploaded_at": artifact.uploaded_at,
+        },
+        "deploy_targets": targets,
+        "user_requirement": _normalize_project_deploy_text(req.requirement, limit=2000),
+        "server_deploy_rules": {
+            "ftp_backup_behavior": "上传前服务端会把远端目标在线重命名为中文时间戳备份名。",
+            "archive_behavior": "压缩包默认按单文件原样上传；只有用户要求或结构化计划明确解压时，当前系统才会在部署前安全解压后上传。",
+            "directory_behavior": "目录产物由当前系统递归上传。",
+            "credentials": "FTP/SSH 账号密码只由服务端凭据解析，不能输出或要求用户提供密码。",
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是谨慎的部署工程师。请基于当前 UI 部署配置和已上传产物生成部署执行流程。"
+                "只生成计划和确认要点，不执行部署，不生成命令，不要求用户解释压缩包或目录。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "输出要求：\n"
+                "- 用中文输出 4 到 7 个短步骤，适合显示在部署弹框里。\n"
+                "- 必须说明产物类型判断、远端备份、上传/解压/目录处理、部署命令是否会执行、执行前确认点。\n"
+                "- 如果 user_requirement 包含“解压”，且 artifact.is_archive=true，必须明确写“当前系统先解压，再上传解压后的内容”。\n"
+                "- 如果 user_requirement 没有明确要求解压，且 artifact.is_archive=true，必须明确写“当前系统原样上传压缩包，不会默认解压”。\n"
+                "- 如果缺少远端目录、目标服务器、命令执行器或部署配置，请明确写出 blocked/missing 项。\n"
+                "- 不要输出 FTP 密码、token、密钥，不要引用历史 CI、本地凭据、远端脚本或环境变量。\n"
+                "- 不要输出 Markdown 表格；可以使用编号列表。\n\n"
+                f"部署上下文：\n{json.dumps(context, ensure_ascii=False, indent=2)}"
+            ),
+        },
+    ]
+
+
+def _build_project_deploy_artifact_runtime_context(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    requirement: str,
+    plan: str,
+    ai_content: str = "",
+) -> dict[str, Any]:
+    profile = _find_project_deploy_profile(project, artifact.profile) or {}
+    component = _find_project_deploy_component(profile, artifact.component) or {}
+    application_type = _infer_project_deploy_artifact_application_type(
+        artifact=artifact,
+        component=component,
+    )
+    targets = [
+        {
+            "id": _normalize_project_deploy_text(target.get("id"), limit=80),
+            "name": _normalize_project_deploy_text(target.get("name"), limit=120),
+            "remote_path": _normalize_project_deploy_text(target.get("remote_path"), limit=1000),
+            "has_deploy_command": bool(_normalize_project_deploy_text(target.get("deploy_command"), limit=1000)),
+            "remote_command_mode": _normalize_project_deploy_text(
+                target.get("remote_command_mode")
+                or (target.get("remote_executor") if isinstance(target.get("remote_executor"), dict) else {}).get("mode"),
+                limit=80,
+            ),
+        }
+        for target in (component.get("targets") if isinstance(component.get("targets"), list) else [])
+        if isinstance(target, dict) and bool(target.get("enabled", True))
+    ]
+    manifest = artifact.manifest if isinstance(artifact.manifest, dict) else {}
+    return {
+        "project": {
+            "project_id": project.id,
+            "project_name": project.name,
+        },
+        "artifact": {
+            "artifact_id": artifact.id,
+            "artifact_name": artifact.artifact_name,
+            "artifact_kind": artifact.artifact_kind,
+            "version": artifact.version,
+            "storage_kind": artifact.storage_kind,
+            "is_archive": _project_deploy_artifact_is_archive(artifact),
+            "archive_suffix": _normalize_project_deploy_text(manifest.get("archive_suffix"), limit=40),
+            "archive_behavior": _normalize_project_deploy_text(manifest.get("archive_behavior"), limit=80),
+            "manifest_summary": {
+                "size": artifact.size,
+                "checksum": artifact.checksum,
+                "file_count": manifest.get("file_count") or 0,
+                "source_type": _normalize_project_deploy_text(manifest.get("source_type"), limit=80),
+            },
+            "file_tree_preview": (artifact.file_tree if isinstance(artifact.file_tree, list) else [])[:20],
+        },
+        "profile": artifact.profile,
+        "component": artifact.component,
+        "application_type": application_type,
+        "targets": targets,
+        "requirement": _normalize_project_deploy_text(requirement, limit=2000),
+        "ui_plan": _normalize_project_deploy_text(plan, limit=4000),
+        "ai_content": _normalize_project_deploy_text(ai_content, limit=6000),
+    }
+
+
+def _build_project_deploy_artifact_execution_plan_messages(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    requirement: str,
+    plan: str,
+) -> list[dict[str, str]]:
+    context = _build_project_deploy_artifact_runtime_context(
+        project=project,
+        artifact=artifact,
+        requirement=requirement,
+        plan=plan,
+    )
+    controlled_tools = [
+        {
+            "type": "backup_remote_target",
+            "description": "上传前由后端自动按目标远端路径创建中文时间戳备份；模型可声明但不能指定凭据。",
+        },
+        {
+            "type": "extract_artifact",
+            "description": "安全解压服务端 artifact；仅支持后端识别的 zip/tar 类压缩包。",
+            "optional_fields": ["extract_to_path"],
+        },
+        {
+            "type": "copy_extracted_to_path",
+            "description": "把安全解压后的文件复制到服务端本地绝对路径，路径必须来自用户要求。",
+            "optional_fields": ["extract_to_path"],
+        },
+        {
+            "type": "upload_extracted_files",
+            "description": "递归上传解压后的文件到部署配置中的远端目录。",
+            "optional_fields": ["target_id"],
+        },
+        {
+            "type": "upload_original_archive",
+            "description": "上传原始 artifact 压缩包或文件到部署配置中的远端目录。",
+            "optional_fields": ["target_id"],
+        },
+        {
+            "type": "write_deploy_log_file",
+            "description": "在用户明确指定的本地部署目录中写入 .log/.txt 文本部署日志文件；不能写脚本或系统目录。",
+            "optional_fields": ["directory", "filename", "content"],
+        },
+        {
+            "type": "run_configured_remote_command",
+            "description": "只允许触发部署配置里已保存的 deploy_command；不能输出或新增命令文本。",
+            "optional_fields": ["target_id"],
+        },
+    ]
+    schema = {
+        "version": 1,
+        "actions": [
+            {"type": "backup_remote_target", "target_id": "server-1"},
+            {"type": "extract_artifact", "extract_to_path": "/absolute/path/from/user/requirement"},
+            {"type": "copy_extracted_to_path", "extract_to_path": "/absolute/path/from/user/requirement"},
+            {"type": "write_deploy_log_file", "directory": "/absolute/path/from/user/requirement", "filename": "deploy.log"},
+            {"type": "upload_extracted_files", "target_id": "server-1"},
+            {"type": "upload_original_archive", "target_id": "server-1"},
+        ],
+        "unsupported_requirements": [],
+        "notes": "一句话说明计划依据",
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是部署执行规划模型。你只能把用户自然语言部署要求映射为后端白名单工具计划，"
+                "不能编造命令、不能要求密码、不能引用历史 CI、本地凭据、远端脚本或环境变量。"
+                "如果用户要求超出白名单工具能力，把无法支持的部分写入 unsupported_requirements。"
+                "只输出一个 JSON object，不要输出 Markdown、代码块或解释文本。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "根据部署上下文和用户要求，输出严格 JSON 执行计划。\n"
+                "规则：\n"
+                "- 没有明确要求解压时，压缩包按 upload_original_archive 处理，不要默认解压。\n"
+                "- 用户明确要求解压时，必须包含 extract_artifact；如果要求上传解压后内容，再包含 upload_extracted_files。\n"
+                "- 用户要求“压缩包也上传/都上传/一起上传”时，必须同时包含 upload_original_archive。\n"
+                "- 用户给出本地绝对路径要求放置解压后文件时，必须把该路径放入 extract_to_path，并包含 copy_extracted_to_path。\n"
+                "- 用户要求创建部署日志文件时，使用 write_deploy_log_file；这类普通日志文件创建不要放入 unsupported_requirements。\n"
+                "- 只能使用 controlled_tools 中的 type；任何重命名、删除、执行自定义命令、读取凭据、写脚本文件等要求必须进入 unsupported_requirements。\n"
+                "- run_configured_remote_command 不能携带 command 或 deploy_command 字段。\n\n"
+                f"JSON schema 示例：\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
+                f"controlled_tools：\n{json.dumps(controlled_tools, ensure_ascii=False, indent=2)}\n\n"
+                f"部署上下文：\n{json.dumps(context, ensure_ascii=False, indent=2)}"
+            ),
+        },
+    ]
+
+
+async def _generate_project_deploy_artifact_execution_plan_payload(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    req: ProjectDeployArtifactAiExecuteReq,
+    auth_payload: dict,
+) -> dict[str, Any]:
+    chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
+    requested_provider_id = _normalize_project_deploy_text(req.provider_id, limit=120)
+    requested_model_name = _normalize_project_deploy_text(req.model_name, limit=160)
+    if requested_provider_id:
+        chat_settings["provider_id"] = requested_provider_id
+    if requested_model_name:
+        chat_settings["model_name"] = requested_model_name
+    if str(chat_settings.get("chat_mode") or "").strip().lower() == "external_agent":
+        chat_settings["chat_mode"] = "system"
+    requirement = _normalize_project_deploy_text(req.requirement, limit=2000)
+    plan = _normalize_project_deploy_text(req.plan, limit=4000)
+    messages = _build_project_deploy_artifact_execution_plan_messages(
+        project=project,
+        artifact=artifact,
+        requirement=requirement,
+        plan=plan,
+    )
+    resolved_runtime = await _resolve_project_chat_runtime(chat_settings, auth_payload)
+    if resolved_runtime.provider_mode == "local_connector":
+        connector = _resolve_accessible_local_connector_for_llm(resolved_runtime.connector_id, auth_payload)
+        if connector is None:
+            raise _ProjectDeployAiExecutionPlanError("本地连接器不可用", stage="ai_execution_plan_generation_failed")
+        response = await chat_completion_via_connector(
+            connector,
+            model_name=resolved_runtime.model_name,
+            messages=messages,
+            temperature=0,
+            max_tokens=1200,
+            timeout=60,
+        )
+    else:
+        llm_runtime = _resolve_chat_llm_service_runtime(None, resolved_runtime, auth_payload)
+        response = await llm_runtime.chat_completion(
+            resolved_runtime.provider_id,
+            resolved_runtime.model_name,
+            messages,
+            temperature=0,
+            max_tokens=1200,
+            timeout=60,
+        )
+    response_payload = response if isinstance(response, dict) else {}
+    raw_content = str(response_payload.get("content") or "").strip()
+    execution_plan = _project_deploy_validate_ai_execution_plan(
+        _project_deploy_parse_json_object_from_model(raw_content)
+    )
+    return {
+        "status": "generated",
+        "project_id": project.id,
+        "artifact_id": artifact.id,
+        "execution_plan": execution_plan,
+        "raw_content": raw_content[:4000],
+        "provider_id": str(response_payload.get("provider_id") or resolved_runtime.provider_id).strip(),
+        "model_name": str(response_payload.get("model_name") or resolved_runtime.model_name).strip(),
+        "chat_mode": "system",
+        "token_usage": response_payload.get("usage"),
+    }
+
+
+def _build_project_deploy_agent_messages(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    requirement: str,
+    plan: str,
+    transcript: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    context = _build_project_deploy_artifact_runtime_context(
+        project=project,
+        artifact=artifact,
+        requirement=requirement,
+        plan=plan,
+    )
+    tools = [
+        {
+            "name": "list_directory",
+            "description": "列出部署工作区、解压目录或 artifact 目录下的文件。",
+            "args": {"path": "可选，绝对路径或相对当前工作目录"},
+        },
+        {
+            "name": "read_text_file",
+            "description": "读取部署工作区内文本文件内容。",
+            "args": {"path": "必填"},
+        },
+        {
+            "name": "write_text_file",
+            "description": "写入部署工作区内文本文件，适合部署日志、报告、json 配置等文本文件。",
+            "args": {"path": "必填", "content": "必填"},
+        },
+        {
+            "name": "create_directory",
+            "description": "创建部署工作区内目录。",
+            "args": {"path": "必填"},
+        },
+        {
+            "name": "extract_artifact",
+            "description": "安全解压服务端 artifact 到部署工作区或用户指定路径。",
+            "args": {"destination": "可选"},
+        },
+        {
+            "name": "upload_directory",
+            "description": "把目录递归上传到部署目标远端目录；上传前自动备份远端目标。",
+            "args": {"path": "可选，默认当前解压目录", "target_id": "可选"},
+        },
+        {
+            "name": "upload_file",
+            "description": "把部署工作区内单个文件上传到部署目标远端目录。",
+            "args": {"path": "必填", "target_id": "可选"},
+        },
+        {
+            "name": "upload_original_archive",
+            "description": "上传原始 artifact 文件或目录产物内唯一压缩包。",
+            "args": {"target_id": "可选"},
+        },
+        {
+            "name": "run_command",
+            "description": "在部署工作区内执行命令或脚本，并把 stdout/stderr 返回给模型继续判断。只能在 artifact/解压目录/指定部署目录内运行。",
+            "args": {"command": "必填", "cwd": "可选", "timeout_sec": "可选"},
+        },
+        {
+            "name": "run_configured_remote_command",
+            "description": "触发部署目标里已保存的 deploy_command，并把 stdout/stderr 返回给模型继续判断。不能携带 command 或 deploy_command。",
+            "args": {"target_id": "可选", "timeout_sec": "可选"},
+        },
+        {
+            "name": "finish",
+            "description": "部署完成或确认无法继续时调用。",
+            "args": {"summary": "必填", "status": "可选：success/failed/blocked"},
+        },
+    ]
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是部署 Agent。你不是生成固定流程，而是根据用户部署要求逐步调用工具完成部署。"
+                "每轮只能输出一个 JSON object，不要 Markdown。格式必须是："
+                "{\"tool\":\"工具名\",\"args\":{...},\"reason\":\"为什么这一步\"}。"
+                "工具结果会在下一轮发给你，你要根据 stdout/stderr/错误继续决定下一步。"
+                "不要要求用户补密码，不要读取或输出凭据。远端备份由上传工具自动处理。"
+                "如果用户没有填写部署要求，压缩包产物必须原样上传，禁止默认调用 extract_artifact 或 upload_directory 上传解压目录。"
+                "只有用户明确要求解压、拆包、上传解压后内容、从压缩包中选择文件，才可以调用 extract_artifact。"
+                "如果用户要求解压后上传指定文件，例如某个 .md/.txt/.js 文件，必须解压后用 upload_file 上传该文件，不能上传原压缩包或整个目录。"
+                "如果用户没有明确要求压缩包也上传，已要求解压处理时不要调用 upload_original_archive。"
+                "需要执行脚本时调用 run_command，并根据 stdout/stderr 继续判断。"
+                "需要触发部署配置里已保存的远端部署命令时调用 run_configured_remote_command，不要自己生成远端命令。"
+                "完成或失败不可继续时调用 finish；失败或阻塞时 args.status 必须是 failed 或 blocked。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"部署上下文：\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
+                f"可用工具：\n{json.dumps(tools, ensure_ascii=False, indent=2)}\n\n"
+                f"已执行步骤和工具结果：\n{json.dumps(transcript[-12:], ensure_ascii=False, indent=2)}"
+            ),
+        },
+    ]
+
+
+async def _call_project_deploy_agent_model(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    req: ProjectDeployArtifactAiExecuteReq,
+    auth_payload: dict,
+    transcript: list[dict[str, Any]],
+) -> dict[str, Any]:
+    chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
+    requested_provider_id = _normalize_project_deploy_text(req.provider_id, limit=120)
+    requested_model_name = _normalize_project_deploy_text(req.model_name, limit=160)
+    if requested_provider_id:
+        chat_settings["provider_id"] = requested_provider_id
+    if requested_model_name:
+        chat_settings["model_name"] = requested_model_name
+    if str(chat_settings.get("chat_mode") or "").strip().lower() == "external_agent":
+        chat_settings["chat_mode"] = "system"
+    messages = _build_project_deploy_agent_messages(
+        project=project,
+        artifact=artifact,
+        requirement=req.requirement,
+        plan=req.plan,
+        transcript=transcript,
+    )
+    resolved_runtime = await _resolve_project_chat_runtime(chat_settings, auth_payload)
+    if resolved_runtime.provider_mode == "local_connector":
+        connector = _resolve_accessible_local_connector_for_llm(resolved_runtime.connector_id, auth_payload)
+        if connector is None:
+            raise _ProjectDeployAgentError("本地连接器不可用", stage="ai_deploy_agent_model_failed")
+        response = await chat_completion_via_connector(
+            connector,
+            model_name=resolved_runtime.model_name,
+            messages=messages,
+            temperature=0,
+            max_tokens=1200,
+            timeout=60,
+        )
+    else:
+        llm_runtime = _resolve_chat_llm_service_runtime(None, resolved_runtime, auth_payload)
+        response = await llm_runtime.chat_completion(
+            resolved_runtime.provider_id,
+            resolved_runtime.model_name,
+            messages,
+            temperature=0,
+            max_tokens=1200,
+            timeout=60,
+        )
+    response_payload = response if isinstance(response, dict) else {}
+    action = _project_deploy_agent_json(response_payload.get("content"))
+    action["_provider_id"] = str(response_payload.get("provider_id") or resolved_runtime.provider_id).strip()
+    action["_model_name"] = str(response_payload.get("model_name") or resolved_runtime.model_name).strip()
+    return action
+
+
+async def _execute_project_deploy_artifact_agent_payload(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    req: ProjectDeployArtifactAiExecuteReq,
+    requested_by: str,
+    chat_session_id: str,
+    auth_payload: dict,
+) -> dict[str, Any]:
+    run = _create_project_deploy_run_for_artifact(
+        project=project,
+        artifact=artifact,
+        requested_by=requested_by,
+        chat_session_id=_normalize_project_deploy_text(chat_session_id, limit=120),
+        task_tree_node_id="",
+        require_auto_deploy_enabled=False,
+    )
+    if run is None:
+        artifact.status = "blocked"
+        artifact.error = "deploy settings disabled or artifact profile/component not found"
+        project_deploy_store.save_artifact(artifact)
+        raise HTTPException(400, "项目部署配置未启用，或产物所属环境/部署单元不存在")
+    profile = _find_project_deploy_profile(project, artifact.profile) or {}
+    component = _find_project_deploy_component(profile, artifact.component) or {}
+    targets = [
+        target
+        for target in (component.get("targets") if isinstance(component.get("targets"), list) else [])
+        if isinstance(target, dict) and bool(target.get("enabled", True))
+    ]
+    run.status = "running"
+    run.stage = "ai_deploy_agent_running"
+    run.artifact_summary = {
+        **(run.artifact_summary or {}),
+        "deploy_surface": "project_detail_ai_deploy_agent",
+        "user_requirement": _normalize_project_deploy_text(req.requirement, limit=2000),
+        "ai_deploy_plan": _normalize_project_deploy_text(req.plan, limit=4000),
+        "agent_mode": True,
+    }
+    run = project_deploy_store.save_run(run)
+    artifact.status = "deploy_queued"
+    artifact.deployment_id = run.id
+    project_deploy_store.save_artifact(artifact)
+
+    transcript: list[dict[str, Any]] = []
+    tool_results: list[dict[str, Any]] = []
+    uploaded_actions: list[str] = []
+    provider_id = ""
+    model_name = ""
+    requirement_text = _normalize_project_deploy_text(req.requirement, limit=2000)
+    requirement_policy = _project_deploy_resolve_archive_upload_policy(requirement=requirement_text, plan="")
+    requirement_wants_original_archive = _project_deploy_wants_original_archive_upload(requirement_text)
+    with TemporaryDirectory(prefix="project-deploy-agent-") as temp_dir:
+        scratch_dir = Path(temp_dir)
+        state: dict[str, Any] = {
+            "current_dir": scratch_dir.as_posix(),
+            "extract_to_path": "",
+            "forbid_default_extract": not bool(requirement_text),
+            "forbid_original_archive_upload": (
+                bool(requirement_text)
+                and requirement_policy == "extract_before_upload"
+                and not requirement_wants_original_archive
+            ),
+            "requires_specific_file_upload": _project_deploy_requirement_uploads_specific_file(requirement_text),
+        }
+        try:
+            for step_index in range(1, 13):
+                action = await _call_project_deploy_agent_model(
+                    project=project,
+                    artifact=artifact,
+                    req=req,
+                    auth_payload=auth_payload,
+                    transcript=transcript,
+                )
+                provider_id = provider_id or _normalize_project_deploy_text(action.get("_provider_id"), limit=120)
+                model_name = model_name or _normalize_project_deploy_text(action.get("_model_name"), limit=160)
+                tool_name = _normalize_project_deploy_text(action.get("tool") or action.get("name"), limit=80)
+                args = action.get("args") if isinstance(action.get("args"), dict) else {}
+                reason = _normalize_project_deploy_text(action.get("reason"), limit=1000)
+                transcript.append({"step": step_index, "agent_action": {"tool": tool_name, "args": args, "reason": reason}})
+                try:
+                    result = await run_in_threadpool(
+                        _project_deploy_agent_execute_tool,
+                        project=project,
+                        artifact=artifact,
+                        targets=targets,
+                        scratch_dir=scratch_dir,
+                        state=state,
+                        tool_name=tool_name,
+                        args=args,
+                        requested_by=requested_by,
+                    )
+                except _ProjectDeployAgentError as exc:
+                    result = {
+                        "ok": False,
+                        "tool": tool_name,
+                        "stage": exc.stage,
+                        "error": str(exc),
+                    }
+                except Exception as exc:
+                    result = {
+                        "ok": False,
+                        "tool": tool_name,
+                        "stage": "ai_deploy_agent_tool_failed",
+                        "error": str(exc),
+                    }
+                transcript.append({"step": step_index, "tool_result": result})
+                tool_results.append({"step": step_index, "tool": tool_name, "result": result})
+                if tool_name.startswith("upload_") and bool(result.get("ok", True)):
+                    uploaded_actions.append(tool_name)
+                if result.get("finished"):
+                    final_status = _normalize_project_deploy_text(result.get("status"), limit=40).lower()
+                    if final_status == "failed":
+                        run.status = "failed"
+                        run.stage = "ai_deploy_agent_failed"
+                        artifact.status = "failed"
+                    elif final_status == "blocked":
+                        run.status = "blocked"
+                        run.stage = "ai_deploy_agent_blocked"
+                        artifact.status = "blocked"
+                    else:
+                        run.status = "success"
+                        run.stage = "ai_deploy_agent_completed"
+                        artifact.status = "deployed"
+                    run.log_excerpt = _normalize_project_deploy_text(result.get("summary"), limit=1000) or "AI deploy agent completed"
+                    if run.status != "success":
+                        artifact.error = run.log_excerpt
+                    break
+                if result.get("ok") is False:
+                    # Give the model one chance to inspect stderr and recover.
+                    continue
+            else:
+                raise _ProjectDeployAgentError("AI 部署 Agent 达到最大步骤数仍未 finish", stage="ai_deploy_agent_step_limit")
+            if run.status not in {"success", "failed", "blocked"}:
+                run.status = "success"
+                run.stage = "ai_deploy_agent_completed"
+                run.log_excerpt = "AI deploy agent completed"
+                artifact.status = "deployed"
+        except _ProjectDeployAgentError as exc:
+            run.status = "failed"
+            run.stage = exc.stage
+            run.log_excerpt = f"AI deploy agent failed: {exc}"
+            artifact.status = "failed"
+            artifact.error = run.log_excerpt
+        except Exception as exc:
+            run.status = "failed"
+            run.stage = "ai_deploy_agent_failed"
+            run.log_excerpt = f"AI deploy agent failed: {exc}"
+            artifact.status = "failed"
+            artifact.error = run.log_excerpt
+
+    run.artifact_summary = {
+        **(run.artifact_summary or {}),
+        "agent_mode": True,
+        "ai_agent_provider_id": provider_id,
+        "ai_agent_model_name": model_name,
+        "agent_transcript": transcript[-40:],
+        "tool_results": tool_results[-40:],
+        "upload_actions": uploaded_actions,
+        "uploaded_target_count": len([item for item in tool_results if str(item.get("tool") or "").startswith("upload_")]),
+    }
+    run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
+    run = project_deploy_store.save_run(run)
+    artifact.deployment_id = run.id
+    artifact.status = _project_deploy_artifact_status_for_run(run.status)
+    project_deploy_store.save_artifact(artifact)
+    return {
+        "status": artifact.status,
+        "project_id": project.id,
+        "artifact": _serialize_project_deploy_artifact(artifact),
+        "deployment": _serialize_project_deploy_run(run),
+        "ai_agent": {
+            "status": run.status,
+            "provider_id": provider_id,
+            "model_name": model_name,
+            "tool_results": tool_results[-20:],
+        },
+    }
+
+
+async def _generate_project_deploy_artifact_plan_payload(
+    *,
+    project: ProjectConfig,
+    artifact_id: str,
+    req: ProjectDeployArtifactPlanGenerateReq,
+    auth_payload: dict,
+) -> dict[str, Any]:
+    artifact_id_value = _normalize_project_deploy_text(artifact_id, limit=120)
+    if not artifact_id_value:
+        raise HTTPException(400, "artifact_id is required")
+    artifact = project_deploy_store.get_artifact(project.id, artifact_id_value)
+    if artifact is None:
+        raise HTTPException(404, f"Artifact {artifact_id_value} not found")
+    chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
+    requested_provider_id = _normalize_project_deploy_text(req.provider_id, limit=120)
+    requested_model_name = _normalize_project_deploy_text(req.model_name, limit=160)
+    if requested_provider_id:
+        chat_settings["provider_id"] = requested_provider_id
+    if requested_model_name:
+        chat_settings["model_name"] = requested_model_name
+    if str(chat_settings.get("chat_mode") or "").strip().lower() == "external_agent":
+        chat_settings["chat_mode"] = "system"
+    messages = _build_project_deploy_artifact_plan_messages(
+        project=project,
+        artifact=artifact,
+        req=req,
+    )
+    resolved_runtime = await _resolve_project_chat_runtime(chat_settings, auth_payload)
+    if resolved_runtime.provider_mode == "local_connector":
+        connector = _resolve_accessible_local_connector_for_llm(resolved_runtime.connector_id, auth_payload)
+        if connector is None:
+            raise HTTPException(400, "本地连接器不可用")
+        response = await chat_completion_via_connector(
+            connector,
+            model_name=resolved_runtime.model_name,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=900,
+            timeout=45,
+        )
+    else:
+        llm_runtime = _resolve_chat_llm_service_runtime(None, resolved_runtime, auth_payload)
+        response = await llm_runtime.chat_completion(
+            resolved_runtime.provider_id,
+            resolved_runtime.model_name,
+            messages,
+            temperature=0.1,
+            max_tokens=900,
+            timeout=45,
+        )
+    response_payload = response if isinstance(response, dict) else {}
+    plan = str(response_payload.get("content") or "").strip()
+    if not plan:
+        raise HTTPException(502, "模型没有返回可用部署流程")
+    return {
+        "status": "generated",
+        "project_id": project.id,
+        "artifact_id": artifact.id,
+        "plan": plan[:6000],
+        "provider_id": str(response_payload.get("provider_id") or resolved_runtime.provider_id).strip(),
+        "model_name": str(response_payload.get("model_name") or resolved_runtime.model_name).strip(),
+        "chat_mode": "system",
+        "token_usage": response_payload.get("usage"),
+    }
+
+
+def _build_project_deploy_artifact_ai_execute_message(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    requirement: str,
+    plan: str,
+) -> str:
+    context = _build_project_deploy_artifact_runtime_context(
+        project=project,
+        artifact=artifact,
+        requirement=requirement,
+        plan=plan,
+    )
+    return (
+        "部署 Agent 已从“部署产物 / AI 部署”入口接管一次真实部署。\n"
+        "这不是流程预览。模型会逐步调用部署工具，工具结果会继续回传给模型判断下一步。\n\n"
+        "硬性边界：\n"
+        "- 只有当前上下文里的 project_id、artifact_id、部署配置和用户要求可作为依据。\n"
+        "- 不要扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量。\n"
+        "- 不要索要或输出 FTP/SSH 密码、token、密钥；真实账号由受控部署工具内部使用。\n"
+        "- 远端备份由上传工具自动处理；远端命令/脚本通过受控命令工具执行，stdout/stderr 会写入部署运行日志。\n\n"
+        "可用部署 Agent 工具语义：列目录、读写文本、创建目录、安全解压、上传目录、上传文件、上传原始包、执行工作区内命令、finish。\n\n"
+        "执行要求：\n"
+        "1. 先基于部署上下文判断策略，不要把前端流程预览当作最终事实。\n"
+        "2. 每一步工具返回后，根据结果继续下一步，直到 finish。\n"
+        "3. 最终把部署结果、部署 ID、状态、阶段、工具 stdout/stderr 或阻塞原因写入部署运行日志。\n\n"
+        f"部署上下文：\n{json.dumps(context, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _project_deploy_artifact_ai_tool_names() -> list[str]:
+    from services.mcp.dynamic_mcp_collaboration import (
+        DEPLOY_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
+        LIST_PROJECT_DEPLOY_ARTIFACTS_TOOL_NAME,
+        PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
+    )
+
+    return [
+        LIST_PROJECT_DEPLOY_ARTIFACTS_TOOL_NAME,
+        DEPLOY_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
+        PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
+    ]
+
+
+async def _execute_project_deploy_artifact_via_project_chat(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    req: ProjectDeployArtifactAiExecuteReq,
+    auth_payload: dict[str, Any],
+) -> dict[str, Any]:
+    username = _current_username(auth_payload) or "unknown"
+    source_context = {
+        "source_type": "manual_ai_chat",
+        "entry": "deploy_artifact_ai_execute",
+        "project_id": project.id,
+        "artifact_id": artifact.id,
+    }
+    chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
+    chat_mode = str(chat_settings.get("chat_mode") or "").strip().lower()
+    chat_session_id = _normalize_project_deploy_text(req.chat_session_id, limit=120)
+    if chat_session_id:
+        existing_session = project_chat_store.get_session(project.id, username, chat_session_id)
+    else:
+        existing_session = None
+    if existing_session is None:
+        session = project_chat_store.create_session(
+            project.id,
+            username,
+            f"AI 部署：{artifact.artifact_name or artifact.id}",
+            source_context=source_context,
+            session_id=chat_session_id,
+        )
+        chat_session_id = session.id
+        await publish_project_chat_session_realtime(
+            project_id=project.id,
+            username=username,
+            chat_session_id=chat_session_id,
+            status="created",
+            message="AI 部署会话已创建",
+        )
+    requirement = _normalize_project_deploy_text(req.requirement, limit=2000)
+    plan = _normalize_project_deploy_text(req.plan, limit=4000)
+    user_message = _build_project_deploy_artifact_ai_execute_message(
+        project=project,
+        artifact=artifact,
+        requirement=requirement,
+        plan=plan,
+    )
+    requested_provider_id = _normalize_project_deploy_text(req.provider_id, limit=120)
+    requested_model_name = _normalize_project_deploy_text(req.model_name, limit=160)
+    selected_employee_ids = [
+        str(item or "").strip()
+        for item in (chat_settings.get("selected_employee_ids") or [])
+        if str(item or "").strip()
+    ]
+    assistant_record = _append_chat_record(
+        project_id=project.id,
+        username=username,
+        role="assistant",
+        content=user_message,
+        chat_session_id=chat_session_id,
+        source_context={
+            **source_context,
+            "deploy_artifact_ai_execute": "started",
+            "chat_mode": chat_mode,
+            "enabled_project_tool_names": _project_deploy_artifact_ai_tool_names(),
+            "ai_deploy_server_side": True,
+        },
+    )
+    if assistant_record is not None:
+        await publish_project_chat_record_realtime(
+            project_id=project.id,
+            username=username,
+            chat_session_id=chat_session_id,
+            message=assistant_record,
+        )
+    await publish_project_chat_session_realtime(
+        project_id=project.id,
+        username=username,
+        chat_session_id=chat_session_id,
+        status="updated",
+        message="AI 部署已开始执行",
+    )
+    agent_payload: dict[str, Any] = {}
+    try:
+        deployment_result = await _execute_project_deploy_artifact_agent_payload(
+            project=project,
+            artifact=artifact,
+            req=ProjectDeployArtifactAiExecuteReq(
+                requirement=requirement,
+                plan=plan,
+                chat_session_id=chat_session_id,
+                provider_id=requested_provider_id,
+                model_name=requested_model_name,
+            ),
+            requested_by=username,
+            chat_session_id=chat_session_id,
+            auth_payload=auth_payload,
+        )
+        agent_payload = deployment_result.get("ai_agent") if isinstance(deployment_result.get("ai_agent"), dict) else {}
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc)
+        agent_payload = {
+            "status": "failed",
+            "stage": "ai_deploy_agent_failed",
+            "error": str(detail),
+        }
+        deployment_result = await run_in_threadpool(
+            _fail_project_deploy_artifact_ai_execution_payload,
+            project=project,
+            artifact=artifact,
+            requested_by=username,
+            chat_session_id=chat_session_id,
+            requirement=requirement,
+            plan=plan,
+            stage="ai_deploy_agent_failed",
+            message=str(detail),
+            raw_plan=agent_payload,
+        )
+    deployment = deployment_result.get("deployment") if isinstance(deployment_result, dict) else None
+    deployment_status = str(
+        (deployment or {}).get("status")
+        or (deployment_result or {}).get("status")
+        or ""
+    ).strip()
+    ai_execution_status = "failed" if deployment_status == "failed" else ("blocked" if deployment_status == "blocked" else "executed")
+    result_content_prefix = (
+        "AI 部署失败，已写入部署运行日志。"
+        if ai_execution_status == "failed"
+        else (
+            "AI 部署已阻塞，已写入部署运行日志。"
+            if ai_execution_status == "blocked"
+            else "AI 部署已通过服务端受控部署工具执行。"
+        )
+    )
+    result_record = _append_chat_record(
+        project_id=project.id,
+        username=username,
+        role="assistant",
+        content=(
+            f"{result_content_prefix}\n"
+            f"- artifact_id: {artifact.id}\n"
+            f"- deployment_id: {str((deployment or {}).get('id') or '').strip() or '-'}\n"
+            f"- status: {deployment_status or '-'}"
+        ),
+        chat_session_id=chat_session_id,
+        source_context={
+            **source_context,
+            "deploy_artifact_ai_execute": "executed",
+            "chat_mode": chat_mode,
+            "ai_deploy_server_side": True,
+        },
+    )
+    if result_record is not None:
+        await publish_project_chat_record_realtime(
+            project_id=project.id,
+            username=username,
+            chat_session_id=chat_session_id,
+            message=result_record,
+        )
+    await publish_project_chat_session_realtime(
+        project_id=project.id,
+        username=username,
+        chat_session_id=chat_session_id,
+        status="updated",
+        message="AI 部署执行完成",
+    )
+    return {
+        "ai_execution": {
+            "status": ai_execution_status,
+            "chat_session_id": chat_session_id,
+            "provider_id": requested_provider_id or str(chat_settings.get("provider_id") or "").strip(),
+            "model_name": requested_model_name or str(chat_settings.get("model_name") or "").strip(),
+            "content": user_message,
+            "agent_mode": True,
+            "agent_status": agent_payload.get("status") if isinstance(agent_payload, dict) else "",
+            "agent_error": agent_payload.get("error") if isinstance(agent_payload, dict) else "",
+            "agent_provider_id": agent_payload.get("provider_id") if isinstance(agent_payload, dict) else "",
+            "agent_model_name": agent_payload.get("model_name") if isinstance(agent_payload, dict) else "",
+            "tool_results": agent_payload.get("tool_results") if isinstance(agent_payload, dict) else [],
+            "selected_employee_ids": selected_employee_ids,
+            "chat_mode": chat_mode,
+            "external_agent_type": str(chat_settings.get("external_agent_type") or "codex_cli").strip() or "codex_cli",
+            "workspace_path": str(
+                chat_settings.get("connector_workspace_path")
+                or project.workspace_path
+                or ""
+            ).strip(),
+            "enabled_project_tool_names": _project_deploy_artifact_ai_tool_names(),
+            "deploy_context": _build_project_deploy_artifact_runtime_context(
+                project=project,
+                artifact=artifact,
+                requirement=requirement,
+                plan=plan,
+            ),
+        },
+        **deployment_result,
     }
 
 
@@ -1620,7 +4253,7 @@ def _serialize_project(
     current_member: ProjectUserMember | None = None,
 ) -> dict:
     data = asdict(project)
-    data.pop("chat_settings", None)
+    data["chat_settings"] = _public_project_chat_settings(getattr(project, "chat_settings", {}) or {})
     data["deploy_settings"] = _public_project_deploy_settings(getattr(project, "deploy_settings", {}) or {})
     normalized_type = _normalize_project_type(getattr(project, "type", "mixed"))
     resolved_creator_username = str(creator_username or "").strip() or _project_creator_username(project.id, project)
@@ -4620,6 +7253,15 @@ async def _resolve_global_assistant_chat_runtime(
     )
     requested_provider_id = str(runtime_settings.get("provider_id") or "").strip()
     requested_model_name = str(runtime_settings.get("model_name") or "").strip()
+    if not requested_provider_id and not configured_provider_id:
+        default_target = get_llm_provider_service().get_default_user_llm_target(
+            owner_username=_current_username(auth_payload),
+            include_all=False,
+            include_secret=False,
+        )
+        if default_target:
+            configured_provider_id = str(default_target.get("provider_id") or "").strip()
+            configured_model_name = str(default_target.get("model_name") or "").strip()
     provider_mode, selected_provider, providers = (
         await _resolve_global_assistant_provider_runtime_target(
             requested_provider_id or configured_provider_id,
@@ -4648,15 +7290,26 @@ async def _resolve_project_chat_runtime(
     runtime_settings: dict[str, Any],
     auth_payload: dict,
 ) -> ResolvedProviderRuntime:
+    selected_provider_id = str(runtime_settings.get("provider_id") or "").strip()
+    selected_model_name = str(runtime_settings.get("model_name") or "").strip()
+    if not selected_provider_id:
+        default_target = get_llm_provider_service().get_default_user_llm_target(
+            owner_username=_current_username(auth_payload),
+            include_all=False,
+            include_secret=False,
+        )
+        if default_target:
+            selected_provider_id = str(default_target.get("provider_id") or "").strip()
+            selected_model_name = selected_model_name or str(default_target.get("model_name") or "").strip()
     provider_mode, selected_provider, providers = await _resolve_provider_runtime_target(
-        str(runtime_settings.get("provider_id") or ""),
+        selected_provider_id,
         auth_payload,
     )
     return _finalize_resolved_provider_runtime(
         provider_mode,
         selected_provider,
         providers,
-        requested_model_name=str(runtime_settings.get("model_name") or "").strip(),
+        requested_model_name=selected_model_name,
         missing_model_message="model_name is required",
     )
 
@@ -4666,6 +7319,10 @@ def _resolve_chat_llm_service_runtime(
     resolved_runtime: ResolvedProviderRuntime,
     auth_payload: dict,
 ) -> Any:
+    if base_llm_service is None:
+        from services.providers.llm_provider_service import get_llm_provider_service
+
+        base_llm_service = get_llm_provider_service()
     return resolve_runtime_llm_service(
         base_llm_service,
         resolved_runtime,
@@ -7306,19 +9963,10 @@ async def _build_project_external_agent_info(
     settings: dict[str, Any],
     workspace_path: str,
 ) -> dict[str, Any]:
-    connectors = _list_accessible_local_connectors(auth_payload)
-    connector_payloads = [_serialize_chat_connector(item) for item in connectors]
     agent_type = str(settings.get("external_agent_type") or "codex_cli").strip().lower()
     if agent_type not in _EXTERNAL_AGENT_TYPE_CATALOG:
         agent_type = "codex_cli"
     agent_meta = _EXTERNAL_AGENT_TYPE_CATALOG[agent_type]
-    connector_id = str(settings.get("local_connector_id") or "").strip()
-    selected_connector = _resolve_accessible_local_connector(connector_id, auth_payload)
-    selected_payload = (
-        _serialize_chat_connector(selected_connector)
-        if selected_connector is not None
-        else {}
-    )
     sandbox_mode = str(settings.get("connector_sandbox_mode") or "workspace-write").strip() or "workspace-write"
     workspace_access: dict[str, Any] = {
         "configured": bool(str(workspace_path or "").strip()),
@@ -7326,76 +9974,22 @@ async def _build_project_external_agent_info(
         "is_dir": False,
         "read_ok": False,
         "write_ok": False,
-        "source": "",
+        "source": "tauri_external_agent_runner",
         "sandbox_mode": sandbox_mode,
-        "reason": "",
+        "reason": "外部 Agent 仅支持桌面端 Runner，服务端不再通过本地连接器执行。",
     }
-    if selected_connector is not None and workspace_path:
-        try:
-            workspace_access = await probe_connector_workspace(
-                selected_connector,
-                workspace_path,
-                sandbox_mode,
-            )
-        except Exception as exc:
-            workspace_access = {
-                **workspace_access,
-                "configured": True,
-                "source": "local_connector",
-                "reason": str(exc),
-            }
-
-    connector_online = bool(selected_payload.get("online"))
-    connector_agent_installed = (
-        _local_connector_codex_installed(selected_payload)
-        if agent_type == "codex_cli"
-        else False
-    )
-    workspace_ready = bool(workspace_access.get("read_ok"))
-    available = bool(selected_connector is not None and connector_online and connector_agent_installed and workspace_ready)
-    if not selected_connector:
-        reason = "请先选择本地连接器"
-        command_source = "local_connector_required"
-    elif not connector_online:
-        reason = "本地连接器离线"
-        command_source = "local_connector"
-    elif not connector_agent_installed:
-        reason = (
-            f"{agent_meta['label']} 交互式执行尚未接入本地连接器"
-            if agent_type != "codex_cli"
-            else "连接器未检测到 Codex CLI"
-        )
-        command_source = "local_connector"
-    elif not workspace_ready:
-        reason = str(workspace_access.get("reason") or "工作区不可访问")
-        command_source = "local_connector"
-    else:
-        reason = ""
-        command_source = "local_connector"
+    reason = "请使用桌面端 Runner"
+    command_source = "tauri_external_agent_runner"
     agent_types = []
     for item_type, item_meta in _EXTERNAL_AGENT_TYPE_CATALOG.items():
-        item_installed = (
-            _local_connector_codex_installed(selected_payload)
-            if item_type == "codex_cli"
-            else False
-        )
-        item_reason = (
-            reason
-            if item_type == agent_type
-            else (
-                ""
-                if item_type == "codex_cli" and item_installed
-                else f"{item_meta['label']} 需要 Tauri 本地 Runner / PTY 接入"
-            )
-        )
         agent_types.append(
             {
                 "agent_type": item_type,
                 "label": item_meta["label"],
-                "available": bool(item_type == agent_type and available),
-                "installed": item_installed,
+                "available": False,
+                "installed": False,
                 "implemented": True,
-                "reason": item_reason,
+                "reason": reason if item_type == agent_type else "请在桌面端 Runner 中检测执行器",
             }
         )
 
@@ -7403,15 +9997,13 @@ async def _build_project_external_agent_info(
         "agent_type": agent_type,
         "label": agent_meta["label"],
         "command": agent_meta["command"],
-        "resolved_command": str((selected_payload.get("health") or {}).get("codex_path") or "").strip()
-        if agent_type == "codex_cli" and isinstance(selected_payload.get("health"), dict)
-        else "",
+        "resolved_command": "",
         "command_source": command_source,
         "runtime_model_name": agent_meta["runtime_model_name"],
-        "execution_mode": "local_connector",
-        "runner_url": str(selected_payload.get("advertised_url") or "").strip(),
-        "available": available,
-        "installed": connector_agent_installed,
+        "execution_mode": "native_desktop",
+        "runner_url": "",
+        "available": False,
+        "installed": False,
         "implemented": True,
         "reason": reason,
         "supports_terminal_mirror": True,
@@ -7420,12 +10012,12 @@ async def _build_project_external_agent_info(
         "sandbox_mode": sandbox_mode,
         "workspace_path": str(workspace_path or "").strip(),
         "workspace_access": workspace_access,
-        "local_connector_id": connector_id,
-        "local_connector_name": str(selected_payload.get("connector_name") or "").strip(),
-        "local_connector_online": connector_online,
+        "local_connector_id": "",
+        "local_connector_name": "",
+        "local_connector_online": False,
         "sandbox_modes": ["read-only", "workspace-write"],
         "agent_types": agent_types,
-        "local_connectors": connector_payloads,
+        "local_connectors": [],
     }
 
 
@@ -10561,6 +13153,7 @@ def _build_query_mcp_cli_prompt(
             [
                 f"- 默认项目: `{normalized_project_id}`",
                 f"- 建议把 URL 默认上下文里的 `project_id` 固定为 `{normalized_project_id}`。",
+                f"- 部署、上传或推送部署产物时，如果用户未另给 `project_id`，必须直接使用当前默认项目 `{normalized_project_id}`；不要因“缺少 project_id”暂停或要求用户重复提供。",
                 f"- 涉及当前项目时，若项目和对象已明确，可直接 `get_manual_content(project_id=\"{normalized_project_id}\")` 或进入 `start_project_workflow(...)`；仅在缺少 ID 或需要跨项目定位时，再调用 `search_ids(keyword=\"<用户原始问题>\", project_id=\"{normalized_project_id}\")`。",
                 f"- 若要创建或续接当前项目任务树，优先显式调用 `bind_project_context(project_id=\"{normalized_project_id}\", chat_session_id=\"<聊天会话ID>\", root_goal=\"<用户原始问题>\")`。",
             ]
@@ -10575,12 +13168,27 @@ def _build_query_mcp_cli_prompt(
         else "- 若当前是新开的 CLI 会话且 URL 未附带 `chat_session_id`，先生成新的 `chat_session_id`，再调用 `bind_project_context(...)`。"
     )
     if template:
-        return (
+        rendered = (
             template.replace("{{clarity_threshold}}", str(normalized_clarity_threshold))
             .replace("{{project_context_block}}", project_context_block)
             .replace("{{chat_session_block}}", chat_session_block)
             .strip()
         )
+        if (
+            normalized_project_id
+            and "{{project_context_block}}" not in template
+            and "默认项目:" not in rendered
+        ):
+            rendered = "\n".join(
+                [
+                    rendered.rstrip(),
+                    "",
+                    "当前接入上下文：",
+                    *project_context_block.splitlines(),
+                    chat_session_block,
+                ]
+            ).strip()
+        return rendered
     sections = [
         "你已接入统一查询 MCP。",
         "",
@@ -10613,13 +13221,16 @@ def _build_query_mcp_cli_prompt(
         "19. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。",
         "20. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
         "",
-        "部署产物技能入口：",
-        "1. 遇到打包、部署、自动部署、手动部署或推送构建产物任务时，必须先加载 `.ai-employee/skills/project-deploy-artifact/`；本地缺失时从 `mcp-skills/knowledge/skill-packages/project-deploy-artifact/` 同步。",
-        "2. 客户端 AI 只负责打包、计算 artifact 元数据并调用项目 MCP 工具 `push_project_deploy_artifact`（或服务端 artifact 推送 HTTP 入口）推送产物；服务端按项目 `deploy_settings` 创建 `ProjectDeployArtifact` / `ProjectDeployRun` 并执行部署。",
-        "3. 自动部署关闭时，客户端完成产物推送后告知用户可在部署配置的“部署产物”列表点击该产物的“部署”按钮手动触发；用户明确授权时才调用 `deploy_project_deploy_artifact`。",
-        "4. 部署任务禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；缺少工具、登录态、项目部署配置、远端路径、部署命令或执行器能力时，直接报告服务端返回的 `blocked` / `missing` 信息。",
-        "5. 当前删除打包文件只删除服务端保存的部署 artifact 文件及 artifact 记录；不删除外部平台消息，也不删除远端服务器已部署目录。",
-        "6. 机器人通知群优先使用机器人连接器扫描结果；飞书支持扫描机器人所在群，微信/QQ 若返回 `unsupported`，客户端必须提示平台缺少群列表 API/适配能力。",
+        "项目聊天打包部署命令约束：",
+        "1. “打包部署”“发布测试环境”“推送部署产物”等需要在用户机器上运行打包命令的任务，只能通过项目聊天的命令执行能力处理。",
+        "2. 本地打包命令只允许在项目聊天已选择外部智能体、且当前运行在桌面端 Runner 时使用；未选择外部智能体、未运行桌面端或当前电脑不可达时，必须停止并提示无法执行本地命令。",
+        "3. 命令执行前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。",
+        "4. 客户端打包完成或读取用户指定压缩包后，必须把产物推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/桌面端 Runner 读取本地文件并上传；否则调用项目 MCP 工具 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`，不要把 Windows/macOS 本地路径当作服务端可读路径。自动部署由部署产物 AI/服务端部署能力基于服务端 artifact 和项目部署配置执行。",
+        "4.1 用户说“推送到服务端部署”“上传部署”“部署这个 zip”且未限定“只上传”时，`push_project_deploy_artifact.auto_deploy=true`；只有明确“只上传”才传 false。已有 `artifact_id` / 服务端部署产物上下文时，直接调用 `deploy_project_deploy_artifact`，不要要求用户重新上传。",
+        "4.2 如果入口当前接入上下文已提供默认 `project_id`，部署、上传或推送部署产物时直接使用该项目；不要在用户已确认部署后再因为“缺少 project_id”暂停。",
+        "5. 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 `blocked` / `missing`。",
+        "6. 当前删除打包文件只删除服务端保存的部署 artifact 文件及 artifact 记录；不删除外部平台消息，也不删除远端服务器已部署目录。",
+        "7. 机器人通知群优先使用机器人连接器扫描结果；飞书支持扫描机器人所在群，微信/QQ 若返回 `unsupported`，客户端必须提示平台缺少群列表 API/适配能力。",
         "",
         "当前接入上下文：",
     ]
@@ -13402,23 +16013,210 @@ def _read_project_deploy_artifact_content(req: ProjectDeployArtifactPushReq) -> 
             raise HTTPException(400, "artifact_content_base64 is not valid base64") from exc
     artifact_path = _normalize_project_deploy_text(req.artifact_path, limit=2000)
     if not artifact_path:
-        raise HTTPException(400, "artifact_content_base64 or artifact_path is required")
+        raise HTTPException(400, "artifact_content_base64 or server-readable artifact_path is required")
     path = Path(artifact_path).expanduser().resolve()
     if not path.exists() or not path.is_file():
-        raise HTTPException(400, "artifact_path does not exist or is not a file")
+        raise HTTPException(
+            400,
+            "artifact_path does not exist on the server or is not a file; remote clients must upload artifact_content_base64",
+        )
     if path.stat().st_size > 200 * 1024 * 1024:
         raise HTTPException(413, "artifact is larger than 200MB")
     try:
         return path.read_bytes()
     except OSError as exc:
-        raise HTTPException(400, f"failed to read artifact_path: {exc}") from exc
+        raise HTTPException(
+            400,
+            f"failed to read server-side artifact_path: {exc}; remote clients must upload artifact_content_base64",
+        ) from exc
 
 
-def _push_project_deploy_artifact_payload(
+async def _read_project_deploy_upload_content(upload: UploadFile) -> bytes:
+    content = await upload.read()
+    if not content:
+        raise HTTPException(400, "artifact file is empty")
+    if len(content) > _PROJECT_DEPLOY_ARTIFACT_MAX_BYTES:
+        raise HTTPException(413, "artifact is larger than 200MB")
+    return content
+
+
+def _is_project_deploy_upload_file(value: Any) -> bool:
+    return bool(getattr(value, "filename", None)) and callable(getattr(value, "read", None))
+
+
+def _extract_project_deploy_directory_tar_entries(
+    *,
+    archive_content: bytes,
+    manifest: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if len(archive_content) > _PROJECT_DEPLOY_ARTIFACT_MAX_BYTES:
+        raise HTTPException(413, "artifact directory is larger than 200MB")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive_content), mode="r:*") as archive:
+            members = [member for member in archive.getmembers() if member.isfile()]
+            if len(members) > _PROJECT_DEPLOY_ARTIFACT_MAX_FILES:
+                raise HTTPException(
+                    413,
+                    f"too many artifact files; maximum is {_PROJECT_DEPLOY_ARTIFACT_MAX_FILES}",
+                )
+            entries: list[dict[str, Any]] = []
+            for member in members:
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    continue
+                content = extracted.read()
+                entries.append(
+                    {
+                        "name": Path(member.name).name,
+                        "path": member.name,
+                        "content": content,
+                    }
+                )
+    except HTTPException:
+        raise
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        raise HTTPException(400, f"invalid artifact directory archive: {exc}") from exc
+    if not entries:
+        raise HTTPException(400, "artifact directory is empty")
+    file_entries_meta = manifest.get("file_entries") if isinstance(manifest.get("file_entries"), list) else []
+    if file_entries_meta:
+        path_by_index = [
+            item.get("path")
+            if isinstance(item, dict) and _normalize_project_deploy_text(item.get("path"), limit=1000)
+            else ""
+            for item in file_entries_meta
+        ]
+        for index, entry in enumerate(entries):
+            if index < len(path_by_index) and path_by_index[index]:
+                entry["path"] = path_by_index[index]
+    return entries
+
+
+def _project_deploy_form_text(form: Any, name: str, default: str = "") -> str:
+    value = form.get(name, default)
+    if _is_project_deploy_upload_file(value):
+        return default
+    return str(value if value is not None else default)
+
+
+def _project_deploy_form_int(form: Any, name: str, default: int = 0) -> int:
+    value = _project_deploy_form_text(form, name, str(default)).strip()
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_project_deploy_relative_path(value: Any, *, fallback: str = "") -> str:
+    text = str(value or "").replace("\\", "/").strip()
+    text = re.sub(r"^[A-Za-z]:", "", text).lstrip("/")
+    parts: list[str] = []
+    for part in text.split("/"):
+        normalized = part.strip()
+        if not normalized or normalized in {".", ".."}:
+            continue
+        parts.append(normalized[:160])
+    path = "/".join(parts)
+    if path:
+        return path[:1000]
+    return _safe_project_deploy_relative_path(fallback) if fallback else "artifact-file"
+
+
+def _build_project_deploy_file_tree(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    root_children: dict[str, dict[str, Any]] = {}
+
+    for entry in entries:
+        path = _safe_project_deploy_relative_path(entry.get("path"))
+        parts = [part for part in path.split("/") if part]
+        if not parts:
+            continue
+
+        current_children = root_children
+        for index, part in enumerate(parts):
+            is_file = index == len(parts) - 1
+            key = "/".join(parts[: index + 1])
+            node = current_children.get(part)
+            if node is None:
+                node = {
+                    "name": part,
+                    "path": key,
+                    "type": "file" if is_file else "directory",
+                    "size": int(entry.get("size") or 0) if is_file else 0,
+                    "children": [] if not is_file else [],
+                }
+                current_children[part] = node
+            if is_file:
+                node["type"] = "file"
+                node["size"] = int(entry.get("size") or 0)
+                continue
+            node["type"] = "directory"
+            node.setdefault("children", [])
+            current_children = node.setdefault("_children_map", {})
+
+    nodes = list(root_children.values())
+    for node in nodes:
+        _strip_project_deploy_tree_maps(node)
+    return sorted(nodes, key=lambda item: (item.get("type") == "file", str(item.get("name") or "")))
+
+
+def _strip_project_deploy_tree_maps(node: dict[str, Any]) -> None:
+    children_map = node.pop("_children_map", None)
+    if isinstance(children_map, dict):
+        node["children"] = list(children_map.values())
+    children = node.get("children")
+    if isinstance(children, list):
+        children.sort(key=lambda item: (item.get("type") == "file", str(item.get("name") or "")))
+        for child in children:
+            if isinstance(child, dict):
+                _strip_project_deploy_tree_maps(child)
+
+
+def _checksum_project_deploy_file_entries(entries: list[dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    for entry in sorted(entries, key=lambda item: str(item.get("path") or "")):
+        digest.update(str(entry.get("path") or "").encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(entry.get("content") or b"")
+        digest.update(b"\0")
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _parse_project_deploy_upload_manifest(
+    *,
+    manifest_json: str,
+    checksum: str,
+    size: int,
+    version: str,
+) -> dict[str, Any]:
+    raw_manifest = str(manifest_json or "").strip()
+    if len(raw_manifest) > _PROJECT_DEPLOY_ARTIFACT_MANIFEST_MAX_CHARS:
+        raise HTTPException(413, "manifest_json is larger than allowed")
+    manifest: dict[str, Any] = {}
+    if raw_manifest:
+        try:
+            parsed = json.loads(raw_manifest)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(400, "manifest_json must be valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise HTTPException(400, "manifest_json must be a JSON object")
+        manifest.update(parsed)
+    checksum_value = _normalize_project_deploy_text(checksum, limit=200)
+    if checksum_value:
+        manifest["checksum"] = checksum_value
+    if size > 0:
+        manifest["size"] = size
+    version_value = _normalize_project_deploy_text(version, limit=120)
+    if version_value:
+        manifest["version"] = version_value
+    return manifest
+
+
+def _push_project_deploy_artifact_content(
     *,
     project: ProjectConfig,
     req: ProjectDeployArtifactPushReq,
     uploaded_by: str,
+    content: bytes,
 ) -> dict[str, Any]:
     profile_id = _normalize_project_deploy_text(req.profile, limit=80) or "prod"
     component_id = _normalize_project_deploy_text(req.component, limit=80)
@@ -13432,13 +16230,21 @@ def _push_project_deploy_artifact_payload(
         raise HTTPException(400, f"deploy component not found: {component_id or 'default'}")
     if not bool(component.get("enabled", True)):
         raise HTTPException(400, f"deploy component disabled: {component.get('id')}")
-    content = _read_project_deploy_artifact_content(req)
     manifest = dict(req.manifest or {})
     checksum, size, version = _verify_project_deploy_artifact_manifest(
         artifact_name=_normalize_project_deploy_text(req.artifact_name, limit=240),
         artifact_content=content,
         manifest=manifest,
     )
+    manifest["checksum"] = checksum
+    manifest["size"] = size
+    if version:
+        manifest["version"] = version
+    archive_suffix = _project_deploy_detect_archive_suffix_from_content(content)
+    if archive_suffix:
+        manifest["archive_suffix"] = archive_suffix
+        manifest["archive_behavior"] = _project_deploy_archive_behavior_label(archive_suffix)
+        manifest["server_prepare_behavior"] = "upload_archive_by_default"
     artifact = ProjectDeployArtifact(
         id=project_deploy_store.new_artifact_id(),
         project_id=project.id,
@@ -13477,6 +16283,17 @@ def _push_project_deploy_artifact_payload(
             task_tree_node_id=_normalize_project_deploy_text(req.task_tree_node_id, limit=120),
         )
         if run is not None:
+            deploy_requirement = _normalize_project_deploy_text(req.requirement, limit=2000)
+            deploy_plan = _normalize_project_deploy_text(req.plan, limit=4000)
+            run.artifact_summary = {
+                **(run.artifact_summary or {}),
+                "deploy_surface": "project_detail_ai_deploy" if bool(req.ai_deploy) else "deploy_artifact_auto_deploy",
+                "deploy_entry": "mcp_or_api_push_auto_deploy",
+                **({"user_requirement": deploy_requirement} if deploy_requirement else {}),
+                **({"ai_deploy_plan": deploy_plan} if deploy_plan else {}),
+                **({"archive_behavior": manifest.get("archive_behavior")} if manifest.get("archive_behavior") else {}),
+                **({"archive_suffix": manifest.get("archive_suffix")} if manifest.get("archive_suffix") else {}),
+            }
             if run.status == "queued":
                 component_targets = component.get("targets") if isinstance(component.get("targets"), list) else []
                 targets = [
@@ -13491,7 +16308,7 @@ def _push_project_deploy_artifact_payload(
                     targets=targets,
                 )
             artifact.deployment_id = run.id
-            artifact.status = "deploy_queued" if run.status == "queued" else run.status
+            artifact.status = _project_deploy_artifact_status_for_run(run.status)
             project_deploy_store.save_artifact(artifact)
     return {
         "status": artifact.status,
@@ -13505,6 +16322,150 @@ def _push_project_deploy_artifact_payload(
     }
 
 
+def _push_project_deploy_artifact_directory_content(
+    *,
+    project: ProjectConfig,
+    req: ProjectDeployArtifactPushReq,
+    uploaded_by: str,
+    file_entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not file_entries:
+        raise HTTPException(400, "artifact directory is empty")
+    total_size = sum(len(entry.get("content") or b"") for entry in file_entries)
+    if total_size <= 0:
+        raise HTTPException(400, "artifact directory is empty")
+    if total_size > _PROJECT_DEPLOY_ARTIFACT_MAX_BYTES:
+        raise HTTPException(413, "artifact directory is larger than 200MB")
+    profile_id = _normalize_project_deploy_text(req.profile, limit=80) or "prod"
+    component_id = _normalize_project_deploy_text(req.component, limit=80)
+    profile = _find_project_deploy_profile(project, profile_id)
+    if profile is None:
+        raise HTTPException(400, f"deploy profile not found: {profile_id}")
+    if not bool(profile.get("enabled", True)):
+        raise HTTPException(400, f"deploy profile disabled: {profile_id}")
+    component = _find_project_deploy_component(profile, component_id)
+    if component is None:
+        raise HTTPException(400, f"deploy component not found: {component_id or 'default'}")
+    if not bool(component.get("enabled", True)):
+        raise HTTPException(400, f"deploy component disabled: {component.get('id')}")
+    normalized_entries = [
+        {
+            "path": _safe_project_deploy_relative_path(entry.get("path"), fallback=entry.get("name") or "artifact-file"),
+            "name": Path(str(entry.get("path") or entry.get("name") or "artifact-file")).name,
+            "size": len(entry.get("content") or b""),
+            "content": entry.get("content") or b"",
+        }
+        for entry in file_entries
+    ]
+    checksum = _checksum_project_deploy_file_entries(normalized_entries)
+    manifest = dict(req.manifest or {})
+    manifest["checksum"] = checksum
+    manifest["size"] = total_size
+    manifest["file_count"] = len(normalized_entries)
+    manifest["source_type"] = "directory"
+    file_tree_entries = [
+        {"path": entry["path"], "name": entry["name"], "size": entry["size"]}
+        for entry in normalized_entries
+    ]
+    file_tree = _build_project_deploy_file_tree(file_tree_entries)
+    manifest["file_entries"] = file_tree_entries
+    manifest["file_tree"] = file_tree
+    version = _normalize_project_deploy_text(manifest.get("version"), limit=120)
+    artifact = ProjectDeployArtifact(
+        id=project_deploy_store.new_artifact_id(),
+        project_id=project.id,
+        profile=profile_id,
+        artifact_name=_normalize_project_deploy_text(req.artifact_name, limit=240) or "directory-upload",
+        component=_normalize_project_deploy_text(component.get("id"), limit=80),
+        artifact_kind=_normalize_project_deploy_text(req.artifact_kind, limit=80)
+        or _normalize_project_deploy_text(component.get("artifact_kind"), limit=80)
+        or _normalize_project_deploy_text(profile.get("artifact_kind"), limit=80)
+        or "source-bundle",
+        version=version,
+        checksum=checksum,
+        size=total_size,
+        status="ready",
+        manifest=manifest,
+        storage_kind="directory",
+        file_tree=file_tree,
+        uploaded_by=uploaded_by,
+        ready_at=_now_iso(),
+    )
+    file_dir = project_deploy_store.artifact_file_dir(project.id, artifact.id)
+    content_dir = file_dir / "content"
+    try:
+        for entry in normalized_entries:
+            destination = (content_dir / entry["path"]).resolve()
+            if content_dir.resolve() not in destination.parents:
+                raise HTTPException(400, "invalid artifact directory path")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(entry["content"])
+    except OSError as exc:
+        raise HTTPException(400, f"failed to store artifact directory: {exc}") from exc
+    artifact.storage_path = str(content_dir)
+    project_deploy_store.save_artifact(artifact)
+    run = None
+    if bool(req.auto_deploy):
+        run = _create_project_deploy_run_for_artifact(
+            project=project,
+            artifact=artifact,
+            requested_by=uploaded_by,
+            chat_session_id=_normalize_project_deploy_text(req.chat_session_id, limit=120),
+            task_tree_node_id=_normalize_project_deploy_text(req.task_tree_node_id, limit=120),
+        )
+        if run is not None:
+            deploy_requirement = _normalize_project_deploy_text(req.requirement, limit=2000)
+            deploy_plan = _normalize_project_deploy_text(req.plan, limit=4000)
+            run.artifact_summary = {
+                **(run.artifact_summary or {}),
+                "deploy_surface": "project_detail_ai_deploy" if bool(req.ai_deploy) else "deploy_artifact_auto_deploy",
+                "deploy_entry": "directory_push_auto_deploy",
+                **({"user_requirement": deploy_requirement} if deploy_requirement else {}),
+                **({"ai_deploy_plan": deploy_plan} if deploy_plan else {}),
+            }
+            if run.status == "queued":
+                component_targets = component.get("targets") if isinstance(component.get("targets"), list) else []
+                targets = [
+                    target
+                    for target in component_targets
+                    if isinstance(target, dict) and bool(target.get("enabled", True))
+                ]
+                run = _execute_project_deploy_run_for_artifact(
+                    project=project,
+                    artifact=artifact,
+                    run=run,
+                    targets=targets,
+                )
+            artifact.deployment_id = run.id
+            artifact.status = _project_deploy_artifact_status_for_run(run.status)
+            project_deploy_store.save_artifact(artifact)
+    return {
+        "status": artifact.status,
+        "project_id": project.id,
+        "profile": profile_id,
+        "component": artifact.component,
+        "artifact": _serialize_project_deploy_artifact(artifact),
+        "deployment": _serialize_project_deploy_run(run) if run else None,
+        "checksum_verified": True,
+        "auto_deploy": bool(req.auto_deploy),
+    }
+
+
+def _push_project_deploy_artifact_payload(
+    *,
+    project: ProjectConfig,
+    req: ProjectDeployArtifactPushReq,
+    uploaded_by: str,
+) -> dict[str, Any]:
+    content = _read_project_deploy_artifact_content(req)
+    return _push_project_deploy_artifact_content(
+        project=project,
+        req=req,
+        uploaded_by=uploaded_by,
+        content=content,
+    )
+
+
 def _deploy_project_deploy_artifact_payload(
     *,
     project: ProjectConfig,
@@ -13512,6 +16473,9 @@ def _deploy_project_deploy_artifact_payload(
     requested_by: str,
     chat_session_id: str = "",
     task_tree_node_id: str = "",
+    requirement: str = "",
+    plan: str = "",
+    execution_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     artifact_id_value = _normalize_project_deploy_text(artifact_id, limit=120)
     if not artifact_id_value:
@@ -13520,7 +16484,7 @@ def _deploy_project_deploy_artifact_payload(
     if artifact is None:
         raise HTTPException(404, f"Artifact {artifact_id_value} not found")
     storage_path = Path(artifact.storage_path).expanduser() if artifact.storage_path else None
-    if storage_path is None or not storage_path.exists() or not storage_path.is_file():
+    if storage_path is None or not storage_path.exists() or not (storage_path.is_file() or storage_path.is_dir()):
         artifact.status = "failed"
         artifact.error = "artifact storage file is missing"
         project_deploy_store.save_artifact(artifact)
@@ -13538,6 +16502,18 @@ def _deploy_project_deploy_artifact_payload(
         artifact.error = "deploy settings disabled or artifact profile/component not found"
         project_deploy_store.save_artifact(artifact)
         raise HTTPException(400, "项目部署配置未启用，或产物所属环境/部署单元不存在")
+    deploy_requirement = _normalize_project_deploy_text(requirement, limit=2000)
+    deploy_plan = _normalize_project_deploy_text(plan, limit=4000)
+    manifest = artifact.manifest if isinstance(artifact.manifest, dict) else {}
+    run.artifact_summary = {
+        **(run.artifact_summary or {}),
+        "deploy_surface": "project_detail_ai_deploy" if (deploy_requirement or deploy_plan) else "deploy_artifact_manual",
+        **({"user_requirement": deploy_requirement} if deploy_requirement else {}),
+        **({"ai_deploy_plan": deploy_plan} if deploy_plan else {}),
+        **({"ai_execution_plan": execution_plan} if execution_plan else {}),
+        **({"archive_behavior": manifest.get("archive_behavior")} if manifest.get("archive_behavior") else {}),
+        **({"archive_suffix": manifest.get("archive_suffix")} if manifest.get("archive_suffix") else {}),
+    }
     if run.status == "queued":
         profile = _find_project_deploy_profile(project, artifact.profile) or {}
         component = _find_project_deploy_component(profile, artifact.component) or {}
@@ -13552,9 +16528,62 @@ def _deploy_project_deploy_artifact_payload(
             artifact=artifact,
             run=run,
             targets=targets,
+            execution_plan=execution_plan,
         )
     artifact.deployment_id = run.id
-    artifact.status = "deploy_queued" if run.status == "queued" else run.status
+    artifact.status = _project_deploy_artifact_status_for_run(run.status)
+    project_deploy_store.save_artifact(artifact)
+    return {
+        "status": artifact.status,
+        "project_id": project.id,
+        "artifact": _serialize_project_deploy_artifact(artifact),
+        "deployment": _serialize_project_deploy_run(run),
+    }
+
+
+def _fail_project_deploy_artifact_ai_execution_payload(
+    *,
+    project: ProjectConfig,
+    artifact: ProjectDeployArtifact,
+    requested_by: str,
+    chat_session_id: str,
+    requirement: str,
+    plan: str,
+    stage: str,
+    message: str,
+    raw_plan: Any = None,
+) -> dict[str, Any]:
+    run = _create_project_deploy_run_for_artifact(
+        project=project,
+        artifact=artifact,
+        requested_by=requested_by,
+        chat_session_id=_normalize_project_deploy_text(chat_session_id, limit=120),
+        task_tree_node_id="",
+        require_auto_deploy_enabled=False,
+    )
+    if run is None:
+        artifact.status = "failed"
+        artifact.error = message
+        project_deploy_store.save_artifact(artifact)
+        raise HTTPException(400, message)
+    run.status = "failed"
+    run.stage = _normalize_project_deploy_text(stage, limit=120) or "ai_execution_plan_generation_failed"
+    run.log_excerpt = f"AI deployment plan failed: {message}"
+    run.artifact_summary = {
+        **(run.artifact_summary or {}),
+        "deploy_surface": "project_detail_ai_deploy",
+        "user_requirement": _normalize_project_deploy_text(requirement, limit=2000),
+        "ai_deploy_plan": _normalize_project_deploy_text(plan, limit=4000),
+        "uploaded_target_count": 0,
+        "ai_execution_plan_error": message,
+        **({"ai_execution_plan_raw": raw_plan} if raw_plan else {}),
+    }
+    artifact.status = "failed"
+    artifact.error = run.log_excerpt
+    run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
+    project_deploy_store.save_artifact(artifact)
+    run = project_deploy_store.save_run(run)
+    artifact.deployment_id = run.id
     project_deploy_store.save_artifact(artifact)
     return {
         "status": artifact.status,
@@ -13572,10 +16601,110 @@ async def push_project_deploy_artifact(
 ):
     _ensure_permission(auth_payload, "menu.projects")
     project = _ensure_project_manage_access(project_id, auth_payload)
-    return _push_project_deploy_artifact_payload(
+    return await run_in_threadpool(
+        _push_project_deploy_artifact_payload,
         project=project,
         req=req,
         uploaded_by=_current_username(auth_payload) or "unknown",
+    )
+
+
+@router.post("/{project_id}/deploy-artifacts/upload")
+async def upload_project_deploy_artifact(
+    project_id: str,
+    request: Request,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    try:
+        form = await request.form(
+            max_files=_PROJECT_DEPLOY_ARTIFACT_MAX_FILES,
+            max_fields=_PROJECT_DEPLOY_ARTIFACT_MAX_FILES + 100,
+            max_part_size=_PROJECT_DEPLOY_ARTIFACT_MANIFEST_MAX_CHARS,
+        )
+    except Exception as exc:
+        detail = str(exc)
+        if "Too many files" in detail:
+            raise HTTPException(
+                413,
+                f"too many artifact files; maximum is {_PROJECT_DEPLOY_ARTIFACT_MAX_FILES}",
+            ) from exc
+        raise HTTPException(400, f"invalid artifact upload form: {detail}") from exc
+    profile = _project_deploy_form_text(form, "profile", "prod")
+    component = _project_deploy_form_text(form, "component", "")
+    artifact_name = _project_deploy_form_text(form, "artifact_name", "")
+    artifact_kind = _project_deploy_form_text(form, "artifact_kind", "source-bundle")
+    manifest_json = _project_deploy_form_text(form, "manifest_json", "")
+    checksum = _project_deploy_form_text(form, "checksum", "")
+    size = _project_deploy_form_int(form, "size", 0)
+    version = _project_deploy_form_text(form, "version", "")
+    chat_session_id = _project_deploy_form_text(form, "chat_session_id", "")
+    task_tree_node_id = _project_deploy_form_text(form, "task_tree_node_id", "")
+    manifest = _parse_project_deploy_upload_manifest(
+        manifest_json=manifest_json,
+        checksum=checksum,
+        size=size,
+        version=version,
+    )
+    upload_files = [item for item in form.getlist("files") if _is_project_deploy_upload_file(item)]
+    single_file = form.get("file")
+    if _is_project_deploy_upload_file(single_file):
+        upload_files = [single_file, *upload_files] if not upload_files else upload_files
+    if not upload_files:
+        raise HTTPException(400, "artifact file is required")
+    source_type = str(manifest.get("source_type") or "").strip().lower()
+    req = ProjectDeployArtifactPushReq(
+        profile=profile,
+        component=component,
+        artifact_name=_normalize_project_deploy_text(artifact_name, limit=240)
+        or _normalize_project_deploy_text(upload_files[0].filename, limit=240),
+        artifact_kind=artifact_kind,
+        manifest=manifest,
+        auto_deploy=False,
+        chat_session_id=chat_session_id,
+        task_tree_node_id=task_tree_node_id,
+    )
+    file_entries_meta = manifest.get("file_entries") if isinstance(manifest.get("file_entries"), list) else []
+    if source_type == "directory-tar":
+        entries = await run_in_threadpool(
+            _extract_project_deploy_directory_tar_entries,
+            archive_content=await _read_project_deploy_upload_content(upload_files[0]),
+            manifest=manifest,
+        )
+        return await run_in_threadpool(
+            _push_project_deploy_artifact_directory_content,
+            project=project,
+            req=req,
+            uploaded_by=_current_username(auth_payload) or "unknown",
+            file_entries=entries,
+        )
+    if len(upload_files) > 1 or source_type == "directory":
+        entries: list[dict[str, Any]] = []
+        for index, upload in enumerate(upload_files):
+            content = await _read_project_deploy_upload_content(upload)
+            meta = file_entries_meta[index] if index < len(file_entries_meta) and isinstance(file_entries_meta[index], dict) else {}
+            entries.append(
+                {
+                    "name": _normalize_project_deploy_text(upload.filename, limit=240),
+                    "path": meta.get("path") or upload.filename,
+                    "content": content,
+                }
+            )
+        return await run_in_threadpool(
+            _push_project_deploy_artifact_directory_content,
+            project=project,
+            req=req,
+            uploaded_by=_current_username(auth_payload) or "unknown",
+            file_entries=entries,
+        )
+    content = await _read_project_deploy_upload_content(upload_files[0])
+    return await run_in_threadpool(
+        _push_project_deploy_artifact_content,
+        project=project,
+        req=req,
+        uploaded_by=_current_username(auth_payload) or "unknown",
+        content=content,
     )
 
 
@@ -13589,12 +16718,56 @@ async def deploy_project_deploy_artifact(
     _ensure_permission(auth_payload, "menu.projects")
     project = _ensure_project_manage_access(project_id, auth_payload)
     payload = req or ProjectDeployArtifactDeployReq()
-    return _deploy_project_deploy_artifact_payload(
+    return await run_in_threadpool(
+        _deploy_project_deploy_artifact_payload,
         project=project,
         artifact_id=artifact_id,
         requested_by=_current_username(auth_payload) or "unknown",
         chat_session_id=payload.chat_session_id,
         task_tree_node_id=payload.task_tree_node_id,
+        requirement=payload.requirement,
+        plan=payload.plan,
+    )
+
+
+@router.post("/{project_id}/deploy-artifacts/{artifact_id}/deploy/ai-execute")
+async def ai_execute_project_deploy_artifact(
+    project_id: str,
+    artifact_id: str,
+    req: ProjectDeployArtifactAiExecuteReq | None = None,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    artifact_id_value = _normalize_project_deploy_text(artifact_id, limit=120)
+    if not artifact_id_value:
+        raise HTTPException(400, "artifact_id is required")
+    artifact = project_deploy_store.get_artifact(project.id, artifact_id_value)
+    if artifact is None:
+        raise HTTPException(404, f"Artifact {artifact_id_value} not found")
+    return await _execute_project_deploy_artifact_via_project_chat(
+        project=project,
+        artifact=artifact,
+        req=req or ProjectDeployArtifactAiExecuteReq(),
+        auth_payload=auth_payload,
+    )
+
+
+@router.post("/{project_id}/deploy-artifacts/{artifact_id}/plan/generate")
+async def generate_project_deploy_artifact_plan(
+    project_id: str,
+    artifact_id: str,
+    req: ProjectDeployArtifactPlanGenerateReq | None = None,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    return await _generate_project_deploy_artifact_plan_payload(
+        project=project,
+        artifact_id=artifact_id,
+        req=req or ProjectDeployArtifactPlanGenerateReq(),
+        auth_payload=auth_payload,
     )
 
 
@@ -13609,7 +16782,7 @@ async def list_project_deploy_artifacts(
     return {
         "project_id": project_id,
         "artifacts": [
-            _serialize_project_deploy_artifact(item)
+            _serialize_project_deploy_artifact_with_deployment(item)
             for item in project_deploy_store.list_artifacts(project_id, limit=limit)
         ],
     }
@@ -13673,6 +16846,29 @@ async def list_project_deploy_runs(
             _serialize_project_deploy_run(item)
             for item in project_deploy_store.list_runs(project_id, limit=limit)
         ],
+    }
+
+
+@router.delete("/{project_id}/deploy-runs/{run_id}")
+async def delete_project_deploy_run(
+    project_id: str,
+    run_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    deleted = project_deploy_store.delete_run(
+        project_id,
+        run_id,
+        deleted_by=_current_username(auth_payload) or "unknown",
+        reason="manual_delete",
+    )
+    if not deleted:
+        raise HTTPException(404, f"Deploy run {run_id} not found")
+    return {
+        "status": "deleted",
+        "project_id": project_id,
+        "run_id": run_id,
     }
 
 
@@ -17542,6 +20738,15 @@ def _resolve_project_experience_llm_target(
         resolved_provider_id = str(chat_settings.get("provider_id") or "").strip()
         resolved_model_name = resolved_model_name or str(chat_settings.get("model_name") or "").strip()
     if not resolved_provider_id:
+        default_target = llm_service.get_default_user_llm_target(
+            owner_username=_current_username(auth_payload),
+            include_all=False,
+            include_secret=False,
+        )
+        if default_target:
+            resolved_provider_id = str(default_target.get("provider_id") or "").strip()
+            resolved_model_name = resolved_model_name or str(default_target.get("model_name") or "").strip()
+    if not resolved_provider_id:
         raise HTTPException(400, "当前未配置可用于经验规则融合的大模型")
     provider = llm_service.get_provider_raw(
         resolved_provider_id,
@@ -20131,24 +23336,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         )
 
     async def _resolve_external_agent_runtime(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Any]:
-        req_payload = dict(payload or {})
-        req_payload["message"] = str(req_payload.get("message") or "__agent_prepare__")
-        req = ProjectChatReq.model_validate(req_payload)
-        runtime_settings = _resolve_chat_runtime_settings(req, project)
-        workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
-        external_agent_info = await _build_project_external_agent_info(
-            project=project,
-            auth_payload=auth_payload,
-            settings=runtime_settings,
-            workspace_path=workspace_path,
-        )
-        connector_id = str(runtime_settings.get("local_connector_id") or "").strip()
-        connector = _resolve_accessible_local_connector(connector_id, auth_payload)
-        if connector is None:
-            raise ValueError("请先选择本地连接器")
-        if not external_agent_info.get("available"):
-            raise ValueError(str(external_agent_info.get("reason") or "外部 Agent 不可用"))
-        return runtime_settings, external_agent_info, connector
+        raise ValueError("外部 Agent 已移除本地连接器执行路径；请使用桌面端 Runner。")
 
     async def _handle_agent_prepare(payload: dict[str, Any]) -> None:
         request_id = str(payload.get("request_id") or "").strip()
@@ -20183,229 +23371,42 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         allow_requirement_record: bool,
         chat_surface: str,
     ) -> None:
-        external_agent_info: dict[str, Any] = {}
         session_id = f"codex-{uuid.uuid4().hex[:12]}"
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
-        exit_code: int | None = None
-        try:
-            workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
-            external_agent_info = await _build_project_external_agent_info(
-                project=project,
-                auth_payload=auth_payload,
-                settings=runtime_settings,
-                workspace_path=workspace_path,
-            )
-            connector = _resolve_accessible_local_connector(
-                str(runtime_settings.get("local_connector_id") or "").strip(),
-                auth_payload,
-            )
-            if connector is None:
-                raise ValueError("请先选择本地连接器")
-            if not external_agent_info.get("available"):
-                raise ValueError(str(external_agent_info.get("reason") or "外部 Agent 不可用"))
-
-            start_payload = _build_project_chat_start_payload(
-                request_id=request_id,
-                project_id=project_id,
-                provider_id="external-agent",
-                model_name="codex-cli",
-                chat_mode="external_agent",
-                employee_id=employee_id_val,
-                employee_name=str((selected_employee or {}).get("name") or ""),
-                employee_ids=selected_employee_ids,
-                tools_enabled=True,
-                task_tree_payload=task_tree_payload,
-            )
-            start_payload.update(
-                {
-                    **external_agent_info,
-                    "agent_session_id": session_id,
-                    "session_id": session_id,
-                    "thread_id": session_id,
-                    "ready": True,
-                }
-            )
-            await _send_project_chat_event(start_payload)
-
-            sandbox_mode = str(runtime_settings.get("connector_sandbox_mode") or "workspace-write").strip() or "workspace-write"
-            cmd = ["codex", "exec", "--sandbox", sandbox_mode, effective_user_message]
-            command_text = shlex.join(cmd)
-            await _send_project_chat_event(
-                {
-                    "type": "command_start",
-                    "request_id": request_id,
-                    "chat_mode": "external_agent",
-                    "tool_name": "Codex CLI",
-                    "command": command_text,
-                    "cwd": workspace_path,
-                    "workspace_path": workspace_path,
-                }
-            )
-            task_node_id = str(
-                (task_tree_payload or {}).get("current_node_id")
-                or ((task_tree_payload or {}).get("current_node") or {}).get("id")
-                or ""
-            ).strip()
-            adapter = CodexRunnerStreamAdapter(task_node_id=task_node_id)
-            async for raw_event in exec_stream_via_connector(
-                connector,
-                cmd=cmd,
-                cwd=workspace_path,
-                env={},
-            ):
-                if cancel_event.is_set():
-                    exit_code = -1
-                    break
-                event = adapter.normalize_event(raw_event).to_dict()
-                raw_type = str(raw_event.get("type") or "").strip().lower()
-                message = str(event.get("message") or "").strip()
-                if raw_type in {"stdout", "chunk"} and message:
-                    stdout_chunks.append(message)
-                elif raw_type == "stderr" and message:
-                    stderr_chunks.append(message)
-                    await _send_project_chat_event(
-                        {
-                            "type": "stderr",
-                            "request_id": request_id,
-                            "chat_mode": "external_agent",
-                            "message": message,
-                            "stderr_preview": message[-500:],
-                        }
-                    )
-                if raw_type == "exit":
-                    try:
-                        exit_code = int(raw_event.get("returncode"))
-                    except (TypeError, ValueError):
-                        exit_code = 1
-                await _send_project_chat_event(
-                    {
-                        "type": "external_executor_event",
-                        "request_id": request_id,
-                        "chat_mode": "external_agent",
-                        "session_id": session_id,
-                        "thread_id": session_id,
-                        "event": event,
-                    }
-                )
-
-            if exit_code is None:
-                exit_code = 0
-            output_text = "".join(stdout_chunks).strip()
-            stderr_text = "".join(stderr_chunks).strip()
-            succeeded = exit_code == 0 and not cancel_event.is_set()
-            await _send_project_chat_event(
-                {
-                    "type": "command_result",
-                    "request_id": request_id,
-                    "chat_mode": "external_agent",
-                    "tool_name": "Codex CLI",
-                    "command": command_text,
-                    "cwd": workspace_path,
-                    "workspace_path": workspace_path,
-                    "status": "completed" if succeeded else "failed",
-                    "exit_code": exit_code,
-                    "output_preview": (output_text or stderr_text)[-1200:],
-                    "stdout_preview": output_text[-1200:],
-                    "stderr_preview": stderr_text[-1200:],
-                }
-            )
-            if cancel_event.is_set():
-                final_answer = "Codex CLI 执行已取消。"
-                completed_reason = "cancelled"
-            elif succeeded:
-                final_answer = output_text or "Codex CLI 执行完成。"
-                completed_reason = "completed"
-            else:
-                final_answer = (
-                    f"Codex CLI 执行失败，退出码 {exit_code}。"
-                    + (f"\n\n{stderr_text[-2000:]}" if stderr_text else "")
-                )
-                completed_reason = "runtime_error"
-            done_payload = _build_project_chat_done_payload(
-                content=final_answer,
-                project_id=project_id,
-                username=username,
-                chat_session_id=chat_session_id,
-                provider_id="external-agent",
-                model_name="codex-cli",
-                task_tree_tool_used=True,
-            )
-            done_payload["request_id"] = request_id
-            done_payload["chat_mode"] = "external_agent"
-            done_payload["completed_reason"] = completed_reason
-            if not succeeded:
-                done_payload["guard_reason"] = completed_reason
-                done_payload["guard_message"] = "外部 Agent 执行未完成"
-            await _send_project_chat_event(done_payload)
-            assistant_source_context = _normalize_project_chat_source_context(
-                {
-                    "source_type": "manual_ai_chat",
-                    "chat_mode": "external_agent",
-                    "external_agent_type": str(
-                        runtime_settings.get("external_agent_type") or "codex_cli"
-                    ),
-                    "agent_session_id": session_id,
-                    "session_id": session_id,
-                    "thread_id": session_id,
-                },
-                project_id=project_id,
-                default_source_type="manual_ai_chat",
-            )
-            _append_chat_record(
-                project_id=project_id,
-                username=username,
-                role="assistant",
-                content=final_answer,
-                message_id=assistant_message_id,
-                chat_session_id=chat_session_id,
-                source_context=assistant_source_context,
-            )
-            _save_project_chat_memory_snapshot(
-                project_id=project_id,
-                user_message=effective_user_message,
-                answer=final_answer,
-                chat_session_id=chat_session_id,
-                task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
-                selected_employee_ids=selected_employee_ids,
-                source=_compose_project_chat_memory_source("project-chat-ws-external-agent", chat_surface),
-                allow_requirement_record=allow_requirement_record,
-            )
-        except Exception as exc:
-            done_payload, final_answer = _build_project_chat_failure_done_payload(
-                exc=exc,
-                project_id=project_id,
-                username=username,
-                chat_session_id=chat_session_id,
-                provider_id="external-agent",
-                model_name="codex-cli",
-            )
-            done_payload["request_id"] = request_id
-            done_payload["chat_mode"] = "external_agent"
-            await _send_project_chat_event(done_payload)
-            assistant_source_context = _normalize_project_chat_source_context(
-                {
-                    "source_type": "manual_ai_chat",
-                    "chat_mode": "external_agent",
-                    "external_agent_type": str(
-                        runtime_settings.get("external_agent_type") or "codex_cli"
-                    ),
-                    "agent_session_id": session_id,
-                    "session_id": session_id,
-                    "thread_id": session_id,
-                },
-                project_id=project_id,
-                default_source_type="manual_ai_chat",
-            )
-            _append_chat_record(
-                project_id=project_id,
-                username=username,
-                role="assistant",
-                content=final_answer,
-                message_id=assistant_message_id,
-                chat_session_id=chat_session_id,
-                source_context=assistant_source_context,
-            )
+        exc = ValueError("外部 Agent 已移除本地连接器执行路径；请使用桌面端 Runner。")
+        done_payload, final_answer = _build_project_chat_failure_done_payload(
+            exc=exc,
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+            provider_id="external-agent",
+            model_name="codex-cli",
+        )
+        done_payload["request_id"] = request_id
+        done_payload["chat_mode"] = "external_agent"
+        await _send_project_chat_event(done_payload)
+        assistant_source_context = _normalize_project_chat_source_context(
+            {
+                "source_type": "manual_ai_chat",
+                "chat_mode": "external_agent",
+                "external_agent_type": str(
+                    runtime_settings.get("external_agent_type") or "codex_cli"
+                ),
+                "agent_session_id": session_id,
+                "session_id": session_id,
+                "thread_id": session_id,
+            },
+            project_id=project_id,
+            default_source_type="manual_ai_chat",
+        )
+        _append_chat_record(
+            project_id=project_id,
+            username=username,
+            role="assistant",
+            content=final_answer,
+            message_id=assistant_message_id,
+            chat_session_id=chat_session_id,
+            source_context=assistant_source_context,
+        )
 
     async def handle_request(payload: dict):
         nonlocal active_tasks, cancel_events

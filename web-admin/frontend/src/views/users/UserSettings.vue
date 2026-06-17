@@ -11,7 +11,9 @@
           <span>{{ form.username || "-" }}</span>
           <span>{{ roleLabel }}</span>
           <span>{{
-            selectedProvider ? `默认 AI：${selectedProvider.name}` : "默认 AI：未指定"
+            selectedProvider
+              ? `默认 AI：${selectedProvider.name} / ${selectedModelName || "-"}`
+              : "默认 AI：未指定"
           }}</span>
         </div>
       </div>
@@ -90,6 +92,23 @@
               </el-option>
             </el-select>
           </el-form-item>
+          <el-form-item label="系统默认大模型">
+            <el-select
+              v-model="form.default_ai_model_name"
+              filterable
+              clearable
+              :disabled="!selectedProvider"
+              placeholder="选择当前账号没有单独配置时使用的默认模型"
+              class="settings-select"
+            >
+              <el-option
+                v-for="item in selectedProviderModelOptions"
+                :key="item.name"
+                :label="item.label"
+                :value="item.name"
+              />
+            </el-select>
+          </el-form-item>
         </el-form>
 
         <div v-if="selectedProvider" class="provider-preview">
@@ -103,7 +122,7 @@
           </div>
           <div class="provider-preview__row">
             <span class="provider-preview__label">默认模型</span>
-            <span class="provider-preview__value">{{ selectedProvider.defaultModel || "-" }}</span>
+            <span class="provider-preview__value">{{ selectedModelName || "-" }}</span>
           </div>
           <div class="provider-preview__row">
             <span class="provider-preview__label">创建人</span>
@@ -166,7 +185,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
 import { formatDateTime } from "@/utils/date.js";
@@ -181,6 +200,7 @@ const form = reactive({
   role: "",
   created_at: "",
   default_ai_provider_id: "",
+  default_ai_model_name: "",
 });
 const passwordForm = reactive({
   password: "",
@@ -214,11 +234,13 @@ const providerOptions = computed(() =>
       const name = String(item?.name || id || "未命名供应商").trim();
       const defaultModel = String(item?.default_model || "").trim();
       const ownerUsername = String(item?.owner_username || "").trim();
+      const models = normalizeProviderModels(item);
       return {
         id,
         name,
         defaultModel,
         ownerUsername,
+        models,
         label: ownerUsername ? `${name} (${ownerUsername})` : name,
       };
     })
@@ -231,6 +253,44 @@ const selectedProvider = computed(() =>
   ) || null,
 );
 
+const selectedProviderModelOptions = computed(() => {
+  const models = Array.isArray(selectedProvider.value?.models)
+    ? selectedProvider.value.models
+    : [];
+  return models.map((name) => ({
+    name,
+    label:
+      name === String(selectedProvider.value?.defaultModel || "").trim()
+        ? `${name}（供应商默认）`
+        : name,
+  }));
+});
+
+const selectedModelName = computed(() => {
+  const configured = String(form.default_ai_model_name || "").trim();
+  if (configured) return configured;
+  return String(selectedProvider.value?.defaultModel || "").trim();
+});
+
+function normalizeProviderModels(provider) {
+  const values = [];
+  const seen = new Set();
+  const push = (value) => {
+    const name = String(value || "").trim();
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    values.push(name);
+  };
+  push(provider?.default_model);
+  if (Array.isArray(provider?.model_configs)) {
+    provider.model_configs.forEach((item) => push(item?.name || item?.model_name));
+  }
+  if (Array.isArray(provider?.models)) {
+    provider.models.forEach((item) => push(item));
+  }
+  return values;
+}
+
 const validateConfirmPassword = (_rule, value, callback) => {
   if (!String(value || "").trim()) {
     callback(new Error("请再次输入新密码"));
@@ -242,6 +302,21 @@ const validateConfirmPassword = (_rule, value, callback) => {
   }
   callback();
 };
+
+watch(
+  () => form.default_ai_provider_id,
+  () => {
+    const modelNames = selectedProviderModelOptions.value.map((item) => item.name);
+    if (!modelNames.length) {
+      form.default_ai_model_name = "";
+      return;
+    }
+    if (!modelNames.includes(String(form.default_ai_model_name || "").trim())) {
+      form.default_ai_model_name =
+        String(selectedProvider.value?.defaultModel || "").trim() || modelNames[0] || "";
+    }
+  },
+);
 
 const passwordRules = {
   password: [
@@ -266,6 +341,7 @@ async function fetchSettings() {
     form.role = String(settings.role || "");
     form.created_at = String(settings.created_at || "");
     form.default_ai_provider_id = String(settings.default_ai_provider_id || "");
+    form.default_ai_model_name = String(settings.default_ai_model_name || "");
     providers.value = Array.isArray(data?.providers) ? data.providers : [];
   } catch (err) {
     providers.value = [];
@@ -280,9 +356,11 @@ async function saveSettings() {
   try {
     const data = await api.put("/users/me/settings", {
       default_ai_provider_id: String(form.default_ai_provider_id || "").trim(),
+      default_ai_model_name: String(form.default_ai_model_name || "").trim(),
     });
     const settings = data?.settings || {};
     form.default_ai_provider_id = String(settings.default_ai_provider_id || "");
+    form.default_ai_model_name = String(settings.default_ai_model_name || "");
     ElMessage.success("用户设置已保存");
     await fetchSettings();
   } catch (err) {

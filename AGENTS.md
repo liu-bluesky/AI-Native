@@ -19,6 +19,7 @@
 9. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 `bind_project_context(...)`。
 10. 当前任务先在项目本地推进：先在工作区完成分析、改动、验证和本地记录，再通过 MCP 回写任务树、工作事实、交付结论或记忆到服务端。
 11. 每个需求必须维护 1 个本地 requirement 对象；项目工作区可解析时，写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。对象内至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history` 等字段，避免只在服务端推进看不到本地状态。
+11.1 需求一开始就要在当前 CLI 工作区完成本地初始化、创建 requirement 与 canonical session 状态；远程写入只算 sync-back，不能替代本地记录。
 12. 当前全局清晰度确认阈值为 3/5；先按 1-5 分估计用户需求清晰度。
 13. 若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= 3，可直接回答；凡涉及开发、实现、修改、部署、写入或其他会改变项目状态的需求，必须先输出需求理解和计划摘要，并请求用户确认后再执行。
 14. 若清晰度分数 < 3、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认后不要重复确认；任何删除、移除、清空、覆盖或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。
@@ -29,15 +30,20 @@
 19. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。
 20. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。
 
-客户端 AI 打包部署契约：
-1. 客户端 AI 打包后调用服务端部署 artifact 推送入口，携带 `profile`、`component`、`artifact_name`、`artifact_kind`、`manifest.checksum`、`manifest.size`、`manifest.version`、`artifact_path` 或 `artifact_content_base64`、`auto_deploy=true`、`chat_session_id` 与 `task_tree_node_id`。
-2. 服务端根据推送内容、项目 `deploy_settings` 和目标 `remote_path` 创建 `ProjectDeployArtifact` 与 `ProjectDeployRun`；缺少部署配置、FTP 凭据、远端目录、部署命令或远端命令执行器时，必须返回 `blocked` / `missing` 并列出缺失项，客户端要直接告知用户。
-3. 当前删除打包文件只删除服务端保存的部署 artifact 文件及 artifact 记录；不删除外部平台消息，也不删除远端服务器已部署目录。
-4. 机器人通知群优先使用机器人连接器扫描结果；飞书支持扫描机器人所在群，微信/QQ 若返回 `unsupported`，客户端必须提示平台缺少群列表 API/适配能力。
+项目聊天打包部署命令约束：
+1. “打包部署”“发布测试环境”“推送部署产物”等需要在用户机器上运行打包命令的任务，只能通过项目聊天的命令执行能力处理。
+2. 本地打包命令只允许在项目聊天已选择外部智能体、且当前运行在桌面端 Runner 时使用；未选择外部智能体、未运行桌面端或当前电脑不可达时，必须停止并提示无法执行本地命令。
+3. 命令执行前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。
+4. 客户端打包完成或读取用户指定压缩包后，必须把产物推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/桌面端 Runner 读取本地文件并上传；否则调用项目 MCP 工具 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`，不要把 Windows/macOS 本地路径当作服务端可读路径。自动部署由部署产物 AI/服务端部署能力基于服务端 artifact 和项目部署配置执行。
+4.1 用户说“推送到服务端部署”“上传部署”“部署这个 zip”“新代码部署”且未限定“只上传”时，`push_project_deploy_artifact.auto_deploy=true`；只有明确“只上传”才传 false。只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact，禁止复用历史 artifact。
+5. 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 `blocked` / `missing`。
+6. 当前删除打包文件只删除服务端保存的部署 artifact 文件及 artifact 记录；不删除外部平台消息，也不删除远端服务器已部署目录。
+7. 机器人通知群优先使用机器人连接器扫描结果；飞书支持扫描机器人所在群，微信/QQ 若返回 `unsupported`，客户端必须提示平台缺少群列表 API/适配能力。
 
 当前接入上下文：
 - 默认项目: `proj-d16591a6`
 - 建议把 URL 默认上下文里的 `project_id` 固定为 `proj-d16591a6`。
+- 部署、上传或推送部署产物时，如果用户未另给 `project_id`，必须直接使用当前默认项目 `proj-d16591a6`；不要因“缺少 project_id”暂停或要求用户重复提供。
 - 涉及当前项目时，若项目和对象已明确，可直接 `get_manual_content(project_id="proj-d16591a6")` 或进入 `start_project_workflow(...)`；仅在缺少 ID 或需要跨项目定位时，再调用 `search_ids(keyword="<用户原始问题>", project_id="proj-d16591a6")`。
 - 若要创建或续接当前项目任务树，优先显式调用 `bind_project_context(project_id="proj-d16591a6", chat_session_id="<聊天会话ID>", root_goal="<用户原始问题>")`。
 - 当前页面已有 `chat_session_id=chat-session-codex-deploy-automation-20260613T011544Z`；仅在明确要续接当前任务树时复用，否则新开的并行 CLI 应重新生成自己的 `chat_session_id`。

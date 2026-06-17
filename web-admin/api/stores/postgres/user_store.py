@@ -35,6 +35,7 @@ class UserStorePostgres:
             role=str(payload.get("role") or "user"),
             role_ids=payload.get("role_ids") if isinstance(payload.get("role_ids"), list) else [],
             default_ai_provider_id=str(payload.get("default_ai_provider_id") or "").strip(),
+            default_ai_model_name=str(payload.get("default_ai_model_name") or "").strip(),
             created_by=str(payload.get("created_by") or "").strip(),
             created_at=str(payload.get("created_at") or _now_iso()),
         )
@@ -48,6 +49,7 @@ class UserStorePostgres:
                 "role": user.role,
                 "role_ids": list(user.role_ids or []),
                 "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
+                "default_ai_model_name": str(user.default_ai_model_name or "").strip(),
                 "created_by": str(user.created_by or "").strip(),
                 "created_at": user.created_at,
             },

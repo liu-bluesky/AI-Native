@@ -39,6 +39,7 @@ from services.mcp.dynamic_mcp_collaboration import (
     extract_execution_task_text,
     invoke_project_builtin_tool,
     parse_object_args,
+    project_deploy_artifact_tool_descriptors,
 )
 from services.mcp.dynamic_mcp_external_tools import (
     _list_visible_external_mcp_modules,
@@ -488,6 +489,10 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
         tools.append(collaboration_tool_descriptor(employee_id_value))
         existing_names.add(COLLABORATION_TOOL_NAME)
     for descriptor in project_prompt_tool_descriptors(employee_id_value):
+        if str(descriptor.get("tool_name") or "") not in existing_names:
+            tools.append(descriptor)
+            existing_names.add(str(descriptor.get("tool_name") or ""))
+    for descriptor in project_deploy_artifact_tool_descriptors(employee_id_value):
         if str(descriptor.get("tool_name") or "") not in existing_names:
             tools.append(descriptor)
             existing_names.add(str(descriptor.get("tool_name") or ""))

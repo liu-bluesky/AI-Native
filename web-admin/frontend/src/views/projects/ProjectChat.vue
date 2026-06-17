@@ -2532,7 +2532,7 @@
                       >
                         <span>本机执行环境</span>
                         <strong
-                          >工作区和权限都属于运行执行器的那台电脑；桌面端使用原生桥，浏览器兼容模式才需要本地连接器。</strong
+                          >工作区和权限都属于运行执行器的那台电脑；外部 Agent 统一使用桌面端 Runner。</strong
                         >
                       </div>
 
@@ -2555,9 +2555,7 @@
                           <strong>{{
                             nativeDesktopBridgeAvailable
                               ? "桌面端原生桥"
-                              : usingLocalConnector
-                                ? "本地连接器"
-                                : "网页模式"
+                              : "网页模式不可用"
                           }}</strong>
                           <span>执行器</span>
                           <strong>{{ externalAgentDisplayLabel }}</strong>
@@ -2565,6 +2563,7 @@
                           <strong>{{ executionWorkspaceLabel }}</strong>
                           <span>权限</span>
                           <strong>{{
+                            projectChatSettings.external_agent_sandbox_mode ||
                             projectChatSettings.connector_sandbox_mode ||
                             "workspace-write"
                           }}</strong>
@@ -2714,8 +2713,7 @@
                           <div class="workspace-path-hint">
                             桌面端已接入 Tauri 原生桥，可直接选择本机目录并检测
                             Codex /
-                            Hermes；不需要再选择本地连接器。完整交互式执行仍需继续接入本地
-                            Runner / PTY。
+                            Hermes；不再使用本地连接器。
                           </div>
                         </div>
                       </el-form-item>
@@ -2724,53 +2722,11 @@
                         v-if="
                           isExternalAgentMode && !nativeDesktopBridgeAvailable
                         "
-                        label="本地连接器"
+                        label="桌面端 Runner"
                       >
                         <div class="workspace-path-editor">
-                          <el-select
-                            v-model="projectChatSettings.local_connector_id"
-                            class="full-width"
-                            filterable
-                            clearable
-                            placeholder="选择本机连接器"
-                          >
-                            <el-option
-                              v-for="item in localConnectors"
-                              :key="item.id"
-                              :label="item.connector_name || item.id"
-                              :value="item.id"
-                            >
-                              <span>{{ item.connector_name || item.id }}</span>
-                              <el-tag
-                                size="small"
-                                :type="item.online ? 'success' : 'info'"
-                              >
-                                {{ item.online ? "在线" : "离线" }}
-                              </el-tag>
-                            </el-option>
-                          </el-select>
-                          <div class="workspace-path-actions">
-                            <el-button
-                              @click="pairBrowserLocalConnector"
-                              :loading="localConnectorPairing"
-                            >
-                              连接本机
-                            </el-button>
-                            <el-button
-                              @click="refreshLocalConnectorCatalog(false)"
-                              :loading="localConnectorRefreshing"
-                            >
-                              刷新
-                            </el-button>
-                          </div>
                           <div class="workspace-path-hint">
-                            {{ localConnectorSummary }}
-                            <template v-if="externalAgentInfo.reason">
-                              · {{ externalAgentInfo.reason }}
-                            </template>
-                            <template v-else>
-                              · 网页模式需要本地连接器；桌面端不需要此选项。
-                            </template>
+                            外部 Agent 已移除本地连接器路径。请在桌面端打开项目后使用 Runner。
                           </div>
                         </div>
                       </el-form-item>
@@ -2780,7 +2736,7 @@
                         :label="
                           nativeDesktopBridgeAvailable
                             ? '本机工作区'
-                            : '本地连接器工作区'
+                            : '本机工作区'
                         "
                       >
                         <div class="workspace-path-editor">
@@ -2822,7 +2778,7 @@
                               {{
                                 nativeDesktopBridgeAvailable
                                   ? "当前还没有配置本机工作区。"
-                                  : "当前还没有配置本地连接器工作区。"
+                                  : "当前需要在桌面端配置本机工作区。"
                               }}
                             </template>
                             这是执行器所在电脑上的绝对路径。
@@ -3854,7 +3810,10 @@ import {
   LARK_CLI_COMMAND,
   LARK_CLI_COMMAND_ALIASES,
   LARK_CLI_SKILL_ROOT_RELATIVE,
+  PACKAGE_DEPLOY_COMMAND,
+  PACKAGE_DEPLOY_COMMAND_ALIASES,
   PLUGIN_INSTALL_DRAFT_QUERY_KEY,
+  PROJECT_DEPLOY_DRAFT_QUERY_KEY,
   PROJECT_STATS_COMMAND,
   PROJECT_STATS_COMMAND_ALIASES,
   PROJECT_STATS_REPORT_DAYS,
@@ -3988,6 +3947,7 @@ import {
   clearTaskTreeSessionMemory,
   clearWorkSessionMemory,
   consumePluginInstallDraft,
+  consumeProjectDeployDraft,
   consumeStatisticsAnalysisDraft,
   hasSeenGuideTour,
   markGuideTourSeen,
@@ -4886,10 +4846,9 @@ const workspaceParentPath = computed(() => {
 const workspaceFileDirty = computed(
   () => workspaceFileDraft.value !== workspaceFileOriginal.value,
 );
-const externalAgentConnectorRequired = computed(() => {
+const externalAgentDesktopRunnerRequired = computed(() => {
   if (!isExternalAgentMode.value) return false;
-  if (nativeDesktopBridgeAvailable.value) return false;
-  return !String(projectChatSettings.value.local_connector_id || "").trim();
+  return !nativeDesktopBridgeAvailable.value;
 });
 const workspacePathDirty = computed(() => {
   if (!isExternalAgentMode.value) return false;
@@ -4909,7 +4868,6 @@ const activeLocalConnector = computed(() => {
     ) || null
   );
 });
-const usingLocalConnector = computed(() => Boolean(activeLocalConnector.value));
 const usingNativeDesktopRuntime = computed(() =>
   Boolean(nativeDesktopBridgeAvailable.value),
 );
@@ -4957,8 +4915,8 @@ const externalAgentDisplayLabel = computed(
     ).trim() || "外部 Agent",
 );
 const externalAgentAvailabilityLabel = computed(() => {
-  if (externalAgentInfo.value.command_source === "local_connector_required") {
-    return "需连接器";
+  if (externalAgentInfo.value.command_source === "native_desktop_required") {
+    return "需桌面端";
   }
   if (externalAgentInfo.value.available) return "可用";
   if (externalAgentInfo.value.installed) return "已安装待接入";
@@ -4977,16 +4935,10 @@ const externalAgentStatusSummary = computed(() => {
   const parts = [
     externalAgentDisplayLabel.value,
     externalAgentRuntimeLabel.value,
-    nativeDesktopBridgeAvailable.value ? "桌面端原生桥" : "本地连接器",
+    nativeDesktopBridgeAvailable.value ? "桌面端原生桥" : "桌面端 Runner 未接入",
     String(externalAgentInfo.value.sandbox_mode || "workspace-write").trim() ||
       "workspace-write",
   ];
-  if (
-    !nativeDesktopBridgeAvailable.value &&
-    externalAgentInfo.value.local_connector_name
-  ) {
-    parts.push(externalAgentInfo.value.local_connector_name);
-  }
   if (externalAgentInfo.value.thread_id) {
     parts.push(`Thread ${shortThreadId.value}`);
   }
@@ -4997,16 +4949,12 @@ const executionRuntimeTitle = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "项目配置加载中";
   if (!isExternalAgentMode.value) return "系统对话";
   if (
-    externalAgentConnectorRequired.value &&
+    externalAgentDesktopRunnerRequired.value &&
     !usingNativeDesktopRuntime.value
   ) {
     return "外部 Agent 未就绪";
   }
-  if (!workspacePathConfigured.value) {
-    return nativeDesktopBridgeAvailable.value
-      ? "待选择本机工作区"
-      : "待配置本地连接器工作区";
-  }
+  if (!workspacePathConfigured.value) return "待选择本机工作区";
   if (workspacePathDirty.value) return "工作区未保存";
   if (externalAgentWarmupLoading.value) return "外部 Agent 预热中";
   if (externalAgentInfo.value.ready) {
@@ -5025,14 +4973,14 @@ const executionRuntimeDescription = computed(() => {
   if (!isExternalAgentMode.value) {
     return currentModelSummary.value || "使用服务端模型和项目工具回答。";
   }
-  if (externalAgentConnectorRequired.value) {
-    return "网页模式需要本地连接器；桌面端不需要此选项。";
+  if (externalAgentDesktopRunnerRequired.value) {
+    return "外部 Agent 只支持桌面端 Runner。请在桌面端打开项目后执行。";
   }
   if (nativeDesktopBridgeAvailable.value) {
     if (nativeRunnerSelfCheckPassed.value) {
       return "Runner 自检已通过；本机基础命令和工作区检查可用，可继续启动外部 Agent。";
     }
-    return "桌面端已接入原生桥，可选择本机目录并检测 Codex / Hermes；完整执行仍需后续接入本地 Runner / PTY。";
+    return "桌面端已接入原生桥，可选择本机目录并检测 Codex / Hermes。";
   }
   if (!workspacePathConfigured.value) {
     return "这是运行执行器的那台电脑上的绝对路径。";
@@ -5053,7 +5001,7 @@ const executionRuntimeActionLabel = computed(() => {
   if (!hasSelectedProject.value) return "选择项目";
   if (!isChatSettingsDisplayReady.value) return "加载中";
   if (!isExternalAgentMode.value) return "切换执行方式";
-  if (externalAgentConnectorRequired.value) return "连接本机";
+  if (externalAgentDesktopRunnerRequired.value) return "打开桌面端";
   if (!workspacePathConfigured.value || workspacePathDirty.value)
     return "配置工作区";
   return nativeDesktopBridgeAvailable.value ? "检查环境" : "环境设置";
@@ -5070,7 +5018,7 @@ const composerExecutionStatusLabel = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "加载中";
   if (!isExternalAgentMode.value) return "系统对话";
   if (externalAgentUnavailable.value) return "不可用";
-  if (externalAgentConnectorRequired.value || !workspacePathConfigured.value) {
+  if (externalAgentDesktopRunnerRequired.value || !workspacePathConfigured.value) {
     return "未就绪";
   }
   if (workspacePathDirty.value) return "待保存";
@@ -5086,8 +5034,7 @@ const composerExecutionRuntimeLocation = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "读取配置";
   if (!isExternalAgentMode.value) return "服务端模型";
   if (nativeDesktopBridgeAvailable.value) return "桌面端原生桥";
-  if (usingLocalConnector.value) return "本地连接器";
-  return "网页模式";
+  return "需桌面端 Runner";
 });
 const composerExecutionSummaryItems = computed(() => [
   {
@@ -5127,7 +5074,7 @@ const externalAgentUnavailable = computed(() => {
   if (nativeDesktopBridgeAvailable.value && nativeRunnerSelfCheckPassed.value) {
     return false;
   }
-  if (externalAgentConnectorRequired.value || !workspacePathConfigured.value) {
+  if (externalAgentDesktopRunnerRequired.value || !workspacePathConfigured.value) {
     return false;
   }
   const commandSource = String(externalAgentInfo.value.command_source || "")
@@ -5149,7 +5096,7 @@ const executionRuntimeToneClass = computed(() => {
   if (!isExternalAgentMode.value) return "is-system";
   if (externalAgentUnavailable.value) return "is-danger";
   if (
-    (externalAgentConnectorRequired.value &&
+    (externalAgentDesktopRunnerRequired.value &&
       !usingNativeDesktopRuntime.value) ||
     !workspacePathConfigured.value ||
     workspacePathDirty.value
@@ -5174,7 +5121,7 @@ const composerExecutionChipLabel = computed(() => {
     return `${externalAgentDisplayLabel.value} · 自检通过`;
   }
   if (nativeDesktopBridgeAvailable.value) return "桌面端原生桥已接入";
-  if (externalAgentConnectorRequired.value) return "外部 Agent 未就绪";
+  if (externalAgentDesktopRunnerRequired.value) return "外部 Agent 未就绪";
   if (!workspacePathConfigured.value) return "请选择工作区";
   if (workspacePathDirty.value) return "工作区未保存";
   if (externalAgentWarmupLoading.value) return "环境检查中";
@@ -5285,9 +5232,7 @@ const executionPermissionItems = computed(() => [
     value: isExternalAgentMode.value
       ? nativeDesktopBridgeAvailable.value
         ? "桌面端原生桥"
-        : usingLocalConnector.value
-          ? "本地连接器"
-          : "外部 Agent"
+        : "需桌面端 Runner"
       : "服务端模型",
   },
   {
@@ -5314,7 +5259,7 @@ const executionPermissionItems = computed(() => [
 const chatHeaderStatusText = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "配置加载中";
   if (!isExternalAgentMode.value) return wsStatusText.value;
-  if (externalAgentConnectorRequired.value) return "未选择本地连接器";
+  if (externalAgentDesktopRunnerRequired.value) return "需桌面端 Runner";
   if (nativeDesktopBridgeAvailable.value && !workspacePathConfigured.value)
     return "待选择本机工作区";
   if (!workspacePathConfigured.value) return "未配置工作区";
@@ -5326,7 +5271,7 @@ const chatHeaderStatusText = computed(() => {
 const chatHeaderStatusType = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "info";
   if (!isExternalAgentMode.value) return wsStatusType.value;
-  if (externalAgentConnectorRequired.value) return "warning";
+  if (externalAgentDesktopRunnerRequired.value) return "warning";
   if (!workspacePathConfigured.value || workspacePathDirty.value)
     return "warning";
   if (externalAgentWarmupLoading.value) return "warning";
@@ -5359,13 +5304,13 @@ const chatHeaderSubtext = computed(() => {
   const parts = [
     `${externalAgentDisplayLabel.value} 对话`,
     externalAgentRuntimeLabel.value,
-    nativeDesktopBridgeAvailable.value ? "桌面端原生桥" : "本地连接器",
+    nativeDesktopBridgeAvailable.value ? "桌面端原生桥" : "需桌面端 Runner",
   ];
   if (
     !nativeDesktopBridgeAvailable.value &&
-    externalAgentConnectorRequired.value
+    externalAgentDesktopRunnerRequired.value
   ) {
-    parts.push("待选择连接器");
+    parts.push("请使用桌面端");
   }
   if (
     !nativeDesktopBridgeAvailable.value &&
@@ -7409,7 +7354,7 @@ const localConnectorSummary = computed(() => {
   if (!isExternalAgentMode.value) {
     return projectWorkspaceResolved.value ? "项目工作区可用" : "未配置工作区";
   }
-  if (externalAgentConnectorRequired.value) {
+  if (externalAgentDesktopRunnerRequired.value) {
     return "待配置本机运行";
   }
   if (!activeLocalConnector.value) {
@@ -9268,6 +9213,18 @@ const composerSlashCommands = computed(() => {
       assistActionId: "",
     },
   ];
+  if (isExternalAgentMode.value) {
+    commands.push({
+      id: "package_deploy",
+      kind: "package_deploy",
+      command: PACKAGE_DEPLOY_COMMAND,
+      aliases: PACKAGE_DEPLOY_COMMAND_ALIASES,
+      label: "打包部署",
+      description:
+        "交给外部智能体在当前电脑执行打包/部署命令；需要先连接本地环境。",
+      assistActionId: "",
+    });
+  }
   for (const action of composerAssistActions.value) {
     commands.push({
       id: `assist_${action.id}`,
@@ -9315,6 +9272,7 @@ const uploadFiles = ref([]);
 const inputFocused = ref(false);
 const isDragging = ref(false);
 const {
+  rememberChatSessionComposerState,
   rememberCurrentChatSessionComposerState,
   applyChatSessionComposerState,
   clearCurrentChatSessionComposerState,
@@ -16378,6 +16336,63 @@ async function applyPluginInstallDraftFromRoute() {
   await router.replace({ query: nextQuery });
 }
 
+async function applyProjectDeployDraftFromRoute() {
+  const draftKey = String(
+    route.query[PROJECT_DEPLOY_DRAFT_QUERY_KEY] || "",
+  ).trim();
+  if (!draftKey) return;
+  if (
+    selectedProjectConversationLoadingKey ||
+    chatHistoryLoading.value ||
+    !String(currentChatSessionId.value || "").trim()
+  ) {
+    return;
+  }
+  const payload = consumeProjectDeployDraft(draftKey);
+  const prompt = String(payload?.prompt || "").trim();
+  if (prompt) {
+    applyProjectDeployDraftPrompt(prompt);
+    scrollToBottom();
+    await focusChatComposerTextarea();
+    ElMessage.success("AI 部署上下文已填入输入框");
+  }
+  const nextQuery = { ...route.query };
+  delete nextQuery[PROJECT_DEPLOY_DRAFT_QUERY_KEY];
+  await router.replace({ query: nextQuery });
+}
+
+function applyProjectDeployDraftPrompt(prompt) {
+  const normalizedPrompt = String(prompt || "").trim();
+  if (!normalizedPrompt) return;
+  const previousDraft = String(draftText.value || "").trim();
+  const nextDraft = previousDraft
+    ? `${previousDraft}\n\n${normalizedPrompt}`
+    : normalizedPrompt;
+  draftText.value = nextDraft;
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (projectId && chatSessionId) {
+    rememberChatSessionComposerState(projectId, chatSessionId, {
+      draftText: nextDraft,
+      uploadFiles: uploadFiles.value,
+      activeComposerAssist: activeComposerAssist.value,
+      singleRoundAnswerOnly: singleRoundAnswerOnly.value,
+    });
+  }
+  window.setTimeout(() => {
+    if (String(draftText.value || "").trim()) return;
+    draftText.value = nextDraft;
+    if (projectId && chatSessionId) {
+      rememberChatSessionComposerState(projectId, chatSessionId, {
+        draftText: nextDraft,
+        uploadFiles: uploadFiles.value,
+        activeComposerAssist: activeComposerAssist.value,
+        singleRoundAnswerOnly: singleRoundAnswerOnly.value,
+      });
+    }
+  }, 0);
+}
+
 async function focusMessageById(messageId, options = {}) {
   const normalizedMessageId = String(messageId || "").trim();
   if (!normalizedMessageId) return false;
@@ -16606,6 +16621,29 @@ function buildProjectStatsCommandPrompt({
     "",
     "以下是当前项目统计 AI 报表：",
     reportMarkdown,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildPackageDeployCommandPrompt(commandPrompt) {
+  const normalizedPrompt = String(commandPrompt || "").trim();
+  return [
+    "用户通过 /打包部署 发起项目打包/部署任务。",
+    "",
+    "用户补充要求：",
+    normalizedPrompt || "未填写；如果目标环境、打包命令或部署命令不明确，先向用户确认，不要直接执行。",
+    "",
+    "执行边界：",
+    "- 优先按用户提供的上下文判断任务类型：已有部署产物时，走服务端部署产物能力；需要本机打包时，才通过外部智能体和桌面端 Runner 执行本机命令。",
+    "- 已有 artifact_id / 部署产物上下文时，不要要求用户重新上传或重新解释压缩包/目录；按服务端部署规则处理备份、解压和上传。",
+    "- 不读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据。",
+    "- 需要执行本机命令时，必须先明确命令内容、工作目录、目标环境、影响范围和可恢复性。",
+    "- 涉及部署、发布、覆盖远端目录、执行远端命令等外部系统写入时，必须先取得用户明确授权。",
+    "",
+    "结果要求：",
+    "- 汇总实际执行的命令、退出状态、关键输出、生成的产物路径和剩余风险。",
+    "- 如果缺少桌面端 Runner、工作区、命令、登录态、部署配置、artifact_id 或部署工具能力，直接说明 blocked / missing，不要编造执行结果。",
   ]
     .filter(Boolean)
     .join("\n");
@@ -17864,7 +17902,7 @@ async function handleComposerExecutionPrimaryAction() {
     return;
   }
   if (
-    externalAgentConnectorRequired.value ||
+    externalAgentDesktopRunnerRequired.value ||
     !workspacePathConfigured.value ||
     workspacePathDirty.value ||
     !nativeDesktopBridgeAvailable.value
@@ -18865,17 +18903,9 @@ function resetExternalAgentRuntimeState() {
     ready: false,
     session_id: "",
     thread_id: "",
-    workspace_path: usingLocalConnector.value
-      ? String(
-          projectChatSettings.value.connector_workspace_path ||
-            workspacePathDraftNormalized.value ||
-            "",
-        ).trim()
-      : String(
-          projectWorkspacePath.value ||
-            externalAgentInfo.value.workspace_path ||
-            "",
-        ).trim(),
+    workspace_path: String(
+      projectWorkspacePath.value || externalAgentInfo.value.workspace_path || "",
+    ).trim(),
   });
   resetTerminalPanel();
 }
@@ -20879,32 +20909,9 @@ async function promptProjectWorkspacePath() {
     }
     return;
   }
-  if (!usingLocalConnector.value) {
-    ElMessage.warning(
-      "浏览器模式请先选择本地连接器，再填写连接器所在电脑上的工作区绝对路径",
-    );
+  if (!nativeDesktopBridgeAvailable.value) {
+    ElMessage.warning("外部 Agent 只支持桌面端 Runner");
     return;
-  }
-  const connectorId = String(
-    projectChatSettings.value.local_connector_id || "",
-  ).trim();
-  if (!connectorId) {
-    ElMessage.warning("浏览器模式请先选择本地连接器");
-    return;
-  }
-  workspacePathPicking.value = true;
-  try {
-    const payload = await pickWorkspaceViaLocalConnector(connectorId);
-    const pickedPath = String(payload?.path || "").trim();
-    if (payload?.cancelled || !pickedPath) {
-      return;
-    }
-    workspacePathDraft.value = pickedPath;
-    await saveProjectWorkspacePath(pickedPath);
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "打开本机目录选择器失败");
-  } finally {
-    workspacePathPicking.value = false;
   }
 }
 
@@ -20995,12 +21002,10 @@ async function saveProjectWorkspaceDirectory(workspacePathOverride = null) {
         ? { ...item, workspace_path: persisted }
         : item,
     );
-    if (!usingLocalConnector.value) {
-      externalAgentInfo.value = normalizeExternalAgentInfo({
-        ...externalAgentInfo.value,
-        workspace_path: persisted,
-      });
-    }
+    externalAgentInfo.value = normalizeExternalAgentInfo({
+      ...externalAgentInfo.value,
+      workspace_path: persisted,
+    });
     ElMessage.success(
       persisted ? "项目工作区路径已保存" : "已清空项目工作区路径",
     );
@@ -21072,19 +21077,11 @@ async function saveProjectWorkspacePath(workspacePathOverride = null) {
   ).trim();
   workspacePathSaving.value = true;
   try {
-    if (!usingLocalConnector.value && !nativeDesktopBridgeAvailable.value) {
-      ElMessage.warning("浏览器模式请先选择本地连接器");
+    if (!nativeDesktopBridgeAvailable.value) {
+      ElMessage.warning("外部 Agent 只支持桌面端 Runner");
       return;
     }
-    const connectorId = String(
-      projectChatSettings.value.local_connector_id || "",
-    ).trim();
     workspacePathDraft.value = workspacePath;
-    writePreferredLocalWorkspacePath(projectId, connectorId, workspacePath);
-    projectChatSettings.value = applyLocalConnectorRuntimeSettings({
-      ...projectChatSettings.value,
-      connector_workspace_path: workspacePath,
-    });
     clearAutoSaveTimer();
     autoSaveState.value = "saving";
     const payload = buildProjectChatSettingsPayload();
@@ -21115,10 +21112,10 @@ async function saveProjectWorkspacePath(workspacePathOverride = null) {
       workspacePath
         ? nativeDesktopBridgeAvailable.value
           ? "本机工作区路径已保存"
-          : "本地连接器工作区路径已保存"
+          : "本机工作区路径已保存"
         : nativeDesktopBridgeAvailable.value
           ? "已清空本机工作区路径"
-          : "已清空本地连接器工作区路径",
+          : "已清空本机工作区路径",
     );
   } catch (err) {
     autoSaveState.value = "error";
@@ -21134,11 +21131,9 @@ async function testProjectWorkspacePath() {
     ElMessage.warning("请先选择项目");
     return;
   }
-  if (!usingLocalConnector.value) {
-    if (!nativeDesktopBridgeAvailable.value) {
-      ElMessage.warning("浏览器模式请先选择本地连接器");
-      return;
-    }
+  if (!nativeDesktopBridgeAvailable.value) {
+    ElMessage.warning("外部 Agent 只支持桌面端 Runner");
+    return;
   }
   if (!workspacePathDraftNormalized.value && !workspacePathResolved.value) {
     ElMessage.warning("请先填写工作区绝对路径");
@@ -21161,15 +21156,7 @@ async function testProjectWorkspacePath() {
       ElMessage.success("工作区可用，桌面端已完成本机路径检查");
       return;
     }
-    await fetchProvidersByProject(projectId);
-    if (!externalAgentInfo.value.workspace_access?.read_ok) {
-      throw new Error(
-        String(
-          externalAgentInfo.value.workspace_access?.reason || "工作区不可访问",
-        ),
-      );
-    }
-    ElMessage.success("工作区可用，本地连接器文件工具已可在该目录使用");
+    throw new Error("外部 Agent 只支持桌面端 Runner");
   } catch (err) {
     ElMessage.error(err?.message || "工作区测试失败");
   } finally {
@@ -21177,106 +21164,10 @@ async function testProjectWorkspacePath() {
   }
 }
 
-async function prepareExternalAgentSession({
-  force = false,
-  silent = true,
-} = {}) {
-  const projectId = String(selectedProjectId.value || "").trim();
-  if (!projectId || !isExternalAgentMode.value) return;
-  if (nativeDesktopBridgeAvailable.value) {
-    throw new Error(
-      "桌面端原生桥已接入，但交互式本地 Runner / PTY 尚未完成；当前可先检测环境和 Runner 自检。",
-    );
-  }
-  if (!usingLocalConnector.value) {
-    throw new Error("浏览器模式请先选择本地连接器");
-  }
-  const preparedWorkspacePath = String(
-    workspacePathDraftNormalized.value ||
-      projectChatSettings.value.connector_workspace_path ||
-      workspacePathResolved.value ||
-      "",
-  ).trim();
-  if (!preparedWorkspacePath) {
-    throw new Error("浏览器模式请先配置本地连接器工作区");
-  }
-
-  const warmupKey = buildExternalAgentWarmupKey({
-    projectId,
-    agentType: projectChatSettings.value.external_agent_type || "codex_cli",
-    localConnectorId: projectChatSettings.value.local_connector_id || "",
-    workspacePath: workspacePathDraftNormalized.value || workspacePathResolved.value,
-    sandboxMode:
-      projectChatSettings.value.external_agent_sandbox_mode ||
-      "workspace-write",
-    skillResourceDirectory: skillResourceDirectoryResolved.value || "",
-    systemPrompt: systemPrompt.value || "",
-    employeeIds: selectedEmployeeIds.value || [],
-  });
-  if (
-    !force &&
-    externalAgentInfo.value.ready &&
-    externalAgentWarmupKey.value === warmupKey &&
-    String(externalAgentInfo.value.session_id || "").trim()
-  ) {
-    return;
-  }
-  if (externalAgentWarmupLoading.value) {
-    return;
-  }
-
-  const employeeIds = normalizeStringList(selectedEmployeeIds.value || []);
-  const requestId = `agent-prepare-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  externalAgentWarmupLoading.value = true;
-  try {
-    const client = await ensureWsClient(projectId);
-    const donePromise = new Promise((resolve, reject) => {
-      pendingAgentPrepares.set(requestId, { resolve, reject });
-    });
-    client.send({
-      type: "agent_prepare",
-      request_id: requestId,
-      chat_session_id: String(currentChatSessionId.value || "").trim(),
-      chat_mode: "external_agent",
-      external_agent_type: String(
-        projectChatSettings.value.external_agent_type || "codex_cli",
-      ).trim(),
-      external_agent_sandbox_mode:
-        projectChatSettings.value.external_agent_sandbox_mode ||
-        "workspace-write",
-      connector_sandbox_mode: String(
-        projectChatSettings.value.connector_sandbox_mode || "workspace-write",
-      ).trim(),
-      connector_sandbox_mode_explicit: true,
-      local_connector_id: String(
-        projectChatSettings.value.local_connector_id || "",
-      ).trim(),
-      connector_workspace_path: preparedWorkspacePath,
-      skill_resource_directory: String(
-        skillResourceDirectoryResolved.value || "",
-      ).trim(),
-      employee_ids: employeeIds,
-      employee_id: employeeIds.length === 1 ? employeeIds[0] : undefined,
-      employee_coordination_mode: String(
-        projectChatSettings.value.employee_coordination_mode ||
-          CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
-      )
-        .trim()
-        .toLowerCase(),
-      system_prompt: systemPrompt.value || undefined,
-    });
-    await donePromise;
-    externalAgentWarmupKey.value = warmupKey;
-  } catch (err) {
-    externalAgentWarmupKey.value = "";
-    if (!silent) {
-      ElMessage.error(err?.message || "外部 Agent 预热失败");
-    }
-    throw err;
-  } finally {
-    pendingAgentPrepares.delete(requestId);
-    externalAgentWarmupLoading.value = false;
-  }
+async function prepareExternalAgentSession() {
+  externalAgentWarmupKey.value = "";
+  externalAgentWarmupLoading.value = false;
+  throw new Error("外部 Agent 已移除本地连接器路径；请使用桌面端 Runner。");
 }
 
 async function sendProjectChatRequest({
@@ -21640,7 +21531,7 @@ async function generateEmployeeDraftWithoutProject() {
     messageId: userMessage.id,
     assistantMessageId: assistantMessage.id,
     source: isExternalAgentMode.value
-      ? "external_agent_connector"
+      ? "tauri_external_agent_runner"
       : "project_chat",
     sourceContext: {
       chat_mode: isExternalAgentMode.value ? "external_agent" : "system",
@@ -21885,11 +21776,8 @@ async function doSend(options = {}) {
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   if (isExternalAgentMode.value) {
     if (!nativeDesktopBridgeAvailable.value) {
-      try {
-        await prepareExternalAgentSession({ force: false, silent: false });
-      } catch {
-        return;
-      }
+      ElMessage.warning("外部 Agent 只支持桌面端 Runner");
+      return;
     }
   }
   const files = uploadFiles.value.map((item) => item.raw).filter(Boolean);
@@ -21967,6 +21855,17 @@ async function doSend(options = {}) {
       return;
     }
     userPrompt = `${slashCommand.entry.command} ${slashCommand.prompt}`;
+  } else if (slashCommand?.entry?.kind === "package_deploy") {
+    if (!isExternalAgentMode.value) {
+      ElMessage.warning("请先选择外部智能体后再使用 /打包部署");
+      return;
+    }
+    nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
+    if (!nativeDesktopBridgeAvailable.value) {
+      ElMessage.warning("外部智能体只支持桌面端 Runner，不能执行打包部署命令");
+      return;
+    }
+    userPrompt = buildPackageDeployCommandPrompt(slashCommand.prompt);
   } else if (slashCommand?.entry?.kind === "lark_cli") {
     if (!slashCommand.prompt) {
       ElMessage.warning(
@@ -22172,7 +22071,7 @@ async function doSend(options = {}) {
       resultSummary: finalAssistantContent,
       verificationResult: "AI 对话已返回最终回答并写入当前聊天。",
       source: isExternalAgentMode.value
-        ? "external_agent_connector"
+        ? "tauri_external_agent_runner"
         : "project_chat",
       sourceContext: {
         chat_mode: isExternalAgentMode.value ? "external_agent" : "system",
@@ -22193,7 +22092,7 @@ async function doSend(options = {}) {
       resultSummary: assistantMessage.content,
       verificationResult: err?.message || "AI 对话请求失败。",
       source: isExternalAgentMode.value
-        ? "external_agent_connector"
+        ? "tauri_external_agent_runner"
         : "project_chat",
       sourceContext: {
         chat_mode: isExternalAgentMode.value ? "external_agent" : "system",
@@ -22585,6 +22484,7 @@ async function loadSelectedProjectConversation(projectId) {
       );
     }
     await applyRouteMessageFocus();
+    await applyProjectDeployDraftFromRoute();
   } finally {
     if (selectedProjectConversationLoadingKey === loadingKey) {
       selectedProjectConversationLoadingKey = "";
@@ -22719,6 +22619,14 @@ watch(
   },
 );
 
+watch(
+  () => String(route.query[PROJECT_DEPLOY_DRAFT_QUERY_KEY] || "").trim(),
+  async (draftKey, previousKey) => {
+    if (!draftKey || draftKey === previousKey) return;
+    await applyProjectDeployDraftFromRoute();
+  },
+);
+
 onMounted(async () => {
   loading.value = true;
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
@@ -22749,6 +22657,7 @@ onMounted(async () => {
     }
     await applyStatisticsAnalysisDraftFromRoute();
     await applyPluginInstallDraftFromRoute();
+    await applyProjectDeployDraftFromRoute();
     if (!String(selectedProjectId.value || "").trim()) {
       await fetchProvidersByProject("");
     }
@@ -22762,6 +22671,7 @@ onMounted(async () => {
     void startChatTour(false);
   }
   await applyStatisticsAnalysisDraftFromRoute();
+  await applyProjectDeployDraftFromRoute();
 });
 
 onUnmounted(() => {

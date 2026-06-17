@@ -1,3 +1,5 @@
+import { isNativeExternalAgentInternalDiagnostic } from "@/modules/project-chat/mappers/nativeAgentMappers.js";
+
 export function normalizeRunnerEvidenceArray(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value;
@@ -133,7 +135,11 @@ export function buildNativeExternalAgentSessionOutputText(rows = []) {
 
 export function buildNativeExternalAgentSessionErrorText(rows = []) {
   return (Array.isArray(rows) ? rows : [])
-    .filter((item) => item.stream === "stderr")
+    .filter(
+      (item) =>
+        item.stream === "stderr" &&
+        !isNativeExternalAgentInternalDiagnostic(item.stream, item.content),
+    )
     .map((item) => item.content)
     .join("");
 }
@@ -152,6 +158,10 @@ export function buildNativeExternalAgentDiagnosticText(rows = []) {
   return (Array.isArray(rows) ? rows : [])
     .filter((item) =>
       ["stderr", "system", "stdin"].includes(String(item.stream || "").trim()),
+    )
+    .filter(
+      (item) =>
+        !isNativeExternalAgentInternalDiagnostic(item.stream, item.content),
     )
     .map((item) => {
       const stream = String(item.stream || "system").trim();

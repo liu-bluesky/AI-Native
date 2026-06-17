@@ -2,10 +2,13 @@
 
 import asyncio
 from contextvars import ContextVar
+import io
 import json
 from pathlib import Path
 import re
 import subprocess
+import tarfile
+import zipfile
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -4093,6 +4096,175 @@ def test_llm_provider_service_blocks_shared_user_from_editing_provider():
         )
 
 
+def test_llm_provider_service_resolves_explicit_user_default_target(monkeypatch):
+    from services.providers.llm_provider_service import LlmProviderService
+    import stores.factory as factory_mod
+
+    class DummyStore:
+        def __init__(self):
+            self.providers = [
+                {
+                    "id": "p-owned",
+                    "name": "Owned Provider",
+                    "enabled": True,
+                    "models": ["owned-model"],
+                    "default_model": "owned-model",
+                    "owner_username": "alice",
+                    "shared_usernames": [],
+                },
+                {
+                    "id": "p-shared",
+                    "name": "Shared Provider",
+                    "enabled": True,
+                    "models": ["shared-a", "shared-b"],
+                    "default_model": "shared-a",
+                    "owner_username": "alice",
+                    "shared_usernames": ["bob"],
+                },
+            ]
+
+        def delete_provider(self, provider_id):
+            return True
+
+        def list_providers(self, include_secret=False, enabled_only=False):
+            providers = self.providers
+            if enabled_only:
+                providers = [item for item in providers if bool(item.get("enabled", True))]
+            return [dict(item) for item in providers]
+
+        def get_provider(self, provider_id, include_secret=False):
+            for item in self.providers:
+                if item["id"] == provider_id:
+                    return dict(item)
+            return None
+
+    monkeypatch.setattr(
+        factory_mod,
+        "user_store",
+        type(
+            "DummyUserStore",
+            (),
+            {
+                "get": staticmethod(
+                    lambda username: type(
+                        "User",
+                        (),
+                        {
+                            "default_ai_provider_id": "p-shared",
+                            "default_ai_model_name": "shared-b",
+                        },
+                    )()
+                )
+            },
+        )(),
+    )
+
+    service = LlmProviderService(DummyStore())
+    target = service.get_default_user_llm_target(owner_username="bob", include_all=False)
+
+    assert target["provider_id"] == "p-shared"
+    assert target["model_name"] == "shared-b"
+
+
+def test_llm_provider_service_rejects_user_default_without_share(monkeypatch):
+    from services.providers.llm_provider_service import LlmProviderService
+    import stores.factory as factory_mod
+
+    class DummyStore:
+        def __init__(self):
+            self.providers = [
+                {
+                    "id": "p-private",
+                    "name": "Private Provider",
+                    "enabled": True,
+                    "models": ["private-model"],
+                    "default_model": "private-model",
+                    "owner_username": "alice",
+                    "shared_usernames": [],
+                },
+            ]
+
+        def delete_provider(self, provider_id):
+            return True
+
+        def list_providers(self, include_secret=False, enabled_only=False):
+            return [dict(item) for item in self.providers if not enabled_only or bool(item.get("enabled", True))]
+
+        def get_provider(self, provider_id, include_secret=False):
+            for item in self.providers:
+                if item["id"] == provider_id:
+                    return dict(item)
+            return None
+
+    monkeypatch.setattr(
+        factory_mod,
+        "user_store",
+        type(
+            "DummyUserStore",
+            (),
+            {
+                "get": staticmethod(
+                    lambda username: type(
+                        "User",
+                        (),
+                        {
+                            "default_ai_provider_id": "p-private",
+                            "default_ai_model_name": "private-model",
+                        },
+                    )()
+                )
+            },
+        )(),
+    )
+
+    service = LlmProviderService(DummyStore())
+
+    assert service.get_default_user_llm_target(owner_username="bob", include_all=False) is None
+
+
+def test_update_current_user_settings_clears_model_when_provider_is_empty(monkeypatch):
+    from routers.users import update_current_user_settings
+    from models.requests import UserSettingsUpdateReq
+    import routers.users as users_router
+
+    class DummyUser:
+        def __init__(self):
+            self.username = "alice"
+            self.password_hash = "hash"
+            self.display_name = "Alice"
+            self.role = "user"
+            self.role_ids = ["user"]
+            self.default_ai_provider_id = "p-1"
+            self.default_ai_model_name = "model-a"
+            self.created_by = "system"
+            self.created_at = "2026-03-24T00:00:00Z"
+
+    class DummyUserStore:
+        def get(self, username):
+            return DummyUser() if username == "alice" else None
+
+        def save(self, user):
+            self.saved = user
+
+    dummy_store = DummyUserStore()
+    monkeypatch.setattr(users_router, "user_store", dummy_store)
+    monkeypatch.setattr(users_router, "get_llm_provider_service", lambda: None)
+    monkeypatch.setattr(users_router, "require_auth", lambda: None)
+
+    async def _call():
+        result = await update_current_user_settings(
+            UserSettingsUpdateReq(default_ai_provider_id="", default_ai_model_name="model-a"),
+            auth_payload={"sub": "alice"},
+        )
+        return result
+
+    result = __import__("asyncio").run(_call())
+
+    assert result["settings"]["default_ai_provider_id"] == ""
+    assert result["settings"]["default_ai_model_name"] == ""
+    assert dummy_store.saved.default_ai_model_name == ""
+
+
 def test_llm_provider_service_normalizes_model_configs(monkeypatch):
     from services.providers.llm_provider_service import LlmProviderService
     import stores.factory as factory_mod
@@ -7827,7 +7999,19 @@ def test_query_mcp_save_project_memory_without_employee_id_stays_single_shared(m
             },
         )(),
     )
-    query_mcp_svc.create_query_mcp()
+    session_ctx = ContextVar("query_prompt_preview_session", default="chat-session-bound")
+    session_contexts = {
+        "chat-session-bound": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "chat_session_id": "chat-session-bound",
+        }
+    }
+    query_mcp_svc.create_query_mcp(
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+    session_ctx.set("chat-session-bound")
 
     result = registered_tools["save_project_memory"](
         "proj-1",
@@ -8102,7 +8286,18 @@ def test_query_mcp_bind_project_context_without_active_session_creates_detached_
         },
     )
 
-    query_mcp_svc.create_query_mcp()
+    session_ctx = ContextVar("query_prompt_preview_session", default="chat-session-bound")
+    session_contexts = {
+        "chat-session-bound": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "chat_session_id": "chat-session-bound",
+        }
+    }
+    query_mcp_svc.create_query_mcp(
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
 
     result = registered_tools["bind_project_context"](
         "proj-1",
@@ -9298,6 +9493,32 @@ def test_project_detail_runtime_includes_full_config_and_member_lists(tmp_path, 
     assert "rule_ids" in employee_detail["employee"]
 
 
+def test_serialize_project_exposes_public_chat_settings():
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    payload = projects_router._serialize_project(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            chat_settings={
+                "chat_mode": "external_agent",
+                "external_agent_type": "hermes",
+                "connector_workspace_path": "/tmp/workspace",
+                "provider_id": "provider-1",
+                "model_name": "model-1",
+            },
+        ),
+        auth_payload={"sub": "tester", "role": "admin"},
+        member_count=0,
+        user_count=0,
+    )
+
+    assert payload["chat_settings"]["chat_mode"] == "external_agent"
+    assert payload["chat_settings"]["external_agent_type"] == "hermes"
+    assert payload["chat_settings"]["connector_workspace_path"] == "/tmp/workspace"
+
+
 def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(monkeypatch):
     from services.mcp import dynamic_mcp_runtime as runtime_svc
 
@@ -9972,9 +10193,14 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     experience_result = registered_tools["resolve_project_experience_rules"]("开发登录页面", limit=2)
     assert experience_result["experience_rule_count"] == 1
     assert experience_result["items"][0]["id"] == "rule-exp"
+    assert "list_project_deploy_artifacts" in registered_tools
     assert "push_project_deploy_artifact" in registered_tools
     assert "deploy_project_deploy_artifact" in registered_tools
-    assert "get_project_deploy_upload_status" in registered_tools
+    assert "get_project_deploy_upload_status" not in registered_tools
+    proxy_tools = registered_tools["list_project_proxy_tools"]()
+    proxy_tool_names = {item["tool_name"] for item in proxy_tools}
+    assert "push_project_deploy_artifact" in proxy_tool_names
+    assert "deploy_project_deploy_artifact" in proxy_tool_names
     assert "get_query_mcp_cli_prompt_preview" in registered_tools
     assert "sync_query_mcp_cli_prompt_to_local_file" in registered_tools
 
@@ -10037,7 +10263,7 @@ def test_project_deploy_settings_validation_requires_global_ftp_credential(monke
                         "ftp_credential_id": "ftp-1",
                         "remote_path": "/opt/app",
                     },
-                    "remote_executor": {"deploy_command": "./deploy.sh up"},
+                    "remote_executor": {"mode": "ssh", "deploy_command": "./deploy.sh up"},
                     "safety": {"auto_deploy_on_artifact_update": True},
                 }
             ],
@@ -10086,6 +10312,7 @@ def test_project_deploy_settings_validation_supports_components_and_multi_target
                                     "transport_mode": "scp",
                                     "ftp_credential_id": "ftp-1",
                                     "remote_path": "/opt/app/api",
+                                    "remote_command_mode": "ssh",
                                     "deploy_command": "./deploy-api.sh",
                                 },
                                 {
@@ -10095,6 +10322,7 @@ def test_project_deploy_settings_validation_supports_components_and_multi_target
                                     "transport_mode": "sftp",
                                     "ftp_credential_id": "ftp-1",
                                     "remote_path": "/opt/app/api",
+                                    "remote_command_mode": "ssh",
                                     "deploy_command": "./deploy-api.sh",
                                 },
                             ],
@@ -10152,7 +10380,79 @@ def test_project_deploy_settings_validation_reports_required_ftp_target_fields(m
     assert payload["valid"] is False
     assert "生产环境 / 后端 API / API 主服务器：请选择 FTP 连接" in messages
     assert "生产环境 / 后端 API / API 主服务器：远端目录必填" in messages
-    assert "生产环境 / 后端 API / API 主服务器：自动部署需要填写部署命令" in messages
+
+
+def test_project_deploy_settings_validation_allows_ftp_only_auto_deploy(monkeypatch):
+    from routers import projects as projects_router
+
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+    payload = projects_router._validate_project_deploy_settings_payload(
+        {
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "name": "生产环境",
+                    "components": [
+                        {
+                            "id": "api",
+                            "name": "后端 API",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [
+                                {
+                                    "id": "api-1",
+                                    "name": "API 主服务器",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app/api",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert payload["valid"] is True
+
+
+def test_project_deploy_settings_validation_requires_executor_when_command_is_set(monkeypatch):
+    from routers import projects as projects_router
+
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+    payload = projects_router._validate_project_deploy_settings_payload(
+        {
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "name": "生产环境",
+                    "components": [
+                        {
+                            "id": "api",
+                            "name": "后端 API",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [
+                                {
+                                    "id": "api-1",
+                                    "name": "API 主服务器",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app/api",
+                                    "deploy_command": "./deploy-api.sh",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    messages = [item["message"] for item in payload["issues"]]
+    assert payload["valid"] is False
+    assert "生产环境 / 后端 API / API 主服务器：已填写部署命令时需要配置远端命令执行方式" in messages
 
 
 def test_project_deploy_settings_validation_rejects_invisible_ftp_credential(monkeypatch):
@@ -10226,6 +10526,9 @@ def test_project_deploy_artifact_push_creates_ready_artifact_and_queued_run(tmp_
         def mkd(self, path):
             return None
 
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
         def storbinary(self, command, handle):
             self.uploaded.append((command, handle.read()))
 
@@ -10286,6 +10589,171 @@ def test_project_deploy_artifact_push_creates_ready_artifact_and_queued_run(tmp_
     assert FakeFtp.uploaded == [("STOR release.tar.gz", content)]
 
 
+def test_project_deploy_artifact_builtin_tool_push_defaults_to_auto_deploy(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+
+    from routers import projects as projects_router
+    from services.mcp import dynamic_mcp_collaboration as collab_svc
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+            self.cwd_path = ""
+
+        def connect(self, host, port, timeout=30):
+            self.host = host
+            self.port = port
+
+        def login(self, user, passwd):
+            self.user = user
+            self.passwd = passwd
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+    content = archive.getvalue()
+    checksum = "sha256:" + hashlib.sha256(content).hexdigest()
+    project = ProjectConfig(
+        id="proj-mcp-artifact",
+        name="部署产物 MCP 项目",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "test",
+            "profiles": [
+                {
+                    "id": "test",
+                    "artifact_kind": "source-bundle",
+                    "components": [
+                        {
+                            "id": "testpc",
+                            "artifact_kind": "source-bundle",
+                            "targets": [
+                                {
+                                    "id": "testpc-target",
+                                    "enabled": True,
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/hrm.jxycrm.com/public/pctest",
+                                }
+                            ],
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        collab_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {"get": staticmethod(lambda project_id: project if project_id == project.id else None)},
+        )(),
+    )
+
+    result = collab_svc.invoke_project_builtin_tool(
+        project.id,
+        "push_project_deploy_artifact",
+        username="tester",
+        chat_session_id="chat-1",
+        args={
+            "profile": "test",
+            "component": "testpc",
+            "artifact_name": "source-bundle-testpc.zip",
+            "artifact_kind": "source-bundle",
+            "manifest": {"checksum": checksum, "size": len(content)},
+            "artifact_content_base64": base64.b64encode(content).decode("ascii"),
+            "requirement": "解压后部署",
+            "plan": "AI 判断先解压再部署。",
+        },
+    )
+
+    assert result["tool_name"] == "push_project_deploy_artifact"
+    assert result["auto_deploy"] is True
+    assert result["artifact"]["profile"] == "test"
+    assert result["artifact"]["component"] == "testpc"
+    assert result["deployment"]["status"] == "success"
+    assert result["deployment"]["stage"] in {"queued", "success", "ftp_upload_completed"}
+    assert result["deployment"]["artifact_summary"]["user_requirement"] == "解压后部署"
+    assert result["deployment"]["artifact_summary"]["ai_deploy_plan"] == "AI 判断先解压再部署。"
+    assert Path(result["artifact"]["storage_path"]).read_bytes() == content
+    assert FakeFtp.uploaded == [("STOR index.html", b"<h1>ok</h1>")]
+
+
+def test_project_deploy_artifact_builtin_tool_rejects_client_local_artifact_path(monkeypatch):
+    from services.mcp import dynamic_mcp_collaboration as collab_svc
+    from stores.json.project_store import ProjectConfig
+
+    project = ProjectConfig(id="proj-mcp-artifact-path", name="部署产物 MCP 项目")
+    monkeypatch.setattr(
+        collab_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {"get": staticmethod(lambda project_id: project if project_id == project.id else None)},
+        )(),
+    )
+
+    result = collab_svc.invoke_project_builtin_tool(
+        project.id,
+        "push_project_deploy_artifact",
+        username="tester",
+        chat_session_id="chat-1",
+        args={
+            "profile": "test",
+            "component": "testpc",
+            "artifact_name": "source-bundle-testpc.zip",
+            "artifact_path": r"D:\work\artifacts\source-bundle-testpc.zip",
+        },
+    )
+
+    assert result["tool_name"] == "push_project_deploy_artifact"
+    assert result["status_code"] == 400
+    assert "artifact_path is not accepted" in result["error"]
+    assert "push_local_artifact" in result["error"]
+
+
+def test_project_deploy_artifact_tool_descriptor_requires_base64_and_hides_artifact_path():
+    from services.mcp.dynamic_mcp_collaboration import project_deploy_artifact_tool_descriptors
+
+    descriptors = {
+        item["tool_name"]: item
+        for item in project_deploy_artifact_tool_descriptors("emp-1")
+    }
+    schema = descriptors["push_project_deploy_artifact"]["parameters_schema"]
+
+    assert "artifact_content_base64" in schema["properties"]
+    assert "artifact_path" not in schema["properties"]
+    assert "artifact_content_base64" in schema["required"]
+
+
 def test_project_deploy_artifact_push_uses_selected_component_targets(tmp_path, monkeypatch):
     import base64
     import hashlib
@@ -10316,6 +10784,9 @@ def test_project_deploy_artifact_push_uses_selected_component_targets(tmp_path, 
 
         def mkd(self, path):
             return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
 
         def storbinary(self, command, handle):
             self.uploaded.append((command, handle.read()))
@@ -10471,6 +10942,9 @@ def test_project_deploy_artifact_manual_deploy_when_auto_deploy_disabled(tmp_pat
         def mkd(self, path):
             return None
 
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
         def storbinary(self, command, handle):
             self.uploaded.append((command, handle.read()))
 
@@ -10479,7 +10953,13 @@ def test_project_deploy_artifact_manual_deploy_when_auto_deploy_disabled(tmp_pat
 
     monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
 
-    content = b"manual-release"
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as package:
+        payload = b"manual-release"
+        info = tarfile.TarInfo("release.txt")
+        info.size = len(payload)
+        package.addfile(info, io.BytesIO(payload))
+    content = archive.getvalue()
     checksum = "sha256:" + hashlib.sha256(content).hexdigest()
     project = ProjectConfig(
         id="proj-1",
@@ -10531,14 +11011,1030 @@ def test_project_deploy_artifact_manual_deploy_when_auto_deploy_disabled(tmp_pat
         requested_by="tester",
         chat_session_id="chat-1",
         task_tree_node_id="node-1",
+        requirement="解压后部署",
+        plan="先解压再上传解压后的内容",
     )
 
     assert deployed["artifact"]["deployment_id"] == deployed["deployment"]["id"]
     assert deployed["deployment"]["chat_session_id"] == "chat-1"
     assert deployed["deployment"]["task_tree_node_id"] == "node-1"
+    assert deployed["deployment"]["artifact_summary"]["user_requirement"] == "解压后部署"
+    assert deployed["deployment"]["artifact_summary"]["ai_deploy_plan"] == "先解压再上传解压后的内容"
     assert deployed["deployment"]["artifact_summary"]["uploaded_target_count"] == 1
     assert deployed["deployment"]["stage"] == "blocked_missing_remote_executor"
-    assert FakeFtp.uploaded == [("STOR manual.tar.gz", content)]
+    assert FakeFtp.uploaded == [("STOR release.txt", b"manual-release")]
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_deploy_route_runs_payload_in_threadpool(monkeypatch):
+    from models.requests import ProjectDeployArtifactDeployReq
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    captured: dict[str, object] = {}
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        captured["func_name"] = getattr(func, "__name__", "")
+        captured["kwargs"] = kwargs
+        return {"status": "deployed"}
+
+    monkeypatch.setattr(projects_router, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(projects_router, "_ensure_permission", lambda auth_payload, permission: None)
+    monkeypatch.setattr(
+        projects_router,
+        "_ensure_project_manage_access",
+        lambda project_id, auth_payload: ProjectConfig(id=project_id, name="项目一"),
+    )
+
+    result = await projects_router.deploy_project_deploy_artifact(
+        "proj-1",
+        "artifact-1",
+        ProjectDeployArtifactDeployReq(
+            chat_session_id="chat-1",
+            task_tree_node_id="node-1",
+            requirement="解压后部署",
+            plan="先解压再上传解压后的内容",
+        ),
+        {"sub": "tester", "role": "admin"},
+    )
+
+    assert result == {"status": "deployed"}
+    assert captured["func_name"] == "_deploy_project_deploy_artifact_payload"
+    assert captured["kwargs"]["artifact_id"] == "artifact-1"
+    assert captured["kwargs"]["chat_session_id"] == "chat-1"
+    assert captured["kwargs"]["task_tree_node_id"] == "node-1"
+    assert captured["kwargs"]["requirement"] == "解压后部署"
+    assert captured["kwargs"]["plan"] == "先解压再上传解压后的内容"
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_ai_execute_route_runs_server_side_deploy(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactAiExecuteReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "_ensure_permission", lambda auth_payload, permission: None)
+    monkeypatch.setattr(
+        projects_router,
+        "_ensure_project_manage_access",
+        lambda project_id, auth_payload: ProjectConfig(
+            id=project_id,
+            name="项目一",
+            created_by="owner-user",
+            workspace_path=str(tmp_path),
+            chat_settings={
+                "chat_mode": "system",
+                "provider_id": "chat-provider",
+                "model_name": "chat-model",
+            },
+            deploy_settings={"enabled": True, "profiles": []},
+        ),
+    )
+
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="app",
+        artifact_name="app.zip",
+        artifact_kind="source-bundle",
+        storage_path=str(tmp_path / "app.zip"),
+    )
+    (tmp_path / "app.zip").write_text("artifact-content", encoding="utf-8")
+    deploy_store.save_artifact(artifact)
+
+    captured: dict[str, object] = {}
+
+    async def fake_execute_agent_payload(**kwargs):
+        captured["agent_kwargs"] = kwargs
+        return {
+            "status": "deployed",
+            "project_id": "proj-1",
+            "artifact": {"id": "artifact-1", "status": "deployed"},
+            "deployment": {
+                "id": "deploy-1",
+                "status": "success",
+                "stage": "completed",
+            },
+            "ai_agent": {
+                "status": "success",
+                "provider_id": "chat-provider",
+                "model_name": "chat-model",
+                "tool_results": [{"tool": "finish", "result": {"ok": True}}],
+            },
+        }
+
+    async def fake_publish_project_chat_session_realtime(**kwargs):
+        return None
+
+    async def fake_publish_project_chat_record_realtime(**kwargs):
+        return None
+
+    monkeypatch.setattr(projects_router, "_execute_project_deploy_artifact_agent_payload", fake_execute_agent_payload)
+    monkeypatch.setattr(projects_router, "_append_chat_record", lambda **kwargs: None)
+    monkeypatch.setattr(projects_router, "publish_project_chat_session_realtime", fake_publish_project_chat_session_realtime)
+    monkeypatch.setattr(projects_router, "publish_project_chat_record_realtime", fake_publish_project_chat_record_realtime)
+    monkeypatch.setattr(
+        projects_router,
+        "project_chat_store",
+        type(
+            "FakeProjectChatStore",
+            (),
+            {
+                "get_session": staticmethod(lambda project_id, username, session_id: None),
+                "create_session": staticmethod(
+                    lambda project_id, username, title, source_context=None, session_id="": type(
+                        "Session",
+                        (),
+                        {"id": session_id or "chat-created"},
+                    )()
+                ),
+            },
+        )(),
+    )
+
+    result = await projects_router.ai_execute_project_deploy_artifact(
+        "proj-1",
+        "artifact-1",
+        ProjectDeployArtifactAiExecuteReq(
+            chat_session_id="chat-ai-1",
+            requirement="解压后部署",
+            plan="先解压再上传解压后的内容",
+        ),
+        {"sub": "tester", "role": "admin"},
+    )
+
+    assert result["ai_execution"]["chat_session_id"] == "chat-ai-1"
+    assert result["ai_execution"]["status"] == "executed"
+    assert result["ai_execution"]["agent_mode"] is True
+    assert result["ai_execution"]["tool_results"] == [{"tool": "finish", "result": {"ok": True}}]
+    assert result["ai_execution"]["chat_mode"] == "system"
+    assert "deploy_project_deploy_artifact" in result["ai_execution"]["enabled_project_tool_names"]
+    assert "部署 Agent" in result["ai_execution"]["content"]
+    assert "逐步调用部署工具" in result["ai_execution"]["content"]
+    assert "pm-deploy" not in result["ai_execution"]["enabled_project_tool_names"]
+    assert "pm-deploy" not in result["ai_execution"]["content"]
+    assert "解压后部署" in result["ai_execution"]["content"]
+    assert result["status"] == "deployed"
+    assert result["deployment"]["id"] == "deploy-1"
+    assert captured["agent_kwargs"]["artifact"].id == "artifact-1"
+    assert captured["agent_kwargs"]["chat_session_id"] == "chat-ai-1"
+    assert captured["agent_kwargs"]["req"].requirement == "解压后部署"
+    assert captured["agent_kwargs"]["req"].plan == "先解压再上传解压后的内容"
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_agent_loop_runs_tools_and_records_logs(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactAiExecuteReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+    content = archive.getvalue()
+    artifact_path = tmp_path / "dist.zip"
+    artifact_path.write_bytes(content)
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="dist.zip",
+        artifact_kind="frontend-dist",
+        storage_path=str(artifact_path),
+        storage_kind="file",
+        size=len(content),
+        manifest={"archive_suffix": ".zip"},
+    )
+    deploy_store.save_artifact(artifact)
+    extract_to = tmp_path / "南京嘉华"
+    actions = iter(
+        [
+            {"tool": "extract_artifact", "args": {"destination": str(extract_to)}, "reason": "解压到用户指定目录"},
+            {"tool": "write_text_file", "args": {"path": str(extract_to / "deploy.log"), "content": "deploy ok"}, "reason": "写部署日志"},
+            {"tool": "upload_original_archive", "args": {"target_id": "server-1"}, "reason": "上传原压缩包"},
+            {"tool": "finish", "args": {"summary": "部署完成"}, "reason": "完成"},
+        ]
+    )
+
+    async def fake_agent_model(**kwargs):
+        return next(actions)
+
+    monkeypatch.setattr(projects_router, "_call_project_deploy_agent_model", fake_agent_model)
+
+    result = await projects_router._execute_project_deploy_artifact_agent_payload(
+        project=project,
+        artifact=artifact,
+        req=ProjectDeployArtifactAiExecuteReq(requirement="解压后写日志并上传压缩包"),
+        requested_by="tester",
+        chat_session_id="chat-ai-1",
+        auth_payload={"sub": "tester", "role": "admin"},
+    )
+
+    summary = result["deployment"]["artifact_summary"]
+    assert result["status"] == "deployed"
+    assert result["deployment"]["status"] == "success"
+    assert result["deployment"]["stage"] == "ai_deploy_agent_completed"
+    assert summary["agent_mode"] is True
+    assert [item["tool"] for item in summary["tool_results"]] == [
+        "extract_artifact",
+        "write_text_file",
+        "upload_original_archive",
+        "finish",
+    ]
+    assert (extract_to / "index.html").read_text(encoding="utf-8") == "<h1>ok</h1>"
+    assert (extract_to / "deploy.log").read_text(encoding="utf-8") == "deploy ok"
+    assert FakeFtp.uploaded == [("STOR dist.zip", content)]
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_agent_upload_directory_resolves_extracted_from_scratch(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactAiExecuteReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+        package.writestr("assets/app.js", "alert(1);")
+    content = archive.getvalue()
+    artifact_path = tmp_path / "dist.zip"
+    artifact_path.write_bytes(content)
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="dist.zip",
+        artifact_kind="frontend-dist",
+        storage_path=str(artifact_path),
+        storage_kind="file",
+        size=len(content),
+        manifest={"archive_suffix": ".zip"},
+    )
+    deploy_store.save_artifact(artifact)
+    actions = iter(
+        [
+            {"tool": "extract_artifact", "args": {"destination": "extracted"}, "reason": "解压"},
+            {"tool": "upload_directory", "args": {"path": "extracted", "target_id": "server-1"}, "reason": "上传解压目录"},
+            {"tool": "finish", "args": {"summary": "部署完成"}, "reason": "完成"},
+        ]
+    )
+
+    async def fake_agent_model(**kwargs):
+        return next(actions)
+
+    monkeypatch.setattr(projects_router, "_call_project_deploy_agent_model", fake_agent_model)
+
+    result = await projects_router._execute_project_deploy_artifact_agent_payload(
+        project=project,
+        artifact=artifact,
+        req=ProjectDeployArtifactAiExecuteReq(requirement="解压后上传"),
+        requested_by="tester",
+        chat_session_id="chat-ai-1",
+        auth_payload={"sub": "tester", "role": "admin"},
+    )
+
+    summary = result["deployment"]["artifact_summary"]
+    assert result["deployment"]["status"] == "success"
+    assert summary["tool_results"][1]["tool"] == "upload_directory"
+    assert summary["tool_results"][1]["result"]["prepared_file_count"] == 2
+    assert ("STOR index.html", b"<h1>ok</h1>") in FakeFtp.uploaded
+    assert ("STOR app.js", b"alert(1);") in FakeFtp.uploaded
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_agent_blocks_default_extract_when_requirement_empty(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactAiExecuteReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+    content = archive.getvalue()
+    artifact_path = tmp_path / "dist.zip"
+    artifact_path.write_bytes(content)
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="dist.zip",
+        artifact_kind="frontend-dist",
+        storage_path=str(artifact_path),
+        storage_kind="file",
+        size=len(content),
+        manifest={"archive_suffix": ".zip"},
+    )
+    deploy_store.save_artifact(artifact)
+    calls = []
+
+    async def fake_agent_model(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {"tool": "extract_artifact", "args": {"destination": "extracted"}, "reason": "误默认解压"}
+        assert kwargs["transcript"][-1]["tool_result"]["ok"] is False
+        assert kwargs["transcript"][-1]["tool_result"]["stage"] == "ai_deploy_agent_tool_blocked"
+        return {"tool": "upload_original_archive", "args": {"target_id": "server-1"}, "reason": "无要求时改为原样上传"}
+
+    def finish_after_upload(**kwargs):
+        calls.append(kwargs)
+        return {"tool": "finish", "args": {"summary": "原包上传完成"}, "reason": "完成"}
+
+    async def fake_agent_model_with_finish(**kwargs):
+        if len(calls) < 2:
+            return await fake_agent_model(**kwargs)
+        return finish_after_upload(**kwargs)
+
+    monkeypatch.setattr(projects_router, "_call_project_deploy_agent_model", fake_agent_model_with_finish)
+
+    result = await projects_router._execute_project_deploy_artifact_agent_payload(
+        project=project,
+        artifact=artifact,
+        req=ProjectDeployArtifactAiExecuteReq(requirement=""),
+        requested_by="tester",
+        chat_session_id="chat-ai-1",
+        auth_payload={"sub": "tester", "role": "admin"},
+    )
+
+    summary = result["deployment"]["artifact_summary"]
+    assert result["deployment"]["status"] == "success"
+    assert summary["tool_results"][0]["tool"] == "extract_artifact"
+    assert summary["tool_results"][0]["result"]["ok"] is False
+    assert summary["tool_results"][1]["tool"] == "upload_original_archive"
+    assert FakeFtp.uploaded == [("STOR dist.zip", content)]
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_agent_requires_specific_file_when_requirement_names_file(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactAiExecuteReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    expected_content = "# 未来节假日清单\n"
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("未来节假日清单.md", expected_content)
+        package.writestr("不要上传.md", "skip")
+    content = archive.getvalue()
+    artifact_path = tmp_path / "dist.zip"
+    artifact_path.write_bytes(content)
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="dist.zip",
+        artifact_kind="frontend-dist",
+        storage_path=str(artifact_path),
+        storage_kind="file",
+        size=len(content),
+        manifest={"archive_suffix": ".zip"},
+    )
+    deploy_store.save_artifact(artifact)
+    extract_to = tmp_path / "work" / "test"
+
+    async def fake_agent_model(**kwargs):
+        transcript = kwargs["transcript"]
+        if not transcript:
+            return {"tool": "extract_artifact", "args": {"destination": str(extract_to)}, "reason": "解压到指定目录"}
+        if len(transcript) == 2:
+            return {"tool": "upload_original_archive", "args": {"target_id": "server-1"}, "reason": "错误上传压缩包"}
+        if len(transcript) == 4:
+            assert transcript[-1]["tool_result"]["ok"] is False
+            assert transcript[-1]["tool_result"]["stage"] == "ai_deploy_agent_tool_blocked"
+            return {"tool": "upload_directory", "args": {"path": str(extract_to), "target_id": "server-1"}, "reason": "错误上传目录"}
+        if len(transcript) == 6:
+            assert transcript[-1]["tool_result"]["ok"] is False
+            assert transcript[-1]["tool_result"]["stage"] == "ai_deploy_agent_tool_blocked"
+            return {"tool": "upload_file", "args": {"path": "未来节假日清单.md", "target_id": "server-1"}, "reason": "上传指定文件"}
+        return {"tool": "finish", "args": {"summary": "指定文件上传完成"}, "reason": "完成"}
+
+    monkeypatch.setattr(projects_router, "_call_project_deploy_agent_model", fake_agent_model)
+
+    result = await projects_router._execute_project_deploy_artifact_agent_payload(
+        project=project,
+        artifact=artifact,
+        req=ProjectDeployArtifactAiExecuteReq(requirement=f"解压到 {extract_to} 后 上传 目录里面的 未来节假日清单.md"),
+        requested_by="tester",
+        chat_session_id="chat-ai-1",
+        auth_payload={"sub": "tester", "role": "admin"},
+    )
+
+    summary = result["deployment"]["artifact_summary"]
+    assert result["deployment"]["status"] == "success"
+    assert [item["tool"] for item in summary["tool_results"]] == [
+        "extract_artifact",
+        "upload_original_archive",
+        "upload_directory",
+        "upload_file",
+        "finish",
+    ]
+    assert summary["tool_results"][1]["result"]["ok"] is False
+    assert summary["tool_results"][2]["result"]["ok"] is False
+    assert FakeFtp.uploaded == [("STOR 未来节假日清单.md", expected_content.encode("utf-8"))]
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_agent_tool_error_is_returned_to_model(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactAiExecuteReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    artifact_path = tmp_path / "dist.zip"
+    artifact_path.write_bytes(b"zip")
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="dist.zip",
+        artifact_kind="frontend-dist",
+        storage_path=str(artifact_path),
+        storage_kind="file",
+        size=3,
+    )
+    deploy_store.save_artifact(artifact)
+    calls = []
+
+    async def fake_agent_model(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {"tool": "read_text_file", "args": {"path": "missing.log"}, "reason": "读取日志"}
+        assert kwargs["transcript"][-1]["tool_result"]["ok"] is False
+        return {"tool": "finish", "args": {"summary": "工具失败，停止部署", "status": "failed"}, "reason": "失败"}
+
+    monkeypatch.setattr(projects_router, "_call_project_deploy_agent_model", fake_agent_model)
+
+    result = await projects_router._execute_project_deploy_artifact_agent_payload(
+        project=project,
+        artifact=artifact,
+        req=ProjectDeployArtifactAiExecuteReq(requirement="读取不存在文件后失败"),
+        requested_by="tester",
+        chat_session_id="chat-ai-1",
+        auth_payload={"sub": "tester", "role": "admin"},
+    )
+
+    summary = result["deployment"]["artifact_summary"]
+    assert result["deployment"]["status"] == "failed"
+    assert len(calls) == 2
+    assert summary["tool_results"][0]["result"]["ok"] is False
+    assert "path does not exist" in summary["tool_results"][0]["result"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_agent_loop_runs_configured_remote_command(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactAiExecuteReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    captured = {}
+
+    def fake_run_project_host_command(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "command": kwargs["command"],
+            "cwd": kwargs["workspace_path"],
+            "stdout": "remote deploy ok",
+            "stderr": "",
+            "exit_code": 0,
+        }
+
+    monkeypatch.setattr(projects_router, "run_project_host_command", fake_run_project_host_command)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        workspace_path=str(tmp_path),
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "targets": [
+                                {
+                                    "id": "server-1",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app",
+                                    "remote_command_mode": "project_host_command",
+                                    "deploy_command": "./deploy.sh restart",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    artifact_path = tmp_path / "dist.zip"
+    artifact_path.write_bytes(b"zip")
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="dist.zip",
+        artifact_kind="frontend-dist",
+        storage_path=str(artifact_path),
+        storage_kind="file",
+        size=3,
+    )
+    deploy_store.save_artifact(artifact)
+    actions = iter(
+        [
+            {"tool": "run_configured_remote_command", "args": {"target_id": "server-1"}, "reason": "执行已配置部署命令"},
+            {"tool": "finish", "args": {"summary": "部署命令完成", "status": "success"}, "reason": "完成"},
+        ]
+    )
+
+    async def fake_agent_model(**kwargs):
+        return next(actions)
+
+    monkeypatch.setattr(projects_router, "_call_project_deploy_agent_model", fake_agent_model)
+
+    result = await projects_router._execute_project_deploy_artifact_agent_payload(
+        project=project,
+        artifact=artifact,
+        req=ProjectDeployArtifactAiExecuteReq(requirement="执行已配置的远端部署命令"),
+        requested_by="tester",
+        chat_session_id="chat-ai-1",
+        auth_payload={"sub": "tester", "role": "admin"},
+    )
+
+    summary = result["deployment"]["artifact_summary"]
+    assert result["deployment"]["status"] == "success"
+    assert captured["command"] == "./deploy.sh restart"
+    assert captured["workspace_path"] == str(tmp_path)
+    assert summary["tool_results"][0]["tool"] == "run_configured_remote_command"
+    assert summary["tool_results"][0]["result"]["stdout"] == "remote deploy ok"
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_agent_finish_can_mark_failed(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactAiExecuteReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    artifact_path = tmp_path / "dist.zip"
+    artifact_path.write_bytes(b"zip")
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="dist.zip",
+        artifact_kind="frontend-dist",
+        storage_path=str(artifact_path),
+        storage_kind="file",
+        size=3,
+    )
+    deploy_store.save_artifact(artifact)
+
+    async def fake_agent_model(**kwargs):
+        return {"tool": "finish", "args": {"summary": "脚本失败，无法继续", "status": "failed"}, "reason": "失败"}
+
+    monkeypatch.setattr(projects_router, "_call_project_deploy_agent_model", fake_agent_model)
+
+    result = await projects_router._execute_project_deploy_artifact_agent_payload(
+        project=project,
+        artifact=artifact,
+        req=ProjectDeployArtifactAiExecuteReq(requirement="失败时结束为失败"),
+        requested_by="tester",
+        chat_session_id="chat-ai-1",
+        auth_payload={"sub": "tester", "role": "admin"},
+    )
+
+    assert result["status"] == "failed"
+    assert result["deployment"]["status"] == "failed"
+    assert result["deployment"]["stage"] == "ai_deploy_agent_failed"
+    assert result["artifact"]["error"] == "脚本失败，无法继续"
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_payload_extracts_zip_when_storage_path_has_no_suffix(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+    monkeypatch.setattr(projects_router, "_ensure_permission", lambda auth_payload, permission: None)
+
+    class FakeFtp:
+        uploaded = []
+        renamed = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            self.renamed.append((source, target))
+            return None
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        created_by="owner-user",
+        chat_settings={"provider_id": "chat-provider", "model_name": "chat-model"},
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "test",
+            "profiles": [
+                {
+                    "id": "test",
+                    "components": [
+                        {
+                            "id": "testpc",
+                            "artifact_kind": "source-bundle",
+                            "targets": [
+                                {
+                                    "id": "server-1",
+                                    "name": "公司数转服务器",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/hrm.jxycrm.com/public/pctest",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+        package.writestr("assets/app.js", "alert(1);")
+    storage_path = tmp_path / "stored-artifact-without-extension"
+    storage_path.write_bytes(archive.getvalue())
+    artifact = ProjectDeployArtifact(
+        id="artifact-zip",
+        project_id=project.id,
+        profile="test",
+        component="testpc",
+        artifact_name="source-bundle-testpc-20260613-104215.zip",
+        artifact_kind="source-bundle",
+        version="1.0.0",
+        storage_path=str(storage_path),
+        status="ready",
+    )
+    deploy_store.save_artifact(artifact)
+    normalized_settings = projects_router._normalize_project_deploy_settings(project.deploy_settings)
+    normalized_target = normalized_settings["profiles"][0]["components"][0]["targets"][0]
+    assert projects_router._project_deploy_target_missing_fields(normalized_target, None) == []
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    monkeypatch.setattr(projects_router, "_ensure_project_manage_access", lambda project_id, auth_payload: project)
+    result = projects_router._deploy_project_deploy_artifact_payload(
+        project=project,
+        artifact_id=artifact.id,
+        requested_by="tester",
+        chat_session_id="chat-ai-zip",
+        task_tree_node_id="",
+        requirement="解压后部署",
+        plan="先安全解压，再上传解压后的内容",
+    )
+
+    assert result["deployment"]["stage"] == "ftp_upload_completed", result["deployment"]
+    artifact_summary = result["deployment"]["artifact_summary"]
+    assert "upload_results" in artifact_summary, result["deployment"]
+    upload_result = artifact_summary["upload_results"][0]
+    assert upload_result["storage_kind"] == "directory"
+    assert upload_result["prepared_storage_kind"] == "directory"
+    assert upload_result["prepared_file_count"] == 2
+    assert FakeFtp.renamed == [("/hrm.jxycrm.com/public/pctest", upload_result["backup_path"])]
+    assert FakeFtp.uploaded == [
+        ("STOR app.js", b"alert(1);"),
+        ("STOR index.html", b"<h1>ok</h1>"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_artifact_list_includes_latest_deployment(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import (
+        ProjectDeployArtifact,
+        ProjectDeployRun,
+        ProjectDeployStore,
+    )
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "_ensure_permission", lambda auth_payload, permission: None)
+    monkeypatch.setattr(projects_router, "_ensure_project_access", lambda project_id, auth_payload: None)
+
+    deploy_store.save_run(
+        ProjectDeployRun(
+            id="deploy-1",
+            project_id="proj-1",
+            profile="prod",
+            component="app",
+            status="success",
+            artifact_id="artifact-1",
+            log_excerpt="uploaded",
+        )
+    )
+    deploy_store.save_artifact(
+        ProjectDeployArtifact(
+            id="artifact-1",
+            project_id="proj-1",
+            profile="prod",
+            component="app",
+            artifact_name="release.zip",
+            status="deployed",
+            deployment_id="deploy-1",
+        )
+    )
+
+    result = await projects_router.list_project_deploy_artifacts(
+        "proj-1",
+        auth_payload={"sub": "tester", "role": "admin"},
+        limit=50,
+    )
+
+    assert result["artifacts"][0]["id"] == "artifact-1"
+    assert result["artifacts"][0]["status"] == "deployed"
+    assert result["artifacts"][0]["deployment"]["id"] == "deploy-1"
+    assert result["artifacts"][0]["deployment"]["status"] == "success"
 
 
 def test_project_deploy_artifact_push_blocks_checksum_mismatch(tmp_path, monkeypatch):
@@ -10577,6 +12073,1575 @@ def test_project_deploy_artifact_push_blocks_checksum_mismatch(tmp_path, monkeyp
     assert "checksum" in str(exc_info.value.detail)
 
 
+def test_project_deploy_artifact_push_explains_server_side_artifact_path(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from routers import projects as projects_router
+    from models.requests import ProjectDeployArtifactPushReq
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    monkeypatch.setattr(projects_router, "project_deploy_store", ProjectDeployStore(tmp_path))
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [{"id": "prod", "transport": {"mode": "ftp"}}],
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        projects_router._push_project_deploy_artifact_payload(
+            project=project,
+            req=ProjectDeployArtifactPushReq(
+                profile="prod",
+                artifact_name="release.tar.gz",
+                manifest={"checksum": "sha256:any", "size": 7},
+                artifact_path="/client/local/release.tar.gz",
+            ),
+            uploaded_by="tester",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "artifact_path does not exist on the server" in str(exc_info.value.detail)
+    assert "artifact_content_base64" in str(exc_info.value.detail)
+
+
+def test_project_deploy_artifact_upload_route_creates_ready_artifact_without_auto_deploy(tmp_path, monkeypatch):
+    import hashlib
+
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+    from stores.json.project_store import ProjectConfig
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in ("project_store", "project_deploy_store", "role_store"):
+        getattr(store_factory, proxy_name)._instance = None
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: {"sub": "tester", "role": "admin"}
+    store_factory.project_store.save(
+        ProjectConfig(
+            id="proj-upload-artifact",
+            name="上传产物项目",
+            deploy_settings={
+                "enabled": True,
+                "default_profile": "prod",
+                "profiles": [
+                    {
+                        "id": "prod",
+                        "components": [
+                            {
+                                "id": "web",
+                                "artifact_kind": "frontend-dist",
+                                "safety": {"auto_deploy_on_artifact_update": True},
+                                "targets": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
+    client = TestClient(app)
+    content = b"manual-upload-release"
+    checksum = "sha256:" + hashlib.sha256(content).hexdigest()
+
+    response = client.post(
+        "/api/projects/proj-upload-artifact/deploy-artifacts/upload",
+        data={
+            "profile": "prod",
+            "component": "web",
+            "artifact_kind": "frontend-dist",
+            "version": "2026.06.15",
+            "size": str(len(content)),
+            "auto_deploy": "true",
+        },
+        files={"file": ("web-dist.tar.gz", content, "application/gzip")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    artifact = payload["artifact"]
+    assert payload["status"] == "ready"
+    assert payload["deployment"] is None
+    assert payload["auto_deploy"] is False
+    assert artifact["artifact_name"] == "web-dist.tar.gz"
+    assert artifact["component"] == "web"
+    assert artifact["artifact_kind"] == "frontend-dist"
+    assert artifact["version"] == "2026.06.15"
+    assert artifact["checksum"] == checksum
+    assert artifact["size"] == len(content)
+    assert artifact["manifest"]["checksum"] == checksum
+    assert artifact["manifest"]["size"] == len(content)
+    assert Path(artifact["storage_path"]).read_bytes() == content
+
+    list_response = client.get("/api/projects/proj-upload-artifact/deploy-artifacts")
+    assert list_response.status_code == 200
+    assert list_response.json()["artifacts"][0]["id"] == artifact["id"]
+
+
+def test_project_deploy_artifact_upload_route_accepts_directory_files(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+    from stores.json.project_store import ProjectConfig
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in ("project_store", "project_deploy_store", "role_store"):
+        getattr(store_factory, proxy_name)._instance = None
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: {"sub": "tester", "role": "admin"}
+    store_factory.project_store.save(
+        ProjectConfig(
+            id="proj-upload-dir",
+            name="上传目录项目",
+            deploy_settings={
+                "enabled": True,
+                "default_profile": "prod",
+                "profiles": [
+                    {
+                        "id": "prod",
+                        "components": [
+                            {
+                                "id": "web",
+                                "artifact_kind": "frontend-dist",
+                                "targets": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
+    client = TestClient(app)
+    manifest = {
+        "source_type": "directory",
+        "root_directory": "dist",
+        "file_entries": [
+            {"path": "index.html", "original_path": "dist/index.html", "name": "index.html", "size": 12},
+            {"path": "assets/app.js", "original_path": "dist/assets/app.js", "name": "app.js", "size": 9},
+        ],
+    }
+
+    response = client.post(
+        "/api/projects/proj-upload-dir/deploy-artifacts/upload",
+        data={
+            "profile": "prod",
+            "component": "web",
+            "artifact_name": "dist",
+            "artifact_kind": "frontend-dist",
+            "manifest_json": json.dumps(manifest),
+        },
+        files=[
+            ("files", ("index.html", b"<h1>ok</h1>", "text/html")),
+            ("files", ("app.js", b"alert(1);", "application/javascript")),
+        ],
+    )
+
+    assert response.status_code == 200
+    artifact = response.json()["artifact"]
+    assert artifact["storage_kind"] == "directory"
+    assert artifact["manifest"]["source_type"] == "directory"
+    assert artifact["manifest"]["root_directory"] == "dist"
+    assert artifact["manifest"]["file_count"] == 2
+    assert artifact["file_tree"][0]["name"] == "assets"
+    assert artifact["file_tree"][1]["name"] == "index.html"
+    assert Path(artifact["storage_path"], "index.html").read_bytes() == b"<h1>ok</h1>"
+    assert Path(artifact["storage_path"], "assets", "app.js").read_bytes() == b"alert(1);"
+
+    list_response = client.get("/api/projects/proj-upload-dir/deploy-artifacts")
+    assert list_response.status_code == 200
+    listed = list_response.json()["artifacts"][0]
+    assert listed["id"] == artifact["id"]
+    assert listed["file_tree"][0]["path"] == "assets"
+
+
+def test_project_deploy_artifact_upload_route_accepts_more_than_default_multipart_file_limit(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+    from stores.json.project_store import ProjectConfig
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in ("project_store", "project_deploy_store", "role_store"):
+        getattr(store_factory, proxy_name)._instance = None
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: {"sub": "tester", "role": "admin"}
+    store_factory.project_store.save(
+        ProjectConfig(
+            id="proj-upload-many-files",
+            name="上传多文件项目",
+            deploy_settings={
+                "enabled": True,
+                "default_profile": "prod",
+                "profiles": [
+                    {
+                        "id": "prod",
+                        "components": [
+                            {
+                                "id": "web",
+                                "artifact_kind": "frontend-dist",
+                                "targets": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
+    file_count = 1001
+    manifest = {
+        "source_type": "directory-tar",
+        "root_directory": "dist",
+        "file_entries": [
+            {"path": f"chunks/file-{index}.txt", "name": f"file-{index}.txt", "size": 1}
+            for index in range(file_count)
+        ],
+    }
+    archive_buffer = io.BytesIO()
+    with tarfile.open(fileobj=archive_buffer, mode="w") as archive:
+        for index in range(file_count):
+            content = b"x"
+            info = tarfile.TarInfo(f"chunks/file-{index}.txt")
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    archive_buffer.seek(0)
+
+    response = TestClient(app).post(
+        "/api/projects/proj-upload-many-files/deploy-artifacts/upload",
+        data={
+            "profile": "prod",
+            "component": "web",
+            "artifact_name": "dist",
+            "artifact_kind": "frontend-dist",
+            "manifest_json": json.dumps(manifest),
+        },
+        files=[("file", ("dist.tar", archive_buffer.read(), "application/x-tar"))],
+    )
+
+    assert response.status_code == 200
+    artifact = response.json()["artifact"]
+    assert artifact["manifest"]["file_count"] == file_count
+    assert artifact["file_tree"][0]["path"] == "chunks"
+    assert Path(artifact["storage_path"], "chunks", "file-1000.txt").read_bytes() == b"x"
+
+
+def test_project_deploy_artifact_directory_deploy_uploads_each_file(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+        cwd_paths = []
+        renamed = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            self.cwd_paths.append(path)
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            self.renamed.append((source, target))
+            return None
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "artifact_kind": "frontend-dist",
+                            "targets": [
+                                {
+                                    "id": "server-1",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app",
+                                    "deploy_command": "./deploy.sh",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    pushed = projects_router._push_project_deploy_artifact_directory_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="dist",
+            artifact_kind="frontend-dist",
+            manifest={"source_type": "directory"},
+            auto_deploy=False,
+        ),
+        uploaded_by="tester",
+        file_entries=[
+            {"path": "index.html", "name": "index.html", "content": b"<h1>ok</h1>"},
+            {"path": "assets/app.js", "name": "app.js", "content": b"alert(1);"},
+        ],
+    )
+
+    deployed = projects_router._deploy_project_deploy_artifact_payload(
+        project=project,
+        artifact_id=pushed["artifact"]["id"],
+        requested_by="tester",
+    )
+
+    upload_result = deployed["deployment"]["artifact_summary"]["upload_results"][0]
+    assert deployed["deployment"]["stage"] == "blocked_missing_remote_executor"
+    assert upload_result["storage_kind"] == "directory"
+    assert upload_result["prepared_storage_kind"] == "directory"
+    assert upload_result["backup_status"] == "renamed"
+    assert upload_result["backup_path"].startswith("/opt/app_备份_")
+    assert upload_result["file_count"] == 2
+    assert [item["path"] for item in upload_result["files"]] == [
+        "assets/app.js",
+        "index.html",
+    ]
+    assert FakeFtp.renamed == [(("/opt/app"), upload_result["backup_path"])]
+    assert FakeFtp.uploaded == [
+        ("STOR app.js", b"alert(1);"),
+        ("STOR index.html", b"<h1>ok</h1>"),
+    ]
+
+
+def test_project_deploy_artifact_ftp_only_auto_deploy_succeeds_without_command(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+        renamed = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            self.renamed.append((source, target))
+            return None
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+
+    content = b"ftp-only-release"
+    checksum = "sha256:" + hashlib.sha256(content).hexdigest()
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "app",
+                            "artifact_kind": "source-bundle",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [
+                                {
+                                    "id": "server-1",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    pushed = projects_router._push_project_deploy_artifact_payload(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="app",
+            artifact_name="release.tar.gz",
+            manifest={"checksum": checksum, "size": len(content)},
+            artifact_content_base64=base64.b64encode(content).decode("ascii"),
+            auto_deploy=True,
+        ),
+        uploaded_by="tester",
+    )
+
+    assert pushed["status"] == "deployed"
+    assert pushed["artifact"]["status"] == "deployed"
+    assert pushed["deployment"]["status"] == "success"
+    assert pushed["deployment"]["stage"] == "ftp_upload_completed"
+    assert pushed["deployment"]["log_excerpt"] == (
+        "artifact file uploaded by FTP; remote target was backed up before upload"
+    )
+    assert pushed["deployment"]["artifact_summary"]["blocked_remote_command_target_count"] == 0
+    assert FakeFtp.renamed == [
+        (
+            "/opt/app/release.tar.gz",
+            pushed["deployment"]["artifact_summary"]["upload_results"][0]["backup_path"],
+        )
+    ]
+    assert FakeFtp.uploaded == [("STOR release.tar.gz", content)]
+
+
+def test_project_deploy_artifact_zip_deploy_extracts_and_uploads_directory(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+        renamed = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            self.renamed.append((source, target))
+            return None
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "artifact_kind": "frontend-dist",
+                            "targets": [
+                                {
+                                    "id": "server-1",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+        package.writestr("assets/app.js", "alert(1);")
+        package.writestr("image/theme/", "")
+        package.writestr("image/theme/base.css", "body{}")
+    content = archive.getvalue()
+
+    pushed = projects_router._push_project_deploy_artifact_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="dist.zip",
+            artifact_kind="frontend-dist",
+            manifest={},
+            auto_deploy=False,
+        ),
+        uploaded_by="tester",
+        content=content,
+    )
+
+    artifact = deploy_store.get_artifact(project.id, pushed["artifact"]["id"])
+    assert artifact is not None
+    upload_result = projects_router._upload_project_deploy_artifact_to_ftp(
+        artifact=artifact,
+        target={
+            "id": "server-1",
+            "ftp_credential_id": "ftp-1",
+            "remote_path": "/opt/app",
+        },
+        archive_upload_policy="extract_before_upload",
+    )
+
+    assert upload_result["storage_kind"] == "directory"
+    assert upload_result["prepared_storage_kind"] == "directory"
+    assert upload_result["prepared_file_count"] == 3
+    assert upload_result["backup_status"] == "renamed"
+    assert FakeFtp.renamed == [("/opt/app", upload_result["backup_path"])]
+    assert FakeFtp.uploaded == [
+        ("STOR app.js", b"alert(1);"),
+        ("STOR base.css", b"body{}"),
+        ("STOR index.html", b"<h1>ok</h1>"),
+    ]
+    assert [item["path"] for item in upload_result["files"]] == [
+        "assets/app.js",
+        "image/theme/base.css",
+        "index.html",
+    ]
+
+
+def test_project_deploy_artifact_zip_defaults_to_archive_file_upload(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+        renamed = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            self.renamed.append((source, target))
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "artifact_kind": "frontend-dist",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+        package.writestr("assets/app.js", "alert(1);")
+    content = archive.getvalue()
+
+    pushed = projects_router._push_project_deploy_artifact_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="dist.zip",
+            artifact_kind="frontend-dist",
+            manifest={},
+            auto_deploy=True,
+        ),
+        uploaded_by="tester",
+        content=content,
+    )
+
+    summary = pushed["deployment"]["artifact_summary"]
+    assert pushed["artifact"]["manifest"]["archive_suffix"] == ".zip"
+    assert pushed["artifact"]["manifest"]["archive_behavior"] == "upload_archive"
+    assert pushed["artifact"]["manifest"]["server_prepare_behavior"] == "upload_archive_by_default"
+    assert summary["archive_upload_policy"] == "auto"
+    assert summary["archive_behavior"] == "upload_archive"
+    assert summary["prepared_storage_kind"] == "file"
+    assert pushed["deployment"]["log_excerpt"] == (
+        "artifact file uploaded by FTP; remote target was backed up before upload"
+    )
+    assert len(FakeFtp.renamed) == 1
+    assert FakeFtp.renamed[0][0] == "/opt/app/dist.zip"
+    assert FakeFtp.uploaded == [("STOR dist.zip", content)]
+
+
+def test_project_deploy_artifact_natural_language_extracts_to_path_and_uploads_archive(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+        renamed = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            self.renamed.append((source, target))
+            if source.endswith(".zip"):
+                raise RuntimeError("550 remote target not found")
+            return None
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "artifact_kind": "frontend-dist",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+        package.writestr("assets/app.js", "alert(1);")
+    content = archive.getvalue()
+    extract_to = tmp_path / "南京嘉华"
+    requirement = f"解压后 文件放到 {extract_to}/ 目录里面 并且 解压后的文件跟 压缩包都上传"
+
+    pushed = projects_router._push_project_deploy_artifact_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="dist.zip",
+            artifact_kind="frontend-dist",
+            manifest={},
+            auto_deploy=True,
+            requirement=requirement,
+        ),
+        uploaded_by="tester",
+        content=content,
+    )
+
+    summary = pushed["deployment"]["artifact_summary"]
+    assert pushed["deployment"]["status"] == "success"
+    assert summary["archive_upload_policy"] == "extract_before_upload"
+    assert summary["extract_to_path"] == extract_to.resolve().as_posix()
+    assert summary["uploaded_extracted_files"] is True
+    assert summary["uploaded_original_archive"] is True
+    assert summary["upload_actions"] == ["upload_extracted_files", "upload_original_archive"]
+    assert (extract_to / "index.html").read_text(encoding="utf-8") == "<h1>ok</h1>"
+    assert (extract_to / "assets" / "app.js").read_text(encoding="utf-8") == "alert(1);"
+    assert FakeFtp.uploaded == [
+        ("STOR app.js", b"alert(1);"),
+        ("STOR index.html", b"<h1>ok</h1>"),
+        ("STOR dist.zip", content),
+    ]
+
+
+def test_project_deploy_artifact_detects_zip_content_without_extension_and_extracts(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "artifact_kind": "frontend-dist",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+        package.writestr("assets/app.js", "alert(1);")
+
+    pushed = projects_router._push_project_deploy_artifact_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="source-bundle-testpc",
+            artifact_kind="frontend-dist",
+            manifest={},
+            auto_deploy=True,
+            requirement="解压后部署",
+        ),
+        uploaded_by="tester",
+        content=archive.getvalue(),
+    )
+
+    summary = pushed["deployment"]["artifact_summary"]
+    assert pushed["artifact"]["manifest"]["archive_suffix"] == ".zip"
+    assert summary["archive_upload_policy"] == "extract_before_upload"
+    assert summary["prepared_storage_kind"] == "directory"
+    assert summary["user_requirement"] == "解压后部署"
+    assert pushed["deployment"]["log_excerpt"] == (
+        "artifact extracted and uploaded by FTP; remote target was backed up before upload"
+    )
+    assert FakeFtp.uploaded == [
+        ("STOR app.js", b"alert(1);"),
+        ("STOR index.html", b"<h1>ok</h1>"),
+    ]
+
+
+def test_project_deploy_artifact_directory_wrapped_zip_extracts_before_upload(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "artifact_kind": "frontend-dist",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+        package.writestr("assets/app.js", "alert(1);")
+
+    pushed = projects_router._push_project_deploy_artifact_directory_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="source-bundle-testpc-20260613-104215.zip",
+            artifact_kind="frontend-dist",
+            manifest={"source_type": "directory"},
+            auto_deploy=True,
+            requirement="解压后部署",
+        ),
+        uploaded_by="tester",
+        file_entries=[
+            {
+                "path": "source-bundle-testpc-20260613-104215.zip",
+                "name": "source-bundle-testpc-20260613-104215.zip",
+                "content": archive.getvalue(),
+            }
+        ],
+    )
+
+    summary = pushed["deployment"]["artifact_summary"]
+    assert pushed["artifact"]["storage_kind"] == "directory"
+    assert summary["archive_upload_policy"] == "extract_before_upload"
+    assert summary["prepared_storage_kind"] == "directory"
+    assert pushed["deployment"]["log_excerpt"] == (
+        "artifact extracted and uploaded by FTP; remote target was backed up before upload"
+    )
+    assert FakeFtp.uploaded == [
+        ("STOR app.js", b"alert(1);"),
+        ("STOR index.html", b"<h1>ok</h1>"),
+    ]
+
+
+def test_project_deploy_artifact_requirement_overrides_generated_plan_policy():
+    from routers import projects as projects_router
+
+    structured_plan = json.dumps(
+        {
+            "archive_policy": "upload_archive",
+            "archive_upload_policy": "upload_archive",
+        },
+        ensure_ascii=False,
+    )
+    assert (
+        projects_router._project_deploy_resolve_archive_upload_policy(
+            requirement="解压后部署",
+            plan=structured_plan,
+        )
+        == "extract_before_upload"
+    )
+    assert (
+        projects_router._project_deploy_resolve_archive_upload_policy(
+            requirement="",
+            plan=structured_plan,
+        )
+        == "upload_archive"
+    )
+    assert (
+        projects_router._project_deploy_resolve_archive_upload_policy(
+            requirement="不要解压，原样上传压缩包",
+            plan="先安全解压，再上传解压后的内容。",
+        )
+        == "upload_archive"
+    )
+    assert (
+        projects_router._project_deploy_resolve_archive_upload_policy(
+            requirement="",
+            plan="先安全解压，再上传解压后的内容。",
+        )
+        == "extract_before_upload"
+    )
+    assert (
+        projects_router._project_deploy_resolve_archive_upload_policy(
+            requirement="",
+            plan="",
+        )
+        == "auto"
+    )
+    assert (
+        projects_router._project_deploy_resolve_archive_upload_policy(
+            requirement="",
+            plan="当前是压缩包产物，且没有明确解压要求；系统会默认原样上传压缩包，不会自动解压。",
+        )
+        == "upload_archive"
+    )
+
+
+def test_project_deploy_artifact_execution_plan_parses_structured_compound_actions(tmp_path):
+    from routers import projects as projects_router
+
+    plan = json.dumps(
+        {
+            "archive_upload_policy": "extract_before_upload",
+            "extract_to_path": str(tmp_path / "release"),
+            "upload_extracted_files": True,
+            "upload_original_archive": True,
+        },
+        ensure_ascii=False,
+    )
+
+    execution_plan = projects_router._project_deploy_resolve_execution_plan(
+        requirement="",
+        plan=plan,
+    )
+
+    assert execution_plan["archive_upload_policy"] == "extract_before_upload"
+    assert execution_plan["extract_to_path"] == (tmp_path / "release").resolve().as_posix()
+    assert execution_plan["upload_extracted_files"] is True
+    assert execution_plan["upload_original_archive"] is True
+    assert execution_plan["actions"] == [
+        "extract_archive",
+        "copy_extracted_files_to_path",
+        "upload_extracted_files",
+        "upload_original_archive",
+    ]
+
+
+def test_project_deploy_artifact_llm_plan_copies_to_path_and_uploads_archive_only(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+    content = archive.getvalue()
+    pushed = projects_router._push_project_deploy_artifact_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="dist.zip",
+            artifact_kind="frontend-dist",
+            manifest={},
+            auto_deploy=False,
+        ),
+        uploaded_by="tester",
+        content=content,
+    )
+    extract_to = tmp_path / "南京嘉华"
+    execution_plan = projects_router._project_deploy_validate_ai_execution_plan(
+        {
+            "version": 1,
+            "actions": [
+                {"type": "extract_artifact", "extract_to_path": str(extract_to)},
+                {"type": "copy_extracted_to_path", "extract_to_path": str(extract_to)},
+                {"type": "write_deploy_log_file", "directory": str(extract_to), "filename": "deploy.log"},
+                {"type": "upload_original_archive", "target_id": "server-1"},
+            ],
+            "unsupported_requirements": [],
+        }
+    )
+
+    deployed = projects_router._deploy_project_deploy_artifact_payload(
+        project=project,
+        artifact_id=pushed["artifact"]["id"],
+        requested_by="tester",
+        requirement="解压后放到指定目录，压缩包上传",
+        execution_plan=execution_plan,
+    )
+
+    summary = deployed["deployment"]["artifact_summary"]
+    assert deployed["deployment"]["status"] == "success"
+    assert summary["ai_execution_plan"]["source"] == "llm_controlled_tool_plan"
+    assert summary["copied_extracted_to_path"] is True
+    assert summary["uploaded_extracted_files"] is False
+    assert summary["uploaded_original_archive"] is True
+    assert summary["created_deploy_log_files"] == [(extract_to / "deploy.log").as_posix()]
+    assert (extract_to / "index.html").read_text(encoding="utf-8") == "<h1>ok</h1>"
+    assert "artifact_id=" in (extract_to / "deploy.log").read_text(encoding="utf-8")
+    assert FakeFtp.uploaded == [("STOR dist.zip", content)]
+
+
+def test_project_deploy_artifact_llm_plan_rejects_unknown_action_without_upload(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            raise AssertionError("FTP should not be touched for rejected AI plans")
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    pushed = projects_router._push_project_deploy_artifact_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="dist.zip",
+            artifact_kind="frontend-dist",
+            manifest={},
+            auto_deploy=False,
+        ),
+        uploaded_by="tester",
+        content=b"zip-content",
+    )
+
+    deployed = projects_router._deploy_project_deploy_artifact_payload(
+        project=project,
+        artifact_id=pushed["artifact"]["id"],
+        requested_by="tester",
+        requirement="把文件重命名后部署",
+        execution_plan={
+            "version": 1,
+            "actions": [{"type": "rename_file", "target_id": "server-1"}],
+            "unsupported_requirements": [],
+        },
+    )
+
+    assert deployed["deployment"]["status"] == "failed"
+    assert deployed["deployment"]["stage"] == "unsupported_ai_deploy_action"
+    assert "未授权动作" in deployed["deployment"]["log_excerpt"]
+    assert deployed["deployment"]["artifact_summary"]["uploaded_target_count"] == 0
+    assert FakeFtp.uploaded == []
+
+
+def test_project_deploy_artifact_llm_json_parser_rejects_invalid_json():
+    from routers import projects as projects_router
+
+    with pytest.raises(projects_router._ProjectDeployAiExecutionPlanError):
+        projects_router._project_deploy_parse_json_object_from_model("不是 JSON")
+
+
+def test_project_deploy_artifact_ai_policy_can_keep_archive_upload(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+        renamed = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            self.renamed.append((source, target))
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "artifact_kind": "frontend-dist",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("index.html", "<h1>ok</h1>")
+    content = archive.getvalue()
+
+    pushed = projects_router._push_project_deploy_artifact_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="source-bundle-testpc.zip",
+            artifact_kind="frontend-dist",
+            manifest={},
+            auto_deploy=True,
+            requirement="不要解压，原样上传压缩包",
+            plan="AI 判断本次应该保留压缩包。",
+        ),
+        uploaded_by="tester",
+        content=content,
+    )
+
+    summary = pushed["deployment"]["artifact_summary"]
+    assert summary["archive_upload_policy"] == "upload_archive"
+    assert summary["prepared_storage_kind"] == "file"
+    assert summary["user_requirement"] == "不要解压，原样上传压缩包"
+    assert pushed["deployment"]["log_excerpt"] == (
+        "archive uploaded by FTP without extraction; remote target was backed up before upload"
+    )
+    assert FakeFtp.uploaded == [("STOR source-bundle-testpc.zip", content)]
+
+
+def test_project_deploy_artifact_extract_requirement_rejects_non_archive(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+        renamed = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            self.renamed.append((source, target))
+            return None
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "artifact_kind": "frontend-dist",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [{"id": "server-1", "ftp_credential_id": "ftp-1", "remote_path": "/opt/app"}],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    pushed = projects_router._push_project_deploy_artifact_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="source-bundle-testpc.zip",
+            artifact_kind="frontend-dist",
+            manifest={},
+            auto_deploy=True,
+            requirement="解压后部署",
+        ),
+        uploaded_by="tester",
+        content=b"not a zip archive",
+    )
+
+    deployment = pushed["deployment"]
+    assert deployment["status"] == "failed"
+    assert deployment["stage"] == "upload_failed"
+    assert "用户要求解压后部署" in deployment["log_excerpt"]
+    assert FakeFtp.renamed == []
+    assert FakeFtp.uploaded == []
+
+
+def test_project_deploy_artifact_archive_extract_rejects_path_traversal(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def rename(self, source, target):
+            return None
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "artifact_kind": "frontend-dist",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [
+                                {
+                                    "id": "server-1",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr("../evil.txt", "bad")
+    pushed = projects_router._push_project_deploy_artifact_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="dist.zip",
+            artifact_kind="frontend-dist",
+            manifest={},
+            auto_deploy=False,
+        ),
+        uploaded_by="tester",
+        content=archive.getvalue(),
+    )
+
+    artifact = deploy_store.get_artifact(project.id, pushed["artifact"]["id"])
+    assert artifact is not None
+
+    with pytest.raises(Exception) as exc_info:
+        projects_router._upload_project_deploy_artifact_to_ftp(
+            artifact=artifact,
+            target={
+                "id": "server-1",
+                "ftp_credential_id": "ftp-1",
+                "remote_path": "/opt/app",
+            },
+            archive_upload_policy="extract_before_upload",
+        )
+    assert "invalid artifact archive path" in str(exc_info.value)
+    assert "../evil.txt" in str(exc_info.value)
+
+    pushed_with_auto_deploy = projects_router._push_project_deploy_artifact_content(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="web",
+            artifact_name="dist.zip",
+            artifact_kind="frontend-dist",
+            manifest={},
+            auto_deploy=True,
+            requirement="解压后部署",
+        ),
+        uploaded_by="tester",
+        content=archive.getvalue(),
+    )
+
+    deployment = pushed_with_auto_deploy["deployment"]
+    assert deployment["status"] == "failed"
+    assert deployment["stage"] == "invalid_artifact_archive"
+    assert deployment["artifact_summary"]["invalid_archive_entry"] == "../evil.txt"
+    assert "../evil.txt" in deployment["log_excerpt"]
+
+
+def test_project_deploy_run_delete_is_soft_delete(tmp_path):
+    from stores.json.project_deploy_store import ProjectDeployRun, ProjectDeployStore
+
+    store = ProjectDeployStore(tmp_path)
+    run = store.save_run(
+        ProjectDeployRun(
+            id="deploy-1",
+            project_id="proj-1",
+            profile="prod",
+            component="web",
+            status="blocked",
+        )
+    )
+
+    assert store.list_runs("proj-1") == [run]
+    assert store.delete_run("proj-1", "deploy-1", deleted_by="tester", reason="cleanup") is True
+    assert store.list_runs("proj-1") == []
+    deleted = store.get_run("proj-1", "deploy-1")
+    assert deleted is not None
+    assert deleted.deleted_at
+    assert deleted.deleted_by == "tester"
+    assert deleted.delete_reason == "cleanup"
+
+
 def test_project_deploy_command_output_cleaner_accepts_json_and_markdown():
     from routers import projects as projects_router
 
@@ -10592,6 +13657,57 @@ def test_project_deploy_command_output_cleaner_accepts_json_and_markdown():
         )
         == "set -e\n./deploy.sh up"
     )
+
+
+def test_codex_exec_command_skips_git_repo_check_for_plain_directories():
+    from routers import projects as projects_router
+
+    cmd = projects_router._build_codex_exec_command(
+        sandbox_mode="workspace-write",
+        prompt="npm run build",
+    )
+
+    assert cmd == [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "workspace-write",
+        "npm run build",
+    ]
+
+
+def test_project_deploy_run_serialization_redacts_failure_log_excerpt():
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployRun
+
+    run = ProjectDeployRun(
+        id="deploy-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        status="failed",
+        stage="upload_failed",
+        log_excerpt=(
+            "upload failed: authorization: Bearer abc123\n"
+            "token=secret-token\n"
+            "password: secret-password\n"
+            "secret=secret-value"
+        ),
+    )
+
+    payload = projects_router._serialize_project_deploy_run(run)
+
+    assert payload["log_excerpt"] == (
+        "upload failed: authorization: ***\n"
+        "token=***\n"
+        "password: ***\n"
+        "secret=***"
+    )
+    assert "abc123" not in payload["log_excerpt"]
+    assert "secret-token" not in payload["log_excerpt"]
+    assert "secret-password" not in payload["log_excerpt"]
+    assert "secret-value" not in payload["log_excerpt"]
 
 
 def test_project_deploy_command_prompt_omits_ftp_account_secrets():
@@ -10621,6 +13737,10 @@ def test_project_deploy_command_prompt_omits_ftp_account_secrets():
 
     assert "公司数转服务器" in prompt_text
     assert "/opt/app/web" in prompt_text
+    assert "产物默认按单文件原样上传" in prompt_text
+    assert "只有部署要求明确解压时才由服务端安全解压" in prompt_text
+    assert "FTP 上传前服务端会先把远端目标在线重命名" in prompt_text
+    assert "命令不要再重复上传、下载、解压本次产物" in prompt_text
     assert "bluesky" not in prompt_text
     assert "super-secret" not in prompt_text
     assert "ftp_credential_id" not in prompt_text
@@ -10654,7 +13774,71 @@ def test_project_deploy_command_prompt_avoids_historical_publish_hints():
         assert keyword not in prompt_text.lower()
 
 
-def test_project_deploy_artifact_skill_files_define_server_deploy_boundary():
+def test_project_deploy_artifact_plan_prompt_uses_ui_context_without_secrets():
+    from models.requests import ProjectDeployArtifactPlanGenerateReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact
+    from stores.json.project_store import ProjectConfig
+
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "name": "生产环境",
+                    "components": [
+                        {
+                            "id": "web",
+                            "name": "前端",
+                            "artifact_kind": "static-assets",
+                            "targets": [
+                                {
+                                    "id": "server-1",
+                                    "name": "公司数转服务器",
+                                    "remote_path": "/opt/app/web",
+                                    "ftp_credential_id": "ftp-1",
+                                    "ftp_username": "bluesky",
+                                    "ftp_password": "super-secret",
+                                    "deploy_command": "./deploy.sh",
+                                    "remote_command_mode": "ssh",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    messages = projects_router._build_project_deploy_artifact_plan_messages(
+        project=project,
+        artifact=ProjectDeployArtifact(
+            id="artifact-1",
+            project_id="proj-1",
+            profile="prod",
+            component="web",
+            artifact_name="dist.zip",
+            artifact_kind="static-assets",
+            storage_kind="file",
+            manifest={"file_count": 12},
+        ),
+        req=ProjectDeployArtifactPlanGenerateReq(requirement="发布测试环境"),
+    )
+    prompt_text = "\n".join(item["content"] for item in messages)
+
+    assert "公司数转服务器" in prompt_text
+    assert "/opt/app/web" in prompt_text
+    assert "中文时间戳备份名" in prompt_text
+    assert "安全解压" in prompt_text
+    assert "发布测试环境" in prompt_text
+    assert "bluesky" not in prompt_text
+    assert "super-secret" not in prompt_text
+    assert "ftp_credential_id" not in prompt_text
+
+
+def test_project_deploy_artifact_skill_files_define_artifact_module_boundary():
     repo_root = Path(__file__).resolve().parents[3]
     source_skill = (
         repo_root / "mcp-skills/knowledge/skill-packages/project-deploy-artifact/SKILL.md"
@@ -10670,11 +13854,28 @@ def test_project_deploy_artifact_skill_files_define_server_deploy_boundary():
 
     assert source_skill == local_skill
     assert registry["id"] == "project-deploy-artifact"
-    assert "push_project_deploy_artifact" in source_skill
-    assert "deploy_project_deploy_artifact" in source_skill
-    assert "Client AI: build or package locally" in source_skill
-    assert "MCP/server: create `ProjectDeployArtifact`" in source_skill
-    assert "Do not deploy directly from the client" in source_skill
+    assert "Project Deploy Artifact" in source_skill
+    assert "Client AI: builds or reads the requested package" in source_skill
+    assert "server-side project deploy artifact module" in source_skill
+    assert "Deploy artifact AI: deploys from the server-side artifact" in source_skill
+    assert "Push the resulting artifact to the server-side deploy artifact module" in source_skill
+    assert "Resolve `project_id` from the current project context before upload" in source_skill
+    assert "do not ask the user to repeat `project_id` after they already confirmed deployment" in source_skill
+    assert "selected external agent" in source_skill
+    assert "desktop Runner" in source_skill
+    assert "available local connector" not in source_skill
+    assert "client-local FTP upload the main deployment path" in source_skill
+    assert "deploy locally on the client machine" not in source_skill
+    assert "query MCP for project deployment parameters" not in source_skill
+    assert "artifact_content_base64" in source_skill
+    assert "scripts/push_local_artifact.py" in source_skill
+    assert registry["version"] == "1.1.0"
+    assert registry["proxy_entries"][0]["name"] == "push-local-artifact"
+    assert registry["proxy_entries"][0]["path"] == "scripts/push_local_artifact.py"
+    assert (repo_root / "mcp-skills/knowledge/skill-packages/project-deploy-artifact/scripts/push_local_artifact.py").is_file()
+    assert (repo_root / ".ai-employee/skills/project-deploy-artifact/scripts/push_local_artifact.py").is_file()
+    assert "MCP-accessible path" not in source_skill
+    assert "Do not read or reuse local config files" in source_skill
     assert "Do not scan or reuse historical publish configuration" in source_skill
     for keyword in ("travis", "qiniu", "七牛", "oss", "github actions", "qshell"):
         assert keyword not in source_skill.lower()
@@ -10749,42 +13950,157 @@ async def test_project_deploy_command_generation_uses_project_chat_model(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_project_deploy_command_external_agent_reports_missing_connector(monkeypatch):
+async def test_project_deploy_artifact_plan_generation_uses_project_chat_model(tmp_path, monkeypatch):
+    from models.requests import ProjectDeployArtifactPlanGenerateReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+    from services.runtime.provider_resolver import ResolvedProviderRuntime
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    deploy_store.save_artifact(
+        ProjectDeployArtifact(
+            id="artifact-1",
+            project_id="proj-1",
+            profile="prod",
+            component="web",
+            artifact_name="dist.zip",
+            artifact_kind="static-assets",
+        )
+    )
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    captured: dict[str, object] = {}
+
+    async def fake_resolve_project_chat_runtime(runtime_settings, auth_payload):
+        captured["runtime_settings"] = dict(runtime_settings)
+        return ResolvedProviderRuntime(
+            provider_mode="provider",
+            provider={"id": "provider-chat"},
+            providers=[],
+            provider_id="provider-chat",
+            model_name="chat-model",
+        )
+
+    class FakeRuntime:
+        async def chat_completion(self, provider_id, model_name, messages, **kwargs):
+            captured["provider_id"] = provider_id
+            captured["model_name"] = model_name
+            captured["messages"] = messages
+            return {
+                "content": "1. 备份远端目录\n2. 上传并解压产物\n3. 执行部署确认",
+                "provider_id": provider_id,
+                "model_name": model_name,
+            }
+
+    monkeypatch.setattr(
+        projects_router,
+        "_resolve_project_chat_runtime",
+        fake_resolve_project_chat_runtime,
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "_resolve_chat_llm_service_runtime",
+        lambda llm_service, resolved_runtime, auth_payload: FakeRuntime(),
+    )
+
+    result = await projects_router._generate_project_deploy_artifact_plan_payload(
+        project=ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            chat_settings={
+                "chat_mode": "system",
+                "provider_id": "provider-chat",
+                "model_name": "chat-model",
+            },
+            deploy_settings={
+                "enabled": True,
+                "profiles": [
+                    {
+                        "id": "prod",
+                        "components": [
+                            {
+                                "id": "web",
+                                "targets": [{"id": "server-1", "remote_path": "/opt/app/web"}],
+                            }
+                        ],
+                    }
+                ],
+            },
+        ),
+        artifact_id="artifact-1",
+        req=ProjectDeployArtifactPlanGenerateReq(requirement="发布测试环境"),
+        auth_payload={"sub": "tester", "role": "admin"},
+    )
+
+    assert captured["runtime_settings"]["provider_id"] == "provider-chat"
+    assert captured["runtime_settings"]["model_name"] == "chat-model"
+    assert captured["provider_id"] == "provider-chat"
+    assert captured["model_name"] == "chat-model"
+    assert "发布测试环境" in captured["messages"][1]["content"]
+    assert result["plan"].startswith("1. 备份远端目录")
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_command_external_agent_falls_back_to_system_model(monkeypatch):
     from models.requests import ProjectDeployCommandGenerateReq
     from routers import projects as projects_router
     from stores.json.project_store import ProjectConfig
+    from services.runtime.provider_resolver import ResolvedProviderRuntime
 
-    async def fake_external_agent_info(**kwargs):
-        return {
-            "available": False,
-            "reason": "请先选择本地连接器",
-            "runtime_model_name": "codex-cli",
-        }
+    captured: dict[str, object] = {}
 
-    monkeypatch.setattr(projects_router, "_build_project_external_agent_info", fake_external_agent_info)
-    monkeypatch.setattr(projects_router, "_resolve_accessible_local_connector", lambda connector_id, auth_payload: None)
-    monkeypatch.setattr(projects_router, "_resolve_project_workspace_for_chat", lambda project, settings: "/tmp/workspace")
-
-    with pytest.raises(Exception) as exc_info:
-        await projects_router._generate_project_deploy_command_payload(
-            project=ProjectConfig(
-                id="proj-1",
-                name="项目一",
-                chat_settings={
-                    "chat_mode": "external_agent",
-                    "external_agent_type": "codex_cli",
-                    "connector_workspace_path": "/tmp/workspace",
-                },
-            ),
-            req=ProjectDeployCommandGenerateReq(
-                target={"id": "server-1", "remote_path": "/opt/app/web"},
-                artifact_kind="source-bundle",
-            ),
-            auth_payload={"sub": "tester", "role": "admin"},
+    async def fake_resolve_project_chat_runtime(runtime_settings, auth_payload):
+        captured["runtime_settings"] = dict(runtime_settings)
+        return ResolvedProviderRuntime(
+            provider_mode="provider",
+            provider={"id": "provider-chat"},
+            providers=[],
+            provider_id="provider-chat",
+            model_name="chat-model",
         )
 
-    assert getattr(exc_info.value, "status_code", None) == 400
-    assert "本地连接器" in str(exc_info.value.detail)
+    class FakeRuntime:
+        async def chat_completion(self, provider_id, model_name, messages, **kwargs):
+            captured["provider_id"] = provider_id
+            captured["model_name"] = model_name
+            return {
+                "content": '{"deploy_command":"set -e\\necho deploy"}',
+                "provider_id": provider_id,
+                "model_name": model_name,
+            }
+
+    monkeypatch.setattr(
+        projects_router,
+        "_resolve_project_chat_runtime",
+        fake_resolve_project_chat_runtime,
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "_resolve_chat_llm_service_runtime",
+        lambda llm_service, resolved_runtime, auth_payload: FakeRuntime(),
+    )
+
+    result = await projects_router._generate_project_deploy_command_payload(
+        project=ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            chat_settings={
+                "chat_mode": "external_agent",
+                "external_agent_type": "codex_cli",
+                "connector_workspace_path": "/tmp/workspace",
+            },
+        ),
+        req=ProjectDeployCommandGenerateReq(
+            target={"id": "server-1", "remote_path": "/opt/app/web"},
+            artifact_kind="source-bundle",
+        ),
+        auth_payload={"sub": "tester", "role": "admin"},
+    )
+
+    assert captured["runtime_settings"]["chat_mode"] == "system"
+    assert result["chat_mode"] == "system_fallback"
+    assert result["requested_chat_mode"] == "external_agent"
+    assert result["deploy_command"] == "set -e\necho deploy"
 
 
 def test_project_deploy_store_factory_supports_postgres_backend(tmp_path, monkeypatch):
@@ -11327,7 +14643,19 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
         )(),
     )
 
-    query_mcp_svc.create_query_mcp()
+    session_ctx = ContextVar("query_prompt_preview_session", default="chat-session-bound")
+    session_contexts = {
+        "chat-session-bound": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "chat_session_id": "chat-session-bound",
+        }
+    }
+    query_mcp_svc.create_query_mcp(
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+    session_ctx.set("chat-session-bound")
 
     assert "save_project_memory" in registered_tools
     assert "list_project_members" in registered_tools
@@ -11400,6 +14728,7 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
             "chat-session-1",
             clarity_threshold=4,
         )
+        bound_prompt_preview = registered_tools["get_query_mcp_cli_prompt_preview"]()
     finally:
         if original_runtime_module is None:
             sys.modules.pop("services.mcp.dynamic_mcp_runtime", None)
@@ -11453,6 +14782,10 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert prompt_preview["rendered_field"] == "runtime.cli_prompt"
     assert "默认项目: `proj-1`" in prompt_preview["rendered_cli_prompt"]
     assert "chat_session_id=chat-session-1" in prompt_preview["rendered_cli_prompt"]
+    assert bound_prompt_preview["project_id"] == "proj-1"
+    assert "默认项目: `proj-1`" in bound_prompt_preview["rendered_cli_prompt"]
+    assert "当前未预设默认项目" not in bound_prompt_preview["rendered_cli_prompt"]
+    assert "chat_session_id=chat-session-bound" in bound_prompt_preview["rendered_cli_prompt"]
 
 
 def test_query_mcp_sync_cli_prompt_dry_run_and_blocks_path_escape(monkeypatch, tmp_path):
@@ -12304,8 +15637,11 @@ def test_query_mcp_bootstrap_local_workspace_creates_skill_and_requirement_files
     assert (skill_dir / "SKILL.md").exists()
     assert (skill_dir / "manifest.json").exists()
     assert "project-deploy-artifact" in skill_text
-    assert "push_project_deploy_artifact" in skill_text
-    assert "deploy_project_deploy_artifact" in skill_text
+    assert "推送到服务端项目详情的部署产物模块" in skill_text
+    assert "部署产物自动部署能力" in skill_text
+    assert "客户端本地执行部署" not in skill_text
+    assert "artifact_content_base64" in skill_text
+    assert "ftp_credential_id" not in skill_text
     assert "历史发布配置" in skill_text
     assert manifest["name"] == "项目本地 Query MCP 工作流"
     assert "仅在缺少明确的 `project_id` / `employee_id` / `rule_id`" in skill_text
@@ -13514,6 +16850,77 @@ def test_query_mcp_mount_handles_real_jsonrpc_over_http_and_sse_bridge(monkeypat
     assert captured_memories == []
 
 
+def test_query_mcp_prompt_preview_uses_url_project_context_without_tool_project_id(monkeypatch):
+    from core.server import create_app
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_runtime as runtime
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    class DummyProject:
+        id = "proj-1"
+        name = "项目一"
+
+    def extract_sse_payload(response_text: str) -> dict:
+        for line in response_text.splitlines():
+            if line.startswith("data: "):
+                return json.loads(line[len("data: "):])
+        raise AssertionError(f"Missing SSE data line: {response_text}")
+
+    monkeypatch.setattr(runtime.query_mcp_proxy_app, "_usage_store", DummyUsageStore())
+    monkeypatch.setattr(runtime.query_mcp_proxy_app, "_current_api_key_ctx", ContextVar("query_prompt_api", default=""))
+    monkeypatch.setattr(runtime.query_mcp_proxy_app, "_current_developer_name_ctx", ContextVar("query_prompt_dev", default=""))
+    prompt_session_ctx = ContextVar("query_prompt_session", default="")
+    prompt_session_contexts: dict[str, dict[str, str]] = {}
+    monkeypatch.setattr(runtime, "_current_mcp_session_id", prompt_session_ctx)
+    monkeypatch.setattr(runtime, "_session_contexts", prompt_session_contexts)
+    monkeypatch.setattr(runtime.query_mcp_proxy_app, "_current_mcp_session_id_ctx", prompt_session_ctx)
+    monkeypatch.setattr(runtime.query_mcp_proxy_app, "_session_contexts", prompt_session_contexts)
+    monkeypatch.setattr(runtime.query_mcp_proxy_app, "_save_auto_query_memory", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {"get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None)},
+        )(),
+    )
+    monkeypatch.setattr(runtime.query_mcp_proxy_app, "_query_app", runtime._create_query_mcp())
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "tools/call",
+        "params": {
+            "name": "get_query_mcp_cli_prompt_preview",
+            "arguments": {},
+        },
+    }
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp/query/mcp?key=valid-key&project_id=proj-1&chat_session_id=chat-session-url",
+            headers={"Accept": "application/json, text/event-stream"},
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    rpc = extract_sse_payload(response.text)
+    result = json.loads(rpc["result"]["content"][0]["text"])
+    assert result["project_id"] == "proj-1"
+    assert "默认项目: `proj-1`" in result["rendered_cli_prompt"]
+    assert "当前未预设默认项目" not in result["rendered_cli_prompt"]
+    assert "chat_session_id=chat-session-url" in result["rendered_cli_prompt"]
+
+
 def test_query_mcp_mount_lists_tools_and_reads_resources(monkeypatch):
     from core.server import create_app
     from services.mcp import dynamic_mcp_runtime as runtime
@@ -14690,6 +18097,9 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "start_work_session" in registered_tools
     assert "build_delivery_report" in registered_tools
     assert "generate_release_note_entry" in registered_tools
+    assert "push_project_deploy_artifact" in registered_tools
+    assert "deploy_project_deploy_artifact" in registered_tools
+    assert "get_project_deploy_upload_status" not in registered_tools
 
     assert "query://client-profile/claude-code" in registered_resources
     assert "query://client-profile/codex" in registered_resources
@@ -14710,9 +18120,19 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "重新获取与当前任务直接相关的规则正文" in usage_guide
     assert "禁止以兜底、兼容、静默降级" in usage_guide
     assert "优先定位并修正根因" in usage_guide
-    assert "project-deploy-artifact" in usage_guide
+    assert "打包命令只能通过项目聊天命令执行能力处理" in usage_guide
+    assert "外部智能体" in usage_guide
+    assert "桌面端 Runner" in usage_guide
     assert "push_project_deploy_artifact" in usage_guide
     assert "deploy_project_deploy_artifact" in usage_guide
+    assert "只有用户明确给出 artifact_id 或明确说部署已有服务端产物时" in usage_guide
+    assert "必须先调用 `push_project_deploy_artifact` 上传本轮文件内容生成新 artifact" in usage_guide
+    assert "FTP-only 部署要求" not in usage_guide
+    assert "客户端通过 MCP/部署技能读取项目的 FTP" not in usage_guide
+    assert "artifact_content_base64" in usage_guide
+    assert "push_local_artifact.py" in usage_guide
+    assert "用户回复“确认部署”时未重复 project_id" in usage_guide
+    assert "MCP 可访问地址" not in usage_guide
     assert "项目级权威状态文件" not in usage_guide
     assert "需求记录文件为 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`" in usage_guide
     assert "`.ai-employee/query-mcp/active/<project_id>.json`" not in usage_guide
@@ -14726,11 +18146,22 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "start_project_workflow" in codex_profile
     assert "get_manual_content" in codex_profile
     assert "build_delivery_report" in codex_profile
-    assert "project-deploy-artifact" in codex_profile
+    assert "打包命令只能通过项目聊天命令执行能力处理" in codex_profile
+    assert "外部智能体" in codex_profile
+    assert "桌面端 Runner" in codex_profile
     assert "push_project_deploy_artifact" in codex_profile
     assert "deploy_project_deploy_artifact" in codex_profile
+    assert "只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时" in codex_profile
+    assert "本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact" in codex_profile
+    assert "客户端通过 MCP/部署技能读取项目的 FTP" not in codex_profile
+    assert "artifact_content_base64" in codex_profile
+    assert "push_local_artifact.py" in codex_profile
+    assert "渲染出的 CLI 提示词已提供 `project_id`" in codex_profile
+    assert "MCP 可访问地址" not in codex_profile
     assert "禁止扫描、读取或复用历史发布配置" in codex_profile
     assert "Auto inferred proxy entry from scripts/..." in codex_profile
+    assert "客户端通过 MCP/部署技能读取项目的 FTP" not in codex_profile
+    assert "FTP-only 部署要求" not in codex_profile
     assert "“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认" in codex_profile
     assert "不要再次请求一般计划确认" in codex_profile
     assert "任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象" in codex_profile
@@ -14781,10 +18212,15 @@ def test_query_mcp_system_config_migrates_legacy_active_state_prompts():
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert "sync_query_mcp_cli_prompt_to_local_file" in config.query_mcp_bootstrap_prompt_template
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
-    assert "部署产物技能入口" in config.query_mcp_bootstrap_prompt_template
-    assert ".ai-employee/skills/project-deploy-artifact/" in config.query_mcp_bootstrap_prompt_template
-    assert "push_project_deploy_artifact" in config.query_mcp_bootstrap_prompt_template
-    assert "deploy_project_deploy_artifact" in config.query_mcp_bootstrap_prompt_template
+    assert "项目聊天打包部署命令约束" in config.query_mcp_bootstrap_prompt_template
+    assert "外部智能体" in config.query_mcp_bootstrap_prompt_template
+    assert "桌面端 Runner" in config.query_mcp_bootstrap_prompt_template
+    assert "把产物推送到服务端项目详情的部署产物模块" in config.query_mcp_bootstrap_prompt_template
+    assert "自动部署由部署产物 AI/服务端部署能力" in config.query_mcp_bootstrap_prompt_template
+    assert "客户端先通过 MCP/部署技能读取项目级部署参数" not in config.query_mcp_bootstrap_prompt_template
+    assert "artifact_content_base64" in config.query_mcp_bootstrap_prompt_template
+    assert "push_local_artifact.py" in config.query_mcp_bootstrap_prompt_template
+    assert "入口当前接入上下文已提供默认 `project_id`" in config.query_mcp_bootstrap_prompt_template
 
 
 def test_query_mcp_system_config_completes_partial_resource_discovery_prompt_rules():
@@ -14814,13 +18250,21 @@ def test_query_mcp_system_config_completes_partial_resource_discovery_prompt_rul
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert config.query_mcp_bootstrap_prompt_template.count("sync_query_mcp_cli_prompt_to_local_file") == 1
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
-    assert config.query_mcp_bootstrap_prompt_template.count("部署产物技能入口") == 1
-    assert ".ai-employee/skills/project-deploy-artifact/" in config.query_mcp_bootstrap_prompt_template
+    assert config.query_mcp_bootstrap_prompt_template.count("项目聊天打包部署命令约束") == 1
+    assert "外部智能体" in config.query_mcp_bootstrap_prompt_template
+    assert "桌面端 Runner" in config.query_mcp_bootstrap_prompt_template
     assert config.query_mcp_usage_guide_template.count("`list_mcp_resources` 只用于发现资源目录") == 1
     assert "简单查询直达业务工具" in config.query_mcp_usage_guide_template
-    assert "project-deploy-artifact" in config.query_mcp_usage_guide_template
+    assert "打包命令只能通过项目聊天命令执行能力处理" in config.query_mcp_usage_guide_template
+    assert "外部智能体" in config.query_mcp_usage_guide_template
+    assert "桌面端 Runner" in config.query_mcp_usage_guide_template
     assert "push_project_deploy_artifact" in config.query_mcp_usage_guide_template
     assert "deploy_project_deploy_artifact" in config.query_mcp_usage_guide_template
+    assert "部署产物自动部署能力" in config.query_mcp_usage_guide_template
+    assert "客户端通过 MCP/部署技能读取项目的 FTP" not in config.query_mcp_usage_guide_template
+    assert "artifact_content_base64" in config.query_mcp_usage_guide_template
+    assert "push_local_artifact.py" in config.query_mcp_usage_guide_template
+    assert "用户回复“确认部署”时未重复 project_id" in config.query_mcp_usage_guide_template
 
 
 def test_query_mcp_system_config_inserts_resource_discovery_prompt_rules_without_anchor():
@@ -14835,12 +18279,19 @@ def test_query_mcp_system_config_inserts_resource_discovery_prompt_rules_without
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert "sync_query_mcp_cli_prompt_to_local_file" in config.query_mcp_bootstrap_prompt_template
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
-    assert "部署产物技能入口" in config.query_mcp_bootstrap_prompt_template
-    assert ".ai-employee/skills/project-deploy-artifact/" in config.query_mcp_bootstrap_prompt_template
+    assert "项目聊天打包部署命令约束" in config.query_mcp_bootstrap_prompt_template
+    assert "外部智能体" in config.query_mcp_bootstrap_prompt_template
+    assert "桌面端 Runner" in config.query_mcp_bootstrap_prompt_template
     assert "`list_mcp_resources` 只用于发现资源目录" in config.query_mcp_usage_guide_template
     assert "简单查询直达业务工具" in config.query_mcp_usage_guide_template
-    assert "project-deploy-artifact" in config.query_mcp_usage_guide_template
+    assert "打包命令只能通过项目聊天命令执行能力处理" in config.query_mcp_usage_guide_template
+    assert "外部智能体" in config.query_mcp_usage_guide_template
+    assert "桌面端 Runner" in config.query_mcp_usage_guide_template
     assert "push_project_deploy_artifact" in config.query_mcp_usage_guide_template
+    assert "deploy_project_deploy_artifact" in config.query_mcp_usage_guide_template
+    assert "部署产物自动部署能力" in config.query_mcp_usage_guide_template
+    assert "客户端通过 MCP/部署技能读取项目的 FTP" not in config.query_mcp_usage_guide_template
+    assert "artifact_content_base64" in config.query_mcp_usage_guide_template
 
 
 def test_query_mcp_system_config_replaces_legacy_deploy_contract_prompt():
@@ -14864,12 +18315,68 @@ def test_query_mcp_system_config_replaces_legacy_deploy_contract_prompt():
 
     assert "客户端 AI 打包部署契约" not in prompt
     assert "旧部署规则" not in prompt
-    assert "部署产物技能入口" in prompt
-    assert ".ai-employee/skills/project-deploy-artifact/" in prompt
+    assert "项目聊天打包部署命令约束" in prompt
+    assert "外部智能体" in prompt
+    assert "桌面端 Runner" in prompt
     assert "push_project_deploy_artifact" in prompt
     assert "deploy_project_deploy_artifact" in prompt
+    assert "自动部署由部署产物 AI/服务端部署能力" in prompt
+    assert "客户端先通过 MCP/部署技能读取项目级部署参数" not in prompt
+    assert "artifact_content_base64" in prompt
+    assert "入口当前接入上下文已提供默认 `project_id`" in prompt
     for keyword in ("travis", "qiniu", "七牛", "oss", "github actions", "qshell"):
         assert keyword not in prompt.lower()
+
+
+def test_query_mcp_system_config_deduplicates_legacy_deploy_usage_contract():
+    from stores.json.system_config_store import SystemConfig
+
+    legacy_deploy_block = """1.4 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，通过 MCP/项目能力推送到服务端项目详情的部署产物模块，再由部署产物 AI/服务端自动部署能力执行部署。
+1.4.1 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。
+1.4.2 未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；已有服务端 artifact 的部署请求不应要求用户重新上传。
+1.4.3 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 blocked / missing。
+1.4.4 已有 artifact_id / 部署产物上下文时，直接走服务端部署产物能力；没有服务端 artifact 时，先把本地打包产物推送到部署产物模块。
+1.5 部署任务禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；缺少登录态、部署产物上传能力、服务端 artifact、项目部署配置、远端路径或部署产物自动部署能力时，直接报告 `blocked` / `missing`。"""
+    config = SystemConfig(
+        query_mcp_usage_guide_template=f"""# Unified Query MCP
+
+## 最少执行规则
+1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。
+{legacy_deploy_block}
+{legacy_deploy_block}
+4. MCP 提示词不提供打包产物上传、自动部署或部署产物推送流程；其他电脑需要上传产物时，只能在“部署产物”列表使用页面手动上传。
+5. 如果项目聊天界面本身有“部署产物上传/部署”按钮，直接让用户去界面操作。
+
+2. MCP 配置里的 description、项目说明和“当前项目”这类文字都不参与真正绑定。""",
+        query_mcp_client_profile_template="""# Codex Client Profile
+
+- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，通过 MCP/项目能力推送到服务端项目详情的部署产物模块，再由部署产物 AI/服务端自动部署能力执行部署。
+- 部署约束: 未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；已有服务端 artifact 的部署请求不应要求用户重新上传。
+- 接入约束: 其他规则。""",
+    )
+
+    usage_guide = config.query_mcp_usage_guide_template
+    client_profile = config.query_mcp_client_profile_template
+
+    assert usage_guide.count("1.4 打包命令只能通过项目聊天命令执行能力处理") == 1
+    assert usage_guide.count("push_project_deploy_artifact") == 2
+    assert usage_guide.count("deploy_project_deploy_artifact") == 2
+    assert "artifact_content_base64" in usage_guide
+    assert "auto_deploy=true" in usage_guide
+    assert "通过 MCP/项目能力推送" not in usage_guide
+    assert "MCP 提示词不提供打包产物上传" not in usage_guide
+    assert "部署产物上传/部署" not in usage_guide
+    assert "先把本地打包产物推送到部署产物模块" not in usage_guide
+
+    assert client_profile.count("- 部署约束:") == 5
+    assert "push_project_deploy_artifact" in client_profile
+    assert "deploy_project_deploy_artifact" in client_profile
+    assert "artifact_content_base64" in client_profile
+    assert "缺少 project_id" in client_profile
+    assert "只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时" in client_profile
+    assert "本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact" in client_profile
+    assert "通过 MCP/项目能力推送" not in client_profile
+    assert "已有服务端 artifact 的部署请求不应要求用户重新上传" not in client_profile
 
 
 def test_query_mcp_resources_and_style_hints_use_system_config(monkeypatch):

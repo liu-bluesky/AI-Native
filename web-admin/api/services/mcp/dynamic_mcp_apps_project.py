@@ -22,6 +22,9 @@ from services.mcp.dynamic_mcp_context import (
 )
 from services.mcp.dynamic_mcp_collaboration import (
     COLLABORATION_TOOL_NAME,
+    DEPLOY_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
+    LIST_PROJECT_DEPLOY_ARTIFACTS_TOOL_NAME,
+    PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
     attach_task_tree_context,
     collaboration_tool_descriptor,
     ensure_project_execution_task_tree,
@@ -29,6 +32,7 @@ from services.mcp.dynamic_mcp_collaboration import (
     extract_execution_task_text,
     invoke_project_builtin_tool,
     parse_object_args,
+    project_deploy_artifact_tool_descriptors,
 )
 from services.mcp.dynamic_mcp_profiles import (
     employee_rule_summary as _employee_rule_summary,
@@ -216,6 +220,15 @@ def create_project_mcp(
             content = f"{content[:max_chars].rstrip()}\n\n[内容已截断，请按需继续读取原文件]"
         return display_path, content
 
+    def _project_deploy_artifact_capability_lines() -> list[str]:
+        return [
+            "- list_project_deploy_artifacts: 查看当前项目服务端已保存的部署产物和最近部署结果。",
+            "- push_project_deploy_artifact: 上传本地 zip/文件到服务端项目详情的部署产物模块；MCP 客户端必须传 `artifact_content_base64`，不要把 Windows/macOS 本地路径当作服务端可读路径；无法提供 base64 时改用 project-deploy-artifact 的本地上传脚本或页面上传。",
+            "- deploy_project_deploy_artifact: 仅对用户本轮明确指定的服务端 artifact_id 触发部署；如果用户说的是本地 zip、新代码、重新打包、推送部署产物，必须先调用 push_project_deploy_artifact 生成新 artifact，不得复用历史 artifact。",
+            "- 用户说“推送到服务端部署”“上传部署”“部署这个 zip”且没有限定“只上传”时，`push_project_deploy_artifact.auto_deploy` 默认 `true`；只有明确说“只上传”才传 `false`。",
+            "- `artifact_path` 不作为项目 MCP 远程客户端上传参数；它只保留给 REST 后端同机/共享文件系统兼容场景。",
+        ]
+
     def _build_usage_guide(project) -> dict:
         from routers.projects import _resolve_project_experience_rule_bindings
 
@@ -253,6 +266,7 @@ def create_project_mcp(
             "6. 若当前需求可能复用历史开发经验，调用 resolve_project_experience_rules 按任务文本只加载相关经验卡片；不要全量拼接全部经验规则。",
             "7. 如需历史记忆或续跑线索，只在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时调用 recall_project_memory；同一任务轮进入执行后不要重复 recall。",
             "8. 规则检索用 query_project_rules；其中项目级 UI 规则优先于员工个人规则。协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断单人主责或多人协作；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
+            "9. 如用户要求推送 zip/压缩包/新代码到服务端部署，直接使用 push_project_deploy_artifact 并上传本轮文件内容；只有用户明确给出 artifact_id 或明确说部署已有服务端产物时，才使用 deploy_project_deploy_artifact。",
             "",
             "## 调用建议",
             "- 页面、交互、视觉相关任务先检查项目级 UI 规则，其优先级高于员工个人规则。",
@@ -264,6 +278,9 @@ def create_project_mcp(
             "- 外部 MCP 工具的参数以远端工具 schema 为准，先用 list_external_mcp_tools 查看。",
             "- 若需要统一入口自动生成或续接任务树，必须保证当前会话已绑定稳定的 chat_session_id；缺失时先走 bind_project_context。",
             "- 项目记忆、工作轨迹和任务树应复用同一条 chat_session_id / session_id；沉淀记忆后应能回看该轮规划和验证，不允许彼此脱节。",
+            "",
+            "## 部署产物 MCP 能力",
+            *_project_deploy_artifact_capability_lines(),
             "",
             "## 当前项目能力概览",
             f"- 项目级 UI 规则数: {len(ui_rule_bindings)}",
@@ -333,6 +350,7 @@ def create_project_mcp(
                 "list_project_members or list_project_proxy_tools",
                 "get_current_task_tree / update_task_node_status / complete_task_node_with_verification",
                 "query_project_rules / invoke_project_skill_tool / invoke_external_mcp_tool",
+                "push_project_deploy_artifact / deploy_project_deploy_artifact",
             ],
             "guide_markdown": "\n".join(guide_lines),
         }
@@ -403,6 +421,8 @@ def create_project_mcp(
         lines.append(
             f"- {COLLABORATION_TOOL_NAME}: builtin / 多员工协作执行工具"
         )
+        for descriptor in project_deploy_artifact_tool_descriptors():
+            lines.append(f"- {descriptor['tool_name']}: builtin / {descriptor['description']}")
         return "\n".join(lines)
 
     @mcp.resource(f"project://{project_id}/external-mcp-tools")
@@ -696,7 +716,123 @@ def create_project_mcp(
     @mcp.tool()
     def list_project_proxy_tools() -> list[dict]:
         """列出项目成员可执行技能脚本代理工具"""
-        return list_project_proxy_tools_runtime(project_id, "")
+        tools = list_project_proxy_tools_runtime(project_id, "")
+        existing_names = {str(item.get("tool_name") or "").strip() for item in tools}
+        for descriptor in project_deploy_artifact_tool_descriptors():
+            if str(descriptor.get("tool_name") or "").strip() not in existing_names:
+                tools.append(descriptor)
+        return tools
+
+    @mcp.tool()
+    def list_project_deploy_artifacts(limit: int = 50) -> dict:
+        """列出当前项目服务端部署产物记录和最近部署状态。"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        from routers.projects import (
+            _serialize_project_deploy_artifact_with_deployment,
+            project_deploy_store,
+        )
+
+        max_limit = max(1, min(int(limit or 50), 100))
+        return {
+            "project_id": project.id,
+            "artifacts": [
+                _serialize_project_deploy_artifact_with_deployment(item)
+                for item in project_deploy_store.list_artifacts(project.id, limit=max_limit)
+            ],
+            "total": len(project_deploy_store.list_artifacts(project.id, limit=max_limit)),
+        }
+
+    @mcp.tool()
+    def push_project_deploy_artifact(
+        artifact_name: str,
+        profile: str = "prod",
+        component: str = "",
+        artifact_kind: str = "source-bundle",
+        manifest: dict | None = None,
+        artifact_content_base64: str = "",
+        auto_deploy: bool = True,
+        chat_session_id: str = "",
+        task_tree_node_id: str = "",
+        requirement: str = "",
+        plan: str = "",
+    ) -> dict:
+        """把本轮打包产物推送到服务端项目部署产物模块；MCP 客户端必须传 artifact_content_base64。"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        from models.requests import ProjectDeployArtifactPushReq
+        from routers.projects import _push_project_deploy_artifact_payload
+
+        artifact_name_value = str(artifact_name or "").strip()
+        if not artifact_name_value:
+            return {"error": "artifact_name is required"}
+        if not str(artifact_content_base64 or "").strip():
+            return {
+                "error": (
+                    "artifact_content_base64 is required for project MCP uploads; "
+                    "for a client-local zip, read the file and pass artifact_content_base64, "
+                    "or use the project-deploy-artifact scripts/push_local_artifact.py local upload script / deploy artifact page"
+                )
+            }
+        _, fallback_chat_session_id = _resolve_task_tree_context()
+        try:
+            return _push_project_deploy_artifact_payload(
+                project=project,
+                req=ProjectDeployArtifactPushReq(
+                    profile=str(profile or "").strip() or "prod",
+                    component=str(component or "").strip(),
+                    artifact_name=artifact_name_value,
+                    artifact_kind=str(artifact_kind or "").strip() or "source-bundle",
+                    manifest=manifest or {},
+                    artifact_content_base64=str(artifact_content_base64 or "").strip(),
+                    auto_deploy=bool(auto_deploy),
+                    chat_session_id=str(chat_session_id or "").strip() or fallback_chat_session_id,
+                    task_tree_node_id=str(task_tree_node_id or "").strip(),
+                    requirement=str(requirement or "").strip(),
+                    plan=str(plan or "").strip(),
+                    ai_deploy=True,
+                ),
+                uploaded_by=_feedback_actor(),
+            )
+        except HTTPException as exc:
+            return {"error": exc.detail, "status_code": exc.status_code}
+        except Exception as exc:  # pragma: no cover - defensive boundary for MCP callers
+            return {"error": str(exc)}
+
+    @mcp.tool()
+    def deploy_project_deploy_artifact(
+        artifact_id: str,
+        chat_session_id: str = "",
+        task_tree_node_id: str = "",
+        requirement: str = "",
+        plan: str = "",
+    ) -> dict:
+        """仅触发用户本轮明确指定的已有服务端 artifact_id；本地 zip/新代码必须先 push 新 artifact。"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        from routers.projects import _deploy_project_deploy_artifact_payload
+
+        artifact_id_value = str(artifact_id or "").strip()
+        if not artifact_id_value:
+            return {"error": "artifact_id is required"}
+        _, fallback_chat_session_id = _resolve_task_tree_context()
+        try:
+            return _deploy_project_deploy_artifact_payload(
+                project=project,
+                artifact_id=artifact_id_value,
+                requested_by=_feedback_actor(),
+                chat_session_id=str(chat_session_id or "").strip() or fallback_chat_session_id,
+                task_tree_node_id=str(task_tree_node_id or "").strip(),
+                requirement=str(requirement or "").strip(),
+                plan=str(plan or "").strip(),
+            )
+        except HTTPException as exc:
+            return {"error": exc.detail, "status_code": exc.status_code}
+        except Exception as exc:  # pragma: no cover - defensive boundary for MCP callers
+            return {"error": str(exc)}
 
     @mcp.tool()
     def get_query_mcp_cli_prompt_preview(
@@ -736,109 +872,6 @@ def create_project_mcp(
     def list_external_mcp_tools() -> list[dict]:
         """列出当前项目可用的外部 MCP 工具"""
         return list_project_external_tools_runtime(project_id)
-
-    @mcp.tool()
-    def push_project_deploy_artifact(
-        profile: str = "prod",
-        component: str = "",
-        artifact_name: str = "",
-        artifact_kind: str = "source-bundle",
-        manifest: dict | None = None,
-        artifact_path: str = "",
-        artifact_content_base64: str = "",
-        auto_deploy: bool = True,
-        chat_session_id: str = "",
-        task_tree_node_id: str = "",
-    ) -> dict:
-        """推送项目部署产物；服务端校验 ready 后按项目配置创建部署运行记录。"""
-        project = _get_project()
-        if not project:
-            return {"error": "Project not found"}
-        from models.requests import ProjectDeployArtifactPushReq
-        from routers.projects import _push_project_deploy_artifact_payload
-
-        try:
-            return _push_project_deploy_artifact_payload(
-                project=project,
-                req=ProjectDeployArtifactPushReq(
-                    profile=profile,
-                    component=component,
-                    artifact_name=artifact_name,
-                    artifact_kind=artifact_kind,
-                    manifest=manifest or {},
-                    artifact_path=artifact_path,
-                    artifact_content_base64=artifact_content_base64,
-                    auto_deploy=auto_deploy,
-                    chat_session_id=chat_session_id,
-                    task_tree_node_id=task_tree_node_id,
-                ),
-                uploaded_by=current_developer_name_ctx.get("").strip() or "mcp",
-            )
-        except HTTPException as exc:
-            return {"status": "failed", "error": str(exc.detail)}
-        except Exception as exc:
-            return {"status": "failed", "error": str(exc)}
-
-    @mcp.tool()
-    def deploy_project_deploy_artifact(
-        artifact_id: str,
-        chat_session_id: str = "",
-        task_tree_node_id: str = "",
-    ) -> dict:
-        """手动部署当前项目已推送的部署产物；用于自动部署关闭后的人工触发。"""
-        project = _get_project()
-        if not project:
-            return {"error": "Project not found"}
-        from routers.projects import _deploy_project_deploy_artifact_payload
-
-        try:
-            return _deploy_project_deploy_artifact_payload(
-                project=project,
-                artifact_id=artifact_id,
-                requested_by=current_developer_name_ctx.get("").strip() or "mcp",
-                chat_session_id=chat_session_id,
-                task_tree_node_id=task_tree_node_id,
-            )
-        except HTTPException as exc:
-            return {"status": "failed", "error": str(exc.detail)}
-        except Exception as exc:
-            return {"status": "failed", "error": str(exc)}
-
-    @mcp.tool()
-    def get_project_deploy_upload_status(artifact_id: str = "", limit: int = 20) -> dict:
-        """查询当前项目部署产物与自动部署运行状态。"""
-        project = _get_project()
-        if not project:
-            return {"error": "Project not found"}
-        from core.deps import project_deploy_store
-        from routers.projects import _serialize_project_deploy_artifact, _serialize_project_deploy_run
-
-        artifact_id_value = str(artifact_id or "").strip()
-        if artifact_id_value:
-            artifact = project_deploy_store.get_artifact(project.id, artifact_id_value)
-            if artifact is None:
-                return {"error": f"Artifact {artifact_id_value} not found"}
-            run = project_deploy_store.get_run(project.id, artifact.deployment_id) if artifact.deployment_id else None
-            return {
-                "project_id": project.id,
-                "artifact": _serialize_project_deploy_artifact(artifact),
-                "deployment": _serialize_project_deploy_run(run) if run else None,
-            }
-        try:
-            limit_value = max(1, min(int(limit or 20), 100))
-        except (TypeError, ValueError):
-            limit_value = 20
-        return {
-            "project_id": project.id,
-            "artifacts": [
-                _serialize_project_deploy_artifact(item)
-                for item in project_deploy_store.list_artifacts(project.id, limit=limit_value)
-            ],
-            "runs": [
-                _serialize_project_deploy_run(item)
-                for item in project_deploy_store.list_runs(project.id, limit=limit_value)
-            ],
-        }
 
     @mcp.tool()
     def invoke_external_mcp_tool(

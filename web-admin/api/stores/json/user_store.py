@@ -43,6 +43,7 @@ class User:
     role: str = "admin"
     role_ids: list[str] = field(default_factory=list)
     default_ai_provider_id: str = ""
+    default_ai_model_name: str = ""
     created_by: str = ""
     created_at: str = field(default_factory=_now_iso)
 
@@ -89,6 +90,7 @@ class UserStore:
             "role": user.role,
             "role_ids": user.role_ids,
             "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
+            "default_ai_model_name": str(user.default_ai_model_name or "").strip(),
             "created_by": str(user.created_by or "").strip(),
             "created_at": user.created_at,
         }
@@ -131,6 +133,7 @@ class UserStore:
             role=str(data.get("role") or "user"),
             role_ids=data.get("role_ids") if isinstance(data.get("role_ids"), list) else [],
             default_ai_provider_id=str(data.get("default_ai_provider_id") or "").strip(),
+            default_ai_model_name=str(data.get("default_ai_model_name") or "").strip(),
             created_by=str(data.get("created_by") or "").strip(),
             created_at=str(data.get("created_at") or _now_iso()),
         )

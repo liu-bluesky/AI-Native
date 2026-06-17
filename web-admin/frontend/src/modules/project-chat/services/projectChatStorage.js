@@ -1,6 +1,7 @@
 import { getStoredAuthProfile } from "@/utils/auth-storage.js";
 import {
   PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX,
+  PROJECT_DEPLOY_DRAFT_STORAGE_PREFIX,
   STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX,
 } from "@/modules/project-chat/constants/projectChatConstants.js";
 
@@ -114,6 +115,34 @@ export function consumePluginInstallDraft(storageKey) {
     PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX,
     (parsed) => ({
       prompt: String(parsed.prompt || "").trim(),
+      source: String(parsed.source || "").trim(),
+    }),
+  );
+}
+
+export function createProjectDeployDraft(payload = {}) {
+  if (typeof window === "undefined") return "";
+  const storageKey = `${PROJECT_DEPLOY_DRAFT_STORAGE_PREFIX}${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+  window.localStorage.setItem(
+    storageKey,
+    JSON.stringify({
+      prompt: String(payload.prompt || "").trim(),
+      project_id: String(payload.project_id || "").trim(),
+      artifact_id: String(payload.artifact_id || "").trim(),
+      source: "deploy_artifact_panel",
+    }),
+  );
+  return storageKey;
+}
+
+export function consumeProjectDeployDraft(storageKey) {
+  return consumeJsonDraft(
+    storageKey,
+    PROJECT_DEPLOY_DRAFT_STORAGE_PREFIX,
+    (parsed) => ({
+      prompt: String(parsed.prompt || "").trim(),
+      project_id: String(parsed.project_id || "").trim(),
+      artifact_id: String(parsed.artifact_id || "").trim(),
       source: String(parsed.source || "").trim(),
     }),
   );

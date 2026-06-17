@@ -39,18 +39,17 @@ if [[ -n "${CLI_PLUGIN_NPM_GLOBAL_PREFIX}" ]]; then
   export PATH="${CLI_PLUGIN_NPM_GLOBAL_PREFIX}/bin:${PATH}"
 fi
 
-NPX_BIN="${CLI_PLUGIN_NPX_PATH}"
-if [[ -z "${NPX_BIN}" ]]; then
-  NPX_BIN="$(command -v npx || true)"
-fi
-
-if [[ -z "${NPX_BIN}" || ! -x "${NPX_BIN}" ]]; then
-  echo "npx is required but was not found in PATH" >&2
-  exit 127
-fi
-
 case "${PLUGIN_ID}" in
   feishu-cli)
+    NPX_BIN="${CLI_PLUGIN_NPX_PATH}"
+    if [[ -z "${NPX_BIN}" ]]; then
+      NPX_BIN="$(command -v npx || true)"
+    fi
+
+    if [[ -z "${NPX_BIN}" || ! -x "${NPX_BIN}" ]]; then
+      echo "npx is required but was not found in PATH" >&2
+      exit 127
+    fi
     exec "${NPX_BIN}" @larksuite/cli@latest install
     ;;
   *)

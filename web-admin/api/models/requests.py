@@ -56,6 +56,7 @@ class UserUpdateReq(BaseModel):
 
 class UserSettingsUpdateReq(BaseModel):
     default_ai_provider_id: str = ""
+    default_ai_model_name: str = ""
 
 
 class DepartmentCreateReq(BaseModel):
@@ -347,11 +348,30 @@ class ProjectDeployArtifactPushReq(BaseModel):
     auto_deploy: bool = True
     chat_session_id: str = ""
     task_tree_node_id: str = ""
+    requirement: str = ""
+    plan: str = ""
+    ai_deploy: bool = True
 
 
 class ProjectDeployArtifactDeployReq(BaseModel):
     chat_session_id: str = ""
     task_tree_node_id: str = ""
+    requirement: str = ""
+    plan: str = ""
+
+
+class ProjectDeployArtifactPlanGenerateReq(BaseModel):
+    requirement: str = ""
+    provider_id: str = ""
+    model_name: str = ""
+
+
+class ProjectDeployArtifactAiExecuteReq(BaseModel):
+    requirement: str = ""
+    plan: str = ""
+    chat_session_id: str = ""
+    provider_id: str = ""
+    model_name: str = ""
 
 
 class ProjectCodeRepositoryCreateReq(BaseModel):

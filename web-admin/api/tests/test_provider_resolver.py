@@ -139,3 +139,4 @@ def test_finalize_resolved_provider_runtime_rejects_missing_model():
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "未找到可用模型"
+

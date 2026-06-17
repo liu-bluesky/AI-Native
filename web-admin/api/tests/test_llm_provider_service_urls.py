@@ -51,6 +51,74 @@ def test_llm_provider_service_parses_sse_reasoning_stream_as_text():
     assert LlmProviderService._parse_sse_content(raw) == "先检查配置。接口已连通。"
 
 
+def test_llm_provider_service_parses_sse_usage_only_chunk_into_payload():
+    raw = "\n".join(
+        [
+            'data: {"id":"","object":"chat.completion.chunk","created":0,"model":"gpt-5.5","choices":[],"usage":{"prompt_tokens":856,"completion_tokens":0,"total_tokens":856}}',
+            "data: [DONE]",
+        ]
+    )
+
+    payload = LlmProviderService._parse_sse_response_payload(raw)
+
+    assert payload == {
+        "usage": {
+            "input_tokens": 856,
+            "output_tokens": 0,
+            "total_tokens": 856,
+        },
+        "model": "gpt-5.5",
+    }
+    assert LlmProviderService._parse_sse_content(raw) == ""
+
+
+def test_llm_provider_service_request_json_handles_sse_usage_only_payload(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, text):
+            self.text = text
+            self.headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeSession:
+        def __init__(self):
+            self.trust_env = False
+
+        def request(self, *args, **kwargs):
+            raw = "\n".join(
+                [
+                    'data: {"id":"","object":"chat.completion.chunk","created":0,"model":"gpt-5.5","choices":[],"usage":{"prompt_tokens":856,"completion_tokens":0,"total_tokens":856}}',
+                    "data: [DONE]",
+                ]
+            )
+            return FakeResponse(raw)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("services.providers.llm_provider_service.requests.Session", FakeSession)
+
+    payload = LlmProviderService._request_json("POST", "https://example.com", {}, body={"test": 1})
+
+    assert payload == {
+        "usage": {
+            "input_tokens": 856,
+            "output_tokens": 0,
+            "total_tokens": 856,
+        },
+        "model": "gpt-5.5",
+    }
+
+
 def test_llm_provider_service_normalizes_usage_only_stream_chunk():
     payload = {
         "id": "resp-usage",

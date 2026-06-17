@@ -53,7 +53,7 @@ def test_market_catalog_includes_cli_plugins(tmp_path, monkeypatch):
                     "latest_version": "1.2.3",
                     "update_available": False,
                 },
-            }
+            },
         ],
     )
 
@@ -65,7 +65,17 @@ def test_market_catalog_includes_cli_plugins(tmp_path, monkeypatch):
     assert cli_plugins[0]["id"] == "feishu-cli"
     assert "install_command" in cli_plugins[0]
     assert cli_plugins[0]["install_status"]["status"] == "installed"
+    assert not any(item["id"] == "pm-deploy" for item in cli_plugins)
     assert response.json()["meta"]["cli_plugin_count"] >= 1
+
+
+def test_cli_plugin_registry_excludes_removed_pm_deploy():
+    from services.plugins.cli_plugin_market_service import list_cli_plugins
+
+    assert not any(
+        item["id"] == "pm-deploy"
+        for item in list_cli_plugins(include_status=False)
+    )
 
 
 def test_market_cli_plugin_install_executes_curated_installer(tmp_path, monkeypatch):

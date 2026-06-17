@@ -1279,6 +1279,7 @@ fn external_agent_launch_command(agent_type: &str) -> (&'static str, &'static st
             "codex",
             vec![
                 "exec".to_string(),
+                "--skip-git-repo-check".to_string(),
                 "--sandbox".to_string(),
                 "workspace-write".to_string(),
                 "--color".to_string(),
@@ -1522,7 +1523,10 @@ fn execute_allowed_runner_command(
     };
 
     let stdout_text = receive_process_output(stdout_receiver, Duration::from_millis(300));
-    let stderr_text = receive_process_output(stderr_receiver, Duration::from_millis(300));
+    let stderr_text = sanitize_external_agent_session_log_content(
+        "stderr",
+        &receive_process_output(stderr_receiver, Duration::from_millis(300)),
+    );
 
     RunnerCommandResult {
         allowed: true,
@@ -1617,10 +1621,13 @@ fn execute_external_agent_plan(
         Duration::from_millis(800),
         &mut output_incomplete,
     );
-    let stderr_text = receive_process_output_with_status(
-        stderr_receiver,
-        Duration::from_millis(800),
-        &mut output_incomplete,
+    let stderr_text = sanitize_external_agent_session_log_content(
+        "stderr",
+        &receive_process_output_with_status(
+            stderr_receiver,
+            Duration::from_millis(800),
+            &mut output_incomplete,
+        ),
     );
     let final_output = read_external_agent_final_output(&final_output_path);
     let stdout_text = if final_output.trim().is_empty() {
@@ -1672,6 +1679,7 @@ fn push_external_agent_session_log(
     stream: &str,
     content: &str,
 ) -> Option<ExternalAgentSessionLog> {
+    let content = sanitize_external_agent_session_log_content(stream, content);
     if content.is_empty() {
         return None;
     }
@@ -1680,7 +1688,7 @@ fn push_external_agent_session_log(
     let log = ExternalAgentSessionLog {
         seq,
         stream: stream.to_string(),
-        content: content.to_string(),
+        content,
         created_at_epoch_ms: current_epoch_millis(),
     };
     state.logs.push(log.clone());
@@ -1690,6 +1698,29 @@ fn push_external_agent_session_log(
     }
     state.updated_at_epoch_ms = current_epoch_millis();
     Some(log)
+}
+
+fn sanitize_external_agent_session_log_content(stream: &str, content: &str) -> String {
+    if stream.trim() != "stderr" {
+        return content.to_string();
+    }
+    let mut sanitized = String::new();
+    for line in content.split_inclusive('\n') {
+        if !is_external_agent_macos_system_noise(line) {
+            sanitized.push_str(line);
+        }
+    }
+    sanitized
+}
+
+fn is_external_agent_macos_system_noise(content: &str) -> bool {
+    let text = content.trim();
+    if text.is_empty() {
+        return false;
+    }
+    text.contains("TSM AdjustCapsLockLEDForKeyTransitionHandling")
+        || text.contains("_ISSetPhysicalKeyboardCapsLockLED")
+        || text.contains("IMKCFRunLoopWakeUpReliable")
 }
 
 fn emit_external_agent_session_event(
@@ -2064,7 +2095,17 @@ fn filter_external_agent_session_snapshot_logs(
     snapshot.logs = snapshot
         .logs
         .into_iter()
-        .filter(|item| item.seq > since_seq)
+        .filter_map(|mut item| {
+            if item.seq <= since_seq {
+                return None;
+            }
+            item.content = sanitize_external_agent_session_log_content(&item.stream, &item.content);
+            if item.content.is_empty() {
+                None
+            } else {
+                Some(item)
+            }
+        })
         .collect();
     snapshot
 }

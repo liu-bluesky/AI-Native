@@ -1,12 +1,78 @@
 {
   "name": "项目部署产物工作流",
-  "description": "约束客户端 AI 只负责打包、计算产物元数据并推送到 MCP/服务端，由服务端按项目 deploy_settings 执行部署。",
-  "version": "1.0.0",
+  "description": "约束客户端 AI 在桌面端 Runner 中打包或读取压缩包，并通过 MCP/项目能力推送到服务端部署产物模块，明确上传/部署接口和默认上传并部署语义。",
+  "version": "1.1.0",
   "tags": [
     "deployment",
     "artifact",
     "mcp",
     "workflow"
   ],
-  "mcp_service": "query-center-project"
+  "mcp_service": "query-center-project",
+  "proxy_entries": [
+    {
+      "name": "push-local-artifact",
+      "path": "scripts/push_local_artifact.py",
+      "runtime": "python",
+      "description": "Read a client-local artifact file and upload it to the project deploy artifact module via multipart API; optionally trigger deployment.",
+      "args_schema": {
+        "type": "object",
+        "properties": {
+          "api_base": {
+            "type": "string",
+            "description": "API base URL, for example http://127.0.0.1:8000 or http://127.0.0.1:8000/api. Can also use AI_EMPLOYEE_API_BASE_URL."
+          },
+          "token": {
+            "type": "string",
+            "description": "Bearer auth token. Can also use AI_EMPLOYEE_AUTH_TOKEN / AI_EMPLOYEE_TOKEN / AUTH_TOKEN."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Project ID."
+          },
+          "file": {
+            "type": "string",
+            "description": "Local artifact file path on the current client or desktop Runner host."
+          },
+          "profile": {
+            "type": "string",
+            "description": "Deploy profile ID, for example test or prod."
+          },
+          "component": {
+            "type": "string",
+            "description": "Deploy component ID, for example testpc."
+          },
+          "artifact_name": {
+            "type": "string",
+            "description": "Artifact name. Defaults to the file name."
+          },
+          "artifact_kind": {
+            "type": "string",
+            "description": "Artifact kind. Defaults to source-bundle."
+          },
+          "version": {
+            "type": "string",
+            "description": "Optional artifact version."
+          },
+          "chat_session_id": {
+            "type": "string",
+            "description": "Optional chat session ID."
+          },
+          "task_tree_node_id": {
+            "type": "string",
+            "description": "Optional task tree node ID."
+          },
+          "no_auto_deploy": {
+            "type": "boolean",
+            "description": "Set true to only upload and skip deployment."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Set true to compute checksum and print the planned upload without network calls."
+          }
+        },
+        "required": ["project_id", "file"]
+      }
+    }
+  ]
 }

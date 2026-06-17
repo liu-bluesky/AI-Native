@@ -204,8 +204,12 @@ async def get_current_user_settings(auth_payload: dict = Depends(require_auth)):
     providers = get_llm_provider_service().list_providers(
         enabled_only=True,
         owner_username=username,
-        include_all=is_admin_like(auth_payload),
+        include_all=False,
         include_shared=True,
+    )
+    user_default_target = get_llm_provider_service().get_default_user_llm_target(
+        owner_username=username,
+        include_all=False,
     )
     return {
         "settings": {
@@ -213,9 +217,11 @@ async def get_current_user_settings(auth_payload: dict = Depends(require_auth)):
             "display_name": str(user.display_name or "").strip(),
             **_user_role_payload(user),
             "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
+            "default_ai_model_name": str(user.default_ai_model_name or "").strip(),
             "created_at": user.created_at,
         },
         "providers": providers,
+        "default_ai_target": user_default_target,
     }
 
 
@@ -229,15 +235,36 @@ async def update_current_user_settings(
     if user is None:
         raise HTTPException(404, "User not found")
     provider_id = str(req.default_ai_provider_id or "").strip()
-    if provider_id:
+    model_name = str(req.default_ai_model_name or "").strip()
+    if not provider_id:
+        model_name = ""
+    else:
         providers = get_llm_provider_service().list_providers(
             enabled_only=True,
             owner_username=username,
-            include_all=is_admin_like(auth_payload),
+            include_all=False,
             include_shared=True,
         )
-        if not any(str(item.get("id") or "").strip() == provider_id for item in providers):
+        selected_provider = next(
+            (item for item in providers if str(item.get("id") or "").strip() == provider_id),
+            None,
+        )
+        if selected_provider is None:
             raise HTTPException(400, "default_ai_provider_id is invalid or not accessible")
+        valid_model_names = [
+            str(item or "").strip()
+            for item in (selected_provider.get("models") or [])
+            if str(item or "").strip()
+        ]
+        default_model = str(selected_provider.get("default_model") or "").strip()
+        if default_model and default_model not in valid_model_names:
+            valid_model_names = [default_model, *valid_model_names]
+        if model_name and model_name not in valid_model_names:
+            raise HTTPException(400, "default_ai_model_name is invalid or not accessible")
+        if not model_name:
+            model_name = default_model or (valid_model_names[0] if valid_model_names else "")
+        if not model_name:
+            raise HTTPException(400, "default_ai_model_name is required")
     updated = User(
         username=user.username,
         password_hash=user.password_hash,
@@ -245,6 +272,7 @@ async def update_current_user_settings(
         role=user.role,
         role_ids=user.role_ids,
         default_ai_provider_id=provider_id,
+        default_ai_model_name=model_name,
         created_by=user.created_by,
         created_at=user.created_at,
     )
@@ -256,6 +284,7 @@ async def update_current_user_settings(
             "display_name": str(updated.display_name or "").strip(),
             "role": updated.role,
             "default_ai_provider_id": updated.default_ai_provider_id,
+            "default_ai_model_name": updated.default_ai_model_name,
             "created_at": updated.created_at,
         },
     }

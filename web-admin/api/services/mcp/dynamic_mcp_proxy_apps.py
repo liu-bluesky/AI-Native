@@ -36,6 +36,59 @@ def _normalize_text(value: object, limit: int = 400) -> str:
     return str(value or "").strip()[:limit]
 
 
+async def _peek_request_body(receive) -> tuple[bytes, Callable[[], Any]]:
+    messages: list[dict[str, Any]] = []
+    chunks: list[bytes] = []
+    while True:
+        message = await receive()
+        messages.append(message)
+        if message.get("type") == "http.request":
+            chunks.append(bytes(message.get("body") or b""))
+            if not bool(message.get("more_body", False)):
+                break
+        else:
+            break
+    replay_index = 0
+
+    async def _replay_receive():
+        nonlocal replay_index
+        if replay_index < len(messages):
+            message = messages[replay_index]
+            replay_index += 1
+            return message
+        return await receive()
+
+    return b"".join(chunks), _replay_receive
+
+
+def _extract_project_context_from_rpc_body(body: bytes) -> tuple[str, str, str, str]:
+    if not body:
+        return "", "", "", ""
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except Exception:
+        return "", "", "", ""
+    payloads = parsed if isinstance(parsed, list) else [parsed]
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        if _normalize_text(payload.get("method"), 120) != "tools/call":
+            continue
+        params = payload.get("params")
+        if not isinstance(params, dict):
+            continue
+        arguments = params.get("arguments")
+        if not isinstance(arguments, dict):
+            continue
+        project_id = _normalize_text(arguments.get("project_id"), 120)
+        project_name = _normalize_text(arguments.get("project_name"), 200)
+        employee_id = _normalize_text(arguments.get("employee_id"), 120)
+        chat_session_id = _normalize_text(arguments.get("chat_session_id"), 200)
+        if project_id or project_name or employee_id or chat_session_id:
+            return project_id, project_name, employee_id, chat_session_id
+    return "", "", "", ""
+
+
 _QUERY_TASK_TREE_AUDIT_SKIP_TOOLS = {
     "bind_project_context",
     "save_project_memory",
@@ -788,6 +841,17 @@ class QueryMcpProxyApp:
             session_id,
             self._session_contexts,
         )
+        receive_for_downstream = receive
+        if method != "GET":
+            body, receive_for_downstream = await _peek_request_body(receive)
+            body_project_id, body_project_name, body_employee_id, body_chat_session_id = (
+                _extract_project_context_from_rpc_body(body)
+            )
+            project_id_from_query = project_id_from_query or body_project_id
+            project_name_from_query = project_name_from_query or body_project_name
+            chat_session_id = chat_session_id or body_chat_session_id
+        else:
+            body_employee_id = ""
         direct_cli_fallback_enabled = bool(
             not session_id and method != "GET" and (is_streamable or is_sse)
         )
@@ -881,13 +945,26 @@ class QueryMcpProxyApp:
 
         if not chat_session_id:
             _ensure_direct_cli_chat_session_id(project_id_from_query)
-        employee_id_from_query = ((query.get("employee_id") or [""])[0]).strip()
+        employee_id_from_query = ((query.get("employee_id") or [""])[0]).strip() or body_employee_id
         initial_session_context = {
             "project_id": str(project_id_from_query or "").strip(),
             "project_name": str(project_name_from_query or "").strip(),
             "employee_id": str(employee_id_from_query or "").strip(),
             "chat_session_id": str(chat_session_id or "").strip(),
         }
+        effective_session_context_key = str(chat_session_id or session_id or "").strip()
+        if effective_session_context_key and any(initial_session_context.values()):
+            stored_context = self._session_contexts.get(effective_session_context_key) or {}
+            self._session_contexts[effective_session_context_key] = {
+                "project_id": initial_session_context["project_id"]
+                or str(stored_context.get("project_id") or "").strip(),
+                "project_name": initial_session_context["project_name"]
+                or str(stored_context.get("project_name") or "").strip(),
+                "employee_id": initial_session_context["employee_id"]
+                or str(stored_context.get("employee_id") or "").strip(),
+                "chat_session_id": initial_session_context["chat_session_id"]
+                or str(stored_context.get("chat_session_id") or "").strip(),
+            }
         if session_id and any(initial_session_context.values()):
             stored_context = self._session_contexts.get(session_id) or {}
             self._session_contexts[session_id] = {
@@ -1246,7 +1323,7 @@ class QueryMcpProxyApp:
             )
 
         tracking_receive = create_tracking_receive(
-            receive,
+            receive_for_downstream,
             usage_scope_id=usage_scope_id,
             api_key=api_key,
             developer_name=developer_name,

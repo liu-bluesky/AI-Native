@@ -26,6 +26,8 @@ class ProjectDeployArtifact:
     storage_path: str = ""
     status: str = "uploading"
     manifest: dict[str, Any] = field(default_factory=dict)
+    storage_kind: str = "file"
+    file_tree: list[dict[str, Any]] = field(default_factory=list)
     uploaded_by: str = ""
     uploaded_at: str = field(default_factory=_now_iso)
     ready_at: str = ""
@@ -52,6 +54,9 @@ class ProjectDeployRun:
     log_excerpt: str = ""
     notify_result: list[dict[str, Any]] = field(default_factory=list)
     rollback_ref: str = ""
+    deleted_at: str = ""
+    deleted_by: str = ""
+    delete_reason: str = ""
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -118,6 +123,16 @@ class ProjectDeployStore:
                 shutil.rmtree(artifact_dir)
         return deleted
 
+    def delete_run(self, project_id: str, run_id: str, *, deleted_by: str = "", reason: str = "") -> bool:
+        run = self.get_run(project_id, run_id)
+        if run is None:
+            return False
+        run.deleted_at = _now_iso()
+        run.deleted_by = str(deleted_by or "").strip()
+        run.delete_reason = str(reason or "").strip()
+        self.save_run(run)
+        return True
+
     def list_artifacts(self, project_id: str, *, limit: int = 50) -> list[ProjectDeployArtifact]:
         project_dir = self._artifacts_dir / _safe_token(project_id)
         if not project_dir.exists():
@@ -159,7 +174,10 @@ class ProjectDeployStore:
         items: list[ProjectDeployRun] = []
         for path in sorted(project_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
             try:
-                items.append(ProjectDeployRun(**json.loads(path.read_text(encoding="utf-8"))))
+                run = ProjectDeployRun(**json.loads(path.read_text(encoding="utf-8")))
+                if run.deleted_at:
+                    continue
+                items.append(run)
             except Exception:
                 continue
             if len(items) >= limit:

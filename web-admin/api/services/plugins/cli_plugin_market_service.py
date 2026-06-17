@@ -384,20 +384,21 @@ def _build_plugin_health(
     package_name = str(plugin.get("package_name") or "").strip()
     binary_name = str(plugin.get("binary_name") or "").strip()
     locked_version = str(receipt.get("locked_version") or "").strip()
+    requires_node = bool(plugin.get("requires_node", bool(package_name)))
     checks = [
         {
             "key": "node",
             "label": "Node.js",
             "ok": bool(str(toolchain_snapshot.get("node_path") or "").strip()),
             "value": str(toolchain_snapshot.get("node_path") or "").strip(),
-            "required": True,
+            "required": requires_node,
         },
         {
             "key": "npm",
             "label": "npm",
             "ok": bool(str(toolchain_snapshot.get("npm_path") or "").strip()),
             "value": str(toolchain_snapshot.get("npm_path") or "").strip(),
-            "required": True,
+            "required": requires_node,
         },
         {
             "key": "binary",
@@ -622,7 +623,14 @@ def _collect_runtime_toolchain_snapshot(
         ).get("plugin_binary_path")
     )
     if not plugin_binary_path and binary_name:
-        plugin_binary_path = _resolve_executable_path(which(binary_name) or "")
+        for candidate in (
+            _resolve_executable_path(str((_cli_plugin_toolchain_bin_dir() / binary_name).resolve())),
+            _resolve_executable_path(str((_cli_plugin_toolchain_npm_prefix() / "bin" / binary_name).resolve())),
+            _resolve_executable_path(which(binary_name) or ""),
+        ):
+            if candidate:
+                plugin_binary_path = candidate
+                break
 
     npm_global_prefix = ""
     npm_global_bin = ""
@@ -816,7 +824,14 @@ def _detect_installed_version(plugin: dict[str, Any]) -> tuple[str, str]:
         ).get("plugin_binary_path")
     )
     if not binary_path and binary_name:
-        binary_path = _resolve_executable_path(which(binary_name) or "")
+        for candidate in (
+            _resolve_executable_path(str((_cli_plugin_toolchain_bin_dir() / binary_name).resolve())),
+            _resolve_executable_path(str((_cli_plugin_toolchain_npm_prefix() / "bin" / binary_name).resolve())),
+            _resolve_executable_path(which(binary_name) or ""),
+        ):
+            if candidate:
+                binary_path = candidate
+                break
     if binary_path:
         ok, stdout, stderr = _run_command([binary_path, "--version"], timeout_sec=8, env=runtime_env)
         version = _extract_version(stdout or stderr)
