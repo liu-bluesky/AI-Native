@@ -91,17 +91,19 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 9. 开始节点前先调用 `update_task_node_status(...)`；完成节点时必须调用 `complete_task_node_with_verification(...)`。
 10. 如果宿主拿不到任务树读取或推进工具，只能明确说明“任务树闭环未完成”，不能把自然语言进度当成已完成。
 
-## 项目聊天打包部署命令约束
+## 项目聊天部署约束
+
+用户提“部署 / 发布到服务器 / 上线 / 发版”需求时，第一步先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 部署方式判断；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时直接报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。
 
 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。
 
-执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。
+执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权；部署到生产档位或触发远端 deploy_command 等不可逆操作前必须单独说明影响范围和可恢复性并取得用户确认。
 
 未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact。
 
 如果入口当前接入上下文、URL 默认上下文或渲染出的 CLI 提示词已提供 `project_id`，部署、上传或推送部署产物时把它视为明确项目 ID；不要因为用户回复“确认部署”时未重复 project_id 就暂停。
 
-部署任务禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 `blocked` / `missing`。
+部署任务禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；凭据只通过项目部署配置由服务端使用，AI 侧只读到脱敏摘要；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 `blocked` / `missing`。
 
 ## 任务树生成约束
 

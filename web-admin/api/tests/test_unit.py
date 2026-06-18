@@ -18842,7 +18842,8 @@ def test_query_mcp_system_config_migrates_legacy_active_state_prompts():
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert "sync_query_mcp_cli_prompt_to_local_file" in config.query_mcp_bootstrap_prompt_template
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
-    assert "项目聊天打包部署命令约束" in config.query_mcp_bootstrap_prompt_template
+    assert "项目聊天部署约束" in config.query_mcp_bootstrap_prompt_template
+    assert "get_project_deploy_options" in config.query_mcp_bootstrap_prompt_template
     assert "外部智能体" in config.query_mcp_bootstrap_prompt_template
     assert "桌面端 Runner" in config.query_mcp_bootstrap_prompt_template
     assert "把产物推送到服务端项目详情的部署产物模块" in config.query_mcp_bootstrap_prompt_template
@@ -18886,7 +18887,8 @@ def test_query_mcp_system_config_completes_partial_resource_discovery_prompt_rul
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert config.query_mcp_bootstrap_prompt_template.count("sync_query_mcp_cli_prompt_to_local_file") == 1
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
-    assert config.query_mcp_bootstrap_prompt_template.count("项目聊天打包部署命令约束") == 1
+    assert config.query_mcp_bootstrap_prompt_template.count("项目聊天部署约束") == 1
+    assert "get_project_deploy_options" in config.query_mcp_bootstrap_prompt_template
     assert "外部智能体" in config.query_mcp_bootstrap_prompt_template
     assert "桌面端 Runner" in config.query_mcp_bootstrap_prompt_template
     assert config.query_mcp_usage_guide_template.count("`list_mcp_resources` 只用于发现资源目录") == 1
@@ -18916,7 +18918,8 @@ def test_query_mcp_system_config_inserts_resource_discovery_prompt_rules_without
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert "sync_query_mcp_cli_prompt_to_local_file" in config.query_mcp_bootstrap_prompt_template
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
-    assert "项目聊天打包部署命令约束" in config.query_mcp_bootstrap_prompt_template
+    assert "项目聊天部署约束" in config.query_mcp_bootstrap_prompt_template
+    assert "get_project_deploy_options" in config.query_mcp_bootstrap_prompt_template
     assert "外部智能体" in config.query_mcp_bootstrap_prompt_template
     assert "桌面端 Runner" in config.query_mcp_bootstrap_prompt_template
     assert "`list_mcp_resources` 只用于发现资源目录" in config.query_mcp_usage_guide_template
@@ -18952,7 +18955,8 @@ def test_query_mcp_system_config_replaces_legacy_deploy_contract_prompt():
 
     assert "客户端 AI 打包部署契约" not in prompt
     assert "旧部署规则" not in prompt
-    assert "项目聊天打包部署命令约束" in prompt
+    assert "项目聊天部署约束" in prompt
+    assert "get_project_deploy_options" in prompt
     assert "外部智能体" in prompt
     assert "桌面端 Runner" in prompt
     assert "push_project_deploy_artifact" in prompt
@@ -18995,7 +18999,9 @@ def test_query_mcp_system_config_deduplicates_legacy_deploy_usage_contract():
     usage_guide = config.query_mcp_usage_guide_template
     client_profile = config.query_mcp_client_profile_template
 
-    assert usage_guide.count("1.4 打包命令只能通过项目聊天命令执行能力处理") == 1
+    assert usage_guide.count("1.4 用户提“部署") == 1
+    assert usage_guide.count("1.4.1 打包命令只能通过项目聊天命令执行能力处理") == 1
+    assert "get_project_deploy_options" in usage_guide
     assert usage_guide.count("push_project_deploy_artifact") == 2
     assert usage_guide.count("deploy_project_deploy_artifact") == 2
     assert "artifact_content_base64" in usage_guide
@@ -19005,7 +19011,8 @@ def test_query_mcp_system_config_deduplicates_legacy_deploy_usage_contract():
     assert "部署产物上传/部署" not in usage_guide
     assert "先把本地打包产物推送到部署产物模块" not in usage_guide
 
-    assert client_profile.count("- 部署约束:") == 5
+    assert client_profile.count("- 部署约束:") == 6
+    assert "get_project_deploy_options" in client_profile
     assert "push_project_deploy_artifact" in client_profile
     assert "deploy_project_deploy_artifact" in client_profile
     assert "artifact_content_base64" in client_profile
@@ -19014,6 +19021,62 @@ def test_query_mcp_system_config_deduplicates_legacy_deploy_usage_contract():
     assert "本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact" in client_profile
     assert "通过 MCP/项目能力推送" not in client_profile
     assert "已有服务端 artifact 的部署请求不应要求用户重新上传" not in client_profile
+
+
+def test_project_deploy_options_summary_redacts_and_lists_targets():
+    from routers.projects import project_deploy_options_summary
+
+    # 未配置 / 未启用
+    assert project_deploy_options_summary({}).get("configured") is False
+    disabled = project_deploy_options_summary({"enabled": False, "profiles": [{"id": "prod"}]})
+    assert disabled["configured"] is False
+
+    settings = {
+        "enabled": True,
+        "default_profile": "prod",
+        "profiles": [
+            {
+                "id": "prod",
+                "name": "生产",
+                "environment": "prod",
+                "components": [
+                    {
+                        "id": "web",
+                        "name": "前端",
+                        "artifact_kind": "source-bundle",
+                        "notify": {"enabled": True},
+                        "targets": [
+                            {
+                                "id": "t1",
+                                "name": "主服务器",
+                                "remote_path": "/var/www/app",
+                                "deploy_command": "pm2 restart app",
+                                "ftp_credential_id": "cred-secret-1",
+                                "transport": {"remote_path": "/var/www/app", "password": "p@ss"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    summary = project_deploy_options_summary(settings)
+    assert summary["configured"] is True
+    assert summary["default_profile"] == "prod"
+    profile = summary["profiles"][0]
+    assert profile["id"] == "prod"
+    component = profile["components"][0]
+    assert component["notify_enabled"] is True
+    target = component["targets"][0]
+    assert target["id"] == "t1"
+    assert target["remote_path"] == "/var/www/app"
+    assert target["has_deploy_command"] is True
+    # 凭据 / 密码绝不出现在摘要里
+    serialized = json.dumps(summary, ensure_ascii=False)
+    assert "cred-secret-1" not in serialized
+    assert "p@ss" not in serialized
+    assert "password" not in serialized
+    assert "ftp_credential_id" not in serialized
 
 
 def test_query_mcp_resources_and_style_hints_use_system_config(monkeypatch):

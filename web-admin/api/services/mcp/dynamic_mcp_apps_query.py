@@ -2936,15 +2936,21 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 定位: 适合需要较强代码修改、命令执行和长任务续跑的开发型 CLI。",
             "- 推荐链路: query://usage-guide -> query://client-profile/claude-code -> start_project_workflow -> check_operation_policy -> save_work_facts/append_session_event。",
             "- 资源约束: `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/claude-code`，不要反复列资源。",
-            "- 接入约束: `description` 只用于说明，不参与项目绑定；要续接任务树，优先让 URL 带上 `project_id` 和 `chat_session_id`，缺失时首轮调用 `bind_project_context(...)`。",
+            "- 简单查询: 用户问项目有几个/哪些员工、工具、规则或需求历史，且 `project_id` 已明确时，直接调用对应业务工具，例如 `list_project_members(project_id=...)`；不要为了 bootstrap 机械调用 `list_mcp_resources`。",
+            "- 固定入口: 实现/修复/治理/文档型需求优先调用 `start_project_workflow(...)` 作为固定入口，不要手动拼接 search_ids / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan 这一整串前置步骤。",
+            "- 接入约束: `description` 只用于说明，不参与项目绑定；要续接任务树，优先让 URL 带上 `project_id` 和 `chat_session_id`。凡涉及开发/实现/修改/写入/部署等改变项目状态的需求，本轮必须先调用 `bind_project_context(project_id, chat_session_id, root_goal=\"<用户原始问题>\")` 把真实需求和任务树记到本地与服务端，再进入执行——不能只靠代理工具或 bootstrap 顺手生成的空 requirement 记录（source=context:* 且 root_goal 为空即视为未记录需求）。",
+            "- 接入约束: 如果当前 CLI 没有活跃 MCP session，只要显式传了 `project_id + chat_session_id`，`bind_project_context(...)` 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 `chat_session_id`。",
+            "- 查询约束: 仅在缺少明确的 `project_id` / `employee_id` / `rule_id`，或需要跨项目检索时，再调用 `search_ids(keyword=\"<用户原始问题>\")`；当前项目和对象已明确时，可直接读取 `get_manual_content(project_id=...)` 或进入 `start_project_workflow(...)`。",
             "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`，避免产生影子链路。",
             "- 接入约束: 每个 CLI 会话都应自行生成唯一 `chat_session_id`；如能解析项目工作区，优先持久化到项目目录 `.ai-employee/query-mcp/`，否则再退回 CLI 自己的本地存储。同一轮任务内固定复用，只有新开的并行 CLI 或新任务才重新生成。",
             "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
             "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`，并通过 MCP（start_project_workflow / start_work_session / save_work_facts / append_session_event / 任务树工具）把同一条需求回写到服务端，本地与服务端追溯到同一条需求。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
+            "- 部署约束: 用户提“部署 / 发布到服务器 / 上线”需求时，先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 是否带 deploy_command 判断方式；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。",
             "- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。",
             "- 部署约束: 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。",
             "- 部署约束: 未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact。",
+            "- 部署约束: 部署到生产档位或触发远端 deploy_command 等不可逆操作前，必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才执行。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall。",
             f"- 交互约束: {clarity_threshold_line}",
             f"- 交互约束: {clarity_direct_line}",
@@ -2957,8 +2963,10 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
             "- 任务树约束: 任务树节点必须描述面向用户目标的真实工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 或候选代理工具名直接写成节点。",
             "- 任务树约束: 实现型、修复型、治理型、文档型任务禁止固定生成“分析 / 实现 / 验证”三步；必须先识别真实对象和任务类型，再生成差异化节点。节点标题不能把“当前需求”当作主要对象。",
+            "- 任务树约束: `bind_project_context(...)` 后如果宿主支持任务树，立刻调用 `get_current_task_tree` 核对 `root_goal/title/current_node` 是否属于当前用户原始问题；若明显挂到了旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。",
             "- 工作流约束: 用户提需求后先规划，再执行；执行中只更新任务树、工作事实和会话事件，不要提前输出最终结论。",
-            "- 工作流约束: 必须做到“完成一个节点、补一次验证、再进入下一步”；只有整棵任务树完成并写入验证结果后，当前需求才算结束。",
+            "- 工作流约束: 开始执行某个任务节点前，先调用 `update_task_node_status(status=in_progress|verifying)`；完成节点时必须调用 `complete_task_node_with_verification` 写入验证结果，不要只在自然语言里声称“已完成”。只有整棵任务树完成并写入验证结果后，当前需求才算结束。",
+            "- 工作流约束: 如果当前宿主拿不到 `get_current_task_tree`、`update_task_node_status` 或 `complete_task_node_with_verification`，只能明确给出“任务树执行闭环未完成”的结论，不能把缺失能力包装成已闭环。",
             "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起通过统一状态服务持久化到 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。若当前拿不到项目工作区，再退回 CLI 自己的本地存储。每完成一个子阶段调用 save_work_facts 或 append_session_event。",
             "- 长任务建议: 中断恢复顺序应固定为“恢复本地 `chat_session_id/session_id` -> bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...) -> 按当前任务树继续执行”；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。",
             "- 宿主扩展: 如宿主需要展示任务树演化摘要，可按需读取 `/api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...`。",
@@ -2978,8 +2986,9 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`。",
             "- 接入约束: 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；缺失时从系统技能库同步或创建到本地，已存在则直接复用，并优先读取本地副本。",
             "- 接入约束: 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。",
+            "- 部署约束: 用户提“部署 / 发布到服务器 / 上线”需求时，先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 是否带 deploy_command 判断方式；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。",
             "- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。",
-            "- 部署约束: 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。",
+            "- 部署约束: 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权；部署到生产档位或触发远端 deploy_command 等不可逆操作前必须单独说明影响范围和可恢复性并取得用户确认。",
             "- 部署约束: 未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact。",
             "- 部署约束: 如果 URL 默认上下文、MCP 绑定上下文、渲染出的 CLI 提示词或本地 canonical 状态已提供 `project_id`，部署、上传或推送部署产物时直接使用它；不要在用户已确认部署后再因为“缺少 project_id”暂停。",
             "- 部署约束: 渲染出的 CLI 提示词已提供 `project_id` 时，直接把它视为明确项目 ID，不要重复追问。",
@@ -3117,11 +3126,12 @@ def build_query_usage_guide_text() -> str:
         "1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。\n"
         "1.2 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；若不存在，再从系统技能库同步或创建到本地；已存在则直接复用，禁止重复创建。\n"
         "1.3 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。\n"
-        "1.4 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。\n"
-        "1.4.1 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。\n"
-        "1.4.2 未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`。\n"
-        "1.4.3 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 blocked / missing。\n"
-        "1.4.4 只有用户明确给出 artifact_id 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；用户说本地 zip、新代码、重新打包、上传部署或推送部署产物时，必须先调用 `push_project_deploy_artifact` 上传本轮文件内容生成新 artifact；用户说“推送到服务端部署”时 `auto_deploy=true`，只有明确“只上传”才设为 false。\n"
+        "1.4 用户提“部署 / 发布到服务器 / 上线”需求时，先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 是否带 deploy_command 判断方式；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。\n"
+        "1.4.1 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。\n"
+        "1.4.2 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权；部署到生产档位或触发远端 deploy_command 等不可逆操作前必须单独说明影响范围和可恢复性并取得用户确认。\n"
+        "1.4.3 未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`。\n"
+        "1.4.4 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；凭据只通过项目部署配置由服务端使用，AI 侧只读到脱敏摘要；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 blocked / missing。\n"
+        "1.4.5 只有用户明确给出 artifact_id 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；用户说本地 zip、新代码、重新打包、上传部署或推送部署产物时，必须先调用 `push_project_deploy_artifact` 上传本轮文件内容生成新 artifact；用户说“推送到服务端部署”时 `auto_deploy=true`，只有明确“只上传”才设为 false。\n"
         "2. MCP 配置里的 description、项目说明、\"当前项目\" 这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文、MCP 会话绑定、渲染出的 CLI 提示词和本地 canonical 状态。\n"
         "3. 先从 URL 默认上下文、MCP 绑定上下文、渲染出的 CLI 提示词和本地 canonical 状态恢复 `project_id`；只有这些位置都缺失时，才调用 bind_project_context(project_id, chat_session_id?, root_goal?) 或要求用户提供项目 ID。\n"
         "4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。\n"
@@ -6223,6 +6233,31 @@ def create_query_mcp(
             "project_name": str(getattr(project, "name", "") or ""),
             "project_mcp_path": f"/mcp/projects/{project_id_value}",
             "result": result,
+        }
+
+    @mcp.tool()
+    def get_project_deploy_options(project_id: str) -> dict:
+        """读取当前项目部署配置摘要（脱敏）：可选环境档位 profile、服务器目标 target、部署方式与通知开关。
+
+        部署型需求的固定第一步：先调用本工具拿到可选档位/目标，向用户摆出来让其选择，
+        再决定打包/上传/触发远端命令。未配置或未启用部署时返回 configured=false，应据此报 blocked/missing，
+        不要凭空打包或臆造服务器信息。
+        """
+
+        project_id_value = str(project_id or "").strip()
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        project = project_store.get(project_id_value)
+        if project is None:
+            return {"error": f"Project {project_id_value} not found"}
+        from routers.projects import project_deploy_options_summary
+
+        summary = project_deploy_options_summary(getattr(project, "deploy_settings", {}) or {})
+        return {
+            "project_id": project_id_value,
+            "project_name": str(getattr(project, "name", "") or ""),
+            "project_mcp_path": f"/mcp/projects/{project_id_value}",
+            **summary,
         }
 
     @mcp.tool()

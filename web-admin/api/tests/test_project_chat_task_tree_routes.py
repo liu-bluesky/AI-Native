@@ -2415,6 +2415,70 @@ def test_project_requirement_records_batch_delete_accepts_list_record_id(
     assert after_response.json()["items"] == []
 
 
+def test_project_requirement_records_batch_delete_handles_long_root_goal_chain_id(
+    tmp_path,
+    monkeypatch,
+):
+    """Regression: a record whose root_goal is long enough to push chain_id past 80
+    chars must still be deletable. Previously the route truncated incoming record_ids
+    to 80 chars, so the lookup missed chain_index and surfaced "没有可删除的需求记录"."""
+    from routers import projects as projects_router
+    from stores.json.project_chat_task_store import ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    projects_router._project_requirement_records_local_cache.clear()
+
+    async def _get_fake_redis():
+        raise RuntimeError("redis unavailable in test")
+
+    monkeypatch.setattr(projects_router, "get_redis_client", _get_fake_redis)
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-long-goal", name="项目一"))
+
+    root_goal = (
+        "把 codex/claude/hermes 三个外部 agent 的输出解析统一改造为结构化 AgentEvent 事件模型："
+        "codex 走 codex exec --json、claude 走 --output-format stream-json、"
+        "hermes 走 ACP JSON-RPC，Runner 按行解析归一为统一事件下发，前端按 kind 渲染。"
+    )
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-long-goal",
+            project_id="proj-long-goal",
+            username="tester",
+            chat_session_id="chat-session-2c9488bbcb11",
+            source_chat_session_id="chat-session-2c9488bbcb11",
+            source_session_id="",
+            title=root_goal,
+            root_goal=root_goal,
+            status="in_progress",
+            lifecycle_status="active",
+            round_index=1,
+        )
+    )
+
+    list_response = client.get("/api/projects/proj-long-goal/requirement-records")
+    assert list_response.status_code == 200
+    record_id = list_response.json()["items"][0]["id"]
+    # chain_id exceeds the old 80-char truncation limit
+    assert len(record_id) > 80
+
+    delete_response = client.post(
+        "/api/projects/proj-long-goal/requirement-records/batch-delete",
+        json={"record_ids": [record_id]},
+    )
+
+    assert delete_response.status_code == 200
+    delete_payload = delete_response.json()
+    assert delete_payload["deleted_count"] == 1
+    assert delete_payload["deleted_record_ids"] == [record_id]
+    assert delete_payload["missing_ids"] == []
+    assert store_factory.project_chat_task_store.list_by_project("proj-long-goal") == []
+
+
 def test_project_requirement_records_cache_invalidation_decodes_redis_bytes(
     tmp_path,
     monkeypatch,

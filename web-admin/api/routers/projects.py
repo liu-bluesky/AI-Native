@@ -780,6 +780,77 @@ def _public_project_deploy_settings(value: Any) -> dict[str, Any]:
     return _redact_project_deploy_value("deploy_settings", _normalize_project_deploy_settings(value))
 
 
+def project_deploy_options_summary(value: Any) -> dict[str, Any]:
+    """部署配置的精简、脱敏摘要：供 AI 向用户摆出可选环境档位/服务器目标，再让用户选择。
+
+    不含任何凭据；通知是否开启只读展示（由配置决定，不询问用户）。
+    """
+
+    try:
+        settings = _normalize_project_deploy_settings(value)
+    except HTTPException:
+        return {
+            "configured": False,
+            "reason": "invalid_deploy_settings",
+            "profiles": [],
+        }
+    profiles_raw = settings.get("profiles") or []
+    if not bool(settings.get("enabled")) or not profiles_raw:
+        return {
+            "configured": False,
+            "reason": "deploy_settings_disabled_or_empty",
+            "enabled": bool(settings.get("enabled")),
+            "profiles": [],
+        }
+    profiles: list[dict[str, Any]] = []
+    for profile in profiles_raw:
+        components: list[dict[str, Any]] = []
+        for component in profile.get("components") or []:
+            targets: list[dict[str, Any]] = []
+            for target in component.get("targets") or []:
+                deploy_command = _project_deploy_target_deploy_command(target)
+                targets.append(
+                    {
+                        "id": target.get("id"),
+                        "name": target.get("name") or target.get("id"),
+                        "enabled": bool(target.get("enabled", True)),
+                        "transport_mode": target.get("transport_mode") or "ftp",
+                        "remote_path": target.get("remote_path") or "",
+                        "remote_command_mode": _project_deploy_target_remote_command_mode(target),
+                        "has_deploy_command": bool(deploy_command),
+                    }
+                )
+            notify = component.get("notify") if isinstance(component.get("notify"), dict) else {}
+            components.append(
+                {
+                    "id": component.get("id"),
+                    "name": component.get("name") or component.get("id"),
+                    "enabled": bool(component.get("enabled", True)),
+                    "artifact_kind": component.get("artifact_kind") or "source-bundle",
+                    "notify_enabled": bool(notify.get("enabled", False)),
+                    "targets": targets,
+                }
+            )
+        profile_notify = profile.get("notify") if isinstance(profile.get("notify"), dict) else {}
+        profiles.append(
+            {
+                "id": profile.get("id"),
+                "name": profile.get("name") or profile.get("id"),
+                "environment": profile.get("environment") or profile.get("id"),
+                "enabled": bool(profile.get("enabled", True)),
+                "artifact_kind": profile.get("artifact_kind") or "source-bundle",
+                "notify_enabled": bool(profile_notify.get("enabled", False)),
+                "components": components,
+            }
+        )
+    return {
+        "configured": True,
+        "enabled": True,
+        "default_profile": settings.get("default_profile") or (profiles[0]["id"] if profiles else ""),
+        "profiles": profiles,
+    }
+
+
 def _merge_project_deploy_secret_placeholders(existing_value: Any, incoming_value: Any) -> Any:
     if isinstance(existing_value, dict) and isinstance(incoming_value, dict):
         merged: dict[str, Any] = {}
@@ -10243,6 +10314,14 @@ def _normalize_project_record_token(value: Any, *, limit: int = 4000) -> str:
     return str(value or "").strip()[:limit]
 
 
+# Upper bound for a requirement-record chain_id token. The chain key shape is
+# "chat:{chat_session_id(<=80)}:goal:{root_goal(<=160)}" plus literals, so 256 safely
+# covers the longest id _project_requirement_record_chain_key can emit. Both the delete
+# route input and chain-index alias registration must use this so long-goal records stay
+# matchable instead of failing with "没有可删除的需求记录".
+_REQUIREMENT_RECORD_CHAIN_ID_MAX_LEN = 256
+
+
 def _normalize_project_record_tags(value: Any) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
         return ()
@@ -11037,7 +11116,9 @@ def _build_project_requirement_record_delete_index(project: ProjectConfig) -> di
     chat_session_id_to_chain: dict[str, str] = {}
 
     def register_chain_alias(alias: Any, entry: dict[str, Any]) -> None:
-        normalized_alias = _normalize_project_record_token(alias, limit=240)
+        normalized_alias = _normalize_project_record_token(
+            alias, limit=_REQUIREMENT_RECORD_CHAIN_ID_MAX_LEN
+        )
         if not normalized_alias:
             return
         chain_index[normalized_alias] = entry
@@ -19953,8 +20034,12 @@ async def batch_delete_project_requirement_records(
     auth_payload: dict = Depends(require_auth),
 ):
     project = _ensure_project_manage_access(project_id, auth_payload)
+    # record_ids are chain_id values produced by _project_requirement_record_chain_key,
+    # which can reach ~251 chars (chat:{<=80}:goal:{<=160}). Truncating to 80 here would
+    # turn long-goal records into lookups that never hit chain_index, surfacing as a
+    # spurious "没有可删除的需求记录" warning. Keep the full token length aligned with the index.
     requested_ids = [
-        _normalize_project_record_token(item, limit=80)
+        _normalize_project_record_token(item, limit=_REQUIREMENT_RECORD_CHAIN_ID_MAX_LEN)
         for item in (req.record_ids or [])
     ]
     requested_ids = [item for item in requested_ids if item]
