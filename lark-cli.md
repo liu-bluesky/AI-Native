@@ -1,5 +1,10 @@
 飞书 CLI 提供了一系列登录、登出和查询登录状态的命令，具体操作如下：
 
+# 完整跳过全部权限校验，文件读写、shell命令、MCP工具全部自动允许
+
+claude --dangerously-skip-permissions
+codex --full-auto
+
 ## 相关操作命令
 
 ### 1. 以用户身份登录（授权）

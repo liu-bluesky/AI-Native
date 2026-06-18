@@ -340,6 +340,7 @@ class ProjectDeployCommandGenerateReq(BaseModel):
 class ProjectDeployArtifactPushReq(BaseModel):
     profile: str = "prod"
     component: str = ""
+    target_ids: list[str] = Field(default_factory=list)
     artifact_name: str
     artifact_kind: str = "source-bundle"
     manifest: dict[str, Any] = Field(default_factory=dict)
@@ -358,12 +359,14 @@ class ProjectDeployArtifactDeployReq(BaseModel):
     task_tree_node_id: str = ""
     requirement: str = ""
     plan: str = ""
+    target_ids: list[str] = Field(default_factory=list)
 
 
 class ProjectDeployArtifactPlanGenerateReq(BaseModel):
     requirement: str = ""
     provider_id: str = ""
     model_name: str = ""
+    target_ids: list[str] = Field(default_factory=list)
 
 
 class ProjectDeployArtifactAiExecuteReq(BaseModel):
@@ -372,6 +375,7 @@ class ProjectDeployArtifactAiExecuteReq(BaseModel):
     chat_session_id: str = ""
     provider_id: str = ""
     model_name: str = ""
+    target_ids: list[str] = Field(default_factory=list)
 
 
 class ProjectCodeRepositoryCreateReq(BaseModel):

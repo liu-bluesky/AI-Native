@@ -168,10 +168,12 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert runtime["bootstrap_resources"] == [
         "query://usage-guide",
         "query://client-profile/codex",
+        "query://client-profile/claude-code",
+        "query://client-profile/generic-cli",
     ]
     assert runtime["bootstrap_checklist"] == [
         "read query://usage-guide",
-        "read query://client-profile/codex",
+        "read the matching client profile: query://client-profile/codex, query://client-profile/claude-code, or query://client-profile/generic-cli",
         "do not loop on list_mcp_resources; it is resource discovery only and may be called at most once per turn",
         "for simple project queries with a known project_id, call the matching business tool directly instead of listing resources",
         "initialize local .ai-employee state in the current CLI workspace and ensure query-mcp-workflow is available there",
@@ -191,6 +193,10 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     ]
     assert "query://usage-guide" in runtime["cli_prompt"]
     assert "query://client-profile/codex" in runtime["cli_prompt"]
+    # 默认 cli_prompt 聚焦 codex，不应再混入其他客户端画像
+    assert "query://client-profile/claude-code" not in runtime["cli_prompt"]
+    assert "query://client-profile/generic-cli" not in runtime["cli_prompt"]
+    assert "当前客户端是 Codex CLI" in runtime["cli_prompt"]
     assert "`list_mcp_resources` 只用于发现资源目录" in runtime["cli_prompt"]
     assert "同一轮最多调用一次" in runtime["cli_prompt"]
     assert "直接调用对应业务工具" in runtime["cli_prompt"]
@@ -225,6 +231,26 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert "禁止以兜底、兼容、静默降级" in runtime["cli_prompt"]
     assert "优先定位并修正根因" in runtime["cli_prompt"]
     assert "# Unified Query MCP" not in runtime["cli_prompt"]
+
+    # 分类提示词：每类只含自己的画像资源，互不污染，且都带需求记录与项目上下文
+    cli_prompts = runtime["cli_prompts"]
+    assert [item["key"] for item in cli_prompts] == ["codex", "claude-code", "generic-cli"]
+    by_key = {item["key"]: item for item in cli_prompts}
+    assert by_key["codex"]["prompt"] == runtime["cli_prompt"]
+    resource_by_key = {
+        "codex": "query://client-profile/codex",
+        "claude-code": "query://client-profile/claude-code",
+        "generic-cli": "query://client-profile/generic-cli",
+    }
+    for key, item in by_key.items():
+        prompt = item["prompt"]
+        assert item["client_profile_resource"] == resource_by_key[key]
+        assert resource_by_key[key] in prompt
+        for other_key, other_resource in resource_by_key.items():
+            if other_key != key:
+                assert other_resource not in prompt
+        assert ".ai-employee/requirements/<project_id>/<chat_session_id>.json" in prompt
+        assert "默认项目: `proj-1`" in prompt
 
 
 def test_query_mcp_runtime_uses_system_clarity_threshold(tmp_path, monkeypatch):
@@ -403,6 +429,9 @@ def test_query_mcp_runtime_upgrades_legacy_default_bootstrap_template(tmp_path, 
     assert "当前任务先在项目本地推进" in runtime["cli_prompt"]
     assert "不能替代当前 CLI 工作区初始化" in runtime["cli_prompt"]
     assert "`list_mcp_resources` 只用于发现资源目录" in runtime["cli_prompt"]
+    assert "query://client-profile/codex" in runtime["cli_prompt"]
+    assert "query://client-profile/generic-cli" not in runtime["cli_prompt"]
+    assert "当前客户端是 Codex CLI" in runtime["cli_prompt"]
     assert "直接调用对应业务工具" in runtime["cli_prompt"]
     assert "不再停下来请求“是否继续”" in runtime["cli_prompt"]
     assert "sync_query_mcp_cli_prompt_to_local_file" in runtime["cli_prompt"]

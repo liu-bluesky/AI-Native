@@ -540,6 +540,7 @@ _PROJECT_DEPLOY_ARTIFACT_MAX_BYTES = 200 * 1024 * 1024
 _PROJECT_DEPLOY_ARTIFACT_MAX_FILES = 20000
 _PROJECT_DEPLOY_ARTIFACT_MANIFEST_MAX_CHARS = 16 * 1024 * 1024
 _PROJECT_DEPLOY_RUN_STATUSES = {"queued", "running", "success", "failed", "blocked", "cancelled"}
+_PROJECT_DEPLOY_NOTIFY_DEFAULT_TEMPLATE = "{project_name} {profile} 部署状态：{status_label}，产物：{artifact_name}，运行：{run_id}"
 _PROJECT_DEPLOY_SECRET_KEYS = {
     "password",
     "passphrase",
@@ -570,11 +571,14 @@ def _normalize_project_deploy_notify(value: Any) -> dict[str, Any]:
                 "platform": _normalize_project_deploy_text(target.get("platform"), limit=40) or "feishu",
                 "connector_id": _normalize_project_deploy_text(target.get("connector_id"), limit=120),
                 "chat_id": _normalize_project_deploy_text(target.get("chat_id"), limit=200),
+                "chat_name": _normalize_project_deploy_text(target.get("chat_name"), limit=200),
             }
         )
     return {
         **notify,
         "enabled": bool(notify.get("enabled", False)),
+        "template": _normalize_project_deploy_text(notify.get("template"), limit=2000)
+        or _PROJECT_DEPLOY_NOTIFY_DEFAULT_TEMPLATE,
         "targets": targets,
     }
 
@@ -1487,6 +1491,82 @@ def _project_deploy_target_ids_from_execution_plan(execution_plan: dict[str, Any
     return target_ids
 
 
+def _normalize_project_deploy_target_ids(value: Any) -> list[str]:
+    raw_items: list[Any]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raw_items = []
+        else:
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = [item.strip() for item in text.split(",")]
+            raw_items = parsed if isinstance(parsed, list) else [parsed]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+    target_ids: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        target_id = _normalize_project_deploy_text(item, limit=80)
+        if not target_id or target_id in seen:
+            continue
+        seen.add(target_id)
+        target_ids.append(target_id)
+    return target_ids
+
+
+def _select_project_deploy_targets(
+    component: dict[str, Any],
+    target_ids: Any = None,
+    *,
+    require_enabled: bool = True,
+) -> list[dict[str, Any]]:
+    component_targets = component.get("targets") if isinstance(component.get("targets"), list) else []
+    targets = [target for target in component_targets if isinstance(target, dict)]
+    requested_ids = _normalize_project_deploy_target_ids(target_ids)
+    if not requested_ids:
+        return [
+            target
+            for target in targets
+            if not require_enabled or bool(target.get("enabled", True))
+        ]
+    target_by_id = {
+        _normalize_project_deploy_text(target.get("id"), limit=80): target
+        for target in targets
+        if _normalize_project_deploy_text(target.get("id"), limit=80)
+    }
+    selected: list[dict[str, Any]] = []
+    invalid_ids: list[str] = []
+    for target_id in requested_ids:
+        target = target_by_id.get(target_id)
+        if target is None or (require_enabled and not bool(target.get("enabled", True))):
+            invalid_ids.append(target_id)
+            continue
+        selected.append(target)
+    if invalid_ids:
+        raise HTTPException(400, "deploy target not found or disabled: " + ", ".join(invalid_ids))
+    return selected
+
+
+def _project_deploy_target_summary(targets: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "selected_target_ids": [
+            _normalize_project_deploy_text(target.get("id"), limit=80)
+            for target in targets
+            if _normalize_project_deploy_text(target.get("id"), limit=80)
+        ],
+        "selected_target_names": [
+            _normalize_project_deploy_text(target.get("name") or target.get("id"), limit=120)
+            for target in targets
+            if _normalize_project_deploy_text(target.get("name") or target.get("id"), limit=120)
+        ],
+        "selected_target_count": len(targets),
+    }
+
+
 class _ProjectDeployAgentError(RuntimeError):
     def __init__(self, message: str, *, stage: str = "ai_deploy_agent_failed") -> None:
         super().__init__(message)
@@ -2139,7 +2219,11 @@ def _project_deploy_backup_label() -> str:
 
 def _project_deploy_remote_backup_name(remote_path: str) -> str:
     base = str(remote_path or "").rstrip("/")
-    return f"{base}_备份_{_project_deploy_backup_label()}"
+    if not base:
+        return f"备份_{_project_deploy_backup_label()}"
+    parent, _, name = base.rpartition("/")
+    backup_name = f"{name or base}_备份_{_project_deploy_backup_label()}"
+    return f"{parent}/{backup_name}" if parent else backup_name
 
 
 def _project_deploy_backup_remote_target(ftp: Any, remote_path: str) -> dict[str, Any]:
@@ -2457,7 +2541,7 @@ def _project_deploy_upload_prepared_file_to_ftp(
 ) -> dict[str, Any]:
     effective_remote_name = Path(remote_name or artifact.artifact_name or prepared_path.name).name or prepared_path.name
     remote_file = _project_deploy_remote_path_join(remote_path, effective_remote_name)
-    backup_result = _project_deploy_backup_remote_target(ftp, remote_file)
+    backup_result = _project_deploy_backup_remote_target(ftp, remote_path)
     _ftp_ensure_remote_dir(ftp, remote_path)
     with prepared_path.open("rb") as handle:
         ftp.storbinary(f"STOR {effective_remote_name}", handle)
@@ -2711,7 +2795,15 @@ def _execute_project_deploy_run_for_artifact(
             }
             artifact.status = "failed"
             artifact.error = run.log_excerpt
-            run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
+            run.notify_result = _build_project_deploy_notification_preview(
+                project,
+                artifact,
+                status=run.status,
+                run_id=run.id,
+                stage=run.stage,
+                log_excerpt=run.log_excerpt,
+                deploy_time=run.created_at,
+            )
             project_deploy_store.save_artifact(artifact)
             return project_deploy_store.save_run(run)
     archive_upload_policy = str(execution_plan.get("archive_upload_policy") or "auto")
@@ -2737,7 +2829,15 @@ def _execute_project_deploy_run_for_artifact(
                 "ai_execution_plan": execution_plan,
                 **({"invalid_archive_entry": invalid_archive_entry} if invalid_archive_entry else {}),
             }
-            run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
+            run.notify_result = _build_project_deploy_notification_preview(
+                project,
+                artifact,
+                status=run.status,
+                run_id=run.id,
+                stage=run.stage,
+                log_excerpt=run.log_excerpt,
+                deploy_time=run.created_at,
+            )
             return project_deploy_store.save_run(run)
     command_targets = [
         target
@@ -2836,7 +2936,15 @@ def _execute_project_deploy_run_for_artifact(
         ),
         "archive_suffix": _normalize_project_deploy_text(manifest.get("archive_suffix"), limit=40),
     }
-    run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
+    run.notify_result = _build_project_deploy_notification_preview(
+        project,
+        artifact,
+        status=run.status,
+        run_id=run.id,
+        stage=run.stage,
+        log_excerpt=run.log_excerpt,
+        deploy_time=run.created_at,
+    )
     project_deploy_store.save_artifact(artifact)
     return project_deploy_store.save_run(run)
 
@@ -2894,6 +3002,7 @@ def _create_project_deploy_run_for_artifact(
     chat_session_id: str,
     task_tree_node_id: str,
     require_auto_deploy_enabled: bool = True,
+    target_ids: Any = None,
 ) -> ProjectDeployRun | None:
     settings = _normalize_project_deploy_settings(getattr(project, "deploy_settings", {}) or {})
     if not bool(settings.get("enabled", False)):
@@ -2907,17 +3016,15 @@ def _create_project_deploy_run_for_artifact(
     safety = component.get("safety") if isinstance(component.get("safety"), dict) else {}
     if require_auto_deploy_enabled and not bool(safety.get("auto_deploy_on_artifact_update", False)):
         return None
-    targets = [
-        target
-        for target in (component.get("targets") if isinstance(component.get("targets"), list) else [])
-        if isinstance(target, dict) and bool(target.get("enabled", True))
-    ]
+    targets = _select_project_deploy_targets(component, target_ids)
     deployable_targets = [target for target in targets if not _project_deploy_target_missing_fields(target, None)]
     missing_target_report = _build_project_deploy_missing_target_report(targets=targets, auth_payload=None)
+    snapshot_component = {**component, "targets": targets}
     run_status = "queued" if deployable_targets else "blocked"
     stage = "queued" if deployable_targets else "blocked_missing_target_config"
+    run_id = project_deploy_store.new_run_id()
     run = ProjectDeployRun(
-        id=project_deploy_store.new_run_id(),
+        id=run_id,
         project_id=project.id,
         profile=artifact.profile,
         component=artifact.component,
@@ -2930,7 +3037,7 @@ def _create_project_deploy_run_for_artifact(
         config_version=str(settings.get("version") or ""),
         config_snapshot=_public_project_deploy_settings(
             {
-                "profiles": [{**profile, "components": [component]}],
+                "profiles": [{**profile, "components": [snapshot_component]}],
                 "default_profile": artifact.profile,
             }
         ),
@@ -2945,11 +3052,82 @@ def _create_project_deploy_run_for_artifact(
             "target_count": len(targets),
             "deployable_target_count": len(deployable_targets),
             "missing_targets": missing_target_report,
+            **_project_deploy_target_summary(targets),
         },
         log_excerpt="" if deployable_targets else "blocked: missing target ftp credential or remote_path",
-        notify_result=_build_project_deploy_notification_preview(project, artifact, status=run_status),
+        notify_result=_build_project_deploy_notification_preview(
+            project,
+            artifact,
+            status=run_status,
+            run_id=run_id,
+            stage=stage,
+            log_excerpt="" if deployable_targets else "blocked: missing target ftp credential or remote_path",
+        ),
     )
     return project_deploy_store.save_run(run)
+
+
+def _send_project_deploy_feishu_notification(
+    *,
+    connector_id: str,
+    chat_id: str,
+    message: str,
+    artifact: ProjectDeployArtifact,
+    status: str,
+    idempotency_scope: str = "",
+) -> dict[str, Any]:
+    from services.feishu.feishu_bot_service import (
+        get_feishu_connector,
+        send_feishu_text_message_with_open_api,
+    )
+
+    connector = get_feishu_connector(connector_id)
+    if connector is None or not bool(connector.get("enabled", True)):
+        return {"status": "failed", "reason": "飞书机器人连接器不存在或未启用"}
+    idempotency_key = (
+        f"project-deploy-{artifact.id}-{status}-"
+        f"{hashlib.sha256((connector_id + chat_id + message + idempotency_scope).encode('utf-8')).hexdigest()[:12]}"
+    )
+    try:
+        sent = send_feishu_text_message_with_open_api(
+            connector,
+            chat_id=chat_id,
+            content=message,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        return {"status": "failed", "reason": str(exc)[:800] or "飞书机器人发送通知失败"}
+    return {"status": "sent", **({"message_id": sent.get("message_id")} if sent.get("message_id") else {})}
+
+
+def _project_deploy_status_label(value: str) -> str:
+    status = str(value or "").strip().lower()
+    if status == "success":
+        return "已部署"
+    if status == "failed":
+        return "失败"
+    if status == "blocked":
+        return "已阻塞"
+    if status == "queued":
+        return "已排队"
+    if status == "running":
+        return "执行中"
+    if status == "cancelled":
+        return "已取消"
+    return status or "未知"
+
+
+def _render_project_deploy_notify_template(template: str, context: dict[str, Any]) -> str:
+    source = _normalize_project_deploy_text(template, limit=2000) or _PROJECT_DEPLOY_NOTIFY_DEFAULT_TEMPLATE
+
+    def replace_match(match: re.Match[str]) -> str:
+        key = str(match.group(1) or "").strip()
+        if key not in context:
+            return match.group(0)
+        return str(context.get(key) or "")
+
+    rendered = re.sub(r"\{([A-Za-z0-9_]+)\}", replace_match, source)
+    return _normalize_project_deploy_text(rendered, limit=2000)
 
 
 def _build_project_deploy_notification_preview(
@@ -2957,6 +3135,14 @@ def _build_project_deploy_notification_preview(
     artifact: ProjectDeployArtifact,
     *,
     status: str,
+    run_id: str = "",
+    stage: str = "",
+    log_excerpt: str = "",
+    deploy_time: str = "",
+    deployed_at: str = "",
+    force_send: bool = False,
+    manual: bool = False,
+    idempotency_scope: str = "",
 ) -> list[dict[str, Any]]:
     profile = _find_project_deploy_profile(project, artifact.profile) or {}
     component = _find_project_deploy_component(profile, artifact.component) or {}
@@ -2964,20 +3150,93 @@ def _build_project_deploy_notification_preview(
     targets = notify.get("targets") if isinstance(notify.get("targets"), list) else []
     if not bool(notify.get("enabled", False)) or not targets:
         return []
+    template = (
+        _normalize_project_deploy_text(notify.get("template"), limit=2000)
+        or _PROJECT_DEPLOY_NOTIFY_DEFAULT_TEMPLATE
+    )
+    # deploy_time：本次部署发起时间；deployed_at：真实部署成功时间（仅成功时填充）。
+    is_success_status = str(status or "").strip().lower() == "success"
+    deploy_time_value = _normalize_project_deploy_text(deploy_time, limit=40)
+    deployed_at_value = _normalize_project_deploy_text(deployed_at, limit=40)
+    if is_success_status and not deployed_at_value:
+        deployed_at_value = _now_iso()
+    elif not is_success_status:
+        deployed_at_value = ""
+    base_context = {
+        "project_id": project.id,
+        "project_name": _normalize_project_deploy_text(project.name, limit=200),
+        "profile": artifact.profile,
+        "profile_name": _normalize_project_deploy_text(profile.get("name"), limit=160) or artifact.profile,
+        "environment": _normalize_project_deploy_text(profile.get("environment"), limit=80) or artifact.profile,
+        "component": artifact.component,
+        "component_name": _normalize_project_deploy_text(component.get("name"), limit=160) or artifact.component,
+        "artifact_id": artifact.id,
+        "artifact_name": artifact.artifact_name,
+        "artifact_kind": artifact.artifact_kind,
+        "version": artifact.version,
+        "status": status,
+        "status_label": _project_deploy_status_label(status),
+        "run_id": run_id,
+        "stage": stage,
+        "log_excerpt": _normalize_project_deploy_text(log_excerpt, limit=600),
+        "deploy_time": deploy_time_value,
+        "deployed_at": deployed_at_value,
+    }
     results: list[dict[str, Any]] = []
     for target in targets:
         if not isinstance(target, dict):
             continue
         platform = _normalize_project_deploy_text(target.get("platform"), limit=40)
+        connector_id = _normalize_project_deploy_text(target.get("connector_id"), limit=120)
+        chat_id = _normalize_project_deploy_text(target.get("chat_id"), limit=200)
+        chat_name = _normalize_project_deploy_text(target.get("chat_name"), limit=200)
+        target_context = {
+            **base_context,
+            "platform": platform,
+            "connector_id": connector_id,
+            "chat_id": chat_id,
+            "chat_name": chat_name,
+        }
+        message = _render_project_deploy_notify_template(template, target_context)
         target_payload = {
             "platform": platform,
-            "connector_id": _normalize_project_deploy_text(target.get("connector_id"), limit=120),
-            "chat_id": _normalize_project_deploy_text(target.get("chat_id"), limit=200),
-            "status": "preview" if platform == "feishu" else "unsupported",
-            "message": f"{project.name} {artifact.profile} 部署状态：{status}，产物：{artifact.artifact_name}",
+            "connector_id": connector_id,
+            "chat_id": chat_id,
+            "chat_name": chat_name,
+            "status": "pending",
+            "message": message,
+            "template": template,
+            "run_id": run_id,
+            "stage": stage,
+            "created_at": _now_iso(),
+            **({"manual": True} if manual else {}),
         }
-        if platform in {"wechat", "qq"}:
+        if status != "success" and not force_send:
+            target_payload["status"] = "skipped"
+            target_payload["reason"] = "部署未成功，不发送成功通知"
+            results.append(target_payload)
+            continue
+        if platform == "feishu":
+            if not connector_id or not chat_id:
+                target_payload["status"] = "failed"
+                target_payload["reason"] = "飞书通知缺少机器人连接器或 chat_id"
+            else:
+                target_payload.update(
+                    _send_project_deploy_feishu_notification(
+                        connector_id=connector_id,
+                        chat_id=chat_id,
+                        message=message,
+                        artifact=artifact,
+                        status=status,
+                        idempotency_scope=idempotency_scope,
+                    )
+                )
+        elif platform in {"wechat", "qq"}:
+            target_payload["status"] = "unsupported"
             target_payload["reason"] = f"{platform} notification sender is not implemented"
+        else:
+            target_payload["status"] = "unsupported"
+            target_payload["reason"] = f"{platform or 'unknown'} notification sender is not implemented"
         results.append(target_payload)
     return results
 
@@ -3281,8 +3540,7 @@ def _build_project_deploy_artifact_plan_messages(
                 limit=80,
             ),
         }
-        for target in (component.get("targets") if isinstance(component.get("targets"), list) else [])
-        if isinstance(target, dict) and bool(target.get("enabled", True))
+        for target in _select_project_deploy_targets(component, req.target_ids)
     ]
     file_tree = artifact.file_tree if isinstance(artifact.file_tree, list) else []
     manifest = artifact.manifest if isinstance(artifact.manifest, dict) else {}
@@ -3361,6 +3619,7 @@ def _build_project_deploy_artifact_runtime_context(
     requirement: str,
     plan: str,
     ai_content: str = "",
+    target_ids: Any = None,
 ) -> dict[str, Any]:
     profile = _find_project_deploy_profile(project, artifact.profile) or {}
     component = _find_project_deploy_component(profile, artifact.component) or {}
@@ -3380,8 +3639,7 @@ def _build_project_deploy_artifact_runtime_context(
                 limit=80,
             ),
         }
-        for target in (component.get("targets") if isinstance(component.get("targets"), list) else [])
-        if isinstance(target, dict) and bool(target.get("enabled", True))
+        for target in _select_project_deploy_targets(component, target_ids)
     ]
     manifest = artifact.manifest if isinstance(artifact.manifest, dict) else {}
     return {
@@ -3422,12 +3680,14 @@ def _build_project_deploy_artifact_execution_plan_messages(
     artifact: ProjectDeployArtifact,
     requirement: str,
     plan: str,
+    target_ids: Any = None,
 ) -> list[dict[str, str]]:
     context = _build_project_deploy_artifact_runtime_context(
         project=project,
         artifact=artifact,
         requirement=requirement,
         plan=plan,
+        target_ids=target_ids,
     )
     controlled_tools = [
         {
@@ -3531,6 +3791,7 @@ async def _generate_project_deploy_artifact_execution_plan_payload(
         artifact=artifact,
         requirement=requirement,
         plan=plan,
+        target_ids=req.target_ids,
     )
     resolved_runtime = await _resolve_project_chat_runtime(chat_settings, auth_payload)
     if resolved_runtime.provider_mode == "local_connector":
@@ -3580,12 +3841,14 @@ def _build_project_deploy_agent_messages(
     requirement: str,
     plan: str,
     transcript: list[dict[str, Any]],
+    target_ids: Any = None,
 ) -> list[dict[str, str]]:
     context = _build_project_deploy_artifact_runtime_context(
         project=project,
         artifact=artifact,
         requirement=requirement,
         plan=plan,
+        target_ids=target_ids,
     )
     tools = [
         {
@@ -3696,6 +3959,7 @@ async def _call_project_deploy_agent_model(
         requirement=req.requirement,
         plan=req.plan,
         transcript=transcript,
+        target_ids=req.target_ids,
     )
     resolved_runtime = await _resolve_project_chat_runtime(chat_settings, auth_payload)
     if resolved_runtime.provider_mode == "local_connector":
@@ -3743,6 +4007,7 @@ async def _execute_project_deploy_artifact_agent_payload(
         chat_session_id=_normalize_project_deploy_text(chat_session_id, limit=120),
         task_tree_node_id="",
         require_auto_deploy_enabled=False,
+        target_ids=req.target_ids,
     )
     if run is None:
         artifact.status = "blocked"
@@ -3751,11 +4016,7 @@ async def _execute_project_deploy_artifact_agent_payload(
         raise HTTPException(400, "项目部署配置未启用，或产物所属环境/部署单元不存在")
     profile = _find_project_deploy_profile(project, artifact.profile) or {}
     component = _find_project_deploy_component(profile, artifact.component) or {}
-    targets = [
-        target
-        for target in (component.get("targets") if isinstance(component.get("targets"), list) else [])
-        if isinstance(target, dict) and bool(target.get("enabled", True))
-    ]
+    targets = _select_project_deploy_targets(component, req.target_ids)
     run.status = "running"
     run.stage = "ai_deploy_agent_running"
     run.artifact_summary = {
@@ -3764,6 +4025,7 @@ async def _execute_project_deploy_artifact_agent_payload(
         "user_requirement": _normalize_project_deploy_text(req.requirement, limit=2000),
         "ai_deploy_plan": _normalize_project_deploy_text(req.plan, limit=4000),
         "agent_mode": True,
+        **_project_deploy_target_summary(targets),
     }
     run = project_deploy_store.save_run(run)
     artifact.status = "deploy_queued"
@@ -3887,7 +4149,15 @@ async def _execute_project_deploy_artifact_agent_payload(
         "upload_actions": uploaded_actions,
         "uploaded_target_count": len([item for item in tool_results if str(item.get("tool") or "").startswith("upload_")]),
     }
-    run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
+    run.notify_result = _build_project_deploy_notification_preview(
+        project,
+        artifact,
+        status=run.status,
+        run_id=run.id,
+        stage=run.stage,
+        log_excerpt=run.log_excerpt,
+        deploy_time=run.created_at,
+    )
     run = project_deploy_store.save_run(run)
     artifact.deployment_id = run.id
     artifact.status = _project_deploy_artifact_status_for_run(run.status)
@@ -3978,12 +4248,14 @@ def _build_project_deploy_artifact_ai_execute_message(
     artifact: ProjectDeployArtifact,
     requirement: str,
     plan: str,
+    target_ids: Any = None,
 ) -> str:
     context = _build_project_deploy_artifact_runtime_context(
         project=project,
         artifact=artifact,
         requirement=requirement,
         plan=plan,
+        target_ids=target_ids,
     )
     return (
         "部署 Agent 已从“部署产物 / AI 部署”入口接管一次真实部署。\n"
@@ -4024,35 +4296,12 @@ async def _execute_project_deploy_artifact_via_project_chat(
     auth_payload: dict[str, Any],
 ) -> dict[str, Any]:
     username = _current_username(auth_payload) or "unknown"
-    source_context = {
-        "source_type": "manual_ai_chat",
-        "entry": "deploy_artifact_ai_execute",
-        "project_id": project.id,
-        "artifact_id": artifact.id,
-    }
     chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
     chat_mode = str(chat_settings.get("chat_mode") or "").strip().lower()
-    chat_session_id = _normalize_project_deploy_text(req.chat_session_id, limit=120)
-    if chat_session_id:
-        existing_session = project_chat_store.get_session(project.id, username, chat_session_id)
-    else:
-        existing_session = None
-    if existing_session is None:
-        session = project_chat_store.create_session(
-            project.id,
-            username,
-            f"AI 部署：{artifact.artifact_name or artifact.id}",
-            source_context=source_context,
-            session_id=chat_session_id,
-        )
-        chat_session_id = session.id
-        await publish_project_chat_session_realtime(
-            project_id=project.id,
-            username=username,
-            chat_session_id=chat_session_id,
-            status="created",
-            message="AI 部署会话已创建",
-        )
+    chat_session_id = (
+        _normalize_project_deploy_text(req.chat_session_id, limit=120)
+        or f"deploy-ai-{uuid.uuid4().hex[:12]}"
+    )
     requirement = _normalize_project_deploy_text(req.requirement, limit=2000)
     plan = _normalize_project_deploy_text(req.plan, limit=4000)
     user_message = _build_project_deploy_artifact_ai_execute_message(
@@ -4060,6 +4309,7 @@ async def _execute_project_deploy_artifact_via_project_chat(
         artifact=artifact,
         requirement=requirement,
         plan=plan,
+        target_ids=req.target_ids,
     )
     requested_provider_id = _normalize_project_deploy_text(req.provider_id, limit=120)
     requested_model_name = _normalize_project_deploy_text(req.model_name, limit=160)
@@ -4068,34 +4318,6 @@ async def _execute_project_deploy_artifact_via_project_chat(
         for item in (chat_settings.get("selected_employee_ids") or [])
         if str(item or "").strip()
     ]
-    assistant_record = _append_chat_record(
-        project_id=project.id,
-        username=username,
-        role="assistant",
-        content=user_message,
-        chat_session_id=chat_session_id,
-        source_context={
-            **source_context,
-            "deploy_artifact_ai_execute": "started",
-            "chat_mode": chat_mode,
-            "enabled_project_tool_names": _project_deploy_artifact_ai_tool_names(),
-            "ai_deploy_server_side": True,
-        },
-    )
-    if assistant_record is not None:
-        await publish_project_chat_record_realtime(
-            project_id=project.id,
-            username=username,
-            chat_session_id=chat_session_id,
-            message=assistant_record,
-        )
-    await publish_project_chat_session_realtime(
-        project_id=project.id,
-        username=username,
-        chat_session_id=chat_session_id,
-        status="updated",
-        message="AI 部署已开始执行",
-    )
     agent_payload: dict[str, Any] = {}
     try:
         deployment_result = await _execute_project_deploy_artifact_agent_payload(
@@ -4107,6 +4329,7 @@ async def _execute_project_deploy_artifact_via_project_chat(
                 chat_session_id=chat_session_id,
                 provider_id=requested_provider_id,
                 model_name=requested_model_name,
+                target_ids=req.target_ids,
             ),
             requested_by=username,
             chat_session_id=chat_session_id,
@@ -4131,6 +4354,7 @@ async def _execute_project_deploy_artifact_via_project_chat(
             stage="ai_deploy_agent_failed",
             message=str(detail),
             raw_plan=agent_payload,
+            target_ids=req.target_ids,
         )
     deployment = deployment_result.get("deployment") if isinstance(deployment_result, dict) else None
     deployment_status = str(
@@ -4139,47 +4363,6 @@ async def _execute_project_deploy_artifact_via_project_chat(
         or ""
     ).strip()
     ai_execution_status = "failed" if deployment_status == "failed" else ("blocked" if deployment_status == "blocked" else "executed")
-    result_content_prefix = (
-        "AI 部署失败，已写入部署运行日志。"
-        if ai_execution_status == "failed"
-        else (
-            "AI 部署已阻塞，已写入部署运行日志。"
-            if ai_execution_status == "blocked"
-            else "AI 部署已通过服务端受控部署工具执行。"
-        )
-    )
-    result_record = _append_chat_record(
-        project_id=project.id,
-        username=username,
-        role="assistant",
-        content=(
-            f"{result_content_prefix}\n"
-            f"- artifact_id: {artifact.id}\n"
-            f"- deployment_id: {str((deployment or {}).get('id') or '').strip() or '-'}\n"
-            f"- status: {deployment_status or '-'}"
-        ),
-        chat_session_id=chat_session_id,
-        source_context={
-            **source_context,
-            "deploy_artifact_ai_execute": "executed",
-            "chat_mode": chat_mode,
-            "ai_deploy_server_side": True,
-        },
-    )
-    if result_record is not None:
-        await publish_project_chat_record_realtime(
-            project_id=project.id,
-            username=username,
-            chat_session_id=chat_session_id,
-            message=result_record,
-        )
-    await publish_project_chat_session_realtime(
-        project_id=project.id,
-        username=username,
-        chat_session_id=chat_session_id,
-        status="updated",
-        message="AI 部署执行完成",
-    )
     return {
         "ai_execution": {
             "status": ai_execution_status,
@@ -4207,6 +4390,7 @@ async def _execute_project_deploy_artifact_via_project_chat(
                 artifact=artifact,
                 requirement=requirement,
                 plan=plan,
+                target_ids=req.target_ids,
             ),
         },
         **deployment_result,
@@ -13131,13 +13315,110 @@ async def get_global_assistant_speech_runtime(
     return {"runtime": _build_global_speech_runtime(auth_payload)}
 
 
+_QUERY_MCP_CLI_PROMPT_PROFILES: list[dict[str, str]] = [
+    {
+        "key": "codex",
+        "label": "Codex CLI",
+        "resource": "query://client-profile/codex",
+        "client_desc": "Codex CLI",
+    },
+    {
+        "key": "hermes",
+        "label": "Hermes",
+        "resource": "query://client-profile/hermes",
+        "client_desc": "Hermes",
+    },
+    {
+        "key": "claude-code",
+        "label": "Claude Code",
+        "resource": "query://client-profile/claude-code",
+        "client_desc": "Claude Code",
+    },
+    {
+        "key": "generic-cli",
+        "label": "Generic CLI",
+        "resource": "query://client-profile/generic-cli",
+        "client_desc": "通用 MCP CLI",
+    },
+]
+_QUERY_MCP_CLI_PROMPT_PROFILE_KEYS = {item["key"] for item in _QUERY_MCP_CLI_PROMPT_PROFILES}
+_QUERY_MCP_CLI_PROMPT_PROFILE_DEFAULT = "codex"
+
+
+def _query_mcp_cli_prompt_profile_meta(client_profile: str) -> dict[str, str]:
+    profile = _normalize_query_mcp_cli_prompt_profile(client_profile)
+    return next(
+        (item for item in _QUERY_MCP_CLI_PROMPT_PROFILES if item["key"] == profile),
+        _QUERY_MCP_CLI_PROMPT_PROFILES[0],
+    )
+
+
+# 多客户端混排的资源清单 / 第 1 步引导文案；按客户端聚焦时需替换成单一画像版本。
+_QUERY_MCP_CLI_PROMPT_SHARED_RESOURCE_LINES = (
+    "- `query://client-profile/codex`（Codex CLI）\n"
+    "- `query://client-profile/hermes`（Hermes）\n"
+    "- `query://client-profile/claude-code`（Claude Code）\n"
+    "- `query://client-profile/generic-cli`（其他 MCP CLI / 通用智能体）"
+)
+_QUERY_MCP_CLI_PROMPT_LEGACY_SHARED_RESOURCE_LINES = (
+    "- `query://client-profile/codex`（Codex CLI）\n"
+    "- `query://client-profile/claude-code`（Claude Code）\n"
+    "- `query://client-profile/generic-cli`（其他 MCP CLI / 通用智能体）"
+)
+_QUERY_MCP_CLI_PROMPT_SHARED_STEP1 = (
+    "1. 先读取 `query://usage-guide`；再按当前客户端读取对应画像："
+    "Codex 读 `query://client-profile/codex`，Hermes 读 `query://client-profile/hermes`，Claude Code 读 `query://client-profile/claude-code`，"
+    "其他 CLI 或不确定时读 `query://client-profile/generic-cli`。"
+)
+_QUERY_MCP_CLI_PROMPT_LEGACY_SHARED_STEP1 = (
+    "1. 先读取 `query://usage-guide`；再按当前客户端读取对应画像："
+    "Codex 读 `query://client-profile/codex`，Claude Code 读 `query://client-profile/claude-code`，"
+    "其他 CLI 或不确定时读 `query://client-profile/generic-cli`。"
+)
+
+
+def _normalize_query_mcp_cli_prompt_profile(client_profile: str = "") -> str:
+    value = str(client_profile or "").strip().lower()
+    if value in _QUERY_MCP_CLI_PROMPT_PROFILE_KEYS:
+        return value
+    return _QUERY_MCP_CLI_PROMPT_PROFILE_DEFAULT
+
+
+def _focus_query_mcp_cli_prompt_on_profile(rendered: str, client_profile: str) -> str:
+    """把混排三客户端的资源清单与第 1 步引导，替换成当前客户端单一画像版本。
+
+    仅替换已知的默认文案；自定义模板若已改写这两段，则原样保留（退回三画像并存），
+    不做静默兜底以外的强制改写。"""
+    meta = _query_mcp_cli_prompt_profile_meta(client_profile)
+    focused_resource_line = f"- `{meta['resource']}`（{meta['client_desc']}）"
+    focused_step1 = (
+        f"1. 先读取 `query://usage-guide`；当前客户端是 {meta['label']}，再读取对应画像 `{meta['resource']}`。"
+    )
+    result = rendered
+    if _QUERY_MCP_CLI_PROMPT_SHARED_RESOURCE_LINES in result:
+        result = result.replace(
+            _QUERY_MCP_CLI_PROMPT_SHARED_RESOURCE_LINES, focused_resource_line, 1
+        )
+    if _QUERY_MCP_CLI_PROMPT_LEGACY_SHARED_RESOURCE_LINES in result:
+        result = result.replace(
+            _QUERY_MCP_CLI_PROMPT_LEGACY_SHARED_RESOURCE_LINES, focused_resource_line, 1
+        )
+    if _QUERY_MCP_CLI_PROMPT_SHARED_STEP1 in result:
+        result = result.replace(_QUERY_MCP_CLI_PROMPT_SHARED_STEP1, focused_step1, 1)
+    if _QUERY_MCP_CLI_PROMPT_LEGACY_SHARED_STEP1 in result:
+        result = result.replace(_QUERY_MCP_CLI_PROMPT_LEGACY_SHARED_STEP1, focused_step1, 1)
+    return result
+
+
 def _build_query_mcp_cli_prompt(
     *,
     project_id: str = "",
     chat_session_id: str = "",
     clarity_confirm_threshold: int = 3,
+    client_profile: str = "codex",
 ) -> str:
     config = system_config_store.get_global()
+    normalized_client_profile = _normalize_query_mcp_cli_prompt_profile(client_profile)
     template = normalize_query_mcp_bootstrap_prompt_template(
         getattr(config, "query_mcp_bootstrap_prompt_template", "") or ""
     ).strip()
@@ -13188,17 +13469,17 @@ def _build_query_mcp_cli_prompt(
                     chat_session_block,
                 ]
             ).strip()
-        return rendered
+        return _focus_query_mcp_cli_prompt_on_profile(rendered, normalized_client_profile)
     sections = [
         "你已接入统一查询 MCP。",
         "",
         "详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：",
         "- `query://usage-guide`",
-        "- `query://client-profile/codex`",
+        f"- `{_query_mcp_cli_prompt_profile_meta(normalized_client_profile)['resource']}`（{_query_mcp_cli_prompt_profile_meta(normalized_client_profile)['client_desc']}）",
         "",
         "强制接入步骤：",
-        "1. 先读取 `query://usage-guide`；当前是 Codex CLI 时，再读取 `query://client-profile/codex`。",
-        "1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/codex`，禁止反复调用 `list_mcp_resources`。",
+        f"1. 先读取 `query://usage-guide`；当前客户端是 {_query_mcp_cli_prompt_profile_meta(normalized_client_profile)['label']}，再读取对应画像 `{_query_mcp_cli_prompt_profile_meta(normalized_client_profile)['resource']}`。",
+        "1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和当前客户端对应的 `query://client-profile/...`，禁止反复调用 `list_mcp_resources`。",
         "1.2 对“有几个员工 / 有哪些员工 / 有哪些工具 / 有哪些规则”这类简单查询，且 `project_id` 已明确时，直接调用对应业务工具（如 `list_project_members(project_id=...)`、`list_project_proxy_tools(...)`），不要为了满足 bootstrap 机械列资源目录。",
         "2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用；canonical session 状态只使用 `active-sessions/<chat_session_id>.json` 与 `session-history/<project_id>__<chat_session_id>.json`。",
         "3. 再检查 `.ai-employee/skills/query-mcp-workflow/` 是否已存在；缺失时先通过 MCP 从服务端技能库同步或创建到当前工作区，已存在则直接复用，禁止重复创建。",
@@ -13250,7 +13531,9 @@ def _build_query_mcp_cli_prompt(
             "- 若入口文件或宿主系统还有额外约束，优先遵守宿主入口文件约定。",
         ]
     )
-    return "\n".join(sections).strip()
+    return _focus_query_mcp_cli_prompt_on_profile(
+        "\n".join(sections).strip(), normalized_client_profile
+    )
 
 
 @router.get("/query-mcp/runtime")
@@ -13287,10 +13570,13 @@ async def get_query_mcp_runtime(
             "bootstrap_resources": [
                 "query://usage-guide",
                 "query://client-profile/codex",
+                "query://client-profile/hermes",
+                "query://client-profile/claude-code",
+                "query://client-profile/generic-cli",
             ],
             "bootstrap_checklist": [
                 "read query://usage-guide",
-                "read query://client-profile/codex",
+                "read the matching client profile: query://client-profile/codex, query://client-profile/claude-code, or query://client-profile/generic-cli",
                 "do not loop on list_mcp_resources; it is resource discovery only and may be called at most once per turn",
                 "for simple project queries with a known project_id, call the matching business tool directly instead of listing resources",
                 "initialize local .ai-employee state in the current CLI workspace and ensure query-mcp-workflow is available there",
@@ -13313,7 +13599,23 @@ async def get_query_mcp_runtime(
                 project_id=normalized_project_id,
                 chat_session_id=normalized_chat_session_id,
                 clarity_confirm_threshold=clarity_confirm_threshold,
+                client_profile=_QUERY_MCP_CLI_PROMPT_PROFILE_DEFAULT,
             ),
+            "cli_prompts": [
+                {
+                    "key": profile["key"],
+                    "label": profile["label"],
+                    "client_profile_resource": profile["resource"],
+                    "prompt": _build_query_mcp_cli_prompt(
+                        project_id=normalized_project_id,
+                        chat_session_id=normalized_chat_session_id,
+                        clarity_confirm_threshold=clarity_confirm_threshold,
+                        client_profile=profile["key"],
+                    ),
+                }
+                for profile in _QUERY_MCP_CLI_PROMPT_PROFILES
+                if profile["key"] != "generic-cli"
+            ],
         }
     }
 
@@ -16281,6 +16583,7 @@ def _push_project_deploy_artifact_content(
             requested_by=uploaded_by,
             chat_session_id=_normalize_project_deploy_text(req.chat_session_id, limit=120),
             task_tree_node_id=_normalize_project_deploy_text(req.task_tree_node_id, limit=120),
+            target_ids=req.target_ids,
         )
         if run is not None:
             deploy_requirement = _normalize_project_deploy_text(req.requirement, limit=2000)
@@ -16295,12 +16598,7 @@ def _push_project_deploy_artifact_content(
                 **({"archive_suffix": manifest.get("archive_suffix")} if manifest.get("archive_suffix") else {}),
             }
             if run.status == "queued":
-                component_targets = component.get("targets") if isinstance(component.get("targets"), list) else []
-                targets = [
-                    target
-                    for target in component_targets
-                    if isinstance(target, dict) and bool(target.get("enabled", True))
-                ]
+                targets = _select_project_deploy_targets(component, req.target_ids)
                 run = _execute_project_deploy_run_for_artifact(
                     project=project,
                     artifact=artifact,
@@ -16412,6 +16710,7 @@ def _push_project_deploy_artifact_directory_content(
             requested_by=uploaded_by,
             chat_session_id=_normalize_project_deploy_text(req.chat_session_id, limit=120),
             task_tree_node_id=_normalize_project_deploy_text(req.task_tree_node_id, limit=120),
+            target_ids=req.target_ids,
         )
         if run is not None:
             deploy_requirement = _normalize_project_deploy_text(req.requirement, limit=2000)
@@ -16424,12 +16723,7 @@ def _push_project_deploy_artifact_directory_content(
                 **({"ai_deploy_plan": deploy_plan} if deploy_plan else {}),
             }
             if run.status == "queued":
-                component_targets = component.get("targets") if isinstance(component.get("targets"), list) else []
-                targets = [
-                    target
-                    for target in component_targets
-                    if isinstance(target, dict) and bool(target.get("enabled", True))
-                ]
+                targets = _select_project_deploy_targets(component, req.target_ids)
                 run = _execute_project_deploy_run_for_artifact(
                     project=project,
                     artifact=artifact,
@@ -16476,6 +16770,7 @@ def _deploy_project_deploy_artifact_payload(
     requirement: str = "",
     plan: str = "",
     execution_plan: dict[str, Any] | None = None,
+    target_ids: Any = None,
 ) -> dict[str, Any]:
     artifact_id_value = _normalize_project_deploy_text(artifact_id, limit=120)
     if not artifact_id_value:
@@ -16496,6 +16791,7 @@ def _deploy_project_deploy_artifact_payload(
         chat_session_id=_normalize_project_deploy_text(chat_session_id, limit=120),
         task_tree_node_id=_normalize_project_deploy_text(task_tree_node_id, limit=120),
         require_auto_deploy_enabled=False,
+        target_ids=target_ids,
     )
     if run is None:
         artifact.status = "blocked"
@@ -16517,12 +16813,7 @@ def _deploy_project_deploy_artifact_payload(
     if run.status == "queued":
         profile = _find_project_deploy_profile(project, artifact.profile) or {}
         component = _find_project_deploy_component(profile, artifact.component) or {}
-        component_targets = component.get("targets") if isinstance(component.get("targets"), list) else []
-        targets = [
-            target
-            for target in component_targets
-            if isinstance(target, dict) and bool(target.get("enabled", True))
-        ]
+        targets = _select_project_deploy_targets(component, target_ids)
         run = _execute_project_deploy_run_for_artifact(
             project=project,
             artifact=artifact,
@@ -16552,6 +16843,7 @@ def _fail_project_deploy_artifact_ai_execution_payload(
     stage: str,
     message: str,
     raw_plan: Any = None,
+    target_ids: Any = None,
 ) -> dict[str, Any]:
     run = _create_project_deploy_run_for_artifact(
         project=project,
@@ -16560,6 +16852,7 @@ def _fail_project_deploy_artifact_ai_execution_payload(
         chat_session_id=_normalize_project_deploy_text(chat_session_id, limit=120),
         task_tree_node_id="",
         require_auto_deploy_enabled=False,
+        target_ids=target_ids,
     )
     if run is None:
         artifact.status = "failed"
@@ -16580,7 +16873,15 @@ def _fail_project_deploy_artifact_ai_execution_payload(
     }
     artifact.status = "failed"
     artifact.error = run.log_excerpt
-    run.notify_result = _build_project_deploy_notification_preview(project, artifact, status=run.status)
+    run.notify_result = _build_project_deploy_notification_preview(
+        project,
+        artifact,
+        status=run.status,
+        run_id=run.id,
+        stage=run.stage,
+        log_excerpt=run.log_excerpt,
+        deploy_time=run.created_at,
+    )
     project_deploy_store.save_artifact(artifact)
     run = project_deploy_store.save_run(run)
     artifact.deployment_id = run.id
@@ -16590,6 +16891,63 @@ def _fail_project_deploy_artifact_ai_execution_payload(
         "project_id": project.id,
         "artifact": _serialize_project_deploy_artifact(artifact),
         "deployment": _serialize_project_deploy_run(run),
+    }
+
+
+def _send_project_deploy_run_notification_payload(
+    *,
+    project: ProjectConfig,
+    run_id: str,
+    requested_by: str,
+) -> dict[str, Any]:
+    run_id_value = _normalize_project_deploy_text(run_id, limit=120)
+    if not run_id_value:
+        raise HTTPException(400, "run_id is required")
+    run = project_deploy_store.get_run(project.id, run_id_value)
+    if run is None:
+        raise HTTPException(404, f"Deploy run {run_id_value} not found")
+    artifact = project_deploy_store.get_artifact(project.id, run.artifact_id) if run.artifact_id else None
+    if artifact is None:
+        summary = run.artifact_summary if isinstance(run.artifact_summary, dict) else {}
+        artifact = ProjectDeployArtifact(
+            id=_normalize_project_deploy_text(run.artifact_id, limit=120) or f"run-{run.id}",
+            project_id=project.id,
+            profile=run.profile,
+            component=run.component,
+            artifact_name=_normalize_project_deploy_text(summary.get("artifact_name"), limit=240) or run.artifact_id or run.id,
+            artifact_kind=_normalize_project_deploy_text(summary.get("artifact_kind"), limit=120),
+            version=_normalize_project_deploy_text(summary.get("version"), limit=120),
+            checksum=_normalize_project_deploy_text(summary.get("checksum"), limit=200),
+            size=int(summary.get("size") or 0) if str(summary.get("size") or "0").isdigit() else 0,
+        )
+    notify_result = _build_project_deploy_notification_preview(
+        project,
+        artifact,
+        status=run.status,
+        run_id=run.id,
+        stage=run.stage,
+        log_excerpt=run.log_excerpt,
+        deploy_time=run.created_at,
+        force_send=True,
+        manual=True,
+        idempotency_scope=f"manual-{run.id}-{requested_by}-{uuid.uuid4().hex[:8]}",
+    )
+    if not notify_result:
+        raise HTTPException(400, "当前部署单元未配置通知目标")
+    previous_results = run.notify_result if isinstance(run.notify_result, list) else []
+    run.notify_result = [*previous_results, *notify_result]
+    run.artifact_summary = {
+        **(run.artifact_summary if isinstance(run.artifact_summary, dict) else {}),
+        "manual_notify_requested_by": requested_by,
+        "manual_notify_at": _now_iso(),
+        "manual_notify_count": len(notify_result),
+    }
+    run = project_deploy_store.save_run(run)
+    return {
+        "status": "sent" if any(item.get("status") == "sent" for item in notify_result) else "completed",
+        "project_id": project.id,
+        "run": _serialize_project_deploy_run(run),
+        "notify_result": notify_result,
     }
 
 
@@ -16641,12 +16999,16 @@ async def upload_project_deploy_artifact(
     version = _project_deploy_form_text(form, "version", "")
     chat_session_id = _project_deploy_form_text(form, "chat_session_id", "")
     task_tree_node_id = _project_deploy_form_text(form, "task_tree_node_id", "")
+    target_ids_json = _project_deploy_form_text(form, "target_ids_json", "")
     manifest = _parse_project_deploy_upload_manifest(
         manifest_json=manifest_json,
         checksum=checksum,
         size=size,
         version=version,
     )
+    target_ids = _normalize_project_deploy_target_ids(target_ids_json) or _normalize_project_deploy_target_ids(manifest.get("target_ids"))
+    if target_ids:
+        manifest["target_ids"] = target_ids
     upload_files = [item for item in form.getlist("files") if _is_project_deploy_upload_file(item)]
     single_file = form.get("file")
     if _is_project_deploy_upload_file(single_file):
@@ -16664,6 +17026,7 @@ async def upload_project_deploy_artifact(
         auto_deploy=False,
         chat_session_id=chat_session_id,
         task_tree_node_id=task_tree_node_id,
+        target_ids=target_ids,
     )
     file_entries_meta = manifest.get("file_entries") if isinstance(manifest.get("file_entries"), list) else []
     if source_type == "directory-tar":
@@ -16727,6 +17090,7 @@ async def deploy_project_deploy_artifact(
         task_tree_node_id=payload.task_tree_node_id,
         requirement=payload.requirement,
         plan=payload.plan,
+        target_ids=payload.target_ids,
     )
 
 
@@ -16847,6 +17211,22 @@ async def list_project_deploy_runs(
             for item in project_deploy_store.list_runs(project_id, limit=limit)
         ],
     }
+
+
+@router.post("/{project_id}/deploy-runs/{run_id}/notify")
+async def send_project_deploy_run_notification(
+    project_id: str,
+    run_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    return await run_in_threadpool(
+        _send_project_deploy_run_notification_payload,
+        project=project,
+        run_id=run_id,
+        requested_by=_current_username(auth_payload) or "unknown",
+    )
 
 
 @router.delete("/{project_id}/deploy-runs/{run_id}")

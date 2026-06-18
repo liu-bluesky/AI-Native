@@ -25,11 +25,14 @@ DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = """你已接入统一查询 MCP。
 
 详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：
 - `query://usage-guide`
-- `query://client-profile/codex`
+- `query://client-profile/codex`（Codex CLI）
+- `query://client-profile/hermes`（Hermes）
+- `query://client-profile/claude-code`（Claude Code）
+- `query://client-profile/generic-cli`（其他 MCP CLI / 通用智能体）
 
 强制接入步骤：
-1. 先读取 `query://usage-guide`；当前是 Codex CLI 时，再读取 `query://client-profile/codex`。
-1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/codex`，禁止反复调用 `list_mcp_resources`。
+1. 先读取 `query://usage-guide`；再按当前客户端读取对应画像：Codex 读 `query://client-profile/codex`，Hermes 读 `query://client-profile/hermes`，Claude Code 读 `query://client-profile/claude-code`，其他 CLI 或不确定时读 `query://client-profile/generic-cli`。
+1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和当前客户端对应的 `query://client-profile/...`，禁止反复调用 `list_mcp_resources`。
 1.2 对“有几个员工 / 有哪些员工 / 有哪些工具 / 有哪些规则”这类简单查询，且 `project_id` 已明确时，直接调用对应业务工具（如 `list_project_members(project_id=...)`、`list_project_proxy_tools(...)`），不要为了满足 bootstrap 机械列资源目录。
 2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用；canonical session 状态只使用 `active-sessions/<chat_session_id>.json` 与 `session-history/<project_id>__<chat_session_id>.json`。
 3. 再检查 `.ai-employee/skills/query-mcp-workflow/` 是否已存在；缺失时先通过 MCP 从服务端技能库同步或创建到当前工作区，已存在则直接复用，禁止重复创建。
@@ -83,7 +86,7 @@ DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = """# Unified Query MCP
 - 推荐工具: start_project_workflow / bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory
 
 ## 最少执行规则
-1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。
+1. 先读取 query://usage-guide；再按当前客户端读取对应 client profile：Codex 读 query://client-profile/codex，Hermes 读 query://client-profile/hermes，Claude Code 读 query://client-profile/claude-code，其他 CLI 或不确定时读 query://client-profile/generic-cli。
 1.0.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 read_mcp_resource 读取 query://usage-guide 和对应 client profile，禁止反复调用 list_mcp_resources。
 1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些员工、工具、规则或需求历史，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree / list_recent_project_requirements 等对应工具，不要为了 bootstrap 机械列资源目录。
 1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。
@@ -164,7 +167,7 @@ DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = """# Unified Query MCP
 - 同一任务轮若已生成任务树并进入执行，后续优先依赖当前会话、任务树和工作轨迹；除非用户明确要求沿用历史方案或当前上下文明显不足，否则不要重复 recall。
 - save_project_memory 只在补充稳定结论或关键决策时使用；不要在同一需求的每个中间步骤重复补记。如宿主已启用自动记忆快照，仅在入口未覆盖自动记忆或需要补一条稳定结论时再额外保存。
 - build_delivery_report 用于结构化汇总本轮交付；generate_release_note_entry 用于生成更新日志条目。
-- 可读取 query://client-profile/claude-code 或 query://client-profile/codex 作为客户端接入画像。
+- 可读取 query://client-profile/codex、query://client-profile/hermes、query://client-profile/claude-code 或 query://client-profile/generic-cli 作为客户端接入画像。
 
 ## 说明
 - 本入口仍以查询与聚合优先；如宿主支持多 MCP，复杂执行场景仍优先直连对应 project MCP。
@@ -177,7 +180,15 @@ _LEGACY_SEARCH_IDS_LINE = '首轮必须把用户原始问题原文传给 `search
 _UPDATED_SEARCH_IDS_LINE = '仅在缺少明确的 `project_id` / `employee_id` / `rule_id`，或需要跨项目检索时，再调用 `search_ids(keyword="<用户原始问题>")`；已明确当前项目且在项目内执行时可直接读取上下文或进入本地实现，不要为满足流程机械检索。'
 _LEGACY_SEARCH_IDS_LINE_GUIDE = '首轮查询必须把用户原始问题原文放进 search_ids(keyword="<用户原始问题>")；不要只写“当前项目”“这个规则”“项目手册”这类代称。'
 _UPDATED_SEARCH_IDS_LINE_GUIDE = '仅在缺少明确的 project_id / employee_id / rule_id，或需要跨项目检索时，再调用 search_ids(keyword="<用户原始问题>")；已明确当前项目且在项目内执行时，可直接 get_manual_content、start_project_workflow 或进入本地实现。'
-_RESOURCE_DISCOVERY_GUARD_BOOTSTRAP_LINE = '1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/codex`，禁止反复调用 `list_mcp_resources`。'
+_CLIENT_PROFILE_BOOTSTRAP_LINE = '1. 先读取 `query://usage-guide`；再按当前客户端读取对应画像：Codex 读 `query://client-profile/codex`，Hermes 读 `query://client-profile/hermes`，Claude Code 读 `query://client-profile/claude-code`，其他 CLI 或不确定时读 `query://client-profile/generic-cli`。'
+_RESOURCE_DISCOVERY_GUARD_BOOTSTRAP_LINE = '1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和当前客户端对应的 `query://client-profile/...`，禁止反复调用 `list_mcp_resources`。'
+_CLIENT_PROFILE_GUIDE_LINE = '1. 先读取 query://usage-guide；再按当前客户端读取对应 client profile：Codex 读 query://client-profile/codex，Hermes 读 query://client-profile/hermes，Claude Code 读 query://client-profile/claude-code，其他 CLI 或不确定时读 query://client-profile/generic-cli。'
+_CLIENT_PROFILE_BOOTSTRAP_RESOURCE_LINES = [
+    "- `query://client-profile/codex`（Codex CLI）",
+    "- `query://client-profile/hermes`（Hermes）",
+    "- `query://client-profile/claude-code`（Claude Code）",
+    "- `query://client-profile/generic-cli`（其他 MCP CLI / 通用智能体）",
+]
 _SIMPLE_QUERY_DIRECT_BOOTSTRAP_LINE = '1.2 对“有几个员工 / 有哪些员工 / 有哪些工具 / 有哪些规则”这类简单查询，且 `project_id` 已明确时，直接调用对应业务工具（如 `list_project_members(project_id=...)`、`list_project_proxy_tools(...)`），不要为了满足 bootstrap 机械列资源目录。'
 _RESOURCE_DISCOVERY_GUARD_GUIDE_LINE = '1.0.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 read_mcp_resource 读取 query://usage-guide 和对应 client profile，禁止反复调用 list_mcp_resources。'
 _SIMPLE_QUERY_DIRECT_GUIDE_LINE = '1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些员工、工具、规则或需求历史，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree / list_recent_project_requirements 等对应工具，不要为了 bootstrap 机械列资源目录。'
@@ -269,6 +280,39 @@ def _insert_prompt_lines(text: str, *, anchor: str, fallback_heading: str, lines
     if fallback_heading in text:
         return text.replace(fallback_heading, f"{fallback_heading}\n{insert_text}", 1)
     return text
+
+
+def _normalize_bootstrap_client_profile_resource_lines(text: str) -> str:
+    upgraded = str(text or "")
+    if "强制接入步骤：" not in upgraded:
+        return upgraded
+
+    header, separator, tail = upgraded.partition("强制接入步骤：")
+    if "详细规则不要直接内联到宿主提示词" not in header:
+        resource_block = "\n".join(
+            [
+                "详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：",
+                "- `query://usage-guide`",
+                *_CLIENT_PROFILE_BOOTSTRAP_RESOURCE_LINES,
+            ]
+        )
+        return header.rstrip() + "\n\n" + resource_block + "\n\n" + separator + "\n" + tail.lstrip("\n")
+
+    lines = header.splitlines()
+    normalized_lines: list[str] = []
+    inserted = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("- `query://client-profile/"):
+            continue
+        normalized_lines.append(line)
+        if stripped == "- `query://usage-guide`":
+            normalized_lines.extend(_CLIENT_PROFILE_BOOTSTRAP_RESOURCE_LINES)
+            inserted = True
+
+    if not inserted:
+        normalized_lines.extend(_CLIENT_PROFILE_BOOTSTRAP_RESOURCE_LINES)
+    return "\n".join(normalized_lines).rstrip() + "\n\n" + separator + "\n" + tail.lstrip("\n")
 
 
 def _normalize_bootstrap_deploy_contract_block(text: str) -> str:
@@ -403,12 +447,35 @@ def normalize_query_mcp_bootstrap_prompt_template(template: str) -> str:
         return DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE
     if _looks_like_legacy_bootstrap_template(normalized):
         return DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE
-    upgraded = _normalize_query_mcp_active_state_contract(
+    upgraded = _normalize_bootstrap_client_profile_resource_lines(_normalize_query_mcp_active_state_contract(
         normalized.replace(_LEGACY_SEARCH_IDS_LINE, _UPDATED_SEARCH_IDS_LINE)
         .replace(_LEGACY_QUERY_MCP_SKILL_SOURCE_LINE, _UPDATED_QUERY_MCP_SKILL_SOURCE_LINE)
         .replace(_LEGACY_CLARITY_DIRECT_LINE, _UPDATED_CLARITY_DIRECT_LINE)
         .replace(_LEGACY_CLARITY_CONFIRM_LINE, _UPDATED_CLARITY_CONFIRM_LINE)
-    )
+        .replace(
+            "1. 先读取 `query://usage-guide`；当前是 Codex CLI 时，再读取 `query://client-profile/codex`。",
+            _CLIENT_PROFILE_BOOTSTRAP_LINE,
+        )
+        .replace(
+            "1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。",
+            _CLIENT_PROFILE_GUIDE_LINE,
+        )
+        .replace(
+            '1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/codex`，禁止反复调用 `list_mcp_resources`。',
+            _RESOURCE_DISCOVERY_GUARD_BOOTSTRAP_LINE,
+        )
+    ))
+    if (
+        "你已接入统一查询 MCP。" in upgraded
+        and "强制接入步骤：" in upgraded
+        and _CLIENT_PROFILE_BOOTSTRAP_LINE not in upgraded
+    ):
+        upgraded = _insert_prompt_lines(
+            upgraded,
+            anchor="强制接入步骤：",
+            fallback_heading="强制接入步骤：",
+            lines=[_CLIENT_PROFILE_BOOTSTRAP_LINE],
+        )
     if (
         "你已接入统一查询 MCP。" in upgraded
         and "强制接入步骤：" in upgraded
@@ -417,7 +484,7 @@ def normalize_query_mcp_bootstrap_prompt_template(template: str) -> str:
             or _SIMPLE_QUERY_DIRECT_BOOTSTRAP_LINE not in upgraded
         )
     ):
-        anchor = "1. 先读取 `query://usage-guide`；当前是 Codex CLI 时，再读取 `query://client-profile/codex`。"
+        anchor = _CLIENT_PROFILE_BOOTSTRAP_LINE
         upgraded = upgraded.replace(f"\n{_RESOURCE_DISCOVERY_GUARD_BOOTSTRAP_LINE}", "")
         upgraded = upgraded.replace(f"\n{_SIMPLE_QUERY_DIRECT_BOOTSTRAP_LINE}", "")
         upgraded = _insert_prompt_lines(
@@ -497,8 +564,23 @@ def normalize_query_mcp_usage_guide_template(template: str) -> str:
             _LEGACY_QUERY_MCP_SKILL_SOURCE_LINE_GUIDE,
             _UPDATED_QUERY_MCP_SKILL_SOURCE_LINE_GUIDE,
         )
+        .replace(
+            "1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。",
+            _CLIENT_PROFILE_GUIDE_LINE,
+        )
     )
     upgraded = _normalize_usage_guide_deploy_contract_lines(upgraded)
+    if (
+        "# Unified Query MCP" in upgraded
+        and "## 最少执行规则" in upgraded
+        and _CLIENT_PROFILE_GUIDE_LINE not in upgraded
+    ):
+        upgraded = _insert_prompt_lines(
+            upgraded,
+            anchor="## 最少执行规则",
+            fallback_heading="## 最少执行规则",
+            lines=[_CLIENT_PROFILE_GUIDE_LINE],
+        )
     if (
         "# Unified Query MCP" in upgraded
         and "## 最少执行规则" in upgraded
@@ -507,7 +589,7 @@ def normalize_query_mcp_usage_guide_template(template: str) -> str:
             or _SIMPLE_QUERY_DIRECT_GUIDE_LINE not in upgraded
         )
     ):
-        anchor = "1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。"
+        anchor = _CLIENT_PROFILE_GUIDE_LINE
         upgraded = upgraded.replace(f"\n{_RESOURCE_DISCOVERY_GUARD_GUIDE_LINE}", "")
         upgraded = upgraded.replace(f"\n{_SIMPLE_QUERY_DIRECT_GUIDE_LINE}", "")
         upgraded = _insert_prompt_lines(

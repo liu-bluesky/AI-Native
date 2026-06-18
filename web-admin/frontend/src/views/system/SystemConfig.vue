@@ -1285,11 +1285,13 @@ const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MC
 
 详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：
 - \`query://usage-guide\`
-- \`query://client-profile/codex\`
+- \`query://client-profile/codex\`（Codex CLI）
+- \`query://client-profile/hermes\`（Hermes）
+- \`query://client-profile/claude-code\`（Claude Code）
 
 强制接入步骤：
-1. 先读取 \`query://usage-guide\`；当前是 Codex CLI 时，再读取 \`query://client-profile/codex\`。
-1.1 \`list_mcp_resources\` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 \`read_mcp_resource\` 读取 \`query://usage-guide\` 和 \`query://client-profile/codex\`，禁止反复调用 \`list_mcp_resources\`。
+1. 先读取 \`query://usage-guide\`；再按当前客户端读取对应画像：Codex 读 \`query://client-profile/codex\`，Hermes 读 \`query://client-profile/hermes\`，Claude Code 读 \`query://client-profile/claude-code\`。
+1.1 \`list_mcp_resources\` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 \`read_mcp_resource\` 读取 \`query://usage-guide\` 和当前客户端对应的 \`query://client-profile/...\`，禁止反复调用 \`list_mcp_resources\`。
 1.2 对“有几个员工 / 有哪些员工 / 有哪些工具 / 有哪些规则”这类简单查询，且 \`project_id\` 已明确时，直接调用对应业务工具（如 \`list_project_members(project_id=...)\`、\`list_project_proxy_tools(...)\`），不要为了满足 bootstrap 机械列资源目录。
 2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 \`.ai-employee/\`，至少确保 \`.ai-employee/skills/\`、\`.ai-employee/query-mcp/active-sessions/\`、\`.ai-employee/query-mcp/session-history/\` 与 \`.ai-employee/requirements/<project_id>/\` 可用；canonical session 状态只使用 \`active-sessions/<chat_session_id>.json\` 与 \`session-history/<project_id>__<chat_session_id>.json\`。
 3. 再检查 \`.ai-employee/skills/query-mcp-workflow/\` 是否已存在；缺失时先通过 MCP 从服务端技能库同步或创建到当前工作区，已存在则直接复用，禁止重复创建。
@@ -1332,7 +1334,7 @@ const DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = `# Unified Query MCP
 - 推荐工具: start_project_workflow / bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory
 
 ## 最少执行规则
-1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。
+1. 先读取 query://usage-guide；再按当前客户端读取对应 client profile：Codex 读 query://client-profile/codex，Hermes 读 query://client-profile/hermes，Claude Code 读 query://client-profile/claude-code。
 1.0.1 \`list_mcp_resources\` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 read_mcp_resource 读取 query://usage-guide 和对应 client profile，禁止反复调用 list_mcp_resources。
 1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些员工、工具、规则或需求历史，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree / list_recent_project_requirements 等对应工具，不要为了 bootstrap 机械列资源目录。
 1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。

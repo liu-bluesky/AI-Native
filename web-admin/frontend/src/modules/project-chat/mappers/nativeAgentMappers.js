@@ -190,14 +190,27 @@ export function isNativeExternalAgentInternalDiagnostic(stream, content) {
   if (!text) return true;
   if (normalizedStream !== "stderr") return false;
   if (isNativeExternalAgentMacosSystemNoise(text)) return true;
-  // 外部 Runner 会输出 Codex 内部诊断，这些内容不应进入用户可见终端流。
-  return (
+  // 外部 Runner 会把内部诊断写到 stderr，这些内容不应进入用户可见终端流。
+  // 1) codex 内部诊断（ISO 时间戳带 T、codex_core 等）
+  if (
     /^tokens used\b/i.test(text) ||
     /^codex$/i.test(text) ||
     /failed to record rollout items/i.test(text) ||
     /codex_core::session/i.test(text) ||
     /^202\d-\d\d-\d\dT.*\bERROR\b/.test(text)
-  );
+  ) {
+    return true;
+  }
+  // 2) hermes ACP 进程的 Python logging 诊断：`YYYY-MM-DD HH:MM:SS [LEVEL] logger: msg`。
+  //    真正的 agent 输出走 ACP stdout 的 session/update（raw_channel=hermes），不在此通道。
+  if (
+    /^\d{4}-\d\d-\d\d[ T][\d:.,]+\s*\[(?:INFO|WARN|WARNING|DEBUG|ERROR|TRACE|CRITICAL|NOTSET)\]/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function isNativeExternalAgentMacosSystemNoise(content) {

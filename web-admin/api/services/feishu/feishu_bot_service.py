@@ -2869,6 +2869,57 @@ def _reply_feishu_text_with_lark_cli(
         raise RuntimeError(f"lark-cli 回复飞书消息失败：{output}")
 
 
+_FEISHU_OPEN_API_UUID_MAX_LENGTH = 50
+
+
+def _normalize_feishu_uuid(value: str, *, fallback_prefix: str = "feishu") -> str:
+    """Coerce an idempotency key into a valid Feishu OpenAPI ``uuid``.
+
+    Feishu's ``/open-apis/im/v1/messages`` ``uuid`` field rejects values longer
+    than 50 characters with an opaque ``400 Bad Request``. Keys within the limit
+    pass through unchanged so idempotency is preserved; over-long (or empty) keys
+    are replaced with a value derived from a deterministic hash of the full key.
+    A hash rather than a raw truncation avoids two distinct keys colliding on a
+    shared prefix.
+    """
+    normalized = str(value or "").strip()
+    if normalized and len(normalized) <= _FEISHU_OPEN_API_UUID_MAX_LENGTH:
+        return normalized
+    seed = uuid.uuid4().hex if not normalized else hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"{fallback_prefix}-{seed}"[:_FEISHU_OPEN_API_UUID_MAX_LENGTH]
+
+
+def _parse_feishu_open_api_response(response: requests.Response, *, action: str) -> dict[str, Any]:
+    """Return the Feishu OpenAPI payload, raising a descriptive error on failure.
+
+    Feishu encodes the real reason for a failure in the JSON body (``code`` /
+    ``msg``) even when the HTTP status is 4xx. Parsing that body before raising
+    surfaces the actual cause (e.g. an invalid ``uuid``) instead of a bare
+    ``400 Bad Request``. Falls back to ``raise_for_status`` when the body is not
+    a parseable Feishu envelope.
+    """
+    payload: Any = None
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+
+    if isinstance(payload, dict):
+        code = int(payload.get("code") or 0)
+        if code != 0:
+            msg = str(payload.get("msg") or "").strip() or "未知错误"
+            status_code = getattr(response, "status_code", None)
+            detail = f"{action}失败：{msg}（code={code}"
+            if status_code is not None:
+                detail += f", http={status_code}"
+            detail += "）"
+            raise RuntimeError(detail)
+        return payload
+
+    response.raise_for_status()
+    return {}
+
+
 def _reply_feishu_text_with_open_api(
     connector: dict[str, Any],
     *,
@@ -2886,7 +2937,7 @@ def _reply_feishu_text_with_open_api(
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8",
         },
-        params={"uuid": f"feishu-reply-{normalized_message_id}"},
+        params={"uuid": _normalize_feishu_uuid(f"feishu-reply-{normalized_message_id}", fallback_prefix="feishu-reply")},
         json={
             "msg_type": "text",
             "content": json.dumps({"text": _build_feishu_reply_text(content)}, ensure_ascii=False),
@@ -2894,10 +2945,42 @@ def _reply_feishu_text_with_open_api(
         },
         timeout=30,
     )
-    response.raise_for_status()
-    payload = response.json()
-    if int(payload.get("code") or 0) != 0:
-        raise RuntimeError(str(payload.get("msg") or "飞书机器人回复失败"))
+    _parse_feishu_open_api_response(response, action="飞书机器人回复")
+
+
+def send_feishu_text_message_with_open_api(
+    connector: dict[str, Any],
+    *,
+    chat_id: str,
+    content: str,
+    idempotency_key: str = "",
+) -> dict[str, str]:
+    normalized_chat_id = str(chat_id or "").strip()
+    if not normalized_chat_id:
+        raise RuntimeError("缺少飞书 chat_id，无法发送消息")
+    token = _get_feishu_tenant_access_token(connector)
+    uuid_value = _normalize_feishu_uuid(idempotency_key, fallback_prefix="feishu-send")
+    response = requests.post(
+        _feishu_open_api_url("/open-apis/im/v1/messages"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        params={"receive_id_type": "chat_id"},
+        json={
+            "receive_id": normalized_chat_id,
+            "msg_type": "text",
+            "content": json.dumps({"text": _build_feishu_reply_text(content)}, ensure_ascii=False),
+            "uuid": uuid_value,
+        },
+        timeout=30,
+    )
+    payload = _parse_feishu_open_api_response(response, action="飞书机器人发送消息")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    return {
+        "message_id": str(data.get("message_id") or "").strip(),
+        "chat_id": normalized_chat_id,
+    }
 
 
 async def process_feishu_message_event(connector_id: str, event: P2ImMessageReceiveV1) -> None:

@@ -180,7 +180,7 @@ export function resolveNativeExternalAgentFinalAnswerText(
   if (explicit) return explicit;
   const finalLog = [...(Array.isArray(rows) ? rows : [])]
     .reverse()
-    .find((item) => String(item.stream || "").trim() === "final");
+    .find((item) => String(item.kind || "").trim() === "final");
   if (finalLog?.content && String(finalLog.content).trim()) {
     return String(finalLog.content).trim();
   }
@@ -267,6 +267,10 @@ export function calculateNativeExternalAgentLogStats(rows = []) {
     acc[stream] = Number(acc[stream] || 0) + 1;
     return acc;
   }, {});
+  // final 现在由统一事件 kind 标识，而非来源通道。
+  const finalCount = normalizedRows.filter(
+    (item) => String(item?.kind || "").trim().toLowerCase() === "final",
+  ).length;
   // pty 是 stdout 的终端流变体，统计时合并到 stdout 方便展示。
   return {
     total: normalizedRows.length,
@@ -274,6 +278,6 @@ export function calculateNativeExternalAgentLogStats(rows = []) {
     stderr: Number(byStream.stderr || 0),
     stdin: Number(byStream.stdin || 0),
     system: Number(byStream.system || 0),
-    final: Number(byStream.final || 0),
+    final: finalCount,
   };
 }

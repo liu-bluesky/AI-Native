@@ -1130,6 +1130,14 @@ def _query_mcp_clarity_instruction_lines() -> tuple[str, str, str, str, str]:
     )
 
 
+def _lark_auth_instruction_lines() -> tuple[str, str]:
+    """飞书 lark-cli 授权约束（agent 无关）：避免业务域 TUI 交互在非交互宿主里卡死。"""
+    return (
+        "- 飞书授权: 执行 `lark-cli auth login` 必须带授权范围（`--domain <domain>` 或 `--scope \"<scope>\"`），禁止裸跑 `lark-cli auth login`，否则会进入业务域 TUI 选择器，在非交互宿主里无法输入而卡死。",
+        "- 飞书授权: agent 代理授权优先用 split-flow：先 `lark-cli auth login --scope \"<scope>\" --no-wait --json` 拿到 `verification_url` / `device_code`，把链接原样作为本轮最终消息发给用户并交还控制权；用户回复“已授权完成”后，再由你执行 `lark-cli auth login --device-code <device_code>` 完成登录。不要在同一轮展示链接后立刻阻塞轮询。",
+    )
+
+
 def _render_query_prompt_template(template: str, variables: dict[str, str]) -> str:
     rendered = str(template or "").strip()
     for key, value in variables.items():
@@ -2918,15 +2926,21 @@ def build_query_client_profile_text(client_name: str) -> str:
         clarity_repeat_line,
         continuous_execution_line,
     ) = _query_mcp_clarity_instruction_lines()
+    (
+        lark_auth_scope_line,
+        lark_auth_splitflow_line,
+    ) = _lark_auth_instruction_lines()
     if normalized == "claude-code":
         title = "Claude Code"
         focus = [
             "- 定位: 适合需要较强代码修改、命令执行和长任务续跑的开发型 CLI。",
-            "- 推荐链路: query://usage-guide -> analyze_task -> search_ids/get_manual_content -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy -> start_work_session。",
+            "- 推荐链路: query://usage-guide -> query://client-profile/claude-code -> start_project_workflow -> check_operation_policy -> save_work_facts/append_session_event。",
+            "- 资源约束: `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/claude-code`，不要反复列资源。",
             "- 接入约束: `description` 只用于说明，不参与项目绑定；要续接任务树，优先让 URL 带上 `project_id` 和 `chat_session_id`，缺失时首轮调用 `bind_project_context(...)`。",
             "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`，避免产生影子链路。",
             "- 接入约束: 每个 CLI 会话都应自行生成唯一 `chat_session_id`；如能解析项目工作区，优先持久化到项目目录 `.ai-employee/query-mcp/`，否则再退回 CLI 自己的本地存储。同一轮任务内固定复用，只有新开的并行 CLI 或新任务才重新生成。",
             "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
+            "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`，并通过 MCP（start_project_workflow / start_work_session / save_work_facts / append_session_event / 任务树工具）把同一条需求回写到服务端，本地与服务端追溯到同一条需求。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。",
             "- 部署约束: 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。",
@@ -2937,6 +2951,8 @@ def build_query_client_profile_text(client_name: str) -> str:
             f"- 交互约束: {clarity_confirm_line}",
             f"- 交互约束: {clarity_repeat_line}",
             f"- 交互约束: {continuous_execution_line}",
+            lark_auth_scope_line,
+            lark_auth_splitflow_line,
             "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
             "- 任务树约束: 任务树节点必须描述面向用户目标的真实工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 或候选代理工具名直接写成节点。",
@@ -2978,6 +2994,8 @@ def build_query_client_profile_text(client_name: str) -> str:
             f"- 交互约束: {clarity_confirm_line}",
             f"- 交互约束: {clarity_repeat_line}",
             f"- 交互约束: {continuous_execution_line}",
+            lark_auth_scope_line,
+            lark_auth_splitflow_line,
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall_project_memory / recall_employee_memory。",
             "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
@@ -2996,13 +3014,17 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 适合自动化的能力: 结构化任务分析、项目规则聚合、交付报告、更新日志条目生成。",
             "- 需要谨慎的能力: 任何真实执行前先补 classify_command_risk / check_operation_policy。",
         ]
-    else:
-        title = "Generic CLI"
+    elif normalized == "hermes":
+        title = "Hermes"
         focus = [
-            "- 定位: 适合通用 MCP 宿主或尚未针对当前系统定制的 CLI 客户端。",
-            "- 推荐链路: query://usage-guide -> search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> start_work_session。",
+            "- 定位: 适合 Hermes 客户端接入统一查询 MCP，侧重多工具编排、项目任务推进和长任务续跑。",
+            "- 目标: 让 Hermes 明确会用 MCP，而不是只读自然语言说明；项目、任务树、工作事实和部署产物操作都优先通过 MCP 工具完成。",
+            "- 推荐链路: query://usage-guide -> query://client-profile/hermes -> start_project_workflow；若宿主不适合固定入口，再走 search_ids/get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan。",
+            "- 资源约束: `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/hermes`。",
+            "- 工具优先: 能调用 MCP 工具时不要只口头总结；查询走对应业务工具，实现/修复走 start_project_workflow，长任务走 start_work_session + save_work_facts/append_session_event。",
             "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
-            "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 CLI 自己的本地存储，这样中断后才能稳定续跑。",
+            "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Hermes 自己的本地存储，这样中断后才能稳定续跑。",
+            "- 接入约束: 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`；并通过 MCP（start_project_workflow / start_work_session / save_work_facts / append_session_event / 任务树工具）把同一条需求回写到服务端，确保 Hermes 也能用 MCP 记录项目需求，而不是只写本地或只口头描述。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
             f"- 交互约束: {clarity_threshold_line}",
@@ -3010,6 +3032,36 @@ def build_query_client_profile_text(client_name: str) -> str:
             f"- 交互约束: {clarity_confirm_line}",
             f"- 交互约束: {clarity_repeat_line}",
             f"- 交互约束: {continuous_execution_line}",
+            lark_auth_scope_line,
+            lark_auth_splitflow_line,
+            "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
+            "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
+            "- 任务树约束: 若宿主会展示任务树，节点必须直接对应用户目标，不要把内部检索工具、规划工具或候选代理工具直接展示成节点。",
+            "- 工作流约束: 先计划、再执行、逐项验证；未完成前只保留需求记录和过程状态，不要提前输出最终结论。",
+            "- 最小可用目标: 先跑通查询、分析、规划，再逐步接入策略判断和恢复能力。",
+            "- 建议优先工具: analyze_task、resolve_relevant_context、generate_execution_plan、check_operation_policy。",
+            "- 长任务建议: 新会话优先调用 start_work_session；恢复时按 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)` 顺序拉起上下文，再继续执行。",
+        ]
+    else:
+        title = "Generic CLI"
+        focus = [
+            "- 定位: 适合通用 MCP 宿主、非 Codex/Claude 的 CLI 客户端，或尚未针对当前系统定制的外部智能体。",
+            "- 目标: 让通用 AI 明确会用 MCP，而不是只读自然语言说明；所有项目、任务树、工作事实和部署产物操作都优先通过 MCP 工具完成。",
+            "- 推荐链路: query://usage-guide -> query://client-profile/generic-cli -> start_project_workflow；若宿主不适合固定入口，再走 search_ids/get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan。",
+            "- 资源约束: `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/generic-cli`。",
+            "- 工具优先: 能调用 MCP 工具时不要只口头总结；查询走对应业务工具，实现/修复走 start_project_workflow，长任务走 start_work_session + save_work_facts/append_session_event。",
+            "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
+            "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 CLI 自己的本地存储，这样中断后才能稳定续跑。",
+            "- 接入约束: 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`；并通过 MCP（start_project_workflow / start_work_session / save_work_facts / append_session_event / 任务树工具）把同一条需求回写到服务端，确保通用 CLI 也能用 MCP 记录项目需求，而不是只写本地或只口头描述。",
+            "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
+            "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
+            f"- 交互约束: {clarity_threshold_line}",
+            f"- 交互约束: {clarity_direct_line}",
+            f"- 交互约束: {clarity_confirm_line}",
+            f"- 交互约束: {clarity_repeat_line}",
+            f"- 交互约束: {continuous_execution_line}",
+            lark_auth_scope_line,
+            lark_auth_splitflow_line,
             "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
             "- 任务树约束: 若宿主会展示任务树，节点必须直接对应用户目标，不要把内部检索工具、规划工具或候选代理工具直接展示成节点。",
@@ -3059,7 +3111,7 @@ def build_query_usage_guide_text() -> str:
         "- 推荐工具: start_project_workflow / bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory\n"
         "\n"
         "## 最少执行规则\n"
-        "1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。\n"
+        "1. 先读取 query://usage-guide；再按当前客户端读取对应 client profile：Codex 读 query://client-profile/codex，Hermes 读 query://client-profile/hermes，Claude Code 读 query://client-profile/claude-code，其他 CLI 或不确定时读 query://client-profile/generic-cli。\n"
         "1.0.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 read_mcp_resource 读取 query://usage-guide 和对应 client profile，禁止反复调用 list_mcp_resources。\n"
         "1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些员工、工具、规则或需求历史，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree / list_recent_project_requirements 等对应工具，不要为了 bootstrap 机械列资源目录。\n"
         "1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。\n"
@@ -3139,7 +3191,7 @@ def build_query_usage_guide_text() -> str:
         "- 同一任务轮若已生成任务树并进入执行，后续优先依赖当前会话、任务树和工作轨迹；除非用户明确要求沿用历史方案或当前上下文明显不足，否则不要重复 recall。\n"
         "- save_project_memory 只在补充稳定结论或关键决策时使用；不要在同一需求的每个中间步骤重复补记。如宿主已启用自动记忆快照，仅在入口未覆盖自动记忆或需要补一条稳定结论时再额外保存。\n"
         "- build_delivery_report 用于结构化汇总本轮交付；generate_release_note_entry 用于生成更新日志条目。\n"
-        "- 可读取 query://client-profile/claude-code 或 query://client-profile/codex 作为客户端接入画像。\n"
+        "- 可读取 query://client-profile/codex、query://client-profile/hermes、query://client-profile/claude-code 或 query://client-profile/generic-cli 作为客户端接入画像。\n"
         "\n"
         "## 说明\n"
         "- 本入口仍以查询与聚合优先；如宿主支持多 MCP，复杂执行场景仍优先直连对应 project MCP。\n"
@@ -4409,6 +4461,10 @@ def create_query_mcp(
     def query_client_profile_codex() -> str:
         return build_query_client_profile_text("codex")
 
+    @mcp.resource("query://client-profile/hermes")
+    def query_client_profile_hermes() -> str:
+        return build_query_client_profile_text("hermes")
+
     @mcp.resource("query://client-profile/generic-cli")
     def query_client_profile_generic_cli() -> str:
         return build_query_client_profile_text("generic-cli")
@@ -4418,12 +4474,14 @@ def create_query_mcp(
         project_id: str = "",
         chat_session_id: str = "",
         clarity_threshold: int = 3,
+        client_profile: str = "codex",
     ) -> dict:
         """获取与统一 MCP 接入弹窗“展开引导提示词预览”一致的 CLI 引导提示词。"""
         project_id_value = _resolve_query_project_id(project_id)
         if project_id_value and project_store.get(project_id_value) is None:
             return {"error": f"Project {project_id_value} not found"}
         chat_session_id_value = _resolve_query_chat_session_id(chat_session_id)
+        client_profile_value = _normalize_text(client_profile, 80) or "codex"
         try:
             threshold_value = max(1, min(5, int(clarity_threshold or 3)))
         except (TypeError, ValueError):
@@ -4435,11 +4493,13 @@ def create_query_mcp(
             project_id=project_id_value,
             chat_session_id=chat_session_id_value,
             clarity_confirm_threshold=threshold_value,
+            client_profile=client_profile_value,
         )
         return {
             "status": "preview",
             "project_id": project_id_value,
             "chat_session_id": chat_session_id_value,
+            "client_profile": client_profile_value,
             "template_source": "system_config.query_mcp_bootstrap_prompt_template",
             "rendered_field": "runtime.cli_prompt",
             "rendered_cli_prompt": rendered,
@@ -4455,6 +4515,7 @@ def create_query_mcp(
         backup: bool = True,
         dry_run: bool = False,
         clarity_threshold: int = 3,
+        client_profile: str = "",
     ) -> dict:
         """把服务器渲染出的 runtime.cli_prompt 写入当前项目工作区内的目标文件。"""
         return sync_query_mcp_cli_prompt_to_local_file_runtime(
@@ -4465,6 +4526,7 @@ def create_query_mcp(
             backup=backup,
             dry_run=dry_run,
             clarity_threshold=clarity_threshold,
+            client_profile=client_profile,
         )
 
     @mcp.tool()

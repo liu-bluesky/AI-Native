@@ -1,13 +1,12 @@
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::Child as PtyChild;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -15,7 +14,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
 type ExternalAgentSessionStore = Arc<Mutex<HashMap<String, ExternalAgentSessionState>>>;
-static EXTERNAL_AGENT_OUTPUT_COUNTER: AtomicU64 = AtomicU64::new(0);
 const EXTERNAL_AGENT_SESSION_EVENT: &str = "ai-employee://external-agent-session";
 
 #[derive(Debug, Serialize)]
@@ -190,9 +188,21 @@ struct ExternalAgentRunResult {
 #[serde(rename_all = "camelCase")]
 struct ExternalAgentSessionLog {
     seq: u64,
+    /// 来源通道（raw_channel）：pty / stdout / stderr / system / acp 等，仅供调试与回溯。
     stream: String,
     content: String,
+    /// 统一事件类型：reasoning / plan / tool_call / tool_result / message / final / error / log。
+    /// 前端按 kind 统一渲染执行过程，final 即最终答案。
+    #[serde(default = "default_agent_event_kind")]
+    kind: String,
+    /// 工具名或步骤标题，可空。
+    #[serde(default)]
+    title: String,
     created_at_epoch_ms: u64,
+}
+
+fn default_agent_event_kind() -> String {
+    "log".to_string()
 }
 
 struct ExternalAgentSessionState {
@@ -208,12 +218,11 @@ struct ExternalAgentSessionState {
     updated_at_epoch_ms: u64,
     next_seq: u64,
     logs: Vec<ExternalAgentSessionLog>,
-    final_output_path: String,
     final_output: String,
     blocked_reason: String,
     summary: String,
     child_process_id: Option<u32>,
-    child: Option<Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>>,
+    child: Option<Arc<Mutex<Box<dyn PtyChild + Send + Sync>>>>,
     process_child: Option<Arc<Mutex<Child>>>,
     stdin: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
 }
@@ -661,7 +670,7 @@ fn run_external_agent_once_blocking(
     if normalized_prompt.is_empty() {
         return Err("缺少外部 Agent 试运行提示词".to_string());
     }
-    let mut plan =
+    let plan =
         build_external_agent_launch_plan(&normalized_agent_type, &root, Some(normalized_prompt));
     if !plan.can_launch {
         return Ok(ExternalAgentRunResult {
@@ -684,13 +693,7 @@ fn run_external_agent_once_blocking(
     }
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(15_000).clamp(5_000, 60_000));
-    let final_output_path = external_agent_final_output_path(&plan.agent_type);
-    attach_external_agent_final_output_arg(&mut plan, &final_output_path);
-    Ok(execute_external_agent_plan(
-        plan,
-        timeout,
-        final_output_path,
-    ))
+    Ok(execute_external_agent_plan(plan, timeout))
 }
 
 #[tauri::command]
@@ -707,8 +710,7 @@ fn start_external_agent_session(
     if normalized_prompt.is_empty() {
         return Err("缺少外部 Agent 任务内容".to_string());
     }
-    let mut plan =
-        build_external_agent_launch_plan(&normalized_agent_type, &root, Some(normalized_prompt));
+    let plan = build_external_agent_launch_plan(&normalized_agent_type, &root, None);
     if !plan.can_launch {
         let now = current_epoch_millis();
         let state = ExternalAgentSessionState {
@@ -724,7 +726,6 @@ fn start_external_agent_session(
             updated_at_epoch_ms: now,
             next_seq: 1,
             logs: Vec::new(),
-            final_output_path: String::new(),
             final_output: String::new(),
             blocked_reason: plan.blocked_reason,
             summary: "外部 Agent Runner 会话被启动计划拦截".to_string(),
@@ -738,99 +739,27 @@ fn start_external_agent_session(
         return Ok(external_agent_session_snapshot(&state, 0));
     }
 
-    let final_output_path = external_agent_final_output_path(&plan.agent_type);
-    attach_external_agent_final_output_arg(&mut plan, &final_output_path);
-    if external_agent_uses_stdout_final_output(&plan.agent_type) {
-        return start_external_agent_pipe_session(app, sessions, plan, final_output_path);
+    // 三个 agent 都走结构化流式 pipe：codex/claude 是单向 JSONL，hermes 是 ACP 双向 JSON-RPC。
+    if plan.agent_type == "hermes" {
+        start_external_agent_acp_session(app, sessions, plan, normalized_prompt)
+    } else {
+        start_external_agent_stream_session(app, sessions, plan, normalized_prompt)
     }
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: 32,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|err| format!("创建 PTY 失败：{err}"))?;
-    let mut command = CommandBuilder::new(&plan.command);
-    command.args(&plan.args);
-    command.cwd(Path::new(&plan.workspace_path));
-    let child = pair
-        .slave
-        .spawn_command(command)
-        .map_err(|err| format!("外部 Agent PTY 进程启动失败：{err}"))?;
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|err| format!("读取 PTY 输出失败：{err}"))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|err| format!("打开 PTY 输入失败：{err}"))?;
-    drop(pair.slave);
-    let child_process_id = child.process_id();
-    let child = Arc::new(Mutex::new(child));
-    let now = current_epoch_millis();
-    let session_id = format!("external-agent-session-{now}");
-    let state = ExternalAgentSessionState {
-        session_id: session_id.clone(),
-        agent_type: plan.agent_type,
-        label: plan.label.clone(),
-        command: plan.command,
-        args: plan.args,
-        workspace_path: plan.workspace_path,
-        status: "running".to_string(),
-        exit_code: None,
-        started_at_epoch_ms: now,
-        updated_at_epoch_ms: now,
-        next_seq: 1,
-        logs: vec![ExternalAgentSessionLog {
-            seq: 0,
-            stream: "system".to_string(),
-            content: format!("{} Runner 会话已启动\n", plan.label),
-            created_at_epoch_ms: now,
-        }],
-        final_output_path: final_output_path.clone(),
-        final_output: String::new(),
-        blocked_reason: String::new(),
-        summary: format!("{} PTY Runner 会话运行中", plan.label),
-        child_process_id,
-        child: Some(child.clone()),
-        process_child: None,
-        stdin: Some(Arc::new(Mutex::new(writer))),
-    };
-
-    {
-        let mut store = sessions.lock().map_err(|err| err.to_string())?;
-        persist_external_agent_session_snapshot(&app, &state)?;
-        emit_external_agent_session_event(&app, "started", &state, "system", None);
-        store.insert(session_id.clone(), state);
-    }
-    spawn_external_agent_log_reader(
-        app.clone(),
-        sessions.inner().clone(),
-        session_id.clone(),
-        "pty",
-        reader,
-    );
-    spawn_external_agent_waiter(app, sessions.inner().clone(), session_id.clone(), child);
-
-    let store = sessions.lock().map_err(|err| err.to_string())?;
-    store
-        .get(&session_id)
-        .map(|state| external_agent_session_snapshot(state, 0))
-        .ok_or_else(|| "Runner 会话启动后状态丢失".to_string())
 }
 
-fn start_external_agent_pipe_session(
+/// codex/claude 的单向结构化流式会话：prompt 作为命令行末尾参数，
+/// stdout 按行解析为统一事件，stderr 作诊断日志。
+fn start_external_agent_stream_session(
     app: tauri::AppHandle,
     sessions: tauri::State<'_, ExternalAgentSessionStore>,
     plan: ExternalAgentLaunchPlan,
-    final_output_path: String,
+    prompt: String,
 ) -> Result<ExternalAgentSessionSnapshot, String> {
+    let mut args = plan.args.clone();
+    args.push(prompt);
     let mut command = Command::new(&plan.command);
     command
-        .args(&plan.args)
+        .args(&args)
         .current_dir(Path::new(&plan.workspace_path))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -845,12 +774,13 @@ fn start_external_agent_pipe_session(
     let child = Arc::new(Mutex::new(child));
     let now = current_epoch_millis();
     let session_id = format!("external-agent-session-{now}");
+    let agent_type = plan.agent_type.clone();
     let state = ExternalAgentSessionState {
         session_id: session_id.clone(),
         agent_type: plan.agent_type,
         label: plan.label.clone(),
         command: plan.command,
-        args: plan.args,
+        args,
         workspace_path: plan.workspace_path,
         status: "running".to_string(),
         exit_code: None,
@@ -860,13 +790,14 @@ fn start_external_agent_pipe_session(
         logs: vec![ExternalAgentSessionLog {
             seq: 0,
             stream: "system".to_string(),
-            content: format!("{} one-shot Runner 已启动，等待最终响应输出\n", plan.label),
+            content: format!("{} Runner 会话已启动\n", plan.label),
+            kind: "log".to_string(),
+            title: String::new(),
             created_at_epoch_ms: now,
         }],
-        final_output_path,
         final_output: String::new(),
         blocked_reason: String::new(),
-        summary: format!("{} one-shot Runner 会话运行中", plan.label),
+        summary: format!("{} 结构化流式 Runner 会话运行中", plan.label),
         child_process_id,
         child: None,
         process_child: Some(child.clone()),
@@ -884,6 +815,7 @@ fn start_external_agent_pipe_session(
             app.clone(),
             sessions.inner().clone(),
             session_id.clone(),
+            agent_type.clone(),
             "stdout",
             stdout,
         );
@@ -893,6 +825,7 @@ fn start_external_agent_pipe_session(
             app.clone(),
             sessions.inner().clone(),
             session_id.clone(),
+            agent_type,
             "stderr",
             stderr,
         );
@@ -904,6 +837,441 @@ fn start_external_agent_pipe_session(
         .get(&session_id)
         .map(|state| external_agent_session_snapshot(state, 0))
         .ok_or_else(|| "Runner 会话启动后状态丢失".to_string())
+}
+
+/// hermes 的 ACP 双向 JSON-RPC 会话（NDJSON 分帧）：
+/// 启动 `hermes acp`，由后台线程驱动 initialize -> session/new -> session/prompt 握手，
+/// 读取 session/update 通知流并归一为统一事件，自动应答 fs/权限等反向请求。
+fn start_external_agent_acp_session(
+    app: tauri::AppHandle,
+    sessions: tauri::State<'_, ExternalAgentSessionStore>,
+    plan: ExternalAgentLaunchPlan,
+    prompt: String,
+) -> Result<ExternalAgentSessionSnapshot, String> {
+    let mut command = Command::new(&plan.command);
+    command
+        .args(&plan.args)
+        .current_dir(Path::new(&plan.workspace_path))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_command_process_group(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Hermes ACP 进程启动失败：{err}"))?;
+    let child_process_id = Some(child.id());
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "无法获取 Hermes ACP stdout".to_string())?;
+    let stderr = child.stderr.take();
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法获取 Hermes ACP stdin".to_string())?;
+    let child = Arc::new(Mutex::new(child));
+    let stdin: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(stdin)));
+    let now = current_epoch_millis();
+    let session_id = format!("external-agent-session-{now}");
+    let state = ExternalAgentSessionState {
+        session_id: session_id.clone(),
+        agent_type: plan.agent_type,
+        label: plan.label.clone(),
+        command: plan.command,
+        args: plan.args,
+        workspace_path: plan.workspace_path.clone(),
+        status: "running".to_string(),
+        exit_code: None,
+        started_at_epoch_ms: now,
+        updated_at_epoch_ms: now,
+        next_seq: 1,
+        logs: vec![ExternalAgentSessionLog {
+            seq: 0,
+            stream: "system".to_string(),
+            content: format!("{} ACP 会话已启动，正在握手…\n", plan.label),
+            kind: "log".to_string(),
+            title: String::new(),
+            created_at_epoch_ms: now,
+        }],
+        final_output: String::new(),
+        blocked_reason: String::new(),
+        summary: format!("{} ACP Runner 会话运行中", plan.label),
+        child_process_id,
+        child: None,
+        process_child: Some(child.clone()),
+        stdin: Some(stdin.clone()),
+    };
+
+    {
+        let mut store = sessions.lock().map_err(|err| err.to_string())?;
+        persist_external_agent_session_snapshot(&app, &state)?;
+        emit_external_agent_session_event(&app, "started", &state, "system", None);
+        store.insert(session_id.clone(), state);
+    }
+
+    // stderr 仅作诊断日志。
+    if let Some(stderr) = stderr {
+        spawn_external_agent_log_reader(
+            app.clone(),
+            sessions.inner().clone(),
+            session_id.clone(),
+            "hermes".to_string(),
+            "stderr",
+            stderr,
+        );
+    }
+
+    // 后台线程：驱动 ACP 握手 + 读取通知流。
+    spawn_acp_driver(
+        app.clone(),
+        sessions.inner().clone(),
+        session_id.clone(),
+        plan.workspace_path,
+        prompt,
+        stdout,
+        stdin,
+        child.clone(),
+    );
+    spawn_external_agent_process_waiter(app, sessions.inner().clone(), session_id.clone(), child);
+
+    let store = sessions.lock().map_err(|err| err.to_string())?;
+    store
+        .get(&session_id)
+        .map(|state| external_agent_session_snapshot(state, 0))
+        .ok_or_else(|| "Runner 会话启动后状态丢失".to_string())
+}
+
+/// ACP 驱动线程：发送 initialize / session/new / session/prompt，
+/// 读取 NDJSON 通知流并归一为统一事件，应答服务端反向请求（fs、权限）。
+fn spawn_acp_driver(
+    app: tauri::AppHandle,
+    sessions: ExternalAgentSessionStore,
+    session_id: String,
+    workspace_path: String,
+    prompt: String,
+    stdout: std::process::ChildStdout,
+    stdin: Arc<Mutex<Box<dyn Write + Send>>>,
+    child: Arc<Mutex<Child>>,
+) {
+    thread::spawn(move || {
+        let send = |value: &serde_json::Value| -> bool {
+            if let Ok(mut writer) = stdin.lock() {
+                let line = format!("{value}\n");
+                writer.write_all(line.as_bytes()).is_ok() && writer.flush().is_ok()
+            } else {
+                false
+            }
+        };
+
+        // 1. initialize
+        send(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientCapabilities": {"fs": {"readTextFile": true, "writeTextFile": true}}
+            }
+        }));
+
+        let mut prompt_sent = false;
+        // ACP message/reasoning 是 token 级增量，先累积再成段下发。
+        let mut msg_buf = String::new();
+        let mut think_buf = String::new();
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                // 非 JSON 行兜底为 log。
+                emit_acp_log(&app, &sessions, &session_id, trimmed);
+                continue;
+            };
+
+            // 终止检查。
+            if let Ok(store) = sessions.lock() {
+                if let Some(state) = store.get(&session_id) {
+                    if is_external_agent_terminal_status(&state.status) {
+                        break;
+                    }
+                }
+            }
+
+            // 响应消息（带 id）：根据 id 推进握手。
+            if let Some(id) = value.get("id").and_then(|v| v.as_u64()) {
+                if value.get("result").is_some() || value.get("error").is_some() {
+                    match id {
+                        1 => {
+                            // initialize 完成 -> 新建会话。
+                            send(&serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": 2,
+                                "method": "session/new",
+                                "params": {"cwd": workspace_path, "mcpServers": []}
+                            }));
+                        }
+                        2 => {
+                            let acp_session_id = value
+                                .get("result")
+                                .and_then(|r| r.get("sessionId"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            if let Some(sid) = &acp_session_id {
+                                send(&serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": 3,
+                                    "method": "session/prompt",
+                                    "params": {
+                                        "sessionId": sid,
+                                        "prompt": [{"type": "text", "text": prompt}]
+                                    }
+                                }));
+                                prompt_sent = true;
+                            } else {
+                                emit_acp_error(&app, &sessions, &session_id, "ACP session/new 未返回 sessionId");
+                            }
+                        }
+                        3 => {
+                            // session/prompt 完成（stopReason）。先刷出残留增量，再收敛为 final。
+                            flush_acp_chunk(&app, &sessions, &session_id, "message", &mut msg_buf);
+                            flush_acp_chunk(
+                                &app,
+                                &sessions,
+                                &session_id,
+                                "reasoning",
+                                &mut think_buf,
+                            );
+                            finalize_acp_turn(&app, &sessions, &session_id);
+                            // 一轮 prompt 即一次交付：hermes acp 不会自行退出，先把状态标记为
+                            // completed（避免 waiter 据 kill 退出码改判 failed），再主动结束进程，
+                            // 让 waiter 据 terminal 状态触发前端渲染最终回答气泡。
+                            if let Ok(mut store) = sessions.lock() {
+                                if let Some(state) = store.get_mut(&session_id) {
+                                    if state.status == "running" {
+                                        state.status = "completed".to_string();
+                                    }
+                                }
+                            }
+                            if let Ok(mut child) = child.lock() {
+                                let _ = child.kill();
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // 反向请求（带 id + method）：应答 fs / 权限。
+                if let Some(method) = value.get("method").and_then(|v| v.as_str()) {
+                    let response = acp_handle_server_request(method, &value);
+                    send(&serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": response
+                    }));
+                    continue;
+                }
+            }
+
+            // 通知（无 id）：解析 session/update。
+            // hermes 的 message/reasoning 是 token 级增量（逐字推送），必须先累积成缓冲区，
+            // 遇到其它事件或 turn 结束时再合并成一条下发，否则一段话会被拆成几十行、且每个
+            // token 都写盘 emit 导致明显卡顿。
+            for event in parse_acp_notification(&value) {
+                match event.kind.as_str() {
+                    "message" => {
+                        flush_acp_chunk(&app, &sessions, &session_id, "reasoning", &mut think_buf);
+                        msg_buf.push_str(&event.text);
+                    }
+                    "reasoning" => {
+                        flush_acp_chunk(&app, &sessions, &session_id, "message", &mut msg_buf);
+                        think_buf.push_str(&event.text);
+                    }
+                    _ => {
+                        // 工具调用 / 计划 / 错误等：先把累积的文本块刷出，保证顺序。
+                        flush_acp_chunk(&app, &sessions, &session_id, "message", &mut msg_buf);
+                        flush_acp_chunk(&app, &sessions, &session_id, "reasoning", &mut think_buf);
+                        emit_acp_event(&app, &sessions, &session_id, &event);
+                    }
+                }
+            }
+        }
+
+        // 流结束：刷出残留缓冲，再兜底收敛。
+        flush_acp_chunk(&app, &sessions, &session_id, "message", &mut msg_buf);
+        flush_acp_chunk(&app, &sessions, &session_id, "reasoning", &mut think_buf);
+        if prompt_sent {
+            finalize_acp_turn(&app, &sessions, &session_id);
+        }
+    });
+}
+
+/// 把累积的 chunk 缓冲区作为一条完整事件下发，然后清空缓冲。
+fn flush_acp_chunk(
+    app: &tauri::AppHandle,
+    sessions: &ExternalAgentSessionStore,
+    session_id: &str,
+    kind: &str,
+    buffer: &mut String,
+) {
+    if buffer.trim().is_empty() {
+        buffer.clear();
+        return;
+    }
+    let event = AgentEvent::new(kind, clip_agent_event_text(buffer), "hermes");
+    emit_acp_event(app, sessions, session_id, &event);
+    buffer.clear();
+}
+
+/// 应答 ACP 服务端反向请求：权限选 allow，fs 读返回空、写返回成功。
+fn acp_handle_server_request(method: &str, request: &serde_json::Value) -> serde_json::Value {
+    match method {
+        "session/request_permission" => {
+            let options = request
+                .get("params")
+                .and_then(|p| p.get("options"))
+                .and_then(|o| o.as_array());
+            let option_id = options.and_then(|opts| {
+                opts.iter()
+                    .find(|o| {
+                        let kind = o.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                        let id = o.get("optionId").and_then(|v| v.as_str()).unwrap_or("");
+                        kind.contains("allow") || id.contains("allow")
+                    })
+                    .or_else(|| opts.first())
+                    .and_then(|o| o.get("optionId").and_then(|v| v.as_str()))
+                    .map(|s| s.to_string())
+            });
+            match option_id {
+                Some(id) => serde_json::json!({"outcome": {"outcome": "selected", "optionId": id}}),
+                None => serde_json::json!({"outcome": {"outcome": "cancelled"}}),
+            }
+        }
+        "fs/read_text_file" => {
+            let path = request
+                .get("params")
+                .and_then(|p| p.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let content = if path.is_empty() {
+                String::new()
+            } else {
+                fs::read_to_string(path).unwrap_or_default()
+            };
+            serde_json::json!({"content": content})
+        }
+        "fs/write_text_file" => {
+            if let (Some(path), Some(content)) = (
+                request
+                    .get("params")
+                    .and_then(|p| p.get("path"))
+                    .and_then(|v| v.as_str()),
+                request
+                    .get("params")
+                    .and_then(|p| p.get("content"))
+                    .and_then(|v| v.as_str()),
+            ) {
+                if !path.is_empty() {
+                    let _ = fs::write(path, content);
+                }
+            }
+            serde_json::json!({})
+        }
+        _ => serde_json::json!({}),
+    }
+}
+
+/// 把 turn 内累计的 message 事件收敛为一条 final（若尚无 final）。
+fn finalize_acp_turn(app: &tauri::AppHandle, sessions: &ExternalAgentSessionStore, session_id: &str) {
+    let payload = {
+        let Ok(mut store) = sessions.lock() else {
+            return;
+        };
+        let Some(state) = store.get_mut(session_id) else {
+            return;
+        };
+        if is_external_agent_terminal_status(&state.status) {
+            return;
+        }
+        if state.logs.iter().any(|item| item.kind == "final") {
+            return;
+        }
+        let joined = state
+            .logs
+            .iter()
+            .filter(|item| item.kind == "message")
+            .map(|item| item.content.as_str())
+            .collect::<Vec<_>>()
+            .join("");
+        if joined.trim().is_empty() {
+            return;
+        }
+        let event = AgentEvent::new("final", clip_agent_event_text(&joined), "hermes");
+        let log = push_external_agent_event(state, &event);
+        let _ = persist_external_agent_session_snapshot(app, state);
+        log.map(|log| external_agent_session_event_payload("log", state, "hermes", Some(log)))
+    };
+    if let Some(payload) = payload {
+        let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
+    }
+}
+
+/// 下发一条 ACP 归一事件。
+fn emit_acp_event(
+    app: &tauri::AppHandle,
+    sessions: &ExternalAgentSessionStore,
+    session_id: &str,
+    event: &AgentEvent,
+) {
+    let payload = {
+        let Ok(mut store) = sessions.lock() else {
+            return;
+        };
+        let Some(state) = store.get_mut(session_id) else {
+            return;
+        };
+        if is_external_agent_terminal_status(&state.status) {
+            return;
+        }
+        let log = push_external_agent_event(state, event);
+        let _ = persist_external_agent_session_snapshot(app, state);
+        log.map(|log| external_agent_session_event_payload("log", state, &event.raw_channel, Some(log)))
+    };
+    if let Some(payload) = payload {
+        let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
+    }
+}
+
+fn emit_acp_log(
+    app: &tauri::AppHandle,
+    sessions: &ExternalAgentSessionStore,
+    session_id: &str,
+    text: &str,
+) {
+    emit_acp_event(
+        app,
+        sessions,
+        session_id,
+        &AgentEvent::new("log", text, "hermes"),
+    );
+}
+
+fn emit_acp_error(
+    app: &tauri::AppHandle,
+    sessions: &ExternalAgentSessionStore,
+    session_id: &str,
+    text: &str,
+) {
+    emit_acp_event(
+        app,
+        sessions,
+        session_id,
+        &AgentEvent::new("error", text, "hermes"),
+    );
 }
 
 #[tauri::command]
@@ -1272,13 +1640,35 @@ fn normalize_external_agent_type(value: &str) -> String {
 
 fn external_agent_launch_command(agent_type: &str) -> (&'static str, &'static str, Vec<String>) {
     match agent_type {
-        "hermes" => ("Hermes", "hermes", vec!["-z".to_string()]),
-        "claude_code" => ("Claude Code", "claude", vec!["--print".to_string()]),
+        // hermes 走 ACP（JSON-RPC over stdio）：initialize -> session/new -> session/prompt。
+        // prompt 通过 session/prompt 下发，不作为命令行参数。
+        "hermes" => (
+            "Hermes",
+            "hermes",
+            vec![
+                "acp".to_string(),
+                "--accept-hooks".to_string(),
+                "--yes".to_string(),
+            ],
+        ),
+        // claude 走 stream-json：JSONL 事件流，按事件 type 映射统一事件。
+        "claude_code" => (
+            "Claude Code",
+            "claude",
+            vec![
+                "--print".to_string(),
+                "--output-format".to_string(),
+                "stream-json".to_string(),
+                "--verbose".to_string(),
+            ],
+        ),
+        // codex 走 exec --json：JSONL 事件流，按事件 type 映射；不再依赖 --output-last-message。
         _ => (
             "Codex CLI",
             "codex",
             vec![
                 "exec".to_string(),
+                "--json".to_string(),
                 "--skip-git-repo-check".to_string(),
                 "--sandbox".to_string(),
                 "workspace-write".to_string(),
@@ -1287,36 +1677,6 @@ fn external_agent_launch_command(agent_type: &str) -> (&'static str, &'static st
                 "--ephemeral".to_string(),
             ],
         ),
-    }
-}
-
-fn external_agent_final_output_path(agent_type: &str) -> String {
-    if agent_type != "codex_cli" {
-        return String::new();
-    }
-    let counter = EXTERNAL_AGENT_OUTPUT_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let file_name = format!(
-        "ai-employee-codex-final-{}-{counter}.txt",
-        current_epoch_millis()
-    );
-    std::env::temp_dir()
-        .join(file_name)
-        .to_string_lossy()
-        .to_string()
-}
-
-fn attach_external_agent_final_output_arg(
-    plan: &mut ExternalAgentLaunchPlan,
-    final_output_path: &str,
-) {
-    if plan.agent_type != "codex_cli" || final_output_path.trim().is_empty() {
-        return;
-    }
-    let prompt = plan.args.pop();
-    plan.args.push("--output-last-message".to_string());
-    plan.args.push(final_output_path.to_string());
-    if let Some(prompt) = prompt {
-        plan.args.push(prompt);
     }
 }
 
@@ -1547,7 +1907,6 @@ fn execute_allowed_runner_command(
 fn execute_external_agent_plan(
     plan: ExternalAgentLaunchPlan,
     timeout: Duration,
-    final_output_path: String,
 ) -> ExternalAgentRunResult {
     let started_at = Instant::now();
     let mut command = Command::new(&plan.command);
@@ -1629,12 +1988,6 @@ fn execute_external_agent_plan(
             &mut output_incomplete,
         ),
     );
-    let final_output = read_external_agent_final_output(&final_output_path);
-    let stdout_text = if final_output.trim().is_empty() {
-        stdout_text
-    } else {
-        final_output
-    };
     let (stdout_text, stdout_truncated) = truncate_text(stdout_text, 30_000);
     let (stderr_text, stderr_truncated) = truncate_text(stderr_text, 12_000);
     let exit_code = status.and_then(|value| value.code()).unwrap_or(-1);
@@ -1674,21 +2027,54 @@ fn execute_external_agent_plan(
     }
 }
 
-fn push_external_agent_session_log(
+/// Agent 无关的统一事件结构。三个 CLI 各自的结构化输出都归一到它，
+/// Runner 把它作为 session log 的 kind/title 字段下发，前端按 kind 统一渲染。
+#[derive(Debug, Clone)]
+struct AgentEvent {
+    /// reasoning / plan / tool_call / tool_result / message / final / error / log
+    kind: String,
+    /// 已清洗的纯文本，不含终端装饰
+    text: String,
+    /// 工具名 / 步骤标题（可空）
+    title: String,
+    /// 来源通道，调试用
+    raw_channel: String,
+}
+
+impl AgentEvent {
+    fn new(kind: &str, text: impl Into<String>, raw_channel: &str) -> Self {
+        AgentEvent {
+            kind: kind.to_string(),
+            text: text.into(),
+            title: String::new(),
+            raw_channel: raw_channel.to_string(),
+        }
+    }
+
+    fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+}
+
+/// 把一条统一事件写入 session log（携带 kind/title），返回新生成的日志条目。
+fn push_external_agent_event(
     state: &mut ExternalAgentSessionState,
-    stream: &str,
-    content: &str,
+    event: &AgentEvent,
 ) -> Option<ExternalAgentSessionLog> {
-    let content = sanitize_external_agent_session_log_content(stream, content);
-    if content.is_empty() {
+    let content = sanitize_external_agent_session_log_content(&event.raw_channel, &event.text);
+    // tool_call / final 这类事件即便正文为空也可能带标题，需要保留；纯文本事件为空则丢弃。
+    if content.is_empty() && event.title.trim().is_empty() {
         return None;
     }
     let seq = state.next_seq;
     state.next_seq = state.next_seq.saturating_add(1);
     let log = ExternalAgentSessionLog {
         seq,
-        stream: stream.to_string(),
+        stream: event.raw_channel.clone(),
         content,
+        kind: event.kind.clone(),
+        title: event.title.clone(),
         created_at_epoch_ms: current_epoch_millis(),
     };
     state.logs.push(log.clone());
@@ -1700,15 +2086,26 @@ fn push_external_agent_session_log(
     Some(log)
 }
 
+fn push_external_agent_session_log(
+    state: &mut ExternalAgentSessionState,
+    stream: &str,
+    content: &str,
+) -> Option<ExternalAgentSessionLog> {
+    push_external_agent_event(state, &AgentEvent::new("log", content, stream))
+}
+
 fn sanitize_external_agent_session_log_content(stream: &str, content: &str) -> String {
     if stream.trim() != "stderr" {
         return content.to_string();
     }
     let mut sanitized = String::new();
     for line in content.split_inclusive('\n') {
-        if !is_external_agent_macos_system_noise(line) {
-            sanitized.push_str(line);
+        if is_external_agent_macos_system_noise(line)
+            || is_external_agent_runner_diagnostic_line(line)
+        {
+            continue;
         }
+        sanitized.push_str(line);
     }
     sanitized
 }
@@ -1721,6 +2118,56 @@ fn is_external_agent_macos_system_noise(content: &str) -> bool {
     text.contains("TSM AdjustCapsLockLEDForKeyTransitionHandling")
         || text.contains("_ISSetPhysicalKeyboardCapsLockLED")
         || text.contains("IMKCFRunLoopWakeUpReliable")
+}
+
+/// 识别外部 Runner 进程写到 stderr 的内部诊断日志，避免污染用户可见过程流。
+/// hermes ACP 用 Python logging：`YYYY-MM-DD HH:MM:SS[,ms] [LEVEL] logger: msg`；
+/// codex 用 `...T...Z ERROR codex_core::...` 与若干固定标记。真正的 agent 输出走
+/// stdout / ACP session/update，不在 stderr，因此过滤这些行是安全的。
+fn is_external_agent_runner_diagnostic_line(content: &str) -> bool {
+    let text = content.trim();
+    if text.is_empty() {
+        return false;
+    }
+    // codex 诊断标记。
+    if text.contains("codex_core::")
+        || text.contains("failed to record rollout items")
+        || text.eq_ignore_ascii_case("codex")
+        || text.to_ascii_lowercase().starts_with("tokens used")
+    {
+        return true;
+    }
+    // Python logging 风格：以日期开头，且包含 [LEVEL] 标记。
+    let starts_with_date = {
+        let bytes = text.as_bytes();
+        bytes.len() >= 10
+            && bytes[0..4].iter().all(|b| b.is_ascii_digit())
+            && bytes[4] == b'-'
+            && bytes[5..7].iter().all(|b| b.is_ascii_digit())
+            && bytes[7] == b'-'
+            && bytes[8..10].iter().all(|b| b.is_ascii_digit())
+    };
+    if starts_with_date {
+        for level in [
+            "[INFO]",
+            "[WARN]",
+            "[WARNING]",
+            "[DEBUG]",
+            "[ERROR]",
+            "[TRACE]",
+            "[CRITICAL]",
+            "[NOTSET]",
+        ] {
+            if text.contains(level) {
+                return true;
+            }
+        }
+        // codex 的 `...T... ERROR ...` 变体（无方括号级别）。
+        if text.contains(" ERROR ") || text.contains(" WARN ") {
+            return true;
+        }
+    }
+    false
 }
 
 fn emit_external_agent_session_event(
@@ -1750,40 +2197,383 @@ fn external_agent_session_event_payload(
     }
 }
 
+/// 截断单条文本，避免单个事件正文过大撑爆日志与前端。
+fn clip_agent_event_text(text: &str) -> String {
+    truncate_text(text.to_string(), 40_000).0
+}
+
+/// 解析 codex `codex exec --json` 的一行 JSONL 事件，归一为统一事件。
+/// 真实报文样例（thread/turn/item 模型）：
+///   {"type":"thread.started",...}
+///   {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+///   {"type":"item.started","item":{"type":"command_execution","command":"...","status":"in_progress"}}
+///   {"type":"item.completed","item":{"type":"command_execution","aggregated_output":"...","exit_code":0}}
+///   {"type":"turn.completed","usage":{...}}
+fn parse_codex_jsonl_event(value: &serde_json::Value) -> Vec<AgentEvent> {
+    let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match event_type {
+        "item.started" | "item.completed" | "item.updated" => {
+            let Some(item) = value.get("item") else {
+                return Vec::new();
+            };
+            let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let completed = event_type == "item.completed";
+            match item_type {
+                // 模型可见消息：completed 的 agent_message 即最终答案候选。
+                "agent_message" | "assistant_message" => {
+                    let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    if text.trim().is_empty() {
+                        return Vec::new();
+                    }
+                    let kind = if completed { "final" } else { "message" };
+                    vec![AgentEvent::new(kind, clip_agent_event_text(text), "codex")]
+                }
+                "reasoning" => {
+                    let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    vec![AgentEvent::new("reasoning", clip_agent_event_text(text), "codex")]
+                }
+                "command_execution" => {
+                    let command = item.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                    if completed {
+                        let output = item
+                            .get("aggregated_output")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let exit = item.get("exit_code").and_then(|v| v.as_i64());
+                        let title = match exit {
+                            Some(code) => format!("$ {command} (exit {code})"),
+                            None => format!("$ {command}"),
+                        };
+                        vec![AgentEvent::new("tool_result", clip_agent_event_text(output), "codex")
+                            .with_title(title)]
+                    } else {
+                        vec![AgentEvent::new("tool_call", String::new(), "codex")
+                            .with_title(format!("$ {command}"))]
+                    }
+                }
+                // 文件改动 / MCP 工具调用等其它 item，统一作为 tool_call/tool_result。
+                other => {
+                    let title = if other.is_empty() {
+                        "工具调用".to_string()
+                    } else {
+                        other.to_string()
+                    };
+                    let text = item
+                        .get("text")
+                        .or_else(|| item.get("aggregated_output"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let kind = if completed { "tool_result" } else { "tool_call" };
+                    let event = AgentEvent::new(kind, clip_agent_event_text(text), "codex")
+                        .with_title(title);
+                    if event.text.trim().is_empty() && !completed {
+                        vec![event]
+                    } else if event.text.trim().is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![event]
+                    }
+                }
+            }
+        }
+        "error" | "turn.failed" => {
+            let message = value
+                .get("message")
+                .or_else(|| value.get("error"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("codex 执行出错");
+            vec![AgentEvent::new("error", message.to_string(), "codex")]
+        }
+        // thread.started / turn.started / turn.completed 等仅状态事件，不渲染。
+        _ => Vec::new(),
+    }
+}
+
+/// 解析 claude `--print --output-format stream-json --verbose` 的一行事件。
+/// 真实报文：
+///   {"type":"system","subtype":"init",...}
+///   {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+///   {"type":"result","subtype":"success","is_error":false,"result":"..."}
+fn parse_claude_stream_json_event(value: &serde_json::Value) -> Vec<AgentEvent> {
+    let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match event_type {
+        "assistant" => {
+            let Some(content) = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            else {
+                return Vec::new();
+            };
+            let mut events = Vec::new();
+            for block in content {
+                let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                match block_type {
+                    "text" => {
+                        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        if !text.trim().is_empty() {
+                            events.push(AgentEvent::new(
+                                "message",
+                                clip_agent_event_text(text),
+                                "claude",
+                            ));
+                        }
+                    }
+                    "thinking" => {
+                        let text = block
+                            .get("thinking")
+                            .or_else(|| block.get("text"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if !text.trim().is_empty() {
+                            events.push(AgentEvent::new(
+                                "reasoning",
+                                clip_agent_event_text(text),
+                                "claude",
+                            ));
+                        }
+                    }
+                    "tool_use" => {
+                        let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                        let input = block
+                            .get("input")
+                            .map(|v| v.to_string())
+                            .unwrap_or_default();
+                        events.push(
+                            AgentEvent::new("tool_call", clip_agent_event_text(&input), "claude")
+                                .with_title(name.to_string()),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            events
+        }
+        "user" => {
+            // tool_result 通过 user 消息回填。
+            let Some(content) = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            else {
+                return Vec::new();
+            };
+            let mut events = Vec::new();
+            for block in content {
+                if block.get("type").and_then(|v| v.as_str()) == Some("tool_result") {
+                    let text = claude_tool_result_text(block.get("content"));
+                    if !text.trim().is_empty() {
+                        events.push(AgentEvent::new(
+                            "tool_result",
+                            clip_agent_event_text(&text),
+                            "claude",
+                        ));
+                    }
+                }
+            }
+            events
+        }
+        "result" => {
+            let is_error = value
+                .get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let result = value.get("result").and_then(|v| v.as_str()).unwrap_or("");
+            if is_error {
+                let detail = if result.trim().is_empty() {
+                    "claude 执行失败".to_string()
+                } else {
+                    result.to_string()
+                };
+                vec![AgentEvent::new("error", detail, "claude")]
+            } else if !result.trim().is_empty() {
+                vec![AgentEvent::new("final", clip_agent_event_text(result), "claude")]
+            } else {
+                Vec::new()
+            }
+        }
+        // system/init、api_retry 等状态事件不直接渲染（保留为底层 log 由 reader 兜底）。
+        _ => Vec::new(),
+    }
+}
+
+/// claude tool_result.content 可能是字符串，也可能是 [{type:text,text}] 数组。
+fn claude_tool_result_text(content: Option<&serde_json::Value>) -> String {
+    match content {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// 解析 hermes ACP 的一条 `session/update` 通知，归一为统一事件。
+/// 真实报文：{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"..."}}}}
+fn parse_acp_notification(value: &serde_json::Value) -> Vec<AgentEvent> {
+    if value.get("method").and_then(|v| v.as_str()) != Some("session/update") {
+        return Vec::new();
+    }
+    let Some(update) = value.get("params").and_then(|p| p.get("update")) else {
+        return Vec::new();
+    };
+    let update_type = update
+        .get("sessionUpdate")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match update_type {
+        "agent_message_chunk" => {
+            let text = acp_content_text(update.get("content"));
+            if text.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![AgentEvent::new("message", clip_agent_event_text(&text), "hermes")]
+            }
+        }
+        "agent_thought_chunk" => {
+            let text = acp_content_text(update.get("content"));
+            if text.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![AgentEvent::new("reasoning", clip_agent_event_text(&text), "hermes")]
+            }
+        }
+        "tool_call" => {
+            let title = update
+                .get("title")
+                .or_else(|| update.get("kind"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("工具调用");
+            let raw = update.get("rawInput").map(|v| v.to_string()).unwrap_or_default();
+            vec![AgentEvent::new("tool_call", clip_agent_event_text(&raw), "hermes")
+                .with_title(title.to_string())]
+        }
+        "tool_call_update" => {
+            let title = update
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("工具结果");
+            let text = acp_tool_call_output_text(update);
+            vec![AgentEvent::new("tool_result", clip_agent_event_text(&text), "hermes")
+                .with_title(title.to_string())]
+        }
+        "plan" => {
+            let text = update
+                .get("entries")
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            vec![AgentEvent::new("plan", clip_agent_event_text(&text), "hermes")]
+        }
+        // usage_update / available_commands_update / session_info_update 等不渲染。
+        _ => Vec::new(),
+    }
+}
+
+/// ACP content 可能是 {type:text,text} 对象，或对象数组。
+fn acp_content_text(content: Option<&serde_json::Value>) -> String {
+    match content {
+        Some(serde_json::Value::Object(_)) => content
+            .and_then(|c| c.get("text"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join(""),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+/// ACP tool_call_update 的输出文本，可能在 content[].content.text。
+fn acp_tool_call_output_text(update: &serde_json::Value) -> String {
+    let Some(items) = update.get("content").and_then(|c| c.as_array()) else {
+        return String::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            item.get("content")
+                .and_then(|c| c.get("text"))
+                .or_else(|| item.get("text"))
+                .and_then(|v| v.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 按 agent_type 把一行结构化文本解析为统一事件列表。
+/// 非 JSON 行或无法识别的行返回空列表，由 reader 兜底为 log。
+fn parse_agent_line(agent_type: &str, line: &str) -> Vec<AgentEvent> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return Vec::new();
+    };
+    match agent_type {
+        "codex_cli" | "codex" => parse_codex_jsonl_event(&value),
+        "claude_code" | "claude" => parse_claude_stream_json_event(&value),
+        "hermes" => parse_acp_notification(&value),
+        _ => Vec::new(),
+    }
+}
+
+/// 按行读取外部 agent 的结构化输出流：每读到一整行就按 agent_type 解析为统一事件并下发。
+/// 非 JSON 行（codex 的 "Reading additional input..."、stderr 噪声、claude 重试日志等）
+/// 兜底为 kind="log"。stderr 通道始终走 log，避免把诊断信息误判为模型输出。
 fn spawn_external_agent_log_reader<R>(
     app: tauri::AppHandle,
     sessions: ExternalAgentSessionStore,
     session_id: String,
-    stream_name: &'static str,
+    agent_type: String,
+    raw_channel: &'static str,
     mut stream: R,
 ) where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
+        let mut pending = String::new();
         loop {
             match stream.read(&mut buffer) {
-                Ok(0) => break,
+                Ok(0) => {
+                    // 流结束前，把残留的最后一行交给解析。
+                    let leftover = std::mem::take(&mut pending);
+                    if !leftover.trim().is_empty() {
+                        emit_agent_line(&app, &sessions, &session_id, &agent_type, raw_channel, &leftover);
+                    }
+                    break;
+                }
                 Ok(size) => {
-                    let content = String::from_utf8_lossy(&buffer[..size]).to_string();
-                    let mut event = None;
-                    if let Ok(mut store) = sessions.lock() {
-                        if let Some(state) = store.get_mut(&session_id) {
-                            if is_external_agent_terminal_status(&state.status) {
-                                continue;
-                            }
-                            let log = push_external_agent_session_log(state, stream_name, &content);
-                            let _ = persist_external_agent_session_snapshot(&app, state);
-                            event = Some(external_agent_session_event_payload(
-                                "log",
-                                state,
-                                stream_name,
-                                log,
-                            ));
+                    pending.push_str(&String::from_utf8_lossy(&buffer[..size]));
+                    // 按行切分，保留最后一段不完整的行到 pending。
+                    while let Some(idx) = pending.find('\n') {
+                        let line: String = pending.drain(..=idx).collect();
+                        let line = line.trim_end_matches(['\r', '\n']).to_string();
+                        if line.is_empty() {
+                            continue;
+                        }
+                        if !emit_agent_line(
+                            &app,
+                            &sessions,
+                            &session_id,
+                            &agent_type,
+                            raw_channel,
+                            &line,
+                        ) {
+                            return;
                         }
                     }
-                    if let Some(payload) = event {
-                        let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
+                    // 防止超长无换行行无限增长。
+                    if pending.len() > 1_048_576 {
+                        let chunk = std::mem::take(&mut pending);
+                        emit_agent_line(&app, &sessions, &session_id, &agent_type, raw_channel, &chunk);
                     }
                 }
                 Err(err) => {
@@ -1793,10 +2583,13 @@ fn spawn_external_agent_log_reader<R>(
                             if is_external_agent_terminal_status(&state.status) {
                                 break;
                             }
-                            let log = push_external_agent_session_log(
+                            let log = push_external_agent_event(
                                 state,
-                                "system",
-                                &format!("读取 {stream_name} 失败：{err}\n"),
+                                &AgentEvent::new(
+                                    "error",
+                                    format!("读取 {raw_channel} 失败：{err}\n"),
+                                    "system",
+                                ),
                             );
                             let _ = persist_external_agent_session_snapshot(&app, state);
                             event = Some(external_agent_session_event_payload(
@@ -1814,97 +2607,58 @@ fn spawn_external_agent_log_reader<R>(
     });
 }
 
-fn spawn_external_agent_waiter(
-    app: tauri::AppHandle,
-    sessions: ExternalAgentSessionStore,
-    session_id: String,
-    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
-) {
-    thread::spawn(move || {
-        let status = {
-            match child.lock() {
-                Ok(mut child) => child.wait().ok(),
-                Err(_) => None,
-            }
+/// 解析并下发一整行。返回 false 表示会话已终止、读取线程应退出。
+fn emit_agent_line(
+    app: &tauri::AppHandle,
+    sessions: &ExternalAgentSessionStore,
+    session_id: &str,
+    agent_type: &str,
+    raw_channel: &str,
+    line: &str,
+) -> bool {
+    // stderr 通道只作诊断日志，不参与结构化事件解析。
+    let events = if raw_channel == "stderr" {
+        Vec::new()
+    } else {
+        parse_agent_line(agent_type, line)
+    };
+    let payloads = {
+        let Ok(mut store) = sessions.lock() else {
+            return true;
         };
-        let mut event = None;
-        if let Ok(mut store) = sessions.lock() {
-            if let Some(state) = store.get_mut(&session_id) {
-                let exit_code = status
-                    .map(|status| i32::try_from(status.exit_code()).unwrap_or(-1))
-                    .unwrap_or(-1);
-                if state.status == "cancelled" || state.status == "cancelling" {
-                    state.status = "cancelled".to_string();
-                    state.exit_code = Some(state.exit_code.unwrap_or(exit_code));
-                    state.child_process_id = None;
-                    state.child = None;
-                    state.stdin = None;
-                    state.updated_at_epoch_ms = current_epoch_millis();
-                    let _ = persist_external_agent_session_snapshot(&app, state);
-                    event = Some(external_agent_session_event_payload(
-                        "cancelled",
+        let Some(state) = store.get_mut(session_id) else {
+            return true;
+        };
+        if is_external_agent_terminal_status(&state.status) {
+            return false;
+        }
+        let mut payloads = Vec::new();
+        if events.is_empty() {
+            // 未识别为结构化事件：兜底为来源通道的 log。
+            if let Some(log) =
+                push_external_agent_event(state, &AgentEvent::new("log", line, raw_channel))
+            {
+                payloads.push(external_agent_session_event_payload("log", state, raw_channel, Some(log)));
+            }
+        } else {
+            for event in &events {
+                if let Some(log) = push_external_agent_event(state, event) {
+                    payloads.push(external_agent_session_event_payload(
+                        "log",
                         state,
-                        "system",
-                        None,
+                        &event.raw_channel,
+                        Some(log),
                     ));
-                    if let Some(payload) = event {
-                        let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
-                    }
-                    return;
                 }
-                let final_output_path = state.final_output_path.clone();
-                let final_output = read_external_agent_final_output(&final_output_path);
-                let final_output = if final_output.trim().is_empty() {
-                    read_external_agent_stdout_final_output(
-                        &state.agent_type,
-                        &state.logs,
-                        exit_code,
-                    )
-                } else {
-                    final_output
-                };
-                state.exit_code = Some(exit_code);
-                state.final_output = final_output;
-                state.status = if state.status == "cancelled" || state.status == "cancelling" {
-                    "cancelled".to_string()
-                } else if exit_code == 0 {
-                    "completed".to_string()
-                } else {
-                    "failed".to_string()
-                };
-                state.summary = format!("{} Runner 会话结束，退出码 {}", state.label, exit_code);
-                state.child_process_id = None;
-                state.child = None;
-                state.stdin = None;
-                state.updated_at_epoch_ms = current_epoch_millis();
-                if !state.final_output.trim().is_empty() {
-                    let final_output = state.final_output.clone();
-                    let _ = push_external_agent_session_log(
-                        state,
-                        "final",
-                        &format!("{final_output}\n"),
-                    );
-                }
-                let log = push_external_agent_session_log(
-                    state,
-                    "system",
-                    &format!("Runner 会话结束，退出码 {exit_code}\n"),
-                );
-                let _ = persist_external_agent_session_snapshot(&app, state);
-                let event_type = match state.status.as_str() {
-                    "completed" => "completed",
-                    "cancelled" => "cancelled",
-                    _ => "error",
-                };
-                event = Some(external_agent_session_event_payload(
-                    event_type, state, "system", log,
-                ));
             }
         }
-        if let Some(payload) = event {
-            let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
-        }
-    });
+        let _ = persist_external_agent_session_snapshot(app, state);
+        payloads
+    };
+    for payload in payloads {
+        let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
+    }
+    true
 }
 
 fn spawn_external_agent_process_waiter(
@@ -1944,21 +2698,14 @@ fn spawn_external_agent_process_waiter(
                     }
                     return;
                 }
-                let final_output_path = state.final_output_path.clone();
-                let final_output = read_external_agent_final_output(&final_output_path);
-                let final_output = if final_output.trim().is_empty() {
-                    read_external_agent_stdout_final_output(
-                        &state.agent_type,
-                        &state.logs,
-                        exit_code,
-                    )
-                } else {
-                    final_output
-                };
                 state.exit_code = Some(exit_code);
-                state.final_output = final_output;
+                state.final_output = resolve_external_agent_final_output(&state.logs);
                 state.status = if state.status == "cancelled" || state.status == "cancelling" {
                     "cancelled".to_string()
+                } else if state.status == "completed" {
+                    // ACP 驱动在 turn 正常结束后已主动标记 completed 并杀进程，
+                    // 此时退出码来自 kill，不能据此改判为 failed。
+                    "completed".to_string()
                 } else if exit_code == 0 {
                     "completed".to_string()
                 } else {
@@ -1968,14 +2715,6 @@ fn spawn_external_agent_process_waiter(
                 state.child_process_id = None;
                 state.process_child = None;
                 state.updated_at_epoch_ms = current_epoch_millis();
-                if !state.final_output.trim().is_empty() {
-                    let final_output = state.final_output.clone();
-                    let _ = push_external_agent_session_log(
-                        state,
-                        "final",
-                        &format!("{final_output}\n"),
-                    );
-                }
                 let log = push_external_agent_session_log(
                     state,
                     "system",
@@ -1998,41 +2737,20 @@ fn spawn_external_agent_process_waiter(
     });
 }
 
-fn read_external_agent_final_output(path: &str) -> String {
-    let normalized_path = path.trim();
-    if normalized_path.is_empty() {
-        return String::new();
+/// 从已归一的事件日志中解析最终答案：优先取最后一条 kind=="final"，
+/// 否则回退为按顺序拼接所有 kind=="message" 的正文。彻底取代旧的
+/// 临时文件（codex --output-last-message）与 stdout 拼接方案。
+fn resolve_external_agent_final_output(logs: &[ExternalAgentSessionLog]) -> String {
+    if let Some(final_log) = logs.iter().rev().find(|item| item.kind == "final") {
+        return truncate_text(final_log.content.trim().to_string(), 40_000).0;
     }
-    let output = fs::read_to_string(normalized_path).unwrap_or_default();
-    let _ = fs::remove_file(normalized_path);
-    truncate_text(output.trim().to_string(), 40_000).0
-}
-
-fn read_external_agent_stdout_final_output(
-    agent_type: &str,
-    logs: &[ExternalAgentSessionLog],
-    exit_code: i32,
-) -> String {
-    if exit_code != 0 {
-        return String::new();
-    }
-    if !external_agent_uses_stdout_final_output(agent_type) {
-        return String::new();
-    }
-    let text = logs
+    let joined = logs
         .iter()
-        .filter(|item| {
-            let stream = item.stream.trim();
-            stream == "pty" || stream == "stdout"
-        })
+        .filter(|item| item.kind == "message")
         .map(|item| item.content.as_str())
         .collect::<Vec<_>>()
         .join("");
-    truncate_text(text.trim().to_string(), 40_000).0
-}
-
-fn external_agent_uses_stdout_final_output(agent_type: &str) -> bool {
-    agent_type == "hermes" || agent_type == "claude_code"
+    truncate_text(joined.trim().to_string(), 40_000).0
 }
 
 fn external_agent_session_snapshot(
@@ -2165,6 +2883,8 @@ fn normalize_detached_external_agent_session_snapshot(
             seq: snapshot.next_seq,
             stream: "system".to_string(),
             content: "Runner 会话已取消\n".to_string(),
+            kind: "log".to_string(),
+            title: String::new(),
             created_at_epoch_ms: now,
         });
     } else {
@@ -2179,6 +2899,8 @@ fn normalize_detached_external_agent_session_snapshot(
             seq: snapshot.next_seq,
             stream: "system".to_string(),
             content: "Runner 会话没有可恢复的本机进程句柄，已停止标记为运行中\n".to_string(),
+            kind: "log".to_string(),
+            title: String::new(),
             created_at_epoch_ms: now,
         });
     }
@@ -2540,3 +3262,256 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running AI Employee Factory desktop app");
 }
+
+#[cfg(test)]
+mod agent_event_tests {
+    use super::*;
+
+    fn parse(agent: &str, line: &str) -> Vec<AgentEvent> {
+        parse_agent_line(agent, line)
+    }
+
+    // ---- codex (codex exec --json) ----
+
+    #[test]
+    fn codex_agent_message_completed_is_final() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"最终答案"}}"#;
+        let events = parse("codex_cli", line);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "final");
+        assert_eq!(events[0].text, "最终答案");
+        assert_eq!(events[0].raw_channel, "codex");
+    }
+
+    #[test]
+    fn codex_command_execution_started_is_tool_call() {
+        let line = r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'ls -la'","status":"in_progress"}}"#;
+        let events = parse("codex_cli", line);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "tool_call");
+        assert!(events[0].title.contains("ls -la"));
+    }
+
+    #[test]
+    fn codex_command_execution_completed_is_tool_result() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"ls","aggregated_output":"total 0\n","exit_code":0,"status":"completed"}}"#;
+        let events = parse("codex_cli", line);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "tool_result");
+        assert!(events[0].title.contains("exit 0"));
+        assert!(events[0].text.contains("total 0"));
+    }
+
+    #[test]
+    fn codex_status_events_are_ignored() {
+        for line in [
+            r#"{"type":"thread.started","thread_id":"x"}"#,
+            r#"{"type":"turn.started"}"#,
+            r#"{"type":"turn.completed","usage":{}}"#,
+        ] {
+            assert!(parse("codex_cli", line).is_empty(), "should ignore: {line}");
+        }
+    }
+
+    // ---- claude (--output-format stream-json) ----
+
+    #[test]
+    fn claude_assistant_text_is_message() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"思考中"}]}}"#;
+        let events = parse("claude_code", line);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "message");
+        assert_eq!(events[0].text, "思考中");
+    }
+
+    #[test]
+    fn claude_tool_use_is_tool_call() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let events = parse("claude_code", line);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "tool_call");
+        assert_eq!(events[0].title, "Bash");
+    }
+
+    #[test]
+    fn claude_result_success_is_final() {
+        let line = r#"{"type":"result","subtype":"success","is_error":false,"result":"OK"}"#;
+        let events = parse("claude_code", line);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "final");
+        assert_eq!(events[0].text, "OK");
+    }
+
+    #[test]
+    fn claude_result_error_is_error() {
+        let line = r#"{"type":"result","subtype":"success","is_error":true,"result":"API Error: 503"}"#;
+        let events = parse("claude_code", line);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "error");
+        assert!(events[0].text.contains("503"));
+    }
+
+    #[test]
+    fn claude_system_init_is_ignored() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"x"}"#;
+        assert!(parse("claude_code", line).is_empty());
+    }
+
+    // ---- hermes (ACP session/update) ----
+
+    #[test]
+    fn acp_agent_message_chunk_is_message() {
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"content":{"text":"OK","type":"text"},"sessionUpdate":"agent_message_chunk"}}}"#;
+        let events = parse("hermes", line);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "message");
+        assert_eq!(events[0].text, "OK");
+        assert_eq!(events[0].raw_channel, "hermes");
+    }
+
+    #[test]
+    fn acp_thought_chunk_is_reasoning() {
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"content":{"text":"想一想","type":"text"},"sessionUpdate":"agent_thought_chunk"}}}"#;
+        let events = parse("hermes", line);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "reasoning");
+    }
+
+    #[test]
+    fn acp_usage_and_info_updates_are_ignored() {
+        for line in [
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"size":256000,"used":17363,"sessionUpdate":"usage_update"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"title":"x","sessionUpdate":"session_info_update"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"availableCommands":[],"sessionUpdate":"available_commands_update"}}}"#,
+        ] {
+            assert!(parse("hermes", line).is_empty(), "should ignore: {line}");
+        }
+    }
+
+    #[test]
+    fn acp_response_messages_are_not_notifications() {
+        // initialize / session/new 响应不是通知，parse_acp_notification 不应产出事件。
+        let line = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#;
+        assert!(parse("hermes", line).is_empty());
+    }
+
+    // ---- 通用 ----
+
+    #[test]
+    fn non_json_line_yields_no_events() {
+        assert!(parse("codex_cli", "Reading additional input from stdin...").is_empty());
+        assert!(parse("claude_code", "not json at all").is_empty());
+    }
+
+    #[test]
+    fn unknown_agent_yields_no_events() {
+        let line = r#"{"type":"result","result":"x"}"#;
+        assert!(parse("unknown", line).is_empty());
+    }
+
+    // ---- final output 收敛 ----
+
+    #[test]
+    fn final_output_prefers_final_kind() {
+        let logs = vec![
+            ExternalAgentSessionLog {
+                seq: 0,
+                stream: "claude".into(),
+                content: "片段A".into(),
+                kind: "message".into(),
+                title: String::new(),
+                created_at_epoch_ms: 0,
+            },
+            ExternalAgentSessionLog {
+                seq: 1,
+                stream: "claude".into(),
+                content: "最终答案".into(),
+                kind: "final".into(),
+                title: String::new(),
+                created_at_epoch_ms: 0,
+            },
+        ];
+        assert_eq!(resolve_external_agent_final_output(&logs), "最终答案");
+    }
+
+    #[test]
+    fn final_output_falls_back_to_joined_messages() {
+        let logs = vec![
+            ExternalAgentSessionLog {
+                seq: 0,
+                stream: "hermes".into(),
+                content: "甲".into(),
+                kind: "message".into(),
+                title: String::new(),
+                created_at_epoch_ms: 0,
+            },
+            ExternalAgentSessionLog {
+                seq: 1,
+                stream: "hermes".into(),
+                content: "乙".into(),
+                kind: "message".into(),
+                title: String::new(),
+                created_at_epoch_ms: 0,
+            },
+        ];
+        assert_eq!(resolve_external_agent_final_output(&logs), "甲乙");
+    }
+
+    #[test]
+    fn acp_permission_request_selects_allow() {
+        let req = serde_json::json!({
+            "params": {"options": [
+                {"optionId": "reject", "kind": "reject_once"},
+                {"optionId": "allow", "kind": "allow_once"}
+            ]}
+        });
+        let resp = acp_handle_server_request("session/request_permission", &req);
+        assert_eq!(resp["outcome"]["optionId"], "allow");
+    }
+
+    // ---- stderr 诊断过滤 ----
+
+    #[test]
+    fn hermes_python_logging_lines_are_filtered() {
+        for line in [
+            "2026-06-18 12:28:45 [WARNING] tools.skills_tool: Skill security warning",
+            "2026-06-18 12:28:45 [INFO] agent.tool_executor: tool skill_view completed",
+            "2026-06-18 12:28:45 [INFO] run_agent: OpenAI client created",
+        ] {
+            assert!(
+                is_external_agent_runner_diagnostic_line(line),
+                "should filter: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_diagnostic_lines_are_filtered() {
+        assert!(is_external_agent_runner_diagnostic_line(
+            "2026-06-18T01:14:49.707148Z ERROR codex_core::session: failed to record rollout items"
+        ));
+    }
+
+    #[test]
+    fn real_agent_text_is_not_filtered_as_diagnostic() {
+        for line in ["OK 这是真实回答", "构建完成，共修改 5 个文件", "[INFO] 普通正文不带日期前缀"] {
+            assert!(
+                !is_external_agent_runner_diagnostic_line(line),
+                "should keep: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_drops_diagnostics_only_on_stderr() {
+        let noisy = "2026-06-18 12:28:45 [INFO] run_agent: started\n真实输出\n";
+        // stderr 通道：诊断行被删，正文保留。
+        let cleaned = sanitize_external_agent_session_log_content("stderr", noisy);
+        assert!(!cleaned.contains("run_agent"));
+        assert!(cleaned.contains("真实输出"));
+        // 非 stderr 通道：原样保留。
+        let kept = sanitize_external_agent_session_log_content("hermes", noisy);
+        assert_eq!(kept, noisy);
+    }
+}
+

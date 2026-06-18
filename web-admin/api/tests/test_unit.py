@@ -10536,6 +10536,7 @@ def test_project_deploy_artifact_push_creates_ready_artifact_and_queued_run(tmp_
             return None
 
     monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    monkeypatch.setattr(projects_router.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError()))
 
     content = b"release-content"
     checksum = "sha256:" + hashlib.sha256(content).hexdigest()
@@ -10584,9 +10585,364 @@ def test_project_deploy_artifact_push_creates_ready_artifact_and_queued_run(tmp_
     assert result["artifact"]["status"] == "blocked"
     assert result["deployment"]["status"] == "blocked"
     assert result["deployment"]["stage"] == "blocked_missing_remote_executor"
-    assert result["deployment"]["notify_result"][0]["status"] == "preview"
+    assert result["deployment"]["notify_result"][0]["status"] == "skipped"
+    assert result["deployment"]["notify_result"][0]["reason"] == "部署未成功，不发送成功通知"
     assert Path(result["artifact"]["storage_path"]).read_bytes() == content
     assert FakeFtp.uploaded == [("STOR release.tar.gz", content)]
+
+
+def test_project_deploy_notification_sends_feishu_message(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact
+    from stores.json.project_store import ProjectConfig
+
+    calls = []
+
+    monkeypatch.setattr(
+        projects_router.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("lark-cli must not be used")),
+    )
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.get_feishu_connector",
+        lambda connector_id: {
+            "id": connector_id,
+            "platform": "feishu",
+            "enabled": True,
+            "app_id": "cli_xxx",
+            "app_secret": "secret",
+        },
+    )
+
+    def fake_send(connector, *, chat_id, content, idempotency_key=""):
+        calls.append(
+            {
+                "connector": connector,
+                "chat_id": chat_id,
+                "content": content,
+                "idempotency_key": idempotency_key,
+            }
+        )
+        return {"message_id": "om_1"}
+
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.send_feishu_text_message_with_open_api",
+        fake_send,
+    )
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "name": "前端服务",
+                            "notify": {
+                                "enabled": True,
+                                "template": "发布结果：{project_name}/{component_name}/{status_label}/{artifact_name}/{run_id}",
+                                "targets": [
+                                    {
+                                        "platform": "feishu",
+                                        "connector_id": "bot-1",
+                                        "chat_id": "chat-1",
+                                        "chat_name": "部署群",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="release.zip",
+    )
+
+    result = projects_router._build_project_deploy_notification_preview(
+        project,
+        artifact,
+        status="success",
+        run_id="deploy-1",
+        stage="ftp_upload_completed",
+    )
+
+    assert result[0]["status"] == "sent"
+    assert result[0]["chat_name"] == "部署群"
+    assert result[0]["stage"] == "ftp_upload_completed"
+    assert result[0]["template"] == "发布结果：{project_name}/{component_name}/{status_label}/{artifact_name}/{run_id}"
+    assert result[0]["message"] == "发布结果：项目一/前端服务/已部署/release.zip/deploy-1"
+    assert result[0]["created_at"]
+    assert result[0]["message_id"] == "om_1"
+    assert calls
+    assert calls[0]["connector"]["id"] == "bot-1"
+    assert calls[0]["chat_id"] == "chat-1"
+    assert calls[0]["content"] == "发布结果：项目一/前端服务/已部署/release.zip/deploy-1"
+    assert calls[0]["idempotency_key"].startswith("project-deploy-artifact-1-success-")
+
+
+def test_project_deploy_notification_fails_when_feishu_connector_missing(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact
+    from stores.json.project_store import ProjectConfig
+
+    monkeypatch.setattr(
+        projects_router.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("lark-cli must not be used")),
+    )
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.get_feishu_connector",
+        lambda _connector_id: None,
+    )
+
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "notify": {
+                                "enabled": True,
+                                "targets": [{"platform": "feishu", "connector_id": "missing", "chat_id": "chat-1"}],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="release.zip",
+    )
+
+    result = projects_router._build_project_deploy_notification_preview(project, artifact, status="success")
+
+    assert result[0]["status"] == "failed"
+    assert result[0]["reason"] == "飞书机器人连接器不存在或未启用"
+
+
+def test_project_deploy_notification_skips_when_deploy_not_success(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact
+    from stores.json.project_store import ProjectConfig
+
+    calls = []
+    monkeypatch.setattr(projects_router.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "notify": {
+                                "enabled": True,
+                                "targets": [{"platform": "feishu", "connector_id": "bot-1", "chat_id": "chat-1"}],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="release.zip",
+    )
+
+    result = projects_router._build_project_deploy_notification_preview(project, artifact, status="failed")
+
+    assert result[0]["status"] == "skipped"
+    assert result[0]["reason"] == "部署未成功，不发送成功通知"
+    assert calls == []
+
+
+def test_project_deploy_notification_manual_send_allows_failed_status(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact
+    from stores.json.project_store import ProjectConfig
+
+    calls = []
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.get_feishu_connector",
+        lambda connector_id: {
+            "id": connector_id,
+            "platform": "feishu",
+            "enabled": True,
+            "app_id": "cli_xxx",
+            "app_secret": "secret",
+        },
+    )
+
+    def fake_send(connector, *, chat_id, content, idempotency_key=""):
+        calls.append({"chat_id": chat_id, "content": content, "idempotency_key": idempotency_key})
+        return {"message_id": "om_failed"}
+
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.send_feishu_text_message_with_open_api",
+        fake_send,
+    )
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "notify": {
+                                "enabled": True,
+                                "template": "{project_name} {status_label} {log_excerpt}",
+                                "targets": [{"platform": "feishu", "connector_id": "bot-1", "chat_id": "chat-1"}],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="release.zip",
+    )
+
+    result = projects_router._build_project_deploy_notification_preview(
+        project,
+        artifact,
+        status="failed",
+        run_id="deploy-1",
+        stage="upload_failed",
+        log_excerpt="upload failed: permission denied",
+        force_send=True,
+        manual=True,
+        idempotency_scope="manual-test",
+    )
+
+    assert result[0]["status"] == "sent"
+    assert result[0]["manual"] is True
+    assert result[0]["message_id"] == "om_failed"
+    assert "失败" in result[0]["message"]
+    assert "permission denied" in result[0]["message"]
+    assert calls == [
+        {
+            "chat_id": "chat-1",
+            "content": "项目一 失败 upload failed: permission denied",
+            "idempotency_key": calls[0]["idempotency_key"],
+        }
+    ]
+
+
+def test_project_deploy_run_manual_notification_updates_run(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact, ProjectDeployRun, ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.get_feishu_connector",
+        lambda connector_id: {
+            "id": connector_id,
+            "platform": "feishu",
+            "enabled": True,
+            "app_id": "cli_xxx",
+            "app_secret": "secret",
+        },
+    )
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.send_feishu_text_message_with_open_api",
+        lambda connector, *, chat_id, content, idempotency_key="": {"message_id": "om_manual"},
+    )
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "notify": {
+                                "enabled": True,
+                                "template": "{artifact_name} {status_label} {stage}",
+                                "targets": [{"platform": "feishu", "connector_id": "bot-1", "chat_id": "chat-1"}],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    deploy_store.save_artifact(
+        ProjectDeployArtifact(
+            id="artifact-1",
+            project_id="proj-1",
+            profile="prod",
+            component="web",
+            artifact_name="release.zip",
+        )
+    )
+    deploy_store.save_run(
+        ProjectDeployRun(
+            id="deploy-1",
+            project_id="proj-1",
+            profile="prod",
+            component="web",
+            status="failed",
+            stage="upload_failed",
+            artifact_id="artifact-1",
+            notify_result=[{"status": "failed", "reason": "old failure"}],
+        )
+    )
+
+    result = projects_router._send_project_deploy_run_notification_payload(
+        project=project,
+        run_id="deploy-1",
+        requested_by="tester",
+    )
+
+    assert result["status"] == "sent"
+    assert result["notify_result"][0]["status"] == "sent"
+    assert result["notify_result"][0]["manual"] is True
+    assert result["notify_result"][0]["message"] == "release.zip 失败 upload_failed"
+    saved_run = deploy_store.get_run("proj-1", "deploy-1")
+    assert saved_run is not None
+    assert len(saved_run.notify_result) == 2
+    assert saved_run.notify_result[-1]["message_id"] == "om_manual"
+    assert saved_run.artifact_summary["manual_notify_requested_by"] == "tester"
 
 
 def test_project_deploy_artifact_builtin_tool_push_defaults_to_auto_deploy(tmp_path, monkeypatch):
@@ -10868,6 +11224,110 @@ def test_project_deploy_artifact_push_uses_selected_component_targets(tmp_path, 
     assert "credential_ref" not in snapshot_target
 
 
+def test_project_deploy_artifact_push_auto_deploy_filters_selected_target_ids(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+
+    from models.requests import ProjectDeployArtifactPushReq
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+            self.cwd_path = ""
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            self.cwd_path = path
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((self.cwd_path, command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+
+    content = b"selected-target-release"
+    checksum = "sha256:" + hashlib.sha256(content).hexdigest()
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "api",
+                            "artifact_kind": "source-bundle",
+                            "safety": {"auto_deploy_on_artifact_update": True},
+                            "targets": [
+                                {
+                                    "id": "server-1",
+                                    "name": "服务器 1",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app/server-1",
+                                },
+                                {
+                                    "id": "server-2",
+                                    "name": "服务器 2",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/opt/app/server-2",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    result = projects_router._push_project_deploy_artifact_payload(
+        project=project,
+        req=ProjectDeployArtifactPushReq(
+            profile="prod",
+            component="api",
+            target_ids=["server-2"],
+            artifact_name="release.bin",
+            manifest={"checksum": checksum, "size": len(content)},
+            artifact_content_base64=base64.b64encode(content).decode("ascii"),
+            auto_deploy=True,
+        ),
+        uploaded_by="tester",
+    )
+
+    summary = result["deployment"]["artifact_summary"]
+    assert result["deployment"]["status"] == "success"
+    assert summary["target_count"] == 1
+    assert summary["selected_target_ids"] == ["server-2"]
+    assert summary["selected_target_names"] == ["服务器 2"]
+    assert summary["uploaded_target_count"] == 1
+    assert FakeFtp.uploaded == [("server-2", "STOR release.bin", content)]
+
+
 def test_project_deploy_artifact_delete_removes_file_and_record(tmp_path, monkeypatch):
     import base64
     import hashlib
@@ -11054,6 +11514,7 @@ async def test_project_deploy_artifact_deploy_route_runs_payload_in_threadpool(m
             task_tree_node_id="node-1",
             requirement="解压后部署",
             plan="先解压再上传解压后的内容",
+            target_ids=["server-2"],
         ),
         {"sub": "tester", "role": "admin"},
     )
@@ -11065,6 +11526,7 @@ async def test_project_deploy_artifact_deploy_route_runs_payload_in_threadpool(m
     assert captured["kwargs"]["task_tree_node_id"] == "node-1"
     assert captured["kwargs"]["requirement"] == "解压后部署"
     assert captured["kwargs"]["plan"] == "先解压再上传解压后的内容"
+    assert captured["kwargs"]["target_ids"] == ["server-2"]
 
 
 @pytest.mark.asyncio
@@ -11090,7 +11552,27 @@ async def test_project_deploy_artifact_ai_execute_route_runs_server_side_deploy(
                 "provider_id": "chat-provider",
                 "model_name": "chat-model",
             },
-            deploy_settings={"enabled": True, "profiles": []},
+            deploy_settings={
+                "enabled": True,
+                "profiles": [
+                    {
+                        "id": "prod",
+                        "components": [
+                            {
+                                "id": "app",
+                                "targets": [
+                                    {
+                                        "id": "server-2",
+                                        "name": "服务器 2",
+                                        "remote_path": "/opt/app/server-2",
+                                        "ftp_credential_id": "ftp-1",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
         ),
     )
 
@@ -11127,14 +11609,20 @@ async def test_project_deploy_artifact_ai_execute_route_runs_server_side_deploy(
             },
         }
 
+    chat_side_effects: list[str] = []
+
     async def fake_publish_project_chat_session_realtime(**kwargs):
-        return None
+        chat_side_effects.append("publish_session")
 
     async def fake_publish_project_chat_record_realtime(**kwargs):
+        chat_side_effects.append("publish_record")
+
+    def fake_append_chat_record(**kwargs):
+        chat_side_effects.append("append_record")
         return None
 
     monkeypatch.setattr(projects_router, "_execute_project_deploy_artifact_agent_payload", fake_execute_agent_payload)
-    monkeypatch.setattr(projects_router, "_append_chat_record", lambda **kwargs: None)
+    monkeypatch.setattr(projects_router, "_append_chat_record", fake_append_chat_record)
     monkeypatch.setattr(projects_router, "publish_project_chat_session_realtime", fake_publish_project_chat_session_realtime)
     monkeypatch.setattr(projects_router, "publish_project_chat_record_realtime", fake_publish_project_chat_record_realtime)
     monkeypatch.setattr(
@@ -11163,6 +11651,7 @@ async def test_project_deploy_artifact_ai_execute_route_runs_server_side_deploy(
             chat_session_id="chat-ai-1",
             requirement="解压后部署",
             plan="先解压再上传解压后的内容",
+            target_ids=["server-2"],
         ),
         {"sub": "tester", "role": "admin"},
     )
@@ -11184,6 +11673,8 @@ async def test_project_deploy_artifact_ai_execute_route_runs_server_side_deploy(
     assert captured["agent_kwargs"]["chat_session_id"] == "chat-ai-1"
     assert captured["agent_kwargs"]["req"].requirement == "解压后部署"
     assert captured["agent_kwargs"]["req"].plan == "先解压再上传解压后的内容"
+    assert captured["agent_kwargs"]["req"].target_ids == ["server-2"]
+    assert chat_side_effects == []
 
 
 @pytest.mark.asyncio
@@ -12550,10 +13041,11 @@ def test_project_deploy_artifact_ftp_only_auto_deploy_succeeds_without_command(t
     assert pushed["deployment"]["artifact_summary"]["blocked_remote_command_target_count"] == 0
     assert FakeFtp.renamed == [
         (
-            "/opt/app/release.tar.gz",
+            "/opt/app",
             pushed["deployment"]["artifact_summary"]["upload_results"][0]["backup_path"],
         )
     ]
+    assert pushed["deployment"]["artifact_summary"]["upload_results"][0]["backup_path"].startswith("/opt/app_备份_")
     assert FakeFtp.uploaded == [("STOR release.tar.gz", content)]
 
 
@@ -12766,7 +13258,8 @@ def test_project_deploy_artifact_zip_defaults_to_archive_file_upload(tmp_path, m
         "artifact file uploaded by FTP; remote target was backed up before upload"
     )
     assert len(FakeFtp.renamed) == 1
-    assert FakeFtp.renamed[0][0] == "/opt/app/dist.zip"
+    assert FakeFtp.renamed[0][0] == "/opt/app"
+    assert FakeFtp.renamed[0][1].startswith("/opt/app_备份_")
     assert FakeFtp.uploaded == [("STOR dist.zip", content)]
 
 
@@ -14183,6 +14676,126 @@ def test_bot_connector_scan_feishu_chats(monkeypatch):
     assert payload["items"][0]["connector_id"] == "feishu-1"
     assert saved_items[0]["scanned_chats"][0]["chat_id"] == "oc_1"
     assert saved_items[0]["scanned_chats"][0]["scanned_at"]
+
+
+def test_send_feishu_text_message_with_open_api_uses_connector_token(monkeypatch):
+    import json
+
+    from services.feishu import feishu_bot_service
+
+    calls = []
+    monkeypatch.setattr(feishu_bot_service, "_get_feishu_tenant_access_token", lambda connector: "tenant-token")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"code": 0, "data": {"message_id": "om_1"}}
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr(feishu_bot_service.requests, "post", fake_post)
+
+    result = feishu_bot_service.send_feishu_text_message_with_open_api(
+        {"id": "feishu-1", "app_id": "cli_xxx", "app_secret": "secret"},
+        chat_id="oc_1",
+        content="部署成功",
+        idempotency_key="deploy-key",
+    )
+
+    assert result == {"message_id": "om_1", "chat_id": "oc_1"}
+    assert calls[0]["url"].endswith("/open-apis/im/v1/messages")
+    assert calls[0]["headers"]["Authorization"] == "Bearer tenant-token"
+    assert calls[0]["params"] == {"receive_id_type": "chat_id"}
+    assert calls[0]["json"]["receive_id"] == "oc_1"
+    assert calls[0]["json"]["msg_type"] == "text"
+    assert json.loads(calls[0]["json"]["content"]) == {"text": "部署成功"}
+    assert calls[0]["json"]["uuid"] == "deploy-key"
+
+
+def test_send_feishu_text_message_normalizes_overlong_uuid(monkeypatch):
+    from services.feishu import feishu_bot_service
+
+    calls = []
+    monkeypatch.setattr(feishu_bot_service, "_get_feishu_tenant_access_token", lambda connector: "tenant-token")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"code": 0, "data": {"message_id": "om_1"}}
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr(feishu_bot_service.requests, "post", fake_post)
+
+    # Mirrors the real deploy-notification key, which is always 56-57 chars.
+    overlong_key = "project-deploy-artifact-0123456789ab-success-0123456789ab"
+    assert len(overlong_key) > 50
+
+    feishu_bot_service.send_feishu_text_message_with_open_api(
+        {"id": "feishu-1", "app_id": "cli_xxx", "app_secret": "secret"},
+        chat_id="oc_1",
+        content="部署成功",
+        idempotency_key=overlong_key,
+    )
+
+    sent_uuid = calls[0]["json"]["uuid"]
+    assert len(sent_uuid) <= 50
+    assert sent_uuid.startswith("feishu-send-")
+    # Same key must derive the same uuid so idempotency is preserved.
+    assert sent_uuid == feishu_bot_service._normalize_feishu_uuid(overlong_key, fallback_prefix="feishu-send")
+
+
+def test_normalize_feishu_uuid_avoids_truncation_collisions():
+    from services.feishu.feishu_bot_service import _normalize_feishu_uuid
+
+    base = "project-deploy-artifact-0123456789ab-"
+    a = _normalize_feishu_uuid(base + "success-aaaaaaaaaaaa", fallback_prefix="feishu-send")
+    b = _normalize_feishu_uuid(base + "blocked-bbbbbbbbbbbb", fallback_prefix="feishu-send")
+    assert a != b
+    assert len(a) <= 50 and len(b) <= 50
+
+    # A key already within the limit passes through unchanged.
+    assert _normalize_feishu_uuid("deploy-key") == "deploy-key"
+
+
+def test_send_feishu_text_message_surfaces_real_error_on_400(monkeypatch):
+    import requests
+
+    from services.feishu import feishu_bot_service
+
+    monkeypatch.setattr(feishu_bot_service, "_get_feishu_tenant_access_token", lambda connector: "tenant-token")
+
+    class FakeResponse:
+        status_code = 400
+
+        def raise_for_status(self):
+            raise requests.HTTPError("400 Client Error: Bad Request")
+
+        def json(self):
+            return {"code": 232001, "msg": "invalid uuid length"}
+
+    monkeypatch.setattr(feishu_bot_service.requests, "post", lambda url, **kwargs: FakeResponse())
+
+    with pytest.raises(RuntimeError) as excinfo:
+        feishu_bot_service.send_feishu_text_message_with_open_api(
+            {"id": "feishu-1", "app_id": "cli_xxx", "app_secret": "secret"},
+            chat_id="oc_1",
+            content="部署成功",
+            idempotency_key="deploy-key",
+        )
+
+    message = str(excinfo.value)
+    assert "invalid uuid length" in message
+    assert "232001" in message
+    assert "http=400" in message
 
 
 def test_save_bot_connector_scanned_chat_merges_existing_chats(monkeypatch):
@@ -16991,6 +17604,7 @@ def test_query_mcp_mount_lists_tools_and_reads_resources(monkeypatch):
     assert "query://usage-guide" in resource_uris
     assert "query://client-profile/claude-code" in resource_uris
     assert "query://client-profile/codex" in resource_uris
+    assert "query://client-profile/hermes" in resource_uris
     assert "query://client-profile/generic-cli" in resource_uris
 
     assert usage_read_response.status_code == 200
@@ -18103,11 +18717,13 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
 
     assert "query://client-profile/claude-code" in registered_resources
     assert "query://client-profile/codex" in registered_resources
+    assert "query://client-profile/hermes" in registered_resources
     assert "query://client-profile/generic-cli" in registered_resources
 
     usage_guide = registered_resources["query://usage-guide"]()
     claude_profile = registered_resources["query://client-profile/claude-code"]()
     codex_profile = registered_resources["query://client-profile/codex"]()
+    hermes_profile = registered_resources["query://client-profile/hermes"]()
     generic_profile = registered_resources["query://client-profile/generic-cli"]()
 
     assert "build_delivery_report" in usage_guide
@@ -18120,6 +18736,7 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "重新获取与当前任务直接相关的规则正文" in usage_guide
     assert "禁止以兜底、兼容、静默降级" in usage_guide
     assert "优先定位并修正根因" in usage_guide
+    assert "query://client-profile/hermes" in usage_guide
     assert "打包命令只能通过项目聊天命令执行能力处理" in usage_guide
     assert "外部智能体" in usage_guide
     assert "桌面端 Runner" in usage_guide
@@ -18172,7 +18789,15 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "`.ai-employee/query-mcp/active/<project_id>.json`" not in codex_profile
     assert "优先使用项目绑定员工、规则和技能" in codex_profile
     assert "重新获取与当前任务直接相关的规则正文" in codex_profile
+    assert "Hermes" in hermes_profile
+    assert "query://client-profile/hermes" in hermes_profile
+    assert "query://client-profile/codex" not in hermes_profile
+    assert "query://client-profile/claude-code" not in hermes_profile
+    assert "start_project_workflow" in hermes_profile
     assert "analyze_task" in generic_profile
+    assert "query://client-profile/generic-cli" in generic_profile
+    assert "所有项目、任务树、工作事实和部署产物操作都优先通过 MCP 工具完成" in generic_profile
+    assert "能调用 MCP 工具时不要只口头总结" in generic_profile
     assert "节点必须直接对应用户目标" in generic_profile
     assert "优先使用项目绑定员工、规则和技能" in generic_profile
 
@@ -18209,6 +18834,11 @@ def test_query_mcp_system_config_migrates_legacy_active_state_prompts():
     assert "active-sessions/`、`.ai-employee/query-mcp/active/`" not in config.query_mcp_bootstrap_prompt_template
     assert "`.ai-employee/query-mcp/active/<project_id>.json`" not in config.query_mcp_bootstrap_prompt_template
     assert "`list_mcp_resources` 只用于发现资源目录" in config.query_mcp_bootstrap_prompt_template
+    assert "query://client-profile/generic-cli" in config.query_mcp_bootstrap_prompt_template
+    assert "- `query://client-profile/claude-code`（Claude Code）" in config.query_mcp_bootstrap_prompt_template
+    assert "- `query://client-profile/hermes`（Hermes）" in config.query_mcp_bootstrap_prompt_template
+    assert "- `query://client-profile/generic-cli`（其他 MCP CLI / 通用智能体）" in config.query_mcp_bootstrap_prompt_template
+    assert "再按当前客户端读取对应画像" in config.query_mcp_bootstrap_prompt_template
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert "sync_query_mcp_cli_prompt_to_local_file" in config.query_mcp_bootstrap_prompt_template
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
@@ -18247,6 +18877,12 @@ def test_query_mcp_system_config_completes_partial_resource_discovery_prompt_rul
     )
 
     assert config.query_mcp_bootstrap_prompt_template.count("`list_mcp_resources` 只用于发现资源目录") == 1
+    assert "query://client-profile/generic-cli" in config.query_mcp_bootstrap_prompt_template
+    assert "- `query://client-profile/codex`（Codex CLI）" in config.query_mcp_bootstrap_prompt_template
+    assert "- `query://client-profile/hermes`（Hermes）" in config.query_mcp_bootstrap_prompt_template
+    assert "- `query://client-profile/claude-code`（Claude Code）" in config.query_mcp_bootstrap_prompt_template
+    assert "- `query://client-profile/generic-cli`（其他 MCP CLI / 通用智能体）" in config.query_mcp_bootstrap_prompt_template
+    assert "再按当前客户端读取对应画像" in config.query_mcp_bootstrap_prompt_template
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert config.query_mcp_bootstrap_prompt_template.count("sync_query_mcp_cli_prompt_to_local_file") == 1
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
@@ -18254,6 +18890,7 @@ def test_query_mcp_system_config_completes_partial_resource_discovery_prompt_rul
     assert "外部智能体" in config.query_mcp_bootstrap_prompt_template
     assert "桌面端 Runner" in config.query_mcp_bootstrap_prompt_template
     assert config.query_mcp_usage_guide_template.count("`list_mcp_resources` 只用于发现资源目录") == 1
+    assert "query://client-profile/generic-cli" in config.query_mcp_usage_guide_template
     assert "简单查询直达业务工具" in config.query_mcp_usage_guide_template
     assert "打包命令只能通过项目聊天命令执行能力处理" in config.query_mcp_usage_guide_template
     assert "外部智能体" in config.query_mcp_usage_guide_template
@@ -18410,11 +19047,15 @@ def test_query_mcp_resources_and_style_hints_use_system_config(monkeypatch):
 
     usage_guide = registered_resources["query://usage-guide"]()
     codex_profile = registered_resources["query://client-profile/codex"]()
+    hermes_profile = registered_resources["query://client-profile/hermes"]()
     style_hint, order_hint = prompt_assembler.resolve_chat_style_hints("balanced")
 
     assert usage_guide == "Guide 当前全局清晰度确认阈值为 3/5；处理前先按 1-5 分估计用户需求清晰度。"
     assert codex_profile.startswith("# Codex")
     assert "search_ids" in codex_profile
+    assert hermes_profile.startswith("# Hermes")
+    assert "query://client-profile/hermes" in hermes_profile
+    assert "query://client-profile/codex" not in hermes_profile
     assert style_hint == "平衡风格提示"
     assert order_hint == "平衡顺序提示"
 
@@ -18530,6 +19171,26 @@ def test_query_mcp_resources_and_style_hints_use_system_config(monkeypatch):
     assert release_note["project_name"] == "项目一"
     assert "2026-04-01" in release_note["entry_markdown"]
     assert "新增 query MCP Phase 1-4 能力单测" in release_note["entry_markdown"]
+
+
+def test_query_mcp_claude_cli_prompt_uses_only_claude_profile(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.system_config_store import SystemConfig
+
+    monkeypatch.setattr(projects_router.system_config_store, "get_global", lambda: SystemConfig())
+
+    prompt = projects_router._build_query_mcp_cli_prompt(
+        project_id="proj-1",
+        chat_session_id="chat-1",
+        client_profile="claude-code",
+    )
+
+    assert "Claude Code" in prompt
+    assert "- `query://client-profile/claude-code`（Claude Code）" in prompt
+    assert "当前客户端是 Claude Code" in prompt
+    assert "query://client-profile/codex" not in prompt
+    assert "query://client-profile/hermes" not in prompt
+    assert "start_project_workflow" in prompt
 
 
 def test_query_mcp_start_project_workflow_blocks_when_required_inputs_missing(monkeypatch):

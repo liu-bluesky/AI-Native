@@ -231,6 +231,56 @@
                         解析群
                       </el-button>
                     </div>
+                    <el-form-item label="通知模板" class="deploy-notify-template">
+                      <div class="deploy-notify-template-editor">
+                        <div class="deploy-notify-template-editor__head">
+                          <div>
+                            <strong>消息内容</strong>
+                            <span>点击字段插入到模板，发送时自动替换为部署数据</span>
+                          </div>
+                          <el-button size="small" text @click="resetDeployNotifyTemplate">
+                            恢复默认
+                          </el-button>
+                        </div>
+                        <div class="deploy-notify-template-editor__presets">
+                          <span>模板样式</span>
+                          <el-button
+                            v-for="preset in deployNotifyTemplatePresets"
+                            :key="preset.id"
+                            size="small"
+                            plain
+                            @click="applyDeployNotifyTemplatePreset(preset)"
+                          >
+                            {{ preset.label }}
+                          </el-button>
+                        </div>
+                        <div class="deploy-notify-template-editor__fields" aria-label="可插入字段">
+                          <el-button
+                            v-for="field in deployNotifyTemplateFields"
+                            :key="field.token"
+                            size="small"
+                            class="deploy-notify-template-editor__field"
+                            @click="insertDeployNotifyTemplateField(field.token)"
+                          >
+                            <span>{{ field.label }}</span>
+                            <code>{{ field.token }}</code>
+                          </el-button>
+                        </div>
+                        <el-input
+                          ref="notifyTemplateInputRef"
+                          v-model="activeComponent.notify.template"
+                          type="textarea"
+                          :rows="4"
+                          maxlength="2000"
+                          show-word-limit
+                          :placeholder="defaultDeployNotifyTemplate"
+                        />
+                        <div class="deploy-notify-template-editor__preview">
+                          <span>预览</span>
+                          <p>{{ deployNotifyTemplatePreview }}</p>
+                        </div>
+                      </div>
+                    </el-form-item>
                   </el-form>
 
                   <div class="deploy-targets">
@@ -457,6 +507,53 @@
             </template>
           <div class="deploy-table-wrap">
             <el-table v-loading="deployRunsLoading" :data="deployRuns" stripe class="section-table deploy-runs-table">
+              <el-table-column type="expand" width="42">
+                <template #default="{ row }">
+                  <div v-if="row.notify_result?.length" class="deploy-notify-records">
+                    <div class="deploy-notify-records__head">
+                      <strong>通知记录</strong>
+                      <span>{{ row.notify_result.length }} 条</span>
+                      <el-button
+                        size="small"
+                        text
+                        @click="copyText(formatDeployLogJson(row.notify_result), '通知记录已复制')"
+                      >
+                        复制全部
+                      </el-button>
+                    </div>
+                    <div
+                      v-for="item in row.notify_result"
+                      :key="`${item.platform}-${item.chat_id}-${item.created_at}`"
+                      class="deploy-notify-record"
+                    >
+                      <div class="deploy-notify-record__title">
+                        <el-tag size="small" effect="plain" :type="getDeployNotifyTagType(item)">
+                          {{ getDeployNotifyLabel(item) }}
+                        </el-tag>
+                        <span>{{ getDeployNotifyTargetLabel(item) }}</span>
+                        <em>{{ formatRelativeTime(item.created_at) }}</em>
+                      </div>
+                      <div v-if="item.message" class="deploy-copy-block">
+                        <p>{{ item.message }}</p>
+                        <el-button size="small" text @click="copyText(item.message, '通知消息已复制')">
+                          复制消息
+                        </el-button>
+                      </div>
+                      <div v-if="item.template" class="deploy-notify-record__template">
+                        <span>模板</span>
+                        <code>{{ item.template }}</code>
+                      </div>
+                      <div v-if="item.reason" class="deploy-notify-record__reason">
+                        <span>{{ item.reason }}</span>
+                        <el-button size="small" text type="danger" @click="copyText(item.reason, '通知原因已复制')">
+                          复制原因
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
+                  <el-empty v-else description="暂无通知记录" :image-size="46" />
+                </template>
+              </el-table-column>
               <el-table-column label="运行 ID" min-width="180">
                 <template #default="{ row }">
                   <code>{{ row.id }}</code>
@@ -479,27 +576,63 @@
               <el-table-column label="通知" min-width="170">
                 <template #default="{ row }">
                   <div class="project-deploy-panel__notify-tags">
-                    <el-tag
+                    <el-tooltip
                       v-for="item in row.notify_result || []"
                       :key="`${item.platform}-${item.chat_id}`"
-                      size="small"
-                      effect="plain"
-                      :type="item.status === 'preview' ? 'success' : 'info'"
+                      :content="getDeployNotifyReason(item)"
+                      placement="top"
+                      :disabled="!getDeployNotifyReason(item)"
                     >
-                      {{ getDeployNotifyLabel(item) }}
-                    </el-tag>
+                      <el-tag
+                        size="small"
+                        effect="plain"
+                        :type="getDeployNotifyTagType(item)"
+                      >
+                        {{ getDeployNotifyLabel(item) }}
+                      </el-tag>
+                    </el-tooltip>
+                    <el-button
+                      v-if="getDeployNotifyFailureText(row)"
+                      size="small"
+                      text
+                      type="danger"
+                      @click="copyText(getDeployNotifyFailureText(row), '通知失败内容已复制')"
+                    >
+                      复制失败
+                    </el-button>
                     <span v-if="!row.notify_result?.length">-</span>
                   </div>
                 </template>
               </el-table-column>
               <el-table-column label="日志摘要" min-width="220" show-overflow-tooltip>
-                <template #default="{ row }">{{ row.log_excerpt || "-" }}</template>
+                <template #default="{ row }">
+                  <div class="deploy-copy-inline">
+                    <span>{{ row.log_excerpt || "-" }}</span>
+                    <el-button
+                      v-if="row.log_excerpt"
+                      size="small"
+                      text
+                      @click="copyText(row.log_excerpt, '日志摘要已复制')"
+                    >
+                      复制
+                    </el-button>
+                  </div>
+                </template>
               </el-table-column>
               <el-table-column label="更新时间" min-width="150">
                 <template #default="{ row }">{{ formatRelativeTime(row.updated_at) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="96" fixed="right">
+              <el-table-column label="操作" width="168" fixed="right">
                 <template #default="{ row }">
+                  <el-button
+                    text
+                    type="primary"
+                    :loading="notifyingRunId === row.id"
+                    :disabled="!canManageProject || deletingRunId === row.id"
+                    @click="sendDeployRunNotification(row)"
+                  >
+                    发送通知
+                  </el-button>
                   <el-popconfirm
                     title="确定删除这条部署运行记录吗？"
                     confirm-button-text="删除"
@@ -574,6 +707,27 @@
             <el-input v-model="artifactUploadForm.version" placeholder="可选" />
           </el-form-item>
         </div>
+        <el-form-item label="部署服务器">
+          <el-select
+            v-model="artifactUploadForm.target_ids"
+            class="deploy-upload-form__control deploy-upload-form__control--wide"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            clearable
+            placeholder="默认选择全部启用服务器"
+          >
+            <el-option
+              v-for="target in artifactUploadTargetOptions"
+              :key="target.id"
+              :label="target.label"
+              :value="target.id"
+            />
+          </el-select>
+          <div class="deploy-form-tip">
+            已选 {{ artifactUploadForm.target_ids.length }} / {{ artifactUploadTargetOptions.length }} 个；清空时后端按全部启用服务器处理。
+          </div>
+        </el-form-item>
         <el-form-item label="上传内容">
           <input
             ref="artifactUploadInputRef"
@@ -682,8 +836,26 @@
         <section class="ai-deploy__targets">
           <div class="ai-deploy__section-head">
             <strong>部署目标</strong>
-            <span>{{ aiDeployTargets.length ? `${aiDeployTargets.length} 个目标` : "未启用" }}</span>
+            <span>{{ aiDeployTargets.length ? `${aiDeployTargets.length}/${aiDeployAllTargets.length} 个目标` : "未启用" }}</span>
           </div>
+          <el-select
+            v-if="aiDeployAllTargets.length"
+            v-model="aiDeployTargetIds"
+            class="ai-deploy__target-select"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            clearable
+            placeholder="默认选择全部启用服务器"
+            @change="handleAiDeployTargetChange"
+          >
+            <el-option
+              v-for="target in aiDeployTargetOptions"
+              :key="target.id"
+              :label="target.label"
+              :value="target.id"
+            />
+          </el-select>
           <div v-if="aiDeployTargets.length" class="ai-deploy__target-list">
             <div v-for="target in aiDeployTargets" :key="target.id || target.name || target.remote_path">
               <span>{{ target.name || target.id || "未命名目标" }}</span>
@@ -786,27 +958,92 @@
           </div>
 
           <section v-if="deployLogArtifact.error" class="deploy-log-detail__section">
-            <strong>错误信息</strong>
+            <div class="deploy-log-detail__section-head">
+              <strong>错误信息</strong>
+              <el-button size="small" text @click="copyText(deployLogArtifact.error, '错误信息已复制')">
+                复制
+              </el-button>
+            </div>
             <pre>{{ deployLogArtifact.error }}</pre>
           </section>
 
           <section v-if="deployLogRun?.log_excerpt" class="deploy-log-detail__section">
-            <strong>日志摘要</strong>
+            <div class="deploy-log-detail__section-head">
+              <strong>日志摘要</strong>
+              <el-button size="small" text @click="copyText(deployLogRun.log_excerpt, '日志摘要已复制')">
+                复制
+              </el-button>
+            </div>
             <pre>{{ deployLogRun.log_excerpt }}</pre>
           </section>
 
+          <section v-if="deployLogNotifyResults.length" class="deploy-log-detail__section">
+            <div class="deploy-log-detail__section-head">
+              <strong>通知记录</strong>
+              <el-button size="small" text @click="copyText(formatDeployLogJson(deployLogNotifyResults), '通知记录已复制')">
+                复制全部
+              </el-button>
+            </div>
+            <div class="deploy-notify-records deploy-notify-records--compact">
+              <div
+                v-for="item in deployLogNotifyResults"
+                :key="`${item.platform}-${item.chat_id}-${item.created_at}`"
+                class="deploy-notify-record"
+              >
+                <div class="deploy-notify-record__title">
+                  <el-tag size="small" effect="plain" :type="getDeployNotifyTagType(item)">
+                    {{ getDeployNotifyLabel(item) }}
+                  </el-tag>
+                  <span>{{ getDeployNotifyTargetLabel(item) }}</span>
+                  <em>{{ formatRelativeTime(item.created_at) }}</em>
+                </div>
+                <div v-if="item.message" class="deploy-copy-block">
+                  <p>{{ item.message }}</p>
+                  <el-button size="small" text @click="copyText(item.message, '通知消息已复制')">
+                    复制消息
+                  </el-button>
+                </div>
+                <div v-if="item.reason" class="deploy-notify-record__reason">
+                  <span>{{ item.reason }}</span>
+                  <el-button size="small" text type="danger" @click="copyText(item.reason, '通知原因已复制')">
+                    复制原因
+                  </el-button>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section v-if="deployLogToolResults.length" class="deploy-log-detail__section">
-            <strong>Agent 工具结果</strong>
+            <div class="deploy-log-detail__section-head">
+              <strong>Agent 工具结果</strong>
+              <el-button size="small" text @click="copyText(formatDeployLogJson(deployLogToolResults), '工具结果已复制')">
+                复制
+              </el-button>
+            </div>
             <pre>{{ formatDeployLogJson(deployLogToolResults) }}</pre>
           </section>
 
           <section v-if="deployLogAgentTranscript.length" class="deploy-log-detail__section">
-            <strong>Agent 执行轨迹</strong>
+            <div class="deploy-log-detail__section-head">
+              <strong>Agent 执行轨迹</strong>
+              <el-button size="small" text @click="copyText(formatDeployLogJson(deployLogAgentTranscript), '执行轨迹已复制')">
+                复制
+              </el-button>
+            </div>
             <pre>{{ formatDeployLogJson(deployLogAgentTranscript) }}</pre>
           </section>
 
           <section v-if="deployLogMissingTargets.length" class="deploy-log-detail__section">
-            <strong>缺失配置</strong>
+            <div class="deploy-log-detail__section-head">
+              <strong>缺失配置</strong>
+              <el-button
+                size="small"
+                text
+                @click="copyText(deployLogMissingTargets.map((target) => formatDeployMissingTarget(target)).join('\n'), '缺失配置已复制')"
+              >
+                复制
+              </el-button>
+            </div>
             <div class="deploy-log-detail__missing">
               <el-tag
                 v-for="target in deployLogMissingTargets"
@@ -844,7 +1081,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import ProjectWorkspaceBlock from "@/components/project-workspace/ProjectWorkspaceBlock.vue";
 import api from "@/utils/api.js";
@@ -884,6 +1121,7 @@ const deployNotifyResolving = ref(false);
 const deployCommandGeneratingKey = ref("");
 const deletingArtifactId = ref("");
 const deployingArtifactId = ref("");
+const deployingArtifactIds = ref(new Set());
 const deployLogArtifactId = ref("");
 const deployLogDialogVisible = ref(false);
 const deployLogLoading = ref(false);
@@ -893,10 +1131,12 @@ const aiDeployArtifact = ref(null);
 const aiDeployRequirement = ref("");
 const aiDeployPlan = ref("");
 const aiDeployPlanMeta = ref("");
+const aiDeployTargetIds = ref([]);
 const aiDeployPlanLoading = ref(false);
 const aiDeployExecuting = ref(false);
 const artifactUploadDialogVisible = ref(false);
 const artifactUploadSubmitting = ref(false);
+const notifyTemplateInputRef = ref(null);
 const artifactUploadInputRef = ref(null);
 const artifactUploadDirectoryInputRef = ref(null);
 const artifactUploadTreeRef = ref(null);
@@ -907,7 +1147,9 @@ const artifactUploadSourceType = ref("file");
 const artifactUploadForm = ref(createDefaultArtifactUploadForm());
 const deployArtifacts = ref([]);
 const deployRuns = ref([]);
+let deployStatusPollTimer = null;
 const deletingRunId = ref("");
+const notifyingRunId = ref("");
 const ftpCredentials = ref([]);
 const deployNotifyConnectors = ref([]);
 const deployNotifyChats = ref([]);
@@ -920,6 +1162,40 @@ const activeProfileObject = ref(null);
 const activeComponentObject = ref(null);
 const notifyTargetForm = ref(createDefaultDeployNotifyTarget());
 const notifyChatName = ref("");
+
+const deployNotifyTemplateFields = [
+  { label: "项目名称", token: "{project_name}" },
+  { label: "环境名称", token: "{profile_name}" },
+  { label: "环境标识", token: "{profile}" },
+  { label: "部署单元", token: "{component_name}" },
+  { label: "部署状态", token: "{status_label}" },
+  { label: "产物名称", token: "{artifact_name}" },
+  { label: "版本号", token: "{version}" },
+  { label: "运行 ID", token: "{run_id}" },
+  { label: "执行阶段", token: "{stage}" },
+  { label: "部署时间", token: "{deploy_time}" },
+  { label: "部署成功时间", token: "{deployed_at}" },
+  { label: "日志摘要", token: "{log_excerpt}" },
+  { label: "通知群", token: "{chat_name}" },
+];
+
+const deployNotifyTemplatePresets = [
+  {
+    id: "simple",
+    label: "简洁通知",
+    template: "{project_name} {profile_name} 部署状态：{status_label}，产物：{artifact_name}",
+  },
+  {
+    id: "detailed",
+    label: "详细通知",
+    template: "{project_name} {profile_name} / {component_name}\n状态：{status_label}\n产物：{artifact_name}\n版本：{version}\n运行：{run_id}",
+  },
+  {
+    id: "diagnostic",
+    label: "排查通知",
+    template: "{project_name} {profile_name} 部署状态：{status_label}\n阶段：{stage}\n产物：{artifact_name}\n运行：{run_id}\n日志：{log_excerpt}",
+  },
+];
 
 const deployPanelTitle = computed(() => {
   if (activeDeployTab.value === "artifacts") return "部署产物";
@@ -990,15 +1266,47 @@ const artifactUploadComponentOptions = computed(() => {
     .filter((component) => component.id);
 });
 
+const artifactUploadTargetOptions = computed(() => {
+  const component = getDeployComponentById(artifactUploadForm.value.profile, artifactUploadForm.value.component);
+  const targets = Array.isArray(component?.targets) ? component.targets : [];
+  return targets
+    .filter((target) => target && target.enabled !== false)
+    .map((target) => {
+      const id = String(target.id || "").trim();
+      const name = String(target.name || "").trim();
+      const remotePath = String(target.remote_path || "").trim();
+      return {
+        id,
+        label: [name || id, remotePath || "缺少远端目录"].filter(Boolean).join(" · "),
+      };
+    })
+    .filter((target) => target.id);
+});
+
 const aiDeployBusy = computed(() => aiDeployPlanLoading.value || aiDeployExecuting.value);
 
 const aiDeployContext = computed(() =>
   aiDeployArtifact.value ? buildAiDeployArtifactContext(aiDeployArtifact.value) : null,
 );
 
-const aiDeployTargets = computed(() =>
+const aiDeployAllTargets = computed(() =>
   Array.isArray(aiDeployContext.value?.deploy_targets) ? aiDeployContext.value.deploy_targets : [],
 );
+
+const aiDeployTargetOptions = computed(() =>
+  aiDeployAllTargets.value
+    .map((target) => ({
+      id: String(target.id || "").trim(),
+      label: [target.name || target.id, target.remote_path || "缺少远端目录"].filter(Boolean).join(" · "),
+    }))
+    .filter((target) => target.id),
+);
+
+const aiDeployTargets = computed(() => {
+  const selectedIds = new Set(aiDeployTargetIds.value.map((item) => String(item || "").trim()).filter(Boolean));
+  if (!selectedIds.size) return aiDeployAllTargets.value;
+  return aiDeployAllTargets.value.filter((target) => selectedIds.has(String(target.id || "").trim()));
+});
 
 const aiDeploySummaryItems = computed(() => {
   const context = aiDeployContext.value;
@@ -1119,6 +1427,11 @@ const deployLogToolResults = computed(() => {
   return Array.isArray(results) ? results : [];
 });
 
+const deployLogNotifyResults = computed(() => {
+  const results = deployLogRun.value?.notify_result;
+  return Array.isArray(results) ? results : [];
+});
+
 const deployLogAgentTranscript = computed(() => {
   const transcript = deployLogRun.value?.artifact_summary?.agent_transcript;
   return Array.isArray(transcript) ? transcript : [];
@@ -1135,6 +1448,9 @@ const deployLogText = computed(() => {
   if (deployLogToolResults.value.length) {
     chunks.push(`Agent 工具结果\n${formatDeployLogJson(deployLogToolResults.value)}`);
   }
+  if (deployLogNotifyResults.value.length) {
+    chunks.push(`通知记录\n${formatDeployLogJson(deployLogNotifyResults.value)}`);
+  }
   if (deployLogAgentTranscript.value.length) {
     chunks.push(`Agent 执行轨迹\n${formatDeployLogJson(deployLogAgentTranscript.value)}`);
   }
@@ -1145,6 +1461,46 @@ const deployLogText = computed(() => {
 });
 
 const hasDeployLogContent = computed(() => Boolean(deployLogText.value));
+
+const defaultDeployNotifyTemplate = computed(() => _defaultDeployNotifyTemplateText());
+
+const deployNotifyTemplatePreviewContext = computed(() => {
+  const projectName = String(props.project?.name || props.project?.title || props.projectId || "当前项目").trim();
+  const profile = activeProfile.value || {};
+  const component = activeComponent.value || {};
+  const chatName = String(notifyTargetForm.value.chat_name || getNotifyChatName(notifyTargetForm.value.chat_id) || "部署通知群").trim();
+  return {
+    project_id: props.projectId || "proj-xxxx",
+    project_name: projectName,
+    profile: String(profile.id || activeProfileId.value || "prod").trim(),
+    profile_name: String(profile.name || "生产环境").trim(),
+    environment: String(profile.environment || profile.id || activeProfileId.value || "prod").trim(),
+    component: String(component.id || activeComponentId.value || "app").trim(),
+    component_name: String(component.name || "默认服务").trim(),
+    artifact_id: "artifact-xxxxxxxx",
+    artifact_name: "release.zip",
+    artifact_kind: String(component.artifact_kind || profile.artifact_kind || "source-bundle").trim(),
+    version: "1.0.0",
+    status: "deployed",
+    status_label: "部署成功",
+    run_id: "deploy-xxxxxxxx",
+    stage: "ftp_upload_completed",
+    deploy_time: "2026-06-18 09:30:00",
+    deployed_at: "2026-06-18 09:31:20",
+    log_excerpt: "上传完成，通知已发送",
+    platform: notifyTargetForm.value.platform || "feishu",
+    connector_id: notifyTargetForm.value.connector_id || "connector-xxxx",
+    chat_id: notifyTargetForm.value.chat_id || "chat-xxxx",
+    chat_name: chatName,
+  };
+});
+
+const deployNotifyTemplatePreview = computed(() =>
+  renderDeployNotifyTemplate(
+    activeComponent.value?.notify?.template || defaultDeployNotifyTemplate.value,
+    deployNotifyTemplatePreviewContext.value,
+  ),
+);
 
 const notifyConnectorOptions = computed(() =>
   deployNotifyConnectors.value
@@ -1240,6 +1596,11 @@ function syncArtifactUploadDefaults() {
   artifactUploadForm.value.artifact_kind = String(
     component?.artifact_kind || profile?.artifact_kind || "source-bundle",
   ).trim() || "source-bundle";
+  syncArtifactUploadTargetDefaults();
+}
+
+function syncArtifactUploadTargetDefaults() {
+  artifactUploadForm.value.target_ids = artifactUploadTargetOptions.value.map((target) => target.id);
 }
 
 function openArtifactUploadDialog() {
@@ -1345,6 +1706,7 @@ function handleArtifactUploadProfileChange() {
   artifactUploadForm.value.artifact_kind = String(
     component?.artifact_kind || profile?.artifact_kind || "source-bundle",
   ).trim() || "source-bundle";
+  syncArtifactUploadTargetDefaults();
 }
 
 function handleArtifactUploadComponentChange() {
@@ -1353,6 +1715,7 @@ function handleArtifactUploadComponentChange() {
   artifactUploadForm.value.artifact_kind = String(
     component?.artifact_kind || profile?.artifact_kind || "source-bundle",
   ).trim() || "source-bundle";
+  syncArtifactUploadTargetDefaults();
 }
 
 function encodeTarHeaderText(view, offset, length, value) {
@@ -1456,11 +1819,15 @@ async function submitArtifactUpload() {
   artifactUploadSubmitting.value = true;
   try {
     const formData = new FormData();
+    const targetIds = artifactUploadForm.value.target_ids
+      .map((item) => String(item || "").trim())
+      .filter(Boolean);
     const manifest = isDirectoryUpload
       ? {
           source_type: "directory-tar",
           file_count: selectedFiles.length,
           root_directory: artifactUploadDirectoryName.value,
+          target_ids: targetIds,
           file_entries: selectedDirectoryItems.map((item) => ({
             path: item.path,
             original_path: item.originalPath,
@@ -1468,7 +1835,7 @@ async function submitArtifactUpload() {
             size: item.size,
           })),
         }
-      : {};
+      : { target_ids: targetIds };
     if (isDirectoryUpload) {
       const archive = await buildArtifactUploadDirectoryTar(selectedDirectoryItems);
       formData.append("file", archive, `${artifactUploadDirectoryName.value || "directory-upload"}.tar`);
@@ -1481,6 +1848,7 @@ async function submitArtifactUpload() {
     formData.append("artifact_kind", artifactUploadForm.value.artifact_kind || "source-bundle");
     formData.append("version", artifactUploadForm.value.version || "");
     formData.append("size", String(selectedSize));
+    formData.append("target_ids_json", JSON.stringify(targetIds));
     formData.append("manifest_json", JSON.stringify(manifest));
     const data = await api.post(`/projects/${props.projectId}/deploy-artifacts/upload`, formData, {
       headers: { "Content-Type": "multipart/form-data" },
@@ -1514,12 +1882,61 @@ function createDefaultDeployNotifyTarget() {
   };
 }
 
+function _defaultDeployNotifyTemplateText() {
+  return "{project_name} {profile} 部署状态：{status_label}，产物：{artifact_name}，运行：{run_id}";
+}
+
+function renderDeployNotifyTemplate(template, context) {
+  const source = String(template || _defaultDeployNotifyTemplateText());
+  return source.replace(/\{([A-Za-z0-9_]+)\}/g, (match, key) => (
+    Object.prototype.hasOwnProperty.call(context, key) ? String(context[key] ?? "") : match
+  ));
+}
+
+function insertDeployNotifyTemplateField(token) {
+  if (!activeComponent.value) return;
+  const current = String(activeComponent.value.notify?.template || "");
+  const textarea = notifyTemplateInputRef.value?.textarea;
+  const fieldToken = String(token || "").trim();
+  if (!fieldToken) return;
+  if (textarea && typeof textarea.selectionStart === "number") {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const prefix = current.slice(0, start);
+    const suffix = current.slice(end);
+    activeComponent.value.notify.template = `${prefix}${fieldToken}${suffix}`;
+    nextTick(() => {
+      textarea.focus();
+      const cursor = start + fieldToken.length;
+      textarea.setSelectionRange(cursor, cursor);
+    });
+    return;
+  }
+  activeComponent.value.notify.template = current
+    ? `${current.trimEnd()} ${fieldToken}`
+    : fieldToken;
+}
+
+function resetDeployNotifyTemplate() {
+  if (!activeComponent.value) return;
+  activeComponent.value.notify.template = _defaultDeployNotifyTemplateText();
+}
+
+function applyDeployNotifyTemplatePreset(preset) {
+  if (!activeComponent.value) return;
+  activeComponent.value.notify.template = String(preset?.template || _defaultDeployNotifyTemplateText());
+  nextTick(() => {
+    notifyTemplateInputRef.value?.textarea?.focus();
+  });
+}
+
 function createDefaultArtifactUploadForm() {
   return {
     profile: "prod",
     component: "",
     artifact_kind: "source-bundle",
     version: "",
+    target_ids: [],
   };
 }
 
@@ -1549,6 +1966,7 @@ function createDefaultDeployComponent() {
     },
     notify: {
       enabled: false,
+      template: _defaultDeployNotifyTemplateText(),
       targets: [],
     },
     targets: [createDefaultDeployTarget()],
@@ -1565,7 +1983,7 @@ function createDefaultDeployProfile() {
     package: {},
     transport: {},
     remote_executor: {},
-    notify: { enabled: false, targets: [] },
+    notify: { enabled: false, template: _defaultDeployNotifyTemplateText(), targets: [] },
     safety: { auto_deploy_on_artifact_update: false, dry_run_default: false },
     components: [createDefaultDeployComponent()],
   };
@@ -1590,6 +2008,23 @@ function normalizeDeployNotifyTarget(item) {
     chat_id: String(source.chat_id || "").trim(),
     chat_name: String(source.chat_name || "").trim(),
     resolve_identity: String(source.resolve_identity || "bot").trim(),
+  };
+}
+
+function normalizeDeployNotifyResult(item) {
+  const source = item && typeof item === "object" ? item : {};
+  return {
+    platform: String(source.platform || "").trim(),
+    connector_id: String(source.connector_id || "").trim(),
+    chat_id: String(source.chat_id || "").trim(),
+    chat_name: String(source.chat_name || "").trim(),
+    status: String(source.status || "").trim(),
+    message: String(source.message || "").trim(),
+    template: String(source.template || "").trim(),
+    reason: String(source.reason || "").trim(),
+    run_id: String(source.run_id || "").trim(),
+    stage: String(source.stage || "").trim(),
+    created_at: String(source.created_at || "").trim(),
   };
 }
 
@@ -1641,6 +2076,7 @@ function normalizeDeployComponent(item, index = 0, legacyProfile = null) {
     },
     notify: {
       enabled: Boolean(notify.enabled),
+      template: String(notify.template || _defaultDeployNotifyTemplateText()).trim(),
       targets: Array.isArray(notify.targets)
         ? notify.targets.map((target) => normalizeDeployNotifyTarget(target))
         : [],
@@ -2161,6 +2597,7 @@ function normalizeDeployArtifact(item) {
 }
 
 function getDeployArtifactStatus(row) {
+  if (isArtifactDeploying(row?.id)) return "running";
   const deploymentStatus = String(row?.deployment?.status || "").trim().toLowerCase();
   if (deploymentStatus === "success") return "deployed";
   if (deploymentStatus === "queued") return "deploy_queued";
@@ -2303,9 +2740,17 @@ function getAiDeployTargetActionLabel(target) {
   return target?.has_deploy_command ? `${uploadLabel} + 远端命令` : `${uploadLabel}，无远端命令`;
 }
 
-function buildLocalAiDeployArtifactPlan(row, requirement = "") {
+function buildLocalAiDeployArtifactPlan(row, requirement = "", targetIds = null) {
   const context = buildAiDeployArtifactContext(row);
-  const targets = Array.isArray(context.deploy_targets) ? context.deploy_targets : [];
+  const selectedIds = new Set(
+    (Array.isArray(targetIds) ? targetIds : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean),
+  );
+  const allTargets = Array.isArray(context.deploy_targets) ? context.deploy_targets : [];
+  const targets = selectedIds.size
+    ? allTargets.filter((target) => selectedIds.has(String(target.id || "").trim()))
+    : allTargets;
   const hasCommand = targets.some((target) => target.has_deploy_command);
   const missingRemotePath = targets.filter((target) => !target.remote_path).length;
   const archivePolicy = resolveAiDeployArchiveUploadPolicy(context, requirement);
@@ -2315,7 +2760,7 @@ function buildLocalAiDeployArtifactPlan(row, requirement = "") {
   const extractPath = requirementText.match(/(?:解压到|解压至|文件(?:放到|放在|保存到)|放到|放在|保存到)\s*([~/][^\s，,。；;]+)/i)?.[1] || "";
   const steps = [
     `1. 识别产物：${getAiDeployApplicationTypeLabel(context.deploy_component.application_type)}，${getAiDeployStorageKindLabel(context.artifact.storage_kind, context.artifact.is_archive)}，版本 ${context.artifact.version || "未标记"}。`,
-    "2. 点击执行部署后，后端会把完整部署要求、产物信息、部署目标和工具结果交给模型逐步决策。",
+    `2. 点击执行部署后，后端会把完整部署要求、产物信息、${targets.length || 0} 个选中部署目标和工具结果交给模型逐步决策。`,
     "3. Agent 可动态调用工具：安全解压、列目录、读写文本、创建目录、上传目录、上传文件、上传原始包、执行工作区命令、触发已配置的远端命令。",
     extractBeforeUpload
       ? `4. 若模型计划确认解压：安全解压产物${extractPath ? `到 ${extractPath}` : ""}，按要求上传解压后的内容${wantsOriginalArchiveUpload ? "，并同时上传原压缩包" : ""}。`
@@ -2351,9 +2796,24 @@ async function openAiDeployArtifact(row) {
   }
   aiDeployArtifact.value = normalizeDeployArtifact(row);
   aiDeployRequirement.value = "";
-  aiDeployPlan.value = buildLocalAiDeployArtifactPlan(row);
+  syncAiDeployTargetDefaults();
+  aiDeployPlan.value = buildLocalAiDeployArtifactPlan(row, "", aiDeployTargetIds.value);
   aiDeployPlanMeta.value = "本地预览";
   aiDeployDialogVisible.value = true;
+}
+
+function syncAiDeployTargetDefaults() {
+  aiDeployTargetIds.value = aiDeployAllTargets.value.map((target) => String(target.id || "").trim()).filter(Boolean);
+}
+
+function handleAiDeployTargetChange() {
+  if (!aiDeployArtifact.value) return;
+  aiDeployPlan.value = buildLocalAiDeployArtifactPlan(
+    aiDeployArtifact.value,
+    aiDeployRequirement.value,
+    aiDeployTargetIds.value,
+  );
+  aiDeployPlanMeta.value = "本地预览";
 }
 
 async function generateAiDeployArtifactPlan() {
@@ -2368,12 +2828,13 @@ async function generateAiDeployArtifactPlan() {
       `/projects/${props.projectId}/deploy-artifacts/${encodeURIComponent(artifactId)}/plan/generate`,
       {
         requirement: aiDeployRequirement.value,
+        target_ids: aiDeployTargetIds.value,
       },
     );
-    aiDeployPlan.value = String(data?.plan || "").trim() || buildLocalAiDeployArtifactPlan(row, aiDeployRequirement.value);
+    aiDeployPlan.value = String(data?.plan || "").trim() || buildLocalAiDeployArtifactPlan(row, aiDeployRequirement.value, aiDeployTargetIds.value);
     aiDeployPlanMeta.value = [data?.model_name, data?.provider_id].filter(Boolean).join(" · ") || "AI 生成";
   } catch (err) {
-    aiDeployPlan.value = buildLocalAiDeployArtifactPlan(row, aiDeployRequirement.value);
+    aiDeployPlan.value = buildLocalAiDeployArtifactPlan(row, aiDeployRequirement.value, aiDeployTargetIds.value);
     aiDeployPlanMeta.value = "本地预览";
     ElMessage.warning(err?.detail || err?.message || "AI 流程生成失败，已使用本地流程预览");
   } finally {
@@ -2387,17 +2848,18 @@ async function executeAiDeployArtifact() {
     return;
   }
   aiDeployExecuting.value = true;
-  try {
-    const deployed = await deployArtifactViaProjectAi(row, {
-      requirement: aiDeployRequirement.value,
-      plan: aiDeployPlan.value,
-    });
-    if (deployed) {
-      aiDeployDialogVisible.value = false;
-    }
-  } finally {
-    aiDeployExecuting.value = false;
-  }
+  setArtifactDeploying(row.id, true);
+  activeDeployTab.value = "runs";
+  deployRuns.value = mergeLocalDeployingRuns(deployRuns.value);
+  scheduleDeployStatusPolling();
+  const payload = {
+    requirement: aiDeployRequirement.value,
+    plan: aiDeployPlan.value,
+    target_ids: aiDeployTargetIds.value,
+  };
+  aiDeployDialogVisible.value = false;
+  aiDeployExecuting.value = false;
+  void deployArtifactViaProjectAi(row, payload);
 }
 
 function resetAiDeployDialog() {
@@ -2405,6 +2867,7 @@ function resetAiDeployDialog() {
   aiDeployRequirement.value = "";
   aiDeployPlan.value = "";
   aiDeployPlanMeta.value = "";
+  aiDeployTargetIds.value = [];
 }
 
 function countDeployFileTreeFiles(nodes) {
@@ -2418,6 +2881,7 @@ function countDeployFileTreeFiles(nodes) {
 function normalizeDeployRun(item) {
   return {
     id: String(item?.id || "").trim(),
+    artifact_id: String(item?.artifact_id || "").trim(),
     profile: String(item?.profile || "").trim(),
     component: String(item?.component || "").trim(),
     status: String(item?.status || "").trim(),
@@ -2426,10 +2890,79 @@ function normalizeDeployRun(item) {
     artifact_summary: item?.artifact_summary && typeof item.artifact_summary === "object"
       ? item.artifact_summary
       : {},
-    notify_result: Array.isArray(item?.notify_result) ? item.notify_result : [],
+    notify_result: Array.isArray(item?.notify_result) ? item.notify_result.map((notify) => normalizeDeployNotifyResult(notify)) : [],
     updated_at: String(item?.updated_at || "").trim(),
     deleted_at: String(item?.deleted_at || "").trim(),
   };
+}
+
+function isArtifactDeploying(artifactId) {
+  return deployingArtifactIds.value.has(String(artifactId || "").trim());
+}
+
+function setArtifactDeploying(artifactId, deploying) {
+  const normalized = String(artifactId || "").trim();
+  if (!normalized) return;
+  const next = new Set(deployingArtifactIds.value);
+  if (deploying) {
+    next.add(normalized);
+  } else {
+    next.delete(normalized);
+  }
+  deployingArtifactIds.value = next;
+}
+
+function buildLocalDeployRunPlaceholder(artifactId) {
+  const artifact = deployArtifacts.value.find((item) => item.id === artifactId)
+    || (aiDeployArtifact.value?.id === artifactId ? aiDeployArtifact.value : null);
+  return normalizeDeployRun({
+    id: `local-running-${artifactId}`,
+    artifact_id: artifactId,
+    profile: artifact?.profile || activeProfileId.value,
+    component: artifact?.component || activeComponentId.value,
+    status: "running",
+    stage: "ai_deploy_agent_running",
+    artifact_summary: {
+      artifact_name: artifact?.artifact_name || artifactId,
+      local_pending: true,
+    },
+    log_excerpt: "AI 部署已提交，正在创建部署运行",
+    notify_result: [],
+    updated_at: new Date().toISOString(),
+  });
+}
+
+function mergeLocalDeployingRuns(runs) {
+  const normalizedRuns = Array.isArray(runs) ? runs : [];
+  const existingArtifactIds = new Set(normalizedRuns.map((item) => item.artifact_id).filter(Boolean));
+  const placeholders = [...deployingArtifactIds.value]
+    .filter((artifactId) => !existingArtifactIds.has(artifactId))
+    .map((artifactId) => buildLocalDeployRunPlaceholder(artifactId));
+  return [...placeholders, ...normalizedRuns];
+}
+
+function scheduleDeployStatusPolling() {
+  if (deployStatusPollTimer || deployingArtifactIds.value.size === 0) {
+    return;
+  }
+  deployStatusPollTimer = window.setTimeout(async () => {
+    deployStatusPollTimer = null;
+    if (!deployingArtifactIds.value.size) {
+      return;
+    }
+    await Promise.all([fetchDeployArtifacts(), fetchDeployRuns()]);
+    if (deployingArtifactIds.value.size) {
+      scheduleDeployStatusPolling();
+    }
+  }, 1600);
+}
+
+function stopDeployStatusPolling() {
+  if (!deployStatusPollTimer) {
+    return;
+  }
+  window.clearTimeout(deployStatusPollTimer);
+  deployStatusPollTimer = null;
 }
 
 async function fetchDeployArtifacts() {
@@ -2478,6 +3011,10 @@ async function deployArtifactViaProjectAi(row, extraPayload = {}) {
     return false;
   }
   deployingArtifactId.value = artifactId;
+  setArtifactDeploying(artifactId, true);
+  activeDeployTab.value = "runs";
+  deployRuns.value = mergeLocalDeployingRuns(deployRuns.value);
+  scheduleDeployStatusPolling();
   let deployed = false;
   try {
     const data = await api.post(
@@ -2492,13 +3029,12 @@ async function deployArtifactViaProjectAi(row, extraPayload = {}) {
     }
     const status = String(data?.deployment?.status || data?.status || "").trim().toLowerCase();
     const statusLabel = getDeployStatusLabel(status);
-    const chatSessionId = String(data?.ai_execution?.chat_session_id || "").trim();
     if (status === "failed") {
       ElMessage.error(`AI 部署失败：${statusLabel}`);
     } else if (status === "blocked") {
       ElMessage.warning(`AI 部署已阻塞：${statusLabel}`);
     } else {
-      ElMessage.success(chatSessionId ? `项目 AI 已触发部署：${statusLabel}` : `AI 部署已触发：${statusLabel}`);
+      ElMessage.success(`AI 部署已触发：${statusLabel}`);
     }
     await Promise.all([fetchDeployArtifacts(), fetchDeployRuns()]);
     deployed = status !== "failed" && status !== "blocked";
@@ -2510,6 +3046,8 @@ async function deployArtifactViaProjectAi(row, extraPayload = {}) {
     await showDeployFailureLog(row);
   } finally {
     deployingArtifactId.value = "";
+    setArtifactDeploying(artifactId, false);
+    await Promise.all([fetchDeployArtifacts(), fetchDeployRuns()]);
   }
   return deployed;
 }
@@ -2616,15 +3154,17 @@ function formatDeployLogJson(value) {
 }
 
 async function copyDeployLog() {
-  const text = deployLogText.value;
-  if (!text) {
-    return;
-  }
+  await copyText(deployLogText.value, "失败日志已复制");
+}
+
+async function copyText(text, successMessage = "内容已复制") {
+  const value = String(text || "").trim();
+  if (!value) return;
   try {
-    await navigator.clipboard.writeText(text);
-    ElMessage.success("失败日志已复制");
+    await navigator.clipboard.writeText(value);
+    ElMessage.success(successMessage);
   } catch (err) {
-    ElMessage.error(err?.message || "复制失败，请手动选择日志内容");
+    ElMessage.error(err?.message || "复制失败，请手动选择内容");
   }
 }
 
@@ -2636,9 +3176,10 @@ async function fetchDeployRuns() {
   deployRunsLoading.value = true;
   try {
     const data = await api.get(`/projects/${props.projectId}/deploy-runs`);
-    deployRuns.value = (data.runs || []).map((item) => normalizeDeployRun(item)).filter((item) => item.id);
+    const remoteRuns = (data.runs || []).map((item) => normalizeDeployRun(item)).filter((item) => item.id);
+    deployRuns.value = mergeLocalDeployingRuns(remoteRuns);
   } catch (err) {
-    deployRuns.value = [];
+    deployRuns.value = mergeLocalDeployingRuns([]);
     ElMessage.error(err?.detail || err?.message || "加载部署运行失败");
   } finally {
     deployRunsLoading.value = false;
@@ -2663,6 +3204,42 @@ async function deleteDeployRun(row) {
     ElMessage.error(err?.detail || err?.message || "删除部署运行记录失败");
   } finally {
     deletingRunId.value = "";
+  }
+}
+
+async function sendDeployRunNotification(row) {
+  if (!props.canManageProject) {
+    ElMessage.warning(props.manageBlockedMessage);
+    return;
+  }
+  const runId = String(row?.id || "").trim();
+  if (!runId || !props.projectId) {
+    return;
+  }
+  notifyingRunId.value = runId;
+  try {
+    const data = await api.post(`/projects/${props.projectId}/deploy-runs/${encodeURIComponent(runId)}/notify`);
+    const updatedRun = data?.run ? normalizeDeployRun(data.run) : null;
+    if (updatedRun?.id) {
+      deployRuns.value = deployRuns.value.map((item) => (item.id === updatedRun.id ? updatedRun : item));
+    } else {
+      await fetchDeployRuns();
+    }
+    const notifyResults = Array.isArray(data?.notify_result) ? data.notify_result : [];
+    const failedText = notifyResults
+      .filter((item) => String(item?.status || "").trim() === "failed")
+      .map((item) => String(item?.reason || item?.message || "").trim())
+      .filter(Boolean)
+      .join("\n");
+    if (failedText) {
+      ElMessage.warning("通知已尝试发送，存在失败记录");
+    } else {
+      ElMessage.success("通知已发送");
+    }
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "发送部署通知失败");
+  } finally {
+    notifyingRunId.value = "";
   }
 }
 
@@ -2822,9 +3399,65 @@ function getDeployStatusLabel(value) {
 }
 
 function getDeployNotifyLabel(item) {
-  const platform = String(item?.platform || "").trim() || "unknown";
+  const platform = getDeployNotifyPlatformLabel(item?.platform);
   const status = String(item?.status || "").trim() || "pending";
-  return `${platform} · ${status}`;
+  return `${platform} · ${getDeployNotifyStatusLabel(status)}`;
+}
+
+function getDeployNotifyTargetLabel(item) {
+  const parts = [
+    String(item?.chat_name || "").trim(),
+    String(item?.chat_id || "").trim(),
+  ].filter(Boolean);
+  if (parts.length) {
+    return parts.join(" · ");
+  }
+  const connector = String(item?.connector_id || "").trim();
+  return connector ? `机器人 ${connector}` : "未指定目标";
+}
+
+function getDeployNotifyPlatformLabel(value) {
+  const platform = String(value || "").trim();
+  if (platform === "feishu") return "飞书";
+  if (platform === "wechat") return "微信";
+  if (platform === "qq") return "QQ";
+  return platform || "未知";
+}
+
+function getDeployNotifyStatusLabel(value) {
+  const status = String(value || "").trim();
+  if (status === "sent") return "已发送";
+  if (status === "failed") return "发送失败";
+  if (status === "skipped") return "未发送";
+  if (status === "unsupported") return "不支持";
+  if (status === "pending") return "待发送";
+  return status || "未知";
+}
+
+function getDeployNotifyReason(item) {
+  return String(item?.reason || "").trim();
+}
+
+function getDeployNotifyFailureText(row) {
+  const results = Array.isArray(row?.notify_result) ? row.notify_result : [];
+  return results
+    .filter((item) => String(item?.status || "").trim() === "failed")
+    .map((item) => {
+      const target = getDeployNotifyTargetLabel(item);
+      const reason = String(item?.reason || item?.message || "").trim();
+      return [target, reason].filter(Boolean).join("：");
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function getDeployNotifyTagType(item) {
+  const status = String(item?.status || "").trim();
+  if (status === "sent") return "success";
+  if (status === "failed") return "danger";
+  if (status === "pending") return "warning";
+  if (status === "skipped") return "info";
+  return "info";
 }
 
 watch(
@@ -2857,6 +3490,10 @@ watch(aiDeployRequirement, () => {
 
 onMounted(() => {
   void refreshDeployStatus();
+});
+
+onBeforeUnmount(() => {
+  stopDeployStatusPolling();
 });
 </script>
 
@@ -3118,6 +3755,222 @@ onMounted(() => {
   max-width: 520px;
 }
 
+.deploy-notify-template {
+  max-width: 820px;
+}
+
+.deploy-notify-template-editor {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.deploy-notify-template-editor__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.deploy-notify-template-editor__head > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.deploy-notify-template-editor__head strong {
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.deploy-notify-template-editor__head span,
+.deploy-notify-template-editor__preview span,
+.deploy-notify-template-editor__presets > span {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.deploy-notify-template-editor__presets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.deploy-notify-template-editor__presets .el-button {
+  margin-left: 0 !important;
+}
+
+.deploy-notify-template-editor__fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.deploy-notify-template-editor__field {
+  height: 30px;
+  margin-left: 0 !important;
+  padding: 0 9px;
+  border-color: rgba(148, 163, 184, 0.42);
+  background: #ffffff;
+}
+
+.deploy-notify-template-editor__field span {
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-notify-template-editor__field code {
+  margin-left: 6px;
+  font-size: 11px;
+  color: #475569;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.deploy-notify-template-editor__preview {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 6px;
+  background: #ffffff;
+  border: 1px dashed rgba(148, 163, 184, 0.5);
+}
+
+.deploy-notify-template-editor__preview p {
+  margin: 0;
+  color: #1e293b;
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.deploy-notify-records {
+  display: grid;
+  gap: 10px;
+  padding: 6px 10px 10px 52px;
+}
+
+.deploy-notify-records--compact {
+  padding: 0;
+}
+
+.deploy-notify-records__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.deploy-notify-records__head strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.deploy-notify-records__head span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.deploy-notify-record {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.deploy-notify-record__title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.deploy-notify-record__title span {
+  color: #334155;
+  font-size: 13px;
+}
+
+.deploy-notify-record__title em {
+  color: #94a3b8;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.deploy-notify-record p {
+  margin: 0;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.deploy-notify-record__template {
+  display: grid;
+  gap: 4px;
+}
+
+.deploy-notify-record__template span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.deploy-notify-record__template code {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.deploy-notify-record__reason {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  color: #b91c1c;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.deploy-notify-record__reason span {
+  min-width: 0;
+}
+
+.deploy-copy-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.deploy-copy-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.deploy-copy-inline span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .deploy-upload-form {
   display: grid;
   gap: 14px;
@@ -3129,6 +3982,17 @@ onMounted(() => {
 
 .deploy-upload-form__control {
   width: 100%;
+}
+
+.deploy-upload-form__control--wide {
+  max-width: 100%;
+}
+
+.deploy-form-tip {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .project-deploy-panel__file-input {
@@ -3454,6 +4318,10 @@ onMounted(() => {
   gap: 8px;
 }
 
+.ai-deploy__target-select {
+  width: 100%;
+}
+
 .ai-deploy__requirement :deep(.el-form-item) {
   margin-bottom: 0;
 }
@@ -3554,9 +4422,15 @@ onMounted(() => {
   margin-top: 16px;
 }
 
-.deploy-log-detail__section > strong {
-  display: block;
+.deploy-log-detail__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
+}
+
+.deploy-log-detail__section-head strong {
   color: #0f172a;
   font-size: 13px;
   font-weight: 600;

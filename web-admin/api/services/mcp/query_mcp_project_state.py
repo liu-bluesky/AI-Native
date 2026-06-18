@@ -66,7 +66,7 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 ## 初始化要求
 
 1. 执行前先读取 `query://usage-guide`。
-2. 当前宿主是 Codex CLI 时，再读取 `query://client-profile/codex`。
+2. 再按当前客户端读取对应画像：Codex 读 `query://client-profile/codex`，Claude Code 读 `query://client-profile/claude-code`，其他 CLI 或不确定时读 `query://client-profile/generic-cli`。
 3. 先以当前 CLI 工作区为准，检查并补齐本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用。
 4. 项目本地工作流技能默认位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。
 5. 只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。
@@ -131,6 +131,38 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 - 不要只在自然语言里宣布任务完成；真正完成依赖任务树验证结果和最终同步状态。
 - 不要在每一步都把零碎进度立即推回服务端；在本地优先模式下，应优先维护本地状态并按节点回写。
 - 不要重新引入分叉会话状态文件。
+"""
+
+# --- Claude Code hook 自动初始化 ---------------------------------------------
+# 任意电脑、任意项目接入统一查询 MCP 时，bind 阶段自动在客户端工作区落地
+# `.claude/` hook，让 Claude Code 每轮自动注入 MCP bootstrap 提醒，而不是依赖
+# 某台机器手工配置。所有受管文件带 _CLAUDE_MANAGED_MARKER，便于幂等刷新且不覆盖
+# 用户自定义内容。
+_CLAUDE_DIR = ".claude"
+_CLAUDE_HOOKS_DIR = "hooks"
+_CLAUDE_SETTINGS_FILE = "settings.json"
+_CLAUDE_HOOK_SCRIPT_NAME = "mcp-bootstrap-reminder.sh"
+_CLAUDE_MANAGED_MARKER = "query-mcp-managed:v1"
+_CLAUDE_HOOK_COMMAND = (
+    'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/mcp-bootstrap-reminder.sh"'
+)
+_CLAUDE_HOOK_EVENTS = ("SessionStart", "UserPromptSubmit")
+_CLAUDE_HOOK_SCRIPT_TEMPLATE = """#!/usr/bin/env bash
+# {marker}
+# 统一查询 MCP · Claude Code 接入强制提醒 hook（由 bind_project_context 自动初始化）。
+# 被 SessionStart 与 UserPromptSubmit 复用；stdout 会被 Claude Code 作为附加上下文注入当前轮。
+# 本文件由 MCP 自动维护：顶部 marker 在时会被刷新，删掉 marker 即视为用户接管、不再覆盖。
+set -euo pipefail
+
+cat <<'REMINDER'
+[统一查询 MCP · 强制接入提醒]
+当前仓库已接入统一查询 MCP，本轮开始执行前请按需确认：
+1. 首轮先用 read_mcp_resource 读取 query://usage-guide 与对应 client-profile（已读过则复用，勿反复 list_mcp_resources）。
+2. 凡涉及开发/实现/修改/写入/部署等改变项目状态的需求：先 bind_project_context(project_id, chat_session_id, root_goal) 记需求并建任务树；纯查询/解释型问题且清晰度>=3 可直接答，不必机械 bootstrap。
+3. 进入执行：开始节点调 update_task_node_status，完成节点必须调 complete_task_node_with_verification 写验证结果——禁止只用自然语言宣布完成。
+4. 默认项目 project_id={project_id}；并行 CLI 新任务请自生成唯一 chat_session_id。
+5. 本地 canonical 状态只写 .ai-employee/query-mcp/active-sessions/<chat_session_id>.json、session-history/<project_id>__<chat_session_id>.json 与 requirements/<project_id>/<chat_session_id>.json。
+REMINDER
 """
 
 
@@ -528,6 +560,122 @@ def ensure_query_mcp_workflow_skill(
     }
 
 
+def _claude_dir(project_id: str = "", workspace_path: str = "") -> Path | None:
+    workspace_root, _scope = _resolve_local_workspace_context(project_id, workspace_path)
+    if not workspace_root:
+        return None
+    return Path(workspace_root) / _CLAUDE_DIR
+
+
+def _write_claude_hook_script(
+    script_path: Path,
+    project_id_value: str,
+) -> bool:
+    """写入/刷新 hook 脚本。返回是否发生写盘。
+
+    幂等规则：文件不存在则写；存在且含受管 marker 则按需刷新；
+    存在但无 marker 视为用户接管，保持不动。
+    """
+    desired = _CLAUDE_HOOK_SCRIPT_TEMPLATE.format(
+        marker=_CLAUDE_MANAGED_MARKER,
+        project_id=project_id_value or "<project_id>",
+    )
+    if script_path.exists():
+        try:
+            current = script_path.read_text(encoding="utf-8")
+        except OSError:
+            current = ""
+        if _CLAUDE_MANAGED_MARKER not in current:
+            return False
+        if current == desired:
+            return False
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(desired, encoding="utf-8")
+    try:
+        script_path.chmod(0o755)
+    except OSError:
+        pass
+    return True
+
+
+def _merge_claude_hook_settings(settings_path: Path) -> bool:
+    """把两个 hook 事件并入 settings.json，保留用户已有键。返回是否写盘。"""
+    data: dict[str, Any] = {}
+    if settings_path.exists():
+        try:
+            loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (OSError, json.JSONDecodeError):
+            # 不破坏无法解析的用户文件，交还给用户处理。
+            return False
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        hooks = {}
+    changed = False
+    for event in _CLAUDE_HOOK_EVENTS:
+        matchers = hooks.get(event)
+        if not isinstance(matchers, list):
+            matchers = []
+        already = any(
+            isinstance(group, dict)
+            and any(
+                isinstance(hook, dict) and hook.get("command") == _CLAUDE_HOOK_COMMAND
+                for hook in (group.get("hooks") or [])
+                if isinstance(hook, dict)
+            )
+            for group in matchers
+        )
+        if already:
+            continue
+        matchers.append(
+            {"hooks": [{"type": "command", "command": _CLAUDE_HOOK_COMMAND}]}
+        )
+        hooks[event] = matchers
+        changed = True
+    if not changed:
+        return False
+    data["hooks"] = hooks
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return True
+
+
+def ensure_claude_code_hooks(
+    *,
+    project_id: str,
+    workspace_path: str = "",
+) -> dict[str, Any]:
+    """在客户端工作区初始化 Claude Code 的 MCP bootstrap 提醒 hook。
+
+    与 ensure_query_mcp_workflow_skill 同属 bind 阶段本地落地，跨电脑可移植：
+    路径全部相对客户端 workspace，命令用 $CLAUDE_PROJECT_DIR，不写死任何机器路径。
+    """
+    project_id_value = _normalize_text(project_id, 120)
+    if not project_id_value:
+        return {}
+    claude_dir = _claude_dir(project_id_value, workspace_path)
+    if claude_dir is None:
+        return {}
+    script_path = claude_dir / _CLAUDE_HOOKS_DIR / _CLAUDE_HOOK_SCRIPT_NAME
+    settings_path = claude_dir / _CLAUDE_SETTINGS_FILE
+    changed: list[str] = []
+    if _write_claude_hook_script(script_path, project_id_value):
+        changed.append(str(script_path))
+    if _merge_claude_hook_settings(settings_path):
+        changed.append(str(settings_path))
+    return {
+        "path": str(claude_dir),
+        "script_path": str(script_path),
+        "settings_path": str(settings_path),
+        "events": list(_CLAUDE_HOOK_EVENTS),
+        "changed": bool(changed),
+        "changed_files": changed,
+    }
+
+
 def _coerce_int(value: object, default: int = 0) -> int:
     try:
         return int(value)
@@ -733,6 +881,10 @@ def bootstrap_query_mcp_local_workspace(
         project_id=project_id_value,
         workspace_path=workspace_path,
     )
+    claude_hooks_payload = ensure_claude_code_hooks(
+        project_id=project_id_value,
+        workspace_path=workspace_path,
+    )
     requirement_payload = upsert_query_mcp_requirement_record(
         project_id=project_id_value,
         chat_session_id=chat_session_id_value,
@@ -749,6 +901,7 @@ def bootstrap_query_mcp_local_workspace(
     )
     return {
         "skill": skill_payload,
+        "claude_hooks": claude_hooks_payload,
         "requirement": requirement_payload,
     }
 

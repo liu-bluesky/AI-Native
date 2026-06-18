@@ -626,13 +626,20 @@ function normalizeExternalAgentSessionLog(value) {
       seq: 0,
       stream: "",
       content: "",
+      kind: "log",
+      title: "",
       createdAtEpochMs: 0,
     };
   }
   return {
     seq: Number(value.seq || 0),
+    // stream 即 raw_channel（来源通道，调试用）。
     stream: String(value.stream || "").trim(),
     content: String(value.content || ""),
+    // 统一事件类型：reasoning/plan/tool_call/tool_result/message/final/error/log。
+    kind: String(value.kind || "log").trim() || "log",
+    // 工具名 / 步骤标题（可空）。
+    title: String(value.title || "").trim(),
     createdAtEpochMs: Number(
       value.createdAtEpochMs ?? value.created_at_epoch_ms ?? 0,
     ),

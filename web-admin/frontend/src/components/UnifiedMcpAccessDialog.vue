@@ -21,14 +21,19 @@
             <pre class="unified-mcp-access__code"><code>{{ httpConfig }}</code></pre>
           </div>
         </el-tab-pane>
-        <el-tab-pane label="CLI" name="cli">
+        <el-tab-pane
+          v-for="item in cliPromptCategories"
+          :key="item.key"
+          :label="item.label"
+          :name="getCliTabName(item.key)"
+        >
           <div class="unified-mcp-access__prompt-card">
-            适合放进 CLI 入口文件。这里默认提供短引导提示词，详细规则通过 `query://...` 资源按需读取。
+            适合放进当前客户端入口文件。每个客户端只展示自己的接入画像；详细规则通过 `query://...` 资源按需读取。
           </div>
-          <details class="unified-mcp-access__details">
+          <details class="unified-mcp-access__details" open>
             <summary>展开引导提示词预览</summary>
             <div class="unified-mcp-access__code-wrap unified-mcp-access__code-wrap--prompt">
-              <pre class="unified-mcp-access__code"><code>{{ cliPrompt }}</code></pre>
+              <pre class="unified-mcp-access__code"><code>{{ item.prompt }}</code></pre>
             </div>
           </details>
         </el-tab-pane>
@@ -79,10 +84,12 @@ const emit = defineEmits(['update:modelValue', 'close'])
 
 const activeTab = ref('sse')
 const QUERY_CENTER_SERVER_NAME = 'query-center'
+const CLI_TAB_PREFIX = 'cli:'
 const runtimeAccess = ref({
   sseUrl: '',
   httpUrl: '',
   cliPrompt: '',
+  cliPrompts: [],
 })
 
 const normalizedProjectId = computed(() => String(props.projectId || '').trim())
@@ -100,6 +107,26 @@ const sessionIdFormatHint = computed(() =>
     ? `ws_${normalizedProjectId.value}_<employee_id|team>_<YYYYMMDDTHHMMSS>_<rand4>`
     : 'ws_<project_id>_<employee_id|team>_<YYYYMMDDTHHMMSS>_<rand4>',
 )
+const fallbackCliProfiles = [
+  {
+    key: 'codex',
+    label: 'Codex CLI',
+    resource: 'query://client-profile/codex',
+    clientDesc: 'Codex CLI',
+  },
+  {
+    key: 'hermes',
+    label: 'Hermes',
+    resource: 'query://client-profile/hermes',
+    clientDesc: 'Hermes',
+  },
+  {
+    key: 'claude-code',
+    label: 'Claude Code',
+    resource: 'query://client-profile/claude-code',
+    clientDesc: 'Claude Code',
+  },
+]
 const runtimeQueryString = computed(() => {
   const params = new URLSearchParams({ key: 'YOUR_API_KEY' })
   if (normalizedProjectId.value) params.set('project_id', normalizedProjectId.value)
@@ -114,16 +141,21 @@ const queryCenterDescription = computed(() => {
   return `统一查询 MCP 入口（server 名：${QUERY_CENTER_SERVER_NAME}），提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹和交付报告能力。注意：description 只是接入说明；真正绑定靠 URL 参数提供的默认上下文，以及 MCP 方法 bind_project_context 写入当前会话绑定。`
 })
 
-function buildFallbackCliPrompt() {
+function getFallbackCliProfile(profileKey = 'codex') {
+  return fallbackCliProfiles.find((item) => item.key === profileKey) || fallbackCliProfiles[0]
+}
+
+function buildFallbackCliPrompt(profileKey = 'codex') {
+  const profile = getFallbackCliProfile(profileKey)
   const sections = [
     '你已接入统一查询 MCP。',
     '',
     '开始执行前必须读取这些资源：',
     '- `query://usage-guide`',
-    '- `query://client-profile/codex` 或 `query://client-profile/claude-code`',
+    `- \`${profile.resource}\`（${profile.clientDesc}）`,
     '',
     '强制接入步骤：',
-    '1. 先读取 `query://usage-guide`；当前是 Codex / Claude 这类代码 CLI 时，再读取对应的 client profile。',
+    `1. 先读取 \`query://usage-guide\`；当前客户端是 ${profile.label}，再读取对应画像 \`${profile.resource}\`。`,
     '1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和对应 client profile，禁止反复调用 `list_mcp_resources`。',
     '1.2 对“有几个员工 / 有哪些员工 / 有哪些工具 / 有哪些规则”这类简单查询，且 `project_id` 已明确时，直接调用对应业务工具（如 `list_project_members(project_id=...)`、`list_project_proxy_tools(...)`），不要为了满足 bootstrap 机械列资源目录。',
     '2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用；canonical session 状态只使用 `active-sessions/<chat_session_id>.json` 与 `session-history/<project_id>__<chat_session_id>.json`。',
@@ -178,8 +210,36 @@ function buildFallbackCliPrompt() {
 const cliPrompt = computed(() => {
   const runtimePrompt = String(runtimeAccess.value.cliPrompt || '').trim()
   if (runtimePrompt) return runtimePrompt
-  return buildFallbackCliPrompt()
+  return buildFallbackCliPrompt('codex')
 })
+const cliPromptCategories = computed(() => {
+  const list = Array.isArray(runtimeAccess.value.cliPrompts) ? runtimeAccess.value.cliPrompts : []
+  const normalized = list
+    .map((item) => ({
+      key: String(item?.key || '').trim(),
+      label: String(item?.label || item?.key || '').trim(),
+      prompt: String(item?.prompt || '').trim(),
+    }))
+    .filter((item) => item.key && item.prompt)
+  if (normalized.length) return normalized
+  return fallbackCliProfiles.map((item) => ({
+    key: item.key,
+    label: item.label,
+    prompt: buildFallbackCliPrompt(item.key),
+  }))
+})
+const isCliPromptTab = computed(() => activeTab.value.startsWith(CLI_TAB_PREFIX))
+const activeCliProfileKey = computed(() => {
+  if (!isCliPromptTab.value) return ''
+  return activeTab.value.slice(CLI_TAB_PREFIX.length)
+})
+const activeCliPromptItem = computed(() => {
+  const categories = cliPromptCategories.value
+  return (
+    categories.find((item) => item.key === activeCliProfileKey.value) || categories[0] || null
+  )
+})
+const activeCliPromptText = computed(() => activeCliPromptItem.value?.prompt || cliPrompt.value)
 const sseConfig = computed(() =>
   JSON.stringify(
     {
@@ -210,7 +270,11 @@ const httpConfig = computed(() =>
     2,
   ),
 )
-const copyButtonText = computed(() => (activeTab.value === 'cli' ? '复制引导提示词' : '复制当前配置'))
+const copyButtonText = computed(() => {
+  if (!isCliPromptTab.value) return '复制当前配置'
+  const label = activeCliPromptItem.value?.label || ''
+  return label ? `复制 ${label} 提示词` : '复制引导提示词'
+})
 
 watch(
   () => props.modelValue,
@@ -248,13 +312,33 @@ async function fetchQueryMcpRuntime() {
       sseUrl: String(runtime.sse_url || '').trim(),
       httpUrl: String(runtime.http_url || '').trim(),
       cliPrompt: String(runtime.cli_prompt || '').trim(),
+      cliPrompts: Array.isArray(runtime.cli_prompts) ? runtime.cli_prompts : [],
     }
+    syncActiveCliTab()
   } catch {
     runtimeAccess.value = {
       sseUrl: '',
       httpUrl: '',
       cliPrompt: '',
+      cliPrompts: [],
     }
+    syncActiveCliTab()
+  }
+}
+
+function getCliTabName(profileKey) {
+  return `${CLI_TAB_PREFIX}${profileKey}`
+}
+
+function syncActiveCliTab() {
+  if (!isCliPromptTab.value) return
+  const categories = cliPromptCategories.value
+  if (!categories.length) {
+    activeTab.value = 'sse'
+    return
+  }
+  if (!categories.some((item) => item.key === activeCliProfileKey.value)) {
+    activeTab.value = getCliTabName(categories[0].key)
   }
 }
 
@@ -262,12 +346,12 @@ async function copyCurrentContent() {
   const content =
     activeTab.value === 'http'
       ? httpConfig.value
-      : activeTab.value === 'cli'
-        ? cliPrompt.value
+      : isCliPromptTab.value
+        ? activeCliPromptText.value
         : sseConfig.value
   try {
     await navigator.clipboard.writeText(content)
-    ElMessage.success(activeTab.value === 'cli' ? '引导提示词已复制' : '配置已复制')
+    ElMessage.success(isCliPromptTab.value ? '引导提示词已复制' : '配置已复制')
   } catch {
     ElMessage.error('复制失败')
   }

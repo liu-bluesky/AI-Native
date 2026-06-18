@@ -311,6 +311,9 @@ export function mergeMessageOperations(existingOperations, nextOperations) {
           authorization_url:
             String(operationMeta.authorization_url || "").trim() ||
             String(existingMeta.authorization_url || "").trim(),
+          user_code:
+            String(operationMeta.user_code || "").trim() ||
+            String(existingMeta.user_code || "").trim(),
           interaction_schema:
             operationMeta.interaction_schema || existingMeta.interaction_schema || null,
         },

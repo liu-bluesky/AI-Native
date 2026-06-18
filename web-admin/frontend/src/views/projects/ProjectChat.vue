@@ -3750,6 +3750,7 @@ import { extractTextFromFile } from "@/utils/file-extractor.js";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
 import { formatRelativeDateTime } from "@/utils/date.js";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   buildModelTypeMetaMap,
   DEFAULT_MODEL_TYPE,
@@ -3986,6 +3987,7 @@ import {
   resolveTaskTreeEventPayload,
 } from "@/modules/project-chat/mappers/taskTreeMappers.js";
 import {
+  extractDeviceAuthReply,
   hasAuthorizationPromptText,
   hasLarkAuthBusinessDomainPromptText,
   hasTerminalChoiceControlSignal,
@@ -4623,17 +4625,27 @@ const nativeExternalAgentTerminalStatusText = computed(() => {
 const nativeExternalAgentTerminalText = computed(() => {
   const rows = nativeExternalAgentSessionLogs.value
     .map((item) => {
-      const stream = String(item.stream || "stdout")
+      const kind = String(item.kind || "log")
         .trim()
         .toLowerCase();
+      const stream = String(item.stream || "")
+        .trim()
+        .toLowerCase();
+      const title = String(item.title || "").trim();
       const content = stripTerminalControlSequences(String(item.content || ""));
-      if (!content.trim()) return "";
-      if (stream === "final") return "";
-      if (isNativeExternalAgentInternalDiagnostic(stream, content)) return "";
-      if (stream === "stdin") return `\n${content}`;
-      if (stream === "system") return `\n[system] ${content}`;
-      if (stream === "stderr") return `\n[stderr] ${content}`;
-      return content;
+      if (!content.trim() && !title) return "";
+      // final 在“最终回答”页单独展示，终端视图不重复。
+      if (kind === "final") return "";
+      if (kind === "log") {
+        if (!content.trim()) return "";
+        if (isNativeExternalAgentInternalDiagnostic(stream, content)) return "";
+        if (stream === "stdin") return `\n${content}`;
+        if (stream === "system") return `\n[system] ${content}`;
+        if (stream === "stderr") return `\n[stderr] ${content}`;
+        return content;
+      }
+      const label = title ? `${kind} ${title}` : kind;
+      return `\n[${label}] ${content}`;
     })
     .filter(Boolean);
   const text = rows.join("");
@@ -5994,28 +6006,58 @@ function getNativeExternalAgentSessionLogs(sessionId = "") {
 }
 
 function nativeExternalAgentProcessLogLevel(log = {}) {
-  const stream = String(log?.stream || "stdout")
+  const kind = String(log?.kind || "log")
     .trim()
     .toLowerCase();
-  if (stream === "stderr") return "warning";
+  if (kind === "error") return "error";
+  const stream = String(log?.stream || "")
+    .trim()
+    .toLowerCase();
+  if (kind === "log" && stream === "stderr") return "warning";
   return "info";
 }
 
+// 按统一事件 kind 渲染执行过程；final 由最终答案单独展示，不进过程日志。
 function nativeExternalAgentProcessLogText(log = {}) {
-  const stream = String(log?.stream || "stdout")
+  const kind = String(log?.kind || "log")
     .trim()
     .toLowerCase();
+  const stream = String(log?.stream || "")
+    .trim()
+    .toLowerCase();
+  const title = String(log?.title || "").trim();
   const content = stripTerminalControlSequences(
     String(log?.content || "").trim(),
   ).trim();
-  if (!content || stream === "final") return "";
-  if (isNativeExternalAgentInternalDiagnostic(stream, content)) return "";
+  if (kind === "final") return "";
+  if (kind === "log") {
+    // 未归一的兜底日志：过滤诊断噪声后按来源通道标注。
+    if (!content) return "";
+    if (isNativeExternalAgentInternalDiagnostic(stream, content)) return "";
+    const summary = clipText(content.replace(/\s+/g, " ").trim(), 260);
+    if (!summary) return "";
+    if (stream === "stderr") return `运行提示：${summary}`;
+    if (stream === "stdin") return `输入已发送：${summary}`;
+    if (stream === "system") return `Runner 状态：${summary}`;
+    return `执行输出：${summary}`;
+  }
   const summary = clipText(content.replace(/\s+/g, " ").trim(), 260);
-  if (!summary) return "";
-  if (stream === "stderr") return `运行提示：${summary}`;
-  if (stream === "stdin") return `输入已发送：${summary}`;
-  if (stream === "system") return `Runner 状态：${summary}`;
-  return `执行输出：${summary}`;
+  switch (kind) {
+    case "reasoning":
+      return summary ? `推理：${summary}` : "";
+    case "plan":
+      return summary ? `计划：${summary}` : "";
+    case "tool_call":
+      return `调用工具${title ? ` ${title}` : ""}${summary ? `：${summary}` : ""}`;
+    case "tool_result":
+      return `工具结果${title ? ` ${title}` : ""}${summary ? `：${summary}` : ""}`;
+    case "message":
+      return summary ? `执行输出：${summary}` : "";
+    case "error":
+      return summary ? `执行出错：${summary}` : "执行出错";
+    default:
+      return summary ? `执行输出：${summary}` : "";
+  }
 }
 
 function appendNativeExternalAgentProcessLogs(row, snapshot = {}, logs = []) {
@@ -6033,6 +6075,116 @@ function appendNativeExternalAgentProcessLogs(row, snapshot = {}, logs = []) {
       text,
     });
   });
+}
+
+function joinNativeExternalAgentLogText(snapshot = {}) {
+  const sessionId = normalizeNativeExternalAgentSessionId(snapshot);
+  if (!sessionId) return "";
+  return getNativeExternalAgentSessionLogs(sessionId)
+    .filter((item) => String(item?.kind || "").trim() !== "final")
+    .map((item) => String(item?.content || ""))
+    .join("\n");
+}
+
+// 设备授权 / OAuth 登录是 agent 无关能力：从统一事件文本里识别授权链接。
+function resolveDeviceAuthReply(snapshot = {}) {
+  const text = joinNativeExternalAgentLogText(snapshot);
+  if (!text) return null;
+  return extractDeviceAuthReply(text);
+}
+
+function isLocalImageReference(value = "") {
+  const text = String(value || "").trim();
+  return Boolean(
+    text &&
+      !/^https?:\/\//i.test(text) &&
+      !/^data:image\//i.test(text) &&
+      /\.(?:png|jpe?g|gif|bmp|webp|svg)(?:[?#].*)?$/i.test(text),
+  );
+}
+
+function localImagePathToMessageUrl(value = "") {
+  const path = String(value || "").trim();
+  if (!path) return "";
+  if (/^(?:https?:\/\/|data:image\/)/i.test(path)) return path;
+  try {
+    return convertFileSrc(path);
+  } catch (_) {
+    return "";
+  }
+}
+
+function stripLocalImageMarkdown(replyText = "") {
+  return String(replyText || "")
+    .replace(/!\[([^\]]*)]\(([^)]+)\)/g, (match, alt, url) => {
+      return isLocalImageReference(url) ? String(alt || "").trim() : match;
+    })
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// 从一段文本里提取本地图片路径，并把它们合并到消息行的图片列表。
+function extractLocalImagePathsFromText(text = "") {
+  const candidates = [];
+  for (const match of String(text || "").matchAll(/!\[[^\]]*]\(([^)]+)\)/g)) {
+    const url = String(match[1] || "")
+      .trim()
+      .replace(/^file:\/\//i, "")
+      .replace(/[)\]}>"'，。；、]+$/g, "");
+    if (isLocalImageReference(url)) candidates.push(url);
+  }
+  return Array.from(new Set(candidates));
+}
+
+function applyVisibleReplyImages(row, text = "") {
+  if (!row) return;
+  const imageUrls = extractLocalImagePathsFromText(text)
+    .map(localImagePathToMessageUrl)
+    .filter(Boolean);
+  if (!imageUrls.length) return;
+  row.images = mergeImageUrls(row.images || [], imageUrls);
+}
+
+function upsertDeviceAuthOperation(row, snapshot = {}, auth = null) {
+  if (!row || !snapshot?.sessionId || !auth?.authorizationUrl) return;
+  const status = String(snapshot.status || "").trim();
+  const terminal = isTerminalNativeExternalAgentSessionStatus(status);
+  const phase =
+    !terminal || status === "running"
+      ? "waiting_user"
+      : status === "completed" || status === "cancelled"
+        ? "completed"
+        : "blocked";
+  const label = String(auth.providerLabel || "").trim();
+  const authName = label ? `${label}授权` : "设备授权";
+  upsertMessageOperation(row, {
+    operationId: `native-external-agent:${snapshot.sessionId}:device-auth`,
+    kind: "auth",
+    title: authName,
+    summary:
+      phase === "waiting_user"
+        ? `等待你完成${authName}`
+        : phase === "completed"
+          ? `${authName}等待已结束`
+          : `${authName}未完成`,
+    detail: auth.replyText || auth.authorizationUrl,
+    phase,
+    actionType: phase === "waiting_user" ? "open_url" : "none",
+    meta: {
+      session_id: snapshot.sessionId,
+      source: "device_auth",
+      provider: auth.provider || "",
+      authorization_url: auth.authorizationUrl,
+      user_code: auth.userCode || "",
+    },
+  });
+}
+
+function applyDeviceAuthWaitingReply(row, snapshot = {}) {
+  const auth = resolveDeviceAuthReply(snapshot);
+  if (!auth) return null;
+  upsertDeviceAuthOperation(row, snapshot, auth);
+  return auth;
 }
 
 /** 将 native external agent 运行态快照应用到组件状态（session/logs/sessionsById 回填） */
@@ -6087,6 +6239,7 @@ function applyNativeExternalAgentSessionSnapshot(snapshot, options = {}) {
           ? snapshot.logs.slice(-20)
           : [],
     );
+    applyDeviceAuthWaitingReply(row, snapshot);
     if (isLiveNativeExternalAgentStatus(snapshot.status)) {
       openMessageProcessForActiveRun(row);
     }
@@ -6205,7 +6358,7 @@ function buildNativeExternalAgentLogPreview(limit = 12000, sessionId = "") {
     .map((item) => {
       const stream = String(item.stream || "stdout").trim();
       const content = String(item.content || "");
-      if (stream === "final") return "";
+      if (String(item.kind || "").trim() === "final") return "";
       if (isNativeExternalAgentInternalDiagnostic(stream, content)) return "";
       const prefix =
         stream === "stderr"
@@ -6225,10 +6378,7 @@ function buildNativeExternalAgentDiagnosticPreview(
   sessionId = "",
 ) {
   const text = getNativeExternalAgentSessionLogs(sessionId)
-    .filter((item) => {
-      const stream = String(item.stream || "").trim();
-      return stream !== "final";
-    })
+    .filter((item) => String(item.kind || "").trim() !== "final")
     .map((item) => {
       const stream = String(item.stream || "stdout").trim();
       const content = String(item.content || "");
@@ -6254,7 +6404,7 @@ function resolveNativeExternalAgentFinalOutput(snapshot) {
     ...getNativeExternalAgentSessionLogs(snapshot?.sessionId || ""),
   ]
     .reverse()
-    .find((item) => String(item.stream || "").trim() === "final");
+    .find((item) => String(item.kind || "").trim() === "final");
   if (finalLog?.content && String(finalLog.content).trim()) {
     return String(finalLog.content).trim();
   }
@@ -6848,6 +6998,7 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
       : "外部 Agent Runner 会话已结束",
   );
   const finalOutput = resolveNativeExternalAgentFinalOutput(snapshot);
+  const deviceAuthReply = resolveDeviceAuthReply(snapshot);
   const blockedReason = shouldShowNativeExternalAgentBlockedReason(
     snapshot,
     finalOutput,
@@ -6857,8 +7008,9 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
   const headerLines = [
     blockedReason ? `执行未完成：${blockedReason}` : "",
   ].filter(Boolean);
-  const outputLines = finalOutput
-    ? [finalOutput]
+  const displayOutput = stripLocalImageMarkdown(finalOutput);
+  const outputLines = displayOutput
+    ? [displayOutput]
     : [
         status === "cancelled"
           ? "本次外部 Agent 执行已取消。"
@@ -6867,7 +7019,11 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
   row.content = [...headerLines, ...outputLines].join("\n");
   row.displayMode = "";
   row.time = nowText();
+  applyVisibleReplyImages(row, finalOutput);
   upsertNativeExternalAgentMessageOperation(snapshot);
+  if (deviceAuthReply) {
+    upsertDeviceAuthOperation(row, snapshot, deviceAuthReply);
+  }
   collapseMessageProcessAfterFinalAnswer(row);
   persistNativeExternalAgentRowsForSession(normalizedChatSessionId);
   if (isCurrentChatSession(selectedProjectId.value, normalizedChatSessionId)) {
@@ -12019,6 +12175,9 @@ function upsertMessageOperation(row, source = {}) {
         authorization_url:
           String(operationMeta.authorization_url || "").trim() ||
           String(existingMeta.authorization_url || "").trim(),
+        user_code:
+          String(operationMeta.user_code || "").trim() ||
+          String(existingMeta.user_code || "").trim(),
         interaction_schema:
           operationMeta.interaction_schema ||
           existingMeta.interaction_schema ||

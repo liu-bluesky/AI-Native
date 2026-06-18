@@ -36,6 +36,125 @@ export function hasAuthorizationPromptText(payload = {}, detailText = "") {
   );
 }
 
+// 设备授权 / OAuth 登录是 agent 无关能力：从输出文本里识别授权链接，
+// 渲染成统一的授权卡片。provider 顺序敏感：先匹配平台专用域，最后回退到
+// 通用 device-code 模式（必须带 user_code 参数，避免误伤普通链接）。
+// URL 按 RFC 3986 只含 ASCII：字符类一旦遇到空白、引号、括号、CJK 汉字或
+// 全角标点就停下，避免把链接后紧跟（无空格）的中文文案一起吞进 URL。
+const DEVICE_AUTH_URL_TAIL = "[^\\s\"'<>，。；、（）【】「」\\u4e00-\\u9fff\\uff00-\\uffef]";
+const DEVICE_AUTH_PROVIDERS = [
+  {
+    key: "lark",
+    label: "飞书",
+    qrHint: "飞书 CLI 授权二维码",
+    urlRe: new RegExp(
+      `https://accounts\\.feishu\\.cn/oauth/v1/device/verify\\?${DEVICE_AUTH_URL_TAIL}+`,
+      "i",
+    ),
+  },
+  {
+    key: "github",
+    label: "GitHub",
+    qrHint: "GitHub 设备授权页",
+    urlRe: new RegExp(
+      `https://github\\.com/login/device(?:/${DEVICE_AUTH_URL_TAIL}*)?`,
+      "i",
+    ),
+  },
+  {
+    key: "google",
+    label: "Google",
+    qrHint: "Google 设备授权页",
+    urlRe: new RegExp(
+      `https://(?:www\\.)?google\\.com/device${DEVICE_AUTH_URL_TAIL}*`,
+      "i",
+    ),
+  },
+  {
+    key: "device-code",
+    label: "设备",
+    qrHint: "设备授权页",
+    urlRe: new RegExp(
+      `https?://${DEVICE_AUTH_URL_TAIL}+[?&]user_code=${DEVICE_AUTH_URL_TAIL}+`,
+      "i",
+    ),
+  },
+];
+
+const DEVICE_AUTH_USER_CODE_TEXT_RE =
+  /(?:user[\s_-]?code|验证码|配对码|授权码)\s*[:：]?\s*([A-Z0-9][A-Z0-9-]{3,})/i;
+
+function cleanDeviceAuthUrl(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[)\]}>"'，。；、]+$/g, "");
+}
+
+function matchDeviceAuthProvider(text) {
+  for (const provider of DEVICE_AUTH_PROVIDERS) {
+    const match = text.match(provider.urlRe);
+    if (match?.[0]) {
+      return { provider, authorizationUrl: cleanDeviceAuthUrl(match[0]) };
+    }
+  }
+  return null;
+}
+
+export function extractDeviceAuthUrl(value) {
+  const text = stripTerminalControlSequences(value);
+  return matchDeviceAuthProvider(text)?.authorizationUrl || "";
+}
+export function extractDeviceAuthUserCode(authorizationUrl = "", rawText = "") {
+  const url = String(authorizationUrl || "").trim();
+  if (url) {
+    try {
+      const fromUrl = String(
+        new URL(url).searchParams.get("user_code") || "",
+      ).trim();
+      if (fromUrl) return fromUrl;
+    } catch (_) {
+      const match = url.match(/[?&]user_code=([^&#\s]+)/i);
+      if (match?.[1]) {
+        try {
+          return decodeURIComponent(match[1]).trim();
+        } catch (_) {
+          return String(match[1]).trim();
+        }
+      }
+    }
+  }
+  // URL 不携带 user_code 时（GitHub/Google 设备流），从输出文本里兜底识别。
+  const textMatch = stripTerminalControlSequences(rawText).match(
+    DEVICE_AUTH_USER_CODE_TEXT_RE,
+  );
+  return String(textMatch?.[1] || "").trim();
+}
+
+export function extractDeviceAuthReply(value) {
+  const text = stripTerminalControlSequences(value);
+  const matched = matchDeviceAuthProvider(text);
+  if (!matched) return null;
+  const { provider, authorizationUrl } = matched;
+  const userCode = extractDeviceAuthUserCode(authorizationUrl, text);
+  const replyText = [
+    `打开这个链接完成${provider.label}授权：`,
+    "",
+    authorizationUrl,
+    ...(userCode ? ["", `授权码：${userCode}`] : []),
+    "",
+    provider.qrHint,
+    "",
+    "授权有效期通常 10 分钟。完成后回来告诉我“已授权完成”，我会继续执行后续命令。",
+  ].join("\n");
+  return {
+    provider: provider.key,
+    providerLabel: provider.label,
+    authorizationUrl,
+    userCode,
+    replyText,
+  };
+}
+
 export const TERMINAL_CHOICE_FALLBACK_PROVIDERS = [
   {
     key: "lark-auth-domain",

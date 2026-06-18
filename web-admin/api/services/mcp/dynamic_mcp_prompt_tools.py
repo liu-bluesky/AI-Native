@@ -20,6 +20,16 @@ def _normalize_text(value: Any, max_length: int = 1000) -> str:
     return text
 
 
+def _infer_client_profile_from_target_file(target_file: str) -> str:
+    """按入口文件名推断客户端画像：CLAUDE.md→claude-code，HERMES.md→hermes，其余→codex。"""
+    name = Path(str(target_file or "")).name.strip().lower()
+    if name == "claude.md":
+        return "claude-code"
+    if name == "hermes.md":
+        return "hermes"
+    return "codex"
+
+
 def prompt_preview_tool_descriptor(employee_id: str = "") -> dict[str, Any]:
     employee_id_value = _normalize_text(employee_id, 120)
     return {
@@ -42,6 +52,10 @@ def prompt_preview_tool_descriptor(employee_id: str = "") -> dict[str, Any]:
                 "clarity_threshold": {
                     "type": "integer",
                     "description": "可选，清晰度确认阈值，范围 1-5，默认 3。",
+                },
+                "client_profile": {
+                    "type": "string",
+                    "description": "可选，客户端画像：codex / hermes / claude-code / generic-cli，默认 codex。",
                 },
             },
             "required": [],
@@ -88,6 +102,10 @@ def prompt_sync_tool_descriptor(employee_id: str = "") -> dict[str, Any]:
                     "type": "integer",
                     "description": "可选，清晰度确认阈值，范围 1-5，默认 3。",
                 },
+                "client_profile": {
+                    "type": "string",
+                    "description": "可选，客户端画像：codex / hermes / claude-code / generic-cli；未传时按 target_file 推断（CLAUDE.md→claude-code，HERMES.md→hermes，其余→codex）。",
+                },
             },
             "required": ["workspace_path"],
         },
@@ -105,9 +123,11 @@ def get_query_mcp_cli_prompt_preview_runtime(
     project_id: str = "",
     chat_session_id: str = "",
     clarity_threshold: int = 3,
+    client_profile: str = "codex",
 ) -> dict[str, Any]:
     project_id_value = _normalize_text(project_id, 120)
     chat_session_id_value = _normalize_text(chat_session_id, 120)
+    client_profile_value = _normalize_text(client_profile, 80) or "codex"
     try:
         threshold_value = max(1, min(5, int(clarity_threshold or 3)))
     except (TypeError, ValueError):
@@ -120,11 +140,13 @@ def get_query_mcp_cli_prompt_preview_runtime(
         project_id=project_id_value,
         chat_session_id=chat_session_id_value,
         clarity_confirm_threshold=threshold_value,
+        client_profile=client_profile_value,
     )
     return {
         "status": "preview",
         "project_id": project_id_value,
         "chat_session_id": chat_session_id_value,
+        "client_profile": client_profile_value,
         "template_source": "system_config.query_mcp_bootstrap_prompt_template",
         "rendered_field": "runtime.cli_prompt",
         "rendered_cli_prompt": rendered,
@@ -140,11 +162,18 @@ def sync_query_mcp_cli_prompt_to_local_file_runtime(
     backup: bool = True,
     dry_run: bool = False,
     clarity_threshold: int = 3,
+    client_profile: str = "",
 ) -> dict[str, Any]:
+    target_value = _normalize_text(target_file, 1000) or "AGENTS.md"
+    resolved_client_profile = (
+        _normalize_text(client_profile, 80)
+        or _infer_client_profile_from_target_file(target_value)
+    )
     preview = get_query_mcp_cli_prompt_preview_runtime(
         project_id=project_id,
         chat_session_id=chat_session_id,
         clarity_threshold=clarity_threshold,
+        client_profile=resolved_client_profile,
     )
     if preview.get("error"):
         return preview
@@ -154,7 +183,6 @@ def sync_query_mcp_cli_prompt_to_local_file_runtime(
     root = Path(workspace_value).expanduser().resolve()
     if not root.exists() or not root.is_dir():
         return {"status": "blocked", "reason": "workspace_path does not exist or is not a directory"}
-    target_value = _normalize_text(target_file, 1000) or "AGENTS.md"
     target_path = (root / target_value).resolve()
     try:
         target_path.relative_to(root)
