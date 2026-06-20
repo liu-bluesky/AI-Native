@@ -23,14 +23,23 @@ router = APIRouter(
 )
 
 
+def _current_username(auth_payload: dict | None) -> str:
+    payload = auth_payload if isinstance(auth_payload, dict) else {}
+    return str(payload.get("sub") or payload.get("username") or "").strip()
+
+
 @router.get("")
 async def get_bot_connectors():
     return {"items": list_bot_connectors()}
 
 
 @router.put("")
-async def put_bot_connectors(req: BotConnectorCollectionReq, request: Request):
-    items = replace_bot_connectors(req.items)
+async def put_bot_connectors(
+    req: BotConnectorCollectionReq,
+    request: Request,
+    auth_payload: dict = Depends(require_auth),
+):
+    items = replace_bot_connectors(req.items, owner_username=_current_username(auth_payload))
     supervisor = getattr(request.app.state, "feishu_long_connection_supervisor", None)
     if (
         supervisor is not None

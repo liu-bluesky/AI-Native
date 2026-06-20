@@ -36,6 +36,9 @@ def resolve_orchestrator_runtime_settings(
         "max_tool_calls_per_round": _resolve_runtime_int(
             source, "max_tool_calls_per_round", 6
         ),
+        "max_tool_calls_total": _resolve_runtime_int(
+            source, "max_tool_calls_total", 0
+        ),
         "tool_timeout_sec": _resolve_runtime_int(source, "tool_timeout_sec", 0),
         "tool_retry_count": _resolve_runtime_int(source, "tool_retry_count", 0),
     }

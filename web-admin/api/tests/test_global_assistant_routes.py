@@ -1262,11 +1262,11 @@ def test_system_config_patch_accepts_bot_platform_connectors(tmp_path, monkeypat
     connectors = response.json()["config"]["bot_platform_connectors"]
     assert [item["platform"] for item in connectors] == ["wechat", "qq"]
     assert connectors[0]["enabled"] is False
-    assert connectors[0]["agent_name"] == "企微机器人"
+    assert connectors[0]["agent_name"] == ""
     assert connectors[1]["name"] == "QQ 主机器人"
     assert connectors[1]["app_id"] == "qq-app-id"
     assert connectors[1]["app_secret"] == "qq-app-secret"
-    assert connectors[1]["project_id"] == "proj-d16591a6"
+    assert connectors[1]["project_id"] == ""
     assert connectors[1]["guide_url"] == "https://example.com/qq"
     assert _store_factory.bot_connector_store.list_all() == connectors
 
@@ -1333,6 +1333,8 @@ def test_bot_connectors_route_persists_to_dedicated_store(tmp_path, monkeypatch)
                     "name": "飞书主机器人",
                     "agent_name": "内部协作机器人",
                     "system_prompt": "你是飞书主机器人，只处理项目协作问题。",
+                    "chat_mode": "external_agent",
+                    "external_agent_type": "claude_code",
                     "provider_id": "provider-bot",
                     "model_name": "bot-model",
                     "app_id": "feishu-app-id",
@@ -1366,13 +1368,23 @@ def test_bot_connectors_route_persists_to_dedicated_store(tmp_path, monkeypatch)
     assert [item["platform"] for item in items] == ["feishu", "feishu"]
     assert items[0]["name"] == "飞书主机器人"
     assert items[0]["system_prompt"] == "你是飞书主机器人，只处理项目协作问题。"
+    assert items[0]["chat_mode"] == "system"
+    assert items[0]["external_agent_type"] == "claude_code"
     assert items[0]["provider_id"] == "provider-bot"
     assert items[0]["model_name"] == "bot-model"
     assert items[0]["verification_token"] == "verify-token"
     assert items[0]["encrypt_key"] == "encrypt-key"
     assert items[0]["reply_identity"] == "user"
+    assert items[0]["agent_name"] == ""
+    assert items[0]["owner_username"] == "tester"
+    assert items[0]["project_id"] == ""
     assert items[1]["reply_identity"] == "bot"
     assert items[1]["name"] == "测试用例机器人"
+    assert items[1]["agent_name"] == ""
+    assert items[1]["chat_mode"] == "system"
+    assert items[1]["external_agent_type"] == "codex_cli"
+    assert items[1]["owner_username"] == "tester"
+    assert items[1]["project_id"] == ""
     assert store_factory.bot_connector_store.list_all() == items
 
     get_response = client.get("/api/system-config")

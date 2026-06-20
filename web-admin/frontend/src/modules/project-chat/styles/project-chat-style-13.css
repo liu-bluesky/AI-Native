@@ -310,44 +310,6 @@
   overflow-wrap: anywhere;
 }
 
-.runner-session-detail__stdin,
-.settings-runtime-status-card__stdin {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.runner-session-detail__interaction {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid rgba(37, 99, 235, 0.18);
-  border-radius: 12px;
-  background: rgba(239, 246, 255, 0.72);
-}
-
-.runner-session-detail__interaction .runner-session-detail__section-head {
-  flex-direction: column;
-  gap: 4px;
-}
-
-.runner-session-detail__interaction .runner-session-detail__section-head span {
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.runner-session-detail__easy-form :deep(.el-form-item) {
-  margin-bottom: 0;
-}
-
-.runner-session-detail__stdin .el-input,
-.settings-runtime-status-card__stdin .el-input {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
 .runner-session-detail__section {
   display: flex;
   flex-direction: column;
@@ -398,15 +360,6 @@
   border-radius: 14px;
   border: 1px solid rgba(15, 23, 42, 0.1);
   background: rgba(248, 250, 252, 0.78);
-}
-
-.runner-session-detail__terminal-actions {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: row;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
 }
 
 .runner-session-detail__terminal-output {
@@ -468,13 +421,6 @@
 .local-terminal-output {
   max-height: 180px;
   padding: 11px;
-}
-
-.local-approval-panel__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
 }
 
 .local-workspace-root {

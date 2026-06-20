@@ -16,6 +16,7 @@ def test_resolve_orchestrator_runtime_settings_uses_runtime_values():
             "tool_only_threshold": 5,
             "tool_budget_strategy": "stop",
             "max_tool_calls_per_round": 8,
+            "max_tool_calls_total": 13,
             "tool_timeout_sec": 90,
             "tool_retry_count": 2,
         }
@@ -28,6 +29,7 @@ def test_resolve_orchestrator_runtime_settings_uses_runtime_values():
         "tool_only_threshold": 5,
         "tool_budget_strategy": "stop",
         "max_tool_calls_per_round": 8,
+        "max_tool_calls_total": 13,
         "tool_timeout_sec": 90,
         "tool_retry_count": 2,
     }
@@ -44,6 +46,7 @@ def test_build_agent_orchestrator_applies_runtime_settings():
             "tool_only_threshold": 4,
             "tool_budget_strategy": "stop",
             "max_tool_calls_per_round": 5,
+            "max_tool_calls_total": 12,
             "tool_timeout_sec": 33,
             "tool_retry_count": 1,
             "agent_runtime_enabled": False,
@@ -56,6 +59,7 @@ def test_build_agent_orchestrator_applies_runtime_settings():
     assert orchestrator._runtime_options["tool_only_threshold"] == 4
     assert orchestrator._runtime_options["tool_budget_strategy"] == "stop"
     assert orchestrator._runtime_options["max_tool_calls_per_round"] == 5
+    assert orchestrator._runtime_options["max_tool_calls_total"] == 12
     assert orchestrator._runtime_options["tool_timeout_sec"] == 33
     assert orchestrator._runtime_options["tool_retry_count"] == 1
 

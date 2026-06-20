@@ -8,11 +8,11 @@
           <div class="page-header__stats">
             <span>{{ platformCount }} 个平台</span>
             <span>{{ configuredConnectorCount }} 个已配置</span>
-            <span>{{ linkedProjectCount }} 个已关联项目</span>
+            <span>按当前用户权限访问项目</span>
           </div>
         </div>
         <p class="page-header__desc">
-          这里只管理机器人凭证、项目关联、机器人提示词和配置说明。接入智能体字段现在只是备注，不填也能直接保存；当前也还不代表平台消息已经接通。
+          这里只管理机器人凭证、可用模型、机器人提示词和配置说明。机器人不绑定单个项目，消息处理时按当前登录用户权限访问可见项目。
         </p>
       </div>
       <div class="page-header__actions">
@@ -23,7 +23,6 @@
     <section class="page-panel">
       <BotPlatformConnectorModule
         v-model="connectors"
-        :project-options="projectOptions"
         :saving="saving"
         :persist-connectors="saveConnectors"
         compact
@@ -43,7 +42,6 @@ const SUPPORTED_PLATFORMS = ["qq", "feishu", "wechat"];
 const loading = ref(false);
 const saving = ref(false);
 const connectors = ref([]);
-const projectOptions = ref([]);
 
 const platformCount = SUPPORTED_PLATFORMS.length;
 const configuredConnectorCount = computed(() =>
@@ -57,14 +55,6 @@ const configuredConnectorCount = computed(() =>
     );
   }).length,
 );
-const linkedProjectCount = computed(
-  () =>
-    new Set(
-      connectors.value
-        .map((item) => String(item?.project_id || "").trim())
-        .filter(Boolean),
-    ).size,
-);
 
 async function fetchConfig() {
   const data = await api.get("/bot-connectors");
@@ -73,26 +63,10 @@ async function fetchConfig() {
     : [];
 }
 
-async function fetchProjectOptions() {
-  try {
-    const data = await api.get("/projects");
-    projectOptions.value = Array.isArray(data?.projects)
-      ? data.projects
-          .map((item) => ({
-            value: String(item?.id || "").trim(),
-            label: String(item?.name || item?.id || "").trim(),
-          }))
-          .filter((item) => item.value && item.label)
-      : [];
-  } catch {
-    projectOptions.value = [];
-  }
-}
-
 async function refreshPage() {
   loading.value = true;
   try {
-    await Promise.all([fetchConfig(), fetchProjectOptions()]);
+    await fetchConfig();
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "加载机器人接入配置失败");
   } finally {

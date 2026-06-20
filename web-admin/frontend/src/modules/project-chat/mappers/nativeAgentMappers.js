@@ -1,7 +1,7 @@
 import { formatRelativeDateTime } from "@/utils/date.js";
 
 export function nativeExecutorOptionLabel(baseLabel, status) {
-  const label = String(baseLabel || "外部 Agent").trim() || "外部 Agent";
+  const label = String(baseLabel || "Runner").trim() || "Runner";
   if (!status?.installed) return label;
   const version = String(status.version || "").trim();
   return version ? `${label} · ${version}` : `${label} · 已安装`;
@@ -40,7 +40,19 @@ export function normalizeNativeExternalAgentRuntimeSnapshot(value) {
 }
 
 export function isLiveNativeExternalAgentStatus(status) {
-  return ["running", "cancelling"].includes(String(status || "").trim());
+  return ["running", "cancelling", "waiting_permission"].includes(
+    String(status || "").trim(),
+  );
+}
+
+export function isNativeExternalAgentPermissionExpired(record) {
+  return Boolean(
+    record?.permissionExpired ||
+      record?.permission_expired ||
+      String(record?.blockedReason || record?.blocked_reason || "").includes(
+        "权限确认超时",
+      ),
+  );
 }
 
 export function formatDurationMs(value) {
@@ -137,9 +149,11 @@ export function runnerPermissionRecordTime(record) {
 }
 
 export function nativeExternalAgentRecordStatusLabel(record) {
+  if (isNativeExternalAgentPermissionExpired(record)) return "授权已超时";
   const status = String(record?.status || "").trim();
   if (status === "running") return "运行中";
   if (status === "cancelling") return "取消中";
+  if (status === "idle") return "可继续对话";
   if (status === "completed") return "已完成";
   if (status === "cancelled") return "已取消";
   if (status === "failed") return "失败";
@@ -148,16 +162,21 @@ export function nativeExternalAgentRecordStatusLabel(record) {
 }
 
 export function nativeExternalAgentRecordTagType(record) {
+  if (isNativeExternalAgentPermissionExpired(record)) return "warning";
   const status = String(record?.status || "").trim();
   if (status === "completed") return "success";
   if (status === "running") return "warning";
+  if (status === "idle") return "success";
   if (status === "failed" || status === "blocked") return "danger";
   return "info";
 }
 
 export function nativeExternalAgentRecordSummary(record) {
+  if (isNativeExternalAgentPermissionExpired(record)) {
+    return "权限确认超时，Runner 已取消等待，可重新发送消息";
+  }
   const label = String(
-    record?.label || record?.agentType || "外部 Agent",
+    record?.label || record?.agentType || "Runner",
   ).trim();
   const exitCode =
     record?.exitCode === null || record?.exitCode === undefined
@@ -246,7 +265,7 @@ export function buildNativeExternalAgentCommandPreview(snapshot) {
     const value = String(arg || "");
     if (
       value.includes("用户本次任务：") ||
-      value.includes("你正在 AI 员工工厂桌面端中作为外部 Agent Runner")
+      value.includes("你正在 AI 员工工厂桌面端中作为Runner")
     ) {
       return "<task-prompt>";
     }
@@ -274,7 +293,7 @@ export function buildExternalAgentWarmupKey({
   systemPrompt = "",
   employeeIds = [],
 } = {}) {
-  // warmup key 只描述会影响外部 Agent 会话复用的输入，保持序列化顺序稳定。
+  // warmup key 只描述会影响Runner 会话复用的输入，保持序列化顺序稳定。
   return JSON.stringify({
     projectId: String(projectId || "").trim(),
     agentType: String(agentType || "codex_cli").trim(),

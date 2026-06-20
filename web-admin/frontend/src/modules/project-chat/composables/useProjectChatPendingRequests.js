@@ -3,6 +3,58 @@ import { reactive, ref } from "vue";
 export function useProjectChatPendingRequests({ currentChatSessionId }) {
   const pendingRequests = reactive(new Map());
   const activeGenerationRequestId = ref("");
+  const DEFAULT_PENDING_TIMEOUT_MS = 120000;
+
+  function clearPendingTimer(pending) {
+    const timer = pending?.timeoutTimer ?? pending?.timeout_timer;
+    if (timer !== null && timer !== undefined) {
+      window.clearTimeout(timer);
+    }
+    if (pending && typeof pending === "object") {
+      pending.timeoutTimer = null;
+    }
+  }
+
+  function settlePending(pending, type, value) {
+    if (!pending || pending.settled) return false;
+    pending.settled = true;
+    clearPendingTimer(pending);
+    if (type === "resolve") {
+      pending.resolve(value);
+    } else {
+      pending.reject(
+        value instanceof Error ? value : new Error(String(value || "未知错误")),
+      );
+    }
+    return true;
+  }
+
+  function createPendingRequest(requestId, pending, options = {}) {
+    const normalizedRequestId = String(requestId || "").trim();
+    if (!normalizedRequestId || !pending || typeof pending !== "object") {
+      return null;
+    }
+    const timeoutMs = Math.max(
+      0,
+      Number(options.timeoutMs ?? pending.timeoutMs ?? DEFAULT_PENDING_TIMEOUT_MS),
+    );
+    pending.requestId = normalizedRequestId;
+    pending.settled = false;
+    if (timeoutMs > 0) {
+      pending.timeoutTimer = window.setTimeout(() => {
+        const current = pendingRequests.get(normalizedRequestId);
+        if (current !== pending || pending.settled) return;
+        rejectAndCleanupRequest(
+          normalizedRequestId,
+          pending,
+          `请求超时（${Math.round(timeoutMs / 1000)}s 未收到完成事件）`,
+        );
+      }, timeoutMs);
+    }
+    pendingRequests.set(normalizedRequestId, pending);
+    trackPendingRequest(normalizedRequestId);
+    return pending;
+  }
 
   function hasPendingRequestForChatSession(chatSessionId) {
     const normalizedSessionId = String(chatSessionId || "").trim();
@@ -72,6 +124,7 @@ export function useProjectChatPendingRequests({ currentChatSessionId }) {
    * @returns {{ chatSessionId: string }}
    */
   function cleanupRequest(requestId, pending) {
+    clearPendingTimer(pending);
     pendingRequests.delete(requestId);
     clearTrackedPendingRequest(requestId);
     return {
@@ -87,13 +140,16 @@ export function useProjectChatPendingRequests({ currentChatSessionId }) {
    * @returns {{ chatSessionId: string }}
    */
   function rejectAndCleanupRequest(requestId, pending, error) {
-    pendingRequests.delete(requestId);
-    clearTrackedPendingRequest(requestId);
-    pending.reject(
+    const settled = settlePending(
+      pending,
+      "reject",
       error instanceof Error ? error : new Error(String(error || "未知错误")),
     );
+    pendingRequests.delete(requestId);
+    clearTrackedPendingRequest(requestId);
     return {
       chatSessionId: String(pending?.chatSessionId || "").trim(),
+      settled,
     };
   }
 
@@ -108,7 +164,7 @@ export function useProjectChatPendingRequests({ currentChatSessionId }) {
       ([requestId, pending]) => ({ requestId, pending }),
     );
     for (const { requestId, pending } of items) {
-      pending.reject(new Error(message));
+      settlePending(pending, "reject", new Error(message));
       pendingRequests.delete(requestId);
       clearTrackedPendingRequest(requestId);
     }
@@ -118,6 +174,8 @@ export function useProjectChatPendingRequests({ currentChatSessionId }) {
   return {
     pendingRequests,
     activeGenerationRequestId,
+    createPendingRequest,
+    settlePending,
     hasPendingRequestForChatSession,
     getActiveRequestId,
     trackPendingRequest,

@@ -17,9 +17,6 @@ _PROJECT_ROOT_MARKERS = (
     "mcp-skills",
     "mcp-rules",
     "mcp-memory",
-    "mcp-persona",
-    "mcp-evolution",
-    "mcp-sync",
 )
 
 

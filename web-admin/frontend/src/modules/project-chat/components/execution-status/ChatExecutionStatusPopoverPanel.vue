@@ -28,13 +28,13 @@
         打开设置
       </el-button>
       <el-button
+        v-if="detailAvailable"
         class="execution-status-popover__secondary-action"
         size="small"
-        :disabled="!detailAvailable"
         @click="$emit('open-execution-detail')"
       >
         <el-icon><View /></el-icon>
-        查看详情
+        查看当前状态
       </el-button>
       <el-button
         class="execution-status-popover__primary-action"

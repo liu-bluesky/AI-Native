@@ -1156,6 +1156,94 @@ async def test_query_engine_creates_observation_and_continues_after_tool(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_query_engine_stops_before_total_tool_call_budget_is_exceeded(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            yield {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": f"call-{self.calls}",
+                        "function": {
+                            "name": "project_host_run_command",
+                            "arguments": "{\"command\": \"pytest\"}",
+                        },
+                    }
+                ]
+            }
+
+    class _FakeToolExecutor:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute_parallel(self, tool_calls, timeout=None):
+            self.calls += 1
+            return [{"exit_code": 0, "stdout": "1 passed"}]
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    executor = _FakeToolExecutor()
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="查询状态",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(_FakeLLM()),
+        tool_runner=ToolExecutionRunner(
+            executor,
+            event_log=event_log,
+        ),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=3,
+        max_tool_calls_per_round=1,
+        max_tool_calls_total=1,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "查询状态"}],
+        tools=[
+            {
+                "tool_name": "project_host_run_command",
+                "parameters_schema": {"type": "object", "properties": {}},
+            }
+        ],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+        task_tree_verified=True,
+        goal_covered=True,
+    )
+
+    events = [item.event_type for item in event_log.list_events(task_run.run_id)]
+    assert executor.calls == 1
+    assert result.task_run.status == "failed"
+    assert result.total_tool_calls == 1
+    assert result.completion_decision is not None
+    assert result.completion_decision.action == "fail"
+    assert "tool_call_budget_exceeded" in result.completion_decision.reasons
+    assert "tool_call_budget_exceeded" in events
+    assert "工具调用次数已达到上限" in result.final_content
+
+
+@pytest.mark.asyncio
 async def test_query_engine_fails_when_tool_succeeds_but_model_never_answers(tmp_path):
     from services.agent_runtime.core.event_log import RuntimeEventLog
     from services.agent_runtime.v2.llm_step import LLMStep

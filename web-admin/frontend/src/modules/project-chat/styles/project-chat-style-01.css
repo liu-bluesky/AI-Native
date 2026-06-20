@@ -59,14 +59,6 @@
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16) !important;
 }
 
-.chat-group-conversation-button {
-  justify-content: center;
-  height: 34px !important;
-  border-radius: 999px !important;
-  color: #2563eb !important;
-  font-weight: 600;
-}
-
 .chat-session-strip {
   min-height: 0;
   flex: 1;

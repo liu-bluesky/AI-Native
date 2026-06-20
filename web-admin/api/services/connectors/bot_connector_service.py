@@ -21,8 +21,18 @@ def list_bot_connectors() -> list[dict[str, object]]:
     return legacy_items
 
 
-def replace_bot_connectors(items: object) -> list[dict[str, object]]:
+def replace_bot_connectors(items: object, *, owner_username: str = "") -> list[dict[str, object]]:
     normalized = normalize_bot_platform_connectors(items)
+    normalized_owner = str(owner_username or "").strip()
+    if normalized_owner:
+        normalized = [
+            {
+                **dict(item),
+                "owner_username": str(item.get("owner_username") or normalized_owner).strip()[:120],
+                "project_id": "",
+            }
+            for item in normalized
+        ]
     bot_connector_store.replace_all(normalized)
     return normalized
 

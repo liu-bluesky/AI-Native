@@ -490,6 +490,7 @@ class AgentTaskRuntime:
                 "max_tool_calls_per_round",
                 6,
             ),
+            max_tool_calls_total=self._runtime_options.get("max_tool_calls_total"),
         )
         run_messages = list(messages or [])
         if not run_messages:

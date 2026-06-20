@@ -43,6 +43,7 @@ class QueryEngineResult:
     completion_decision: CompletionDecision | None = None
     observations: list[ToolObservation] = field(default_factory=list)
     model_steps: int = 0
+    total_tool_calls: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,6 +57,7 @@ class QueryEngineResult:
             ),
             "observations": [item.to_dict() for item in self.observations],
             "model_steps": self.model_steps,
+            "total_tool_calls": self.total_tool_calls,
         }
 
 
@@ -72,6 +74,7 @@ class QueryEngine:
         verification_policy: VerificationPolicy | None = None,
         max_model_steps: int = 3,
         max_tool_calls_per_round: int = 6,
+        max_tool_calls_total: int | None = None,
     ):
         self._llm_step = llm_step
         self._tool_runner = tool_runner
@@ -82,6 +85,11 @@ class QueryEngine:
         self._verification_policy = verification_policy or VerificationPolicy()
         self._max_model_steps = max(1, int(max_model_steps or 3))
         self._max_tool_calls_per_round = max(1, int(max_tool_calls_per_round or 6))
+        default_total = self._max_model_steps * self._max_tool_calls_per_round
+        self._max_tool_calls_total = max(
+            1,
+            int(max_tool_calls_total or default_total),
+        )
 
     async def run(
         self,
@@ -100,13 +108,21 @@ class QueryEngine:
         task_run = self._state_store.append_event(
             task_run,
             "query_engine_started",
-            {"max_model_steps": self._max_model_steps},
+            {
+                "max_model_steps": self._max_model_steps,
+                "max_tool_calls_per_round": self._max_tool_calls_per_round,
+                "max_tool_calls_total": self._max_tool_calls_total,
+            },
             status="running",
         )
         self._event_log.append(
             task_run.run_id,
             "query_engine_started",
-            {"max_model_steps": self._max_model_steps},
+            {
+                "max_model_steps": self._max_model_steps,
+                "max_tool_calls_per_round": self._max_tool_calls_per_round,
+                "max_tool_calls_total": self._max_tool_calls_total,
+            },
         )
         working_messages = list(messages or [])
         final_content = ""
@@ -116,6 +132,7 @@ class QueryEngine:
         tool_round_completed = False
         final_answer_retry_used = False
         step_index = 0
+        total_tool_calls = 0
         while step_index < self._max_model_steps:
             step_index += 1
             model_steps = step_index
@@ -177,8 +194,46 @@ class QueryEngine:
                     completion_decision=latest_decision,
                     observations=observations,
                     model_steps=step_index,
+                    total_tool_calls=total_tool_calls,
                 )
             if llm_result.tool_calls:
+                next_tool_call_count = len(llm_result.tool_calls)
+                if total_tool_calls + next_tool_call_count > self._max_tool_calls_total:
+                    latest_decision = CompletionDecision(
+                        "fail",
+                        ["tool_call_budget_exceeded"],
+                    )
+                    self._record_completion_decision(task_run.run_id, latest_decision)
+                    final_content = (
+                        "工具调用次数已达到上限，已停止继续执行。"
+                        "请缩小问题范围或调整运行时工具调用预算后重试。"
+                    )
+                    payload = {
+                        "decision": latest_decision.to_dict(),
+                        "step_index": step_index,
+                        "tool_call_count": next_tool_call_count,
+                        "total_tool_calls": total_tool_calls,
+                        "max_tool_calls_total": self._max_tool_calls_total,
+                    }
+                    self._event_log.append(
+                        task_run.run_id,
+                        "tool_call_budget_exceeded",
+                        payload,
+                    )
+                    task_run = self._state_store.append_event(
+                        task_run,
+                        "query_engine_failed",
+                        payload,
+                        status="failed",
+                    )
+                    return QueryEngineResult(
+                        task_run=task_run,
+                        final_content=final_content,
+                        completion_decision=latest_decision,
+                        observations=observations,
+                        model_steps=step_index,
+                        total_tool_calls=total_tool_calls,
+                    )
                 if self._tool_runner is None:
                     latest_decision = CompletionDecision("blocked", ["tool_runner_missing"])
                     self._record_completion_decision(task_run.run_id, latest_decision)
@@ -189,6 +244,7 @@ class QueryEngine:
                         status="blocked",
                     )
                     break
+                total_tool_calls += next_tool_call_count
                 working_messages.append(
                     {
                         "role": "assistant",
@@ -212,6 +268,8 @@ class QueryEngine:
                     {
                         "step_index": step_index,
                         "observation_count": len(records),
+                        "total_tool_calls": total_tool_calls,
+                        "max_tool_calls_total": self._max_tool_calls_total,
                     },
                 )
                 blocked_decision = self._blocked_tool_decision(records)
@@ -384,6 +442,7 @@ class QueryEngine:
                         completion_decision=latest_decision,
                         observations=observations,
                         model_steps=step_index,
+                        total_tool_calls=total_tool_calls,
                     )
                 if str(final_content or "").strip():
                     latest_decision = CompletionDecision("complete", ["final_answer_after_tool"])
@@ -400,6 +459,7 @@ class QueryEngine:
                         completion_decision=latest_decision,
                         observations=observations,
                         model_steps=step_index,
+                        total_tool_calls=total_tool_calls,
                     )
             reason = (
                 "missing_final_response_after_tool"
@@ -420,6 +480,7 @@ class QueryEngine:
             completion_decision=latest_decision,
             observations=observations,
             model_steps=model_steps,
+            total_tool_calls=total_tool_calls,
         )
 
     def _normalize_llm_result(

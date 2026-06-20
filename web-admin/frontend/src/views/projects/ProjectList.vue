@@ -244,7 +244,7 @@
             v-model="createForm.mcp_instruction"
             type="textarea"
             :rows="4"
-            placeholder="给外部模型看的接入说明，例如先读 usage guide，再看项目成员和工具"
+            placeholder="给 AI 客户端看的接入说明，例如先读 usage guide，再看项目成员和工具"
           />
         </el-form-item>
         <el-form-item v-if="showProjectLocationFields" label="工作区路径">
@@ -315,7 +315,7 @@
             v-model="editForm.mcp_instruction"
             type="textarea"
             :rows="4"
-            placeholder="给外部模型看的接入说明，例如先读 usage guide，再看项目成员和工具"
+            placeholder="给 AI 客户端看的接入说明，例如先读 usage guide，再看项目成员和工具"
           />
         </el-form-item>
         <el-form-item v-if="showProjectLocationFields" label="工作区路径">

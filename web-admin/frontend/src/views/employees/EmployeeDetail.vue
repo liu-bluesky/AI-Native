@@ -26,7 +26,6 @@
       </el-button>
       <el-tag v-else size="small" type="info">反馈模块未开启</el-tag>
       <el-button text @click="$router.push(`/memory/${route.params.id}`)">记忆</el-button>
-      <el-button text @click="$router.push(`/sync/${route.params.id}`)">同步</el-button>
     </div>
 
     <el-descriptions :column="2" border v-if="emp.id">

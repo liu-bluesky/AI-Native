@@ -23,9 +23,11 @@ import requests
 try:
     import lark_oapi as lark
     from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
+    from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
 except ModuleNotFoundError as exc:
     lark = None
     P2ImMessageReceiveV1 = Any
+    P2CardActionTriggerResponse = None
     ReplyMessageRequest = Any
     ReplyMessageRequestBody = Any
     _LARK_IMPORT_ERROR: ModuleNotFoundError | None = exc
@@ -733,6 +735,13 @@ def build_feishu_event_handler(
         task = loop.create_task(process_feishu_message_event(connector_id, data))
         task.add_done_callback(_log_background_task)
 
+    def _on_card_action(data: Any) -> Any:
+        task = loop.create_task(process_feishu_card_action_event(connector_id, data))
+        task.add_done_callback(_log_background_task)
+        if P2CardActionTriggerResponse is None:
+            return None
+        return P2CardActionTriggerResponse()
+
     def _on_ignored_event(data: Any) -> None:
         event_type = str(getattr(getattr(data, "header", None), "event_type", "") or "").strip()
         logger.debug(
@@ -743,6 +752,7 @@ def build_feishu_event_handler(
     return (
         lark.EventDispatcherHandler.builder(encrypt_key, verification_token)
         .register_p2_im_message_receive_v1(_on_message)
+        .register_p2_card_action_trigger(_on_card_action)
         .register_p2_customized_event("im.message.message_read_v1", _on_ignored_event)
         .build()
     )
@@ -758,6 +768,27 @@ def _log_background_task(task: asyncio.Task[Any]) -> None:
 def _project_chat_username(project: Any) -> str:
     created_by = str(getattr(project, "created_by", "") or "").strip()
     return created_by or "admin"
+
+
+async def process_feishu_card_action_event(connector_id: str, data: Any) -> None:
+    connector = get_feishu_connector(connector_id)
+    if connector is None or not bool(connector.get("enabled", True)):
+        return
+    event = getattr(data, "event", None)
+    action = getattr(event, "action", None)
+    action_value = getattr(action, "value", None) or {}
+    if not isinstance(action_value, dict):
+        return
+    if str(action_value.get("ai_employee_action") or "").strip() != "external_agent_permission":
+        return
+    logger.info(
+        "feishu external agent approval action ignored because external agent feature is removed",
+        extra={
+            "connector_id": connector_id,
+            "task_id": str(action_value.get("task_id") or "").strip(),
+            "approval_id": str(action_value.get("approval_id") or "").strip(),
+        },
+    )
 
 
 def _resolve_feishu_project_chat_session_id(
@@ -1024,30 +1055,47 @@ def _resolve_feishu_chat_name_by_id(connector: dict[str, Any], chat_id: str) -> 
     return str(data.get("name") or data.get("chat_name") or "").strip()
 
 
-def _resolve_feishu_fallback_project(connector: dict[str, Any], projects_router: Any) -> tuple[str, str] | None:
-    configured_project_id = str(connector.get("project_id") or "").strip()
-    if configured_project_id:
-        project = projects_router.project_store.get(configured_project_id)
-        if project is not None:
-            return configured_project_id, _project_chat_username(project)
-        logger.warning(
-            "feishu connector configured project was not found, falling back to any available runtime project",
-            extra={
-                "connector_id": str(connector.get("id") or "").strip(),
-                "project_id": configured_project_id,
-            },
-        )
+def _connector_owner_auth_payload(owner_username: str, projects_router: Any) -> dict[str, Any]:
+    username = str(owner_username or "").strip()
+    if not username:
+        return {"sub": "admin", "role": "admin", "roles": ["admin"]}
+    try:
+        user = projects_router.user_store.get(username)
+    except Exception:
+        user = None
+    role_ids = list(getattr(user, "role_ids", []) or []) if user is not None else []
+    role = str(getattr(user, "role", "") or "").strip() if user is not None else ""
+    if role and role not in role_ids:
+        role_ids.append(role)
+    if not role_ids:
+        role_ids = ["user"]
+    return {"sub": username, "role": role_ids[0], "roles": role_ids}
 
+
+def _resolve_feishu_fallback_project(connector: dict[str, Any], projects_router: Any) -> tuple[str, str] | None:
+    owner_username = str(connector.get("owner_username") or connector.get("created_by") or "").strip()
     projects = [
         project
         for project in projects_router.project_store.list_all()
         if str(getattr(project, "id", "") or "").strip()
     ]
+    if owner_username:
+        auth_payload = _connector_owner_auth_payload(owner_username, projects_router)
+        visible_projects = []
+        for project in projects:
+            project_id = str(getattr(project, "id", "") or "").strip()
+            try:
+                projects_router._ensure_project_access(project_id, auth_payload)
+            except Exception:
+                continue
+            visible_projects.append(project)
+        projects = visible_projects
     if not projects:
         logger.warning(
             "feishu message ignored because no runtime project is available",
             extra={
                 "connector_id": str(connector.get("id") or "").strip(),
+                "owner_username": owner_username,
             },
         )
         return None
@@ -1060,9 +1108,10 @@ def _resolve_feishu_fallback_project(connector: dict[str, Any], projects_router:
                 "connector_id": str(connector.get("id") or "").strip(),
                 "project_id": project_id,
                 "project_count": len(projects),
+                "owner_username": owner_username,
             },
         )
-    return project_id, _project_chat_username(project)
+    return project_id, owner_username or _project_chat_username(project)
 
 
 def _create_feishu_fallback_chat_session(
@@ -1168,7 +1217,7 @@ def _strip_leading_feishu_bot_mentions(text: str, connector: dict[str, Any]) -> 
     runtime_identity = _get_feishu_runtime_bot_identity(connector)
     bot_names = {
         _normalize_feishu_mention_label(connector.get(key))
-        for key in ("agent_name", "name", "bot_name")
+        for key in ("name", "bot_name")
         if _normalize_feishu_mention_label(connector.get(key))
     }
     runtime_bot_name = _normalize_feishu_mention_label(runtime_identity.get("bot_name"))
@@ -1321,7 +1370,7 @@ def _feishu_group_message_mentions_bot(message: Any, connector: dict[str, Any]) 
         bot_ids.add(runtime_bot_open_id)
     bot_names = {
         _normalize_feishu_mention_label(connector.get(key))
-        for key in ("agent_name", "name", "bot_name")
+        for key in ("name", "bot_name")
         if _normalize_feishu_mention_label(connector.get(key))
     }
     runtime_bot_name = _normalize_feishu_mention_label(runtime_identity.get("bot_name"))
@@ -1804,7 +1853,7 @@ def _build_feishu_meeting_reminder_reply(result: dict[str, Any] | None) -> str:
 
 
 def _build_feishu_archive_truth_prompt(connector: dict[str, Any], source_context: dict[str, Any]) -> str:
-    bot_name = str(connector.get("agent_name") or connector.get("name") or "当前机器人").strip() or "当前机器人"
+    bot_name = str(connector.get("name") or "当前机器人").strip() or "当前机器人"
     group_name = str(source_context.get("external_chat_name") or source_context.get("group_name") or "当前飞书群").strip() or "当前飞书群"
     return (
         "飞书归档真实性约束："
@@ -1881,6 +1930,8 @@ def _build_feishu_agent_workflow_prompt(
         "如果本地没有合适技能，再通过可用的项目工具或搜索/技能安装能力查找并安装合适技能，然后继续执行。"
         "执行时优先使用系统提供的工具能力；可用 `project_host_run_command` 时，通过它读取本地环境、列出技能、运行 lark-cli 或安装缺失技能，"
         "不要臆造 API 参数，也不要把口头教程当成已经执行。"
+        "当用户询问你是谁、是什么智能体或是否在线时，只按用户可见身份回答：你是当前飞书里的项目机器人/AI 助手；"
+        "不要暴露或强调 Hermes、Codex、Claude Code、桌面 Runner、API 服务、内部队列、桥接实现或运行环境名称。"
         "停止处理的条件只有两类：一是工具返回结果已经满足用户本次需求；二是确实缺少可继续执行的环境、权限、授权、必要输入、"
         "可访问附件/文件，或已触发工具预算/轮次保护。除此之外，只要下一步清晰且工具可用，就继续调用工具执行。"
         "不要把“下一步最小操作”“请稍后回复重新执行”“暂时未能完成写入”作为最终回复；这类内容只能作为内部状态，"
@@ -2775,24 +2826,6 @@ def _downgrade_unconfirmed_archive_reply(content: str, matched_tasks: list[dict[
     return f"{notice}\n\n{sanitized}" if sanitized else notice
 
 
-def _resolve_employee_id_from_connector(project_id: str, connector: dict[str, Any]) -> str:
-    from stores.factory import employee_store, project_store
-
-    target = str(connector.get("agent_name") or "").strip()
-    if not target:
-        return ""
-    normalized_target = target.lower()
-    for member in project_store.list_members(project_id):
-        employee_id = str(getattr(member, "employee_id", "") or "").strip()
-        if not employee_id:
-            continue
-        employee = employee_store.get(employee_id)
-        employee_name = str(getattr(employee, "name", "") or "").strip()
-        if normalized_target in {employee_id.lower(), employee_name.lower()}:
-            return employee_id
-    return ""
-
-
 def _build_feishu_reply_text(content: str) -> str:
     normalized = _sanitize_feishu_user_reply(content)
     if not normalized:
@@ -2808,6 +2841,7 @@ async def _reply_feishu_text(
     message_id: str,
     content: str,
     reply_in_thread: bool = False,
+    idempotency_suffix: str = "",
 ) -> None:
     if _normalize_feishu_reply_identity(connector) == "bot":
         await asyncio.to_thread(
@@ -2816,6 +2850,7 @@ async def _reply_feishu_text(
             message_id=message_id,
             content=content,
             reply_in_thread=reply_in_thread,
+            idempotency_suffix=idempotency_suffix,
         )
         return
     await asyncio.to_thread(
@@ -2824,6 +2859,7 @@ async def _reply_feishu_text(
         message_id=message_id,
         content=content,
         reply_in_thread=reply_in_thread,
+        idempotency_suffix=idempotency_suffix,
     )
 
 
@@ -2833,10 +2869,15 @@ def _reply_feishu_text_with_lark_cli(
     message_id: str,
     content: str,
     reply_in_thread: bool = False,
+    idempotency_suffix: str = "",
 ) -> None:
     normalized_message_id = str(message_id or "").strip()
     if not normalized_message_id:
         raise RuntimeError("缺少飞书 message_id，无法回复")
+    suffix = str(idempotency_suffix or "").strip()
+    idempotency_key = f"feishu-reply-{normalized_message_id}"
+    if suffix:
+        idempotency_key = f"{idempotency_key}-{suffix}"
     command = [
         "lark-cli",
         "im",
@@ -2848,7 +2889,7 @@ def _reply_feishu_text_with_lark_cli(
         "--as",
         _normalize_feishu_reply_identity(connector),
         "--idempotency-key",
-        f"feishu-reply-{normalized_message_id}",
+        idempotency_key,
     ]
     if reply_in_thread:
         command.append("--reply-in-thread")
@@ -2926,10 +2967,15 @@ def _reply_feishu_text_with_open_api(
     message_id: str,
     content: str,
     reply_in_thread: bool = False,
+    idempotency_suffix: str = "",
 ) -> None:
     normalized_message_id = str(message_id or "").strip()
     if not normalized_message_id:
         raise RuntimeError("缺少飞书 message_id，无法回复")
+    suffix = str(idempotency_suffix or "").strip()
+    idempotency_key = f"feishu-reply-{normalized_message_id}"
+    if suffix:
+        idempotency_key = f"{idempotency_key}-{suffix}"
     token = _get_feishu_tenant_access_token(connector)
     response = requests.post(
         _feishu_open_api_url(f"/open-apis/im/v1/messages/{quote(normalized_message_id)}/reply"),
@@ -2937,7 +2983,7 @@ def _reply_feishu_text_with_open_api(
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8",
         },
-        params={"uuid": _normalize_feishu_uuid(f"feishu-reply-{normalized_message_id}", fallback_prefix="feishu-reply")},
+        params={"uuid": _normalize_feishu_uuid(idempotency_key, fallback_prefix="feishu-reply")},
         json={
             "msg_type": "text",
             "content": json.dumps({"text": _build_feishu_reply_text(content)}, ensure_ascii=False),
@@ -2981,6 +3027,161 @@ def send_feishu_text_message_with_open_api(
         "message_id": str(data.get("message_id") or "").strip(),
         "chat_id": normalized_chat_id,
     }
+
+
+def _feishu_external_agent_approval_card(
+    *,
+    task_id: str,
+    approval: dict[str, Any],
+    resolved_label: str = "",
+) -> dict[str, Any]:
+    title = str(approval.get("title") or "Hermes 权限确认").strip()
+    description = str(approval.get("description") or "Hermes 请求执行需要确认的操作，请选择允许范围或拒绝。").strip()
+    approval_id = str(approval.get("id") or "").strip()
+    options = approval.get("options") if isinstance(approval.get("options"), list) else []
+    if resolved_label:
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": resolved_label, "tag": "plain_text"},
+                "template": "green" if "拒绝" not in resolved_label else "red",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**{title}**\n\n{description}\n\n{resolved_label}",
+                }
+            ],
+        }
+
+    def _button(option: dict[str, Any], index: int) -> dict[str, Any]:
+        decision = str(option.get("decision") or "").strip()
+        label = str(option.get("label") or option.get("value") or "").strip()
+        button_type = "default"
+        if decision == "approve_once" and index == 0:
+            button_type = "primary"
+        elif decision == "reject":
+            button_type = "danger"
+        return {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": label or "选择"},
+            "type": button_type,
+            "value": {
+                "ai_employee_action": "external_agent_permission",
+                "task_id": str(task_id or "").strip(),
+                "approval_id": approval_id,
+                "option_id": str(option.get("value") or "").strip(),
+            },
+        }
+
+    actions = [
+        _button(option, index)
+        for index, option in enumerate(options)
+        if isinstance(option, dict) and str(option.get("value") or "").strip()
+    ]
+    if not actions:
+        actions = [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "拒绝"},
+                "type": "danger",
+                "value": {
+                    "ai_employee_action": "external_agent_permission",
+                    "task_id": str(task_id or "").strip(),
+                    "approval_id": approval_id,
+                    "option_id": "denied",
+                },
+            }
+        ]
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"content": title, "tag": "plain_text"},
+            "template": "orange",
+        },
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": f"**需要授权后继续执行**\n\n{description}",
+            },
+            {"tag": "action", "actions": actions[:4]},
+        ],
+    }
+
+
+def send_feishu_external_agent_approval_card(
+    connector: dict[str, Any],
+    *,
+    chat_id: str,
+    task_id: str,
+    approval: dict[str, Any],
+) -> dict[str, str]:
+    normalized_chat_id = str(chat_id or "").strip()
+    if not normalized_chat_id:
+        raise RuntimeError("缺少飞书 chat_id，无法发送授权卡片")
+    token = _get_feishu_tenant_access_token(connector)
+    approval_id = str(approval.get("id") or "").strip()
+    response = requests.post(
+        _feishu_open_api_url("/open-apis/im/v1/messages"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        params={"receive_id_type": "chat_id"},
+        json={
+            "receive_id": normalized_chat_id,
+            "msg_type": "interactive",
+            "content": json.dumps(
+                _feishu_external_agent_approval_card(task_id=task_id, approval=approval),
+                ensure_ascii=False,
+            ),
+            "uuid": _normalize_feishu_uuid(
+                f"feishu-external-agent-approval-{task_id}-{approval_id}",
+                fallback_prefix="feishu-approval",
+            ),
+        },
+        timeout=30,
+    )
+    payload = _parse_feishu_open_api_response(response, action="飞书发送授权卡片")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    return {
+        "message_id": str(data.get("message_id") or "").strip(),
+        "chat_id": normalized_chat_id,
+    }
+
+
+def _update_feishu_external_agent_approval_card(
+    connector: dict[str, Any],
+    *,
+    message_id: str,
+    task_id: str,
+    approval: dict[str, Any],
+    resolved_label: str,
+) -> None:
+    normalized_message_id = str(message_id or "").strip()
+    if not normalized_message_id:
+        return
+    token = _get_feishu_tenant_access_token(connector)
+    response = requests.patch(
+        _feishu_open_api_url(f"/open-apis/im/v1/messages/{quote(normalized_message_id)}"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        json={
+            "msg_type": "interactive",
+            "content": json.dumps(
+                _feishu_external_agent_approval_card(
+                    task_id=task_id,
+                    approval=approval,
+                    resolved_label=resolved_label,
+                ),
+                ensure_ascii=False,
+            ),
+        },
+        timeout=30,
+    )
+    _parse_feishu_open_api_response(response, action="飞书更新授权卡片")
 
 
 async def process_feishu_message_event(connector_id: str, event: P2ImMessageReceiveV1) -> None:
@@ -3211,6 +3412,7 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
             if attachment_files:
                 _merge_source_attachment_files(source_context, attachment_files)
 
+    should_reply_in_thread = bool(thread_id)
     pending_archive_message = _latest_pending_archive_message(previous_messages, source_context)
     recent_pending_archive_reply = _archive_message_reply_content(pending_archive_message) if pending_archive_message is not None else ""
     if recent_pending_archive_reply and _looks_like_feishu_archive_confirmation(text_message):
@@ -3313,17 +3515,22 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
 
     auth_payload = {"sub": username, "role": "admin", "roles": ["admin"]}
     skill_resource_directory = _resolve_feishu_skill_resource_directory(project_id, projects_router)
+    chat_mode = "system"
+    external_agent_type = str(connector.get("external_agent_type") or "").strip().lower()
+    if external_agent_type not in {"codex_cli", "hermes", "claude_code"}:
+        external_agent_type = "codex_cli"
     req = ProjectChatReq(
         message=text_message,
         message_id=message_id,
         assistant_message_id=f"bot-reply-{uuid.uuid4().hex[:12]}",
         chat_session_id=chat_session_id,
-        chat_mode="system",
+        chat_mode=chat_mode,
         chat_surface="main-chat",
+        external_agent_type=external_agent_type,
         provider_id=str(connector.get("provider_id") or "").strip(),
         model_name=str(connector.get("model_name") or "").strip(),
         history=history,
-        employee_id=_resolve_employee_id_from_connector(project_id, connector),
+        employee_id="",
         system_prompt="\n\n".join(
             item
             for item in (
@@ -3342,6 +3549,24 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         skill_resource_directory=skill_resource_directory,
     )
     try:
+        try:
+            await _reply_feishu_text(
+                connector,
+                message_id=message_id,
+                content="收到，正在处理。",
+                reply_in_thread=should_reply_in_thread,
+                idempotency_suffix="processing",
+            )
+        except Exception:
+            logger.warning(
+                "failed to send feishu processing acknowledgement",
+                exc_info=True,
+                extra={
+                    "connector_id": connector_id,
+                    "message_id": message_id,
+                    "chat_id": chat_id,
+                },
+            )
         result = await run_project_chat_once(
             project_id=project_id,
             username=username,
@@ -3350,6 +3575,23 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
             save_memory_snapshot=False,
             publish_realtime=True,
         )
+        if bool(getattr(result, "is_error", False)):
+            await projects_router.publish_project_chat_group_status_realtime(
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                status="error",
+                message=result.content,
+                source_context=source_context,
+            )
+            await _reply_feishu_text(
+                connector,
+                message_id=message_id,
+                content=result.content,
+                reply_in_thread=should_reply_in_thread,
+            )
+            _cleanup_downloaded_feishu_resources(downloaded_resources)
+            return
         await projects_router.publish_project_chat_group_status_realtime(
             project_id=project_id,
             username=username,
@@ -3478,7 +3720,7 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
             connector,
             message_id=message_id,
             content=reply_content,
-            reply_in_thread=bool(thread_id),
+            reply_in_thread=should_reply_in_thread,
         )
     finally:
         _cleanup_downloaded_feishu_resources(downloaded_resources)

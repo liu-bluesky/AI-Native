@@ -2947,9 +2947,9 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`，并通过 MCP（start_project_workflow / start_work_session / save_work_facts / append_session_event / 任务树工具）把同一条需求回写到服务端，本地与服务端追溯到同一条需求。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 部署约束: 用户提“部署 / 发布到服务器 / 上线”需求时，先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 是否带 deploy_command 判断方式；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。",
-            "- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。",
+            "- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须在桌面端 Runner 中运行；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。",
             "- 部署约束: 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。",
-            "- 部署约束: 未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact。",
+            "- 部署约束: 未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact。",
             "- 部署约束: 部署到生产档位或触发远端 deploy_command 等不可逆操作前，必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才执行。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall。",
             f"- 交互约束: {clarity_threshold_line}",
@@ -2987,12 +2987,12 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；缺失时从系统技能库同步或创建到本地，已存在则直接复用，并优先读取本地副本。",
             "- 接入约束: 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。",
             "- 部署约束: 用户提“部署 / 发布到服务器 / 上线”需求时，先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 是否带 deploy_command 判断方式；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。",
-            "- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。",
+            "- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须在桌面端 Runner 中运行；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。",
             "- 部署约束: 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权；部署到生产档位或触发远端 deploy_command 等不可逆操作前必须单独说明影响范围和可恢复性并取得用户确认。",
-            "- 部署约束: 未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact。",
+            "- 部署约束: 未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact。",
             "- 部署约束: 如果 URL 默认上下文、MCP 绑定上下文、渲染出的 CLI 提示词或本地 canonical 状态已提供 `project_id`，部署、上传或推送部署产物时直接使用它；不要在用户已确认部署后再因为“缺少 project_id”暂停。",
             "- 部署约束: 渲染出的 CLI 提示词已提供 `project_id` 时，直接把它视为明确项目 ID，不要重复追问。",
-            "- 部署约束: 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时直接报告 `blocked` / `missing`。",
+            "- 部署约束: 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给模型或本地命令；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时直接报告 `blocked` / `missing`。",
             "- 接入约束: 每个 Codex CLI 会话都应先持久化自己生成的 `chat_session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Codex 自己的本地存储。同一进程整轮任务固定复用，只有新开的并行任务或全新需求才重新生成。",
             "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
             "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`。",
@@ -3054,7 +3054,7 @@ def build_query_client_profile_text(client_name: str) -> str:
     else:
         title = "Generic CLI"
         focus = [
-            "- 定位: 适合通用 MCP 宿主、非 Codex/Claude 的 CLI 客户端，或尚未针对当前系统定制的外部智能体。",
+            "- 定位: 适合通用 MCP 宿主、非 Codex/Claude 的 CLI 客户端，或尚未针对当前系统定制的外部 CLI 客户端。",
             "- 目标: 让通用 AI 明确会用 MCP，而不是只读自然语言说明；所有项目、任务树、工作事实和部署产物操作都优先通过 MCP 工具完成。",
             "- 推荐链路: query://usage-guide -> query://client-profile/generic-cli -> start_project_workflow；若宿主不适合固定入口，再走 search_ids/get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan。",
             "- 资源约束: `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/generic-cli`。",
@@ -3127,10 +3127,10 @@ def build_query_usage_guide_text() -> str:
         "1.2 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；若不存在，再从系统技能库同步或创建到本地；已存在则直接复用，禁止重复创建。\n"
         "1.3 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。\n"
         "1.4 用户提“部署 / 发布到服务器 / 上线”需求时，先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 是否带 deploy_command 判断方式；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。\n"
-        "1.4.1 打包命令只能通过项目聊天命令执行能力处理，并且必须已选择外部智能体且当前运行在桌面端 Runner；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。\n"
+        "1.4.1 打包命令只能通过项目聊天命令执行能力处理，并且必须在桌面端 Runner 中运行；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。\n"
         "1.4.2 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权；部署到生产档位或触发远端 deploy_command 等不可逆操作前必须单独说明影响范围和可恢复性并取得用户确认。\n"
-        "1.4.3 未选择外部智能体、未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`。\n"
-        "1.4.4 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；凭据只通过项目部署配置由服务端使用，AI 侧只读到脱敏摘要；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 blocked / missing。\n"
+        "1.4.3 未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`。\n"
+        "1.4.4 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给模型或本地命令；凭据只通过项目部署配置由服务端使用，AI 侧只读到脱敏摘要；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 blocked / missing。\n"
         "1.4.5 只有用户明确给出 artifact_id 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；用户说本地 zip、新代码、重新打包、上传部署或推送部署产物时，必须先调用 `push_project_deploy_artifact` 上传本轮文件内容生成新 artifact；用户说“推送到服务端部署”时 `auto_deploy=true`，只有明确“只上传”才设为 false。\n"
         "2. MCP 配置里的 description、项目说明、\"当前项目\" 这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文、MCP 会话绑定、渲染出的 CLI 提示词和本地 canonical 状态。\n"
         "3. 先从 URL 默认上下文、MCP 绑定上下文、渲染出的 CLI 提示词和本地 canonical 状态恢复 `project_id`；只有这些位置都缺失时，才调用 bind_project_context(project_id, chat_session_id?, root_goal?) 或要求用户提供项目 ID。\n"

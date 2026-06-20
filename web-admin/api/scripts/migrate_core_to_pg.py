@@ -5,9 +5,6 @@
     - skills / skill_bindings
     - rules
     - memories
-    - personas / persona_snapshots
-    - evolution_candidates / evolution_events / evolution_usage_logs
-    - sync_events
 
 用法示例：
     python scripts/migrate_core_to_pg.py \\
@@ -50,7 +47,7 @@ def _iter_json_files(directory: Path) -> list[Path]:
 def main() -> None:
     default_project_root = Path(__file__).resolve()
     for candidate in default_project_root.parents:
-        if all((candidate / name).exists() for name in ("mcp-skills", "mcp-rules", "mcp-memory", "mcp-persona", "mcp-evolution", "mcp-sync")):
+        if all((candidate / name).exists() for name in ("mcp-skills", "mcp-rules", "mcp-memory")):
             default_project_root = candidate
             break
     parser = argparse.ArgumentParser(description="迁移 core 数据到 PostgreSQL")
@@ -86,15 +83,9 @@ def main() -> None:
     from stores.postgres.employee_store import EmployeeStorePostgres
     from stores.postgres.mcp_bridge import (
         PgBindingStore,
-        PgCandidateStore,
-        PgEventStore,
         PgMemoryStore,
-        PgPersonaStore,
         PgRuleStore,
         PgSkillStore,
-        PgSnapshotStore,
-        PgSyncEventStore,
-        PgUsageLogStore,
     )
     from stores.json.user_store import UserStore
     from stores.postgres.user_store import UserStorePostgres
@@ -102,16 +93,10 @@ def main() -> None:
     skills_mod = _load_store_module(project_root, "skills")
     rules_mod = _load_store_module(project_root, "rules")
     memory_mod = _load_store_module(project_root, "memory")
-    persona_mod = _load_store_module(project_root, "persona")
-    evolution_mod = _load_store_module(project_root, "evolution")
-    sync_mod = _load_store_module(project_root, "sync")
 
     skills_dir = project_root / "mcp-skills" / "knowledge"
     rules_dir = project_root / "mcp-rules" / "knowledge"
     memory_db = project_root / "mcp-memory" / "knowledge" / "memories.db"
-    persona_dir = project_root / "mcp-persona" / "knowledge"
-    evolution_dir = project_root / "mcp-evolution" / "knowledge"
-    sync_dir = project_root / "mcp-sync" / "knowledge"
 
     user_source = UserStore(data_dir)
     employee_source = EmployeeStore(data_dir)
@@ -119,9 +104,6 @@ def main() -> None:
     binding_source = skills_mod.BindingStore(skills_dir)
     rule_source = rules_mod.RuleStore(rules_dir)
     memory_source = memory_mod.MemoryStore(memory_db)
-    persona_source = persona_mod.PersonaStore(persona_dir)
-    snapshot_source = persona_mod.SnapshotStore(persona_dir)
-    candidate_source = evolution_mod.CandidateStore(evolution_dir)
 
     user_target = UserStorePostgres(args.database_url)
     employee_target = EmployeeStorePostgres(args.database_url)
@@ -141,20 +123,6 @@ def main() -> None:
         memory_mod.Classification,
         memory_mod.serialize_memory,
     )
-    persona_target = PgPersonaStore(
-        args.database_url,
-        persona_mod._serialize_persona,
-        persona_mod._deserialize_persona,
-    )
-    snapshot_target = PgSnapshotStore(args.database_url, persona_mod.PersonaSnapshot)
-    candidate_target = PgCandidateStore(
-        args.database_url,
-        evolution_mod.serialize_candidate,
-        evolution_mod._deserialize_candidate,
-    )
-    event_target = PgEventStore(args.database_url, evolution_mod.EvolutionEvent)
-    usage_log_target = PgUsageLogStore(args.database_url, evolution_mod.UsageLog)
-    sync_target = PgSyncEventStore(args.database_url, sync_mod.SyncEvent, sync_mod.serialize_event)
 
     migrated: dict[str, int] = {
         "users": 0,
@@ -163,12 +131,6 @@ def main() -> None:
         "skill_bindings": 0,
         "rules": 0,
         "memories": 0,
-        "personas": 0,
-        "persona_snapshots": 0,
-        "evolution_candidates": 0,
-        "evolution_events": 0,
-        "evolution_usage_logs": 0,
-        "sync_events": 0,
     }
 
     for p in _iter_json_files(data_dir / "users"):
@@ -203,39 +165,6 @@ def main() -> None:
         for memory in memory_source.list_by_employee(employee_id):
             memory_target.save(memory)
             migrated["memories"] += 1
-
-    for persona in persona_source.list_all():
-        persona_target.save(persona)
-        migrated["personas"] += 1
-
-    for p in _iter_json_files(persona_dir / "snapshots"):
-        snapshot = snapshot_source.get(p.stem)
-        if snapshot is None:
-            continue
-        snapshot_target.save(snapshot)
-        migrated["persona_snapshots"] += 1
-
-    for p in _iter_json_files(evolution_dir / "candidates"):
-        candidate = candidate_source.get(p.stem)
-        if candidate is None:
-            continue
-        candidate_target.save(candidate)
-        migrated["evolution_candidates"] += 1
-
-    for p in _iter_json_files(evolution_dir / "events"):
-        data = json.loads(p.read_text())
-        event_target.save(evolution_mod.EvolutionEvent(**data))
-        migrated["evolution_events"] += 1
-
-    for p in _iter_json_files(evolution_dir / "usage_logs"):
-        data = json.loads(p.read_text())
-        usage_log_target.save(evolution_mod.UsageLog(**data))
-        migrated["evolution_usage_logs"] += 1
-
-    for p in _iter_json_files(sync_dir / "sync_events"):
-        data = json.loads(p.read_text())
-        sync_target.save(sync_mod._deserialize_event(data))
-        migrated["sync_events"] += 1
 
     print("Core migration completed.")
     print(f"- api_data_dir: {data_dir}")

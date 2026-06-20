@@ -25,14 +25,6 @@
                 {{ session.title }}
               </span>
               <el-button
-                v-if="isBotConversationSession(session)"
-                text
-                size="small"
-                class="chat-session-chip__edit"
-                :icon="EditPen"
-                @click.stop="$emit('edit', session)"
-              />
-              <el-button
                 text
                 size="small"
                 class="chat-session-chip__delete"
@@ -61,11 +53,10 @@
 </template>
 
 <script setup>
-import { Delete, EditPen } from "@element-plus/icons-vue";
+import { Delete } from "@element-plus/icons-vue";
 import { formatRelativeDateTime } from "@/utils/date.js";
 import {
   formatChatSessionSourceLabel,
-  isBotConversationSession,
 } from "@/modules/project-chat/mappers/messageMappers.js";
 
 defineProps({
@@ -87,7 +78,7 @@ defineProps({
   },
 });
 
-defineEmits(["select", "edit", "delete"]);
+defineEmits(["select", "delete"]);
 
 function formatChatSessionMeta(session) {
   const count = Number(session?.message_count || 0);
@@ -196,8 +187,7 @@ function formatChatSessionMeta(session) {
   white-space: nowrap;
 }
 
-.chat-session-chip__delete,
-.chat-session-chip__edit {
+.chat-session-chip__delete {
   opacity: 0;
 }
 
@@ -205,19 +195,9 @@ function formatChatSessionMeta(session) {
   color: #98a2b3;
 }
 
-.chat-session-chip__edit {
-  color: #64748b;
-}
-
 .chat-session-chip:hover .chat-session-chip__delete,
-.chat-session-chip.is-active .chat-session-chip__delete,
-.chat-session-chip:hover .chat-session-chip__edit,
-.chat-session-chip.is-active .chat-session-chip__edit {
+.chat-session-chip.is-active .chat-session-chip__delete {
   opacity: 1;
-}
-
-.chat-session-chip__edit:hover {
-  color: #2563eb;
 }
 
 .chat-session-chip__delete:hover {

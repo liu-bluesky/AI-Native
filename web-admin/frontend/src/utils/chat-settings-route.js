@@ -16,7 +16,7 @@ const SETTINGS_PANEL_TARGETS = [
   { panel: "providers", prefixes: ["/llm/providers"] },
   { panel: "projects", prefixes: ["/projects"] },
   { panel: "agent-templates", prefixes: ["/agent-templates"] },
-  { panel: "employees", prefixes: ["/employees", "/feedback", "/memory", "/sync"] },
+  { panel: "employees", prefixes: ["/employees", "/feedback", "/memory"] },
   { panel: "skills", prefixes: ["/skills", "/skill-resources"] },
   { panel: "rules", prefixes: ["/rules"] },
   { panel: "users", prefixes: ["/users"] },

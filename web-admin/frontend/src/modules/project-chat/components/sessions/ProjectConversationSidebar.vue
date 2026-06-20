@@ -60,14 +60,6 @@
       </el-button>
       <el-button
         text
-        class="chat-group-conversation-button"
-        :disabled="chatLoading || creatingSession || !hasSelectedProject"
-        @click="emit('open-group-chat')"
-      >
-        机器人对话
-      </el-button>
-      <el-button
-        text
         class="chat-clear-current-button"
         :disabled="chatLoading || !currentSessionId"
         @click="emit('clear-current')"
@@ -87,7 +79,6 @@
         :current-session-id="currentSessionId"
         :deleting-session-id="deletingSessionId"
         @select="emit('select-session', $event)"
-        @edit="emit('edit-session', $event)"
         @delete="emit('delete-session', $event)"
       />
     </div>
@@ -136,10 +127,8 @@ const emit = defineEmits([
   "open-settings",
   "project-change",
   "create-conversation",
-  "open-group-chat",
   "clear-current",
   "select-session",
-  "edit-session",
   "delete-session",
   "logout",
 ]);
@@ -350,14 +339,6 @@ defineExpose({
   color: #f8fafc !important;
   font-weight: 600;
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16) !important;
-}
-
-.chat-group-conversation-button {
-  justify-content: center;
-  min-height: 34px !important;
-  border-radius: 999px !important;
-  color: #2563eb !important;
-  font-weight: 600;
 }
 
 .chat-clear-current-button {

@@ -92,12 +92,8 @@
 
         <div class="bot-card__meta">
           <div class="bot-card__meta-item">
-            <span>接入智能体</span>
-            <strong>{{ connector.agent_name || '未设置' }}</strong>
-          </div>
-          <div class="bot-card__meta-item">
-            <span>关联项目</span>
-            <strong>{{ connector.project_label || '未关联' }}</strong>
+            <span>回复方式</span>
+            <strong>{{ connector.chat_mode_label }}</strong>
           </div>
           <div class="bot-card__meta-item">
             <span>对话模型</span>
@@ -254,78 +250,42 @@
                 <el-switch v-model="draft.auto_start_worker" />
               </div>
             </el-form-item>
-            <el-form-item label="接入智能体">
-              <el-select
-                v-model="draft.agent_name"
-                filterable
-                allow-create
-                default-first-option
-                :reserve-keyword="false"
-                placeholder="选填，用于备注当前机器人对应的智能体"
-              />
+            <el-form-item label="回复方式">
+              <el-radio-group v-model="draft.chat_mode" class="connector-dialog__radio-group">
+                <el-radio-button label="system">系统对话</el-radio-button>
+              </el-radio-group>
               <div class="connector-dialog__hint">
-                当前系统里这个字段只做标注用途，不填也可以保存。
-              </div>
-            </el-form-item>
-            <el-form-item label="关联项目">
-              <el-select
-                v-model="draft.project_id"
-                filterable
-                clearable
-                placeholder="选择机器人接入的项目"
-              >
-                <el-option
-                  v-for="item in normalizedProjectOptions"
-                  :key="item.value"
-                  :label="item.label"
-                  :value="item.value"
-                />
-              </el-select>
-              <div class="connector-dialog__hint">
-                {{
-                  draft.project_id
-                    ? `当前关联项目：${findProjectLabel(draft.project_id)}`
-                    : '未关联时只保留系统级接入配置。'
-                }}
-              </div>
-            </el-form-item>
-            <el-form-item label="机器人对话供应商">
-              <el-select
-                v-model="draft.provider_id"
-                filterable
-                clearable
-                :loading="loadingBotChatModelOptions"
-                placeholder="跟随项目/系统默认"
-                @change="handleBotChatProviderChange"
-              >
-                <el-option
-                  v-for="item in botChatProviderOptions"
-                  :key="item.id"
-                  :label="item.name"
-                  :value="item.id"
-                />
-              </el-select>
-              <div class="connector-dialog__hint">
-                留空时不覆盖当前项目或系统默认模型。
+                系统对话使用服务端大模型回复。
               </div>
             </el-form-item>
             <el-form-item label="机器人对话模型">
               <el-select
-                v-model="draft.model_name"
+                v-model="selectedBotModelOptionValue"
                 filterable
                 clearable
-                :disabled="!draft.provider_id || !selectedBotChatProviderModels.length"
-                placeholder="使用供应商默认模型"
+                :loading="loadingBotChatModelOptions"
+                placeholder="请选择回复使用的模型"
               >
-                <el-option
-                  v-for="item in selectedBotChatProviderModels"
-                  :key="`${draft.provider_id}-${item.name}`"
-                  :label="item.name"
-                  :value="item.name"
-                />
+                <el-option-group
+                  v-for="group in botProviderModelGroups"
+                  :key="group.providerId"
+                  :label="group.label"
+                >
+                  <el-option
+                    v-for="item in group.options"
+                    :key="item.value"
+                    :label="item.label"
+                    :value="item.value"
+                  >
+                    <span>{{ item.modelName }}</span>
+                    <span class="connector-dialog__model-provider">
+                      {{ item.providerLabel }}
+                    </span>
+                  </el-option>
+                </el-option-group>
               </el-select>
               <div class="connector-dialog__hint">
-                只影响当前机器人收到平台消息后的回复；不修改全局 AI 对话框配置。
+                留空时使用当前账号默认模型；没有账号默认时从当前可见的可用模型中选择，仍无可用模型则返回配置错误。
               </div>
             </el-form-item>
             <el-form-item v-if="showVerificationTokenField" label="Verification Token">
@@ -527,13 +487,13 @@ import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
 import { buildServerUrl } from "@/utils/server-profile.js";
+import {
+  FALLBACK_MODEL_TYPE_OPTIONS,
+  normalizeProviderModelConfigs as normalizeLlmProviderModelConfigs,
+} from "@/utils/llm-models.js";
 
 const props = defineProps({
   modelValue: {
-    type: Array,
-    default: () => [],
-  },
-  projectOptions: {
     type: Array,
     default: () => [],
   },
@@ -608,7 +568,6 @@ const RECEIVE_MODE_HINTS = {
   polling: "由后端定时拉取平台消息，适合少量不支持事件推送的平台。",
   manual: "先保存凭证和说明，事件适配后续再接入。",
 };
-
 function findPreset(platform) {
   const normalizedPlatform = String(platform || "").trim().toLowerCase();
   return PLATFORM_PRESETS.find((item) => item.platform === normalizedPlatform) || null;
@@ -642,6 +601,17 @@ function normalizeReceiveMode(value, preset) {
   return allowedModes.includes(normalized) ? normalized : allowedModes[0] || "manual";
 }
 
+function normalizeChatMode(value) {
+  return "system";
+}
+
+function normalizeExternalAgentType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["codex_cli", "hermes", "claude_code"].includes(normalized)
+    ? normalized
+    : "codex_cli";
+}
+
 function normalizeConnector(item) {
   const raw = item && typeof item === "object" && !Array.isArray(item) ? item : {};
   const platform = String(raw.platform || "").trim().toLowerCase();
@@ -652,9 +622,11 @@ function normalizeConnector(item) {
     enabled: raw.enabled !== false,
     platform,
     name: String(raw.name || "").trim().slice(0, 120),
-    agent_name: String(raw.agent_name || "").trim().slice(0, 120),
+    agent_name: "",
     description: String(raw.description || "").trim().slice(0, 280),
     system_prompt: String(raw.system_prompt || "").trim().slice(0, 4000),
+    chat_mode: normalizeChatMode(raw.chat_mode),
+    external_agent_type: normalizeExternalAgentType(raw.external_agent_type),
     provider_id: String(raw.provider_id || "").trim().slice(0, 120),
     model_name: String(raw.model_name || "").trim().slice(0, 160),
     app_id: String(raw.app_id || "").trim().slice(0, 160),
@@ -666,34 +638,15 @@ function normalizeConnector(item) {
     reply_identity: ["bot", "user"].includes(String(raw.reply_identity || "").trim().toLowerCase())
       ? String(raw.reply_identity || "").trim().toLowerCase()
       : "bot",
-    project_id: String(raw.project_id || "").trim().slice(0, 80),
+    project_id: "",
     guide_url: String(raw.guide_url || "").trim().slice(0, 500),
     sort_order: Math.min(999, Math.max(0, Number(raw.sort_order || 0) || 0)),
-    display_name: String(raw.name || raw.agent_name || preset?.name || id || "机器人").trim(),
+    display_name: String(raw.name || preset?.name || id || "机器人").trim(),
   };
 }
 
-const normalizedProjectOptions = computed(() =>
-  Array.isArray(props.projectOptions)
-    ? props.projectOptions
-        .map((item) => ({
-          value: String(item?.value || item?.id || "").trim(),
-          label: String(item?.label || item?.name || "").trim(),
-        }))
-        .filter((item) => item.value && item.label)
-    : [],
-);
-
-const projectLabelMap = computed(() =>
-  normalizedProjectOptions.value.reduce((accumulator, item) => {
-    accumulator[item.value] = item.label;
-    return accumulator;
-  }, {}),
-);
-
 const botChatProviderOptions = ref([]);
 const loadingBotChatModelOptions = ref(false);
-
 const botChatProviderMap = computed(() =>
   botChatProviderOptions.value.reduce((accumulator, item) => {
     accumulator[String(item.id || "").trim()] = item;
@@ -701,16 +654,52 @@ const botChatProviderMap = computed(() =>
   }, {}),
 );
 
-const selectedBotChatProvider = computed(() => {
-  const providerId = String(draft.value.provider_id || "").trim();
-  return providerId ? botChatProviderMap.value[providerId] || null : null;
-});
-
-const selectedBotChatProviderModels = computed(() =>
-  Array.isArray(selectedBotChatProvider.value?.model_configs)
-    ? selectedBotChatProvider.value.model_configs
-    : [],
+const botProviderModelGroups = computed(() =>
+  botChatProviderOptions.value
+    .map((provider) => {
+      const providerId = String(provider?.id || "").trim();
+      const providerLabel = String(provider?.name || providerId || "未命名供应商").trim();
+      const models = normalizeProviderModelConfigs(provider);
+      return {
+        providerId,
+        label: providerLabel,
+        options: models.map((item) => ({
+          value: `${providerId}::${item.name}`,
+          providerId,
+          providerLabel,
+          modelName: item.name,
+          modelType: item.model_type,
+          label: `${item.name} · ${providerLabel}`,
+        })),
+      };
+    })
+    .filter((group) => group.providerId && group.options.length),
 );
+
+const selectedBotModelOptionValue = computed({
+  get() {
+    const providerId = String(draft.value.provider_id || "").trim();
+    const modelName = String(draft.value.model_name || "").trim();
+    if (!providerId || !modelName) {
+      return "";
+    }
+    return `${providerId}::${modelName}`;
+  },
+  set(value) {
+    const normalized = String(value || "").trim();
+    if (!normalized) {
+      draft.value.provider_id = "";
+      draft.value.model_name = "";
+      return;
+    }
+    const separatorIndex = normalized.indexOf("::");
+    if (separatorIndex < 0) {
+      return;
+    }
+    draft.value.provider_id = normalized.slice(0, separatorIndex);
+    draft.value.model_name = normalized.slice(separatorIndex + 2);
+  },
+});
 
 const normalizedConnectors = computed(() => {
   if (!Array.isArray(props.modelValue)) {
@@ -741,11 +730,8 @@ const connectorCards = computed(() =>
     return {
       ...preset,
       ...connector,
-      display_name: connector.name || connector.agent_name || `${preset.name || "机器人"}配置`,
-      project_label:
-        projectLabelMap.value[connector.project_id] ||
-        connector.project_id ||
-        "",
+      display_name: connector.name || `${preset.name || "机器人"}配置`,
+      chat_mode_label: botChatModeLabel(connector),
       model_label: botChatModelLabel(connector),
       connected: Boolean(
         connector.enabled &&
@@ -773,6 +759,8 @@ const draft = ref({
   agent_name: "",
   description: "",
   system_prompt: "",
+  chat_mode: "system",
+  external_agent_type: "codex_cli",
   provider_id: "",
   model_name: "",
   app_id: "",
@@ -946,36 +934,84 @@ function scanStatusLabel(status) {
   return labels[normalized] || "群列表扫描未完成";
 }
 
-function findProjectLabel(projectId) {
-  const normalizedProjectId = String(projectId || "").trim();
-  if (!normalizedProjectId) {
-    return "";
+function normalizeProviderModelConfigs(provider) {
+  return normalizeLlmProviderModelConfigs(provider, FALLBACK_MODEL_TYPE_OPTIONS);
+}
+
+function normalizeBotChatProvider(provider) {
+  if (!provider || typeof provider !== "object" || Array.isArray(provider)) {
+    return null;
   }
-  return projectLabelMap.value[normalizedProjectId] || normalizedProjectId;
+  const id = String(provider.id || "").trim();
+  if (!id) {
+    return null;
+  }
+  const modelConfigs = normalizeProviderModelConfigs(provider);
+  return {
+    ...provider,
+    id,
+    name: String(provider.name || id).trim(),
+    provider_type: String(provider.provider_type || "").trim(),
+    default_model: String(provider.default_model || modelConfigs[0]?.name || "").trim(),
+    model_configs: modelConfigs,
+  };
+}
+
+function mergeBotChatProviders(providers) {
+  const merged = [];
+  const seen = new Set();
+  const add = (provider) => {
+    const normalized = normalizeBotChatProvider(provider);
+    if (!normalized || seen.has(normalized.id)) {
+      return;
+    }
+    seen.add(normalized.id);
+    merged.push(normalized);
+  };
+  (Array.isArray(providers) ? providers : []).forEach(add);
+  return merged;
+}
+
+function botChatModeLabel(connector) {
+  return "系统对话";
 }
 
 function botChatModelLabel(connector) {
   const providerId = String(connector?.provider_id || "").trim();
   const modelName = String(connector?.model_name || "").trim();
   if (!providerId) {
-    return "跟随默认";
+    return "按账号默认";
   }
   const provider = botChatProviderMap.value[providerId] || null;
   const providerName = String(provider?.name || providerId).trim();
-  const modelLabel = modelName || String(provider?.default_model || "").trim() || "供应商默认";
+  const modelLabel = modelName || String(provider?.default_model || "").trim() || "模型默认";
   return `${providerName} · ${modelLabel}`;
 }
 
-function handleBotChatProviderChange(value) {
-  draft.value.provider_id = String(value || "").trim();
-  draft.value.model_name = "";
-}
-
-async function fetchBotChatModelOptions() {
+async function fetchBotChatModelOptions(options = {}) {
+  const preserveSelection = options.preserveSelection !== false;
+  const currentProviderId = String(draft.value.provider_id || "").trim();
+  const currentModelName = String(draft.value.model_name || "").trim();
   loadingBotChatModelOptions.value = true;
   try {
-    const data = await api.get("/system-config/global-assistant-chat/options");
-    botChatProviderOptions.value = Array.isArray(data?.providers) ? data.providers : [];
+    const llmProviderData = await api.get("/llm/providers", {
+      params: { enabled_only: true },
+    });
+    botChatProviderOptions.value = mergeBotChatProviders([
+      ...(Array.isArray(llmProviderData?.providers) ? llmProviderData.providers : []),
+    ]);
+    if (preserveSelection && currentProviderId) {
+      const provider = botChatProviderOptions.value.find((item) => item.id === currentProviderId);
+      if (!provider) {
+        draft.value.provider_id = "";
+        draft.value.model_name = "";
+      } else if (currentModelName) {
+        const modelNames = normalizeProviderModelConfigs(provider).map((item) => item.name);
+        if (!modelNames.includes(currentModelName)) {
+          draft.value.model_name = "";
+        }
+      }
+    }
   } catch {
     botChatProviderOptions.value = [];
   } finally {
@@ -997,6 +1033,8 @@ async function saveDraft() {
     ...draft.value,
     id: normalizeConnectorId(draft.value.id),
     platform: editingPlatform.value,
+    agent_name: "",
+    project_id: "",
   });
   const duplicate = normalizedConnectors.value.find(
     (item) =>
@@ -1032,7 +1070,7 @@ async function duplicateConnector(connector) {
   const nextItem = normalizeConnector({
     ...source,
     id: createConnectorId(source.platform),
-    name: `${source.name || source.agent_name || preset?.name || "机器人"} 副本`,
+    name: `${source.name || preset?.name || "机器人"} 副本`,
     sort_order: Math.min(999, Number(source.sort_order || 0) + 1),
   });
   await persistNextConnectors(
@@ -1289,6 +1327,13 @@ onMounted(() => {
   color: #7c8aa0;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.connector-dialog__model-provider {
+  float: right;
+  margin-left: 18px;
+  color: #94a3b8;
+  font-size: 12px;
 }
 
 .connector-dialog__section {

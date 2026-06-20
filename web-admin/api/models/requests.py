@@ -600,6 +600,7 @@ class ProjectChatReq(BaseModel):
     chat_mode: str = "system"
     chat_surface: str = "main-chat"
     source_context: dict[str, Any] = {}
+    external_agent_type: str = "codex_cli"
     local_connector_id: str = ""
     connector_workspace_path: str = ""
     connector_sandbox_mode: str | None = None
@@ -698,6 +699,25 @@ class ProjectChatRequirementRecordUpsertReq(BaseModel):
 class ProjectChatRuntimeSnapshotUpdateReq(BaseModel):
     chat_session_id: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectChatExternalAgentTaskClaimReq(BaseModel):
+    runner_id: str = ""
+    supported_agent_types: list[str] = Field(default_factory=list)
+    workspace_path: str = ""
+
+
+class ProjectChatExternalAgentTaskCompleteReq(BaseModel):
+    status: Literal["completed", "failed", "cancelled", "timeout"] = "completed"
+    content: str = ""
+    error_message: str = ""
+    runner_session_id: str = ""
+    runner_meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectChatExternalAgentApprovalRequestReq(BaseModel):
+    runner_session_id: str = ""
+    approval: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectChatSettingsUpdateReq(BaseModel):
@@ -1204,27 +1224,3 @@ class LlmProviderUpdateReq(BaseModel):
 
 class LlmProviderTestReq(BaseModel):
     model_name: str = ""
-
-
-# ── Persona ──
-
-class PersonaCreateReq(BaseModel):
-    name: str
-    tone: str = "professional"
-    verbosity: str = "concise"
-    language: str = "zh-CN"
-    behaviors: list[str] = []
-    style_hints: list[str] = []
-    decision_policy: dict | None = None
-    drift_control: dict | None = None
-
-
-class PersonaUpdateReq(BaseModel):
-    name: str | None = None
-    tone: str | None = None
-    verbosity: str | None = None
-    language: str | None = None
-    behaviors: list[str] | None = None
-    style_hints: list[str] | None = None
-    decision_policy: dict | None = None
-    drift_control: dict | None = None

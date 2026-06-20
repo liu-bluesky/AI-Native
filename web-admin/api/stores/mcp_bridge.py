@@ -37,18 +37,12 @@ def _load_store(service_name: str) -> ModuleType:
 _skills_mod = _load_store("skills")
 _rules_mod = _load_store("rules")
 _memory_mod = _load_store("memory")
-_persona_mod = _load_store("persona")
-_evolution_mod = _load_store("evolution")
-_sync_mod = _load_store("sync")
 
 # ── 序列化函数 ──
 
 serialize_skill = _skills_mod._serialize_skill
 serialize_rule = _rules_mod._serialize_rule
 serialize_memory = _memory_mod.serialize_memory
-serialize_persona = _persona_mod._serialize_persona
-serialize_candidate = _evolution_mod.serialize_candidate
-serialize_sync_event = _sync_mod.serialize_event
 
 # ── 数据类（供 router 层使用） ──
 
@@ -59,7 +53,6 @@ ToolDef = _skills_mod.ToolDef
 ResourceDef = _skills_mod.ResourceDef
 ProxyEntryDef = _skills_mod.ProxyEntryDef
 Rule = _rules_mod.Rule
-Persona = _persona_mod.Persona
 Memory = _memory_mod.Memory
 MemoryType = _memory_mod.MemoryType
 MemoryScope = _memory_mod.MemoryScope
@@ -68,21 +61,15 @@ Classification = _memory_mod.Classification
 Severity = _rules_mod.Severity
 RiskDomain = _rules_mod.RiskDomain
 
-DecisionPolicy = _persona_mod.DecisionPolicy
-DelegationScope = _persona_mod.DelegationScope
-DriftControl = _persona_mod.DriftControl
-
 # ── 辅助函数（各模块的 _now_iso，前缀命名避免冲突） ──
 
 skills_now_iso = _skills_mod._now_iso
 rules_now_iso = _rules_mod._now_iso
-persona_now_iso = _persona_mod._now_iso
 
 # ── 反序列化函数 ──
 
 deserialize_skill = _skills_mod._deserialize_skill
 deserialize_rule = _rules_mod._deserialize_rule
-deserialize_persona = _persona_mod._deserialize_persona
 
 
 def _create_json_stores() -> tuple:
@@ -91,12 +78,6 @@ def _create_json_stores() -> tuple:
         _skills_mod.BindingStore(_BASE / "mcp-skills" / "knowledge"),
         _rules_mod.RuleStore(_BASE / "mcp-rules" / "knowledge"),
         _memory_mod.MemoryStore(_BASE / "mcp-memory" / "knowledge" / "memories.db"),
-        _persona_mod.PersonaStore(_BASE / "mcp-persona" / "knowledge"),
-        _persona_mod.SnapshotStore(_BASE / "mcp-persona" / "knowledge"),
-        _evolution_mod.CandidateStore(_BASE / "mcp-evolution" / "knowledge"),
-        _evolution_mod.EventStore(_BASE / "mcp-evolution" / "knowledge"),
-        _evolution_mod.UsageLogStore(_BASE / "mcp-evolution" / "knowledge"),
-        _sync_mod.SyncEventStore(_BASE / "mcp-sync" / "knowledge"),
     )
 
 
@@ -104,15 +85,9 @@ def _create_postgres_stores(database_url: str) -> tuple:
     try:
         from stores.postgres.mcp_bridge import (
             PgBindingStore,
-            PgCandidateStore,
-            PgEventStore,
             PgMemoryStore,
-            PgPersonaStore,
             PgRuleStore,
             PgSkillStore,
-            PgSnapshotStore,
-            PgSyncEventStore,
-            PgUsageLogStore,
         )
     except ModuleNotFoundError as exc:
         raise RuntimeError(
@@ -137,12 +112,6 @@ def _create_postgres_stores(database_url: str) -> tuple:
             _memory_mod.Classification,
             serialize_memory,
         ),
-        PgPersonaStore(database_url, serialize_persona, deserialize_persona),
-        PgSnapshotStore(database_url, _persona_mod.PersonaSnapshot),
-        PgCandidateStore(database_url, serialize_candidate, _evolution_mod._deserialize_candidate),
-        PgEventStore(database_url, _evolution_mod.EvolutionEvent),
-        PgUsageLogStore(database_url, _evolution_mod.UsageLog),
-        PgSyncEventStore(database_url, _sync_mod.SyncEvent, serialize_sync_event),
     )
 
 
@@ -181,9 +150,3 @@ skill_store = _StoreProxy(0)
 binding_store = _StoreProxy(1)
 rule_store = _StoreProxy(2)
 memory_store = _StoreProxy(3)
-persona_store = _StoreProxy(4)
-snapshot_store = _StoreProxy(5)
-candidate_store = _StoreProxy(6)
-event_store = _StoreProxy(7)
-usage_log_store = _StoreProxy(8)
-sync_store = _StoreProxy(9)

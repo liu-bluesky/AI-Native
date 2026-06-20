@@ -38,6 +38,37 @@ def _build_project_chat_runtime_test_client(tmp_path, monkeypatch, auth_payload)
     return TestClient(app), store_factory
 
 
+def _create_feishu_project_chat_session(
+    store_factory,
+    *,
+    project_id: str = "proj-1",
+    username: str = "tester",
+    title: str = "飞书群：产品研发群",
+    source_context: dict | None = None,
+) -> dict:
+    from routers import projects as projects_router
+
+    context = projects_router._normalize_project_chat_source_context(
+        source_context
+        or {
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
+        },
+        project_id=project_id,
+        default_source_type="group_message",
+    )
+    session = store_factory.project_chat_store.create_session(
+        project_id,
+        username,
+        title,
+        source_context=context,
+    )
+    return projects_router._serialize_chat_session(session)
+
+
 def test_feishu_project_chat_session_id_isolates_group_and_private_messages():
     from services.feishu.feishu_bot_service import _resolve_feishu_project_chat_session_id
 
@@ -488,9 +519,7 @@ def test_clear_commands_do_not_trigger_update_clarify_interaction():
     )
 
 
-def test_project_chat_session_update_and_feishu_manual_binding(tmp_path, monkeypatch):
-    from routers import projects as projects_router
-    from services.feishu.feishu_bot_service import _find_or_bind_feishu_manual_chat_session
+def test_project_chat_session_routes_keep_regular_sessions_but_retire_manual_bot_sessions(tmp_path, monkeypatch):
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -500,7 +529,15 @@ def test_project_chat_session_update_and_feishu_manual_binding(tmp_path, monkeyp
     )
     store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
 
-    create_response = client.post(
+    regular_create = client.post(
+        "/api/projects/proj-1/chat/sessions",
+        json={"title": "普通项目对话"},
+    )
+    assert regular_create.status_code == 200
+    regular_session = regular_create.json()["session"]
+    assert regular_session["title"] == "普通项目对话"
+
+    bot_create = client.post(
         "/api/projects/proj-1/chat/sessions",
         json={
             "title": "飞书群：产品研发群",
@@ -512,13 +549,11 @@ def test_project_chat_session_update_and_feishu_manual_binding(tmp_path, monkeyp
             },
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
-    assert session["source_context"]["connector_id"] == "conn-feishu-1"
-    assert "external_chat_id" not in session["source_context"]
+    assert bot_create.status_code == 410
+    assert "机器人对话创建和编辑接口已下架" in bot_create.json()["detail"]
 
-    patch_response = client.patch(
-        f"/api/projects/proj-1/chat/sessions/{session['id']}",
+    bot_update = client.patch(
+        f"/api/projects/proj-1/chat/sessions/{regular_session['id']}",
         json={
             "title": "售前需求群",
             "source_context": {
@@ -529,9 +564,33 @@ def test_project_chat_session_update_and_feishu_manual_binding(tmp_path, monkeyp
             },
         },
     )
-    assert patch_response.status_code == 200
-    updated = patch_response.json()["session"]
-    assert updated["title"] == "售前需求群"
+    assert bot_update.status_code == 410
+    assert "飞书等平台内的机器人消息入口不受影响" in bot_update.json()["detail"]
+
+
+def test_feishu_manual_session_binding_still_works_without_page_route(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from services.feishu.feishu_bot_service import _find_or_bind_feishu_manual_chat_session
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_name": "产品研发群",
+        },
+    )
+    assert session["source_context"]["connector_id"] == "conn-feishu-1"
+    assert "external_chat_id" not in session["source_context"]
 
     bound = _find_or_bind_feishu_manual_chat_session(
         project_id="proj-1",
@@ -548,7 +607,7 @@ def test_project_chat_session_update_and_feishu_manual_binding(tmp_path, monkeyp
     assert bound_context["thread_key"] == "feishu:conn-feishu-1:chat:oc_real_group_1"
 
 
-def test_project_chat_session_resolve_source_uses_feishu_search(tmp_path, monkeypatch):
+def test_project_chat_session_resolve_source_route_is_retired(tmp_path, monkeypatch):
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -572,43 +631,23 @@ def test_project_chat_session_resolve_source_uses_feishu_search(tmp_path, monkey
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书群：产品研发群",
-            "source_context": {
-                "source_type": "group_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_name": "产品研发群",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_name": "产品研发群",
         },
-    )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
-
-    def fake_resolve(connector, chat_name, *, identity="bot"):
-        assert connector["id"] == "conn-feishu-1"
-        assert chat_name == "产品研发群"
-        assert identity == "bot"
-        return {"chat_id": "oc_real_group_1", "name": "产品研发群"}
-
-    monkeypatch.setattr(
-        "services.feishu.feishu_bot_service.resolve_feishu_chat_by_name",
-        fake_resolve,
     )
     resolve_response = client.post(
         f"/api/projects/proj-1/chat/sessions/{session['id']}/resolve-source",
     )
-    assert resolve_response.status_code == 200
-    payload = resolve_response.json()
-    assert payload["resolved"] is True
-    resolved_context = payload["session"]["source_context"]
-    assert resolved_context["external_chat_id"] == "oc_real_group_1"
-    assert resolved_context["thread_key"] == "feishu:conn-feishu-1:chat:oc_real_group_1"
+    assert resolve_response.status_code == 410
+    assert "机器人对话创建和编辑接口已下架" in resolve_response.json()["detail"]
 
 
-def test_project_chat_session_resolve_source_can_use_user_identity(tmp_path, monkeypatch):
+def test_regular_project_chat_session_resolve_source_keeps_existing_validation(tmp_path, monkeypatch):
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -632,42 +671,16 @@ def test_project_chat_session_resolve_source_can_use_user_identity(tmp_path, mon
     )
     create_response = client.post(
         "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书群：产品研发群",
-            "source_context": {
-                "source_type": "group_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_name": "产品研发群",
-                "resolve_identity": "user",
-            },
-        },
+        json={"title": "普通项目对话"},
     )
     assert create_response.status_code == 200
     session = create_response.json()["session"]
-    calls = []
-
-    def fake_resolve(connector, chat_name, *, identity="bot"):
-        calls.append({"connector": connector, "chat_name": chat_name, "identity": identity})
-        return {"chat_id": "oc_user_visible_group", "name": "产品研发群"}
-
-    monkeypatch.setattr(
-        "services.feishu.feishu_bot_service.resolve_feishu_chat_by_name",
-        fake_resolve,
-    )
     resolve_response = client.post(
         f"/api/projects/proj-1/chat/sessions/{session['id']}/resolve-source",
         json={"identity": "user"},
     )
-    assert resolve_response.status_code == 200
-    payload = resolve_response.json()
-    assert calls[0]["connector"]["id"] == "conn-feishu-1"
-    assert calls[0]["connector"]["app_id"] == "cli_xxx"
-    assert calls[0]["chat_name"] == "产品研发群"
-    assert calls[0]["identity"] == "user"
-    resolved_context = payload["session"]["source_context"]
-    assert resolved_context["external_chat_id"] == "oc_user_visible_group"
-    assert resolved_context["resolve_identity"] == "user"
+    assert resolve_response.status_code == 400
+    assert resolve_response.json()["detail"] == "当前只支持解析飞书群 ID"
 
 
 def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, monkeypatch):
@@ -699,21 +712,17 @@ def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, m
         ]
     )
 
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书群：产品研发群",
-            "source_context": {
-                "source_type": "group_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_real_group_1",
-                "external_chat_name": "产品研发群",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：产品研发群",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
 
     store_factory.system_config_store.patch_global({"voice_output_enabled": True})
 
@@ -779,12 +788,107 @@ def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, m
     assert req.message == "帮我总结一下"
     assert "你是飞书群里的需求协作机器人，只回答和项目推进有关的问题。" in req.system_prompt
     assert "飞书机器人通用工作流约束" in req.system_prompt
+    assert "不要暴露或强调 Hermes、Codex、Claude Code、桌面 Runner" in req.system_prompt
     assert "lark-cli im +messages-reply" in req.system_prompt
     assert req.skill_resource_directory.endswith("skills")
     assert req.source_context["external_chat_id"] == "oc_real_group_1"
     assert req.source_context["thread_key"] == "feishu:conn-feishu-1:chat:oc_real_group_1"
     assert speech_calls == []
     assert replies[0][1]["message_id"] == "om_message_1"
+
+
+def test_feishu_external_agent_connector_is_normalized_to_system_chat(tmp_path, monkeypatch):
+    from services.feishu.feishu_bot_service import process_feishu_message_event
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+
+    client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.project_store.upsert_user_member(
+        ProjectUserMember(project_id="proj-1", username="tester", role="owner")
+    )
+    store_factory.bot_connector_store.replace_all(
+        [
+            {
+                "id": "conn-feishu-1",
+                "platform": "feishu",
+                "name": "飞书机器人",
+                "enabled": True,
+                "project_id": "",
+                "app_id": "cli_xxx",
+                "app_secret": "secret_xxx",
+                "bot_open_id": "ou_bot_1",
+                "chat_mode": "external_agent",
+                "external_agent_type": "hermes",
+            }
+        ]
+    )
+    _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：产品研发群",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
+        },
+    )
+
+    calls = []
+    replies = []
+
+    class FakeResult:
+        content = "系统对话正常回复"
+
+    async def fake_run_project_chat_once(**kwargs):
+        calls.append(kwargs)
+        return FakeResult()
+
+    async def fake_reply_feishu_text(connector, **kwargs):
+        replies.append((connector, kwargs))
+
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.run_project_chat_once",
+        fake_run_project_chat_once,
+    )
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service._reply_feishu_text",
+        fake_reply_feishu_text,
+    )
+
+    class Obj:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    event = Obj(
+        event=Obj(
+            sender=Obj(sender_type="user", sender_id=Obj(open_id="ou_sender_1")),
+            message=Obj(
+                chat_type="group",
+                chat_id="oc_real_group_1",
+                thread_id="",
+                message_id="om_message_1",
+                message_type="text",
+                content='{"text":"@_user_1 列出所有项目"}',
+                mentions=[Obj(key="@_user_1", id=Obj(open_id="ou_bot_1"))],
+            ),
+        )
+    )
+
+    import asyncio
+
+    asyncio.run(process_feishu_message_event("conn-feishu-1", event))
+
+    assert len(calls) == 1
+    req = calls[0]["req"]
+    assert req.chat_mode == "system"
+    assert req.external_agent_type == "hermes"
+    assert [item[1]["content"] for item in replies] == ["收到，正在处理。", "系统对话正常回复"]
+    assert replies[0][1].get("idempotency_suffix") == "processing"
 
 
 def test_feishu_message_event_auto_binds_unbound_group_to_connector_project(tmp_path, monkeypatch):
@@ -921,21 +1025,17 @@ def test_feishu_record_bug_message_does_not_confirm_stale_pending_archive(tmp_pa
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书私聊：飞书私聊-1a7e3653",
-            "source_context": {
-                "source_type": "private_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_private_1",
-                "external_chat_name": "飞书私聊-1a7e3653",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书私聊：飞书私聊-1a7e3653",
+        source_context={
+            "source_type": "private_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_private_1",
+            "external_chat_name": "飞书私聊-1a7e3653",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
     projects_router = __import__("routers.projects", fromlist=["_append_chat_record"])
     projects_router._append_chat_record(
         project_id="proj-1",
@@ -1892,6 +1992,33 @@ def test_feishu_reply_uses_lark_cli_with_configured_identity(monkeypatch):
     assert "--reply-in-thread" in command
 
 
+def test_feishu_reply_lark_cli_allows_idempotency_suffix(monkeypatch):
+    from services.feishu import feishu_bot_service as service
+
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        return Completed()
+
+    monkeypatch.setattr(service.subprocess, "run", fake_run)
+
+    service._reply_feishu_text_with_lark_cli(
+        {"reply_identity": "user"},
+        message_id="om_message_1",
+        content="收到，正在处理。",
+        idempotency_suffix="processing",
+    )
+
+    command = calls[0]["command"]
+    assert command[command.index("--idempotency-key") + 1] == "feishu-reply-om_message_1-processing"
+
+
 def test_feishu_bot_reply_uses_open_api_without_lark_cli(monkeypatch):
     from services.feishu import feishu_bot_service as service
 
@@ -1938,6 +2065,42 @@ def test_feishu_bot_reply_uses_open_api_without_lark_cli(monkeypatch):
         "content": json.dumps({"text": "收到"}, ensure_ascii=False),
         "reply_in_thread": True,
     }
+
+
+def test_feishu_bot_reply_open_api_allows_idempotency_suffix(monkeypatch):
+    from services.feishu import feishu_bot_service as service
+
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/tenant_access_token/internal"):
+            return FakeResponse({"code": 0, "tenant_access_token": "tenant-token"})
+        if url.endswith("/im/v1/messages/om_message_1/reply"):
+            return FakeResponse({"code": 0, "data": {"message_id": "om_reply_1"}})
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(service.requests, "post", fake_post)
+
+    service._reply_feishu_text_with_open_api(
+        {"reply_identity": "bot", "app_id": "cli_xxx", "app_secret": "secret_xxx"},
+        message_id="om_message_1",
+        content="收到，正在处理。",
+        idempotency_suffix="processing",
+    )
+
+    reply_kwargs = calls[1][1]
+    assert reply_kwargs["params"]["uuid"] == "feishu-reply-om_message_1-processing"
 
 
 def test_feishu_bot_reply_open_api_error_is_clear(monkeypatch):
@@ -1997,21 +2160,17 @@ def test_feishu_non_text_image_message_routes_resource_to_model_context(tmp_path
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书群：产品研发群",
-            "source_context": {
-                "source_type": "group_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_real_group_1",
-                "external_chat_name": "产品研发群",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：产品研发群",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
 
     calls = []
     replies = []
@@ -2122,21 +2281,17 @@ def test_feishu_group_follow_up_resource_message_continues_open_workflow_without
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书群：产品研发群",
-            "source_context": {
-                "source_type": "group_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_real_group_1",
-                "external_chat_name": "产品研发群",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：产品研发群",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
     store_factory.project_chat_store.append_message(
         ProjectChatMessage(
             id="om_prev_bug_1",
@@ -2268,21 +2423,17 @@ def test_feishu_text_redownloads_recent_image_resource_for_model_context(tmp_pat
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书群：数转CRM技术小组",
-            "source_context": {
-                "source_type": "group_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_real_group_1",
-                "external_chat_name": "数转CRM技术小组",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：数转CRM技术小组",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "数转CRM技术小组",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
     projects_router = __import__("routers.projects", fromlist=["_append_chat_record"])
     projects_router._append_chat_record(
         project_id="proj-1",
@@ -2409,21 +2560,17 @@ def test_feishu_text_recovers_recent_image_resource_from_previous_reply_text(tmp
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书私聊：飞书私聊-1a7e3653",
-            "source_context": {
-                "source_type": "private_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_private_1",
-                "external_chat_name": "飞书私聊-1a7e3653",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书私聊：飞书私聊-1a7e3653",
+        source_context={
+            "source_type": "private_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_private_1",
+            "external_chat_name": "飞书私聊-1a7e3653",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
     projects_router = __import__("routers.projects", fromlist=["_append_chat_record"])
     projects_router._append_chat_record(
         project_id="proj-1",
@@ -2616,20 +2763,17 @@ def test_feishu_text_with_image_and_target_title_routes_to_model_with_resource_c
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书群：数转CRM技术小组",
-            "source_context": {
-                "source_type": "group_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_real_group_1",
-                "external_chat_name": "数转CRM技术小组",
-            },
+    _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：数转CRM技术小组",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "数转CRM技术小组",
         },
     )
-    assert create_response.status_code == 200
 
     calls = []
     replies = []
@@ -2701,7 +2845,10 @@ def test_feishu_text_with_image_and_target_title_routes_to_model_with_resource_c
     ]
     assert req.source_context["attachment_files"][0]["path"] == str(image_path)
     assert replies[0][1]["message_id"] == "om_post_1"
-    assert "结合这张图片" in replies[0][1]["content"]
+    assert replies[0][1]["content"] == "收到，正在处理。"
+    assert replies[0][1]["idempotency_suffix"] == "processing"
+    assert replies[-1][1]["message_id"] == "om_post_1"
+    assert "结合这张图片" in replies[-1][1]["content"]
 
 
 def test_feishu_post_message_with_image_routes_text_to_project_chat(tmp_path, monkeypatch):
@@ -2731,21 +2878,17 @@ def test_feishu_post_message_with_image_routes_text_to_project_chat(tmp_path, mo
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书群：产品研发群",
-            "source_context": {
-                "source_type": "group_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_real_group_1",
-                "external_chat_name": "产品研发群",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：产品研发群",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
 
     calls = []
     replies = []
@@ -2853,20 +2996,17 @@ def test_feishu_text_message_recursively_extracts_nested_image_and_file_resource
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书私聊：飞书私聊-1a7e3653",
-            "source_context": {
-                "source_type": "private_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_private_1",
-                "external_chat_name": "飞书私聊-1a7e3653",
-            },
+    _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书私聊：飞书私聊-1a7e3653",
+        source_context={
+            "source_type": "private_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_private_1",
+            "external_chat_name": "飞书私聊-1a7e3653",
         },
     )
-    assert create_response.status_code == 200
 
     calls = []
     replies = []
@@ -3458,20 +3598,17 @@ def test_feishu_message_event_queues_speech_only_when_task_listener_matches(tmp_
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书群：产品研发群",
-            "source_context": {
-                "source_type": "group_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_real_group_1",
-                "external_chat_name": "产品研发群",
-            },
+    _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：产品研发群",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
         },
     )
-    assert create_response.status_code == 200
     upsert_global_assistant_task(
         username="tester",
         project_id="proj-1",
@@ -4222,12 +4359,20 @@ def test_global_assistant_task_engine_queues_due_system_speech(tmp_path, monkeyp
     assert tasks[0]["execution_history"][0]["action_results"][0]["status"] == "queued"
 
 
-def test_global_assistant_system_speech_action_respects_disabled_config_in_event_loop(monkeypatch):
+def test_global_assistant_system_speech_action_respects_disabled_config_in_event_loop(tmp_path, monkeypatch):
     import asyncio
     from types import SimpleNamespace
 
+    from core import config as core_config
     from services.providers import system_speech_service
     from services.assistant.global_assistant_task_service import _enqueue_system_speech_action
+    from stores import factory as store_factory
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    store_factory.system_config_store._instance = None
 
     monkeypatch.setattr(
         system_speech_service.system_config_store,
@@ -4584,20 +4729,17 @@ def test_feishu_message_event_creates_group_meeting_reminder(tmp_path, monkeypat
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书群：产品研发群",
-            "source_context": {
-                "source_type": "group_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_real_group_1",
-                "external_chat_name": "产品研发群",
-            },
+    _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：产品研发群",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
         },
     )
-    assert create_response.status_code == 200
 
     class FakeResult:
         content = "收到"
@@ -4650,7 +4792,9 @@ def test_feishu_message_event_creates_group_meeting_reminder(tmp_path, monkeypat
     assert tasks[0]["actions"][0]["params"]["identity"] == "user"
     assert tasks[0]["actions"][0]["params"]["remind_before_minutes"] == 10
     assert "14:50" in tasks[0]["next_run_at"] or tasks[0]["next_run_at"].endswith("T06:50:00+00:00")
-    assert "已创建会议提醒" in replies[0][1]["content"]
+    assert replies[0][1]["content"] == "收到，正在处理。"
+    assert replies[0][1]["idempotency_suffix"] == "processing"
+    assert "已创建会议提醒" in replies[-1][1]["content"]
 
 
 def test_feishu_scheduled_reminder_sends_due_message_and_completes(tmp_path, monkeypatch):
@@ -6796,21 +6940,17 @@ def test_feishu_confirmation_retries_recent_pending_archive_without_model(tmp_pa
             }
         ]
     )
-    create_response = _client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书私聊：飞书私聊-1a7e3653",
-            "source_context": {
-                "source_type": "private_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_private_1",
-                "external_chat_name": "飞书私聊-1a7e3653",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书私聊：飞书私聊-1a7e3653",
+        source_context={
+            "source_type": "private_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_private_1",
+            "external_chat_name": "飞书私聊-1a7e3653",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
     projects_router = __import__("routers.projects", fromlist=["_append_chat_record"])
     pending_reply = (
         "【待归档类型】\n"
@@ -6955,21 +7095,17 @@ def test_feishu_confirmation_retries_direct_bitable_pending_reply_without_model(
             }
         ]
     )
-    create_response = _client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书私聊：飞书私聊-1a7e3653",
-            "source_context": {
-                "source_type": "private_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_private_1",
-                "external_chat_name": "飞书私聊-1a7e3653",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书私聊：飞书私聊-1a7e3653",
+        source_context={
+            "source_type": "private_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_private_1",
+            "external_chat_name": "飞书私聊-1a7e3653",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
     projects_router = __import__("routers.projects", fromlist=["_append_chat_record"])
     pending_reply = (
         "已找到目标“文档”，但它实际是一个飞书多维表格 Base，当前尚未追加数据成功。\n\n"
@@ -7123,21 +7259,17 @@ def test_feishu_confirmation_retries_direct_bitable_attachment_pending_reply_wit
             }
         ]
     )
-    create_response = _client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书私聊：飞书私聊-1a7e3653",
-            "source_context": {
-                "source_type": "private_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_private_1",
-                "external_chat_name": "飞书私聊-1a7e3653",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书私聊：飞书私聊-1a7e3653",
+        source_context={
+            "source_type": "private_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_private_1",
+            "external_chat_name": "飞书私聊-1a7e3653",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
 
     workspace_tmp = Path.cwd().parent.parent / "tmp" / "pytest-feishu-direct-attachment"
     workspace_tmp.mkdir(parents=True, exist_ok=True)
@@ -7257,21 +7389,17 @@ def test_feishu_confirmation_executes_direct_bitable_create_with_resource_ref_wi
             }
         ]
     )
-    create_response = _client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书私聊：飞书私聊-1a7e3653",
-            "source_context": {
-                "source_type": "private_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_private_1",
-                "external_chat_name": "飞书私聊-1a7e3653",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书私聊：飞书私聊-1a7e3653",
+        source_context={
+            "source_type": "private_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_private_1",
+            "external_chat_name": "飞书私聊-1a7e3653",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
 
     projects_router = __import__("routers.projects", fromlist=["_append_chat_record"])
     pending_reply = (
@@ -7425,21 +7553,17 @@ def test_feishu_direct_bitable_resource_download_failure_reports_real_cause(tmp_
             }
         ]
     )
-    create_response = _client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书私聊：飞书私聊-1a7e3653",
-            "source_context": {
-                "source_type": "private_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_private_1",
-                "external_chat_name": "飞书私聊-1a7e3653",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书私聊：飞书私聊-1a7e3653",
+        source_context={
+            "source_type": "private_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_private_1",
+            "external_chat_name": "飞书私聊-1a7e3653",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
 
     projects_router = __import__("routers.projects", fromlist=["_append_chat_record"])
     pending_reply = (
@@ -7857,21 +7981,17 @@ def test_feishu_success_reply_prevents_retrying_older_pending_archive(tmp_path, 
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书私聊：机器人测试群",
-            "source_context": {
-                "source_type": "private_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_private_1",
-                "external_chat_name": "机器人测试群",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书私聊：机器人测试群",
+        source_context={
+            "source_type": "private_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_private_1",
+            "external_chat_name": "机器人测试群",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
     projects_router = __import__("routers.projects", fromlist=["_append_chat_record"])
     projects_router._append_chat_record(
         project_id="proj-1",
@@ -7994,21 +8114,17 @@ def test_feishu_legacy_success_reply_still_blocks_retry_of_older_pending(tmp_pat
             }
         ]
     )
-    create_response = client.post(
-        "/api/projects/proj-1/chat/sessions",
-        json={
-            "title": "飞书私聊：机器人测试群",
-            "source_context": {
-                "source_type": "private_message",
-                "platform": "feishu",
-                "connector_id": "conn-feishu-1",
-                "external_chat_id": "oc_private_1",
-                "external_chat_name": "机器人测试群",
-            },
+    session = _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书私聊：机器人测试群",
+        source_context={
+            "source_type": "private_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_private_1",
+            "external_chat_name": "机器人测试群",
         },
     )
-    assert create_response.status_code == 200
-    session = create_response.json()["session"]
     projects_router = __import__("routers.projects", fromlist=["_append_chat_record"])
     projects_router._append_chat_record(
         project_id="proj-1",

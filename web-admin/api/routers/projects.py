@@ -176,6 +176,9 @@ from models.requests import (
     ProjectRequirementRecordBatchDeleteReq,
     ProjectChatHistoryTruncateReq,
     ProjectChatHistoryAppendReq,
+    ProjectChatExternalAgentApprovalRequestReq,
+    ProjectChatExternalAgentTaskClaimReq,
+    ProjectChatExternalAgentTaskCompleteReq,
     ProjectChatRequirementRecordUpsertReq,
     ProjectChatReq,
     ProjectChatSessionCreateReq,
@@ -3449,58 +3452,8 @@ def _resolve_project_deploy_command_chat_settings(
         settings["provider_id"] = requested_provider_id
     if requested_model_name:
         settings["model_name"] = requested_model_name
-    chat_mode = str(settings.get("chat_mode") or "system").strip().lower()
-    settings["chat_mode"] = "external_agent" if chat_mode == "external_agent" else "system"
+    settings["chat_mode"] = "system"
     return settings
-
-
-async def _generate_project_deploy_command_via_external_agent(
-    *,
-    project: ProjectConfig,
-    auth_payload: dict,
-    messages: list[dict[str, str]],
-    chat_settings: dict[str, Any],
-) -> dict[str, Any]:
-    fallback_settings = dict(chat_settings)
-    fallback_settings["chat_mode"] = "system"
-    resolved_runtime = await _resolve_project_chat_runtime(fallback_settings, auth_payload)
-    if resolved_runtime.provider_mode == "local_connector":
-        connector = _resolve_accessible_local_connector_for_llm(resolved_runtime.connector_id, auth_payload)
-        if connector is None:
-            raise HTTPException(400, "本地连接器不可用")
-        response = await chat_completion_via_connector(
-            connector,
-            model_name=resolved_runtime.model_name,
-            messages=messages,
-            temperature=0.1,
-            max_tokens=500,
-            timeout=30,
-        )
-    else:
-        llm_runtime = _resolve_chat_llm_service_runtime(None, resolved_runtime, auth_payload)
-        response = await llm_runtime.chat_completion(
-            resolved_runtime.provider_id,
-            resolved_runtime.model_name,
-            messages,
-            temperature=0.1,
-            max_tokens=500,
-            timeout=30,
-        )
-    response_payload = response if isinstance(response, dict) else {}
-    command = _clean_project_deploy_command_output(response_payload.get("content"))
-    if not command:
-        raise HTTPException(502, "模型没有返回可用部署命令")
-    return {
-        "status": "generated",
-        "project_id": project.id,
-        "deploy_command": command,
-        "provider_id": str(response_payload.get("provider_id") or resolved_runtime.provider_id).strip(),
-        "model_name": str(response_payload.get("model_name") or resolved_runtime.model_name).strip(),
-        "chat_mode": "system_fallback",
-        "requested_chat_mode": "external_agent",
-        "token_usage": response_payload.get("usage"),
-        "persisted": False,
-    }
 
 
 async def _generate_project_deploy_command_payload(
@@ -3511,13 +3464,6 @@ async def _generate_project_deploy_command_payload(
 ) -> dict[str, Any]:
     chat_settings = _resolve_project_deploy_command_chat_settings(project, req)
     messages = _build_project_deploy_command_prompt(project=project, req=req)
-    if str(chat_settings.get("chat_mode") or "").strip().lower() == "external_agent":
-        return await _generate_project_deploy_command_via_external_agent(
-            project=project,
-            auth_payload=auth_payload,
-            messages=messages,
-            chat_settings=chat_settings,
-        )
     resolved_runtime = await _resolve_project_chat_runtime(chat_settings, auth_payload)
     if resolved_runtime.provider_mode == "local_connector":
         connector = _resolve_accessible_local_connector_for_llm(resolved_runtime.connector_id, auth_payload)
@@ -4368,7 +4314,7 @@ async def _execute_project_deploy_artifact_via_project_chat(
 ) -> dict[str, Any]:
     username = _current_username(auth_payload) or "unknown"
     chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
-    chat_mode = str(chat_settings.get("chat_mode") or "").strip().lower()
+    chat_mode = "system"
     chat_session_id = (
         _normalize_project_deploy_text(req.chat_session_id, limit=120)
         or f"deploy-ai-{uuid.uuid4().hex[:12]}"
@@ -6424,10 +6370,7 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["video_style"] = get_chat_parameter_default_value("video_style")
     settings["video_duration_seconds"] = get_chat_parameter_default_value("video_duration_seconds")
     settings["video_motion_strength"] = get_chat_parameter_default_value("video_motion_strength")
-    chat_mode = str(source.get("chat_mode", settings["chat_mode"]) or "").strip().lower()
-    settings["chat_mode"] = (
-        chat_mode if chat_mode in {"system", "external_agent"} else settings["chat_mode"]
-    )
+    settings["chat_mode"] = "system"
     external_agent_type = str(
         source.get("external_agent_type", settings["external_agent_type"]) or ""
     ).strip().lower()
@@ -7509,10 +7452,18 @@ async def _resolve_global_assistant_chat_runtime(
     requested_provider_id = str(runtime_settings.get("provider_id") or "").strip()
     requested_model_name = str(runtime_settings.get("model_name") or "").strip()
     if not requested_provider_id and not configured_provider_id:
-        default_target = get_llm_provider_service().get_default_user_llm_target(
-            owner_username=_current_username(auth_payload),
-            include_all=False,
-            include_secret=False,
+        from services.providers.llm_provider_service import get_llm_provider_service
+
+        llm_service = get_llm_provider_service()
+        get_default_user_llm_target = getattr(llm_service, "get_default_user_llm_target", None)
+        default_target = (
+            get_default_user_llm_target(
+                owner_username=_current_username(auth_payload),
+                include_all=False,
+                include_secret=False,
+            )
+            if callable(get_default_user_llm_target)
+            else None
         )
         if default_target:
             configured_provider_id = str(default_target.get("provider_id") or "").strip()
@@ -7548,10 +7499,18 @@ async def _resolve_project_chat_runtime(
     selected_provider_id = str(runtime_settings.get("provider_id") or "").strip()
     selected_model_name = str(runtime_settings.get("model_name") or "").strip()
     if not selected_provider_id:
-        default_target = get_llm_provider_service().get_default_user_llm_target(
-            owner_username=_current_username(auth_payload),
-            include_all=False,
-            include_secret=False,
+        from services.providers.llm_provider_service import get_llm_provider_service
+
+        llm_service = get_llm_provider_service()
+        get_default_user_llm_target = getattr(llm_service, "get_default_user_llm_target", None)
+        default_target = (
+            get_default_user_llm_target(
+                owner_username=_current_username(auth_payload),
+                include_all=False,
+                include_secret=False,
+            )
+            if callable(get_default_user_llm_target)
+            else None
         )
         if default_target:
             selected_provider_id = str(default_target.get("provider_id") or "").strip()
@@ -7888,6 +7847,7 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
             merged["selected_employee_ids"] = connector_employee_ids
     override = {
         "chat_mode": req.chat_mode,
+        "external_agent_type": req.external_agent_type,
         "local_connector_id": req.local_connector_id,
         "connector_workspace_path": req.connector_workspace_path,
         "connector_sandbox_mode": req.connector_sandbox_mode,
@@ -10231,7 +10191,7 @@ async def _build_project_external_agent_info(
         "write_ok": False,
         "source": "tauri_external_agent_runner",
         "sandbox_mode": sandbox_mode,
-        "reason": "外部 Agent 仅支持桌面端 Runner，服务端不再通过本地连接器执行。",
+        "reason": "代理会话功能已移除，服务端不再通过本地连接器执行。",
     }
     reason = "请使用桌面端 Runner"
     command_source = "tauri_external_agent_runner"
@@ -11947,7 +11907,7 @@ def _normalize_project_chat_source_context(raw: Any, *, project_id: str = "", de
     if isinstance(pending_interaction, dict) and pending_interaction:
         result["pending_interaction"] = dict(pending_interaction)
     chat_mode = str(context.get("chat_mode") or "").strip().lower()
-    if chat_mode in {"system", "external_agent", "host_terminal"}:
+    if chat_mode in {"system", "host_terminal"}:
         result["chat_mode"] = chat_mode
     external_agent_type = str(context.get("external_agent_type") or "").strip().lower()
     if external_agent_type in {"codex_cli", "claude_code", "hermes"}:
@@ -11957,6 +11917,24 @@ def _normalize_project_chat_source_context(raw: Any, *, project_id: str = "", de
         if value:
             result[key] = value
     return result
+
+
+def _is_manual_bot_project_chat_session_context(context: dict[str, Any] | None) -> bool:
+    if not isinstance(context, dict) or not context:
+        return False
+    source_type = str(context.get("source_type") or "").strip().lower()
+    return bool(
+        str(context.get("platform") or "").strip()
+        or str(context.get("connector_id") or "").strip()
+        or source_type == "group_message"
+    )
+
+
+def _raise_manual_bot_project_chat_session_gone() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail="AI 对话页的机器人对话创建和编辑接口已下架；飞书等平台内的机器人消息入口不受影响。",
+    )
 
 
 def _project_chat_session_context(item: Any) -> dict[str, str]:
@@ -13585,12 +13563,12 @@ def _build_query_mcp_cli_prompt(
         "",
         "项目聊天打包部署命令约束：",
         "1. “打包部署”“发布测试环境”“推送部署产物”等需要在用户机器上运行打包命令的任务，只能通过项目聊天的命令执行能力处理。",
-        "2. 本地打包命令只允许在项目聊天已选择外部智能体、且当前运行在桌面端 Runner 时使用；未选择外部智能体、未运行桌面端或当前电脑不可达时，必须停止并提示无法执行本地命令。",
+        "2. 本地打包命令只允许在桌面端 Runner 中通过项目聊天命令执行能力使用；未运行桌面端或当前电脑不可达时，必须停止并提示无法执行本地命令。",
         "3. 命令执行前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。",
         "4. 客户端打包完成或读取用户指定压缩包后，必须把产物推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/桌面端 Runner 读取本地文件并上传；否则调用项目 MCP 工具 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`，不要把 Windows/macOS 本地路径当作服务端可读路径。自动部署由部署产物 AI/服务端部署能力基于服务端 artifact 和项目部署配置执行。",
         "4.1 用户说“推送到服务端部署”“上传部署”“部署这个 zip”且未限定“只上传”时，`push_project_deploy_artifact.auto_deploy=true`；只有明确“只上传”才传 false。已有 `artifact_id` / 服务端部署产物上下文时，直接调用 `deploy_project_deploy_artifact`，不要要求用户重新上传。",
         "4.2 如果入口当前接入上下文已提供默认 `project_id`，部署、上传或推送部署产物时直接使用该项目；不要在用户已确认部署后再因为“缺少 project_id”暂停。",
-        "5. 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给外部智能体；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 `blocked` / `missing`。",
+        "5. 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给模型或本地命令；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 `blocked` / `missing`。",
         "6. 当前删除打包文件只删除服务端保存的部署 artifact 文件及 artifact 记录；不删除外部平台消息，也不删除远端服务器已部署目录。",
         "7. 机器人通知群优先使用机器人连接器扫描结果；飞书支持扫描机器人所在群，微信/QQ 若返回 `unsupported`，客户端必须提示平台缺少群列表 API/适配能力。",
         "",
@@ -19062,14 +19040,6 @@ async def list_project_chat_providers(
     chat_settings = dict(persisted_chat_settings)
     runtime_external_tools = list_project_external_tools_runtime(project_id)
     effective_workspace_path = _resolve_project_workspace_for_chat(project, chat_settings)
-    external_agent_info = await _build_project_external_agent_info(
-        project=project,
-        auth_payload=auth_payload,
-        settings=chat_settings,
-        workspace_path=effective_workspace_path,
-    )
-    local_connectors = list(external_agent_info.get("local_connectors") or [])
-
     return {
         "project_id": project_id,
         "workspace_path": effective_workspace_path,
@@ -19077,26 +19047,16 @@ async def list_project_chat_providers(
         "project_ai_entry_file": str(project.ai_entry_file or "").strip(),
         "chat_modes": [
             {"id": "system", "label": "系统对话"},
-            {
-                "id": "external_agent",
-                "label": "外部 Agent",
-                "available": bool(external_agent_info.get("available")),
-                "reason": str(external_agent_info.get("reason") or ""),
-            },
         ],
         "providers": providers,
-        "local_connectors": local_connectors,
+        "local_connectors": [],
         "default_provider_id": str(selected_provider.get("id") or ""),
         "default_model_name": str(selected_provider.get("default_model") or ""),
         "employees": candidates,
         "default_employee_id": str((default_employee or {}).get("id") or ""),
         "mcp_modules": mcp_modules,
         "runtime_external_tools": runtime_external_tools,
-        "external_agent": {
-            key: value
-            for key, value in external_agent_info.items()
-            if key != "local_connectors"
-        },
+        "external_agent": {"available": False, "reason": "代理会话功能已移除"},
         "chat_settings": _public_project_chat_settings(persisted_chat_settings),
     }
 
@@ -22387,6 +22347,53 @@ async def update_project_chat_ai_entry_file(
     }
 
 
+@router.post("/{project_id}/chat/external-agent/tasks/claim")
+async def claim_project_chat_external_agent_task(
+    project_id: str,
+    req: ProjectChatExternalAgentTaskClaimReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    raise HTTPException(410, "代理会话功能已移除")
+
+
+@router.post("/{project_id}/chat/external-agent/tasks/{task_id}/complete")
+async def complete_project_chat_external_agent_task(
+    project_id: str,
+    task_id: str,
+    req: ProjectChatExternalAgentTaskCompleteReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    raise HTTPException(410, "代理会话功能已移除")
+
+
+@router.post("/{project_id}/chat/external-agent/tasks/{task_id}/approval-requests")
+async def create_project_chat_external_agent_approval_request(
+    project_id: str,
+    task_id: str,
+    req: ProjectChatExternalAgentApprovalRequestReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    raise HTTPException(410, "代理会话功能已移除")
+
+
+@router.get("/{project_id}/chat/external-agent/tasks/{task_id}/approval-requests/{approval_id}")
+async def get_project_chat_external_agent_approval_request(
+    project_id: str,
+    task_id: str,
+    approval_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    raise HTTPException(410, "代理会话功能已移除")
+
+
 @router.get("/{project_id}/chat/history")
 async def list_project_chat_history(
     project_id: str,
@@ -22521,10 +22528,10 @@ def _build_project_chat_requirement_session(
         session_id=session_id,
         parent_id=root_node_id,
         node_kind="plan_step",
-        stage_key="external_agent" if source == "tauri_external_agent_runner" else "ai_chat",
-        title="外部 Agent 执行" if source == "tauri_external_agent_runner" else "AI 对话处理",
+        stage_key="desktop_runner" if source == "tauri_external_agent_runner" else "ai_chat",
+        title="桌面端 Runner 执行" if source == "tauri_external_agent_runner" else "AI 对话处理",
         description="\n".join([root_goal, *[bit for bit in source_bits if bit]]),
-        objective="通过 AI 对话或外部 Agent 处理用户需求。",
+        objective="通过 AI 对话或桌面端 Runner 处理用户需求。",
         level=1,
         sort_order=1,
         status=child_status,
@@ -22942,6 +22949,8 @@ async def create_project_chat_session(
         project_id=project_id,
         default_source_type="manual_ai_chat",
     )
+    if _is_manual_bot_project_chat_session_context(source_context):
+        _raise_manual_bot_project_chat_session_gone()
     title = _build_project_chat_session_title(str(payload.title or ""), source_context)
     item = project_chat_store.create_session(
         project_id,
@@ -22982,8 +22991,12 @@ async def update_project_chat_session(
         project_id=project_id,
         default_source_type=str(getattr(current, "source_type", "") or "manual_ai_chat"),
     )
+    if _is_manual_bot_project_chat_session_context(source_context):
+        _raise_manual_bot_project_chat_session_gone()
     if not source_context:
         source_context = _project_chat_session_context(current)
+    if _is_manual_bot_project_chat_session_context(source_context):
+        _raise_manual_bot_project_chat_session_gone()
     explicit_title = payload.title if payload.title is not None else None
     title = str(explicit_title).strip()[:80] if explicit_title is not None else None
     item = project_chat_store.update_session(
@@ -23024,6 +23037,8 @@ async def resolve_project_chat_session_source(
     if current is None:
         raise HTTPException(404, "chat session not found")
     source_context = _project_chat_session_context(current)
+    if _is_manual_bot_project_chat_session_context(source_context):
+        _raise_manual_bot_project_chat_session_gone()
     platform = _normalize_project_chat_platform(source_context.get("platform"))
     if platform != "feishu":
         raise HTTPException(400, "当前只支持解析飞书群 ID")
@@ -23800,77 +23815,15 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             }
         )
 
-    async def _resolve_external_agent_runtime(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Any]:
-        raise ValueError("外部 Agent 已移除本地连接器执行路径；请使用桌面端 Runner。")
-
     async def _handle_agent_prepare(payload: dict[str, Any]) -> None:
         request_id = str(payload.get("request_id") or "").strip()
-        runtime_settings, external_agent_info, _connector = await _resolve_external_agent_runtime(payload)
-        session_id = f"codex-{uuid.uuid4().hex[:12]}"
         await _send_project_chat_event(
             {
-                "type": "agent_ready",
+                "type": "error",
                 "request_id": request_id,
-                "chat_mode": "external_agent",
-                "agent_type": str(runtime_settings.get("external_agent_type") or "codex_cli"),
-                "agent_session_id": session_id,
-                "session_id": session_id,
-                "thread_id": session_id,
-                **external_agent_info,
-                "ready": True,
+                "chat_mode": "system",
+                "message": "代理会话功能已移除，请使用系统对话。",
             }
-        )
-
-    async def _run_external_agent_chat(
-        *,
-        request_id: str,
-        chat_session_id: str,
-        assistant_message_id: str,
-        effective_user_message: str,
-        runtime_settings: dict[str, Any],
-        selected_employee: dict[str, Any] | None,
-        selected_employee_ids: list[str],
-        employee_id_val: str,
-        task_tree_payload: dict[str, Any] | None,
-        cancel_event: asyncio.Event,
-        allow_requirement_record: bool,
-        chat_surface: str,
-    ) -> None:
-        session_id = f"codex-{uuid.uuid4().hex[:12]}"
-        exc = ValueError("外部 Agent 已移除本地连接器执行路径；请使用桌面端 Runner。")
-        done_payload, final_answer = _build_project_chat_failure_done_payload(
-            exc=exc,
-            project_id=project_id,
-            username=username,
-            chat_session_id=chat_session_id,
-            provider_id="external-agent",
-            model_name="codex-cli",
-        )
-        done_payload["request_id"] = request_id
-        done_payload["chat_mode"] = "external_agent"
-        await _send_project_chat_event(done_payload)
-        assistant_source_context = _normalize_project_chat_source_context(
-            {
-                "source_type": "manual_ai_chat",
-                "chat_mode": "external_agent",
-                "external_agent_type": str(
-                    runtime_settings.get("external_agent_type") or "codex_cli"
-                ),
-                "agent_session_id": session_id,
-                "session_id": session_id,
-                "thread_id": session_id,
-            },
-            project_id=project_id,
-            default_source_type="manual_ai_chat",
-        )
-        _append_chat_record(
-            project_id=project_id,
-            username=username,
-            role="assistant",
-            content=final_answer,
-            message_id=assistant_message_id,
-            chat_session_id=chat_session_id,
-            source_context=assistant_source_context,
         )
 
     async def handle_request(payload: dict):
@@ -23974,21 +23927,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 (task_tree_payload or {}).get("model_context_summary") or ""
             ).strip()
             if str(runtime_settings.get("chat_mode") or "").strip().lower() == "external_agent":
-                await _run_external_agent_chat(
-                    request_id=request_id,
-                    chat_session_id=chat_session_id,
-                    assistant_message_id=assistant_message_id,
-                    effective_user_message=effective_user_message,
-                    runtime_settings=runtime_settings,
-                    selected_employee=selected_employee,
-                    selected_employee_ids=selected_employee_ids,
-                    employee_id_val=employee_id_val,
-                    task_tree_payload=task_tree_payload,
-                    cancel_event=cancel_event,
-                    allow_requirement_record=allow_requirement_record,
-                    chat_surface=chat_surface,
-                )
-                return
+                runtime_settings["chat_mode"] = "system"
             if not is_interaction_continuation and _is_project_meta_query(effective_user_message):
                 direct_answer = _build_project_meta_reply(project, selected_employee, candidates)
                 direct_done_payload = _build_project_chat_done_payload(

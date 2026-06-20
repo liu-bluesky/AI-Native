@@ -96,6 +96,7 @@ async def run_project_chat_once(
         for name in (req.attachment_names or [])
         if str(name or "").strip()
     ]
+    history = list(req.history or [])
     if not user_message and not normalized_images and not attachment_names:
         raise RuntimeError("message is required")
 
@@ -151,6 +152,8 @@ async def run_project_chat_once(
         )
 
     runtime_settings = projects_router._resolve_chat_runtime_settings(req, project)
+    if str(runtime_settings.get("chat_mode") or "").strip().lower() == "external_agent":
+        runtime_settings["chat_mode"] = "system"
     selected_employees, _ = projects_router._resolve_project_chat_employees(
         project_id,
         list(runtime_settings.get("selected_employee_ids") or []),

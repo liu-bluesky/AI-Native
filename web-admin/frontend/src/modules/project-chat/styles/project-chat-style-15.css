@@ -264,11 +264,6 @@
     grid-column: 1;
   }
 
-  .runner-session-detail__stdin {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
   .settings-form .el-form-item {
     padding-top: 14px;
   }

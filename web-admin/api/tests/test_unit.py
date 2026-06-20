@@ -9514,7 +9514,7 @@ def test_serialize_project_exposes_public_chat_settings():
         user_count=0,
     )
 
-    assert payload["chat_settings"]["chat_mode"] == "external_agent"
+    assert payload["chat_settings"]["chat_mode"] == "system"
     assert payload["chat_settings"]["external_agent_type"] == "hermes"
     assert payload["chat_settings"]["connector_workspace_path"] == "/tmp/workspace"
 
@@ -14534,7 +14534,7 @@ async def test_project_deploy_artifact_plan_generation_uses_project_chat_model(t
 
 
 @pytest.mark.asyncio
-async def test_project_deploy_command_external_agent_falls_back_to_system_model(monkeypatch):
+async def test_project_deploy_command_legacy_external_agent_uses_system_model(monkeypatch):
     from models.requests import ProjectDeployCommandGenerateReq
     from routers import projects as projects_router
     from stores.json.project_store import ProjectConfig
@@ -14591,8 +14591,8 @@ async def test_project_deploy_command_external_agent_falls_back_to_system_model(
     )
 
     assert captured["runtime_settings"]["chat_mode"] == "system"
-    assert result["chat_mode"] == "system_fallback"
-    assert result["requested_chat_mode"] == "external_agent"
+    assert result["chat_mode"] == "system"
+    assert "requested_chat_mode" not in result
     assert result["deploy_command"] == "set -e\necho deploy"
 
 
@@ -21147,8 +21147,8 @@ def test_public_project_chat_settings_preserves_connector_configuration():
     assert settings["connector_workspace_path"] == "/tmp/workspace"
 
 
-def test_update_project_chat_settings_merges_with_persisted_chat_mode(tmp_path, monkeypatch):
-    """局部更新对话设置时，不应把已保存的外部 Agent 模式重置为系统对话。"""
+def test_update_project_chat_settings_normalizes_persisted_external_agent_mode(tmp_path, monkeypatch):
+    """局部更新对话设置时，旧外部 Agent 模式应归一为系统对话。"""
     from stores.json.project_store import ProjectConfig
 
     client, project_store = _build_project_api_test_client(
@@ -21175,14 +21175,14 @@ def test_update_project_chat_settings_merges_with_persisted_chat_mode(tmp_path, 
 
     assert response.status_code == 200
     settings = response.json()["settings"]
-    assert settings["chat_mode"] == "external_agent"
+    assert settings["chat_mode"] == "system"
     assert settings["external_agent_type"] == "codex_cli"
     assert settings["connector_workspace_path"] == "/tmp/next-workspace"
-    assert project_store.get("proj-1").chat_settings["chat_mode"] == "external_agent"
+    assert project_store.get("proj-1").chat_settings["chat_mode"] == "system"
 
 
-def test_project_chat_source_context_preserves_external_agent_runtime_snapshot():
-    """消息 source_context 应保留真实执行模式，避免历史记录依赖当前项目设置推断。"""
+def test_project_chat_source_context_drops_external_agent_runtime_snapshot():
+    """外部 Agent 功能移除后，消息 source_context 不再保留该执行模式。"""
     from routers import projects as projects_router
 
     context = projects_router._normalize_project_chat_source_context(
@@ -21199,7 +21199,7 @@ def test_project_chat_source_context_preserves_external_agent_runtime_snapshot()
     )
 
     assert context["source_type"] == "manual_ai_chat"
-    assert context["chat_mode"] == "external_agent"
+    assert "chat_mode" not in context
     assert context["external_agent_type"] == "codex_cli"
     assert context["agent_session_id"] == "codex-123"
     assert context["session_id"] == "codex-123"

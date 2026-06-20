@@ -890,7 +890,6 @@ function getEmployeeActions(row) {
     actions.push({ key: "enable-feedback", label: "开启反馈", type: "primary" });
   }
   actions.push({ key: "memory", label: "记忆" });
-  actions.push({ key: "sync", label: "同步" });
   if (canDeleteRow(row)) {
     actions.push({ key: "delete", label: "删除", type: "danger" });
   }
@@ -942,9 +941,6 @@ function handleEmployeeAction(row, actionKey) {
       break;
     case "memory":
       router.push(`/memory/${row.id}`);
-      break;
-    case "sync":
-      router.push(`/sync/${row.id}`);
       break;
     case "delete":
       void handleDelete(row);

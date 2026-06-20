@@ -1085,10 +1085,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { ElMessage } from "element-plus";
 import ProjectWorkspaceBlock from "@/components/project-workspace/ProjectWorkspaceBlock.vue";
 import api from "@/utils/api.js";
-import {
-  hasNativeDesktopBridge,
-  runNativeExternalAgentOnce,
-} from "@/utils/native-desktop-bridge.js";
 
 const props = defineProps({
   projectId: {
@@ -2307,118 +2303,6 @@ function deployTargetRowKey(row, index = 0) {
   ].join(":");
 }
 
-function cleanGeneratedDeployCommand(content) {
-  let text = String(content || "").trim();
-  if (!text) return "";
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === "object") {
-      text = String(parsed.deploy_command || parsed.command || "").trim();
-    }
-  } catch {
-    // Continue with plain text output.
-  }
-  if (text.includes("```")) {
-    const match = text.match(/```(?:bash|sh|shell|json)?\s*([\s\S]*?)```/i);
-    if (match) text = String(match[1] || "").trim();
-    if (text.startsWith("{")) {
-      try {
-        const parsed = JSON.parse(text);
-        text = String(parsed?.deploy_command || parsed?.command || text).trim();
-      } catch {
-        // Continue with fenced shell output.
-      }
-    }
-  }
-  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim().slice(0, 1000).trim();
-}
-
-function buildDeployCommandGenerationPrompt({ profile, component, target, artifactKind, artifactPath }) {
-  const payload = {
-    project: {
-      id: props.projectId,
-      name: String(props.project?.name || "").trim(),
-      description: String(props.project?.description || "").trim(),
-    },
-    deploy_profile: {
-      id: String(profile?.id || "").trim(),
-      name: String(profile?.name || "").trim(),
-      environment: String(profile?.environment || "").trim(),
-    },
-    deploy_component: {
-      id: String(component?.id || "").trim(),
-      name: String(component?.name || "").trim(),
-      artifact_kind: String(component?.artifact_kind || "").trim(),
-      package: component?.package && typeof component.package === "object" ? component.package : {},
-      auto_deploy_on_artifact_update: Boolean(component?.safety?.auto_deploy_on_artifact_update),
-    },
-    deploy_target: {
-      id: String(target?.id || "").trim(),
-      name: String(target?.name || "").trim(),
-      transport_mode: "ftp",
-      remote_path: String(target?.remote_path || "").trim(),
-      existing_deploy_command: String(target?.deploy_command || "").trim(),
-    },
-    artifact: {
-      artifact_path: String(artifactPath || "").trim(),
-      artifact_kind: String(artifactKind || "source-bundle").trim() || "source-bundle",
-    },
-  };
-  return [
-    "你是谨慎的部署工程师。请基于输入信息生成一段适合保存到部署配置的 Linux shell 部署命令。",
-    "命令将在系统把产物上传到目标 remote_path 后执行。只生成幂等、可重复执行、失败即停止的命令。",
-    "约束：",
-    "- 当前只支持 FTP 上传，服务器连接和密码已由系统全局 FTP 账户管理，命令里不要包含账号、密码、token、密钥。",
-    "- 只能依据本次输入里的部署配置、目标路径和产物信息生成命令；不要扫描、读取或引用历史发布配置。",
-    "- 如果无法确定具体重启命令，生成保守命令：校验目录、解压/同步产物、输出下一步提示，不要编造 systemctl 服务名。",
-    "- 最终 deploy_command 不超过 1000 字符。",
-    "",
-    "只返回 JSON，不要输出 Markdown 或解释：{\"deploy_command\":\"...\"}",
-    "",
-    `输入：\n${JSON.stringify(payload, null, 2)}`,
-  ].join("\n");
-}
-
-async function generateDeployCommandViaExternalAgent(row) {
-  const chatSettings = props.project?.chat_settings && typeof props.project.chat_settings === "object"
-    ? props.project.chat_settings
-    : {};
-  if (!hasNativeDesktopBridge()) {
-    throw new Error("外部 Agent 需要在桌面端 Runner 中生成部署命令");
-  }
-  const workspacePath = String(
-    chatSettings.connector_workspace_path
-      || props.project?.workspace_path
-      || "",
-  ).trim();
-  if (!workspacePath) {
-    throw new Error("外部 Agent 缺少项目工作区路径，请先在项目聊天设置中配置本机工作区");
-  }
-  const artifactKind = activeComponent.value?.artifact_kind || activeProfile.value?.artifact_kind || "source-bundle";
-  const artifactPath = String(
-    activeComponent.value?.package?.artifact_path || activeComponent.value?.package?.output_path || "",
-  ).trim();
-  const result = await runNativeExternalAgentOnce({
-    agentType: String(chatSettings.external_agent_type || "codex_cli").trim() || "codex_cli",
-    workspacePath,
-    prompt: buildDeployCommandGenerationPrompt({
-      profile: activeProfile.value,
-      component: activeComponent.value,
-      target: row,
-      artifactKind,
-      artifactPath,
-    }),
-    timeoutMs: 120000,
-  });
-  const command = cleanGeneratedDeployCommand(
-    result?.finalOutput || result?.final_output || result?.stdout || result?.output || "",
-  );
-  if (!command) {
-    throw new Error("外部 Agent 没有返回可用部署命令");
-  }
-  return command;
-}
-
 async function generateDeployCommand(row, index = 0) {
   if (!props.canManageProject) {
     ElMessage.warning(props.manageBlockedMessage);
@@ -2428,12 +2312,6 @@ async function generateDeployCommand(row, index = 0) {
   const rowKey = deployTargetRowKey(row, index);
   deployCommandGeneratingKey.value = rowKey;
   try {
-    const chatMode = String(props.project?.chat_settings?.chat_mode || "system").trim().toLowerCase();
-    if (chatMode === "external_agent") {
-      row.deploy_command = await generateDeployCommandViaExternalAgent(row);
-      ElMessage.success("部署命令已由外部 Agent 生成，保存配置后后续部署会直接复用");
-      return;
-    }
     const data = await api.post(`/projects/${props.projectId}/deploy-command/generate`, {
       profile: {
         id: activeProfile.value.id,
@@ -3025,7 +2903,7 @@ async function deployArtifactViaProjectAi(row, extraPayload = {}) {
       ? data.ai_execution
       : {};
     if (String(aiExecution.status || "").trim() === "handoff_required") {
-      throw new Error("后端仍返回外部智能体交接，未创建真实部署运行");
+      throw new Error("后端返回了已下线的部署交接状态，未创建真实部署运行");
     }
     const status = String(data?.deployment?.status || data?.status || "").trim().toLowerCase();
     const statusLabel = getDeployStatusLabel(status);

@@ -2,7 +2,6 @@ import {
   invoke as invokeTauriCommand,
   isTauri as isTauriRuntime,
 } from "@tauri-apps/api/core";
-import { listen as listenTauriEvent } from "@tauri-apps/api/event";
 
 const NATIVE_BRIDGE_NAMES = [
   "__AI_EMPLOYEE_DESKTOP__",
@@ -19,20 +18,9 @@ const TAURI_COMMAND_NAMES = {
   prepareWorkspaceFileWrite: "prepare_workspace_file_write",
   classifyRunnerCommand: "classify_runner_command",
   runRunnerCommand: "run_runner_command",
-  prepareExternalAgentLaunch: "prepare_external_agent_launch",
-  runExternalAgentOnce: "run_external_agent_once",
-  startExternalAgentSession: "start_external_agent_session",
-  getExternalAgentSession: "get_external_agent_session",
-  listExternalAgentSessions: "list_external_agent_sessions",
-  cancelExternalAgentSession: "cancel_external_agent_session",
-  hardKillExternalAgentSession: "hard_kill_external_agent_session",
-  writeExternalAgentSessionInput: "write_external_agent_session_input",
   recordRunnerPermissionDecision: "record_runner_permission_decision",
   listRunnerPermissionDecisions: "list_runner_permission_decisions",
 };
-
-export const NATIVE_EXTERNAL_AGENT_SESSION_EVENT =
-  "ai-employee://external-agent-session";
 
 function canUseWindow() {
   return typeof window !== "undefined";
@@ -189,6 +177,10 @@ export async function getNativeRuntimeInfo() {
     desktopBridgeVersion: String(
       result.desktopBridgeVersion || result.desktop_bridge_version || "",
     ).trim(),
+    installDir: String(result.installDir || result.install_dir || "").trim(),
+    defaultWorkspacePath: String(
+      result.defaultWorkspacePath || result.default_workspace_path || "",
+    ).trim(),
   };
 }
 
@@ -261,123 +253,56 @@ export async function runNativeRunnerCommand(options = {}) {
   return normalizeRunnerCommandResult(result, payload);
 }
 
-export async function prepareNativeExternalAgentLaunch(options = {}) {
-  const payload = {
-    agentType: String(options?.agentType || options?.agent_type || "").trim(),
-    workspacePath: String(
-      options?.workspacePath || options?.workspace_path || "",
-    ).trim(),
-    prompt: String(options?.prompt || ""),
-  };
-  const result = await invokeNativeDesktopBridge(
-    "prepareExternalAgentLaunch",
-    payload,
-  );
-  return normalizeExternalAgentLaunchPlan(result, payload);
+function removedNativeExternalAgentError() {
+  return new Error("代理会话功能已下线，请使用系统对话或桌面端 Runner 命令。");
 }
 
-export async function runNativeExternalAgentOnce(options = {}) {
-  const payload = {
-    agentType: String(options?.agentType || options?.agent_type || "").trim(),
-    workspacePath: String(
-      options?.workspacePath || options?.workspace_path || "",
-    ).trim(),
-    prompt: String(options?.prompt || ""),
-    timeoutMs: Number(options?.timeoutMs || options?.timeout_ms || 60000),
-  };
-  const result = await invokeNativeDesktopBridge("runExternalAgentOnce", payload);
-  return normalizeExternalAgentRunResult(result, payload);
+export async function prepareNativeExternalAgentLaunch(options = {}) {
+  throw removedNativeExternalAgentError();
 }
 
 export async function startNativeExternalAgentSession(options = {}) {
-  const payload = {
-    agentType: String(options?.agentType || options?.agent_type || "").trim(),
-    workspacePath: String(
-      options?.workspacePath || options?.workspace_path || "",
-    ).trim(),
-    prompt: String(options?.prompt || ""),
-  };
-  const result = await invokeNativeDesktopBridge(
-    "startExternalAgentSession",
-    payload,
-  );
-  return normalizeExternalAgentSessionSnapshot(result, payload);
+  throw removedNativeExternalAgentError();
+}
+
+/// 复用常驻会话发送新一轮 prompt（多轮上下文由 CLI 自身维护）。
+/// 找不到可复用会话时 Rust 端返回 Err，调用方据此回退到 startNativeExternalAgentSession。
+export async function sendNativeExternalAgentPrompt(options = {}) {
+  throw removedNativeExternalAgentError();
+}
+
+/// 预热常驻会话：提前启动进程并完成握手，首条消息直接复用、免冷启动。
+/// 当前仅 hermes 支持；其它 agent 或环境不可用时 Rust 端返回 Err。
+export async function warmupNativeExternalAgentSession(options = {}) {
+  throw removedNativeExternalAgentError();
 }
 
 export async function getNativeExternalAgentSession(options = {}) {
-  const payload = {
-    sessionId: String(options?.sessionId || options?.session_id || "").trim(),
-    sinceSeq: Number(options?.sinceSeq ?? options?.since_seq ?? 0),
-  };
-  const result = await invokeNativeDesktopBridge(
-    "getExternalAgentSession",
-    payload,
-  );
-  return normalizeExternalAgentSessionSnapshot(result, payload);
+  throw removedNativeExternalAgentError();
 }
 
 export async function listNativeExternalAgentSessions(options = {}) {
-  const limit = Number(options?.limit || 20);
-  const result = await invokeNativeDesktopBridge("listExternalAgentSessions", {
-    limit,
-  });
-  if (!Array.isArray(result)) return [];
-  return result
-    .map((item) => normalizeExternalAgentSessionSnapshot(item))
-    .filter((item) => item.sessionId);
+  return [];
 }
 
 export async function cancelNativeExternalAgentSession(options = {}) {
-  const payload = {
-    sessionId: String(options?.sessionId || options?.session_id || "").trim(),
-  };
-  const result = await invokeNativeDesktopBridge(
-    "cancelExternalAgentSession",
-    payload,
-  );
-  return normalizeExternalAgentSessionSnapshot(result, payload);
+  throw removedNativeExternalAgentError();
 }
 
 export async function hardKillNativeExternalAgentSession(options = {}) {
-  const payload = {
-    sessionId: String(options?.sessionId || options?.session_id || "").trim(),
-  };
-  const result = await invokeNativeDesktopBridge(
-    "hardKillExternalAgentSession",
-    payload,
-  );
-  return normalizeExternalAgentSessionSnapshot(result, payload);
+  throw removedNativeExternalAgentError();
 }
 
 export async function writeNativeExternalAgentSessionInput(options = {}) {
-  const payload = {
-    sessionId: String(options?.sessionId || options?.session_id || "").trim(),
-    input: String(options?.input || ""),
-    appendNewline: options?.appendNewline ?? options?.append_newline ?? true,
-  };
-  const result = await invokeNativeDesktopBridge(
-    "writeExternalAgentSessionInput",
-    payload,
-  );
-  return normalizeExternalAgentSessionSnapshot(result, payload);
+  throw removedNativeExternalAgentError();
+}
+
+export async function resolveNativeExternalAgentPermission(options = {}) {
+  throw removedNativeExternalAgentError();
 }
 
 export async function subscribeNativeExternalAgentSessionEvents(handler) {
-  if (typeof handler !== "function" || !canUseTauriApi()) {
-    return () => {};
-  }
-  try {
-    const unlisten = await listenTauriEvent(
-      NATIVE_EXTERNAL_AGENT_SESSION_EVENT,
-      (event) => {
-        handler(normalizeExternalAgentSessionEvent(event?.payload));
-      },
-    );
-    return typeof unlisten === "function" ? unlisten : () => {};
-  } catch (err) {
-    console.warn("subscribe native external agent session events failed", err);
-    return () => {};
-  }
+  return () => {};
 }
 
 export async function recordNativeRunnerPermissionDecision(options = {}) {
@@ -492,176 +417,6 @@ function normalizeRunnerCommandResult(value, fallback = {}) {
     exitCode: Number(value.exitCode ?? value.exit_code ?? -1),
     durationMs: Number(value.durationMs ?? value.duration_ms ?? 0),
     timedOut: Boolean(value.timedOut || value.timed_out),
-  };
-}
-
-function normalizeExternalAgentLaunchPlan(value, fallback = {}) {
-  if (!value || typeof value !== "object") {
-    return {
-      agentType: fallback.agentType || "",
-      label: "",
-      command: "",
-      args: [],
-      workspacePath: fallback.workspacePath || "",
-      installed: false,
-      executablePath: "",
-      version: "",
-      riskLevel: "unavailable",
-      requiresApproval: false,
-      canLaunch: false,
-      blockedReason: "桌面端原生启动计划不可用",
-      summary: "",
-    };
-  }
-  return {
-    agentType: String(value.agentType || value.agent_type || fallback.agentType || "").trim(),
-    label: String(value.label || "").trim(),
-    command: String(value.command || "").trim(),
-    args: Array.isArray(value.args)
-      ? value.args.map((item) => String(item || "").trim()).filter(Boolean)
-      : [],
-    workspacePath: String(
-      value.workspacePath || value.workspace_path || fallback.workspacePath || "",
-    ).trim(),
-    installed: Boolean(value.installed),
-    executablePath: String(
-      value.executablePath || value.executable_path || "",
-    ).trim(),
-    version: String(value.version || "").trim(),
-    riskLevel: String(value.riskLevel || value.risk_level || "").trim(),
-    requiresApproval: Boolean(
-      value.requiresApproval || value.requires_approval,
-    ),
-    canLaunch: Boolean(value.canLaunch || value.can_launch),
-    blockedReason: String(
-      value.blockedReason || value.blocked_reason || "",
-    ).trim(),
-    summary: String(value.summary || "").trim(),
-  };
-}
-
-function normalizeExternalAgentRunResult(value, fallback = {}) {
-  const plan = normalizeExternalAgentLaunchPlan(value, fallback);
-  if (!value || typeof value !== "object") {
-    return {
-      ...plan,
-      stdout: "",
-      stderr: "",
-      exitCode: -1,
-      durationMs: 0,
-      timedOut: false,
-      truncated: false,
-    };
-  }
-  return {
-    ...plan,
-    stdout: String(value.stdout || ""),
-    stderr: String(value.stderr || ""),
-    exitCode: Number(value.exitCode ?? value.exit_code ?? -1),
-    durationMs: Number(value.durationMs ?? value.duration_ms ?? 0),
-    timedOut: Boolean(value.timedOut || value.timed_out),
-    truncated: Boolean(value.truncated),
-  };
-}
-
-function normalizeExternalAgentSessionSnapshot(value, fallback = {}) {
-  if (!value || typeof value !== "object") {
-    return {
-      sessionId: fallback.sessionId || "",
-      agentType: fallback.agentType || "",
-      label: "",
-      command: "",
-      args: [],
-      workspacePath: fallback.workspacePath || "",
-      status: "unavailable",
-      exitCode: null,
-      startedAtEpochMs: 0,
-      updatedAtEpochMs: 0,
-      logs: [],
-      nextSeq: Number(fallback.sinceSeq || 0),
-      finalOutput: "",
-      blockedReason: "桌面端 Runner 会话不可用",
-      summary: "",
-      stdinOpen: false,
-    };
-  }
-  return {
-    sessionId: String(value.sessionId || value.session_id || fallback.sessionId || "").trim(),
-    agentType: String(value.agentType || value.agent_type || fallback.agentType || "").trim(),
-    label: String(value.label || "").trim(),
-    command: String(value.command || "").trim(),
-    args: Array.isArray(value.args)
-      ? value.args.map((item) => String(item || "").trim()).filter(Boolean)
-      : [],
-    workspacePath: String(
-      value.workspacePath || value.workspace_path || fallback.workspacePath || "",
-    ).trim(),
-    status: String(value.status || "").trim(),
-    exitCode:
-      value.exitCode === null || value.exit_code === null
-        ? null
-        : Number(value.exitCode ?? value.exit_code ?? -1),
-    startedAtEpochMs: Number(
-      value.startedAtEpochMs ?? value.started_at_epoch_ms ?? 0,
-    ),
-    updatedAtEpochMs: Number(
-      value.updatedAtEpochMs ?? value.updated_at_epoch_ms ?? 0,
-    ),
-    logs: Array.isArray(value.logs)
-      ? value.logs.map((item) => normalizeExternalAgentSessionLog(item))
-      : [],
-    nextSeq: Number(value.nextSeq ?? value.next_seq ?? fallback.sinceSeq ?? 0),
-    finalOutput: String(value.finalOutput || value.final_output || ""),
-    blockedReason: String(
-      value.blockedReason || value.blocked_reason || "",
-    ).trim(),
-    summary: String(value.summary || "").trim(),
-    stdinOpen: Boolean(value.stdinOpen ?? value.stdin_open),
-  };
-}
-
-function normalizeExternalAgentSessionLog(value) {
-  if (!value || typeof value !== "object") {
-    return {
-      seq: 0,
-      stream: "",
-      content: "",
-      kind: "log",
-      title: "",
-      createdAtEpochMs: 0,
-    };
-  }
-  return {
-    seq: Number(value.seq || 0),
-    // stream 即 raw_channel（来源通道，调试用）。
-    stream: String(value.stream || "").trim(),
-    content: String(value.content || ""),
-    // 统一事件类型：reasoning/plan/tool_call/tool_result/message/final/error/log。
-    kind: String(value.kind || "log").trim() || "log",
-    // 工具名 / 步骤标题（可空）。
-    title: String(value.title || "").trim(),
-    createdAtEpochMs: Number(
-      value.createdAtEpochMs ?? value.created_at_epoch_ms ?? 0,
-    ),
-  };
-}
-
-function normalizeExternalAgentSessionEvent(value) {
-  const payload = value && typeof value === "object" ? value : {};
-  const snapshot = normalizeExternalAgentSessionSnapshot(payload.snapshot || {});
-  const log = payload.log ? normalizeExternalAgentSessionLog(payload.log) : null;
-  return {
-    eventType: String(payload.eventType || payload.event_type || "").trim(),
-    sessionId: String(
-      payload.sessionId ||
-        payload.session_id ||
-        snapshot.sessionId ||
-        "",
-    ).trim(),
-    status: String(payload.status || snapshot.status || "").trim(),
-    stream: String(payload.stream || log?.stream || "").trim(),
-    log,
-    snapshot,
   };
 }
 
