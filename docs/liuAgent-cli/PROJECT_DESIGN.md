@@ -25,11 +25,18 @@ Adapters
   -> CLI Adapter
   -> Web Adapter
   -> Desktop Adapter
+
+Agent Gateway
+  -> ProjectChat Adapter
+  -> External System Adapter
+  -> Unified MCP RequirementSession
 ```
 
 ## 详细设计目录
 
 更细的数据结构、协议分类和名词解释放在 [design/README.md](./design/README.md)。
+
+通用智能体接入、ProjectChat 边界、外部系统接入和 MCP 统一记录入口放在 [design/15-agent-gateway-mcp.md](./design/15-agent-gateway-mcp.md)。
 
 ## 核心模块
 
@@ -45,6 +52,12 @@ Adapters
 - 生成最终输出
 
 Agent Core 不直接读写终端，不直接弹窗，也不直接控制浏览器。
+
+### Agent Gateway
+
+Agent Gateway 是 ProjectChat、桌面端、CLI 和外部系统进入 liuAgent Core 的标准入口。它创建 `AgentInvocation`，绑定项目、会话、智能体、提示词和 workspace 元数据，并通过 Unified MCP 记录 `RequirementSession`。
+
+Agent Gateway 不执行用户本地工具。用户本地文件、命令、patch、下载和本地 MCP 工具只能由 Desktop/Tauri/Local Runner 执行；服务端只保存配置、需求、任务树、记忆和审计摘要。
 
 ### Tool Runtime
 

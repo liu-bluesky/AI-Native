@@ -24,7 +24,13 @@ from stores.json.project_chat_task_store import (
 from stores.json.task_tree_evolution_store import TaskTreeEvolutionSample
 from stores.json.work_session_store import WorkSessionEvent
 
-_NODE_STATUS_VALUES = {"pending", "in_progress", "blocked", "verifying", "done"}
+_NODE_STATUS_VALUES = {
+    "pending",
+    "in_progress",
+    "verifying",
+    "blocked",
+    "done",
+}
 _TASK_TREE_TOOL_NAMES = {
     "get_current_task_tree",
     "update_task_node_status",
@@ -277,7 +283,15 @@ def _normalize_text(value: Any, limit: int = 2000) -> str:
 
 
 def _normalize_status(value: Any) -> str:
-    normalized = str(value or "").strip().lower()
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {
+        "waiting_approval",
+        "waiting_user",
+        "waiting_user_action",
+        "validating",
+        "retrying",
+    }:
+        return "in_progress"
     return normalized if normalized in _NODE_STATUS_VALUES else "pending"
 
 
@@ -1989,10 +2003,27 @@ def _coerce_event_status(value: Any) -> str:
     normalized = _normalize_match_text(value, 60)
     if normalized in {"done", "completed", "complete", "finished", "resolved", "fixed"}:
         return "done"
-    if normalized in {"verifying", "verified", "checking", "validation"}:
-        return "verifying"
-    if normalized in {"in_progress", "in-progress", "started", "working", "processing", "running"}:
+    if normalized in {
+        "waiting_approval",
+        "approval",
+        "awaiting_approval",
+        "waiting_user",
+        "waiting_user_action",
+        "awaiting_user",
+        "validating",
+        "validation",
+        "retrying",
+        "retry",
+        "in_progress",
+        "in-progress",
+        "started",
+        "working",
+        "processing",
+        "running",
+    }:
         return "in_progress"
+    if normalized in {"verifying", "verified", "checking"}:
+        return "verifying"
     if normalized in {"blocked", "failed", "error"}:
         return "blocked"
     return _normalize_status(normalized)
@@ -2263,10 +2294,15 @@ def _recompute_session(session: ProjectChatTaskSession) -> ProjectChatTaskSessio
         child_statuses = [resolve_node(child) for child in children]
         all_children_done = all(status == "done" for status in child_statuses)
         any_blocked = any(status == "blocked" for status in child_statuses)
-        any_active = any(status in {"in_progress", "verifying"} for status in child_statuses)
+        any_active = any(
+            status in {"in_progress", "verifying"}
+            for status in child_statuses
+        )
         if all_children_done and node.verification_result:
             node.status = "done"
         elif all_children_done:
+            node.status = "verifying"
+        elif "verifying" in child_statuses:
             node.status = "verifying"
         elif any_active:
             node.status = "in_progress"
@@ -2288,7 +2324,9 @@ def _recompute_session(session: ProjectChatTaskSession) -> ProjectChatTaskSessio
     root_statuses = [root.status for root in root_nodes]
     if root_statuses and all(status == "done" for status in root_statuses):
         normalized.status = "done"
-    elif any(status in {"in_progress", "verifying"} for status in root_statuses):
+    elif "verifying" in root_statuses:
+        normalized.status = "verifying"
+    elif any(status == "in_progress" for status in root_statuses):
         normalized.status = "in_progress"
     elif any(status == "blocked" for status in root_statuses):
         normalized.status = "blocked"
@@ -2299,7 +2337,9 @@ def _recompute_session(session: ProjectChatTaskSession) -> ProjectChatTaskSessio
     current_candidates = [
         node
         for node in ordered_nodes
-        if node.level > 0 and node.status in {"in_progress", "verifying", "pending", "blocked"}
+        if node.level > 0
+        and node.status
+        in {"in_progress", "verifying", "pending", "blocked"}
     ]
     current_node = nodes_by_id.get(normalized.current_node_id)
     if current_node is None or current_node.status == "done":
@@ -2891,6 +2931,7 @@ def serialize_task_tree(session: ProjectChatTaskSession | None) -> dict[str, Any
         "archived_at": normalized.archived_at,
         "current_node_id": normalized.current_node_id,
         "progress_percent": normalized.progress_percent,
+        "metadata": dict(normalized.metadata or {}),
         "nodes": [asdict(node) for node in normalized.nodes],
         "tree": tree,
         "current_node": current_node,

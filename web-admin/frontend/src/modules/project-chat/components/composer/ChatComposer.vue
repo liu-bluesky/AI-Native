@@ -177,24 +177,6 @@
             <div v-else class="chat-model-pill is-loading">
               项目配置加载中
             </div>
-            <ChatExecutionStatusPopover
-              :visible="hasSelectedProject"
-              :tone-class="executionRuntimeToneClass"
-              :chip-label="composerExecutionChipLabel"
-              :title="executionRuntimeTitle"
-              :description="executionRuntimeDescription"
-              :status-tag-type="composerExecutionStatusTagType"
-              :status-label="composerExecutionStatusLabel"
-              :summary-items="composerExecutionSummaryItems"
-              :detail-available="composerExecutionDetailAvailable"
-              :native-executor-detecting="nativeExecutorDetecting"
-              :native-runner-self-checking="nativeRunnerSelfChecking"
-              :external-agent-warmup-loading="externalAgentWarmupLoading"
-              :action-label="executionRuntimeActionLabel"
-              @open-settings="$emit('open-settings', 'chat')"
-              @open-execution-detail="$emit('open-execution-detail')"
-              @execute-primary="$emit('execute-primary')"
-            />
             <el-upload
               action="#"
               :auto-upload="false"
@@ -270,27 +252,16 @@ import {
   Promotion,
   VideoPause,
 } from "@element-plus/icons-vue";
-import ChatExecutionStatusPopover from "../execution-status/ChatExecutionStatusPopover.vue";
 
 const props = defineProps([
   "agentWorkflowMetaItems",
   "agentWorkflowState",
   "canSend",
   "chatLoading",
-  "composerExecutionChipLabel",
-  "composerExecutionDetailAvailable",
-  "composerExecutionStatusLabel",
-  "composerExecutionStatusTagType",
-  "composerExecutionSummaryItems",
   "composerHintText",
   "composerPlaceholder",
   "draftText",
-  "executionRuntimeActionLabel",
-  "executionRuntimeDescription",
-  "executionRuntimeTitle",
-  "executionRuntimeToneClass",
   "externalAgentDisplayLabel",
-  "externalAgentWarmupLoading",
   "filteredSlashCommands",
   "formatFileType",
   "hasSelectedProject",
@@ -300,8 +271,6 @@ const props = defineProps([
   "isDragging",
   "isExternalAgentMode",
   "isSlashCommandMenuVisible",
-  "nativeExecutorDetecting",
-  "nativeRunnerSelfChecking",
   "providerModelGroups",
   "selectedModelOptionValue",
   "selectedProjectId",
@@ -325,11 +294,7 @@ const emit = defineEmits([
   "editor-composition-start",
   "editor-keydown",
   "editor-paste",
-  "execute-primary",
   "file-change",
-  "focus-agent-workflow-operation",
-  "open-execution-detail",
-  "open-settings",
   "remove-file",
   "send",
   "stop-generation",

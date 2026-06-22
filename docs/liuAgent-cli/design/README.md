@@ -27,6 +27,8 @@
 13. [12-test-fixtures.md](./12-test-fixtures.md)：事件回放、审批、恢复和多端一致性的测试夹具。
 14. [13-agent-orchestration.md](./13-agent-orchestration.md)：智能体编排、运行时生命周期和规则执行分层。
 15. [14-consistency-audit.md](./14-consistency-audit.md)：阶段、事件、审批和工具生命周期的一致性审查与修正记录。
+16. [15-agent-gateway-mcp.md](./15-agent-gateway-mcp.md)：Agent Gateway、ProjectChat Adapter、外部系统接入和 MCP 统一记录入口边界。
+17. [16-planning-mechanism.md](./16-planning-mechanism.md)：需求清晰度评估、计划生成、确认门、任务树和阻塞记录。
 
 ## 当前目录结构
 
@@ -50,6 +52,7 @@ docs/liuAgent-cli/
     12-test-fixtures.md
     13-agent-orchestration.md
     14-consistency-audit.md
+    15-agent-gateway-mcp.md
 ```
 
 ## 文档分类
@@ -70,6 +73,7 @@ docs/liuAgent-cli/
 | 测试夹具 | 描述可回放样例和跨端验收用例 | `EventFixture`、`ReplayCase`、`AcceptanceMatrix` |
 | 智能体编排 | 描述提示词规则、固定流程、状态机和策略引擎如何组合成运行时控制层 | `Agent Orchestration`、`Agent Runtime Lifecycle`、`Policy Engine` |
 | 一致性审查 | 描述不同设计阶段的数据结构是否对齐，以及已知逻辑风险 | `ConsistencyIssue`、canonical schema、修正清单 |
+| Agent Gateway | 描述 ProjectChat、桌面端、CLI 和外部系统如何通过统一入口创建本地 agent 会话并写入 MCP 需求记录 | `AgentGateway`、`AgentInvocation`、`RequirementSession`、`ProjectContextBundle` |
 
 ## 核心名词
 
@@ -184,6 +188,18 @@ Event 模式是让 Core 输出结构化事件，CLI、Web、Desktop 分别渲染
 ### MCP
 
 MCP 是外部工具和资源接入协议。liuAgent CLI 可以通过 MCP 获取工具、资源和上下文，但 MCP 只是工具来源之一，不应该侵入 Agent Core 的 UI 逻辑。
+
+### Agent Gateway
+
+Agent Gateway 是业务系统进入 liuAgent Core 的标准接入层。ProjectChat、外部系统、CLI 和 Desktop 都通过它创建 `AgentInvocation`，再由 Unified MCP 记录 `RequirementSession`。它不执行用户本地工具。
+
+### RequirementSession
+
+RequirementSession 是智能体对话和 MCP 触发任务共享的需求记录锚点。它绑定 `project_id`、`chat_session_id`、任务树、工作会话和本地 requirement 文件。
+
+### ProjectChat Adapter
+
+ProjectChat Adapter 把项目聊天消息转换成 `AgentInvocation` 并展示运行事件。它不是 Agent Core，也不应该直接执行用户本地文件或命令工具。
 
 ### Runner
 

@@ -48,6 +48,20 @@
 | `started_at` | Timestamp | 否 | 真正开始执行时间。 |
 | `ended_at` | Timestamp | 否 | 完成、失败、拒绝或取消时间。 |
 
+## ToolCall 来源约束
+
+工具调用必须来自模型明确产出的结构化 `ModelToolCall`，再由 Core 转换为 `ToolCall`。运行时、Adapter、前端或后端都不能根据用户自然语言中的关键词、正则匹配或意图猜测直接合成工具调用。
+
+硬性规则：
+
+- 禁止用正则、关键词、字符串包含关系或路径提取逻辑从 `user_message` 中推断 `delete_file`、`write_file`、`run_command`、`call_mcp_tool` 等工具调用。
+- 允许解析的只有模型输出中的结构化工具调用协议；即使模型文字里说“我将删除文件”，只要没有合法 `ModelToolCall`，就不能进入工具执行链路。
+- 用户输入“删除吧”“确认删除”“已授权”等自然语言，不能被当成新的工具调用；它只能在已有 `PermissionRequest` 的上下文中转换为引用该 `request_id` 的 `PermissionDecision`。
+- Core 收到 `ModelToolCall` 后必须先做 schema 校验、工具注册表校验、workspace 范围校验和 Permission Gate 检查，不能先执行再补授权。
+- 删除、覆盖、命令执行、网络写入、MCP 写入等高风险动作，必须在真正调用 executor 之前进入 `waiting_permission`，并生成可展示、可审计的 `PermissionRequest`。
+- 授权 UI 只能展示已经由 Permission Gate 产生的具体权限请求，不能根据聊天文本提前弹出“删除/写入/执行”的假授权。
+- 测试必须覆盖负例：用户自然语言包含“删除”“remove”“delete_file”等词时，如果模型没有结构化工具调用，不得产生删除工具调用，也不得删除文件。
+
 ## ToolBatch
 
 当模型一次返回多个工具调用时，Core 必须创建工具批次，避免 CLI、Web、Desktop 各自猜测执行顺序。
@@ -112,6 +126,27 @@ ToolCall
 Tool Runtime 不应该绕过 Permission Gate。即使工具来自 MCP 或插件，也必须进入同一条执行链路。
 
 `ToolResult.content` 面向模型 observation，允许包含必要上下文；`ToolResult.summary` 面向 UI，必须短且不包含敏感数据。`tool_result` 事件只使用 UI 摘要，不直接暴露完整 `content`。
+
+## MCP stdio framing
+
+本地 MCP adapter 从 workspace `.ai-employee/mcp-adapter/servers.json` 读取 server 配置。默认使用逐行 JSON-RPC，适配简单本地桥接器；标准 MCP server 必须显式配置 framing：
+
+```json
+{
+  "servers": {
+    "local": {
+      "command": "/path/to/mcp-server",
+      "args": ["--stdio"],
+      "cwd": ".",
+      "framing": "content-length"
+    }
+  }
+}
+```
+
+`framing` 可取 `content-length`、`mcp`、`standard`；也可通过 `transport` 写入等价值。启用后，请求和响应都按 `Content-Length: <bytes>\r\n\r\n<body>` 解析。未配置时保持逐行 JSON-RPC，避免破坏已有轻量 adapter。
+
+无论使用哪种 framing，`tools/call` 都必须先进入 Permission Gate；framing 只影响传输解析，不改变工具授权、审计和 workspace 范围规则。
 
 ## 多工具 observation 聚合
 

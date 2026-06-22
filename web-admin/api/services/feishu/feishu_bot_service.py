@@ -3515,7 +3515,48 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
 
     auth_payload = {"sub": username, "role": "admin", "roles": ["admin"]}
     skill_resource_directory = _resolve_feishu_skill_resource_directory(project_id, projects_router)
-    chat_mode = "system"
+    chat_mode = str(connector.get("chat_mode") or "desktop_local_agent").strip().lower()
+    if chat_mode != "desktop_local_agent":
+        chat_mode = "desktop_local_agent"
+    if chat_mode == "desktop_local_agent":
+        reply_content = (
+            "已收到，但当前机器人已切换为桌面本地智能体；"
+            "桌面端接管队列尚未接通，不能回退到后端系统智能体。"
+        )
+        next_source_context = dict(source_context)
+        next_source_context["chat_mode"] = "desktop_local_agent"
+        next_source_context["runtime_migration_status"] = "desktop_local_agent_handoff_missing"
+        assistant_record = projects_router._append_chat_record(
+            project_id=project_id,
+            username=username,
+            role="assistant",
+            content=reply_content,
+            message_id=f"bot-reply-{uuid.uuid4().hex[:12]}",
+            chat_session_id=chat_session_id,
+            source_context=next_source_context,
+        )
+        await projects_router.publish_project_chat_record_realtime(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+            message=assistant_record,
+        )
+        await _reply_feishu_text(
+            connector,
+            message_id=message_id,
+            content=reply_content,
+            reply_in_thread=should_reply_in_thread,
+        )
+        await projects_router.publish_project_chat_group_status_realtime(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+            status="blocked",
+            message="机器人已切换为桌面本地智能体，等待桌面端接管队列实现。",
+            source_context=next_source_context,
+        )
+        _cleanup_downloaded_feishu_resources(downloaded_resources)
+        return
     external_agent_type = str(connector.get("external_agent_type") or "").strip().lower()
     if external_agent_type not in {"codex_cli", "hermes", "claude_code"}:
         external_agent_type = "codex_cli"

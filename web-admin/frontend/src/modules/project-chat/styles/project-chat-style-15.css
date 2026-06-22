@@ -140,6 +140,156 @@
 
 }
 
+.chat-layout .chat-stage {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  padding-top: 0;
+  overflow: hidden;
+}
+
+.chat-layout {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-layout .chat-main {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-layout .chat-shell,
+.chat-layout .chat-shell.chat-shell--local-runner {
+  grid-template-columns: 300px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-layout .chat-workbench {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-layout .chat-workbench,
+.chat-layout .chat-messages-shell,
+.chat-layout .chat-messages,
+.chat-layout .message-list-inner,
+.chat-layout .message-row,
+.chat-layout .message-content-wrapper,
+.chat-layout .message-bubble,
+.chat-layout .message-operations,
+.chat-layout .message-operation-card {
+  min-width: 0;
+}
+
+.chat-layout .chat-messages-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-layout .chat-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-top: 18px;
+}
+
+.chat-layout .message-list-inner {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.chat-layout .message-row.is-ai .message-content-wrapper {
+  width: min(100%, 780px);
+  max-width: min(100%, 780px);
+}
+
+.chat-layout .message-row.is-ai .message-bubble {
+  width: 100%;
+  max-width: 100%;
+}
+
+.chat-layout .message-row.is-user .message-content-wrapper {
+  max-width: min(84%, 680px);
+}
+
+.chat-layout .message-operation-card {
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.chat-layout .message-operation-card__head,
+.chat-layout .message-operation-card__title-wrap,
+.chat-layout .message-operation-card__summary,
+.chat-layout .message-operation-card__detail,
+.chat-layout .message-operation-card__action,
+.chat-layout .message-operation-card__risk,
+.chat-layout .message-operation-card__meta-tags,
+.chat-layout .message-operation-card__command,
+.chat-layout .message-operation-card__output {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-layout .message-operation-card__title,
+.chat-layout .message-operation-card__summary,
+.chat-layout .message-operation-card__detail,
+.chat-layout .message-operation-card__action,
+.chat-layout .message-operation-card__risk,
+.chat-layout .message-operation-card__meta-tag,
+.chat-layout .message-operation-card__command-meta,
+.chat-layout .message-operation-card__output-label {
+  overflow-wrap: anywhere;
+}
+
+.chat-layout .message-operation-card__command-pre,
+.chat-layout .message-operation-card__output-pre {
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1120px) {
+  .chat-layout {
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .chat-layout .chat-main {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .chat-layout .chat-shell,
+  .chat-layout .chat-shell.chat-shell--local-runner {
+    grid-template-columns: 1fr;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .chat-layout .chat-workbench,
+  .chat-layout .chat-messages-shell {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+}
+
 @media (max-width: 640px) {
   .chat-main {
     padding: 0 10px 14px;

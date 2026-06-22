@@ -1201,7 +1201,7 @@ def normalize_bot_platform_connectors(value: object) -> list[dict[str, object]]:
                 "agent_name": "",
                 "description": str(raw_item.get("description") or "").strip()[:280],
                 "system_prompt": str(raw_item.get("system_prompt") or "").strip()[:4000],
-                "chat_mode": "system",
+                "chat_mode": "desktop_local_agent",
                 "external_agent_type": (
                     str(raw_item.get("external_agent_type") or "").strip().lower()
                     if str(raw_item.get("external_agent_type") or "").strip().lower()

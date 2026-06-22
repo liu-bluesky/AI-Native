@@ -687,7 +687,13 @@ class ProjectChatRequirementRecordUpsertReq(BaseModel):
     assistant_message_id: str = ""
     root_goal: str = ""
     title: str = ""
-    status: Literal["pending", "in_progress", "blocked", "verifying", "done"] = "in_progress"
+    status: Literal[
+        "pending",
+        "in_progress",
+        "verifying",
+        "blocked",
+        "done",
+    ] = "in_progress"
     result_summary: str = ""
     verification_result: str = ""
     runner_session_id: str = ""

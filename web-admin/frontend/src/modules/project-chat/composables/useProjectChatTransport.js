@@ -15,6 +15,7 @@ export function useProjectChatTransport({
 
   let reconnectTimer = null;
   let connectingPromise = null;
+  let connectionGeneration = 0;
   let manualClose = false;
 
   const wsStatusText = computed(() => (wsConnected.value ? "已连接" : "未连接"));
@@ -48,6 +49,7 @@ export function useProjectChatTransport({
 
   function disconnectWs(reason = "") {
     manualClose = true;
+    connectionGeneration += 1;
     clearReconnectTimer();
     if (wsClient.value) {
       wsClient.value.close(1000, reason || "client close");
@@ -65,20 +67,29 @@ export function useProjectChatTransport({
     if (!normalizedProjectId) {
       throw new Error("缺少项目 ID");
     }
+    const shouldForceReconnect = Boolean(options?.forceReconnect);
     if (
+      !shouldForceReconnect &&
       wsClient.value &&
       wsProjectId.value === normalizedProjectId &&
       wsClient.value.isOpen()
     ) {
       return wsClient.value;
     }
-    if (connectingPromise && wsProjectId.value === normalizedProjectId) {
+    if (!shouldForceReconnect && connectingPromise && wsProjectId.value === normalizedProjectId) {
       return connectingPromise;
     }
     if (wsClient.value && wsProjectId.value !== normalizedProjectId) {
       disconnectWs("switch project");
-    } else if (wsClient.value) {
+    } else if (wsClient.value && shouldForceReconnect) {
+      connectionGeneration += 1;
       wsClient.value.close(1000, "replace connection");
+      wsClient.value = null;
+      wsConnected.value = false;
+      connectingPromise = null;
+    } else if (wsClient.value) {
+      connectionGeneration += 1;
+      wsClient.value.close(1000, "stale connection");
       wsClient.value = null;
       wsConnected.value = false;
     }
@@ -90,23 +101,29 @@ export function useProjectChatTransport({
     manualClose = false;
     clearReconnectTimer();
     wsProjectId.value = normalizedProjectId;
+    const generation = connectionGeneration + 1;
+    connectionGeneration = generation;
     // WebSocket 的协议事件仍由页面编排层处理，这里只负责连接生命周期。
     const client = createProjectChatWsClient({
       projectId: normalizedProjectId,
       token,
       onOpen: () => {
+        if (connectionGeneration !== generation) return;
         wsConnected.value = true;
         reconnectAttempt.value = 0;
       },
       onMessage,
       onError: () => {
+        if (connectionGeneration !== generation) return;
         wsConnected.value = false;
       },
       onStale: (reason) => {
+        if (connectionGeneration !== generation) return;
         wsConnected.value = false;
         onUnexpectedClose?.(reason);
       },
       onClose: (event) => {
+        if (connectionGeneration !== generation) return;
         wsConnected.value = false;
         if (wsClient.value === client) {
           wsClient.value = null;
@@ -121,7 +138,7 @@ export function useProjectChatTransport({
     wsClient.value = client;
     connectingPromise = client.ready
       .then(() => {
-        if (wsClient.value !== client) {
+        if (connectionGeneration !== generation || wsClient.value !== client) {
           throw new Error("WebSocket 连接已被替换");
         }
         wsConnected.value = true;

@@ -615,12 +615,20 @@ class QueryEngine:
     ) -> CompletionDecision | None:
         for item in records:
             raw = item.raw_result if isinstance(item.raw_result, dict) else {}
-            if str(raw.get("source") or "").strip() not in {
+            source = str(raw.get("source") or "").strip()
+            if source not in {
                 "operation_wait_task",
                 "cli_plugin_login_task",
+                "desktop_client_tool",
             }:
                 continue
             status = str(raw.get("status") or "").strip().lower()
+            if source == "desktop_client_tool" and status in {
+                "queued",
+                "running",
+                "waiting_user_action",
+            }:
+                return CompletionDecision("request_user", ["desktop_client_tool_pending"])
             if status in {"queued", "running"}:
                 return CompletionDecision("request_user", ["background_operation_pending"])
             if status == "waiting_user_action":
@@ -708,6 +716,7 @@ class QueryEngine:
             if str(raw.get("source") or "").strip() not in {
                 "operation_wait_task",
                 "cli_plugin_login_task",
+                "desktop_client_tool",
             }:
                 continue
             status = str(raw.get("status") or "").strip().lower()
@@ -740,6 +749,9 @@ class QueryEngine:
         lines = ["等待用户操作：后台授权流程已经启动，但还需要后续动作才能继续。"]
         if operation_label:
             lines.append(f"等待对象：{operation_label}")
+        elif operation_kind == "desktop_client_tool":
+            tool_name = str(raw.get("tool_name") or "").strip()
+            lines.append(f"等待对象：桌面本地工具{f' {tool_name}' if tool_name else ''}")
         elif operation_kind == "auth_login":
             lines.append("等待对象：登录授权")
         if command:
@@ -762,6 +774,8 @@ class QueryEngine:
             lines.append("下一步：等待后台任务开始执行；有授权链接、验证码或表单时会继续更新本轮状态。")
         elif status == "running":
             lines.append("下一步：等待后台任务返回授权链接、验证码或完成结果。")
+        elif operation_kind == "desktop_client_tool":
+            lines.append("下一步：等待桌面客户端在本机执行工具并回传结果。")
         elif operation_kind == "auth_login":
             lines.append("下一步：等待授权流程返回可操作信息或完成结果。")
         else:

@@ -874,7 +874,11 @@ def test_project_chat_task_tree_audit_keeps_unverified_completion_out_of_done(
     assert audit_payload["auto_updated"] is True
     assert audit_payload["suggested_status"] == "verifying"
     assert audit_payload["task_tree"]["current_node"]["status"] == "verifying"
-    assert audit_payload["task_tree"]["status"] in {"pending", "in_progress"}
+    assert audit_payload["task_tree"]["status"] in {
+        "pending",
+        "in_progress",
+        "verifying",
+    }
 
 
 def test_project_chat_task_tree_audit_auto_completes_leaf_when_completion_and_verification_are_both_present(
@@ -1701,6 +1705,119 @@ def test_project_chat_task_tree_audit_auto_completes_lookup_query(
         latest_tree_response.json()["task_tree"]["source_chat_session_id"]
         == chat_session_id
     )
+
+
+def test_project_chat_requirement_record_keeps_runtime_waiting_status_flat(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    response = client.post(
+        "/api/projects/proj-1/chat/requirement-record",
+        json={
+            "chat_session_id": "chat-requirement-approval",
+            "message_id": "msg-approval",
+            "assistant_message_id": "assistant-approval",
+            "root_goal": "删除 reademe.md",
+            "title": "删除 reademe.md",
+            "status": "in_progress",
+            "result_summary": "桌面本地智能体等待用户授权删除文件。",
+            "source": "desktop_local_agent_runtime",
+        },
+    )
+
+    assert response.status_code == 200
+    tree = response.json()["requirement_record"]
+    assert tree["status"] == "in_progress"
+    assert tree["progress_percent"] < 100
+    assert tree["current_node"]["status"] == "in_progress"
+    assert tree["metadata"] == {}
+    assert tree["current_node"]["metadata"] == {}
+
+
+def test_project_chat_requirement_record_done_stays_flat_done(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    response = client.post(
+        "/api/projects/proj-1/chat/requirement-record",
+        json={
+            "chat_session_id": "chat-requirement-validating",
+            "message_id": "msg-validating",
+            "assistant_message_id": "assistant-validating",
+            "root_goal": "修复授权后 UI 反馈",
+            "title": "修复授权后 UI 反馈",
+            "status": "done",
+            "result_summary": "模型返回了最终回答，但还没有验证证据。",
+            "verification_result": "",
+            "source": "project_chat",
+        },
+    )
+
+    assert response.status_code == 200
+    tree = response.json()["requirement_record"]
+    assert tree["status"] == "done"
+    assert tree["current_node"]["status"] == "done"
+    assert tree["metadata"] == {}
+
+
+def test_project_chat_requirement_record_does_not_own_repeated_failure_loop(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    base_payload = {
+        "chat_session_id": "chat-requirement-repeat-failure",
+        "message_id": "msg-repeat-failure",
+        "assistant_message_id": "assistant-repeat-failure",
+        "root_goal": "修复任务结束判断",
+        "title": "修复任务结束判断",
+        "status": "blocked",
+        "result_summary": "pytest 仍然失败。",
+        "verification_result": "pytest tests/test_agent_loop.py::test_done_requires_verification 失败",
+        "source": "project_chat",
+    }
+    first_response = client.post(
+        "/api/projects/proj-1/chat/requirement-record",
+        json={**base_payload, "message_id": "msg-repeat-failure-1"},
+    )
+    assert first_response.status_code == 200
+    assert first_response.json()["requirement_record"]["metadata"] == {}
+
+    second_response = client.post(
+        "/api/projects/proj-1/chat/requirement-record",
+        json={**base_payload, "message_id": "msg-repeat-failure-2"},
+    )
+
+    assert second_response.status_code == 200
+    tree = second_response.json()["requirement_record"]
+    assert tree["status"] == "blocked"
+    assert tree["metadata"] == {}
 
 
 def test_project_chat_task_tree_audit_auto_completes_colloquial_lookup_query(

@@ -8,8 +8,15 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-_TASK_STATUS_VALUES = {"pending", "in_progress", "blocked", "verifying", "done"}
+_TASK_STATUS_VALUES = {
+    "pending",
+    "in_progress",
+    "verifying",
+    "blocked",
+    "done",
+}
 _TASK_LIFECYCLE_VALUES = {"active", "archived"}
 _TASK_NODE_KIND_VALUES = {"goal", "plan_step", "repair_step"}
 
@@ -39,6 +46,24 @@ def _normalize_list(values: list[str] | None, *, item_limit: int = 240, max_item
         if len(items) >= max_items:
             break
     return items
+
+
+def _normalize_metadata(value: object, *, limit: int = 8000) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    try:
+        payload = json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    encoded = json.dumps(payload, ensure_ascii=False)
+    if len(encoded) <= limit:
+        return payload
+    return {
+        "truncated": True,
+        "preview": encoded[:limit],
+    }
 
 
 def _normalize_status(value: object) -> str:
@@ -76,6 +101,7 @@ class ProjectChatTaskNode:
     verification_result: str = ""
     summary_for_model: str = ""
     latest_outcome: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -121,6 +147,7 @@ class ProjectChatTaskNode:
             self.latest_outcome = self.summary_for_model or self.verification_result
         if not self.summary_for_model:
             self.summary_for_model = self.latest_outcome
+        self.metadata = _normalize_metadata(self.metadata)
         self.created_at = _normalize_text(self.created_at or _now_iso(), 40) or _now_iso()
         self.updated_at = _normalize_text(self.updated_at or _now_iso(), 40) or _now_iso()
 
@@ -144,6 +171,7 @@ class ProjectChatTaskSession:
     current_node_id: str = ""
     progress_percent: int = 0
     nodes: list[ProjectChatTaskNode] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -179,6 +207,7 @@ class ProjectChatTaskSession:
             elif isinstance(item, dict):
                 normalized_nodes.append(ProjectChatTaskNode(**item))
         self.nodes = normalized_nodes
+        self.metadata = _normalize_metadata(self.metadata)
         self.created_at = _normalize_text(self.created_at or _now_iso(), 40) or _now_iso()
         self.updated_at = _normalize_text(self.updated_at or _now_iso(), 40) or _now_iso()
 

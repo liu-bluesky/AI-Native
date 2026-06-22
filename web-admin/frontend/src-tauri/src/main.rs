@@ -6,7 +6,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+mod liuagent_core;
 
 #[derive(Debug, Serialize)]
 struct PickPathResult {
@@ -167,6 +169,78 @@ struct RunnerPermissionDecisionRecord {
     source: String,
     risk_level: String,
     created_at_epoch_ms: u64,
+}
+
+#[tauri::command]
+fn liuagent_builtin_tool_definitions() -> Vec<liuagent_core::ToolDefinition> {
+    liuagent_core::builtin_tool_definitions()
+}
+
+#[tauri::command]
+fn liuagent_execute_tool(
+    request: liuagent_core::ToolExecutionRequest,
+) -> liuagent_core::ToolExecutionResult {
+    liuagent_core::execute_tool(request)
+}
+
+#[tauri::command]
+async fn liuagent_start_local_chat(
+    app: tauri::AppHandle,
+    request: liuagent_core::LocalChatRequest,
+) -> liuagent_core::LocalChatResult {
+    let chat_session_id = request.chat_session_id.trim().to_string();
+    match tauri::async_runtime::spawn_blocking(move || {
+        liuagent_core::start_local_chat_with_event_sink(request, |event| {
+            let _ = app.emit("liuagent-runtime-event", event.clone());
+            let _ = app.emit("liuagent://runtime-event", event);
+        })
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => liuagent_core::LocalChatResult::failed(
+            chat_session_id,
+            liuagent_core::ToolError::new(
+                "runtime.join_failed",
+                format!("local chat worker failed: {error}"),
+            ),
+        ),
+    }
+}
+
+#[tauri::command]
+fn liuagent_prepare_agent_invocation(
+    request: liuagent_core::AgentInvocationRequest,
+) -> liuagent_core::AgentInvocationResult {
+    liuagent_core::prepare_agent_invocation(request)
+}
+
+#[tauri::command]
+fn liuagent_recover_runtime_state(
+    request: liuagent_core::LocalRuntimeRecoveryRequest,
+) -> liuagent_core::LocalRuntimeRecoveryResult {
+    liuagent_core::recover_local_runtime_state(request)
+}
+
+#[tauri::command]
+fn liuagent_list_runtime_events(
+    request: liuagent_core::LocalRuntimeEventsRequest,
+) -> liuagent_core::LocalRuntimeEventsResult {
+    liuagent_core::list_local_runtime_events(request)
+}
+
+#[tauri::command]
+fn liuagent_list_runtime_outbox(
+    request: liuagent_core::LocalRuntimeOutboxRequest,
+) -> liuagent_core::LocalRuntimeOutboxResult {
+    liuagent_core::list_local_runtime_outbox(request)
+}
+
+#[tauri::command]
+fn liuagent_ack_runtime_outbox(
+    request: liuagent_core::LocalRuntimeOutboxAckRequest,
+) -> liuagent_core::LocalRuntimeOutboxResult {
+    liuagent_core::ack_local_runtime_outbox(request)
 }
 
 #[tauri::command]
@@ -817,9 +891,10 @@ fn execute_allowed_runner_command(
     };
 
     let stdout_text = receive_process_output(stdout_receiver, Duration::from_millis(300));
-    let stderr_text = sanitize_runner_process_output(
-        &receive_process_output(stderr_receiver, Duration::from_millis(300)),
-    );
+    let stderr_text = sanitize_runner_process_output(&receive_process_output(
+        stderr_receiver,
+        Duration::from_millis(300),
+    ));
 
     RunnerCommandResult {
         allowed: true,
@@ -1089,7 +1164,15 @@ fn main() {
             classify_runner_command,
             run_runner_command,
             record_runner_permission_decision,
-            list_runner_permission_decisions
+            list_runner_permission_decisions,
+            liuagent_builtin_tool_definitions,
+            liuagent_execute_tool,
+            liuagent_start_local_chat,
+            liuagent_prepare_agent_invocation,
+            liuagent_recover_runtime_state,
+            liuagent_list_runtime_events,
+            liuagent_list_runtime_outbox,
+            liuagent_ack_runtime_outbox
         ])
         .run(tauri::generate_context!())
         .expect("error while running AI Employee Factory desktop app");

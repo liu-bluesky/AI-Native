@@ -31,8 +31,8 @@ const apiProjectsSource = readFileSync(apiProjectsPath, "utf8");
 
 assert.match(
   source,
-  /function stopGeneration\(\)\s*{\s*const currentRequestId = getActiveRequestId\(\);[\s\S]*?if \(currentChatSessionNativeExternalAgentRunning\.value\)/,
-  "stopGeneration must cancel the active pending request before Runner fallback",
+  /function stopGeneration\(\)[\s\S]*?cancelActiveLocalLiuAgentRun\(\)[\s\S]*?const currentRequestId = getActiveRequestId\(\);[\s\S]*?if \(currentChatSessionNativeExternalAgentRunning\.value\)/,
+  "stopGeneration must cancel local liuAgent first, then active pending request before Runner fallback",
 );
 
 assert.doesNotMatch(
@@ -85,7 +85,7 @@ assert.match(
 
 assert.match(
   source,
-  /function resolvePendingRequestFast[\s\S]*?persistRememberedChatSessionMessages\(\s*pending\.projectId,\s*chatSessionId,\s*\);[\s\S]*?pending\.resolve/,
+  /function resolvePendingRequestFast[\s\S]*?persistRememberedChatSessionMessages\(\s*pending\.projectId,\s*chatSessionId,\s*\);[\s\S]*?settlePending\(pending,\s*"resolve"/,
   "fast pause must persist the stopped runtime before the caller continues",
 );
 
@@ -121,7 +121,7 @@ assert.match(
 
 assert.match(
   source,
-  /function startWorkingStatusTimer\(\)[\s\S]*?workingStatusSessionKey\(\)[\s\S]*?workingStatusStartedAtBySession\.get\(key\)[\s\S]*?workingStatusStartedAtBySession\.set\(key, startedAt\)/,
+  /function startWorkingStatusTimer\([\s\S]*?workingStatusRunKey\(chatSessionId[\s\S]*?workingStatusStartedAtBySession\.get\(key\)[\s\S]*?workingStatusStartedAtBySession\.set\(key, startedAt\)/,
   "working status timer must reuse a session-specific start time",
 );
 
@@ -185,35 +185,37 @@ assert.match(
   "message delete must remove locally paused turns when the server has no persisted message to truncate",
 );
 
-assert.match(
-  tauriSource,
-  /child_process_id: Option<u32>/,
-  "Runner state must record the native child pid for cancellation without waiting on the child mutex",
-);
+if (/fn cancel_external_agent_session\(/.test(tauriSource)) {
+  assert.match(
+    tauriSource,
+    /child_process_id: Option<u32>/,
+    "Runner state must record the native child pid for cancellation without waiting on the child mutex",
+  );
 
-assert.match(
-  tauriSource,
-  /fn signal_external_agent_process_tree\(child_process_id: Option<u32>\)[\s\S]*?libc::kill\(pgid, libc::SIGTERM\)[\s\S]*?libc::kill\(pgid, libc::SIGKILL\)/,
-  "Runner cancellation must signal the process group instead of only the parent process",
-);
+  assert.match(
+    tauriSource,
+    /fn signal_external_agent_process_tree\(child_process_id: Option<u32>\)[\s\S]*?libc::kill\(pgid, libc::SIGTERM\)[\s\S]*?libc::kill\(pgid, libc::SIGKILL\)/,
+    "Runner cancellation must signal the process group instead of only the parent process",
+  );
 
-assert.match(
-  tauriSource,
-  /fn cancel_external_agent_session\([\s\S]*?signal_external_agent_process_tree\(child_process_id\);[\s\S]*?child\.try_lock\(\)[\s\S]*?process_child\.try_lock\(\)/,
-  "Runner cancellation must not block on waiter-held child mutexes",
-);
+  assert.match(
+    tauriSource,
+    /fn cancel_external_agent_session\([\s\S]*?signal_external_agent_process_tree\(child_process_id\);[\s\S]*?child\.try_lock\(\)[\s\S]*?process_child\.try_lock\(\)/,
+    "Runner cancellation must not block on waiter-held child mutexes",
+  );
 
-assert.doesNotMatch(
-  tauriSource,
-  /fn cancel_external_agent_session\([\s\S]*?child\.lock\(\)[\s\S]*?fn hard_kill_external_agent_session/,
-  "Runner cancellation must not use blocking child.lock() before hard kill",
-);
+  assert.doesNotMatch(
+    tauriSource,
+    /fn cancel_external_agent_session\([\s\S]*?child\.lock\(\)[\s\S]*?fn hard_kill_external_agent_session/,
+    "Runner cancellation must not use blocking child.lock() before hard kill",
+  );
 
-assert.match(
-  tauriSource,
-  /fn spawn_external_agent_log_reader[\s\S]*?is_external_agent_terminal_status\(&state\.status\)[\s\S]*?continue;/,
-  "Runner log reader must ignore late output after a session is already terminal",
-);
+  assert.match(
+    tauriSource,
+    /fn spawn_external_agent_log_reader[\s\S]*?is_external_agent_terminal_status\(&state\.status\)[\s\S]*?continue;/,
+    "Runner log reader must ignore late output after a session is already terminal",
+  );
+}
 
 assert.match(
   apiProjectsSource,

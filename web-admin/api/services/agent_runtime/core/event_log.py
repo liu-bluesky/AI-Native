@@ -18,17 +18,29 @@ class RuntimeEvent:
     event_id: str
     run_id: str
     event_type: str
+    session_id: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
 
     def to_dict(self) -> dict[str, Any]:
+        # 中文注释：保留 event_type 给旧代码使用，同时补 type/session_id 给新 Adapter 统一消费。
         return {
             "event_id": self.event_id,
             "run_id": self.run_id,
+            "session_id": self.session_id,
+            "type": self.event_type,
             "event_type": self.event_type,
             "created_at": self.created_at,
             "payload": dict(self.payload),
         }
+
+    def to_agent_event(self, *, session_id: str = "") -> dict[str, Any]:
+        """Return the cross-adapter event envelope used by CLI/Web/Desktop."""
+
+        payload = self.to_dict()
+        normalized_session_id = str(session_id or self.session_id or "").strip()
+        payload["session_id"] = normalized_session_id
+        return payload
 
     @classmethod
     def create(
@@ -37,10 +49,12 @@ class RuntimeEvent:
         run_id: str,
         event_type: str,
         payload: dict[str, Any] | None = None,
+        session_id: str = "",
     ) -> "RuntimeEvent":
         return cls(
             event_id=f"evt_{uuid4().hex[:16]}",
             run_id=str(run_id or "").strip(),
+            session_id=str(session_id or "").strip(),
             event_type=str(event_type or "").strip() or "event",
             payload=dict(payload or {}),
         )
@@ -50,6 +64,7 @@ class RuntimeEvent:
         return cls(
             event_id=str(payload.get("event_id") or f"evt_{uuid4().hex[:16]}").strip(),
             run_id=str(payload.get("run_id") or "").strip(),
+            session_id=str(payload.get("session_id") or "").strip(),
             event_type=str(payload.get("event_type") or payload.get("type") or "event").strip(),
             created_at=str(payload.get("created_at") or utc_now_iso()).strip(),
             payload=dict(payload.get("payload") or {}),
@@ -78,11 +93,14 @@ class RuntimeEventLog:
         run_id: str,
         event_type: str,
         payload: dict[str, Any] | None = None,
+        *,
+        session_id: str = "",
     ) -> RuntimeEvent:
         event = RuntimeEvent.create(
             run_id=run_id,
             event_type=event_type,
             payload=payload,
+            session_id=session_id,
         )
         path = self._path_for(event.run_id)
         path.parent.mkdir(parents=True, exist_ok=True)

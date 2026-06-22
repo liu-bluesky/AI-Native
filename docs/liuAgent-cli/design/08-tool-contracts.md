@@ -2,6 +2,8 @@
 
 本文档定义第一版内置工具的参数、结果、权限和错误契约。所有工具都必须进入 Tool Runtime，并经过 schema 校验、Permission Gate 和 Audit Log。
 
+所有内置工具只能由模型结构化工具调用触发。运行时不得从用户自然语言、关键词或正则匹配中推断并合成工具调用；权限请求也只能在具体 `ToolCall` 通过 schema 和范围校验后、executor 执行前生成。
+
 ## 通用 ToolCall
 
 | 字段 | 类型 | 必填 | 说明 |

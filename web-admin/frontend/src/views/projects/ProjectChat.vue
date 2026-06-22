@@ -11,10 +11,7 @@
     <div class="chat-layout__mesh" aria-hidden="true" />
 
     <div class="chat-main">
-      <div
-        class="chat-shell"
-        :class="{ 'chat-shell--local-runner': isLocalRunnerSurface }"
-      >
+      <div class="chat-shell">
         <ProjectConversationSidebar
           ref="conversationSidebarRef"
           v-model:selected-project-id="selectedProjectId"
@@ -59,6 +56,48 @@
             @open-mcp="openUnifiedMcpDialog"
             @open-skill-resource="openSkillResourceCenter"
           />
+          <div
+            v-if="nativeExternalAgentApprovalBannerVisible"
+            class="chat-approval-banner"
+          >
+            <div class="chat-approval-banner__head">
+              <span class="chat-approval-banner__icon">🔐</span>
+              <strong>{{ nativeExternalAgentInteractionPrompt.title }}</strong>
+            </div>
+            <p class="chat-approval-banner__desc">
+              {{ nativeExternalAgentInteractionPrompt.description }}
+            </p>
+            <details
+              v-if="nativeExternalAgentInteractionPrompt.commandPreview"
+              class="chat-approval-banner__details"
+            >
+              <summary>查看要执行的操作详情</summary>
+              <pre>{{ nativeExternalAgentInteractionPrompt.commandPreview }}</pre>
+            </details>
+            <div class="chat-approval-banner__form">
+              <ElementEasyForm
+                :form-json="nativeExternalAgentInteractionFormJson"
+                class="chat-approval-banner__easy-form"
+              />
+            </div>
+            <div class="chat-approval-banner__actions">
+              <el-button
+                size="small"
+                text
+                @click="dismissNativeExternalAgentInteraction"
+              >
+                手动输入
+              </el-button>
+              <el-button
+                size="small"
+                type="primary"
+                :loading="nativeExternalAgentStdinSending"
+                @click="submitNativeExternalAgentInteraction"
+              >
+                确认授权
+              </el-button>
+            </div>
+          </div>
           <div class="chat-workbench">
             <div class="chat-messages-shell">
               <div
@@ -1278,368 +1317,6 @@
               </div>
             </div>
 
-            <aside v-if="isLocalRunnerSurface" class="local-runner-panel">
-              <section class="local-runner-card local-runner-card--self-check">
-                <div class="local-runner-card__head">
-                  <div>
-                    <div class="local-runner-card__eyebrow">Diagnostics</div>
-                    <div class="local-runner-card__title">本机 Runner 自检</div>
-                  </div>
-                  <el-button
-                    size="small"
-                    :loading="nativeRunnerSelfChecking"
-                    :disabled="!nativeDesktopBridgeAvailable"
-                    @click="runNativeRunnerSelfCheck"
-                  >
-                    运行自检
-                  </el-button>
-                </div>
-                <div
-                  v-if="!nativeDesktopBridgeAvailable"
-                  class="local-runner-empty"
-                >
-                  当前是网页模式；Tauri 桌面端启动后才会提供本机 Runner。
-                </div>
-                <div
-                  v-else-if="nativeRunnerSelfCheckResults.length"
-                  class="local-runner-self-check"
-                >
-                  <div
-                    v-for="item in nativeRunnerSelfCheckResults"
-                    :key="item.id"
-                    class="local-runner-self-check__item"
-                    :class="`is-${item.tone}`"
-                  >
-                    <div>
-                      <strong>{{ item.label }}</strong>
-                      <span>{{ item.summary }}</span>
-                    </div>
-                    <el-tag
-                      size="small"
-                      :type="runnerSelfCheckTagType(item)"
-                      effect="plain"
-                    >
-                      {{ runnerSelfCheckStatusLabel(item) }}
-                    </el-tag>
-                  </div>
-                </div>
-                <div v-else class="local-runner-empty">
-                  运行自检会检查原生桥、工作区和少量只读命令白名单。
-                </div>
-              </section>
-
-              <section class="local-runner-card local-runner-card--approval">
-                <div class="local-runner-card__head">
-                  <div>
-                    <div class="local-runner-card__eyebrow">Authorization Log</div>
-                    <div class="local-runner-card__title">授权记录</div>
-                  </div>
-                  <div class="local-runner-card__actions">
-                    <el-button
-                      size="small"
-                      text
-                      :loading="nativeRunnerPermissionRecordsLoading"
-                      :disabled="!nativeDesktopBridgeAvailable"
-                      @click="refreshNativeRunnerPermissionRecords"
-                    >
-                      刷新
-                    </el-button>
-                    <el-tag
-                      size="small"
-                      :type="terminalApprovalPrompt ? 'warning' : 'success'"
-                      effect="plain"
-                    >
-                      {{ terminalApprovalPrompt ? "聊天区待确认" : "空闲" }}
-                    </el-tag>
-                  </div>
-                </div>
-                <div v-if="terminalApprovalPrompt" class="local-approval-panel">
-                  <div class="local-approval-panel__title">
-                    {{ terminalApprovalPrompt.title }}
-                  </div>
-                  <p
-                    v-if="terminalApprovalPrompt.description"
-                    class="local-approval-panel__desc"
-                  >
-                    {{ terminalApprovalPrompt.description }}
-                  </p>
-                  <pre
-                    v-if="terminalApprovalPrompt.message"
-                    class="local-approval-panel__message"
-                    >{{ terminalApprovalPrompt.message }}</pre
-                  >
-                  <div
-                    v-if="terminalApprovalPrompt.commandPreview"
-                    class="local-approval-panel__command-preview"
-                  >
-                    <details>
-                      <summary>查看要执行的操作详情</summary>
-                      <pre>{{ terminalApprovalPrompt.commandPreview }}</pre>
-                    </details>
-                  </div>
-                  <el-alert
-                    type="warning"
-                    show-icon
-                    :closable="false"
-                    title="请在聊天主界面完成授权"
-                    description="这里仅展示诊断信息，不处理批准或拒绝。"
-                  />
-                </div>
-                <div v-else class="local-runner-empty">
-                  当前没有待确认操作；需要授权时会显示在聊天主界面。
-                </div>
-                <div
-                  v-if="nativeRunnerPermissionRecords.length"
-                  class="local-permission-records"
-                >
-                  <div class="local-permission-records__title">
-                    最近授权记录
-                  </div>
-                  <div
-                    v-for="record in nativeRunnerPermissionRecords"
-                    :key="record.decisionId"
-                    class="local-permission-record"
-                  >
-                    <div>
-                      <strong>{{
-                        runnerPermissionDecisionLabel(record)
-                      }}</strong>
-                      <span>{{ runnerPermissionRecordSummary(record) }}</span>
-                    </div>
-                    <span>{{ runnerPermissionRecordTime(record) }}</span>
-                  </div>
-                </div>
-              </section>
-
-              <section class="local-runner-card local-runner-card--process">
-                <div class="local-runner-card__head">
-                  <div>
-                    <div class="local-runner-card__eyebrow">Process</div>
-                    <div class="local-runner-card__title">执行过程</div>
-                  </div>
-                  <el-tag
-                    size="small"
-                    effect="plain"
-                    :type="localRunnerProcessStatusTagType"
-                  >
-                    {{ terminalPanelStatusText }}
-                  </el-tag>
-                </div>
-                <div class="local-process-summary">
-                  <div>
-                    <span>会话</span>
-                    <strong>{{ hostTerminalSessionId || "未连接" }}</strong>
-                  </div>
-                  <div>
-                    <span>命令</span>
-                    <strong>{{ terminalActiveCommand || "等待任务" }}</strong>
-                  </div>
-                  <div>
-                    <span>日志</span>
-                    <strong>{{ terminalPanelLineCount }} 行</strong>
-                  </div>
-                </div>
-                <div class="local-process-timeline">
-                  <div
-                    v-for="item in localRunnerProcessItems"
-                    :key="item.id"
-                    class="local-process-timeline__item"
-                    :class="`is-${item.phase}`"
-                  >
-                    <span class="local-process-timeline__marker">
-                      <CircleCheck
-                        v-if="item.phase === 'completed'"
-                        :size="13"
-                      />
-                      <span v-else></span>
-                    </span>
-                    <span class="local-process-timeline__main">
-                      <span class="local-process-timeline__title">
-                        {{ item.title }}
-                      </span>
-                      <span
-                        v-if="item.summary"
-                        class="local-process-timeline__summary"
-                      >
-                        {{ item.summary }}
-                      </span>
-                    </span>
-                    <span class="local-process-timeline__phase">
-                      {{ item.phaseLabel }}
-                    </span>
-                  </div>
-                </div>
-              </section>
-
-              <section class="local-runner-card local-runner-card--workspace">
-                <div class="local-runner-card__head">
-                  <div>
-                    <div class="local-runner-card__eyebrow">Workspace</div>
-                    <div class="local-runner-card__title">文件树 / 编辑器</div>
-                  </div>
-                  <el-button
-                    size="small"
-                    text
-                    :loading="workspaceFileTreeLoading"
-                    :disabled="!canUseWorkspaceFiles"
-                    @click="refreshWorkspaceFileTree"
-                  >
-                    刷新
-                  </el-button>
-                </div>
-                <div class="local-workspace-root">
-                  {{ projectWorkspaceResolved || "未配置项目工作区" }}
-                </div>
-                <div v-if="canUseWorkspaceFiles" class="local-workspace-source">
-                  {{ workspaceFileBridgeLabel }}
-                </div>
-                <div v-if="!canUseWorkspaceFiles" class="local-runner-empty">
-                  先在设置中保存项目工作区后，才能直接浏览和编辑本机文件。
-                </div>
-                <template v-else>
-                  <div class="local-file-browser">
-                    <div class="local-file-browser__toolbar">
-                      <el-button
-                        size="small"
-                        text
-                        :disabled="!workspaceFileTreePath"
-                        @click="openWorkspaceDirectory(workspaceParentPath)"
-                      >
-                        上一级
-                      </el-button>
-                      <span>{{ workspaceFileTreePath || "." }}</span>
-                    </div>
-                    <div class="local-file-list">
-                      <button
-                        v-for="item in workspaceFileItems"
-                        :key="`${item.kind}:${item.path}`"
-                        type="button"
-                        class="local-file-item"
-                        :class="{
-                          'is-active': item.path === activeWorkspaceFilePath,
-                        }"
-                        @click="handleWorkspaceFileClick(item)"
-                      >
-                        <span class="local-file-item__icon">
-                          {{ item.kind === "directory" ? "DIR" : "TXT" }}
-                        </span>
-                        <span class="local-file-item__name">{{
-                          item.name
-                        }}</span>
-                      </button>
-                      <div
-                        v-if="!workspaceFileItems.length"
-                        class="local-runner-empty"
-                      >
-                        当前目录没有可展示文件。
-                      </div>
-                    </div>
-                  </div>
-                  <div class="local-editor">
-                    <div class="local-editor__head">
-                      <span>{{ activeWorkspaceFilePath || "未选择文件" }}</span>
-                      <el-button
-                        size="small"
-                        type="primary"
-                        :loading="workspaceFileSaving"
-                        :disabled="
-                          !activeWorkspaceFilePath || !workspaceFileDirty
-                        "
-                        @click="saveActiveWorkspaceFile"
-                      >
-                        {{ workspaceFileReadOnly ? "准备写入" : "保存" }}
-                      </el-button>
-                    </div>
-                    <el-input
-                      v-model="workspaceFileDraft"
-                      type="textarea"
-                      resize="none"
-                      :autosize="{ minRows: 8, maxRows: 14 }"
-                      :disabled="
-                        !activeWorkspaceFilePath || workspaceFileLoading
-                      "
-                      :readonly="false"
-                      :placeholder="
-                        workspaceFileReadOnly
-                          ? '桌面端可编辑草稿；点击准备写入只生成确认摘要，不会直接保存。'
-                          : '从上方文件树选择文本文件后可在这里编辑。'
-                      "
-                      class="local-editor__textarea"
-                    />
-                  </div>
-                  <div class="local-diff-preview">
-                    <div class="local-diff-preview__head">
-                      <div>
-                        <strong>差异预览</strong>
-                        <span>{{ workspaceDiffTargetLabel }}</span>
-                      </div>
-                      <div class="local-runner-card__actions">
-                        <el-tag size="small" effect="plain">
-                          {{ workspaceDiffStatusLabel }}
-                        </el-tag>
-                        <el-button
-                          size="small"
-                          text
-                          :loading="workspaceDiffLoading"
-                          :disabled="!canPreviewWorkspaceDiff"
-                          @click="refreshWorkspaceDiffPreview"
-                        >
-                          预览
-                        </el-button>
-                      </div>
-                    </div>
-                    <div
-                      v-if="!canPreviewWorkspaceDiff"
-                      class="local-runner-empty"
-                    >
-                      差异预览需要 Tauri 桌面端原生桥和项目工作区。
-                    </div>
-                    <div
-                      v-else-if="
-                        workspaceDiffPreview?.reason &&
-                        !workspaceDiffPreview?.available
-                      "
-                      class="local-runner-empty"
-                    >
-                      {{ workspaceDiffPreview.reason }}
-                    </div>
-                    <pre
-                      v-else-if="
-                        workspaceDiffPreview?.diff ||
-                        workspaceDiffPreview?.summary ||
-                        workspaceDiffPreview?.status
-                      "
-                      class="local-diff-preview__output"
-                      >{{
-                        [
-                          workspaceDiffPreview?.status,
-                          workspaceDiffPreview?.summary,
-                          workspaceDiffPreview?.diff,
-                        ]
-                          .filter(Boolean)
-                          .join("\n\n")
-                      }}</pre
-                    >
-                    <div v-else class="local-runner-empty">
-                      尚未生成差异预览；没有选中文件时会预览整个工作区。
-                    </div>
-                  </div>
-                </template>
-              </section>
-
-              <section class="local-runner-card local-runner-card--terminal">
-                <div class="local-runner-card__head">
-                  <div>
-                    <div class="local-runner-card__eyebrow">Terminal</div>
-                    <div class="local-runner-card__title">终端输出</div>
-                  </div>
-                  <el-tag size="small" effect="plain">
-                    {{ terminalPanelStatusText }}
-                  </el-tag>
-                </div>
-                <pre class="local-terminal-output">{{ terminalPanelText }}</pre>
-              </section>
-            </aside>
           </div>
 
           <TerminalApprovalDialog
@@ -1674,25 +1351,10 @@
             :chat-loading="chatLoading"
             :external-agent-display-label="externalAgentDisplayLabel"
             :has-selected-project="hasSelectedProject"
-            :execution-runtime-tone-class="executionRuntimeToneClass"
-            :composer-execution-chip-label="composerExecutionChipLabel"
-            :execution-runtime-title="executionRuntimeTitle"
-            :execution-runtime-description="executionRuntimeDescription"
-            :composer-execution-status-tag-type="composerExecutionStatusTagType"
-            :composer-execution-status-label="composerExecutionStatusLabel"
-            :composer-execution-summary-items="composerExecutionSummaryItems"
-            :composer-execution-detail-available="
-              composerExecutionDetailAvailable
-            "
-            :native-executor-detecting="nativeExecutorDetecting"
-            :native-runner-self-checking="nativeRunnerSelfChecking"
-            :external-agent-warmup-loading="externalAgentWarmupLoading"
-            :execution-runtime-action-label="executionRuntimeActionLabel"
             :selected-project-id="selectedProjectId"
             :composer-hint-text="composerHintText"
             :show-pause-generation-button="showPauseGenerationButton"
             :can-send="canSend"
-            @focus-agent-workflow-operation="focusAgentWorkflowOperation"
             @drag-over="handleDragOver"
             @drag-leave="handleDragLeave"
             @drop-files="handleDrop"
@@ -1703,9 +1365,6 @@
             @editor-composition-start="handleEditorCompositionStart"
             @editor-composition-end="handleEditorCompositionEnd"
             @apply-slash-command-selection="applySlashCommandSelection"
-            @open-settings="openSettingsCenter"
-            @open-execution-detail="openComposerExecutionDetail"
-            @execute-primary="handleComposerExecutionPrimaryAction"
             @file-change="handleFileChange"
             @stop-generation="stopGeneration"
             @send="doSend"
@@ -1942,7 +1601,10 @@
         </div>
 
         <div
-          v-if="activeSettingsPanel === 'chat'"
+          v-if="
+            activeSettingsPanel === 'chat' ||
+            activeSettingsPanel === 'local-runner'
+          "
           class="settings-center-stage__body settings-center-stage__body--chat"
         >
           <div class="settings-chat-layout settings-chat-layout--single">
@@ -2076,7 +1738,13 @@
 
                       <div class="settings-execution-section">
                         <span>执行入口</span>
-                        <strong>项目聊天统一由系统模型处理。</strong>
+                        <strong>
+                          {{
+                            isLocalRunnerSurface
+                              ? "桌面端本地 liuAgent Runtime"
+                              : "项目聊天统一由系统模型处理。"
+                          }}
+                        </strong>
                       </div>
 
                       <el-form-item label="执行方式">
@@ -2174,7 +1842,7 @@
                   </el-form>
                 </section>
 
-                <el-tabs class="settings-tabs">
+                <el-tabs v-if="activeSettingsPanel === 'chat'" class="settings-tabs">
                   <el-tab-pane label="上下文与提示">
                     <el-form
                       label-position="left"
@@ -2188,7 +1856,11 @@
                             项目上下文
                           </div>
                           <p class="settings-parameter-section__desc">
-                            <template v-if="showLocalRuntimeSettings">
+                            <template
+                              v-if="
+                                showLocalRuntimeSettings || isLocalRunnerSurface
+                              "
+                            >
                               让系统知道真实工作区、入口规则文件以及这一轮的最高优先级提示词。
                             </template>
                             <template v-else>
@@ -2197,7 +1869,10 @@
                           </p>
                         </div>
                         <el-form-item
-                          v-if="hasSelectedProject && showLocalRuntimeSettings"
+                          v-if="
+                            hasSelectedProject &&
+                            (showLocalRuntimeSettings || isLocalRunnerSurface)
+                          "
                         >
                           <template #label>
                             <span class="label-with-tooltip">
@@ -2249,7 +1924,10 @@
                         </el-form-item>
 
                         <el-form-item
-                          v-if="hasSelectedProject && showLocalRuntimeSettings"
+                          v-if="
+                            hasSelectedProject &&
+                            (showLocalRuntimeSettings || isLocalRunnerSurface)
+                          "
                         >
                           <template #label>
                             <span class="label-with-tooltip">
@@ -2339,7 +2017,448 @@
                       </section>
                     </el-form>
                   </el-tab-pane>
+                </el-tabs>
 
+                <div
+                  v-if="activeSettingsPanel === 'local-runner'"
+                  class="settings-local-runner-body"
+                >
+                  <section
+                    class="settings-parameter-section settings-parameter-section--local-runner-workspace"
+                  >
+                    <div class="settings-parameter-section__header">
+                      <div class="settings-parameter-section__title">
+                        项目工作区
+                      </div>
+                      <p class="settings-parameter-section__desc">
+                        桌面本地智能体只在这台电脑的项目目录内读取和执行工具。
+                      </p>
+                    </div>
+                    <el-form
+                      label-position="left"
+                      label-width="160px"
+                      class="settings-form"
+                      size="default"
+                    >
+                      <el-form-item v-if="hasSelectedProject">
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            工作目录
+                            <el-tooltip
+                              content="当前项目在这台电脑上的真实目录。AI 执行本机工具、读取文件和解析相对路径时都会以这里为边界。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <div class="workspace-path-editor">
+                          <el-input
+                            v-model="projectWorkspaceDraft"
+                            class="full-width"
+                            placeholder="/Volumes/苹果1_5T/self/ai-employee"
+                          />
+                          <div class="workspace-path-actions">
+                            <el-button
+                              @click="promptProjectWorkspaceDirectory"
+                              :loading="projectWorkspacePicking"
+                            >
+                              选择目录
+                            </el-button>
+                            <el-button
+                              type="primary"
+                              :loading="projectWorkspaceSaving"
+                              @click="saveProjectWorkspaceDirectory()"
+                            >
+                              保存工作区
+                            </el-button>
+                          </div>
+                          <div class="workspace-path-hint">
+                            <template v-if="projectWorkspaceResolved">
+                              当前已保存：{{ projectWorkspaceResolved }}
+                            </template>
+                            <template v-else>
+                              当前项目还没有配置工作区路径，本地智能体不会执行本机工具。
+                            </template>
+                            <template v-if="projectWorkspaceDirty">
+                              当前输入尚未保存。
+                            </template>
+                          </div>
+                        </div>
+                      </el-form-item>
+                      <div v-else class="settings-empty">
+                        选择项目后才能配置本机工作目录。
+                      </div>
+                    </el-form>
+                  </section>
+
+                  <div class="local-runner-panel local-runner-panel--settings">
+                      <section class="local-runner-card local-runner-card--self-check">
+                        <div class="local-runner-card__head">
+                          <div>
+                            <div class="local-runner-card__eyebrow">Diagnostics</div>
+                            <div class="local-runner-card__title">本机 Runner 自检</div>
+                          </div>
+                          <el-button
+                            size="small"
+                            :loading="nativeRunnerSelfChecking"
+                            :disabled="!nativeDesktopBridgeAvailable"
+                            @click="runNativeRunnerSelfCheck"
+                          >
+                            运行自检
+                          </el-button>
+                        </div>
+                        <div
+                          v-if="!nativeDesktopBridgeAvailable"
+                          class="local-runner-empty"
+                        >
+                          当前是网页模式；Tauri 桌面端启动后才会提供本机 Runner。
+                        </div>
+                        <div
+                          v-else-if="nativeRunnerSelfCheckResults.length"
+                          class="local-runner-self-check"
+                        >
+                          <div
+                            v-for="item in nativeRunnerSelfCheckResults"
+                            :key="item.id"
+                            class="local-runner-self-check__item"
+                            :class="`is-${item.tone}`"
+                          >
+                            <div>
+                              <strong>{{ item.label }}</strong>
+                              <span>{{ item.summary }}</span>
+                            </div>
+                            <el-tag
+                              size="small"
+                              :type="runnerSelfCheckTagType(item)"
+                              effect="plain"
+                            >
+                              {{ runnerSelfCheckStatusLabel(item) }}
+                            </el-tag>
+                          </div>
+                        </div>
+                        <div v-else class="local-runner-empty">
+                          运行自检会检查原生桥、工作区和少量只读命令白名单。
+                        </div>
+                      </section>
+
+                      <section class="local-runner-card local-runner-card--approval">
+                        <div class="local-runner-card__head">
+                          <div>
+                            <div class="local-runner-card__eyebrow">Authorization Log</div>
+                            <div class="local-runner-card__title">授权记录</div>
+                          </div>
+                          <div class="local-runner-card__actions">
+                            <el-button
+                              size="small"
+                              text
+                              :loading="nativeRunnerPermissionRecordsLoading"
+                              :disabled="!nativeDesktopBridgeAvailable"
+                              @click="refreshNativeRunnerPermissionRecords"
+                            >
+                              刷新
+                            </el-button>
+                            <el-tag
+                              size="small"
+                              :type="terminalApprovalPrompt ? 'warning' : 'success'"
+                              effect="plain"
+                            >
+                              {{ terminalApprovalPrompt ? "聊天区待确认" : "空闲" }}
+                            </el-tag>
+                          </div>
+                        </div>
+                        <div v-if="terminalApprovalPrompt" class="local-approval-panel">
+                          <div class="local-approval-panel__title">
+                            {{ terminalApprovalPrompt.title }}
+                          </div>
+                          <p
+                            v-if="terminalApprovalPrompt.description"
+                            class="local-approval-panel__desc"
+                          >
+                            {{ terminalApprovalPrompt.description }}
+                          </p>
+                          <pre
+                            v-if="terminalApprovalPrompt.message"
+                            class="local-approval-panel__message"
+                            >{{ terminalApprovalPrompt.message }}</pre
+                          >
+                          <div
+                            v-if="terminalApprovalPrompt.commandPreview"
+                            class="local-approval-panel__command-preview"
+                          >
+                            <details>
+                              <summary>查看要执行的操作详情</summary>
+                              <pre>{{ terminalApprovalPrompt.commandPreview }}</pre>
+                            </details>
+                          </div>
+                          <el-alert
+                            type="warning"
+                            show-icon
+                            :closable="false"
+                            title="请在聊天主界面完成授权"
+                            description="这里仅展示诊断信息，不处理批准或拒绝。"
+                          />
+                        </div>
+                        <div v-else class="local-runner-empty">
+                          当前没有待确认操作；需要授权时会显示在聊天主界面。
+                        </div>
+                        <div
+                          v-if="nativeRunnerPermissionRecords.length"
+                          class="local-permission-records"
+                        >
+                          <div class="local-permission-records__title">
+                            最近授权记录
+                          </div>
+                          <div
+                            v-for="record in nativeRunnerPermissionRecords"
+                            :key="record.decisionId"
+                            class="local-permission-record"
+                          >
+                            <div>
+                              <strong>{{
+                                runnerPermissionDecisionLabel(record)
+                              }}</strong>
+                              <span>{{ runnerPermissionRecordSummary(record) }}</span>
+                            </div>
+                            <span>{{ runnerPermissionRecordTime(record) }}</span>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section class="local-runner-card local-runner-card--process">
+                        <div class="local-runner-card__head">
+                          <div>
+                            <div class="local-runner-card__eyebrow">Process</div>
+                            <div class="local-runner-card__title">执行过程</div>
+                          </div>
+                          <el-tag
+                            size="small"
+                            effect="plain"
+                            :type="localRunnerProcessStatusTagType"
+                          >
+                            {{ terminalPanelStatusText }}
+                          </el-tag>
+                        </div>
+                        <div class="local-process-summary">
+                          <div>
+                            <span>会话</span>
+                            <strong>{{ hostTerminalSessionId || "未连接" }}</strong>
+                          </div>
+                          <div>
+                            <span>命令</span>
+                            <strong>{{ terminalActiveCommand || "等待任务" }}</strong>
+                          </div>
+                          <div>
+                            <span>日志</span>
+                            <strong>{{ terminalPanelLineCount }} 行</strong>
+                          </div>
+                        </div>
+                        <div class="local-process-timeline">
+                          <div
+                            v-for="item in localRunnerProcessItems"
+                            :key="item.id"
+                            class="local-process-timeline__item"
+                            :class="`is-${item.phase}`"
+                          >
+                            <span class="local-process-timeline__marker">
+                              <CircleCheck
+                                v-if="item.phase === 'completed'"
+                                :size="13"
+                              />
+                              <span v-else></span>
+                            </span>
+                            <span class="local-process-timeline__main">
+                              <span class="local-process-timeline__title">
+                                {{ item.title }}
+                              </span>
+                              <span
+                                v-if="item.summary"
+                                class="local-process-timeline__summary"
+                              >
+                                {{ item.summary }}
+                              </span>
+                            </span>
+                            <span class="local-process-timeline__phase">
+                              {{ item.phaseLabel }}
+                            </span>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section class="local-runner-card local-runner-card--workspace">
+                        <div class="local-runner-card__head">
+                          <div>
+                            <div class="local-runner-card__eyebrow">Workspace</div>
+                            <div class="local-runner-card__title">文件树 / 编辑器</div>
+                          </div>
+                          <el-button
+                            size="small"
+                            text
+                            :loading="workspaceFileTreeLoading"
+                            :disabled="!canUseWorkspaceFiles"
+                            @click="refreshWorkspaceFileTree"
+                          >
+                            刷新
+                          </el-button>
+                        </div>
+                        <div class="local-workspace-root">
+                          {{ projectWorkspaceResolved || "未配置项目工作区" }}
+                        </div>
+                        <div v-if="canUseWorkspaceFiles" class="local-workspace-source">
+                          {{ workspaceFileBridgeLabel }}
+                        </div>
+                        <div v-if="!canUseWorkspaceFiles" class="local-runner-empty">
+                          先在设置中保存项目工作区后，才能直接浏览和编辑本机文件。
+                        </div>
+                        <template v-else>
+                          <div class="local-file-browser">
+                            <div class="local-file-browser__toolbar">
+                              <el-button
+                                size="small"
+                                text
+                                :disabled="!workspaceFileTreePath"
+                                @click="openWorkspaceDirectory(workspaceParentPath)"
+                              >
+                                上一级
+                              </el-button>
+                              <span>{{ workspaceFileTreePath || "." }}</span>
+                            </div>
+                            <div class="local-file-list">
+                              <button
+                                v-for="item in workspaceFileItems"
+                                :key="`${item.kind}:${item.path}`"
+                                type="button"
+                                class="local-file-item"
+                                :class="{
+                                  'is-active': item.path === activeWorkspaceFilePath,
+                                }"
+                                @click="handleWorkspaceFileClick(item)"
+                              >
+                                <span class="local-file-item__icon">
+                                  {{ item.kind === "directory" ? "DIR" : "TXT" }}
+                                </span>
+                                <span class="local-file-item__name">{{
+                                  item.name
+                                }}</span>
+                              </button>
+                              <div
+                                v-if="!workspaceFileItems.length"
+                                class="local-runner-empty"
+                              >
+                                当前目录没有可展示文件。
+                              </div>
+                            </div>
+                          </div>
+                          <div class="local-editor">
+                            <div class="local-editor__head">
+                              <span>{{ activeWorkspaceFilePath || "未选择文件" }}</span>
+                              <el-button
+                                size="small"
+                                type="primary"
+                                :loading="workspaceFileSaving"
+                                :disabled="
+                                  !activeWorkspaceFilePath || !workspaceFileDirty
+                                "
+                                @click="saveActiveWorkspaceFile"
+                              >
+                                {{ workspaceFileReadOnly ? "准备写入" : "保存" }}
+                              </el-button>
+                            </div>
+                            <el-input
+                              v-model="workspaceFileDraft"
+                              type="textarea"
+                              resize="none"
+                              :autosize="{ minRows: 8, maxRows: 14 }"
+                              :disabled="
+                                !activeWorkspaceFilePath || workspaceFileLoading
+                              "
+                              :readonly="false"
+                              :placeholder="
+                                workspaceFileReadOnly
+                                  ? '桌面端可编辑草稿；点击准备写入只生成确认摘要，不会直接保存。'
+                                  : '从上方文件树选择文本文件后可在这里编辑。'
+                              "
+                              class="local-editor__textarea"
+                            />
+                          </div>
+                          <div class="local-diff-preview">
+                            <div class="local-diff-preview__head">
+                              <div>
+                                <strong>差异预览</strong>
+                                <span>{{ workspaceDiffTargetLabel }}</span>
+                              </div>
+                              <div class="local-runner-card__actions">
+                                <el-tag size="small" effect="plain">
+                                  {{ workspaceDiffStatusLabel }}
+                                </el-tag>
+                                <el-button
+                                  size="small"
+                                  text
+                                  :loading="workspaceDiffLoading"
+                                  :disabled="!canPreviewWorkspaceDiff"
+                                  @click="refreshWorkspaceDiffPreview"
+                                >
+                                  预览
+                                </el-button>
+                              </div>
+                            </div>
+                            <div
+                              v-if="!canPreviewWorkspaceDiff"
+                              class="local-runner-empty"
+                            >
+                              差异预览需要 Tauri 桌面端原生桥和项目工作区。
+                            </div>
+                            <div
+                              v-else-if="
+                                workspaceDiffPreview?.reason &&
+                                !workspaceDiffPreview?.available
+                              "
+                              class="local-runner-empty"
+                            >
+                              {{ workspaceDiffPreview.reason }}
+                            </div>
+                            <pre
+                              v-else-if="
+                                workspaceDiffPreview?.diff ||
+                                workspaceDiffPreview?.summary ||
+                                workspaceDiffPreview?.status
+                              "
+                              class="local-diff-preview__output"
+                              >{{
+                                [
+                                  workspaceDiffPreview?.status,
+                                  workspaceDiffPreview?.summary,
+                                  workspaceDiffPreview?.diff,
+                                ]
+                                  .filter(Boolean)
+                                  .join("\n\n")
+                              }}</pre
+                            >
+                            <div v-else class="local-runner-empty">
+                              尚未生成差异预览；没有选中文件时会预览整个工作区。
+                            </div>
+                          </div>
+                        </template>
+                      </section>
+
+                      <section class="local-runner-card local-runner-card--terminal">
+                        <div class="local-runner-card__head">
+                          <div>
+                            <div class="local-runner-card__eyebrow">Terminal</div>
+                            <div class="local-runner-card__title">终端输出</div>
+                          </div>
+                          <el-tag size="small" effect="plain">
+                            {{ terminalPanelStatusText }}
+                          </el-tag>
+                        </div>
+                        <pre class="local-terminal-output">{{ terminalPanelText }}</pre>
+                      </section>
+                  </div>
+                </div>
+
+                <el-tabs v-if="activeSettingsPanel === 'chat'" class="settings-tabs">
                   <el-tab-pane label="生成回答">
                     <el-form
                       label-position="left"
@@ -3017,8 +3136,8 @@ import ProjectMaterialSaveDialog from "@/components/ProjectMaterialSaveDialog.vu
 import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
 import ChatComposer from "@/modules/project-chat/components/composer/ChatComposer.vue";
 import ChatMediaParameterPopover from "@/modules/project-chat/components/composer/ChatMediaParameterPopover.vue";
-import ChatContextBar from "@/modules/project-chat/components/layout/ChatContextBar.vue";
 import ChatMessageList from "@/modules/project-chat/components/messages/ChatMessageList.vue";
+import ChatContextBar from "@/modules/project-chat/components/layout/ChatContextBar.vue";
 import ProjectConversationSidebar from "@/modules/project-chat/components/sessions/ProjectConversationSidebar.vue";
 import ChatTaskTreePanel from "@/modules/project-chat/components/task-tree/ChatTaskTreePanel.vue";
 import TerminalApprovalDialog from "@/modules/project-chat/components/terminal/TerminalApprovalDialog.vue";
@@ -3090,7 +3209,10 @@ import {
   getNativeRuntimeInfo,
   hardKillNativeExternalAgentSession,
   hasNativeDesktopBridge,
+  ackNativeLiuAgentRuntimeOutbox,
   listNativeExternalAgentSessions,
+  listNativeLiuAgentBuiltinTools,
+  listNativeLiuAgentRuntimeOutbox,
   listNativeRunnerPermissionDecisions,
   listNativeWorkspaceFiles,
   prepareNativeExternalAgentLaunch,
@@ -3099,12 +3221,16 @@ import {
   readNativeWorkspaceFile,
   recordNativeRunnerPermissionDecision,
   resolveNativeExternalAgentPermission,
+  recoverNativeLiuAgentRuntimeState,
   runNativeRunnerCommand,
   startNativeExternalAgentSession as startNativeExternalAgentSessionCommand,
   sendNativeExternalAgentPrompt as sendNativeExternalAgentPromptCommand,
   warmupNativeExternalAgentSession as warmupNativeExternalAgentSessionCommand,
   subscribeNativeExternalAgentSessionEvents,
+  subscribeNativeLiuAgentRuntimeEvents,
+  startNativeLiuAgentLocalChat,
   writeNativeExternalAgentSessionInput,
+  executeNativeLiuAgentTool,
 } from "@/utils/native-desktop-bridge.js";
 import {
   buildChatSettingsRoute,
@@ -3530,6 +3656,15 @@ let lastChatRuntimeRemotePersistFingerprint = "";
 let terminalRestoreAttemptKey = "";
 let terminalStructuredInteractionRefreshPending = false;
 let externalAgentStatusRefreshKey = "";
+let chatSessionListRefreshAfterSendTimer = null;
+const localLiuAgentBuiltinToolNames = ref(new Set());
+const localLiuAgentToolTasks = new Set();
+const localLiuAgentPendingPermissions = new Map();
+const localLiuAgentPendingPlans = new Map();
+const localLiuAgentActiveRuns = new Map();
+const localLiuAgentSeenRuntimeEventIds = new Set();
+const localLiuAgentActiveRunVersion = ref(0);
+let nativeLiuAgentRuntimeEventUnlisten = null;
 
 // ============================================================
 // Composable 初始化（pending requests、native agent、workspace、terminal、settings、transport）
@@ -3645,6 +3780,7 @@ let activeFollowupAssistantMessageId = "";
 const workingStatusStartedAt = ref(0);
 const workingStatusNow = ref(Date.now());
 const workingStatusStartedAtBySession = new Map();
+const workingStatusActiveKey = ref("");
 let workingStatusTimer = null;
 let lastNoActiveGenerationWarningAt = 0;
 const pendingAgentPrepares = new Map();
@@ -3706,13 +3842,7 @@ const conversationSidebarRef = ref(null);
 const chatSettingsButtonRef = computed(
   () => conversationSidebarRef.value?.settingsButtonRef || null,
 );
-const chatContextBarHostRef = ref(null);
-const chatGuideButtonRef = computed(
-  () => chatContextBarHostRef.value?.guideButtonRef || null,
-);
-const chatContextBarRef = computed(
-  () => chatContextBarHostRef.value?.contextBarRef || null,
-);
+const chatGuideButtonRef = chatSettingsButtonRef;
 const chatComposerRef = ref(null);
 const settingsSidebarRef = ref(null);
 const settingsGuideButtonRef = ref(null);
@@ -3738,7 +3868,7 @@ const mcpDialogProjectLabel = computed(() => {
   return String(matched?.name || projectId).trim();
 });
 const chatSurface = computed(() => {
-  return "main-chat";
+  return "local-runner";
 });
 const isLocalRunnerSurface = computed(
   () => chatSurface.value === "local-runner",
@@ -4437,6 +4567,11 @@ const externalAgentStatusSummary = computed(() => {
 const executionRuntimeTitle = computed(() => {
   if (!hasSelectedProject.value) return "未选择项目";
   if (!isChatSettingsDisplayReady.value) return "项目配置加载中";
+  if (isLocalRunnerSurface.value) {
+    if (!nativeDesktopBridgeAvailable.value) return "本地 Runtime 未接入";
+    if (!projectWorkspaceResolved.value) return "待选择本机工作区";
+    return "本地智能体已启用";
+  }
   if (!isExternalAgentMode.value) return "系统对话";
   if (
     externalAgentDesktopRunnerRequired.value &&
@@ -4459,6 +4594,15 @@ const executionRuntimeDescription = computed(() => {
   if (!hasSelectedProject.value) return "选择项目后才能绑定执行环境。";
   if (!isChatSettingsDisplayReady.value) {
     return "正在读取项目执行方式，加载完成前不会显示系统对话或Runner 状态。";
+  }
+  if (isLocalRunnerSurface.value) {
+    if (!nativeDesktopBridgeAvailable.value) {
+      return "当前不是桌面端 Tauri 环境，本地智能体无法执行本机工具。";
+    }
+    if (!projectWorkspaceResolved.value) {
+      return "请在对话设置里选择本机工作区，本地智能体会以该目录作为工具执行边界。";
+    }
+    return "对话由桌面端本地 liuAgent Runtime 执行；后端只负责配置、记录和同步。";
   }
   if (!isExternalAgentMode.value) {
     return currentModelSummary.value || "使用服务端模型和项目工具回答。";
@@ -4490,6 +4634,7 @@ const executionRuntimeDescription = computed(() => {
 const executionRuntimeActionLabel = computed(() => {
   if (!hasSelectedProject.value) return "选择项目";
   if (!isChatSettingsDisplayReady.value) return "加载中";
+  if (isLocalRunnerSurface.value) return "本地设置";
   if (!isExternalAgentMode.value) return "切换执行方式";
   if (externalAgentDesktopRunnerRequired.value) return "打开桌面端";
   if (!workspacePathConfigured.value || workspacePathDirty.value)
@@ -4506,6 +4651,12 @@ const composerExecutionStatusTagType = computed(() => {
 });
 const composerExecutionStatusLabel = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "加载中";
+  if (isLocalRunnerSurface.value) {
+    if (!nativeDesktopBridgeAvailable.value || !projectWorkspaceResolved.value) {
+      return "未就绪";
+    }
+    return "本地运行";
+  }
   if (!isExternalAgentMode.value) return "系统对话";
   if (externalAgentUnavailable.value) return "不可用";
   if (externalAgentDesktopRunnerRequired.value || !workspacePathConfigured.value) {
@@ -4522,6 +4673,7 @@ const composerExecutionStatusLabel = computed(() => {
 });
 const composerExecutionRuntimeLocation = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "读取配置";
+  if (isLocalRunnerSurface.value) return "桌面端本地";
   if (!isExternalAgentMode.value) return "服务端模型";
   if (nativeDesktopBridgeAvailable.value) return "桌面端原生桥";
   return "需桌面端 Runner";
@@ -4533,7 +4685,9 @@ const composerExecutionSummaryItems = computed(() => [
   },
   {
     label: "执行器",
-    value: isExternalAgentMode.value
+    value: isLocalRunnerSurface.value
+      ? "liuAgent Runtime"
+      : isExternalAgentMode.value
       ? externalAgentDisplayLabel.value
       : currentModelSummary.value || "系统模型",
   },
@@ -4544,6 +4698,7 @@ const composerExecutionSummaryItems = computed(() => [
 ]);
 const composerExecutionDetailAvailable = computed(
   () =>
+    isLocalRunnerSurface.value ||
     hasChatTaskTree.value ||
     terminalPanelLineCount.value > 0 ||
     Boolean(terminalApprovalPrompt.value),
@@ -4582,6 +4737,12 @@ const externalAgentUnavailable = computed(() => {
 const executionRuntimeToneClass = computed(() => {
   if (!hasSelectedProject.value) return "is-muted";
   if (!isChatSettingsDisplayReady.value) return "is-muted";
+  if (isLocalRunnerSurface.value) {
+    if (!nativeDesktopBridgeAvailable.value || !projectWorkspaceResolved.value) {
+      return "is-warning";
+    }
+    return "is-ready";
+  }
   if (!isExternalAgentMode.value) return "is-system";
   if (externalAgentUnavailable.value) return "is-danger";
   if (
@@ -4601,6 +4762,11 @@ const executionRuntimeToneClass = computed(() => {
 });
 const composerExecutionChipLabel = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "项目配置加载中";
+  if (isLocalRunnerSurface.value) {
+    if (!nativeDesktopBridgeAvailable.value) return "本地智能体 · 桌面端未接入";
+    if (!projectWorkspaceResolved.value) return "本地智能体 · 请选择工作区";
+    return "本地智能体 · 本机执行";
+  }
   if (!isExternalAgentMode.value)
     return `系统对话 · ${currentModelSummary.value}`;
   if (externalAgentInfo.value.ready) {
@@ -7552,6 +7718,7 @@ async function hydrateNativeDesktopRuntimeInfo() {
   } catch {
     nativeRuntimeInfo.value = null;
   }
+  void startNativeLiuAgentRuntimeEventSubscription();
 }
 
 async function logoutFromChat() {
@@ -7627,17 +7794,17 @@ const chatTourSteps = computed(() => [
     description:
       "这是分步蒙层导览。看过一次或主动跳过后，本账号在当前角色下不会再自动弹出。",
     target: () => resolveTourTarget(chatGuideButtonRef),
-    placement: "bottom-start",
+    placement: "right-start",
   },
   {
     title: hasSelectedProject.value
       ? `${currentProjectLabel.value} 的主要能力入口`
       : "先看当前对话工作台",
     description: hasSelectedProject.value
-      ? "这里把当前项目的主入口集中在一起：继续 AI 对话、打开素材库、接入 MCP、补更新技能。要更新项目的前端、后端或数据库数据，通常就从这里进入并继续推进。"
-      : "这里是当前会话的主工作台。即使还没选项目，也可以先直接对话，再根据需要补项目、MCP 或技能资源。",
-    target: () => resolveTourTarget(chatContextBarRef),
-    placement: "bottom-start",
+      ? "项目详情、素材库、MCP 接入、提示词和本地工作区设置都集中在设置中心；对话页面只保留消息流和输入。"
+      : "设置中心用于选择项目、模型、MCP 和本地工作区；对话页面只保留消息流和输入。",
+    target: () => resolveTourTarget(chatSettingsButtonRef),
+    placement: "right-start",
   },
   {
     title: hasSelectedProject.value
@@ -8093,6 +8260,8 @@ const emptyStateText = computed(() => {
 const composerPlaceholder = computed(() =>
   isTerminalInteractionMode.value
     ? "项目终端已连接，直接输入命令或交互内容，按 Enter 发送。"
+    : isLocalRunnerSurface.value
+      ? "输入需求，本地 liuAgent 会在桌面端调用模型并按模型结构化工具调用执行。"
     : agentWorkflowState.value.phase === "waiting_user"
       ? "请先在消息卡片完成确认或授权；完成后系统会自动继续执行。"
       : agentWorkflowState.value.phase === "running"
@@ -8124,6 +8293,9 @@ const composerPlaceholder = computed(() =>
 const composerHintText = computed(() => {
   if (isTerminalInteractionMode.value) {
     return "当前主输入框已切换为项目终端输入，Enter 发送";
+  }
+  if (isLocalRunnerSurface.value) {
+    return "本地运行：模型请求和工具执行在桌面端发起";
   }
   if (agentWorkflowState.value.phase === "waiting_user") {
     return "等待你在消息卡片确认，完成后自动继续";
@@ -8251,6 +8423,526 @@ function isLiveTerminalOperation(operation) {
   if (kind !== "terminal") return false;
   const phase = normalizeOperationPhase(operation?.phase || operation?.status);
   return !["completed", "failed", "blocked"].includes(phase);
+}
+
+function isLocalLiuAgentBubbleOnlyOperation(operation) {
+  if (!operation || typeof operation !== "object") return false;
+  const meta =
+    operation.meta && typeof operation.meta === "object" ? operation.meta : {};
+  if (String(meta.local_liuagent_permission || "").trim() === "true") {
+    return true;
+  }
+  if (String(meta.local_liuagent_operation || "").trim() === "true") {
+    return true;
+  }
+  if (String(meta.source || "").trim() === "tauri_liuagent_local_chat") {
+    return true;
+  }
+  const operationId = String(
+    operation.operationId || operation.id || "",
+  ).trim();
+  return (
+    operationId.startsWith("local-agent:") ||
+    operationId.startsWith("desktop-tool:") ||
+    operationId.startsWith("local-liuagent-permission:")
+  );
+}
+
+function markLocalLiuAgentBubbleOnlyOperation(operation, context = {}) {
+  if (!operation || typeof operation !== "object") return operation;
+  const meta =
+    operation.meta && typeof operation.meta === "object" ? operation.meta : {};
+  return {
+    ...operation,
+    meta: {
+      ...meta,
+      local_liuagent_operation: "true",
+      source: "tauri_liuagent_local_chat",
+      chat_session_id:
+        String(meta.chat_session_id || "").trim() ||
+        String(context.chatSessionId || "").trim(),
+      cwd:
+        String(meta.cwd || "").trim() ||
+        String(context.workspacePath || "").trim(),
+    },
+  };
+}
+
+function localLiuAgentRuntimeEventsFromResult(result = {}) {
+  if (Array.isArray(result?.runtimeEvents)) return result.runtimeEvents;
+  if (Array.isArray(result?.runtime_events)) return result.runtime_events;
+  return [];
+}
+
+function localLiuAgentRuntimeEventPayload(event = {}) {
+  return event?.payload && typeof event.payload === "object" ? event.payload : {};
+}
+
+function localLiuAgentRuntimeEventPhase(event = {}) {
+  const type = String(event?.type || "").trim();
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  if (type === "approval_required") return "waiting_user";
+  if (type === "model_call_started" || type === "tool_call_started") return "running";
+  if (type === "model_step") return payload?.ok === false ? "failed" : "completed";
+  if (type === "tool_result") return payload?.ok === false ? "failed" : "completed";
+  if (type === "state_changed") {
+    const to = String(payload?.to || "").trim();
+    if (to === "waiting_approval" || to === "waiting_user") return "waiting_user";
+    if (to === "failed") return "failed";
+    if (to === "completed") return "completed";
+    if (to === "cancelled") return "blocked";
+  }
+  return "running";
+}
+
+function localLiuAgentRuntimeEventSummary(event = {}) {
+  const type = String(event?.type || "").trim();
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  if (type === "approval_required") {
+    const action = String(payload?.action || "").trim();
+    const risk = String(payload?.risk || "").trim();
+    return [action ? `等待授权：${action}` : "等待本机工具授权", risk]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (type === "state_changed") {
+    const to = String(payload?.to || "").trim();
+    if (to === "waiting_approval") return "本地会话等待授权";
+    if (to === "completed") return "本地会话完成";
+    if (to === "failed") return "本地会话失败";
+    return to ? `本地会话状态：${to}` : "本地会话状态已更新";
+  }
+  if (type === "model_step") {
+    const index = Number(payload?.index || 0) || 0;
+    const summary = String(payload?.summary || "").trim();
+    const provider = String(payload?.provider_id || payload?.providerId || "").trim();
+    const model = String(payload?.model_name || payload?.modelName || "").trim();
+    const toolCount = Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0;
+    const title = index > 0 ? `模型步骤 ${index}` : "模型步骤";
+    const runtime = [provider, model].filter(Boolean).join(" / ");
+    const toolText = toolCount > 0 ? `返回 ${toolCount} 个工具调用` : "未继续调用工具";
+    return [title, runtime, summary || toolText].filter(Boolean).join(" · ");
+  }
+  if (type === "model_call_started") {
+    const index = Number(payload?.index || 0) || 0;
+    const provider = String(payload?.provider_id || payload?.providerId || "").trim();
+    const model = String(payload?.model_name || payload?.modelName || "").trim();
+    const messageCount = Number(payload?.message_count || payload?.messageCount || 0) || 0;
+    const title = index > 0 ? `模型步骤 ${index}` : "模型步骤";
+    const runtime = [provider, model].filter(Boolean).join(" / ");
+    const contextText = messageCount > 0 ? `上下文 ${messageCount} 条` : "";
+    return [title, runtime, contextText, "请求中"].filter(Boolean).join(" · ");
+  }
+  if (type === "tool_call_started") {
+    const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+    const summary = String(payload?.summary || "").trim();
+    const toolIndex = Number(payload?.tool_index || payload?.toolIndex || 0) || 0;
+    const toolCount = Number(payload?.tool_count || payload?.toolCount || 0) || 0;
+    const toolLabel =
+      toolName && toolIndex > 0 && toolCount > 0
+        ? `${toolName} (${toolIndex}/${toolCount})`
+        : toolName || "本地工具";
+    const argumentsPreview = String(
+      payload?.arguments_preview || payload?.argumentsPreview || "",
+    ).trim();
+    return [`准备调用：${toolLabel}`, summary || argumentsPreview]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (type === "tool_result") {
+    const toolName = String(payload?.tool_name || "").trim();
+    const summary = String(payload?.summary || "").trim();
+    return [toolName ? `工具结果：${toolName}` : "工具结果", summary]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  return type ? `本地事件：${type}` : "本地运行时事件";
+}
+
+function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
+  const type = String(event?.type || "").trim();
+  if (!type || type === "message") return null;
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  const eventId = String(event?.event_id || event?.eventId || "").trim();
+  const runtimeSessionId = String(
+    event?.runtime_session_id || event?.runtimeSessionId || event?.session_id || "",
+  ).trim();
+  const phase = localLiuAgentRuntimeEventPhase(event);
+  const summary = localLiuAgentRuntimeEventSummary(event);
+  const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+  const modelStepIndex = Number(payload?.index || 0) || 0;
+  const requestId = String(payload?.requestId || payload?.request_id || "").trim();
+  const argumentsPreview = String(
+    payload?.arguments_preview || payload?.argumentsPreview || "",
+  ).trim();
+  const operationId =
+    type === "approval_required" && requestId
+      ? localLiuAgentPermissionOperationId(requestId, eventId)
+      : eventId ||
+        `local-agent-event:${runtimeSessionId || context.assistantMessageId || "unknown"}:${type}`;
+  return {
+    operationId,
+    kind:
+      type === "approval_required"
+        ? "approval"
+        : type === "model_step" || type === "model_call_started"
+          ? "model"
+        : type === "tool_result" || type === "tool_call_started"
+          ? "tool"
+          : "request",
+    title:
+      type === "approval_required"
+        ? "桌面本地工具授权"
+        : type === "model_step"
+          ? `本地模型步骤 ${modelStepIndex || ""}`.trim()
+        : type === "model_call_started"
+          ? `本地模型步骤 ${modelStepIndex || ""} 请求中`.trim()
+        : type === "tool_result"
+          ? `桌面本地工具：${toolName || "本地工具"}`
+        : type === "tool_call_started"
+          ? `准备调用本地工具：${toolName || "本地工具"}`
+          : "桌面本地 Agent Runtime",
+    summary,
+    detail:
+      type === "approval_required"
+        ? nativeLiuAgentPermissionText(payload, { toolName: toolName || "本地工具" })
+        : type === "tool_call_started"
+          ? argumentsPreview
+        : String(payload?.error_code || payload?.error || "").trim(),
+    phase,
+    actionType: type === "approval_required" ? "approve" : "none",
+    meta: {
+      local_liuagent_operation: "true",
+      agent_runtime_event: "true",
+      source: "tauri_liuagent_local_chat",
+      event_type: type,
+      runtime_session_id: runtimeSessionId,
+      chat_session_id:
+        String(event?.chat_session_id || event?.chatSessionId || "").trim() ||
+        String(context.chatSessionId || "").trim(),
+      request_id: requestId,
+      model_step_index: modelStepIndex,
+      provider_id: String(payload?.provider_id || payload?.providerId || "").trim(),
+      model_name: String(payload?.model_name || payload?.modelName || "").trim(),
+      tool_call_count: Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0,
+      tool_name: toolName,
+      tool_index: Number(payload?.tool_index || payload?.toolIndex || 0) || 0,
+      tool_count: Number(payload?.tool_count || payload?.toolCount || 0) || 0,
+      arguments_preview: argumentsPreview,
+      tool_call_id: String(payload?.tool_call_id || payload?.toolCallId || "").trim(),
+      tool_result_id: String(
+        payload?.tool_result_id || payload?.toolResultId || "",
+      ).trim(),
+      cwd: String(context.workspacePath || "").trim(),
+    },
+  };
+}
+
+function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
+  if (!row) return;
+  for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
+    const operation = localLiuAgentRuntimeEventOperation(event, {
+      ...context,
+      assistantMessageId: row.id,
+    });
+    if (!operation) continue;
+    upsertMessageOperation(row, operation);
+    appendMessageProcessLog(row, {
+      text: operation.summary,
+      level:
+        operation.phase === "failed"
+          ? "error"
+          : operation.phase === "waiting_user"
+            ? "warning"
+            : operation.phase === "completed"
+              ? "success"
+              : "info",
+    });
+  }
+}
+
+function localLiuAgentActiveRunForChatSession(chatSessionId = "") {
+  localLiuAgentActiveRunVersion.value;
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedChatSessionId) return null;
+  return localLiuAgentActiveRuns.get(normalizedChatSessionId) || null;
+}
+
+function setLocalLiuAgentActiveRun(chatSessionId = "", run = null) {
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedChatSessionId || !run) return;
+  localLiuAgentActiveRuns.set(normalizedChatSessionId, run);
+  localLiuAgentActiveRunVersion.value += 1;
+}
+
+function deleteLocalLiuAgentActiveRun(chatSessionId = "") {
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedChatSessionId) return false;
+  const deleted = localLiuAgentActiveRuns.delete(normalizedChatSessionId);
+  if (deleted) {
+    localLiuAgentActiveRunVersion.value += 1;
+  }
+  return deleted;
+}
+
+const currentChatSessionLocalLiuAgentRunning = computed(() =>
+  Boolean(localLiuAgentActiveRunForChatSession(currentChatSessionId.value)),
+);
+
+function localLiuAgentActiveRunRow(run) {
+  const assistantMessageId = String(run?.assistantMessageId || "").trim();
+  if (!assistantMessageId) return null;
+  return messages.value.find((row) => String(row?.id || "").trim() === assistantMessageId) || null;
+}
+
+function handleNativeLiuAgentRuntimeEvent(event = {}) {
+  const chatSessionId = String(event?.chat_session_id || event?.chatSessionId || "").trim();
+  const run = localLiuAgentActiveRunForChatSession(chatSessionId);
+  if (!run || run.cancelled) return;
+  const eventId = String(event?.event_id || event?.eventId || "").trim();
+  const eventKey =
+    eventId ||
+    [
+      String(event?.runtime_session_id || event?.runtimeSessionId || "").trim(),
+      String(event?.type || "").trim(),
+      JSON.stringify(localLiuAgentRuntimeEventPayload(event)),
+    ]
+      .filter(Boolean)
+      .join(":");
+  if (eventKey) {
+    if (localLiuAgentSeenRuntimeEventIds.has(eventKey)) return;
+    localLiuAgentSeenRuntimeEventIds.add(eventKey);
+  }
+  const row = localLiuAgentActiveRunRow(run);
+  if (!row) return;
+  const operation = localLiuAgentRuntimeEventOperation(event, {
+    chatSessionId,
+    workspacePath: run.workspacePath,
+    assistantMessageId: run.assistantMessageId,
+  });
+  if (!operation) return;
+  upsertMessageOperation(row, operation);
+  appendMessageProcessLog(row, {
+    text: operation.summary,
+    level:
+      operation.phase === "failed"
+        ? "error"
+        : operation.phase === "waiting_user"
+          ? "warning"
+          : operation.phase === "completed"
+            ? "success"
+            : "info",
+    autoExpand: true,
+  });
+  row.processExpanded = true;
+  scrollToBottom();
+}
+
+async function startNativeLiuAgentRuntimeEventSubscription() {
+  if (nativeLiuAgentRuntimeEventUnlisten || !hasNativeDesktopBridge()) return;
+  nativeLiuAgentRuntimeEventUnlisten = await subscribeNativeLiuAgentRuntimeEvents(
+    handleNativeLiuAgentRuntimeEvent,
+  );
+}
+
+function stopNativeLiuAgentRuntimeEventSubscription() {
+  const unlisten = nativeLiuAgentRuntimeEventUnlisten;
+  nativeLiuAgentRuntimeEventUnlisten = null;
+  if (typeof unlisten === "function") {
+    try {
+      const result = unlisten();
+      if (result && typeof result.catch === "function") {
+        result.catch(() => {});
+      }
+    } catch {
+      // ignore cleanup errors
+    }
+  }
+}
+
+function localLiuAgentUserMessageFromRuntimeEvents(events = []) {
+  const event = (Array.isArray(events) ? events : []).find((item) => {
+    const payload = localLiuAgentRuntimeEventPayload(item);
+    return (
+      String(item?.type || "").trim() === "message" &&
+      String(payload?.role || "").trim() === "user" &&
+      String(payload?.content || "").trim()
+    );
+  });
+  if (!event) return null;
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  return {
+    messageId: String(payload?.message_id || payload?.messageId || "").trim(),
+    content: String(payload?.content || "").trim(),
+  };
+}
+
+function localLiuAgentAssistantMessageIdFromRuntimeEvents(events = []) {
+  const event = (Array.isArray(events) ? events : []).find((item) => {
+    const payload = localLiuAgentRuntimeEventPayload(item);
+    return (
+      String(item?.type || "").trim() === "message" &&
+      String(payload?.role || "").trim() === "assistant" &&
+      String(payload?.message_id || payload?.messageId || "").trim()
+    );
+  });
+  const payload = event ? localLiuAgentRuntimeEventPayload(event) : {};
+  return String(payload?.message_id || payload?.messageId || "").trim();
+}
+
+function localLiuAgentPendingPermissionFromRecovery(result = {}) {
+  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  const runState =
+    state?.run_state && typeof state.run_state === "object" ? state.run_state : {};
+  const pendingPermissions = Array.isArray(runState?.pending_permissions)
+    ? runState.pending_permissions
+    : [];
+  const permission = pendingPermissions.find((item) => {
+    const requestId = String(item?.requestId || item?.request_id || "").trim();
+    return Boolean(requestId);
+  });
+  if (permission) return permission;
+  for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
+    if (String(event?.type || "").trim() !== "approval_required") continue;
+    const payload = localLiuAgentRuntimeEventPayload(event);
+    const requestId = String(payload?.requestId || payload?.request_id || "").trim();
+    if (requestId) return payload;
+  }
+  return null;
+}
+
+function findLocalLiuAgentRuntimeMessage(rows = []) {
+  return (
+    [...(Array.isArray(rows) ? rows : messages.value)]
+      .reverse()
+      .find((item) => item && item.role !== "user") || null
+  );
+}
+
+async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows = []) {
+  const activeProjectId = String(selectedProjectId.value || "").trim();
+  const activeChatSessionId = String(currentChatSessionId.value || "").trim();
+  if (
+    String(projectId || "").trim() !== activeProjectId ||
+    String(chatSessionId || "").trim() !== activeChatSessionId
+  ) {
+    return;
+  }
+  const workspacePath = localLiuAgentWorkspacePath();
+  if (!workspacePath || !hasNativeDesktopBridge()) return;
+  let result = null;
+  try {
+    result = await recoverNativeLiuAgentRuntimeState({
+      projectId: activeProjectId,
+      chatSessionId: activeChatSessionId,
+      workspacePath,
+    });
+  } catch (err) {
+    console.warn("recover local liuAgent runtime failed", err);
+    return;
+  }
+  if (!result?.ok) {
+    const code = String(result?.errorCode || result?.error_code || "").trim();
+    if (code && code !== "state.not_found") {
+      console.warn("recover local liuAgent runtime failed", result);
+    }
+    return;
+  }
+  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  const runState =
+    state?.run_state && typeof state.run_state === "object" ? state.run_state : {};
+  const status = String(runState?.status || "").trim();
+  if (!["waiting_approval", "failed"].includes(status)) return;
+  const row = findLocalLiuAgentRuntimeMessage(rows);
+  if (!row) return;
+  applyLocalLiuAgentRuntimeEvents(row, result, {
+    chatSessionId: activeChatSessionId,
+    workspacePath,
+  });
+  if (status === "waiting_approval") {
+    const permissionRequest = localLiuAgentPendingPermissionFromRecovery(result);
+    const requestId = String(
+      permissionRequest?.requestId || permissionRequest?.request_id || "",
+    ).trim();
+    const userMessage = localLiuAgentUserMessageFromRuntimeEvents(
+      localLiuAgentRuntimeEventsFromResult(result),
+    );
+    if (!permissionRequest || !requestId || !userMessage?.content) return;
+    let modelRuntime = null;
+    try {
+      modelRuntime = await buildLocalLiuAgentModelRuntime();
+    } catch (_error) {
+      modelRuntime = null;
+    }
+    const assistantMessageId =
+      localLiuAgentAssistantMessageIdFromRuntimeEvents(
+        localLiuAgentRuntimeEventsFromResult(result),
+      ) || row.id;
+    const localChatPayload = {
+      projectId: activeProjectId,
+      chatSessionId: activeChatSessionId,
+      messageId: userMessage.messageId,
+      assistantMessageId,
+      message: userMessage.content,
+      workspacePath,
+      history: [],
+      providerId: selectedProviderId.value || defaultProviderId.value || "",
+      modelName: selectedModelName.value || defaultModelName.value || "",
+      systemPrompt: systemPrompt.value || "",
+      temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
+      maxTokens: Number(chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens),
+      modelRuntime,
+    };
+    const normalizedPermissionRequest = {
+      ...permissionRequest,
+      requestId,
+      toolName:
+        String(permissionRequest?.toolName || permissionRequest?.tool_name || "").trim() ||
+        "本地工具",
+    };
+    localLiuAgentPendingPermissions.set(requestId, {
+      kind: "local_chat",
+      localChatPayload,
+      permissionRequest: normalizedPermissionRequest,
+      assistantMessageId: row.id,
+      userMessageId: userMessage.messageId,
+      activeChatSessionId,
+      displayUserMessageContent: userMessage.content,
+      finalUserPrompt: userMessage.content,
+      sourceContext: {
+        restored_from_local_runtime_state: true,
+      },
+    });
+    upsertLocalLiuAgentPermissionOperation(row, normalizedPermissionRequest);
+    row.content =
+      String(row.content || "").trim() ||
+      "已恢复上次本机工具授权请求，请在当前回答气泡中继续处理。";
+    appendMessageProcessLog(row, {
+      text: "已恢复上次待授权的本地 liuAgent 会话",
+      level: "warning",
+    });
+  } else if (status === "failed") {
+    upsertMessageOperation(row, {
+      operationId: `local-agent:${row.id}`,
+      kind: "request",
+      title: "桌面本地 Agent Runtime",
+      summary: "已恢复上次失败的本地会话",
+      detail: String(result?.summary || result?.error || "").trim(),
+      phase: "failed",
+      actionType: "none",
+      meta: {
+        local_liuagent_operation: "true",
+        source: "tauri_liuagent_local_chat",
+        chat_session_id: activeChatSessionId,
+        cwd: workspacePath,
+      },
+    });
+    row.content =
+      String(row.content || "").trim() ||
+      "已恢复上次失败的本地 liuAgent 会话，请检查执行过程后重新发送。";
+  }
+  rememberChatSessionMessages(activeProjectId, activeChatSessionId, messages.value);
+  schedulePersistChatRuntime();
 }
 
 function hasLiveTerminalOperation(row) {
@@ -8426,6 +9118,7 @@ function findLatestAgentWorkflowOperation(phaseNames = []) {
     const operations = messageProcessOperations(row);
     for (let opIndex = operations.length - 1; opIndex >= 0; opIndex -= 1) {
       const operation = operations[opIndex];
+      if (isLocalLiuAgentBubbleOnlyOperation(operation)) continue;
       const phase = normalizeOperationPhase(
         operation?.phase || operation?.status,
       );
@@ -8505,6 +9198,7 @@ const agentWorkflowState = computed(() => {
     running ||
     chatLoading.value ||
     hasCurrentPendingRequest ||
+    currentChatSessionLocalLiuAgentRunning.value ||
     currentChatSessionNativeExternalAgentRunning.value ||
     backgroundTerminalCount.value > 0,
   );
@@ -8561,7 +9255,9 @@ const agentWorkflowState = computed(() => {
 
 const showAgentWorkflowStatusStrip = computed(
   () =>
+    !isLocalRunnerSurface.value &&
     Boolean(String(selectedProjectId.value || "").trim()) &&
+    !isAwaitingCardActionInteraction.value &&
     agentWorkflowState.value.phase !== "idle",
 );
 
@@ -8613,8 +9309,11 @@ function focusAgentWorkflowOperation() {
 const showPauseGenerationButton = computed(
   () =>
     (Boolean(getActiveRequestId()) ||
+      currentChatSessionLocalLiuAgentRunning.value ||
       currentChatSessionNativeExternalAgentRunning.value) &&
-    (chatLoading.value || currentChatSessionNativeExternalAgentRunning.value) &&
+    (chatLoading.value ||
+      currentChatSessionLocalLiuAgentRunning.value ||
+      currentChatSessionNativeExternalAgentRunning.value) &&
     !isAwaitingUserInteraction.value &&
     !isTerminalInteractionMode.value,
 );
@@ -8634,6 +9333,7 @@ const showWorkingStatusBar = computed(() => {
   return Boolean(
     chatLoading.value ||
     hasPendingRequestForChatSession(currentChatSessionId.value) ||
+    currentChatSessionLocalLiuAgentRunning.value ||
     currentChatSessionNativeExternalAgentRunning.value ||
     backgroundTerminalCount.value > 0,
   );
@@ -8655,6 +9355,9 @@ const workingStatusElapsedLabel = computed(
 );
 
 const workingStatusTitle = computed(() => {
+  if (isLocalRunnerSurface.value) {
+    return "本地智能体执行中";
+  }
   if (backgroundTerminalCount.value > 0 && !chatLoading.value) {
     return "Terminal running";
   }
@@ -8662,6 +9365,9 @@ const workingStatusTitle = computed(() => {
 });
 
 const workingStatusMetaItems = computed(() => {
+  if (isLocalRunnerSurface.value) {
+    return ["本机模型/工具运行中", "等待结果返回"];
+  }
   const items = ["esc to interrupt"];
   const terminalCount = Number(backgroundTerminalCount.value || 0);
   if (terminalCount > 0) {
@@ -8691,22 +9397,71 @@ function workingStatusSessionKey(chatSessionId = currentChatSessionId.value) {
   return String(chatSessionId || "").trim() || "__current__";
 }
 
+function workingStatusRunKey(
+  chatSessionId = currentChatSessionId.value,
+  runId = "",
+) {
+  const sessionKey = workingStatusSessionKey(chatSessionId);
+  const normalizedRunId = String(runId || "").trim();
+  return normalizedRunId ? `${sessionKey}::${normalizedRunId}` : sessionKey;
+}
+
+function workingStatusKeyBelongsToSession(key, chatSessionId = "") {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return false;
+  const sessionKey = workingStatusSessionKey(chatSessionId);
+  return (
+    normalizedKey === sessionKey ||
+    normalizedKey.startsWith(`${sessionKey}::`)
+  );
+}
+
 function clearWorkingStatusStartForChatSession(chatSessionId = "") {
-  const key = workingStatusSessionKey(chatSessionId);
-  workingStatusStartedAtBySession.delete(key);
-  if (key === workingStatusSessionKey()) {
+  const sessionKey = workingStatusSessionKey(chatSessionId);
+  for (const key of Array.from(workingStatusStartedAtBySession.keys())) {
+    if (key === sessionKey || key.startsWith(`${sessionKey}::`)) {
+      workingStatusStartedAtBySession.delete(key);
+    }
+  }
+  if (
+    workingStatusKeyBelongsToSession(workingStatusActiveKey.value, chatSessionId)
+  ) {
+    workingStatusActiveKey.value = "";
     workingStatusStartedAt.value = 0;
     workingStatusNow.value = Date.now();
   }
 }
 
-function startWorkingStatusTimer() {
-  const key = workingStatusSessionKey();
+function clearWorkingStatusStartForRun(
+  runId = "",
+  chatSessionId = currentChatSessionId.value,
+) {
+  const key = workingStatusRunKey(chatSessionId, runId);
+  workingStatusStartedAtBySession.delete(key);
+  if (workingStatusActiveKey.value === key) {
+    workingStatusActiveKey.value = "";
+    workingStatusStartedAt.value = 0;
+    workingStatusNow.value = Date.now();
+  }
+}
+
+function startWorkingStatusTimer(
+  runId = "",
+  chatSessionId = currentChatSessionId.value,
+) {
+  const explicitRunId = String(runId || "").trim();
+  let key = explicitRunId
+    ? workingStatusRunKey(chatSessionId, explicitRunId)
+    : String(workingStatusActiveKey.value || "").trim();
+  if (!key || !workingStatusKeyBelongsToSession(key, chatSessionId)) {
+    key = workingStatusRunKey(chatSessionId);
+  }
   let startedAt = Number(workingStatusStartedAtBySession.get(key) || 0);
   if (!startedAt) {
     startedAt = Date.now();
     workingStatusStartedAtBySession.set(key, startedAt);
   }
+  workingStatusActiveKey.value = key;
   workingStatusStartedAt.value = startedAt;
   workingStatusNow.value = Date.now();
   if (workingStatusTimer !== null) return;
@@ -8720,6 +9475,7 @@ function stopWorkingStatusTimer() {
     window.clearInterval(workingStatusTimer);
     workingStatusTimer = null;
   }
+  workingStatusActiveKey.value = "";
   workingStatusStartedAt.value = 0;
   workingStatusNow.value = Date.now();
 }
@@ -9504,6 +10260,12 @@ function getRememberedChatSessionMessages(projectId, chatSessionId) {
   return Array.isArray(rows) ? rows : null;
 }
 
+function forgetChatSessionMessages(projectId, chatSessionId) {
+  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
+  if (!key) return;
+  chatSessionMessageCache.delete(key);
+}
+
 function isNativeExternalAgentRunningForChatSession(chatSessionId) {
   const normalizedSessionId = String(chatSessionId || "").trim();
   if (!normalizedSessionId) return false;
@@ -9634,6 +10396,7 @@ function isChatSessionBusy(chatSessionId = currentChatSessionId.value) {
   if (!normalizedSessionId) return false;
   return (
     hasPendingRequestForChatSession(normalizedSessionId) ||
+    Boolean(localLiuAgentActiveRunForChatSession(normalizedSessionId)) ||
     (isExternalAgentMode.value &&
       isNativeExternalAgentRunningForChatSession(normalizedSessionId))
   );
@@ -10168,6 +10931,7 @@ async function restoreInteractiveChatRuntime(
   ) {
     return;
   }
+  await restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows);
   const terminal =
     runtimePayload?.terminal && typeof runtimePayload.terminal === "object"
       ? runtimePayload.terminal
@@ -11853,7 +12617,7 @@ function isVisibleProcessOperation(operation) {
   if (kind === "plan") return true;
   const phase = normalizeOperationPhase(operation?.phase || operation?.status);
   if (
-    ["tool", "terminal", "auth", "approval", "verification"].includes(kind) &&
+    ["model", "tool", "terminal", "auth", "approval", "verification"].includes(kind) &&
     phase !== "pending"
   ) {
     return true;
@@ -12589,6 +13353,477 @@ function applyAgentRuntimeEvent(row, eventData = {}) {
   return true;
 }
 
+function agentRuntimeNestedPayload(eventData = {}) {
+  const event =
+    eventData?.event && typeof eventData.event === "object"
+      ? eventData.event
+      : {};
+  if (event?.payload && typeof event.payload === "object") {
+    return event.payload;
+  }
+  if (eventData?.payload && typeof eventData.payload === "object") {
+    return eventData.payload;
+  }
+  return {};
+}
+
+function desktopClientToolTaskFromRuntimeEvent(eventData = {}) {
+  if (String(eventData?.event_type || "").trim() !== "tool_observation_created") {
+    return null;
+  }
+  const payload = agentRuntimeNestedPayload(eventData);
+  const rawResult =
+    payload?.raw_result && typeof payload.raw_result === "object"
+      ? payload.raw_result
+      : {};
+  if (String(rawResult?.source || "").trim() !== "desktop_client_tool") {
+    return null;
+  }
+  const status = String(rawResult?.status || "").trim().toLowerCase();
+  if (!["waiting_user_action", "queued", "running"].includes(status)) {
+    return null;
+  }
+  const taskId = String(rawResult?.task_id || "").trim();
+  const runId = String(rawResult?.run_id || eventData?.run_id || "").trim();
+  const callId = String(
+    rawResult?.call_id || payload?.call_id || "",
+  ).trim();
+  const toolName = String(
+    rawResult?.tool_name || payload?.tool_name || "",
+  ).trim();
+  if (!taskId || !runId || !callId || !toolName) return null;
+  return {
+    taskId,
+    runId,
+    callId,
+    toolName,
+    toolArgs:
+      rawResult?.tool_args &&
+      typeof rawResult.tool_args === "object" &&
+      !Array.isArray(rawResult.tool_args)
+        ? rawResult.tool_args
+        : {},
+    chatSessionId: String(eventData?.chat_session_id || "").trim(),
+  };
+}
+
+function localLiuAgentWorkspacePath() {
+  return String(
+    workspacePathDraftNormalized.value ||
+      projectChatSettings.value.connector_workspace_path ||
+      workspacePathResolved.value ||
+      projectWorkspaceResolved.value ||
+      "",
+  ).trim();
+}
+
+async function ensureLocalLiuAgentBuiltinToolNames() {
+  if (localLiuAgentBuiltinToolNames.value.size) {
+    return localLiuAgentBuiltinToolNames.value;
+  }
+  if (!hasNativeDesktopBridge()) {
+    return localLiuAgentBuiltinToolNames.value;
+  }
+  try {
+    const tools = await listNativeLiuAgentBuiltinTools();
+    localLiuAgentBuiltinToolNames.value = new Set(
+      (Array.isArray(tools) ? tools : [])
+        .map((item) => String(item?.name || item?.tool_name || "").trim())
+        .filter(Boolean),
+    );
+  } catch (_error) {
+    localLiuAgentBuiltinToolNames.value = new Set();
+  }
+  return localLiuAgentBuiltinToolNames.value;
+}
+
+function nativeLiuAgentPermissionText(permissionRequest = {}, task = {}) {
+  const preview =
+    permissionRequest?.preview && typeof permissionRequest.preview === "object"
+      ? JSON.stringify(permissionRequest.preview, null, 2)
+      : "";
+  return [
+    `工具：${task.toolName || "本地工具"}`,
+    `风险：${permissionRequest.risk || "unknown"}`,
+    permissionRequest.reason ? `原因：${permissionRequest.reason}` : "",
+    preview ? `预览：\n${preview}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function localLiuAgentPermissionOperationId(requestId, fallback = "") {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (normalizedRequestId) return `local-liuagent-permission:${normalizedRequestId}`;
+  return `local-liuagent-permission:${String(fallback || Date.now()).trim()}`;
+}
+
+function removeLocalLiuAgentPermissionOperation(row, requestId) {
+  if (!row || !Array.isArray(row.operations) || !row.operations.length) return false;
+  const normalizedRequestId = String(requestId || "").trim();
+  if (!normalizedRequestId) return false;
+  const operationId = localLiuAgentPermissionOperationId(normalizedRequestId);
+  const beforeCount = row.operations.length;
+  row.operations = row.operations.filter((operation) => {
+    const meta =
+      operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+    const isLocalPermission =
+      String(meta.local_liuagent_permission || "").trim() === "true";
+    const operationRequestId = String(meta.request_id || "").trim();
+    const normalizedOperationId = String(
+      operation?.operationId || operation?.id || "",
+    ).trim();
+    if (normalizedOperationId === operationId) return false;
+    return !(isLocalPermission && operationRequestId === normalizedRequestId);
+  });
+  if (row.operations.length !== beforeCount) {
+    collapseMessageProcessAfterFinalAnswer(row);
+    return true;
+  }
+  return false;
+}
+
+function upsertLocalLiuAgentContinuationOperation(
+  row,
+  pending = {},
+  requestId = "",
+  allowSession = false,
+) {
+  if (!row) return null;
+  const isDesktopTool = pending?.kind === "desktop_tool";
+  const toolName = String(pending?.task?.toolName || "本地工具").trim();
+  const operation = upsertMessageOperation(row, {
+    operationId: isDesktopTool
+      ? `desktop-tool:${String(pending?.task?.taskId || requestId).trim()}`
+      : `local-agent:${row.id}`,
+    kind: isDesktopTool ? "tool" : "request",
+    title: isDesktopTool ? `桌面本地工具：${toolName}` : "桌面本地 Agent Runtime",
+    summary: allowSession
+      ? "已允许本会话，AI 正在继续执行"
+      : "已允许一次，AI 正在继续执行",
+    detail: "本地模型和工具仍在运行，结果返回前请保持当前会话打开。",
+    phase: "running",
+    actionType: "none",
+    meta: {
+      local_liuagent_operation: "true",
+      source: "tauri_liuagent_local_chat",
+      request_id: String(requestId || "").trim(),
+      ...(isDesktopTool
+        ? {
+            task_id: pending?.task?.taskId,
+            run_id: pending?.task?.runId,
+            call_id: pending?.task?.callId,
+            tool_name: pending?.task?.toolName,
+            cwd: pending?.workspacePath,
+          }
+        : {
+            chat_session_id: pending?.activeChatSessionId,
+            cwd: pending?.localChatPayload?.workspacePath,
+          }),
+    },
+  });
+  row.processExpanded = true;
+  return operation;
+}
+
+function upsertLocalLiuAgentPermissionOperation(row, permissionRequest = {}, patch = {}) {
+  if (!row || !permissionRequest) return null;
+  const requestId = String(permissionRequest?.requestId || "").trim();
+  const toolName = String(permissionRequest?.toolName || "本地工具").trim();
+  return upsertMessageOperation(row, {
+    operationId: localLiuAgentPermissionOperationId(requestId, row.id),
+    kind: "approval",
+    title: "桌面本地工具授权",
+    summary: "等待你确认本机工具执行",
+    detail: nativeLiuAgentPermissionText(permissionRequest, { toolName }),
+    phase: "waiting_user",
+    actionType: "approve",
+    ...patch,
+    meta: {
+      local_liuagent_permission: "true",
+      request_id: requestId,
+      tool_name: toolName,
+      action: String(permissionRequest?.action || "").trim(),
+      risk: String(permissionRequest?.risk || "").trim(),
+      ...(patch?.meta && typeof patch.meta === "object" ? patch.meta : {}),
+    },
+  });
+}
+
+// ── 规划确认辅助 ─────────────────────────────────────────────────────────────
+
+function localLiuAgentPlanFromChatResult(result = {}) {
+  if (String(result?.planStatus || result?.plan_status || "").trim() !== "plan_required") {
+    return null;
+  }
+  return {
+    taskTree: result?.taskTree || result?.task_tree || null,
+    requirementRecordPath: String(result?.requirementRecordPath || result?.requirement_record_path || "").trim(),
+  };
+}
+
+function upsertLocalLiuAgentPlanOperation(row, plan = {}) {
+  if (!row) return null;
+  const nodeCount = Array.isArray(plan?.taskTree?.nodes) ? plan.taskTree.nodes.length : 0;
+  return upsertMessageOperation(row, {
+    operationId: `local-liuagent-plan:${row.id}`,
+    kind: "approval",
+    title: "确认执行计划",
+    summary: `AI 已生成执行计划（${nodeCount} 个节点），请确认后开始执行`,
+    detail: String(plan?.taskTree?.rootGoal || plan?.taskTree?.root_goal || "").trim(),
+    phase: "waiting_user",
+    actionType: "approve",
+    meta: {
+      local_liuagent_plan: "true",
+      plan_session_id: String(plan?.taskTree?.sessionId || plan?.taskTree?.session_id || "").trim(),
+    },
+  });
+}
+
+async function executeLocalLiuAgentToolWithPermission(task, workspacePath, row = null) {
+  let result = await executeNativeLiuAgentTool({
+    toolCallId: task.callId,
+    name: task.toolName,
+    arguments: task.toolArgs,
+    workspacePath,
+  });
+  const errorCode = String(result?.errorCode || result?.error_code || "").trim();
+  const permissionRequest =
+    result?.content?.permissionRequest &&
+    typeof result.content.permissionRequest === "object"
+      ? result.content.permissionRequest
+      : null;
+  if (errorCode !== "permission.required" || !permissionRequest) {
+    return result;
+  }
+  const normalizedPermissionRequest = {
+    ...permissionRequest,
+    toolName: task.toolName,
+  };
+  const requestId = String(permissionRequest.requestId || "").trim();
+  if (row && requestId) {
+    localLiuAgentPendingPermissions.set(requestId, {
+      kind: "desktop_tool",
+      task,
+      workspacePath,
+      rowId: row.id,
+      permissionRequest: normalizedPermissionRequest,
+    });
+    upsertLocalLiuAgentPermissionOperation(row, normalizedPermissionRequest);
+  }
+  return result;
+}
+
+function localLiuAgentPermissionRequestFromChatResult(result = {}) {
+  for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
+    if (String(event?.type || "").trim() !== "approval_required") continue;
+    const payload = localLiuAgentRuntimeEventPayload(event);
+    const requestId = String(payload?.requestId || payload?.request_id || "").trim();
+    if (!requestId) continue;
+    return {
+      ...payload,
+      requestId,
+      toolName: String(payload?.toolName || payload?.tool_name || "").trim(),
+    };
+  }
+  const toolResults = Array.isArray(result?.toolResults)
+    ? result.toolResults
+    : Array.isArray(result?.tool_results)
+      ? result.tool_results
+      : [];
+  for (const toolResult of toolResults) {
+    const permissionRequest =
+      toolResult?.content?.permissionRequest &&
+      typeof toolResult.content.permissionRequest === "object"
+        ? toolResult.content.permissionRequest
+        : null;
+    if (!permissionRequest) continue;
+    const errorCode = String(
+      toolResult?.errorCode || toolResult?.error_code || result?.errorCode || result?.error_code || "",
+    ).trim();
+    if (errorCode && errorCode !== "permission.required") continue;
+    return {
+      ...permissionRequest,
+      toolName: String(toolResult?.name || "").trim(),
+    };
+  }
+  return null;
+}
+
+async function maybeExecuteDesktopClientToolTask(row, eventData = {}, requestId = "") {
+  const task = desktopClientToolTaskFromRuntimeEvent(eventData);
+  if (!task || localLiuAgentToolTasks.has(task.taskId)) return false;
+  localLiuAgentToolTasks.add(task.taskId);
+  const workspacePath = localLiuAgentWorkspacePath();
+  const operationId = `desktop-tool:${task.taskId}`;
+  upsertMessageOperation(row, {
+    operationId,
+    kind: "tool",
+    title: `桌面本地工具：${task.toolName}`,
+    summary: "正在本机执行",
+    detail: "",
+    phase: "running",
+    actionType: "none",
+    meta: {
+      local_liuagent_operation: "true",
+      task_id: task.taskId,
+      run_id: task.runId,
+      call_id: task.callId,
+      tool_name: task.toolName,
+      cwd: workspacePath,
+    },
+  });
+  try {
+    const toolNames = await ensureLocalLiuAgentBuiltinToolNames();
+    if (!workspacePath) {
+      throw new Error("未配置本地工作区路径");
+    }
+    if (toolNames.size && !toolNames.has(task.toolName)) {
+      throw new Error(`桌面端未注册工具：${task.toolName}`);
+    }
+    const result = await executeLocalLiuAgentToolWithPermission(task, workspacePath, row);
+    if (String(result?.errorCode || result?.error_code || "").trim() === "permission.required") {
+      upsertMessageOperation(row, {
+        operationId,
+        kind: "tool",
+        title: `桌面本地工具：${task.toolName}`,
+        summary: "等待你在消息卡片授权后继续",
+        detail: String(result?.summary || result?.error || "").trim(),
+        phase: "waiting_user",
+        actionType: "none",
+        meta: {
+          task_id: task.taskId,
+          run_id: task.runId,
+          call_id: task.callId,
+          tool_name: task.toolName,
+          cwd: workspacePath,
+        },
+      });
+      return true;
+    }
+    const ok = Boolean(result?.ok);
+    upsertMessageOperation(row, {
+      operationId,
+      kind: "tool",
+      title: `桌面本地工具：${task.toolName}`,
+      summary: ok ? "本机执行完成，正在回传结果" : "本机执行失败，正在回传结果",
+      detail: String(result?.summary || result?.error || "").trim(),
+      phase: ok ? "completed" : "failed",
+      actionType: "none",
+      meta: {
+        task_id: task.taskId,
+        run_id: task.runId,
+        call_id: task.callId,
+        tool_name: task.toolName,
+        cwd: workspacePath,
+        output_preview: String(result?.summary || result?.error || "").trim(),
+      },
+    });
+    const client = wsClient.value;
+    if (!client || !client.isOpen()) {
+      throw new Error("WebSocket 未连接，无法回传桌面工具结果");
+    }
+    client.send({
+      type: "desktop_tool_result",
+      request_id: requestId,
+      chat_session_id: task.chatSessionId || currentChatSessionId.value,
+      assistant_message_id: String(row?.id || "").trim(),
+      run_id: task.runId,
+      call_id: task.callId,
+      tool_name: task.toolName,
+      task_id: task.taskId,
+      ok,
+      tool_result: result && typeof result === "object" ? result : {},
+    });
+    return true;
+  } catch (error) {
+    const message = String(error?.message || error || "桌面本地工具执行失败").trim();
+    upsertMessageOperation(row, {
+      operationId,
+      kind: "tool",
+      title: `桌面本地工具：${task.toolName}`,
+      summary: "本机执行失败，正在回传错误",
+      detail: message,
+      phase: "failed",
+      actionType: "none",
+      meta: {
+        task_id: task.taskId,
+        run_id: task.runId,
+        call_id: task.callId,
+        tool_name: task.toolName,
+        cwd: workspacePath,
+        error: message,
+      },
+    });
+    const client = wsClient.value;
+    if (client && client.isOpen()) {
+      client.send({
+        type: "desktop_tool_result",
+        request_id: requestId,
+        chat_session_id: task.chatSessionId || currentChatSessionId.value,
+        assistant_message_id: String(row?.id || "").trim(),
+        run_id: task.runId,
+        call_id: task.callId,
+        tool_name: task.toolName,
+        task_id: task.taskId,
+        ok: false,
+        tool_result: {
+          ok: false,
+          errorCode: "desktop_client.execution_failed",
+          error: message,
+          summary: message,
+        },
+      });
+    }
+    return true;
+  } finally {
+    scrollToBottom();
+  }
+}
+
+function agentRuntimeResumeEvents(eventData = {}) {
+  const resume =
+    eventData?.resume && typeof eventData.resume === "object"
+      ? eventData.resume
+      : null;
+  if (!resume) return [];
+  const continuation =
+    resume?.continuation && typeof resume.continuation === "object"
+      ? resume.continuation
+      : null;
+  const candidates = [];
+  if (Array.isArray(continuation?.events)) candidates.push(...continuation.events);
+  if (Array.isArray(resume?.events)) candidates.push(...resume.events);
+  return candidates.filter((item) => item && typeof item === "object");
+}
+
+function runtimeEventDataFromResumeEvent(event = {}, fallback = {}) {
+  const payload = event?.payload && typeof event.payload === "object" ? event.payload : {};
+  return {
+    type: "agent_runtime_event",
+    request_id: String(fallback?.request_id || "").trim(),
+    chat_session_id: String(
+      fallback?.chat_session_id || event?.session_id || "",
+    ).trim(),
+    run_id: String(fallback?.run_id || event?.run_id || "").trim(),
+    event_type: String(event?.event_type || event?.type || "").trim(),
+    event: {
+      ...event,
+      payload,
+    },
+  };
+}
+
+function maybeExecuteDesktopClientToolTasksFromResume(row, eventData = {}, requestId = "") {
+  agentRuntimeResumeEvents(eventData).forEach((event) => {
+    const runtimeEvent = runtimeEventDataFromResumeEvent(event, {
+      ...eventData,
+      request_id: requestId,
+    });
+    void maybeExecuteDesktopClientToolTask(row, runtimeEvent, requestId);
+  });
+}
+
 function applyPlanCreatedEvent(row, eventData = {}, requestId = "") {
   if (!row) return;
   const planId = String(eventData?.plan_id || requestId || "active").trim();
@@ -13001,6 +14236,7 @@ function hasLiveExecutionActivity() {
     chatLoading.value ||
     hasPendingRequestForChatSession(currentChatSessionId.value) ||
     Boolean(getActiveRequestId()) ||
+    currentChatSessionLocalLiuAgentRunning.value ||
     externalAgentWarmupLoading.value ||
     currentChatSessionNativeExternalAgentRunning.value ||
     backgroundTerminalCount.value > 0 ||
@@ -14705,6 +15941,13 @@ function operationActionButtons(operation) {
     }
   }
   if (actionType === "approve") {
+    if (String(meta.local_liuagent_permission || "").trim() === "true") {
+      return [
+        { key: "local_liuagent_allow_once", label: "允许一次" },
+        { key: "local_liuagent_allow_session", label: "本会话允许" },
+        { key: "local_liuagent_deny", label: "拒绝", type: "danger" },
+      ];
+    }
     if (String(meta.agent_runtime_permission || "").trim() === "true") {
       return [
         { key: "agent_runtime_allow_once", label: "允许一次" },
@@ -14738,6 +15981,21 @@ async function handleOperationAction(operation, actionKey) {
   const actionType = normalizeOperationActionType(operation?.actionType);
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  if (
+    normalizedActionKey === "local_liuagent_allow_once" ||
+    normalizedActionKey === "local_liuagent_allow_session" ||
+    normalizedActionKey === "local_liuagent_deny"
+  ) {
+    await submitLocalLiuAgentPermissionAction(operation, normalizedActionKey);
+    return;
+  }
+  if (
+    normalizedActionKey === "local_liuagent_plan_confirm" ||
+    normalizedActionKey === "local_liuagent_plan_reject"
+  ) {
+    await submitLocalLiuAgentPlanAction(operation, normalizedActionKey);
+    return;
+  }
   if (normalizedActionKey === "open_url" && actionType === "open_url") {
     const url = extractOperationUrl(operation);
     if (!url) return;
@@ -14829,6 +16087,356 @@ async function handleOperationAction(operation, actionKey) {
     });
     return;
   }
+}
+
+async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  const requestId = String(meta.request_id || "").trim();
+  if (!requestId) {
+    ElMessage.warning("缺少本地授权上下文，无法继续");
+    return;
+  }
+  const pending = localLiuAgentPendingPermissions.get(requestId);
+  const row =
+    findMessageRowByOperationId(operation?.id || operation?.operationId) ||
+    (pending?.rowId ? messages.value.find((item) => item?.id === pending.rowId) : null) ||
+    (pending?.assistantMessageId
+      ? messages.value.find((item) => item?.id === pending.assistantMessageId)
+      : null);
+  if (!pending || !row) {
+    ElMessage.warning("本地授权上下文已失效，请重新发送");
+    return;
+  }
+
+  const denied = actionKey === "local_liuagent_deny";
+  const allowSession = actionKey === "local_liuagent_allow_session";
+  localLiuAgentPendingPermissions.delete(requestId);
+  removeLocalLiuAgentPermissionOperation(row, requestId);
+  if (denied) {
+    row.content = row.content || "已拒绝本次本机工具授权。";
+    appendMessageProcessLog(row, {
+      text: "已拒绝本次本机工具授权，工具未执行",
+      level: "warning",
+    });
+    scrollToBottom();
+    return;
+  }
+
+  appendMessageProcessLog(row, {
+    text: allowSession ? "已允许本会话，正在继续执行" : "已允许一次，正在继续执行",
+    level: "info",
+  });
+  upsertLocalLiuAgentContinuationOperation(row, pending, requestId, allowSession);
+  chatLoading.value = true;
+  startWorkingStatusTimer(
+    row?.id || pending?.assistantMessageId || `permission:${requestId}`,
+    pending?.activeChatSessionId || currentChatSessionId.value,
+  );
+  scrollToBottom();
+
+  try {
+    if (pending.kind === "desktop_tool") {
+      await continueLocalLiuAgentDesktopToolPermission(
+        pending,
+        row,
+        requestId,
+        allowSession,
+      );
+    } else {
+      await continueLocalLiuAgentChatPermission(pending, row, requestId, allowSession);
+    }
+  } catch (err) {
+    upsertMessageOperation(row, {
+      operationId:
+        pending.kind === "desktop_tool"
+          ? `desktop-tool:${String(pending?.task?.taskId || requestId).trim()}`
+          : `local-agent:${row.id}`,
+      kind: pending.kind === "desktop_tool" ? "tool" : "request",
+      title:
+        pending.kind === "desktop_tool"
+          ? `桌面本地工具：${String(pending?.task?.toolName || "本地工具").trim()}`
+          : "桌面本地 Agent Runtime",
+      summary: "授权后继续执行失败",
+      detail: String(err?.message || err || "").trim(),
+      phase: "failed",
+      actionType: "none",
+      meta: {
+        local_liuagent_operation: "true",
+        source: "tauri_liuagent_local_chat",
+        request_id: requestId,
+        ...(pending.kind === "desktop_tool"
+          ? {
+              task_id: pending?.task?.taskId,
+              run_id: pending?.task?.runId,
+              call_id: pending?.task?.callId,
+              tool_name: pending?.task?.toolName,
+              cwd: pending?.workspacePath,
+            }
+          : {
+              chat_session_id: pending?.activeChatSessionId,
+              cwd: pending?.localChatPayload?.workspacePath,
+            }),
+      },
+    });
+    appendMessageProcessLog(row, {
+      text: err?.message || "授权后继续执行失败",
+      level: "error",
+    });
+  } finally {
+    chatLoading.value = false;
+    syncChatLoadingWithCurrentSession();
+    scrollToBottom();
+  }
+}
+
+async function continueLocalLiuAgentDesktopToolPermission(
+  pending,
+  row,
+  requestId,
+  allowSession = false,
+) {
+  const task = pending.task || {};
+  const workspacePath = String(pending.workspacePath || "").trim();
+  const permissionRequest =
+    pending?.permissionRequest && typeof pending.permissionRequest === "object"
+      ? pending.permissionRequest
+      : {};
+  const result = await executeNativeLiuAgentTool({
+    toolCallId: task.callId,
+    name: task.toolName,
+    arguments: task.toolArgs,
+    workspacePath,
+    permissionDecision: {
+      requestId,
+      decision: allowSession ? "approve_session" : "approve_once",
+      grantScope: allowSession ? "session" : "once",
+      comment: String(permissionRequest?.reason || "").trim(),
+    },
+  });
+  const ok = Boolean(result?.ok);
+
+  const operationId = `desktop-tool:${String(task.taskId || "").trim()}`;
+  upsertMessageOperation(row, {
+    operationId,
+    kind: "tool",
+    title: `桌面本地工具：${task.toolName}`,
+    summary: ok ? "本机执行完成，正在回传结果" : "本机执行失败，正在回传结果",
+    detail: String(result?.summary || result?.error || "").trim(),
+    phase: ok ? "completed" : "failed",
+    actionType: "none",
+    meta: {
+      task_id: task.taskId,
+      run_id: task.runId,
+      call_id: task.callId,
+      tool_name: task.toolName,
+      cwd: workspacePath,
+      output_preview: String(result?.summary || result?.error || "").trim(),
+    },
+  });
+  const client = wsClient.value;
+  if (!client || !client.isOpen()) {
+    throw new Error("WebSocket 未连接，无法回传桌面工具结果");
+  }
+  client.send({
+    type: "desktop_tool_result",
+    request_id: `local-liuagent-${requestId}`,
+    chat_session_id: task.chatSessionId || currentChatSessionId.value,
+    assistant_message_id: String(row?.id || "").trim(),
+    run_id: task.runId,
+    call_id: task.callId,
+    tool_name: task.toolName,
+    task_id: task.taskId,
+    ok,
+    tool_result: result && typeof result === "object" ? result : {},
+  });
+}
+
+async function submitLocalLiuAgentPlanAction(operation, actionKey) {
+  const meta = operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  const planSessionId = String(meta.plan_session_id || "").trim();
+  const pending = planSessionId ? localLiuAgentPendingPlans.get(planSessionId) : null;
+  const row =
+    findMessageRowByOperationId(operation?.id || operation?.operationId) ||
+    (pending?.assistantMessageId
+      ? messages.value.find((item) => item?.id === pending.assistantMessageId)
+      : null);
+  if (!pending || !row) {
+    ElMessage.warning("规划确认上下文已失效，请重新发送");
+    return;
+  }
+  localLiuAgentPendingPlans.delete(planSessionId);
+  upsertMessageOperation(row, {
+    operationId: `local-liuagent-plan:${row.id}`,
+    kind: "approval",
+    title: "确认执行计划",
+    summary: actionKey === "local_liuagent_plan_confirm" ? "已确认，开始执行" : "已拒绝执行计划",
+    phase: actionKey === "local_liuagent_plan_confirm" ? "running" : "failed",
+    actionType: "none",
+  });
+  if (actionKey === "local_liuagent_plan_reject") {
+    row.content = "已取消执行计划。";
+    scrollToBottom();
+    return;
+  }
+  chatLoading.value = true;
+  startWorkingStatusTimer(row.id, pending.activeChatSessionId);
+  scrollToBottom();
+  try {
+    await continueLocalLiuAgentChatWithPlan(pending, row);
+  } catch (err) {
+    appendMessageProcessLog(row, { text: err?.message || "执行计划失败", level: "error" });
+  } finally {
+    chatLoading.value = false;
+    syncChatLoadingWithCurrentSession();
+    scrollToBottom();
+  }
+}
+
+async function continueLocalLiuAgentChatWithPlan(pending, row) {
+  const result = await startNativeLiuAgentLocalChat({
+    ...(pending.localChatPayload || {}),
+    planDecision: { approved: true },
+  });
+  const ok = Boolean(result?.ok);
+  row.content = String(
+    result?.assistantContent || result?.assistant_content || result?.summary || "",
+  ).trim();
+  row.time = nowText();
+  applyLocalLiuAgentRuntimeEvents(row, result, {
+    chatSessionId: pending.activeChatSessionId,
+    workspacePath: pending.localChatPayload?.workspacePath,
+  });
+  const localPermissionRequest = localLiuAgentPermissionRequestFromChatResult(result);
+  if (localPermissionRequest) {
+    const requestId = String(localPermissionRequest?.requestId || "").trim();
+    if (requestId) {
+      localLiuAgentPendingPermissions.set(requestId, {
+        kind: "local_chat",
+        localChatPayload: { ...(pending.localChatPayload || {}), planDecision: { approved: true } },
+        permissionRequest: localPermissionRequest,
+        assistantMessageId: row.id,
+        activeChatSessionId: pending.activeChatSessionId,
+      });
+    }
+    upsertLocalLiuAgentPermissionOperation(row, localPermissionRequest);
+  }
+  upsertMessageOperation(row, {
+    operationId: `local-agent:${row.id}`,
+    kind: "request",
+    title: "桌面本地 Agent Runtime",
+    summary: ok ? "本地会话完成" : "本地会话失败",
+    detail: String(result?.error || "").trim(),
+    phase: ok ? "completed" : "failed",
+    actionType: "none",
+    meta: {
+      local_liuagent_operation: "true",
+      source: "tauri_liuagent_local_chat",
+      chat_session_id: pending.activeChatSessionId,
+    },
+  });
+  appendMessageProcessLog(row, {
+    text: ok ? "执行计划已完成" : "执行计划失败",
+    level: ok ? "success" : "error",
+    autoExpand: !ok,
+  });
+}
+
+async function continueLocalLiuAgentChatPermission(
+  pending,
+  row,
+  requestId,
+  allowSession = false,
+) {
+  const permissionRequest =
+    pending?.permissionRequest && typeof pending.permissionRequest === "object"
+      ? pending.permissionRequest
+      : {};
+  const result = await startNativeLiuAgentLocalChat({
+    ...(pending.localChatPayload || {}),
+    permissionDecision: {
+      requestId,
+      decision: allowSession ? "approve_session" : "approve_once",
+      grantScope: allowSession ? "session" : "once",
+      comment: String(permissionRequest?.reason || "").trim(),
+    },
+  });
+  const ok = Boolean(result?.ok);
+  row.content = String(
+    result?.assistantContent || result?.assistant_content || result?.summary || "",
+  ).trim();
+  if (!row.content && !ok) {
+    row.content = `执行失败：${String(result?.error || "桌面端本地对话失败").trim()}`;
+  }
+  row.time = nowText();
+  applyLocalLiuAgentRuntimeEvents(row, result, {
+    chatSessionId: pending.activeChatSessionId,
+    workspacePath: pending.localChatPayload?.workspacePath,
+  });
+  const operations = Array.isArray(result?.operations) ? result.operations : [];
+  for (const item of operations) {
+    upsertMessageOperation(
+      row,
+      markLocalLiuAgentBubbleOnlyOperation(item, {
+        chatSessionId: pending.activeChatSessionId,
+        workspacePath: pending.localChatPayload?.workspacePath,
+      }),
+    );
+  }
+  removeLocalLiuAgentPermissionOperation(row, requestId);
+  upsertMessageOperation(row, {
+    operationId: `local-agent:${row.id}`,
+    kind: "request",
+    title: "桌面本地 Agent Runtime",
+    summary: ok ? "本地会话完成" : "本地会话失败",
+    detail: String(result?.error || "").trim(),
+    phase: ok ? "completed" : "failed",
+    actionType: "none",
+    meta: {
+      local_liuagent_operation: "true",
+      source: "tauri_liuagent_local_chat",
+      chat_session_id: pending.activeChatSessionId,
+      session_id: String(result?.sessionId || result?.session_id || "").trim(),
+      requirement_record_path: String(
+        result?.requirementRecordPath || result?.requirement_record_path || "",
+      ).trim(),
+      cwd: String(pending.localChatPayload?.workspacePath || "").trim(),
+    },
+  });
+  appendMessageProcessLog(row, {
+    text: ok ? "本地对话已完成并写入 workspace requirement 记录" : "本地对话执行失败",
+    level: ok ? "success" : "error",
+    autoExpand: !ok,
+  });
+  collapseMessageProcessAfterFinalAnswer(row);
+  await upsertProjectChatRequirementRecord({
+    chatSessionId: pending.activeChatSessionId,
+    status: ok ? "done" : "blocked",
+    rootGoal: pending.displayUserMessageContent || pending.finalUserPrompt,
+    messageId: pending.userMessageId,
+    assistantMessageId: row.id,
+    resultSummary: row.content,
+    verificationResult: ok
+      ? "桌面端 Tauri 本地 runtime 已在授权后继续执行，并返回 assistant 内容。"
+      : String(result?.error || "桌面端本地 runtime 授权后执行失败。"),
+    source: "desktop_local_agent",
+    sourceContext: {
+      ...(pending.sourceContext || {}),
+      runtime: "tauri",
+      workspace_path: String(pending.localChatPayload?.workspacePath || "").trim(),
+      requirement_record_path: String(
+        result?.requirementRecordPath || result?.requirement_record_path || "",
+      ).trim(),
+    },
+  });
+  await syncLocalLiuAgentRuntimeOutbox({
+    projectId: selectedProjectId.value,
+    chatSessionId: pending.activeChatSessionId,
+    workspacePath: String(pending.localChatPayload?.workspacePath || "").trim(),
+    rootGoal: pending.displayUserMessageContent || pending.finalUserPrompt,
+    messageId: pending.userMessageId,
+    assistantMessageId: row.id,
+  });
 }
 
 function agentRuntimePermissionActionValue(actionKey) {
@@ -16755,6 +18363,94 @@ async function upsertProjectChatRequirementRecord({
   }
 }
 
+async function syncLocalLiuAgentRuntimeOutbox({
+  projectId = "",
+  chatSessionId = "",
+  workspacePath = "",
+  rootGoal = "",
+  messageId = "",
+  assistantMessageId = "",
+} = {}) {
+  const normalizedProjectId = String(projectId || selectedProjectId.value || "").trim();
+  const normalizedChatSessionId = String(
+    chatSessionId || currentChatSessionId.value || "",
+  ).trim();
+  const normalizedWorkspacePath = String(workspacePath || "").trim();
+  if (!normalizedProjectId || !normalizedWorkspacePath || !hasNativeDesktopBridge()) {
+    return { synced: 0, pending: 0 };
+  }
+  let outbox = null;
+  try {
+    outbox = await listNativeLiuAgentRuntimeOutbox({
+      projectId: normalizedProjectId,
+      chatSessionId: normalizedChatSessionId,
+      workspacePath: normalizedWorkspacePath,
+      limit: 50,
+    });
+  } catch (err) {
+    console.warn("list local liuAgent runtime outbox failed", err);
+    return { synced: 0, pending: 0 };
+  }
+  const entries = Array.isArray(outbox?.entries) ? outbox.entries : [];
+  if (!entries.length) return { synced: 0, pending: 0 };
+  const ackByChatSession = new Map();
+  let synced = 0;
+  for (const entry of entries) {
+    const entryChatSessionId = String(
+      entry?.chat_session_id || entry?.chatSessionId || normalizedChatSessionId,
+    ).trim();
+    const eventId = String(entry?.event_id || entry?.eventId || "").trim();
+    if (!entryChatSessionId || !eventId) continue;
+    const trajectory =
+      entry?.trajectory && typeof entry.trajectory === "object"
+        ? entry.trajectory
+        : {};
+    const status = String(trajectory?.status || entry?.latest_status || "").trim();
+    const result = await upsertProjectChatRequirementRecord({
+      chatSessionId: entryChatSessionId,
+      status:
+        status === "completed"
+          ? "done"
+          : status === "waiting_approval"
+            ? "waiting_approval"
+            : status || "in_progress",
+      rootGoal: String(entry?.root_goal || entry?.rootGoal || rootGoal || "").trim(),
+      messageId,
+      assistantMessageId,
+      resultSummary: String(entry?.content || "").trim(),
+      verificationResult: Array.isArray(trajectory?.verification)
+        ? trajectory.verification.join("；")
+        : "",
+      source: "desktop_local_agent_outbox",
+      sourceContext: {
+        runtime: "tauri",
+        workspace_path: normalizedWorkspacePath,
+        outbox_event_id: eventId,
+        source_kind: String(entry?.source_kind || entry?.sourceKind || "").trim(),
+        session_id: String(entry?.session_id || entry?.sessionId || "").trim(),
+      },
+    });
+    if (!result) continue;
+    synced += 1;
+    const ids = ackByChatSession.get(entryChatSessionId) || [];
+    ids.push(eventId);
+    ackByChatSession.set(entryChatSessionId, ids);
+  }
+  for (const [entryChatSessionId, eventIds] of ackByChatSession.entries()) {
+    try {
+      await ackNativeLiuAgentRuntimeOutbox({
+        projectId: normalizedProjectId,
+        chatSessionId: entryChatSessionId,
+        workspacePath: normalizedWorkspacePath,
+        eventIds,
+      });
+    } catch (err) {
+      console.warn("ack local liuAgent runtime outbox failed", err);
+    }
+  }
+  return { synced, pending: Math.max(entries.length - synced, 0) };
+}
+
 function resolveSlashCommand(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed.startsWith("/")) {
@@ -18161,7 +19857,11 @@ function openSettingsCenter(panelId = "chat") {
   activeSettingsPanel.value = normalizedPanelId;
   const targetPath = isSettingsCenterRoute.value
     ? resolveSettingsAwarePanelPath(route.path, normalizedPanelId, "/chat")
-    : buildChatSettingsRoute("/chat");
+    : resolveSettingsAwarePanelPath(
+        buildChatSettingsRoute("/chat"),
+        normalizedPanelId,
+        "/chat",
+      );
   void router.push(targetPath);
 }
 
@@ -18177,7 +19877,7 @@ function openComposerExecutionDetail() {
     void openTaskTreePanel();
     return;
   }
-  openSettingsCenter("chat");
+  openSettingsCenter(isLocalRunnerSurface.value ? "local-runner" : "chat");
 }
 
 async function handleComposerExecutionPrimaryAction() {
@@ -18186,7 +19886,7 @@ async function handleComposerExecutionPrimaryAction() {
     return;
   }
   if (!isExternalAgentMode.value) {
-    openSettingsCenter("chat");
+    openSettingsCenter(isLocalRunnerSurface.value ? "local-runner" : "chat");
     return;
   }
   if (
@@ -18816,6 +20516,45 @@ function markAutoSaveSynced() {
   lastAutoSavedFingerprint = JSON.stringify(buildProjectChatSettingsPayload());
 }
 
+function applySavedProjectChatSettings(settings) {
+  const currentPayload = buildProjectChatSettingsPayload();
+  const nextSettings =
+    settings && typeof settings === "object"
+      ? applyLocalConnectorRuntimeSettings({ ...currentPayload, ...settings })
+      : applyLocalConnectorRuntimeSettings(currentPayload);
+  projectChatSettings.value = nextSettings;
+  const nextProviderId = String(nextSettings.provider_id || "").trim();
+  if (
+    nextProviderId &&
+    providers.value.some(
+      (item) => String(item?.id || "").trim() === nextProviderId,
+    )
+  ) {
+    selectedProviderId.value = nextProviderId;
+  }
+  const provider =
+    providers.value.find(
+      (item) =>
+        String(item?.id || "").trim() ===
+        String(selectedProviderId.value || "").trim(),
+    ) || {};
+  const providerModels = normalizeProviderModelNames(
+    provider,
+    modelTypeOptions.value,
+  );
+  const nextModelName = String(nextSettings.model_name || "").trim();
+  if (nextModelName && providerModels.includes(nextModelName)) {
+    selectedModelName.value = nextModelName;
+  }
+  systemPrompt.value = String(nextSettings.system_prompt || "");
+  temperature.value = Number(
+    nextSettings.temperature ?? CHAT_SETTINGS_DEFAULTS.temperature,
+  );
+  chatMaxTokens.value = Number(
+    nextSettings.max_tokens ?? CHAT_SETTINGS_DEFAULTS.max_tokens,
+  );
+}
+
 function scheduleAutoSave() {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId || projectSettingsHydrating.value) return;
@@ -18853,11 +20592,7 @@ async function saveProjectChatSettings(silent = false) {
   try {
     const payload = buildProjectChatSettingsPayload();
     const data = await saveProjectChatSettingsRequest(projectId, payload);
-    projectChatSettings.value = applyLocalConnectorRuntimeSettings(
-      data?.settings || payload,
-    );
-    // 以服务端回读结果为准，避免“保存成功但界面仍旧值”的状态分叉。
-    await fetchProvidersByProject(projectId);
+    applySavedProjectChatSettings(data?.settings || payload);
     markAutoSaveSynced();
     autoSaveState.value = "saved";
     autoSaveUpdatedAt.value = new Date().toLocaleTimeString("zh-CN", {
@@ -18977,6 +20712,47 @@ async function fetchChatSessions(
   } finally {
     chatSessionsLoading.value = false;
   }
+}
+
+async function refreshChatSessionListMetadata(projectId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return;
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/sessions`,
+      {
+        params: { limit: 50 },
+      },
+    );
+    if (
+      normalizedProjectId !== String(selectedProjectId.value || "").trim()
+    ) {
+      return;
+    }
+    const nextSessions = (data.sessions || []).map(normalizeChatSession);
+    chatSessions.value = nextSessions;
+    const currentId = String(currentChatSessionId.value || "").trim();
+    if (
+      currentId &&
+      nextSessions.some((item) => String(item?.id || "").trim() === currentId)
+    ) {
+      rememberChatSession(normalizedProjectId, currentId);
+    }
+  } catch (err) {
+    console.warn("refresh project chat sessions metadata failed", err);
+  }
+}
+
+function scheduleChatSessionListMetadataRefresh(projectId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return;
+  if (chatSessionListRefreshAfterSendTimer) {
+    window.clearTimeout(chatSessionListRefreshAfterSendTimer);
+  }
+  chatSessionListRefreshAfterSendTimer = window.setTimeout(() => {
+    chatSessionListRefreshAfterSendTimer = null;
+    void refreshChatSessionListMetadata(normalizedProjectId);
+  }, 0);
 }
 
 async function refreshChatSessionsKeepingCurrent() {
@@ -19415,6 +21191,7 @@ async function deleteChatSession(session) {
       (item) => item.id !== chatSessionId,
     );
     clearPersistedChatRuntime(projectId, chatSessionId);
+    forgetChatSessionMessages(projectId, chatSessionId);
     const isCurrentSession = currentChatSessionId.value === chatSessionId;
     if (isCurrentSession) {
       clearChatSessionMemory(projectId);
@@ -19428,7 +21205,12 @@ async function deleteChatSession(session) {
       } else {
         currentChatSessionId.value = "";
         messages.value = [];
-        await createChatSession({ switchTo: true });
+        chatHistoryLoadedCount.value = 0;
+        chatHistoryReachedEnd.value = false;
+        applyChatSessionComposerState(projectId, "");
+        applyTaskTreePayload(null);
+        resetTerminalPanel();
+        scrollToBottom();
       }
     }
     ElMessage.success("历史对话已删除");
@@ -19475,6 +21257,7 @@ async function clearMessages() {
       (item) => item.id !== chatSessionId,
     );
     clearPersistedChatRuntime(projectId, chatSessionId);
+    forgetChatSessionMessages(projectId, chatSessionId);
     clearChatSessionMemory(projectId);
     clearTaskTreeSessionMemory(projectId);
     clearWorkSessionMemory(projectId);
@@ -19485,7 +21268,12 @@ async function clearMessages() {
       await fetchChatHistory(projectId, nextSessionId);
     } else {
       currentChatSessionId.value = "";
-      await createChatSession({ switchTo: true });
+      chatHistoryLoadedCount.value = 0;
+      chatHistoryReachedEnd.value = false;
+      applyChatSessionComposerState(projectId, "");
+      applyTaskTreePayload(null);
+      resetTerminalPanel();
+      scrollToBottom();
     }
     ElMessage.success("当前会话已清空");
   } catch (err) {
@@ -19983,12 +21771,41 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "agent_runtime_permission_action_result") {
     if (applyAgentRuntimePermissionActionResult(eventData)) {
+      const row =
+        findMessageRowByAgentRuntimePermission(
+          eventData?.run_id,
+          eventData?.call_id,
+          eventData?.command_signature,
+        ) || findMessageRowByOperationId(
+          `agent-runtime-permission:${String(eventData?.run_id || "").trim()}:${String(eventData?.call_id || "").trim()}`,
+        );
+      if (row) {
+        maybeExecuteDesktopClientToolTasksFromResume(row, eventData, requestId);
+      }
       scrollToBottom();
     }
     return;
   }
   if (eventType === "agent_runtime_operation_resume_result") {
     if (applyAgentRuntimeOperationResumeResult(eventData)) {
+      const row = findMessageRowByOperationId(
+        `desktop-tool:${String(eventData?.task_id || "").trim()}`,
+      ) || messages.value.find((item) =>
+        Array.isArray(item?.operations) &&
+        item.operations.some((operation) => {
+          const meta =
+            operation?.meta && typeof operation.meta === "object"
+              ? operation.meta
+              : {};
+          return (
+            String(meta.run_id || "").trim() ===
+            String(eventData?.run_id || "").trim()
+          );
+        }),
+      );
+      if (row) {
+        maybeExecuteDesktopClientToolTasksFromResume(row, eventData, requestId);
+      }
       scrollToBottom();
     }
     return;
@@ -20042,6 +21859,7 @@ async function handleSocketMessage(eventData) {
     if (applyAgentRuntimeEvent(row, eventData)) {
       scrollToBottom();
     }
+    void maybeExecuteDesktopClientToolTask(row, eventData, requestId);
     return;
   }
   if (eventType === "intent_classified") {
@@ -21406,6 +23224,313 @@ async function sendProjectChatRequest({
   };
 }
 
+async function sendLocalLiuAgentChatRequest({
+  projectId,
+  activeChatSessionId,
+  userMessage,
+  assistantMessage,
+  finalUserPrompt,
+  historyRows = [],
+  displayUserMessageContent = "",
+  sourceContext = {},
+}) {
+  const workspacePath = localLiuAgentWorkspacePath();
+  if (!hasNativeDesktopBridge()) {
+    throw new Error("桌面端本地 liuAgent Runtime 不可用");
+  }
+  if (!workspacePath) {
+    throw new Error("请先配置本机工作区");
+  }
+  upsertMessageOperation(assistantMessage, {
+    operationId: `local-agent:${assistantMessage.id}`,
+    kind: "request",
+    title: "桌面本地 Agent Runtime",
+    summary: "正在本机创建会话并执行本地工具",
+    detail: "",
+    phase: "running",
+    actionType: "none",
+    meta: {
+      local_liuagent_operation: "true",
+      source: "tauri_liuagent_local_chat",
+      chat_session_id: activeChatSessionId,
+      cwd: workspacePath,
+    },
+  });
+  appendMessageProcessLog(assistantMessage, {
+    text: "已切换到桌面端本地智能体运行时",
+    level: "info",
+  });
+  await upsertProjectChatRequirementRecord({
+    chatSessionId: activeChatSessionId,
+    status: "in_progress",
+    rootGoal: displayUserMessageContent || finalUserPrompt,
+    messageId: userMessage.id,
+    assistantMessageId: assistantMessage.id,
+    source: "desktop_local_agent",
+    sourceContext: {
+      ...sourceContext,
+      runtime: "tauri",
+      workspace_path: workspacePath,
+    },
+  });
+  const modelRuntime = await buildLocalLiuAgentModelRuntime();
+  const localChatPayload = {
+    projectId,
+    chatSessionId: activeChatSessionId,
+    messageId: userMessage.id,
+    assistantMessageId: assistantMessage.id,
+    message: finalUserPrompt,
+    workspacePath,
+    history: historyRows,
+    providerId: selectedProviderId.value || defaultProviderId.value || "",
+    modelName: selectedModelName.value || defaultModelName.value || "",
+    systemPrompt: systemPrompt.value || "",
+    temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
+    maxTokens: Number(chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens),
+    modelRuntime,
+  };
+  const activeRun = {
+    chatSessionId: activeChatSessionId,
+    assistantMessageId: assistantMessage.id,
+    userMessageId: userMessage.id,
+    workspacePath,
+    cancelled: false,
+    startedAt: Date.now(),
+  };
+  setLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
+  upsertMessageOperation(assistantMessage, {
+    operationId: `local-agent-running:${assistantMessage.id}`,
+    kind: "request",
+    title: "桌面本地 Agent Runtime",
+    summary: "准备启动本地 Agent Loop",
+    detail: "正在准备模型请求；模型请求、工具计划、工具执行和授权等待会作为独立步骤继续追加。",
+    phase: "running",
+    actionType: "none",
+    meta: {
+      local_liuagent_operation: "true",
+      agent_runtime_event: "true",
+      source: "tauri_liuagent_local_chat",
+      chat_session_id: activeChatSessionId,
+      cwd: workspacePath,
+    },
+  });
+  appendMessageProcessLog(assistantMessage, {
+    text: "本地智能体已启动，等待模型请求步骤返回",
+    level: "info",
+    autoExpand: true,
+  });
+  assistantMessage.processExpanded = true;
+  syncChatLoadingWithCurrentSession();
+  let result;
+  try {
+    await startNativeLiuAgentRuntimeEventSubscription();
+    result = await startNativeLiuAgentLocalChat(localChatPayload);
+  } catch (err) {
+    deleteLocalLiuAgentActiveRun(activeChatSessionId);
+    syncChatLoadingWithCurrentSession();
+    throw err;
+  }
+  if (activeRun.cancelled) {
+    deleteLocalLiuAgentActiveRun(activeChatSessionId);
+    syncChatLoadingWithCurrentSession();
+    return { cancelled: true };
+  }
+  applyLocalLiuAgentRuntimeEvents(assistantMessage, result, {
+    chatSessionId: activeChatSessionId,
+    workspacePath,
+  });
+  const localPermissionRequest = localLiuAgentPermissionRequestFromChatResult(result);
+  if (localPermissionRequest) {
+    const requestId = String(localPermissionRequest?.requestId || "").trim();
+    if (requestId) {
+      localLiuAgentPendingPermissions.set(requestId, {
+        kind: "local_chat",
+        localChatPayload,
+        permissionRequest: localPermissionRequest,
+        assistantMessageId: assistantMessage.id,
+        userMessageId: userMessage.id,
+        activeChatSessionId,
+        displayUserMessageContent,
+        finalUserPrompt,
+        sourceContext,
+      });
+    }
+    upsertLocalLiuAgentPermissionOperation(assistantMessage, localPermissionRequest);
+    assistantMessage.content =
+      result?.assistantContent ||
+      result?.assistant_content ||
+      "需要你确认本机工具授权后继续执行。";
+    assistantMessage.time = nowText();
+    appendMessageProcessLog(assistantMessage, {
+      text: "本机工具执行已暂停，等待你在当前回答气泡中授权",
+      level: "warning",
+    });
+    await upsertProjectChatRequirementRecord({
+      chatSessionId: activeChatSessionId,
+      status: "waiting_approval",
+      rootGoal: displayUserMessageContent || finalUserPrompt,
+      messageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      resultSummary: assistantMessage.content,
+      verificationResult: "本地工具调用已在 executor 执行前暂停，等待用户授权。",
+      source: "desktop_local_agent",
+      sourceContext: {
+        ...sourceContext,
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        permission_request_id: requestId,
+      },
+    });
+    await syncLocalLiuAgentRuntimeOutbox({
+      projectId,
+      chatSessionId: activeChatSessionId,
+      workspacePath,
+      rootGoal: displayUserMessageContent || finalUserPrompt,
+      messageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+    });
+    deleteLocalLiuAgentActiveRun(activeChatSessionId);
+    syncChatLoadingWithCurrentSession();
+    return result;
+  }
+  // 规划确认门：返回 plan_required 时暂停，等待用户确认后再次执行
+  const localPlan = localLiuAgentPlanFromChatResult(result);
+  if (localPlan) {
+    const planSessionId = String(result?.sessionId || result?.session_id || "").trim();
+    if (planSessionId) {
+      localLiuAgentPendingPlans.set(planSessionId, {
+        localChatPayload,
+        assistantMessageId: assistantMessage.id,
+        activeChatSessionId,
+        displayUserMessageContent,
+        finalUserPrompt,
+        sourceContext,
+      });
+    }
+    upsertLocalLiuAgentPlanOperation(assistantMessage, localPlan);
+    assistantMessage.content = "已生成执行计划，请确认后开始执行。";
+    assistantMessage.time = nowText();
+    appendMessageProcessLog(assistantMessage, {
+      text: "规划门已触发，等待你在当前回答气泡中确认执行计划",
+      level: "warning",
+    });
+    deleteLocalLiuAgentActiveRun(activeChatSessionId);
+    syncChatLoadingWithCurrentSession();
+    return result;
+  }
+  const ok = Boolean(result?.ok);
+  assistantMessage.content = String(
+    result?.assistantContent || result?.assistant_content || result?.summary || "",
+  ).trim();
+  if (!assistantMessage.content && !ok) {
+    assistantMessage.content = `执行失败：${String(result?.error || "桌面端本地对话失败").trim()}`;
+  }
+  assistantMessage.time = nowText();
+  const operations = Array.isArray(result?.operations) ? result.operations : [];
+  for (const operation of operations) {
+    upsertMessageOperation(
+      assistantMessage,
+      markLocalLiuAgentBubbleOnlyOperation(operation, {
+        chatSessionId: activeChatSessionId,
+        workspacePath,
+      }),
+    );
+  }
+  upsertMessageOperation(assistantMessage, {
+    operationId: `local-agent:${assistantMessage.id}`,
+    kind: "request",
+    title: "桌面本地 Agent Runtime",
+    summary: ok ? "本地会话完成" : "本地会话失败",
+    detail: String(result?.error || "").trim(),
+    phase: ok ? "completed" : "failed",
+    actionType: "none",
+    meta: {
+      local_liuagent_operation: "true",
+      source: "tauri_liuagent_local_chat",
+      chat_session_id: activeChatSessionId,
+      session_id: String(result?.sessionId || result?.session_id || "").trim(),
+      requirement_record_path: String(
+        result?.requirementRecordPath || result?.requirement_record_path || "",
+      ).trim(),
+      cwd: workspacePath,
+    },
+  });
+  appendMessageProcessLog(assistantMessage, {
+    text: ok ? "本地对话已完成并写入 workspace requirement 记录" : "本地对话执行失败",
+    level: ok ? "success" : "error",
+    autoExpand: !ok,
+  });
+  collapseMessageProcessAfterFinalAnswer(assistantMessage);
+  await upsertProjectChatRequirementRecord({
+    chatSessionId: activeChatSessionId,
+    status: ok ? "done" : "blocked",
+    rootGoal: displayUserMessageContent || finalUserPrompt,
+    messageId: userMessage.id,
+    assistantMessageId: assistantMessage.id,
+    resultSummary: assistantMessage.content,
+    verificationResult: ok
+      ? "桌面端 Tauri 本地 runtime 已返回 assistant 内容，并写入 workspace requirement 记录。"
+      : String(result?.error || "桌面端本地 runtime 执行失败。"),
+    source: "desktop_local_agent",
+    sourceContext: {
+      ...sourceContext,
+      runtime: "tauri",
+      workspace_path: workspacePath,
+      requirement_record_path: String(
+        result?.requirementRecordPath || result?.requirement_record_path || "",
+      ).trim(),
+    },
+  });
+  await syncLocalLiuAgentRuntimeOutbox({
+    projectId,
+    chatSessionId: activeChatSessionId,
+    workspacePath,
+    rootGoal: displayUserMessageContent || finalUserPrompt,
+    messageId: userMessage.id,
+    assistantMessageId: assistantMessage.id,
+  });
+  deleteLocalLiuAgentActiveRun(activeChatSessionId);
+  syncChatLoadingWithCurrentSession();
+  return result;
+}
+
+async function fetchLocalLiuAgentDesktopModelRuntime(providerId) {
+  const normalizedProviderId = String(providerId || "").trim();
+  if (!normalizedProviderId) {
+    throw new Error("请先在对话设置中选择本地运行使用的模型供应商");
+  }
+  const data = await api.get(
+    `/llm/providers/${encodeURIComponent(normalizedProviderId)}/desktop-runtime`,
+  );
+  const runtime =
+    data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
+  const baseUrl = String(runtime.base_url || runtime.baseUrl || "").trim();
+  const apiKey = String(runtime.api_key || runtime.apiKey || "").trim();
+  if (!baseUrl || !apiKey) {
+    throw new Error("当前模型供应商缺少 Base URL 或 API Key，桌面端无法本地调用模型");
+  }
+  return runtime;
+}
+
+async function buildLocalLiuAgentModelRuntime() {
+  const providerId = String(
+    selectedProviderId.value || defaultProviderId.value || "",
+  ).trim();
+  const modelName = String(
+    selectedModelName.value || defaultModelName.value || "",
+  ).trim();
+  const runtime = await fetchLocalLiuAgentDesktopModelRuntime(providerId);
+  return {
+    mode: "direct-openai-compatible",
+    providerId,
+    modelName: modelName || String(runtime.default_model || "").trim(),
+    baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
+    apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
+    temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
+    maxTokens: Number(chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens),
+  };
+}
+
 function resolvePendingRequestFast(requestId, pending, content = "") {
   if (!pending || !requestId) return;
   const { chatSessionId } = cleanupRequest(requestId, pending);
@@ -21481,6 +23606,52 @@ function sendCancelRequestInBackground(requestId) {
   }, 0);
 }
 
+function cancelActiveLocalLiuAgentRun() {
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  const run = localLiuAgentActiveRunForChatSession(chatSessionId);
+  if (!run || run.cancelled) return false;
+  run.cancelled = true;
+  deleteLocalLiuAgentActiveRun(chatSessionId);
+  const row = localLiuAgentActiveRunRow(run);
+  const message = "已停止本地智能体执行。";
+  if (row) {
+    row.displayMode = "";
+    row.content = String(row.content || "").trim() || message;
+    row.time = nowText();
+    completeFinishedMessageOperations(row, message);
+    closeOpenAgentRuntimeOperationsForCompletedTurn(row, message);
+    upsertMessageOperation(row, {
+      operationId: `local-agent-cancelled:${row.id}`,
+      kind: "request",
+      title: "桌面本地 Agent Runtime",
+      summary: message,
+      detail: "前端已停止等待本轮本地运行结果；底层 Tauri 任务可能仍会短暂收尾，返回后不会覆盖当前消息。",
+      phase: "blocked",
+      actionType: "none",
+      meta: {
+        local_liuagent_operation: "true",
+        source: "tauri_liuagent_local_chat",
+        chat_session_id: chatSessionId,
+        cwd: String(run.workspacePath || "").trim(),
+        cancelled: true,
+      },
+    });
+    appendMessageProcessLog(row, {
+      level: "warning",
+      text: message,
+      autoExpand: true,
+    });
+    row.processExpanded = true;
+  }
+  queuedFollowupMessages.value = [];
+  activeFollowupAssistantMessageId = "";
+  clearWorkingStatusStartForChatSession(chatSessionId);
+  syncChatLoadingWithCurrentSession();
+  chatLoading.value = isChatSessionBusy();
+  scrollToBottom();
+  return true;
+}
+
 function closeIdleChatWsAfterFastCancel() {
   if (queuedFollowupMessages.value.length > 0) return;
   if (!wsClient.value || pendingRequests.size > 0) return;
@@ -21492,6 +23663,10 @@ function closeIdleChatWsAfterFastCancel() {
 }
 
 function stopGeneration() {
+  if (cancelActiveLocalLiuAgentRun()) {
+    ElMessage.info("已停止本地智能体执行");
+    return;
+  }
   const currentRequestId = getActiveRequestId();
   if (currentRequestId) {
     const pending = pendingRequests.get(currentRequestId);
@@ -21580,6 +23755,7 @@ async function generateEmployeeDraftWithoutProject() {
 
   const assistantIndex = messages.value.length - 1;
   chatLoading.value = true;
+  startWorkingStatusTimer(assistantMessage.id, activeChatSessionId);
   resetDraft();
   scrollToBottom();
 
@@ -21832,11 +24008,14 @@ async function doSend(options = {}) {
       reader.onerror = reject;
       reader.readAsDataURL(f);
     });
-  const base64Images = await Promise.all(imageFiles.map(readAsBase64));
+  const shouldPrepareRemoteAttachmentPayload = !isLocalRunnerSurface.value;
+  const base64Images = shouldPrepareRemoteAttachmentPayload
+    ? await Promise.all(imageFiles.map(readAsBase64))
+    : [];
 
   let docsText = "";
   const docFiles = files.filter((file) => !isImageFile(file));
-  if (docFiles.length > 0) {
+  if (shouldPrepareRemoteAttachmentPayload && docFiles.length > 0) {
     for (const file of docFiles) {
       const content = await extractTextFromFile(file);
       if (content) {
@@ -22043,86 +24222,154 @@ async function doSend(options = {}) {
 
   const assistantIndex = messages.value.length - 1;
   chatLoading.value = true;
+  startWorkingStatusTimer(assistantMessage.id, activeChatSessionId);
   resetDraft();
   scrollToBottom();
 
   let requestCancelled = false;
+  let localLiuAgentHandled = false;
   try {
-    const sendResult = await sendProjectChatRequest({
-      projectId: selectedProjectId.value,
-      activeChatSessionId,
-      userMessageId: userMessage.id,
-      assistantMessage,
-      assistantIndex,
-      finalUserPrompt,
-      activeSessionSourceContext,
-      attachmentNames,
-      base64Images,
-      historyRows,
-      effectiveAutoUseTools,
-      effectiveToolPriority,
-      enabledProjectToolNames: effectiveSelectedProjectToolNames,
-      assistAction,
-      assistToolNames,
-      onAfterDone:
-        assistAction?.id === "employee_create"
-          ? async () => {
-              await autoCreateEmployeeFromDraftMessage(
-                messages.value[assistantIndex],
-                {
-                  resetAssist: true,
-                },
-              );
-            }
-          : null,
-    });
-    requestCancelled = Boolean(sendResult?.cancelled);
-    if (requestCancelled) return;
+    if (isLocalRunnerSurface.value) {
+      await sendLocalLiuAgentChatRequest({
+        projectId: selectedProjectId.value,
+        activeChatSessionId,
+        userMessage,
+        assistantMessage,
+        finalUserPrompt,
+        historyRows,
+        displayUserMessageContent,
+        sourceContext: {
+          chat_mode: "system",
+          surface: chatSurface.value,
+          slash_command: slashCommand?.entry?.kind || "",
+          attachment_names: attachmentNames,
+          employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
+        },
+      });
+      localLiuAgentHandled = true;
+    } else {
+      const sendResult = await sendProjectChatRequest({
+        projectId: selectedProjectId.value,
+        activeChatSessionId,
+        userMessageId: userMessage.id,
+        assistantMessage,
+        assistantIndex,
+        finalUserPrompt,
+        activeSessionSourceContext,
+        attachmentNames,
+        base64Images,
+        historyRows,
+        effectiveAutoUseTools,
+        effectiveToolPriority,
+        enabledProjectToolNames: effectiveSelectedProjectToolNames,
+        assistAction,
+        assistToolNames,
+        onAfterDone:
+          assistAction?.id === "employee_create"
+            ? async () => {
+                await autoCreateEmployeeFromDraftMessage(
+                  messages.value[assistantIndex],
+                  {
+                    resetAssist: true,
+                  },
+                );
+              }
+            : null,
+      });
+      requestCancelled = Boolean(sendResult?.cancelled);
+      if (requestCancelled) return;
+    }
     const finalAssistantContent = String(assistantMessage.content || "").trim();
-    await upsertProjectChatRequirementRecord({
-      chatSessionId: activeChatSessionId,
-      status: "done",
-      rootGoal: displayUserMessageContent,
-      messageId: userMessage.id,
-      assistantMessageId: assistantMessage.id,
-      resultSummary: finalAssistantContent,
-      verificationResult: "AI 对话已返回最终回答并写入当前聊天。",
-      source: "project_chat",
-      sourceContext: {
-        chat_mode: "system",
-        surface: chatSurface.value,
-        slash_command: slashCommand?.entry?.kind || "",
-        attachment_names: attachmentNames,
-        employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
-      },
-    });
+    if (!localLiuAgentHandled) {
+      await upsertProjectChatRequirementRecord({
+        chatSessionId: activeChatSessionId,
+        status: "done",
+        rootGoal: displayUserMessageContent,
+        messageId: userMessage.id,
+        assistantMessageId: assistantMessage.id,
+        resultSummary: finalAssistantContent,
+        verificationResult: "AI 对话已返回最终回答并写入当前聊天。",
+        source: "project_chat",
+        sourceContext: {
+          chat_mode: "system",
+          surface: chatSurface.value,
+          slash_command: slashCommand?.entry?.kind || "",
+          attachment_names: attachmentNames,
+          employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
+        },
+      });
+    }
   } catch (err) {
-    assistantMessage.content = `请求失败：${err?.message || "未知错误"}`;
-    void upsertProjectChatRequirementRecord({
-      chatSessionId: activeChatSessionId,
-      status: "blocked",
-      rootGoal: displayUserMessageContent,
-      messageId: userMessage.id,
-      assistantMessageId: assistantMessage.id,
-      resultSummary: assistantMessage.content,
-      verificationResult: err?.message || "AI 对话请求失败。",
-      source: "project_chat",
-      sourceContext: {
-        chat_mode: "system",
-        surface: chatSurface.value,
-        error: err?.detail || err?.message || "",
-      },
-    });
-    ElMessage.error(err?.message || "对话失败");
+    const errorMessage = String(err?.message || "未知错误").trim();
+    if (isLocalRunnerSurface.value) {
+      assistantMessage.content = `执行失败：${errorMessage}`;
+      assistantMessage.time = nowText();
+      upsertMessageOperation(assistantMessage, {
+        operationId: `local-agent:${assistantMessage.id}`,
+        kind: "request",
+        title: "桌面本地 Agent Runtime",
+        summary: "本地会话失败",
+        detail: errorMessage,
+        phase: "failed",
+        actionType: "none",
+        meta: {
+          local_liuagent_operation: "true",
+          source: "tauri_liuagent_local_chat",
+          chat_session_id: activeChatSessionId,
+          cwd: localLiuAgentWorkspacePath(),
+        },
+      });
+      appendMessageProcessLog(assistantMessage, {
+        text: errorMessage,
+        level: "error",
+        autoExpand: true,
+      });
+      void upsertProjectChatRequirementRecord({
+        chatSessionId: activeChatSessionId,
+        status: "blocked",
+        rootGoal: displayUserMessageContent,
+        messageId: userMessage.id,
+        assistantMessageId: assistantMessage.id,
+        resultSummary: assistantMessage.content,
+        verificationResult: errorMessage || "桌面端本地 liuAgent 执行失败。",
+        source: "desktop_local_agent",
+        sourceContext: {
+          chat_mode: "system",
+          surface: chatSurface.value,
+          runtime: "tauri",
+          workspace_path: localLiuAgentWorkspacePath(),
+          error: err?.detail || errorMessage,
+        },
+      });
+    } else {
+      assistantMessage.content = `请求失败：${errorMessage}`;
+      void upsertProjectChatRequirementRecord({
+        chatSessionId: activeChatSessionId,
+        status: "blocked",
+        rootGoal: displayUserMessageContent,
+        messageId: userMessage.id,
+        assistantMessageId: assistantMessage.id,
+        resultSummary: assistantMessage.content,
+        verificationResult: errorMessage || "AI 对话请求失败。",
+        source: "project_chat",
+        sourceContext: {
+          chat_mode: "system",
+          surface: chatSurface.value,
+          error: err?.detail || errorMessage,
+        },
+      });
+      ElMessage.error(errorMessage || "对话失败");
+    }
   } finally {
     syncChatLoadingWithCurrentSession();
     singleRoundAnswerOnly.value = false;
     if (selectedProjectId.value && !requestCancelled) {
-      const sessionToKeep =
-        String(currentChatSessionId.value || "").trim() || activeChatSessionId;
-      await fetchChatSessions(selectedProjectId.value, sessionToKeep, {
-        useRemembered: false,
-      });
+      rememberChatSession(
+        selectedProjectId.value,
+        String(currentChatSessionId.value || "").trim() || activeChatSessionId,
+      );
+      rememberCurrentChatSessionMessages();
+      scheduleChatSessionListMetadataRefresh(selectedProjectId.value);
       syncChatLoadingWithCurrentSession();
     }
     if (
@@ -22456,8 +24703,19 @@ async function loadSelectedProjectConversation(projectId) {
         currentChatSessionId.value = existingSessionId;
         rememberChatSession(normalizedProjectId, existingSessionId);
       } else {
-        const created = await createChatSession({ switchTo: true });
-        chatSessionId = String(created?.id || "").trim();
+        currentChatSessionId.value = "";
+        clearChatSessionMemory(normalizedProjectId);
+        clearTaskTreeSessionMemory(normalizedProjectId);
+        clearWorkSessionMemory(normalizedProjectId);
+        currentWorkSessionId.value = "";
+        clearOngoingTaskRestoreNotice();
+        messages.value = [];
+        chatHistoryLoadedCount.value = 0;
+        chatHistoryReachedEnd.value = false;
+        applyChatSessionComposerState(normalizedProjectId, "");
+        applyTaskTreePayload(null);
+        resetTerminalPanel();
+        return;
       }
     }
     if (
@@ -22623,6 +24881,7 @@ onMounted(async () => {
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.addEventListener("keydown", handleWorkingStatusKeydown);
   void hydrateNativeDesktopRuntimeInfo();
+  void startNativeLiuAgentRuntimeEventSubscription();
   window.setTimeout(() => {
     void hydrateNativeDesktopRuntimeInfo();
   }, 300);
@@ -22671,6 +24930,7 @@ onUnmounted(() => {
   stopExternalAgentBridgeTaskPolling();
   stopNativeExternalAgentSessionPolling();
   stopNativeExternalAgentSessionEventSubscription();
+  stopNativeLiuAgentRuntimeEventSubscription();
   nativeExternalAgentDeferredCleanupTimers.forEach((timer) => {
     window.clearTimeout(timer);
   });
@@ -22688,6 +24948,10 @@ onUnmounted(() => {
   disconnectMessageListResizeObserver();
   clearHighlightedMessage();
   clearAutoSaveTimer();
+  if (chatSessionListRefreshAfterSendTimer) {
+    window.clearTimeout(chatSessionListRefreshAfterSendTimer);
+    chatSessionListRefreshAfterSendTimer = null;
+  }
   rejectPendingRequests("页面已关闭");
   disconnectWs("page closed");
 });

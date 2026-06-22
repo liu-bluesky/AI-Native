@@ -23,10 +23,19 @@ class TranscriptStore:
             raise ValueError("run_id is required")
         return self._root_path / f"{normalized_run_id}.jsonl"
 
-    def append(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def append(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        session_id: str = "",
+    ) -> dict[str, Any]:
+        # 中文注释：Transcript 是 replay 来源，session_id 允许后续按会话恢复，不再只靠 run_id 反查。
         event = {
             "event_id": f"evt_{uuid4().hex[:16]}",
             "run_id": str(run_id or "").strip(),
+            "session_id": str(session_id or "").strip(),
             "type": str(event_type or "").strip() or "event",
             "created_at": utc_now_iso(),
             "payload": dict(payload or {}),

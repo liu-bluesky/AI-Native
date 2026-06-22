@@ -2,6 +2,7 @@ import {
   invoke as invokeTauriCommand,
   isTauri as isTauriRuntime,
 } from "@tauri-apps/api/core";
+import { listen as listenTauriEvent } from "@tauri-apps/api/event";
 
 const NATIVE_BRIDGE_NAMES = [
   "__AI_EMPLOYEE_DESKTOP__",
@@ -20,6 +21,14 @@ const TAURI_COMMAND_NAMES = {
   runRunnerCommand: "run_runner_command",
   recordRunnerPermissionDecision: "record_runner_permission_decision",
   listRunnerPermissionDecisions: "list_runner_permission_decisions",
+  liuagentBuiltinToolDefinitions: "liuagent_builtin_tool_definitions",
+  liuagentExecuteTool: "liuagent_execute_tool",
+  liuagentStartLocalChat: "liuagent_start_local_chat",
+  liuagentPrepareAgentInvocation: "liuagent_prepare_agent_invocation",
+  liuagentRecoverRuntimeState: "liuagent_recover_runtime_state",
+  liuagentListRuntimeEvents: "liuagent_list_runtime_events",
+  liuagentListRuntimeOutbox: "liuagent_list_runtime_outbox",
+  liuagentAckRuntimeOutbox: "liuagent_ack_runtime_outbox",
 };
 
 function canUseWindow() {
@@ -184,6 +193,321 @@ export async function getNativeRuntimeInfo() {
   };
 }
 
+export async function listNativeLiuAgentBuiltinTools() {
+  const result = await invokeNativeDesktopBridge("liuagentBuiltinToolDefinitions");
+  return Array.isArray(result) ? result : [];
+}
+
+export async function executeNativeLiuAgentTool(request = {}) {
+  const toolName = String(request?.name || request?.toolName || "").trim();
+  const workspacePath = String(request?.workspacePath || "").trim();
+  if (!toolName) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "tool name is required",
+    };
+  }
+  if (!workspacePath) {
+    return {
+      ok: false,
+      errorCode: "workspace.not_configured",
+      error: "workspacePath is required",
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentExecuteTool", {
+    request: {
+      toolCallId: String(request?.toolCallId || "").trim(),
+      name: toolName,
+      arguments:
+        request?.arguments && typeof request.arguments === "object"
+          ? request.arguments
+          : {},
+      workspacePath,
+      permissionDecision:
+        request?.permissionDecision &&
+        typeof request.permissionDecision === "object"
+          ? request.permissionDecision
+          : null,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent runtime is unavailable",
+      };
+}
+
+export async function startNativeLiuAgentLocalChat(request = {}) {
+  const projectId = String(request?.projectId || request?.project_id || "").trim();
+  const chatSessionId = String(
+    request?.chatSessionId || request?.chat_session_id || "",
+  ).trim();
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  const message = String(request?.message || "").trim();
+  if (!projectId || !chatSessionId || !workspacePath || !message) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "projectId, chatSessionId, workspacePath and message are required",
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentStartLocalChat", {
+    request: {
+      projectId,
+      chatSessionId,
+      messageId: String(request?.messageId || request?.message_id || "").trim(),
+      assistantMessageId: String(
+        request?.assistantMessageId || request?.assistant_message_id || "",
+      ).trim(),
+      message,
+      workspacePath,
+      history: Array.isArray(request?.history) ? request.history : [],
+      providerId: String(request?.providerId || request?.provider_id || "").trim(),
+      modelName: String(request?.modelName || request?.model_name || "").trim(),
+      systemPrompt: String(
+        request?.systemPrompt || request?.system_prompt || "",
+      ).trim(),
+      temperature:
+        Number.isFinite(Number(request?.temperature)) &&
+        request?.temperature !== ""
+          ? Number(request.temperature)
+          : null,
+      maxTokens:
+        Number.isFinite(Number(request?.maxTokens || request?.max_tokens)) &&
+        (request?.maxTokens || request?.max_tokens) !== ""
+          ? Number(request?.maxTokens || request?.max_tokens)
+          : null,
+      modelRuntime:
+        request?.modelRuntime && typeof request.modelRuntime === "object"
+          ? request.modelRuntime
+          : request?.model_runtime && typeof request.model_runtime === "object"
+            ? request.model_runtime
+            : null,
+      permissionDecision:
+        request?.permissionDecision && typeof request.permissionDecision === "object"
+          ? request.permissionDecision
+          : request?.permission_decision &&
+              typeof request.permission_decision === "object"
+            ? request.permission_decision
+            : null,
+      planDecision:
+        request?.planDecision && typeof request.planDecision === "object"
+          ? request.planDecision
+          : request?.plan_decision && typeof request.plan_decision === "object"
+            ? request.plan_decision
+            : null,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent local chat runtime is unavailable",
+      };
+}
+
+export async function prepareNativeLiuAgentInvocation(request = {}) {
+  const projectId = String(request?.projectId || request?.project_id || "").trim();
+  const chatSessionId = String(
+    request?.chatSessionId || request?.chat_session_id || "",
+  ).trim();
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  const userMessage = String(
+    request?.userMessage || request?.user_message || request?.message || "",
+  ).trim();
+  if (!projectId || !chatSessionId || !workspacePath || !userMessage) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "projectId, chatSessionId, workspacePath and userMessage are required",
+    };
+  }
+  const capabilities = Array.isArray(request?.capabilities)
+    ? request.capabilities.map((item) => String(item || "").trim()).filter(Boolean)
+    : ["local_runner", "mcp_recording", "desktop_tools"];
+  const result = await invokeNativeDesktopBridge("liuagentPrepareAgentInvocation", {
+    request: {
+      invocationId: String(
+        request?.invocationId || request?.invocation_id || "",
+      ).trim(),
+      source: String(request?.source || "project_chat").trim(),
+      adapterKind: String(
+        request?.adapterKind || request?.adapter_kind || "desktop",
+      ).trim(),
+      projectId,
+      chatSessionId,
+      userMessage,
+      workspacePath,
+      agentId: String(request?.agentId || request?.agent_id || "").trim(),
+      promptBundleId: String(
+        request?.promptBundleId || request?.prompt_bundle_id || "",
+      ).trim(),
+      toolBundleId: String(
+        request?.toolBundleId || request?.tool_bundle_id || "",
+      ).trim(),
+      capabilities,
+      recordRequirement:
+        request?.recordRequirement ?? request?.record_requirement ?? true,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent agent gateway is unavailable",
+      };
+}
+
+export async function recoverNativeLiuAgentRuntimeState(request = {}) {
+  const projectId = String(request?.projectId || request?.project_id || "").trim();
+  const chatSessionId = String(
+    request?.chatSessionId || request?.chat_session_id || "",
+  ).trim();
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  if (!projectId || !chatSessionId || !workspacePath) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "projectId, chatSessionId and workspacePath are required",
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentRecoverRuntimeState", {
+    request: {
+      projectId,
+      chatSessionId,
+      workspacePath,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent runtime recovery is unavailable",
+      };
+}
+
+export async function listNativeLiuAgentRuntimeEvents(request = {}) {
+  const projectId = String(request?.projectId || request?.project_id || "").trim();
+  const chatSessionId = String(
+    request?.chatSessionId || request?.chat_session_id || "",
+  ).trim();
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  if (!projectId || !chatSessionId || !workspacePath) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "projectId, chatSessionId and workspacePath are required",
+      events: [],
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentListRuntimeEvents", {
+    request: {
+      projectId,
+      chatSessionId,
+      workspacePath,
+      afterEventId: String(
+        request?.afterEventId || request?.after_event_id || "",
+      ).trim(),
+      limit: Number.isFinite(Number(request?.limit)) ? Number(request.limit) : null,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent runtime event stream is unavailable",
+        events: [],
+      };
+}
+
+export async function listNativeLiuAgentRuntimeOutbox(request = {}) {
+  const projectId = String(request?.projectId || request?.project_id || "").trim();
+  const chatSessionId = String(
+    request?.chatSessionId || request?.chat_session_id || "",
+  ).trim();
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  if (!projectId || !workspacePath) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "projectId and workspacePath are required",
+      entries: [],
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentListRuntimeOutbox", {
+    request: {
+      projectId,
+      chatSessionId: chatSessionId || null,
+      workspacePath,
+      limit: Number.isFinite(Number(request?.limit)) ? Number(request.limit) : null,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent runtime outbox is unavailable",
+        entries: [],
+      };
+}
+
+export async function ackNativeLiuAgentRuntimeOutbox(request = {}) {
+  const projectId = String(request?.projectId || request?.project_id || "").trim();
+  const chatSessionId = String(
+    request?.chatSessionId || request?.chat_session_id || "",
+  ).trim();
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  const eventIds = Array.isArray(request?.eventIds || request?.event_ids)
+    ? (request.eventIds || request.event_ids)
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    : [];
+  if (!projectId || !chatSessionId || !workspacePath) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "projectId, chatSessionId and workspacePath are required",
+      deletedCount: 0,
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentAckRuntimeOutbox", {
+    request: {
+      projectId,
+      chatSessionId,
+      workspacePath,
+      eventIds,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent runtime outbox ack is unavailable",
+        deletedCount: 0,
+      };
+}
+
 export async function listNativeWorkspaceFiles(options = {}) {
   const workspacePath = String(
     options?.workspacePath || options?.workspace_path || "",
@@ -303,6 +627,37 @@ export async function resolveNativeExternalAgentPermission(options = {}) {
 
 export async function subscribeNativeExternalAgentSessionEvents(handler) {
   return () => {};
+}
+
+export async function subscribeNativeLiuAgentRuntimeEvents(handler) {
+  if (typeof handler !== "function") return () => {};
+  if (!hasNativeDesktopBridge()) return () => {};
+  const handleEvent = (event) => {
+    handler(event?.payload && typeof event.payload === "object" ? event.payload : {});
+  };
+  const unlisteners = [];
+  try {
+    unlisteners.push(await listenTauriEvent("liuagent-runtime-event", handleEvent));
+  } catch (_error) {
+    // keep legacy fallback below
+  }
+  try {
+    unlisteners.push(await listenTauriEvent("liuagent://runtime-event", handleEvent));
+  } catch (_error) {
+    // keep primary listener if available
+  }
+  if (!unlisteners.length) {
+    return () => {};
+  }
+  return () => {
+    for (const unlisten of unlisteners) {
+      try {
+        unlisten?.();
+      } catch (_error) {
+        // ignore cleanup errors
+      }
+    }
+  };
 }
 
 export async function recordNativeRunnerPermissionDecision(options = {}) {

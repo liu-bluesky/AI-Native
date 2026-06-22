@@ -252,13 +252,13 @@
             </el-form-item>
             <el-form-item label="回复方式">
               <el-radio-group v-model="draft.chat_mode" class="connector-dialog__radio-group">
-                <el-radio-button label="system">系统对话</el-radio-button>
+                <el-radio-button label="desktop_local_agent">桌面本地智能体</el-radio-button>
               </el-radio-group>
               <div class="connector-dialog__hint">
-                系统对话使用服务端大模型回复。
+                机器人消息只声明本地智能体运行目标；实际模型调用和工具执行应由桌面端本地智能体完成。
               </div>
             </el-form-item>
-            <el-form-item label="机器人对话模型">
+            <el-form-item label="桌面本地智能体模型">
               <el-select
                 v-model="selectedBotModelOptionValue"
                 filterable
@@ -285,7 +285,7 @@
                 </el-option-group>
               </el-select>
               <div class="connector-dialog__hint">
-                留空时使用当前账号默认模型；没有账号默认时从当前可见的可用模型中选择，仍无可用模型则返回配置错误。
+                这里保存桌面本地智能体要使用的模型目标；留空时由桌面端运行时按账号默认模型解析。
               </div>
             </el-form-item>
             <el-form-item v-if="showVerificationTokenField" label="Verification Token">
@@ -602,7 +602,7 @@ function normalizeReceiveMode(value, preset) {
 }
 
 function normalizeChatMode(value) {
-  return "system";
+  return "desktop_local_agent";
 }
 
 function normalizeExternalAgentType(value) {
@@ -759,7 +759,7 @@ const draft = ref({
   agent_name: "",
   description: "",
   system_prompt: "",
-  chat_mode: "system",
+  chat_mode: "desktop_local_agent",
   external_agent_type: "codex_cli",
   provider_id: "",
   model_name: "",
@@ -973,7 +973,7 @@ function mergeBotChatProviders(providers) {
 }
 
 function botChatModeLabel(connector) {
-  return "系统对话";
+  return "桌面本地智能体";
 }
 
 function botChatModelLabel(connector) {

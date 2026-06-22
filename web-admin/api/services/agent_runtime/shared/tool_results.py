@@ -28,9 +28,15 @@ class ToolObservation:
     def is_error(self) -> bool:
         return self.status in {"error", "failed", "timeout", "blocked"}
 
+    @property
+    def tool_result_id(self) -> str:
+        # 中文注释：observation_id 是旧命名；tool_result_id 是新协议命名，两者先保持同值。
+        return self.observation_id
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "observation_id": self.observation_id,
+            "tool_result_id": self.tool_result_id,
             "run_id": self.run_id,
             "call_id": self.call_id,
             "tool_name": self.tool_name,

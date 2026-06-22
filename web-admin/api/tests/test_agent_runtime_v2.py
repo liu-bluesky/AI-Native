@@ -3404,18 +3404,91 @@ async def test_tool_runner_blocks_permission_ask_without_executor_call(tmp_path)
     )
 
     events = [item.event_type for item in event_log.list_events("run-1")]
+    approval_event = next(
+        item
+        for item in event_log.list_events("run-1")
+        if item.event_type == "approval_required"
+    )
     assert executor.calls == 0
     assert len(records) == 1
     assert records[0].observation.status == "blocked"
     assert records[0].permission_decision is not None
     assert records[0].permission_decision.behavior == "ask"
     assert records[0].raw_result["permission_decision"]["behavior"] == "ask"
+    assert records[0].raw_result["permission_request"]["request_id"]
+    assert approval_event.session_id == "chat-1"
+    assert approval_event.payload["action"] == "command.run"
+    assert approval_event.payload["options"][0]["decision"] == "approve_once"
+    assert approval_event.payload["options"][0]["grant_scope"] == "once"
+    assert approval_event.payload["options"][-1]["decision"] == "deny"
     assert "permission_decision" in events
-    assert "tool_observation_created" in events
+    assert "approval_required" in events
 
 
 @pytest.mark.asyncio
-async def test_tool_runner_executes_when_permission_rule_allows(tmp_path):
+async def test_tool_runner_delegates_local_builtin_tools_to_desktop_client(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.shared.tool_calls import CollectedToolCall
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+
+    class _FakeToolExecutor:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute_parallel(self, tool_calls, timeout=None):
+            self.calls += 1
+            return [{"ok": False, "error": "server executor must not run"}]
+
+    executor = _FakeToolExecutor()
+    event_log = RuntimeEventLog(tmp_path / "events")
+    runner = ToolExecutionRunner(
+        executor,
+        event_log=event_log,
+        permission_policy=PermissionPolicy(PermissionStore(tmp_path / "permissions")),
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        workspace_trusted=True,
+        tool_entries=[
+            {
+                "tool_name": "list_files",
+                "execution_backend": "builtin",
+                "permission_scope": "workspace",
+            }
+        ],
+    )
+
+    records = await runner.execute(
+        run_id="run-1",
+        tool_calls=[
+            CollectedToolCall(
+                call_id="call-1",
+                tool_name="list_files",
+                arguments="{\"path\": \".\"}",
+                raw={},
+            )
+        ],
+    )
+
+    assert executor.calls == 0
+    assert len(records) == 1
+    assert records[0].observation.status == "waiting_user_action"
+    assert records[0].raw_result["source"] == "desktop_client_tool"
+    assert records[0].raw_result["task_id"].startswith("desktop-tool-")
+    assert records[0].raw_result["tool_name"] == "list_files"
+    assert records[0].raw_result["tool_args"] == {"path": "."}
+    events = event_log.list_events("run-1")
+    assert [item.event_type for item in events].count("tool_observation_created") == 1
+    observation_event = next(
+        item for item in events if item.event_type == "tool_observation_created"
+    )
+    assert observation_event.payload["raw_result"]["source"] == "desktop_client_tool"
+
+
+@pytest.mark.asyncio
+async def test_tool_runner_executes_when_permission_rule_allows_once(tmp_path):
     from services.agent_runtime.core.event_log import RuntimeEventLog
     from services.agent_runtime.v2.permission_policy import PermissionPolicy
     from services.agent_runtime.v2.permission_store import (
@@ -3439,7 +3512,7 @@ async def test_tool_runner_executes_when_permission_rule_allows(tmp_path):
     store.save_rule(
         PermissionRule(
             rule_id="rule-1",
-            behavior="allow_session",
+            behavior="allow_once",
             tool_name="project_host_run_command",
             project_id="proj-1",
             username="tester",
@@ -3448,9 +3521,10 @@ async def test_tool_runner_executes_when_permission_rule_allows(tmp_path):
         )
     )
     executor = _FakeToolExecutor()
+    event_log = RuntimeEventLog(tmp_path / "events")
     runner = ToolExecutionRunner(
         executor,
-        event_log=RuntimeEventLog(tmp_path / "events"),
+        event_log=event_log,
         permission_policy=PermissionPolicy(store),
         project_id="proj-1",
         username="tester",
@@ -3470,6 +3544,12 @@ async def test_tool_runner_executes_when_permission_rule_allows(tmp_path):
         ],
     )
 
+    permission_event = next(
+        item
+        for item in event_log.list_events("run-1")
+        if item.event_type == "permission_decision"
+    )
+    events = [item.event_type for item in event_log.list_events("run-1")]
     assert executor.calls == 1
     executed_args = json.loads(executor.tool_calls[0]["function"]["arguments"])
     assert executed_args["command"] == "sudo echo ok"
@@ -3478,6 +3558,10 @@ async def test_tool_runner_executes_when_permission_rule_allows(tmp_path):
     assert executed_args["_agent_runtime_tool_name"] == "project_host_run_command"
     assert records[0].observation.status == "succeeded"
     assert records[0].raw_result["stdout"] == "allowed"
+    assert permission_event.payload["decision"]["behavior"] == "allow_once"
+    assert permission_event.payload["decision"]["decision"] == "approve_once"
+    assert permission_event.payload["decision"]["grant_scope"] == "once"
+    assert "approval_required" not in events
 
 
 @pytest.mark.asyncio
@@ -3532,7 +3616,9 @@ async def test_tool_runner_records_registry_metadata_in_permission_events(tmp_pa
     assert records[0].observation.status == "blocked"
     assert records[0].raw_result["tool_entry"]["execution_backend"] == "local_connector"
     assert records[0].raw_result["permission_decision"]["risk_level"] == "high"
+    assert records[0].raw_result["permission_request"]["scope"] == "workspace"
     assert permission_event.payload["tool_entry"]["audit_policy"] == "full"
+    assert permission_event.payload["permission_request"]["request_id"]
 
 
 def test_trust_policy_marks_workspace_trusted(tmp_path):
@@ -4044,6 +4130,7 @@ def test_permission_action_service_trusts_workspace(tmp_path):
 
 def test_dynamic_tool_pool_deduplicates_and_summarizes_tools():
     from services.agent_runtime.v2.dynamic_tool_pool import DynamicToolPool
+    from services.agent_runtime.builtin_tools.definitions import BUILTIN_TOOL_NAMES
 
     pool = DynamicToolPool.from_runtime_tools(
         [
@@ -4054,11 +4141,31 @@ def test_dynamic_tool_pool_deduplicates_and_summarizes_tools():
         tool_priority=["a_tool"],
     )
 
-    assert pool.names() == ["a_tool", "b_tool"]
+    names = pool.names()
+    assert names[:2] == ["a_tool", "b_tool"]
+    assert "b_tool" in names
+    assert BUILTIN_TOOL_NAMES.issubset(set(names))
     summary = pool.summary()
-    assert summary["effective_tool_total"] == 2
+    assert summary["effective_tool_total"] == len(BUILTIN_TOOL_NAMES) + 2
     assert summary["effective_tools"][0]["tool_name"] == "a_tool"
-    assert summary["plugin_registry"]["registered_tool_total"] == 2
+    assert summary["plugin_registry"]["registered_tool_total"] == len(BUILTIN_TOOL_NAMES) + 2
+
+
+def test_dynamic_tool_pool_exposes_builtin_runtime_contracts():
+    from services.agent_runtime.v2.dynamic_tool_pool import DynamicToolPool
+    from services.agent_runtime.builtin_tools.definitions import BUILTIN_TOOL_NAMES
+
+    pool = DynamicToolPool.from_runtime_tools([])
+    names = set(pool.names())
+
+    assert BUILTIN_TOOL_NAMES.issubset(names)
+    tools = {item["tool_name"]: item for item in pool.openai_tools()}
+    read_file = tools["read_file"]
+    assert read_file["parameters_schema"]["required"] == ["path"]
+    assert read_file["risk_level"] == "low"
+    assert read_file["execution_backend"] == "builtin"
+    assert tools["call_mcp_tool"]["execution_backend"] == "mcp"
+    assert tools["call_mcp_tool"]["requires_approval"] is True
 
 
 def test_plugin_registry_classifies_runtime_tool_sources():
@@ -4127,6 +4234,7 @@ def test_plugin_registry_reads_skill_manifest_version_and_blocks_untrusted_proje
 def test_dynamic_tool_pool_filters_browser_tools_until_workspace_trusted():
     from services.agent_runtime.v2.dynamic_tool_pool import DynamicToolPool
     from services.agent_runtime.shared.tool_registry import PluginRegistryContext
+    from services.agent_runtime.builtin_tools.definitions import BUILTIN_TOOL_NAMES
 
     untrusted_pool = DynamicToolPool.from_runtime_tools(
         [],
@@ -4145,12 +4253,24 @@ def test_dynamic_tool_pool_filters_browser_tools_until_workspace_trusted():
         ),
     )
 
-    assert untrusted_pool.names() == []
-    assert trusted_pool.names() == [
+    assert set(untrusted_pool.names()) == BUILTIN_TOOL_NAMES - {
+        "list_files",
+        "read_file",
+        "search_text",
+        "apply_patch",
+        "write_file",
+        "check_command_risk",
+        "run_command",
+        "download_file",
+    }
+    assert set(trusted_pool.names()) >= {
         "global_assistant_browser_actions",
         "global_assistant_browser_requests",
-    ]
-    browser_summary = trusted_pool.summary()["effective_tools"][0]
+    }
+    browser_summary = {
+        item["tool_name"]: item
+        for item in trusted_pool.summary()["effective_tools"]
+    }["global_assistant_browser_actions"]
     assert browser_summary["source"] == "browser"
     assert browser_summary["plugin_id"] == "browser-tools"
     assert browser_summary["version"] == "builtin"
@@ -4256,6 +4376,8 @@ async def test_event_stream_builds_agent_runtime_event_payload():
 
     assert payload["type"] == "agent_runtime_event"
     assert payload["event_type"] == "llm_step_completed"
+    assert payload["event"]["type"] == "llm_step_completed"
+    assert payload["event"]["session_id"] == "chat-1"
     assert published == [payload]
 
 

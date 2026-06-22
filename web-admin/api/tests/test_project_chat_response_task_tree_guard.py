@@ -234,6 +234,67 @@ def test_project_chat_stream_direct_reply_emits_task_tree_before_done(tmp_path, 
     assert done_payload["history_task_tree"]["chat_session_id"] == "chat-1"
 
 
+def test_project_chat_ws_direct_reply_reaches_start_and_done(tmp_path, monkeypatch):
+    from core.auth import create_token
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_guard_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(
+        ProjectConfig(id="proj-1", name="项目一", description="用于验证 WebSocket 对话")
+    )
+
+    monkeypatch.setattr(projects_router, "_is_project_meta_query", lambda message: True)
+    monkeypatch.setattr(
+        projects_router,
+        "_build_project_meta_reply",
+        lambda project, selected_employee, candidates: "项目一可以通过 WebSocket 正常回答。",
+    )
+    monkeypatch.setattr(projects_router, "_save_project_chat_memory_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(projects_router, "audit_task_tree_round", lambda **kwargs: {})
+
+    token = create_token("tester", role="admin", roles=["admin"])
+    with client.websocket_connect(f"/api/projects/proj-1/chat/ws?token={token}") as websocket:
+        ready = websocket.receive_json()
+        assert ready["type"] == "ready"
+
+        websocket.send_json(
+            {
+                "request_id": "req-direct-meta",
+                "message_id": "msg-user-1",
+                "assistant_message_id": "msg-assistant-1",
+                "chat_session_id": "chat-1",
+                "message": "当前项目做什么的",
+                "history": [],
+            }
+        )
+
+        saw_start = False
+        done_payload = None
+        for _ in range(10):
+            event = websocket.receive_json()
+            assert event.get("type") != "error", event
+            if event.get("type") == "start":
+                saw_start = True
+                assert event["request_id"] == "req-direct-meta"
+                assert event["model_name"] == "direct-project-meta"
+            if event.get("type") == "done":
+                done_payload = event
+                break
+        else:
+            raise AssertionError("did not receive done event for direct websocket reply")
+
+        assert saw_start is True
+        assert done_payload is not None
+        assert done_payload["request_id"] == "req-direct-meta"
+        assert done_payload["content"] == "项目一可以通过 WebSocket 正常回答。"
+        assert done_payload["model_name"] == "direct-project-meta"
+
+
 def test_project_chat_ws_cancel_returns_done_and_unlocks_request(tmp_path, monkeypatch):
     from core.auth import create_token
     from routers import projects as projects_router

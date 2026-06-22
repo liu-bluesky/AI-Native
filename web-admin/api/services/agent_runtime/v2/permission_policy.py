@@ -86,7 +86,10 @@ class PermissionPolicy:
                 reason="workspace is not trusted",
                 matched_rule=None,
             )
-        if risk_level in {"high", "critical"}:
+        requires_approval = bool(entry.get("requires_approval"))
+        if requires_approval:
+            behavior = "ask"
+        elif risk_level in {"high", "critical"}:
             behavior = "ask"
         else:
             behavior = "allow_once"
@@ -177,7 +180,12 @@ class PermissionPolicy:
         entry = dict(tool_entry or {}) if isinstance(tool_entry, dict) else {}
         metadata_risk = str(entry.get("risk_level") or "").strip().lower()
         computed_risk = "low"
-        if tool_name == "project_host_run_command":
+        # 内置工具（文件/命令/网络）：按工具定义和参数动态计算风险
+        from services.agent_runtime.builtin_tools.registry import get_builtin_tool_risk_override
+        builtin_override = get_builtin_tool_risk_override(tool_name, args)
+        if builtin_override:
+            computed_risk = builtin_override
+        elif tool_name == "project_host_run_command":
             command = f" {str(args.get('command') or '').strip().lower()} "
             computed_risk = "high" if any(term in command for term in _SENSITIVE_COMMAND_TERMS) else "medium"
         elif tool_name == "project_host_terminal_start":

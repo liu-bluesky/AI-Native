@@ -17,6 +17,13 @@ from services.agent_runtime.core.task_run import utc_now_iso
 ALLOW_BEHAVIORS = {"allow_once", "allow_session", "allow_always"}
 DENY_BEHAVIOR = "deny"
 
+_BEHAVIOR_TO_DECISION = {
+    "allow_once": ("approve_once", "once"),
+    "allow_session": ("approve_session", "session"),
+    "allow_always": ("approve_workspace", "workspace"),
+    "deny": ("deny", ""),
+}
+
 _LARK_CLI_STABLE_SUBCOMMANDS = {
     ("auth", "status"),
     ("auth", "login"),
@@ -153,16 +160,42 @@ class PermissionDecision:
     def allowed(self) -> bool:
         return self.behavior in ALLOW_BEHAVIORS
 
+    @property
+    def request_id(self) -> str:
+        # 中文注释：旧结构只有 decision_id；V0.1 协议里审批请求需要稳定 request_id，先复用同一 ID。
+        return self.decision_id
+
+    def canonical_decision(self) -> dict[str, Any]:
+        decision, grant_scope = _BEHAVIOR_TO_DECISION.get(self.behavior, ("", ""))
+        if not decision:
+            return {}
+        payload: dict[str, Any] = {
+            "decision_id": self.decision_id,
+            "request_id": self.request_id,
+            "decision": decision,
+            "decided_by": "policy",
+            "idempotency_key": f"policy:{self.decision_id}:{decision}:{grant_scope}",
+            "created_at": self.created_at,
+        }
+        if grant_scope:
+            payload["grant_scope"] = grant_scope
+        return payload
+
     def to_dict(self) -> dict[str, Any]:
+        canonical = self.canonical_decision()
         return {
             "decision_id": self.decision_id,
+            "request_id": self.request_id,
             "run_id": self.run_id,
             "call_id": self.call_id,
             "tool_name": self.tool_name,
             "behavior": self.behavior,
+            "decision": canonical.get("decision", ""),
+            "grant_scope": canonical.get("grant_scope", ""),
             "risk_level": self.risk_level,
             "reason": self.reason,
             "matched_rule": self.matched_rule,
+            "canonical_decision": canonical,
             "created_at": self.created_at,
         }
 

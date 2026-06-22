@@ -94,12 +94,46 @@
       audit.jsonl
 ```
 
+当前 Desktop/Tauri 落地使用工作区内 `.ai-employee/agent-runtime-v2/` 作为本地 runtime 根目录，其中：
+
+```text
+.ai-employee/
+  agent-runtime-v2/
+    sessions/
+      <chat_session_id>/
+        state.json
+        transcript.jsonl
+        audit.jsonl
+        checkpoint.json
+    permissions/
+      <chat_session_id>.json
+  query-mcp/
+    active-sessions/
+      <chat_session_id>.json
+    session-history/
+      <project_id>__<chat_session_id>.json
+    outbox/
+      <project_id>__<chat_session_id>.jsonl
+  requirements/
+    <project_id>/
+      <chat_session_id>.json
+```
+
+`permissions/<chat_session_id>.json` 保存当前会话内的 `approve_session` 授权缓存，只能按同一会话同一 action 复用，不能替代完整审计日志。
+
+`query-mcp/active-sessions/<chat_session_id>.json` 和 `query-mcp/session-history/<project_id>__<chat_session_id>.json` 是当前窗口/会话的 canonical query-MCP 状态。不得新写 `current-session.json`、`session_id.txt`、`active/<project_id>.json` 这类分叉状态；旧文件只能作为只读迁移来源。
+
+`query-mcp/outbox/<project_id>__<chat_session_id>.jsonl` 是本地 runtime 到项目聊天 requirement 记录的追加 outbox。每行保存一条可同步事件，至少包含 `event_id`、`project_id`、`chat_session_id`、`session_id`、`source_kind`、`content` 和 `trajectory`。前端或 CLI 同步成功后，必须通过 ack 命令按 `event_id` 删除已同步条目；未 ack 的条目应在下次恢复时继续保留。
+
+`requirements/<project_id>/<chat_session_id>.json` 是本地 requirement 对象，必须和 query-MCP active/session-history 使用同一 `chat_session_id`，并记录 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history` 等字段。
+
 ## 存储边界
 
 - `state.json` 保存当前可恢复状态，可以被覆盖。
 - `transcript.jsonl` 保存追加式运行记录，不应静默重写历史。
 - `audit.jsonl` 保存权限和高风险动作记录，应追加写入。
 - checkpoint 只保存关键节点，不需要每个 token 都落盘。
+- query-mcp outbox 是未同步工作事实，不是审计日志；同步失败时保留，确认服务端写入成功后才 ack。
 
 ## 恢复策略
 

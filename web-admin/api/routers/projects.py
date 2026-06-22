@@ -332,6 +332,18 @@ class ProjectDesktopAuditEventReq(BaseModel):
     next_steps: list[str] = Field(default_factory=list, max_length=20)
 
 
+class AgentRuntimeV2DesktopToolResultReq(BaseModel):
+    request_id: str = Field("", max_length=160)
+    chat_session_id: str = Field("", max_length=160)
+    assistant_message_id: str = Field("", max_length=160)
+    run_id: str = Field("", max_length=160)
+    call_id: str = Field("", max_length=160)
+    tool_name: str = Field("", max_length=160)
+    task_id: str = Field("", max_length=160)
+    ok: bool = True
+    tool_result: dict[str, Any] = Field(default_factory=dict)
+
+
 class ProjectWorkLogCreateReq(BaseModel):
     title: str = Field("", max_length=240)
     content: str = Field("", max_length=12000)
@@ -11268,6 +11280,8 @@ def _get_project_task_session_status_label(value: Any) -> str:
         return "已完成"
     if normalized == "blocked":
         return "阻塞"
+    if normalized in {"waiting_approval", "waiting_user", "validating", "retrying"}:
+        return "进行中"
     if normalized == "verifying":
         return "验证中"
     if normalized == "paused":
@@ -19297,6 +19311,101 @@ async def publish_agent_runtime_operation_resume_realtime(
     )
 
 
+async def _resume_agent_runtime_desktop_tool_result(
+    *,
+    project_id: str,
+    username: str,
+    auth_payload: dict,
+    req: AgentRuntimeV2DesktopToolResultReq,
+    project: ProjectConfig | None = None,
+) -> tuple[dict[str, Any], ProjectChatMessage | None]:
+    run_id = str(req.run_id or "").strip()
+    call_id = str(req.call_id or "").strip()
+    tool_name = str(req.tool_name or "").strip()
+    task_id = str(req.task_id or "").strip()
+    if not run_id:
+        raise HTTPException(400, "run_id is required")
+    if not call_id:
+        raise HTTPException(400, "call_id is required")
+    if not tool_name:
+        raise HTTPException(400, "tool_name is required")
+    if not task_id:
+        raise HTTPException(400, "task_id is required")
+    snapshot = AgentRuntimeInspector().get_run_snapshot(run_id)
+    if snapshot is None:
+        raise HTTPException(404, "agent runtime run not found")
+    run = dict(snapshot.get("run") or {})
+    if run.get("project_id") != project_id or run.get("username") != username:
+        raise HTTPException(404, "agent runtime run not found")
+    chat_session_id = (
+        str(req.chat_session_id or "").strip()
+        or str(run.get("chat_session_id") or "").strip()
+    )
+    operation_task = {
+        "task_id": task_id,
+        "run_id": run_id,
+        "call_id": call_id,
+        "tool_name": tool_name,
+        "operation_kind": "desktop_client_tool",
+        "operation_label": f"桌面本地工具：{tool_name}",
+        "status_label": "桌面工具执行完成" if req.ok else "桌面工具执行失败",
+        "ok": bool(req.ok) and bool(dict(req.tool_result or {}).get("ok", req.ok)),
+        "execution_ok": bool(req.ok) and bool(dict(req.tool_result or {}).get("ok", req.ok)),
+        "tool_result": dict(req.tool_result or {}),
+    }
+    resume_result = await _build_agent_runtime_resume_service(
+        auth_payload,
+    ).resume_background_operation(
+        AgentRuntimeResumeRequest(
+            project_id=project_id,
+            username=username,
+            run_id=run_id,
+            call_id=call_id,
+            tool_name=tool_name,
+            chat_session_id=chat_session_id,
+            role_ids=get_auth_role_ids(auth_payload),
+            project_workspace_path=str(getattr(project, "workspace_path", "") or "").strip(),
+            workspace_trusted=True,
+        ),
+        operation_task=operation_task,
+    )
+    resume_payload = resume_result.to_dict()
+    latest_snapshot = AgentRuntimeInspector().get_run_snapshot(run_id) or snapshot
+    runtime_events = [
+        dict(item)
+        for item in (latest_snapshot.get("events") or [])
+        if isinstance(item, dict)
+    ]
+    assistant_message = _persist_agent_runtime_resume_chat_message(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        assistant_message_id=str(req.assistant_message_id or "").strip(),
+        content=_agent_runtime_resume_final_content(resume_payload),
+        run_id=run_id,
+        call_id=call_id,
+        tool_name=tool_name,
+        resume_payload=resume_payload,
+        runtime_events=runtime_events,
+    )
+    if assistant_message is not None:
+        await publish_project_chat_record_update_realtime(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+            message=assistant_message,
+        )
+    await publish_agent_runtime_operation_resume_realtime(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        run_id=run_id,
+        task_id=task_id,
+        resume=resume_payload,
+    )
+    return resume_payload, assistant_message
+
+
 def _agent_runtime_resume_final_content(resume_payload: dict[str, Any] | None) -> str:
     if not isinstance(resume_payload, dict):
         return ""
@@ -22451,6 +22560,43 @@ async def append_project_chat_history_message(
     return {"message": asdict(message)}
 
 
+_PROJECT_CHAT_REQUIREMENT_STATUS_VALUES = {
+    "pending",
+    "in_progress",
+    "verifying",
+    "blocked",
+    "done",
+}
+
+
+def _normalize_project_chat_requirement_status(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"completed", "complete", "success", "resolved"}:
+        return "done"
+    if normalized in {
+        "running",
+        "started",
+        "processing",
+        "working",
+        "waiting_approval",
+        "approval_required",
+        "awaiting_approval",
+        "waiting_user",
+        "waiting_user_action",
+        "awaiting_user",
+        "validating",
+        "validation",
+        "retry",
+        "retrying",
+    }:
+        return "in_progress"
+    if normalized in {"checking", "verified"}:
+        return "verifying"
+    if normalized in {"failed", "error", "blocked"}:
+        return "blocked"
+    return normalized if normalized in _PROJECT_CHAT_REQUIREMENT_STATUS_VALUES else "in_progress"
+
+
 def _build_project_chat_requirement_session(
     *,
     project_id: str,
@@ -22470,15 +22616,15 @@ def _build_project_chat_requirement_session(
     runner_session_id = str(req.runner_session_id or "").strip()
     runner_agent_type = str(req.runner_agent_type or "").strip()
     source = str(req.source or "project_chat").strip() or "project_chat"
-    status = str(req.status or "in_progress").strip().lower()
-    if status not in {"pending", "in_progress", "blocked", "verifying", "done"}:
-        status = "in_progress"
+    status = _normalize_project_chat_requirement_status(req.status)
     result_summary = str(req.result_summary or "").strip()
     verification_result = str(req.verification_result or "").strip()
-    if status == "done" and not verification_result:
-        verification_result = result_summary or "AI 对话已返回结果，需求完成。"
     if status == "blocked" and not verification_result:
         verification_result = result_summary
+    if status == "done" and not verification_result:
+        verification_result = result_summary or "来源已标记完成"
+    if status not in _PROJECT_CHAT_REQUIREMENT_STATUS_VALUES:
+        status = "in_progress"
 
     root_node_id = ""
     run_node_id = ""
@@ -22490,8 +22636,8 @@ def _build_project_chat_requirement_session(
     root_node_id = root_node_id or project_chat_task_store.new_node_id()
     run_node_id = run_node_id or project_chat_task_store.new_node_id()
 
-    child_status = "done" if status == "done" else "blocked" if status == "blocked" else "in_progress"
-    root_status = "done" if status == "done" else "blocked" if status == "blocked" else "in_progress"
+    child_status = status
+    root_status = status
     source_bits = [
         f"source={source}",
         f"message={str(req.message_id or '').strip()}",
@@ -22520,6 +22666,7 @@ def _build_project_chat_requirement_session(
         verification_result=verification_result if status == "done" else "",
         summary_for_model=root_goal,
         latest_outcome=result_summary or root_goal,
+        metadata={},
         created_at=getattr(existing, "created_at", "") or now,
         updated_at=now,
     )
@@ -22542,6 +22689,7 @@ def _build_project_chat_requirement_session(
         verification_result=verification_result if status == "done" else "",
         summary_for_model=result_summary or root_goal,
         latest_outcome=result_summary or root_goal,
+        metadata={},
         created_at=getattr(existing, "created_at", "") or now,
         updated_at=now,
     )
@@ -22560,6 +22708,7 @@ def _build_project_chat_requirement_session(
         lifecycle_status="active",
         current_node_id=run_node_id,
         nodes=[root_node, run_node],
+        metadata={},
         created_at=getattr(existing, "created_at", "") or now,
         updated_at=now,
     )
@@ -24836,6 +24985,49 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             if payload_type == "agent_prepare":
                 try:
                     await _handle_agent_prepare(payload)
+                except Exception as exc:
+                    await _send_project_chat_event(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "message": str(exc),
+                        }
+                    )
+                continue
+            if payload_type == "desktop_tool_result":
+                try:
+                    desktop_req = AgentRuntimeV2DesktopToolResultReq(
+                        **{
+                            **payload,
+                            "tool_result": (
+                                payload.get("tool_result")
+                                if isinstance(payload.get("tool_result"), dict)
+                                else {}
+                            ),
+                        }
+                    )
+                    resume_payload, assistant_message = await _resume_agent_runtime_desktop_tool_result(
+                        project_id=project_id,
+                        username=username,
+                        auth_payload=auth_payload,
+                        req=desktop_req,
+                        project=project,
+                    )
+                    await _send_project_chat_event(
+                        {
+                            "type": "agent_runtime_operation_resume_result",
+                            "request_id": request_id,
+                            "chat_session_id": desktop_req.chat_session_id,
+                            "task_id": desktop_req.task_id,
+                            "run_id": desktop_req.run_id,
+                            "resume": resume_payload,
+                            "assistant_message": (
+                                asdict(assistant_message)
+                                if assistant_message is not None
+                                else None
+                            ),
+                        }
+                    )
                 except Exception as exc:
                     await _send_project_chat_event(
                         {

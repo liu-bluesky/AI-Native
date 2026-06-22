@@ -411,18 +411,13 @@ class OperationResumeCoordinator:
             if str(raw_result.get("source") or "").strip() not in {
                 "operation_wait_task",
                 "cli_plugin_login_task",
+                "desktop_client_tool",
             }:
                 continue
             return ToolExecutionRecord(
                 tool_call=self._tool_call_from_event(
                     {
-                        "arguments": json.dumps(
-                            {
-                                "command": raw_result.get("command") or "",
-                                "timeout_sec": raw_result.get("timeout_sec") or 120,
-                            },
-                            ensure_ascii=False,
-                        )
+                        "arguments": self._background_operation_arguments(raw_result)
                     },
                     str(payload.get("call_id") or "").strip(),
                     str(payload.get("tool_name") or "project_host_run_command").strip(),
@@ -509,10 +504,17 @@ class OperationResumeCoordinator:
         pending_record: ToolExecutionRecord,
         operation_task: dict[str, Any],
     ) -> ToolExecutionRecord:
+        source = str(pending_record.raw_result.get("source") or "operation_wait_task").strip()
+        if source == "desktop_client_tool":
+            return self._completed_desktop_client_tool_record(
+                run_id=run_id,
+                pending_record=pending_record,
+                operation_task=operation_task,
+            )
         raw_result = {
             "ok": bool(operation_task.get("ok", True)),
             "execution_ok": bool(operation_task.get("execution_ok", operation_task.get("ok", True))),
-            "source": str(pending_record.raw_result.get("source") or "operation_wait_task").strip(),
+            "source": source,
             "command": str(pending_record.raw_result.get("command") or "").strip(),
             "operation_kind": str(operation_task.get("operation_kind") or "").strip(),
             "operation_label": str(operation_task.get("operation_label") or "").strip(),
@@ -524,6 +526,76 @@ class OperationResumeCoordinator:
             "exit_code": operation_task.get("exit_code"),
             "operation_task": dict(operation_task),
         }
+        observation = self._normalizer().normalize(
+            run_id=run_id,
+            call_id=pending_record.tool_call.call_id,
+            tool_name=pending_record.tool_call.tool_name,
+            raw_result=raw_result,
+        )
+        self._event_log.append(
+            run_id,
+            "tool_observation_created",
+            observation.to_dict(),
+        )
+        return ToolExecutionRecord(
+            tool_call=pending_record.tool_call,
+            raw_result=raw_result,
+            observation=observation,
+        )
+
+    def _background_operation_arguments(self, raw_result: dict[str, Any]) -> str:
+        source = str(raw_result.get("source") or "").strip()
+        if source == "desktop_client_tool":
+            args = raw_result.get("tool_args") if isinstance(raw_result.get("tool_args"), dict) else {}
+            return json.dumps(dict(args), ensure_ascii=False)
+        return json.dumps(
+            {
+                "command": raw_result.get("command") or "",
+                "timeout_sec": raw_result.get("timeout_sec") or 120,
+            },
+            ensure_ascii=False,
+        )
+
+    def _completed_desktop_client_tool_record(
+        self,
+        *,
+        run_id: str,
+        pending_record: ToolExecutionRecord,
+        operation_task: dict[str, Any],
+    ) -> ToolExecutionRecord:
+        tool_result = (
+            operation_task.get("tool_result")
+            if isinstance(operation_task.get("tool_result"), dict)
+            else {}
+        )
+        content = tool_result.get("content") if isinstance(tool_result.get("content"), dict) else {}
+        raw_result: dict[str, Any] = {
+            "ok": bool(tool_result.get("ok", operation_task.get("ok", True))),
+            "execution_ok": bool(tool_result.get("ok", operation_task.get("ok", True))),
+            "source": "desktop_client_tool",
+            "status": "succeeded" if bool(tool_result.get("ok", operation_task.get("ok", True))) else "error",
+            "task_id": str(operation_task.get("task_id") or "").strip(),
+            "run_id": str(operation_task.get("run_id") or "").strip(),
+            "call_id": pending_record.tool_call.call_id,
+            "tool_name": pending_record.tool_call.tool_name,
+            "tool_args": dict(pending_record.raw_result.get("tool_args") or {}),
+            "result": content if content else dict(tool_result),
+            "summary": str(
+                content.get("summary")
+                or tool_result.get("summary")
+                or operation_task.get("summary")
+                or ""
+            ).strip(),
+            "error": str(tool_result.get("error") or operation_task.get("error") or "").strip(),
+            "error_code": str(tool_result.get("errorCode") or tool_result.get("error_code") or "").strip(),
+            "audit_summary": str(content.get("audit_summary") or "").strip(),
+        }
+        if "stdout" in content:
+            raw_result["stdout"] = str(content.get("stdout") or "")
+        if "stderr" in content:
+            raw_result["stderr"] = str(content.get("stderr") or "")
+        if "exit_code" in content:
+            raw_result["exit_code"] = content.get("exit_code")
         observation = self._normalizer().normalize(
             run_id=run_id,
             call_id=pending_record.tool_call.call_id,

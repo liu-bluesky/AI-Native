@@ -3886,7 +3886,10 @@ function resolveRequirementRoundHealth(round) {
       priority: 5,
     };
   }
-  if (currentNodeStatus === "verifying" || taskStatus === "verifying") {
+  if (
+    currentNodeStatus === "verifying" ||
+    taskStatus === "verifying"
+  ) {
     return {
       state: "needs_verification",
       label: "待补验证",
@@ -5248,6 +5251,14 @@ function getTaskSessionStatusLabel(value) {
     .toLowerCase();
   if (normalized === "done") return "已完成";
   if (normalized === "blocked") return "阻塞";
+  if (
+    normalized === "waiting_approval" ||
+    normalized === "waiting_user" ||
+    normalized === "validating" ||
+    normalized === "retrying"
+  ) {
+    return "进行中";
+  }
   if (normalized === "verifying") return "验证中";
   if (normalized === "paused") return "已暂停";
   if (normalized === "in_progress") return "进行中";

@@ -41,6 +41,38 @@ async def list_llm_providers(
     return {"providers": providers}
 
 
+@router.get("/providers/{provider_id}/desktop-runtime")
+async def get_llm_provider_desktop_runtime(
+    provider_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _require_llm_provider_read_permission(auth_payload)
+    provider = get_llm_provider_service().get_provider_raw(
+        provider_id,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+        include_shared=True,
+    )
+    if not provider:
+        raise HTTPException(404, f"LLM provider {provider_id} not found")
+    provider_type = str(provider.get("provider_type") or "").strip().lower()
+    if provider_type != "openai-compatible":
+        raise HTTPException(
+            400,
+            f"Provider type {provider_type or 'unknown'} is not supported by desktop runtime",
+        )
+    return {
+        "runtime": {
+            "mode": "direct-openai-compatible",
+            "provider_id": str(provider.get("id") or "").strip(),
+            "provider_type": provider_type,
+            "base_url": str(provider.get("base_url") or "").strip().rstrip("/"),
+            "api_key": str(provider.get("api_key") or "").strip(),
+            "default_model": str(provider.get("default_model") or "").strip(),
+        }
+    }
+
+
 @router.get("/providers/share-options")
 async def list_llm_provider_share_options(
     auth_payload: dict = Depends(require_auth),

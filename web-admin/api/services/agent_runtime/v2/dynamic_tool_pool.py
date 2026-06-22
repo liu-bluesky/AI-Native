@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from services.agent_runtime.v2.browser_tool_loader import build_browser_runtime_tools
+from services.agent_runtime.builtin_tools.definitions import iter_builtin_runtime_tools
 from services.agent_runtime.shared.tool_registry import (
     PluginRegistry,
     PluginRegistryContext,
@@ -27,6 +28,20 @@ class DynamicToolPool:
         context: PluginRegistryContext | None = None,
     ) -> "DynamicToolPool":
         runtime_tools = list(tools or [])
+        existing_names = {
+            str(item.get("tool_name") or item.get("name") or "").strip()
+            for item in runtime_tools
+            if isinstance(item, dict)
+        }
+        auto_builtin_names: set[str] = set()
+        builtin_tools = []
+        for item in iter_builtin_runtime_tools():
+            tool_name = str(item.get("tool_name") or "").strip()
+            if tool_name in existing_names:
+                continue
+            auto_builtin_names.add(tool_name)
+            builtin_tools.append(item)
+        runtime_tools.extend(builtin_tools)
         if context is not None and context.include_browser_tools:
             runtime_tools.extend(
                 build_browser_runtime_tools(
@@ -44,6 +59,7 @@ class DynamicToolPool:
             registry.available_entries(),
             key=lambda item: (
                 priority_order.get(item.tool_name, len(priority_order)),
+                item.tool_name in auto_builtin_names,
                 item.tool_name,
             ),
         )

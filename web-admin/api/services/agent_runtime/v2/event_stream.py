@@ -20,7 +20,8 @@ class EventStream:
     emitted: list[dict[str, Any]] = field(default_factory=list)
 
     def event_payload(self, event: RuntimeEvent) -> dict[str, Any]:
-        payload = event.to_dict()
+        # 中文注释：推给前端/CLI 的事件使用带 session_id 的统一信封，外层 wrapper 继续兼容旧字段。
+        payload = event.to_agent_event(session_id=self.chat_session_id)
         return {
             "type": "agent_runtime_event",
             "project_id": str(self.project_id or "").strip(),
@@ -39,8 +40,8 @@ class EventStream:
         return payload
 
 
-def runtime_event_public_payload(event: RuntimeEvent) -> dict[str, Any]:
-    payload = event.to_dict()
+def runtime_event_public_payload(event: RuntimeEvent, *, session_id: str = "") -> dict[str, Any]:
+    payload = event.to_agent_event(session_id=session_id)
     return {
         "type": "agent_runtime_event",
         "run_id": event.run_id,
