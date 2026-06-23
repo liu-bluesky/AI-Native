@@ -77,7 +77,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "write_file",
-            description: "写入或创建本地 workspace 内文件",
+            description: "写入或创建本地 workspace 内文件。必须同时提供 path 和 content，例如 {\"path\":\"register.html\",\"content\":\"完整文件内容\",\"overwrite\":false}。创建新文件时 overwrite=false；覆盖已有文件时 overwrite=true。",
             action: "file.write",
             risk: "medium",
             requires_approval: true,
@@ -85,9 +85,19 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
-                    "overwrite": {"type": "boolean", "default": false}
+                    "path": {
+                        "type": "string",
+                        "description": "相对 workspace 的目标文件路径，例如 register.html 或 login/register.html。不得省略。"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "要写入目标文件的完整文本内容。不得省略。"
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "目标文件已存在且需要替换时设为 true；创建新文件时通常为 false。"
+                    }
                 },
                 "required": ["path", "content"]
             }),

@@ -195,6 +195,17 @@ pub fn write_runtime_artifacts(
     })
 }
 
+pub fn append_runtime_event(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    event: &Value,
+) -> Result<(), ToolError> {
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    ensure_parent(&paths.transcript_path)?;
+    append_jsonl(&paths.transcript_path, &[event.clone()])
+}
+
 pub fn recover_runtime_state(
     workspace_root: &Path,
     project_id: &str,

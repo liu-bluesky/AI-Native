@@ -538,6 +538,7 @@ async def patch_system_config(
         "chat_upload_max_limit",
         "chat_max_tokens",
         "default_chat_system_prompt",
+        "desktop_agent_global_prompt",
         "public_changelog",
         "employee_auto_rule_generation_enabled",
         "employee_auto_rule_generation_source_filters",
@@ -601,6 +602,9 @@ async def patch_system_config(
 
     if "default_chat_system_prompt" in updates:
         updates["default_chat_system_prompt"] = str(updates["default_chat_system_prompt"] or "").strip()[:8000]
+
+    if "desktop_agent_global_prompt" in updates:
+        updates["desktop_agent_global_prompt"] = str(updates["desktop_agent_global_prompt"] or "").strip()[:12000]
 
     if "public_changelog" in updates:
         updates["public_changelog"] = normalize_public_changelog(updates["public_changelog"])

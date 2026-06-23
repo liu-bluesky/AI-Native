@@ -320,7 +320,7 @@ assert.match(
 
 assert.match(
   runtime,
-  /emit_tool_call_started_event\([\s\S]*?let result = tool_runner\(ToolExecutionRequest/,
+  /emit_tool_call_started_event\([\s\S]*?let result = if tool\.name\.trim\(\) == "run_command" \{[\s\S]*?execute_tool_with_command_output_sink\(tool_request, Some\(&command_stream_sink\)\)[\s\S]*?\} else \{[\s\S]*?tool_runner\(tool_request\)/,
   "Agent Loop must emit a tool_call_started event before executing a local tool",
 );
 
@@ -338,8 +338,32 @@ assert.match(
 
 assert.match(
   projectChat,
-  /type === "tool_call_started"[\s\S]*?toolIndex[\s\S]*?toolCount[\s\S]*?argumentsPreview[\s\S]*?准备调用/,
-  "ProjectChat must render tool_call_started as a visible running detail with index and argument preview",
+  /type === "tool_call_started"[\s\S]*?localLiuAgentToolTraceSubject\(payload\)[\s\S]*?toolIndex[\s\S]*?toolCount[\s\S]*?argumentsPreview/,
+  "ProjectChat must render tool_call_started as a Codex-style running detail with index and argument preview",
+);
+
+assert.match(
+  projectChat,
+  /function localLiuAgentToolResultLabel[\s\S]*?read_file[\s\S]*?Read file[\s\S]*?apply_patch[\s\S]*?Apply patch/,
+  "ProjectChat must translate local tool names into user-facing Codex-style result labels",
+);
+
+assert.match(
+  projectChat,
+  /type === "command_output_chunk"[\s\S]*?Output \(\$\{stream\}\)/,
+  "ProjectChat must render streamed command output as explicit stdout/stderr chunks",
+);
+
+assert.match(
+  projectChat,
+  /messageProcessLogEntries\(row\)\.slice\(-8\)[\s\S]*?return items\.slice\(-12\)/,
+  "live progress must keep enough recent execution details visible for drift detection",
+);
+
+assert.match(
+  projectChat,
+  /function handleNativeLiuAgentRuntimeEvent\(event = \{\}\) \{[\s\S]*?scrollToBottom\(\{ force: false \}\);[\s\S]*?\}/,
+  "runtime progress events must only auto-scroll when the message viewport is already sticky to the bottom",
 );
 
 assert.match(

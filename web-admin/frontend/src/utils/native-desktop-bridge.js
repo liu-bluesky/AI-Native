@@ -81,6 +81,23 @@ function resolveTauriInvoke() {
   return null;
 }
 
+function resolveTauriEventListen() {
+  for (const nativeGlobal of resolveNativeGlobals()) {
+    try {
+      const eventApi = nativeGlobal.__TAURI__?.event;
+      if (typeof eventApi?.listen === "function") {
+        return eventApi.listen.bind(eventApi);
+      }
+      if (typeof nativeGlobal.__TAURI__?.listen === "function") {
+        return nativeGlobal.__TAURI__.listen.bind(nativeGlobal.__TAURI__);
+      }
+    } catch {
+      // Ignore inaccessible cross-origin window globals.
+    }
+  }
+  return null;
+}
+
 function canUseTauriApi() {
   for (const nativeGlobal of resolveNativeGlobals()) {
     try {
@@ -294,12 +311,6 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
           : request?.permission_decision &&
               typeof request.permission_decision === "object"
             ? request.permission_decision
-            : null,
-      planDecision:
-        request?.planDecision && typeof request.planDecision === "object"
-          ? request.planDecision
-          : request?.plan_decision && typeof request.plan_decision === "object"
-            ? request.plan_decision
             : null,
     },
   });
@@ -645,6 +656,21 @@ export async function subscribeNativeLiuAgentRuntimeEvents(handler) {
     unlisteners.push(await listenTauriEvent("liuagent://runtime-event", handleEvent));
   } catch (_error) {
     // keep primary listener if available
+  }
+  if (!unlisteners.length) {
+    const fallbackListen = resolveTauriEventListen();
+    if (fallbackListen) {
+      try {
+        unlisteners.push(await fallbackListen("liuagent-runtime-event", handleEvent));
+      } catch (_error) {
+        // keep legacy fallback below
+      }
+      try {
+        unlisteners.push(await fallbackListen("liuagent://runtime-event", handleEvent));
+      } catch (_error) {
+        // keep primary listener if available
+      }
+    }
   }
   if (!unlisteners.length) {
     return () => {};

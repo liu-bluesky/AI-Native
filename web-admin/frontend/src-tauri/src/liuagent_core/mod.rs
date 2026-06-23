@@ -32,11 +32,18 @@ pub use types::{
     ToolExecutionResult,
 };
 
-use tools::command::{check_command_risk, run_command};
+use tools::command::{check_command_risk, run_command, run_command_with_output_sink};
 use tools::file::{apply_patch, delete_file, list_files, read_file, search_text, write_file};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
 use tools::network::{download_file, http_get, http_post};
 pub fn execute_tool(request: ToolExecutionRequest) -> ToolExecutionResult {
+    execute_tool_with_command_output_sink(request, None)
+}
+
+pub(crate) fn execute_tool_with_command_output_sink(
+    request: ToolExecutionRequest,
+    command_output_sink: Option<&dyn Fn(&str, &str)>,
+) -> ToolExecutionResult {
     let tool_call_id = normalized_tool_call_id(request.tool_call_id);
     let name = request.name.trim().to_string();
     let result = match name.as_str() {
@@ -62,6 +69,13 @@ pub fn execute_tool(request: ToolExecutionRequest) -> ToolExecutionResult {
             request.permission_decision.as_ref(),
         ),
         "check_command_risk" => check_command_risk(&request.workspace_path, &request.arguments),
+        "run_command" if command_output_sink.is_some() => run_command_with_output_sink(
+            &tool_call_id,
+            &request.workspace_path,
+            &request.arguments,
+            request.permission_decision.as_ref(),
+            command_output_sink,
+        ),
         "run_command" => run_command(
             &tool_call_id,
             &request.workspace_path,

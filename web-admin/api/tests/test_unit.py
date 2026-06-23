@@ -7683,7 +7683,7 @@ def test_save_project_chat_memory_snapshot_allows_multiple_requirement_records_i
         type=MemoryType.PROJECT_CONTEXT,
         content=(
             "[用户问题] 先前的问题\n"
-            "[处理过程] 已生成执行计划，当前只记录需求与计划状态。\n"
+            "[处理过程] 已进入任务树记录状态，当前只记录需求与计划状态。\n"
             "[解决状态] 执行中\n"
             "[完成条件] 只有所有计划项完成并写入验证结果后，当前需求才算结束。\n"
             "[关联会话] chat-123\n"

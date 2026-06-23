@@ -12791,7 +12791,7 @@ def _save_project_chat_memory_snapshot(
         content_lines = [
             f"[用户问题] {question[:1200]}",
             (
-                "[处理过程] 已生成执行计划，当前只记录需求与计划状态。"
+                "[处理过程] 已进入任务树记录状态，当前只记录需求与计划状态。"
                 f" 当前阶段：{stage_label}；必须按任务树逐项执行、逐项验证，全部完成前不生成最终结论。"
             ),
             f"[解决状态] {stage_label}",

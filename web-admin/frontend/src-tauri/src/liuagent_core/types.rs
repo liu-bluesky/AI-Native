@@ -34,9 +34,6 @@ pub struct LocalChatRequest {
     pub max_tokens: Option<u32>,
     pub model_runtime: Option<LocalModelRuntimeConfig>,
     pub permission_decision: Option<PermissionDecisionInput>,
-    /// 用户对规划摘要的确认决策；None 表示尚未确认，Some(approved=true) 表示可执行。
-    #[serde(default)]
-    pub plan_decision: Option<PlanDecisionInput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,7 +99,7 @@ pub struct LocalModelRuntimeConfig {
 #[serde(rename_all = "camelCase")]
 pub struct LocalChatResult {
     pub ok: bool,
-    pub plan_status: String, // "" | "plan_required" | "confirmed"
+    pub plan_status: String,
     pub session_id: String,
     pub chat_session_id: String,
     pub requirement_record_path: String,
@@ -440,14 +437,6 @@ pub struct ToolDefinition {
     pub requires_approval: bool,
     pub scope: &'static str,
     pub input_schema: Value,
-}
-
-/// 用户对规划摘要的确认决策，随下一次 LocalChatRequest 一起提交。
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct PlanDecisionInput {
-    pub approved: bool,
-    pub modifications: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

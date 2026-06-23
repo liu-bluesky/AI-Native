@@ -897,6 +897,7 @@ class SystemConfigUpdateReq(BaseModel):
     chat_upload_max_limit: int | None = None
     chat_max_tokens: int | None = None
     default_chat_system_prompt: str | None = None
+    desktop_agent_global_prompt: str | None = None
     public_changelog: str | None = None
     employee_auto_rule_generation_enabled: bool | None = None
     employee_auto_rule_generation_source_filters: list[str] | None = None

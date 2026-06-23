@@ -3212,6 +3212,7 @@ import {
   ackNativeLiuAgentRuntimeOutbox,
   listNativeExternalAgentSessions,
   listNativeLiuAgentBuiltinTools,
+  listNativeLiuAgentRuntimeEvents,
   listNativeLiuAgentRuntimeOutbox,
   listNativeRunnerPermissionDecisions,
   listNativeWorkspaceFiles,
@@ -3619,6 +3620,16 @@ const modelTypeOptions = ref(FALLBACK_MODEL_TYPE_OPTIONS);
 const chatParameterOptions = ref({});
 const temperature = ref(0.1);
 const systemPrompt = ref("");
+const desktopAgentGlobalPrompt = ref("");
+
+function buildLocalLiuAgentSystemPrompt() {
+  return [
+    String(systemPrompt.value || "").trim(),
+    String(desktopAgentGlobalPrompt.value || "").trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
 const activeMcpSource = ref("system");
 const activeSettingsPanel = ref("chat");
 const activeSystemScope = ref("project_related");
@@ -3660,11 +3671,12 @@ let chatSessionListRefreshAfterSendTimer = null;
 const localLiuAgentBuiltinToolNames = ref(new Set());
 const localLiuAgentToolTasks = new Set();
 const localLiuAgentPendingPermissions = new Map();
-const localLiuAgentPendingPlans = new Map();
 const localLiuAgentActiveRuns = new Map();
 const localLiuAgentSeenRuntimeEventIds = new Set();
 const localLiuAgentActiveRunVersion = ref(0);
 let nativeLiuAgentRuntimeEventUnlisten = null;
+let localLiuAgentRuntimeEventPollTimer = null;
+let localLiuAgentRuntimeEventPollInFlight = false;
 
 // ============================================================
 // Composable 初始化（pending requests、native agent、workspace、terminal、settings、transport）
@@ -8482,9 +8494,16 @@ function localLiuAgentRuntimeEventPhase(event = {}) {
   const type = String(event?.type || "").trim();
   const payload = localLiuAgentRuntimeEventPayload(event);
   if (type === "approval_required") return "waiting_user";
-  if (type === "model_call_started" || type === "tool_call_started") return "running";
+  if (
+    type === "model_call_started" ||
+    type === "tool_call_started" ||
+    type === "command_started" ||
+    type === "command_output_chunk"
+  )
+    return "running";
   if (type === "model_step") return payload?.ok === false ? "failed" : "completed";
   if (type === "tool_result") return payload?.ok === false ? "failed" : "completed";
+  if (type === "command_finished") return payload?.ok === false ? "failed" : "completed";
   if (type === "state_changed") {
     const to = String(payload?.to || "").trim();
     if (to === "waiting_approval" || to === "waiting_user") return "waiting_user";
@@ -8495,9 +8514,203 @@ function localLiuAgentRuntimeEventPhase(event = {}) {
   return "running";
 }
 
+function compactLocalLiuAgentInline(value, limit = 180) {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, limit)}...`;
+}
+
+function localLiuAgentToolTraceVerb(toolName = "") {
+  const normalized = String(toolName || "").trim();
+  if (["list_files", "search_text"].includes(normalized)) return "Explore";
+  if (normalized === "read_file") return "Read";
+  if (["run_command", "check_command_risk"].includes(normalized)) return "Run";
+  if (["write_file", "apply_patch", "delete_file"].includes(normalized)) return "Edit";
+  if (["http_get", "http_post", "download_file"].includes(normalized)) return "Network";
+  if (["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"].includes(normalized)) return "MCP";
+  return normalized || "Tool";
+}
+
+function localLiuAgentToolTraceArgument(payload = {}) {
+  const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+  const args =
+    payload?.arguments && typeof payload.arguments === "object" && !Array.isArray(payload.arguments)
+      ? payload.arguments
+      : {};
+  if (toolName === "run_command" || toolName === "check_command_risk") {
+    return String(args.cmd || args.command || payload?.cmd || payload?.command || "").trim();
+  }
+  if (toolName === "read_file" || toolName === "write_file" || toolName === "delete_file") {
+    return String(args.path || args.file || "").trim();
+  }
+  if (toolName === "apply_patch") {
+    return String(args.path || args.file || args.target || "patch").trim();
+  }
+  if (toolName === "search_text") {
+    return String(args.query || args.pattern || args.text || "").trim();
+  }
+  if (toolName === "list_files") {
+    return String(args.path || args.directory || ".").trim();
+  }
+  if (toolName === "http_get" || toolName === "http_post" || toolName === "download_file") {
+    return String(args.url || "").trim();
+  }
+  if (toolName === "call_mcp_tool") {
+    return [args.server, args.tool_name || args.name].filter(Boolean).join(".");
+  }
+  return String(payload?.arguments_preview || payload?.argumentsPreview || "").trim();
+}
+
+function localLiuAgentToolTraceSubject(payload = {}) {
+  const argument = compactLocalLiuAgentInline(localLiuAgentToolTraceArgument(payload), 220);
+  const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+  const verb = localLiuAgentToolTraceVerb(toolName);
+  return `${verb}${argument ? `(${argument})` : ""}`;
+}
+
+function localLiuAgentToolResultLabel(toolName = "") {
+  const normalized = String(toolName || "").trim();
+  if (normalized === "list_files") return "Explore directory";
+  if (normalized === "search_text") return "Search text";
+  if (normalized === "read_file") return "Read file";
+  if (normalized === "run_command") return "Run command";
+  if (normalized === "check_command_risk") return "Check command risk";
+  if (normalized === "write_file") return "Write file";
+  if (normalized === "apply_patch") return "Apply patch";
+  if (normalized === "delete_file") return "Delete file";
+  if (normalized === "http_get") return "HTTP GET";
+  if (normalized === "http_post") return "HTTP POST";
+  if (normalized === "download_file") return "Download file";
+  if (normalized === "call_mcp_tool") return "MCP tool";
+  if (normalized === "list_mcp_tools") return "List MCP tools";
+  if (normalized === "read_mcp_resource") return "Read MCP resource";
+  return normalized || "Tool";
+}
+
+function localLiuAgentRuntimeEventTranscriptText(event = {}) {
+  const type = String(event?.type || "").trim();
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  if (type === "progress_update") {
+    const summary = compactLocalLiuAgentInline(payload?.summary || "", 360);
+    const nextAction = compactLocalLiuAgentInline(
+      payload?.next_action || payload?.nextAction || "",
+      260,
+    );
+    return [
+      "Agent progress",
+      summary ? `  - ${summary}` : "",
+      nextAction ? `  - 下一步：${nextAction}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (type === "model_call_started") {
+    const index = Number(payload?.index || 0) || 0;
+    const provider = String(payload?.provider_id || payload?.providerId || "").trim();
+    const model = String(payload?.model_name || payload?.modelName || "").trim();
+    const runtime = [provider, model].filter(Boolean).join(" / ");
+    const messageCount = Number(payload?.message_count || payload?.messageCount || 0) || 0;
+    return [
+      `Computing${index > 0 ? ` (model step ${index})` : ""}`,
+      runtime ? `  - 模型：${runtime}` : "",
+      messageCount > 0 ? `  - 上下文：${messageCount} 条` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (type === "model_step") {
+    const index = Number(payload?.index || 0) || 0;
+    const toolCount = Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0;
+    const error = compactLocalLiuAgentInline(payload?.error || payload?.error_code || "", 260);
+    return [
+      `Model step${index > 0 ? ` ${index}` : ""} completed`,
+      toolCount > 0 ? `  - Planned tool calls: ${toolCount}` : "  - No more tool calls",
+      error ? `  - 错误：${error}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (type === "command_started") {
+    const cmd = compactLocalLiuAgentInline(payload?.cmd || payload?.command || "", 260);
+    const cwd = String(payload?.cwd || "").trim();
+    return [
+      cmd ? `Ran ${cmd}` : "Ran command",
+      cwd ? `  - cwd=${cwd}` : "",
+      "Running...",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (type === "command_output_chunk") {
+    const stream = String(payload?.stream || "stdout").trim();
+    const text = compactLocalLiuAgentInline(payload?.text || "", 500);
+    return [`Output (${stream})`, text ? `  ${text}` : ""].filter(Boolean).join("\n");
+  }
+  if (type === "command_finished") {
+    const exitCode = payload?.exit_code ?? payload?.exitCode;
+    const durationMs = payload?.duration_ms ?? payload?.durationMs;
+    const summary = compactLocalLiuAgentInline(payload?.summary || payload?.error || "", 260);
+    return [
+      "Command finished",
+      exitCode !== undefined && exitCode !== null ? `  - exit_code=${exitCode}` : "",
+      durationMs !== undefined && durationMs !== null ? `  - duration=${durationMs}ms` : "",
+      summary ? `  - ${summary}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (type === "tool_call_started") {
+    const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+    const subject = localLiuAgentToolTraceSubject(payload);
+    const index = Number(payload?.tool_index || payload?.toolIndex || 0) || 0;
+    const count = Number(payload?.tool_count || payload?.toolCount || 0) || 0;
+    const progress = index > 0 && count > 0 ? ` ${index}/${count}` : "";
+    const summary = compactLocalLiuAgentInline(payload?.summary || "", 260);
+    return [subject ? `${subject}${progress}` : `${toolName || "Tool"}${progress}`, summary ? `  - ${summary}` : "", "Running..."]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (type === "tool_result") {
+    const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+    const resultLabel = localLiuAgentToolResultLabel(toolName);
+    const summary = compactLocalLiuAgentInline(
+      payload?.summary || payload?.error_code || payload?.error || "",
+      260,
+    );
+    return [`Result: ${resultLabel}`, summary ? `  - ${summary}` : ""]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (type === "approval_required") {
+    const action = String(payload?.action || "").trim();
+    const risk = String(payload?.risk || "").trim();
+    const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+    const preview =
+      payload?.preview && typeof payload.preview === "object" ? payload.preview : {};
+    const cmd = compactLocalLiuAgentInline(preview.cmd || preview.command || "", 260);
+    return [
+      "Waiting for approval",
+      toolName ? `  - 工具：${toolName}` : "",
+      cmd ? `  - 命令：${cmd}` : "",
+      action ? `  - 动作：${action}` : "",
+      risk ? `  - 风险：${risk}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
+}
+
 function localLiuAgentRuntimeEventSummary(event = {}) {
   const type = String(event?.type || "").trim();
   const payload = localLiuAgentRuntimeEventPayload(event);
+  if (type === "progress_update") {
+    const summary = String(payload?.summary || "").trim();
+    const nextAction = String(payload?.next_action || payload?.nextAction || "").trim();
+    return [summary || "Agent progress", nextAction ? `下一步：${nextAction}` : ""]
+      .filter(Boolean)
+      .join(" · ");
+  }
   if (type === "approval_required") {
     const action = String(payload?.action || "").trim();
     const risk = String(payload?.risk || "").trim();
@@ -8533,26 +8746,43 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
     const contextText = messageCount > 0 ? `上下文 ${messageCount} 条` : "";
     return [title, runtime, contextText, "请求中"].filter(Boolean).join(" · ");
   }
+  if (type === "command_started") {
+    const cmd = String(payload?.cmd || payload?.command || "").trim();
+    return cmd ? `Ran ${cmd}` : "Ran command";
+  }
+  if (type === "command_output_chunk") {
+    const stream = String(payload?.stream || "stdout").trim();
+    const text = compactLocalLiuAgentInline(payload?.text || "", 120);
+    return text ? `Output (${stream}): ${text}` : `Output (${stream})`;
+  }
+  if (type === "command_finished") {
+    const exitCode = payload?.exit_code ?? payload?.exitCode;
+    const summary = String(payload?.summary || payload?.error || "").trim();
+    return [exitCode !== undefined && exitCode !== null ? `命令退出码 ${exitCode}` : "命令完成", summary]
+      .filter(Boolean)
+      .join(" · ");
+  }
   if (type === "tool_call_started") {
     const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
     const summary = String(payload?.summary || "").trim();
     const toolIndex = Number(payload?.tool_index || payload?.toolIndex || 0) || 0;
     const toolCount = Number(payload?.tool_count || payload?.toolCount || 0) || 0;
+    const subject = localLiuAgentToolTraceSubject(payload);
     const toolLabel =
-      toolName && toolIndex > 0 && toolCount > 0
-        ? `${toolName} (${toolIndex}/${toolCount})`
-        : toolName || "本地工具";
+      subject && toolIndex > 0 && toolCount > 0
+        ? `${subject} ${toolIndex}/${toolCount}`
+        : subject || toolName || "本地工具";
     const argumentsPreview = String(
       payload?.arguments_preview || payload?.argumentsPreview || "",
     ).trim();
-    return [`准备调用：${toolLabel}`, summary || argumentsPreview]
+    return [toolLabel, summary || argumentsPreview || "Running..."]
       .filter(Boolean)
       .join(" · ");
   }
   if (type === "tool_result") {
-    const toolName = String(payload?.tool_name || "").trim();
+    const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
     const summary = String(payload?.summary || "").trim();
-    return [toolName ? `工具结果：${toolName}` : "工具结果", summary]
+    return [`Result: ${localLiuAgentToolResultLabel(toolName)}`, summary]
       .filter(Boolean)
       .join(" · ");
   }
@@ -8563,6 +8793,12 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
   const type = String(event?.type || "").trim();
   if (!type || type === "message") return null;
   const payload = localLiuAgentRuntimeEventPayload(event);
+  if (
+    type === "tool_result" &&
+    String(payload?.error_code || payload?.errorCode || "").trim() === "permission.required"
+  ) {
+    return null;
+  }
   const eventId = String(event?.event_id || event?.eventId || "").trim();
   const runtimeSessionId = String(
     event?.runtime_session_id || event?.runtimeSessionId || event?.session_id || "",
@@ -8585,22 +8821,32 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
     kind:
       type === "approval_required"
         ? "approval"
-        : type === "model_step" || type === "model_call_started"
+        : type === "model_step" || type === "model_call_started" || type === "progress_update"
           ? "model"
+        : type === "command_started" || type === "command_output_chunk" || type === "command_finished"
+          ? "tool"
         : type === "tool_result" || type === "tool_call_started"
           ? "tool"
           : "request",
     title:
       type === "approval_required"
         ? "桌面本地工具授权"
+        : type === "command_started"
+          ? "Ran command"
+        : type === "command_output_chunk"
+          ? "Command output"
+        : type === "command_finished"
+          ? "Command finished"
+        : type === "progress_update"
+          ? "Agent progress"
         : type === "model_step"
           ? `本地模型步骤 ${modelStepIndex || ""}`.trim()
         : type === "model_call_started"
           ? `本地模型步骤 ${modelStepIndex || ""} 请求中`.trim()
         : type === "tool_result"
-          ? `桌面本地工具：${toolName || "本地工具"}`
+          ? `Result: ${localLiuAgentToolResultLabel(toolName)}`
         : type === "tool_call_started"
-          ? `准备调用本地工具：${toolName || "本地工具"}`
+          ? localLiuAgentToolTraceSubject(payload)
           : "桌面本地 Agent Runtime",
     summary,
     detail:
@@ -8641,14 +8887,16 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
 function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
   if (!row) return;
   for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
+    if (!markLocalLiuAgentRuntimeEventSeen(event)) continue;
     const operation = localLiuAgentRuntimeEventOperation(event, {
       ...context,
       assistantMessageId: row.id,
     });
     if (!operation) continue;
     upsertMessageOperation(row, operation);
+    const transcriptText = localLiuAgentRuntimeEventTranscriptText(event);
     appendMessageProcessLog(row, {
-      text: operation.summary,
+      text: transcriptText || operation.summary,
       level:
         operation.phase === "failed"
           ? "error"
@@ -8673,6 +8921,7 @@ function setLocalLiuAgentActiveRun(chatSessionId = "", run = null) {
   if (!normalizedChatSessionId || !run) return;
   localLiuAgentActiveRuns.set(normalizedChatSessionId, run);
   localLiuAgentActiveRunVersion.value += 1;
+  startLocalLiuAgentRuntimeEventPolling();
 }
 
 function deleteLocalLiuAgentActiveRun(chatSessionId = "") {
@@ -8681,6 +8930,7 @@ function deleteLocalLiuAgentActiveRun(chatSessionId = "") {
   const deleted = localLiuAgentActiveRuns.delete(normalizedChatSessionId);
   if (deleted) {
     localLiuAgentActiveRunVersion.value += 1;
+    stopLocalLiuAgentRuntimeEventPollingIfIdle();
   }
   return deleted;
 }
@@ -8695,24 +8945,31 @@ function localLiuAgentActiveRunRow(run) {
   return messages.value.find((row) => String(row?.id || "").trim() === assistantMessageId) || null;
 }
 
+function localLiuAgentRuntimeEventKey(event = {}) {
+  const eventId = String(event?.event_id || event?.eventId || "").trim();
+  if (eventId) return eventId;
+  return [
+    String(event?.runtime_session_id || event?.runtimeSessionId || "").trim(),
+    String(event?.type || "").trim(),
+    JSON.stringify(localLiuAgentRuntimeEventPayload(event)),
+  ]
+    .filter(Boolean)
+    .join(":");
+}
+
+function markLocalLiuAgentRuntimeEventSeen(event = {}) {
+  const eventKey = localLiuAgentRuntimeEventKey(event);
+  if (!eventKey) return true;
+  if (localLiuAgentSeenRuntimeEventIds.has(eventKey)) return false;
+  localLiuAgentSeenRuntimeEventIds.add(eventKey);
+  return true;
+}
+
 function handleNativeLiuAgentRuntimeEvent(event = {}) {
   const chatSessionId = String(event?.chat_session_id || event?.chatSessionId || "").trim();
   const run = localLiuAgentActiveRunForChatSession(chatSessionId);
   if (!run || run.cancelled) return;
-  const eventId = String(event?.event_id || event?.eventId || "").trim();
-  const eventKey =
-    eventId ||
-    [
-      String(event?.runtime_session_id || event?.runtimeSessionId || "").trim(),
-      String(event?.type || "").trim(),
-      JSON.stringify(localLiuAgentRuntimeEventPayload(event)),
-    ]
-      .filter(Boolean)
-      .join(":");
-  if (eventKey) {
-    if (localLiuAgentSeenRuntimeEventIds.has(eventKey)) return;
-    localLiuAgentSeenRuntimeEventIds.add(eventKey);
-  }
+  if (!markLocalLiuAgentRuntimeEventSeen(event)) return;
   const row = localLiuAgentActiveRunRow(run);
   if (!row) return;
   const operation = localLiuAgentRuntimeEventOperation(event, {
@@ -8722,8 +8979,9 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
   });
   if (!operation) return;
   upsertMessageOperation(row, operation);
+  const transcriptText = localLiuAgentRuntimeEventTranscriptText(event);
   appendMessageProcessLog(row, {
-    text: operation.summary,
+    text: transcriptText || operation.summary,
     level:
       operation.phase === "failed"
         ? "error"
@@ -8734,8 +8992,71 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
             : "info",
     autoExpand: true,
   });
-  row.processExpanded = true;
-  scrollToBottom();
+  scrollToBottom({ force: false });
+}
+
+function localLiuAgentRuntimeEventCreatedAt(event = {}) {
+  const direct = Number(event?.created_at_epoch_ms || event?.createdAtEpochMs || 0) || 0;
+  if (direct > 0) return direct;
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  return Number(payload?.created_at_epoch_ms || payload?.createdAtEpochMs || 0) || 0;
+}
+
+function isLocalLiuAgentRuntimeEventForActiveRun(event = {}, run = {}) {
+  const createdAt = localLiuAgentRuntimeEventCreatedAt(event);
+  const startedAt = Number(run?.startedAt || 0) || 0;
+  return !createdAt || !startedAt || createdAt >= startedAt - 100;
+}
+
+async function pollLocalLiuAgentRuntimeEventsOnce() {
+  if (localLiuAgentRuntimeEventPollInFlight) return;
+  if (!localLiuAgentActiveRuns.size) {
+    stopLocalLiuAgentRuntimeEventPollingIfIdle();
+    return;
+  }
+  localLiuAgentRuntimeEventPollInFlight = true;
+  try {
+    const runs = Array.from(localLiuAgentActiveRuns.entries());
+    for (const [chatSessionId, run] of runs) {
+      if (!run || run.cancelled) continue;
+      const projectId = String(run.projectId || selectedProjectId.value || "").trim();
+      const workspacePath = String(run.workspacePath || projectWorkspacePath.value || "").trim();
+      if (!projectId || !chatSessionId || !workspacePath) continue;
+      const result = await listNativeLiuAgentRuntimeEvents({
+        projectId,
+        chatSessionId,
+        workspacePath,
+        afterEventId: run.lastRuntimeEventId || "",
+        limit: 120,
+      });
+      const events = Array.isArray(result?.events) ? result.events : [];
+      for (const event of events) {
+        const eventId = String(event?.event_id || event?.eventId || "").trim();
+        if (eventId) run.lastRuntimeEventId = eventId;
+        if (!isLocalLiuAgentRuntimeEventForActiveRun(event, run)) continue;
+        handleNativeLiuAgentRuntimeEvent(event);
+      }
+    }
+  } catch (err) {
+    console.warn("poll local liuAgent runtime events failed", err);
+  } finally {
+    localLiuAgentRuntimeEventPollInFlight = false;
+  }
+}
+
+function startLocalLiuAgentRuntimeEventPolling() {
+  if (localLiuAgentRuntimeEventPollTimer || !hasNativeDesktopBridge()) return;
+  localLiuAgentRuntimeEventPollTimer = window.setInterval(() => {
+    void pollLocalLiuAgentRuntimeEventsOnce();
+  }, 600);
+  void pollLocalLiuAgentRuntimeEventsOnce();
+}
+
+function stopLocalLiuAgentRuntimeEventPollingIfIdle() {
+  if (localLiuAgentActiveRuns.size > 0 || !localLiuAgentRuntimeEventPollTimer) return;
+  window.clearInterval(localLiuAgentRuntimeEventPollTimer);
+  localLiuAgentRuntimeEventPollTimer = null;
+  localLiuAgentRuntimeEventPollInFlight = false;
 }
 
 async function startNativeLiuAgentRuntimeEventSubscription() {
@@ -8888,7 +9209,7 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
       history: [],
       providerId: selectedProviderId.value || defaultProviderId.value || "",
       modelName: selectedModelName.value || defaultModelName.value || "",
-      systemPrompt: systemPrompt.value || "",
+      systemPrompt: buildLocalLiuAgentSystemPrompt(),
       temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
       maxTokens: Number(chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens),
       modelRuntime,
@@ -12836,7 +13157,7 @@ function messageLiveProgressItems(row, idx) {
       phaseLabel: operationPhaseLabel(operation),
     });
   }
-  const latestLogs = messageProcessLogEntries(row).slice(-4);
+  const latestLogs = messageProcessLogEntries(row).slice(-8);
   for (const entry of latestLogs) {
     const text = String(entry?.text || "").trim();
     if (!text) continue;
@@ -12877,7 +13198,7 @@ function messageLiveProgressItems(row, idx) {
       phaseLabel: "进行中",
     });
   }
-  return items.slice(-8);
+  return items.slice(-12);
 }
 
 function agentRuntimeCommandSignatureFromArgs(args = {}) {
@@ -13317,39 +13638,41 @@ function applyAgentRuntimeEvent(row, eventData = {}) {
   if (["query_engine_completed", "run_finished"].includes(eventType)) {
     completeAgentRuntimeOperations(row, runId, summary);
     completeAgentRuntimeOperationsForRun(row, runId);
-    completePendingRequestForAssistantRow(row);
   }
-  const shouldUpdateRuntimeOperation = [
-    "permission_decision",
-    "query_engine_waiting_operation",
-    "query_engine_blocked",
-    "query_engine_completed",
-    "query_engine_failed",
-    "run_failed",
-    "run_finished",
-  ].includes(eventType);
-  if (shouldUpdateRuntimeOperation) {
-    upsertMessageOperation(row, {
-      operationId: `agent-runtime:${runId}`,
-      kind: "request",
-      title: "Agent Runtime",
-      summary,
-      detail: "",
-      phase,
-      actionType: "none",
-      meta: {
-        agent_runtime_event: "true",
-        run_id: runId,
-        event_type: eventType,
-        chat_session_id: String(eventData?.chat_session_id || "").trim(),
-      },
-    });
-  }
+  upsertMessageOperation(row, {
+    operationId: `agent-runtime:${runId}`,
+    kind: "request",
+    title: "Agent Runtime",
+    summary,
+    detail: "",
+    phase,
+    actionType: "none",
+    meta: {
+      agent_runtime_event: "true",
+      run_id: runId,
+      event_type: eventType,
+      chat_session_id: String(eventData?.chat_session_id || "").trim(),
+    },
+  });
   const transcriptEntry = formatAgentRuntimeTranscriptEntry(eventData);
   if (transcriptEntry) {
     appendMessageProcessLog(row, transcriptEntry);
+  } else if (summary) {
+    appendMessageProcessLog(row, {
+      level:
+        phase === "failed"
+          ? "error"
+          : phase === "blocked" || phase === "waiting_user"
+            ? "warning"
+            : phase === "completed"
+              ? "success"
+              : "info",
+      text: summary,
+    });
   }
-  row.processExpanded = false;
+  row.processExpanded =
+    ["running", "waiting_user"].includes(phase) ||
+    !String(row.content || "").trim();
   return true;
 }
 
@@ -13550,36 +13873,6 @@ function upsertLocalLiuAgentPermissionOperation(row, permissionRequest = {}, pat
   });
 }
 
-// ── 规划确认辅助 ─────────────────────────────────────────────────────────────
-
-function localLiuAgentPlanFromChatResult(result = {}) {
-  if (String(result?.planStatus || result?.plan_status || "").trim() !== "plan_required") {
-    return null;
-  }
-  return {
-    taskTree: result?.taskTree || result?.task_tree || null,
-    requirementRecordPath: String(result?.requirementRecordPath || result?.requirement_record_path || "").trim(),
-  };
-}
-
-function upsertLocalLiuAgentPlanOperation(row, plan = {}) {
-  if (!row) return null;
-  const nodeCount = Array.isArray(plan?.taskTree?.nodes) ? plan.taskTree.nodes.length : 0;
-  return upsertMessageOperation(row, {
-    operationId: `local-liuagent-plan:${row.id}`,
-    kind: "approval",
-    title: "确认执行计划",
-    summary: `AI 已生成执行计划（${nodeCount} 个节点），请确认后开始执行`,
-    detail: String(plan?.taskTree?.rootGoal || plan?.taskTree?.root_goal || "").trim(),
-    phase: "waiting_user",
-    actionType: "approve",
-    meta: {
-      local_liuagent_plan: "true",
-      plan_session_id: String(plan?.taskTree?.sessionId || plan?.taskTree?.session_id || "").trim(),
-    },
-  });
-}
-
 async function executeLocalLiuAgentToolWithPermission(task, workspacePath, row = null) {
   let result = await executeNativeLiuAgentTool({
     toolCallId: task.callId,
@@ -13624,6 +13917,7 @@ function localLiuAgentPermissionRequestFromChatResult(result = {}) {
       ...payload,
       requestId,
       toolName: String(payload?.toolName || payload?.tool_name || "").trim(),
+      toolCallId: String(payload?.toolCallId || payload?.tool_call_id || "").trim(),
     };
   }
   const toolResults = Array.isArray(result?.toolResults)
@@ -13645,9 +13939,35 @@ function localLiuAgentPermissionRequestFromChatResult(result = {}) {
     return {
       ...permissionRequest,
       toolName: String(toolResult?.name || "").trim(),
+      toolCallId: String(toolResult?.toolCallId || toolResult?.tool_call_id || "").trim(),
     };
   }
   return null;
+}
+
+function localLiuAgentPermissionContinuationMessage(baseMessage = "", permissionRequest = {}) {
+  const original = String(baseMessage || "").trim();
+  const action = String(permissionRequest?.action || "").trim();
+  const toolName = String(permissionRequest?.toolName || permissionRequest?.tool_name || "").trim();
+  const reason = String(permissionRequest?.reason || "").trim();
+  const preview =
+    permissionRequest?.preview && typeof permissionRequest.preview === "object"
+      ? permissionRequest.preview
+      : {};
+  const cmd = String(preview.cmd || preview.command || "").trim();
+  const cwd = String(preview.cwd || ".").trim() || ".";
+  const continuation = [
+    "[本地工具授权续跑]",
+    "用户已经授权刚才等待确认的本地工具请求。",
+    `工具：${toolName || action || "unknown"}`,
+    reason ? `原因：${reason}` : "",
+    cmd ? `命令：${cmd}` : "",
+    cwd ? `工作目录：${cwd}` : "",
+    "下一步必须优先继续这个已授权工具请求，并展示它的执行结果；不要因为已授权而改用其他搜索或读取方案。",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return [original, continuation].filter(Boolean).join("\n\n");
 }
 
 async function maybeExecuteDesktopClientToolTask(row, eventData = {}, requestId = "") {
@@ -13833,7 +14153,7 @@ function applyPlanCreatedEvent(row, eventData = {}, requestId = "") {
     operationId: `plan:${planId}`,
     kind: "plan",
     title: "执行计划",
-    summary: steps.length ? `已生成 ${steps.length} 个步骤` : "已生成执行计划",
+    summary: steps.length ? `已生成 ${steps.length} 个步骤` : "执行计划暂无步骤明细",
     detail,
     phase: "running",
     actionType: "none",
@@ -15989,13 +16309,6 @@ async function handleOperationAction(operation, actionKey) {
     await submitLocalLiuAgentPermissionAction(operation, normalizedActionKey);
     return;
   }
-  if (
-    normalizedActionKey === "local_liuagent_plan_confirm" ||
-    normalizedActionKey === "local_liuagent_plan_reject"
-  ) {
-    await submitLocalLiuAgentPlanAction(operation, normalizedActionKey);
-    return;
-  }
   if (normalizedActionKey === "open_url" && actionType === "open_url") {
     const url = extractOperationUrl(operation);
     if (!url) return;
@@ -16252,96 +16565,6 @@ async function continueLocalLiuAgentDesktopToolPermission(
   });
 }
 
-async function submitLocalLiuAgentPlanAction(operation, actionKey) {
-  const meta = operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
-  const planSessionId = String(meta.plan_session_id || "").trim();
-  const pending = planSessionId ? localLiuAgentPendingPlans.get(planSessionId) : null;
-  const row =
-    findMessageRowByOperationId(operation?.id || operation?.operationId) ||
-    (pending?.assistantMessageId
-      ? messages.value.find((item) => item?.id === pending.assistantMessageId)
-      : null);
-  if (!pending || !row) {
-    ElMessage.warning("规划确认上下文已失效，请重新发送");
-    return;
-  }
-  localLiuAgentPendingPlans.delete(planSessionId);
-  upsertMessageOperation(row, {
-    operationId: `local-liuagent-plan:${row.id}`,
-    kind: "approval",
-    title: "确认执行计划",
-    summary: actionKey === "local_liuagent_plan_confirm" ? "已确认，开始执行" : "已拒绝执行计划",
-    phase: actionKey === "local_liuagent_plan_confirm" ? "running" : "failed",
-    actionType: "none",
-  });
-  if (actionKey === "local_liuagent_plan_reject") {
-    row.content = "已取消执行计划。";
-    scrollToBottom();
-    return;
-  }
-  chatLoading.value = true;
-  startWorkingStatusTimer(row.id, pending.activeChatSessionId);
-  scrollToBottom();
-  try {
-    await continueLocalLiuAgentChatWithPlan(pending, row);
-  } catch (err) {
-    appendMessageProcessLog(row, { text: err?.message || "执行计划失败", level: "error" });
-  } finally {
-    chatLoading.value = false;
-    syncChatLoadingWithCurrentSession();
-    scrollToBottom();
-  }
-}
-
-async function continueLocalLiuAgentChatWithPlan(pending, row) {
-  const result = await startNativeLiuAgentLocalChat({
-    ...(pending.localChatPayload || {}),
-    planDecision: { approved: true },
-  });
-  const ok = Boolean(result?.ok);
-  row.content = String(
-    result?.assistantContent || result?.assistant_content || result?.summary || "",
-  ).trim();
-  row.time = nowText();
-  applyLocalLiuAgentRuntimeEvents(row, result, {
-    chatSessionId: pending.activeChatSessionId,
-    workspacePath: pending.localChatPayload?.workspacePath,
-  });
-  const localPermissionRequest = localLiuAgentPermissionRequestFromChatResult(result);
-  if (localPermissionRequest) {
-    const requestId = String(localPermissionRequest?.requestId || "").trim();
-    if (requestId) {
-      localLiuAgentPendingPermissions.set(requestId, {
-        kind: "local_chat",
-        localChatPayload: { ...(pending.localChatPayload || {}), planDecision: { approved: true } },
-        permissionRequest: localPermissionRequest,
-        assistantMessageId: row.id,
-        activeChatSessionId: pending.activeChatSessionId,
-      });
-    }
-    upsertLocalLiuAgentPermissionOperation(row, localPermissionRequest);
-  }
-  upsertMessageOperation(row, {
-    operationId: `local-agent:${row.id}`,
-    kind: "request",
-    title: "桌面本地 Agent Runtime",
-    summary: ok ? "本地会话完成" : "本地会话失败",
-    detail: String(result?.error || "").trim(),
-    phase: ok ? "completed" : "failed",
-    actionType: "none",
-    meta: {
-      local_liuagent_operation: "true",
-      source: "tauri_liuagent_local_chat",
-      chat_session_id: pending.activeChatSessionId,
-    },
-  });
-  appendMessageProcessLog(row, {
-    text: ok ? "执行计划已完成" : "执行计划失败",
-    level: ok ? "success" : "error",
-    autoExpand: !ok,
-  });
-}
-
 async function continueLocalLiuAgentChatPermission(
   pending,
   row,
@@ -16352,8 +16575,15 @@ async function continueLocalLiuAgentChatPermission(
     pending?.permissionRequest && typeof pending.permissionRequest === "object"
       ? pending.permissionRequest
       : {};
-  const result = await startNativeLiuAgentLocalChat({
+  const localChatPayload = {
     ...(pending.localChatPayload || {}),
+    message: localLiuAgentPermissionContinuationMessage(
+      pending.localChatPayload?.message,
+      permissionRequest,
+    ),
+  };
+  const result = await startNativeLiuAgentLocalChat({
+    ...localChatPayload,
     permissionDecision: {
       requestId,
       decision: allowSession ? "approve_session" : "approve_once",
@@ -16371,7 +16601,7 @@ async function continueLocalLiuAgentChatPermission(
   row.time = nowText();
   applyLocalLiuAgentRuntimeEvents(row, result, {
     chatSessionId: pending.activeChatSessionId,
-    workspacePath: pending.localChatPayload?.workspacePath,
+    workspacePath: localChatPayload?.workspacePath,
   });
   const operations = Array.isArray(result?.operations) ? result.operations : [];
   for (const item of operations) {
@@ -16379,7 +16609,7 @@ async function continueLocalLiuAgentChatPermission(
       row,
       markLocalLiuAgentBubbleOnlyOperation(item, {
         chatSessionId: pending.activeChatSessionId,
-        workspacePath: pending.localChatPayload?.workspacePath,
+        workspacePath: localChatPayload?.workspacePath,
       }),
     );
   }
@@ -16400,7 +16630,7 @@ async function continueLocalLiuAgentChatPermission(
       requirement_record_path: String(
         result?.requirementRecordPath || result?.requirement_record_path || "",
       ).trim(),
-      cwd: String(pending.localChatPayload?.workspacePath || "").trim(),
+      cwd: String(localChatPayload?.workspacePath || "").trim(),
     },
   });
   appendMessageProcessLog(row, {
@@ -16423,7 +16653,7 @@ async function continueLocalLiuAgentChatPermission(
     sourceContext: {
       ...(pending.sourceContext || {}),
       runtime: "tauri",
-      workspace_path: String(pending.localChatPayload?.workspacePath || "").trim(),
+      workspace_path: String(localChatPayload?.workspacePath || "").trim(),
       requirement_record_path: String(
         result?.requirementRecordPath || result?.requirement_record_path || "",
       ).trim(),
@@ -16432,7 +16662,7 @@ async function continueLocalLiuAgentChatPermission(
   await syncLocalLiuAgentRuntimeOutbox({
     projectId: selectedProjectId.value,
     chatSessionId: pending.activeChatSessionId,
-    workspacePath: String(pending.localChatPayload?.workspacePath || "").trim(),
+    workspacePath: String(localChatPayload?.workspacePath || "").trim(),
     rootGoal: pending.displayUserMessageContent || pending.finalUserPrompt,
     messageId: pending.userMessageId,
     assistantMessageId: row.id,
@@ -20021,6 +20251,9 @@ async function fetchSystemConfig() {
     if (data?.config?.chat_max_tokens) {
       chatMaxTokens.value = Number(data.config.chat_max_tokens);
     }
+    desktopAgentGlobalPrompt.value = String(
+      data?.config?.desktop_agent_global_prompt || "",
+    );
     botPlatformConnectors.value = Array.isArray(
       data?.config?.bot_platform_connectors,
     )
@@ -20060,6 +20293,7 @@ async function fetchSystemConfig() {
     employeeDraftExternalSkillSites.value = [];
     employeeDraftAutoRuleGenerationMaxCount.value = 3;
     botPlatformConnectors.value = [];
+    desktopAgentGlobalPrompt.value = "";
   }
 }
 
@@ -23245,7 +23479,7 @@ async function sendLocalLiuAgentChatRequest({
     operationId: `local-agent:${assistantMessage.id}`,
     kind: "request",
     title: "桌面本地 Agent Runtime",
-    summary: "正在本机创建会话并执行本地工具",
+    summary: "启动桌面本地 Agent Runtime，等待模型计算",
     detail: "",
     phase: "running",
     actionType: "none",
@@ -23257,7 +23491,7 @@ async function sendLocalLiuAgentChatRequest({
     },
   });
   appendMessageProcessLog(assistantMessage, {
-    text: "已切换到桌面端本地智能体运行时",
+    text: "Local Agent Runtime started\n  - 正在创建本机会话\n  - 等待 Runtime 返回模型调用事件",
     level: "info",
   });
   await upsertProjectChatRequirementRecord({
@@ -23284,13 +23518,14 @@ async function sendLocalLiuAgentChatRequest({
     history: historyRows,
     providerId: selectedProviderId.value || defaultProviderId.value || "",
     modelName: selectedModelName.value || defaultModelName.value || "",
-    systemPrompt: systemPrompt.value || "",
+    systemPrompt: buildLocalLiuAgentSystemPrompt(),
     temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
     maxTokens: Number(chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens),
     modelRuntime,
   };
   const activeRun = {
     chatSessionId: activeChatSessionId,
+    projectId,
     assistantMessageId: assistantMessage.id,
     userMessageId: userMessage.id,
     workspacePath,
@@ -23302,8 +23537,8 @@ async function sendLocalLiuAgentChatRequest({
     operationId: `local-agent-running:${assistantMessage.id}`,
     kind: "request",
     title: "桌面本地 Agent Runtime",
-    summary: "准备启动本地 Agent Loop",
-    detail: "正在准备模型请求；模型请求、工具计划、工具执行和授权等待会作为独立步骤继续追加。",
+    summary: "等待本地模型调用事件",
+    detail: "模型步骤、工具调用、命令执行、文件读写和授权等待会作为运行轨迹继续追加。",
     phase: "running",
     actionType: "none",
     meta: {
@@ -23315,7 +23550,7 @@ async function sendLocalLiuAgentChatRequest({
     },
   });
   appendMessageProcessLog(assistantMessage, {
-    text: "本地智能体已启动，等待模型请求步骤返回",
+    text: "已提交本地模型请求\n  - 后续 Computing、工具调用和结果由 Runtime 事件驱动追加",
     level: "info",
     autoExpand: true,
   });
@@ -23388,31 +23623,6 @@ async function sendLocalLiuAgentChatRequest({
       rootGoal: displayUserMessageContent || finalUserPrompt,
       messageId: userMessage.id,
       assistantMessageId: assistantMessage.id,
-    });
-    deleteLocalLiuAgentActiveRun(activeChatSessionId);
-    syncChatLoadingWithCurrentSession();
-    return result;
-  }
-  // 规划确认门：返回 plan_required 时暂停，等待用户确认后再次执行
-  const localPlan = localLiuAgentPlanFromChatResult(result);
-  if (localPlan) {
-    const planSessionId = String(result?.sessionId || result?.session_id || "").trim();
-    if (planSessionId) {
-      localLiuAgentPendingPlans.set(planSessionId, {
-        localChatPayload,
-        assistantMessageId: assistantMessage.id,
-        activeChatSessionId,
-        displayUserMessageContent,
-        finalUserPrompt,
-        sourceContext,
-      });
-    }
-    upsertLocalLiuAgentPlanOperation(assistantMessage, localPlan);
-    assistantMessage.content = "已生成执行计划，请确认后开始执行。";
-    assistantMessage.time = nowText();
-    appendMessageProcessLog(assistantMessage, {
-      text: "规划门已触发，等待你在当前回答气泡中确认执行计划",
-      level: "warning",
     });
     deleteLocalLiuAgentActiveRun(activeChatSessionId);
     syncChatLoadingWithCurrentSession();
@@ -24931,6 +25141,10 @@ onUnmounted(() => {
   stopNativeExternalAgentSessionPolling();
   stopNativeExternalAgentSessionEventSubscription();
   stopNativeLiuAgentRuntimeEventSubscription();
+  if (localLiuAgentRuntimeEventPollTimer) {
+    window.clearInterval(localLiuAgentRuntimeEventPollTimer);
+    localLiuAgentRuntimeEventPollTimer = null;
+  }
   nativeExternalAgentDeferredCleanupTimers.forEach((timer) => {
     window.clearTimeout(timer);
   });

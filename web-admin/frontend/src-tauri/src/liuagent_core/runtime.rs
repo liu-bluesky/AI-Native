@@ -9,34 +9,40 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::adapters::protocol::{
-    approval_required_event, model_call_started_event, model_step_event, tool_call_started_event,
-    tool_result_event,
+    approval_required_event, command_finished_event, command_output_chunk_event,
+    command_started_event, model_call_started_event, model_step_event, progress_update_event,
+    tool_call_started_event, tool_result_event,
 };
 use super::audit::build_tool_audit_logs;
 use super::definitions::builtin_tool_definitions;
 use super::permission::{cached_session_grant_comment, permission_request_id};
+use super::planning;
 use super::state::recover_runtime_session;
-#[cfg(test)]
-use super::state::recover_runtime_state;
 use super::state::{
-    delete_runtime_outbox_entries, list_runtime_events as read_runtime_events,
-    list_runtime_outbox as read_runtime_outbox, write_runtime_artifacts, RuntimePersistenceInput,
+    append_runtime_event, delete_runtime_outbox_entries,
+    list_runtime_events as read_runtime_events, list_runtime_outbox as read_runtime_outbox,
+    recover_runtime_state, write_runtime_artifacts, RuntimePersistenceInput,
 };
+use super::tools::command::classify_command_risk;
 use super::types::{
     AgentInvocationRequest, AgentInvocationResult, LocalChatMessage, LocalChatRequest,
     LocalChatResult, LocalModelRuntimeConfig, LocalRuntimeEventsRequest, LocalRuntimeEventsResult,
     LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult,
     LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult, ToolError, ToolExecutionRequest,
 };
-use super::planning;
 use super::workspace::resolve_workspace_root;
-use super::{execute_tool, normalized_tool_call_id, prepare_agent_invocation};
+use super::workspace::{resolve_workspace_child, workspace_relative_path};
+use super::{
+    execute_tool, execute_tool_with_command_output_sink, normalized_tool_call_id,
+    prepare_agent_invocation,
+};
 
 const REQUIREMENT_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_MODEL_TIMEOUT_MS: u64 = 45_000;
@@ -45,6 +51,7 @@ const DEFAULT_MAX_VERIFICATION_REPROMPTS: usize = 1;
 const MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS: usize = 5;
 const PERMISSION_CACHE_VERSION: u32 = 1;
 
+#[cfg(test)]
 pub fn start_local_chat(request: LocalChatRequest) -> LocalChatResult {
     let chat_session_id = request.chat_session_id.trim().to_string();
     match start_local_chat_inner(request, None) {
@@ -227,38 +234,53 @@ fn start_local_chat_inner(
     let workspace_root = resolve_workspace_root(&request.workspace_path)?;
     let session_id = format!("local_{}", epoch_millis());
 
-    // 规划门：Implementation 型请求在未确认前先返回任务树，等待用户确认。
-    // Query 型请求或已确认（plan_decision.approved=true）的请求直接放行。
-    let plan_approved = request
-        .plan_decision
-        .as_ref()
-        .map(|decision| decision.approved)
-        .unwrap_or(false);
-    if !plan_approved
-        && planning::assess_request_type(&user_message) == planning::RequestType::Implementation
-    {
-        return Ok(build_plan_required_result(
-            &session_id,
-            &chat_session_id,
-            &user_message,
-            &workspace_root,
-            &project_id,
-        ));
-    }
-
     let gateway_result = prepare_local_chat_invocation(&request, &user_message)?;
     let user_message_id = normalized_id(request.message_id.as_deref(), "local_user");
     let assistant_message_id =
         normalized_id(request.assistant_message_id.as_deref(), "local_assistant");
-    let model_request = build_model_request(&request, &user_message);
-    let agent_loop = run_agent_loop(
+    let mut model_request = build_model_request(&request, &user_message);
+    let collected_runtime_events = RefCell::new(Vec::<Value>::new());
+    let collecting_event_sink = |event: Value| {
+        collected_runtime_events.borrow_mut().push(event.clone());
+        let _ = append_runtime_event(&workspace_root, &project_id, &chat_session_id, &event);
+        if let Some(sink) = event_sink {
+            sink(event);
+        }
+    };
+    let runtime_event_sink: Option<&dyn Fn(Value)> = Some(&collecting_event_sink);
+    let replayed_permission_tool = replay_pending_permission_tool_if_available(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        &session_id,
+        &request,
+        runtime_event_sink,
+    );
+    if let Some(replayed) = replayed_permission_tool.as_ref() {
+        let mut messages = model_request.messages.clone();
+        messages.push(RuntimeModelMessage::assistant_tool_call(
+            "用户已授权，继续执行之前等待授权的本地工具。",
+            vec![replayed.tool.clone()],
+        ));
+        let attempt = build_agent_loop_attempt(&replayed.tool, &replayed.result, 1);
+        messages.push(RuntimeModelMessage::tool_observation(
+            replayed.result.tool_call_id.clone(),
+            tool_observation_content(&replayed.result, false, Some(&attempt)),
+        ));
+        model_request = model_request.with_messages(messages);
+    }
+    let mut agent_loop = run_agent_loop(
         &chat_session_id,
         &session_id,
         &model_request,
         &workspace_root,
         request.permission_decision.clone(),
-        event_sink,
+        runtime_event_sink,
     );
+    if let Some(replayed) = replayed_permission_tool {
+        agent_loop.planned_tools.insert(0, replayed.tool);
+        agent_loop.tool_results.insert(0, replayed.result);
+    }
     let model_result = agent_loop.final_model_result();
     let planned_tools = agent_loop.planned_tools.clone();
     let tool_results = agent_loop.tool_results.clone();
@@ -314,7 +336,10 @@ fn start_local_chat_inner(
         operations: operations.clone(),
         audit_logs: &audit_logs,
     })?;
-    let runtime_events = runtime_artifacts.runtime_events.clone();
+    let runtime_events = merge_runtime_events(
+        collected_runtime_events.borrow().as_slice(),
+        runtime_artifacts.runtime_events.as_slice(),
+    );
     let requirement_path = requirement_record_path(&workspace_root, &project_id, &chat_session_id);
     write_requirement_record(
         &requirement_path,
@@ -490,48 +515,6 @@ fn start_local_chat_inner(
         error_code: result_error_code,
         error: result_error,
     })
-}
-
-/// 规划门早返回：生成任务树并等待用户确认，不触发模型调用。
-fn build_plan_required_result(
-    session_id: &str,
-    chat_session_id: &str,
-    user_message: &str,
-    workspace_root: &PathBuf,
-    project_id: &str,
-) -> LocalChatResult {
-    let task_tree = planning::TaskTree::for_implementation(session_id, user_message);
-    let requirement_path = requirement_record_path(workspace_root, project_id, chat_session_id);
-    let _ = write_requirement_record(
-        &requirement_path,
-        json!({
-            "record_type": "desktop-local-agent-requirement",
-            "version": REQUIREMENT_SCHEMA_VERSION,
-            "project_id": project_id,
-            "chat_session_id": chat_session_id,
-            "session_id": session_id,
-            "root_goal": user_message,
-            "plan_status": "plan_required",
-            "task_tree": task_tree,
-            "updated_at_epoch_ms": epoch_millis()
-        }),
-    );
-    LocalChatResult {
-        ok: true,
-        plan_status: "plan_required".to_string(),
-        session_id: session_id.to_string(),
-        chat_session_id: chat_session_id.to_string(),
-        requirement_record_path: requirement_path.to_string_lossy().to_string(),
-        gateway_result: None,
-        assistant_content: String::new(),
-        model_result: json!({}),
-        tool_results: Vec::new(),
-        operations: json!([]),
-        runtime_events: Vec::new(),
-        summary: "需要用户确认执行计划".to_string(),
-        error_code: String::new(),
-        error: String::new(),
-    }
 }
 
 fn build_runtime_blockers(
@@ -777,12 +760,17 @@ fn build_assistant_content(
     lines.join("\n")
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PlannedLocalTool {
     tool_call_id: String,
     name: String,
     arguments: Value,
     summary: String,
+}
+
+struct ReplayedPermissionTool {
+    tool: PlannedLocalTool,
+    result: super::types::ToolExecutionResult,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -820,6 +808,149 @@ impl RuntimeModelMessage {
             tool_calls: Vec::new(),
         }
     }
+}
+
+fn replay_pending_permission_tool_if_available(
+    workspace_root: &PathBuf,
+    project_id: &str,
+    chat_session_id: &str,
+    runtime_session_id: &str,
+    request: &LocalChatRequest,
+    event_sink: Option<&dyn Fn(Value)>,
+) -> Option<ReplayedPermissionTool> {
+    let decision = request.permission_decision.as_ref()?;
+    if decision.decision.trim() == "deny" {
+        return None;
+    }
+    let pending_tool =
+        recover_pending_permission_tool(workspace_root, project_id, chat_session_id, decision)?;
+    let mut tool = pending_tool;
+    tool.summary = if tool.summary.trim().is_empty() {
+        "继续已授权的本地工具调用".to_string()
+    } else {
+        format!("{}；继续已授权的本地工具调用", tool.summary.trim())
+    };
+    emit_tool_call_started_event(event_sink, runtime_session_id, chat_session_id, &tool, 1, 1);
+    emit_command_started_for_tool(
+        event_sink,
+        runtime_session_id,
+        chat_session_id,
+        &tool,
+        request.permission_decision.as_ref(),
+    );
+    let command_stream_index = Cell::new(0usize);
+    let command_stream_sink = |stream: &str, text: &str| {
+        let index = command_stream_index.get() + 1;
+        command_stream_index.set(index);
+        if let Some(sink) = event_sink {
+            emit_command_output_chunk(
+                sink,
+                runtime_session_id,
+                chat_session_id,
+                &tool,
+                &command_arg(&tool),
+                stream,
+                text,
+                false,
+                Some(index),
+            );
+        }
+    };
+    let tool_request = ToolExecutionRequest {
+        tool_call_id: Some(tool.tool_call_id.clone()),
+        name: tool.name.clone(),
+        arguments: tool.arguments.clone(),
+        workspace_path: workspace_root.to_string_lossy().to_string(),
+        permission_decision: Some(decision.clone()),
+    };
+    let result = if tool.name.trim() == "run_command" {
+        execute_tool_with_command_output_sink(tool_request, Some(&command_stream_sink))
+    } else {
+        execute_tool(tool_request)
+    };
+    emit_command_result_events(
+        event_sink,
+        runtime_session_id,
+        chat_session_id,
+        &tool,
+        &result,
+    );
+    emit_tool_result_event(event_sink, runtime_session_id, chat_session_id, &result);
+    Some(ReplayedPermissionTool { tool, result })
+}
+
+fn recover_pending_permission_tool(
+    workspace_root: &PathBuf,
+    project_id: &str,
+    chat_session_id: &str,
+    decision: &super::types::PermissionDecisionInput,
+) -> Option<PlannedLocalTool> {
+    let request_id = decision.request_id.as_deref().map(str::trim)?;
+    if request_id.is_empty() {
+        return None;
+    }
+    let state = recover_runtime_state(workspace_root, project_id, chat_session_id).ok()?;
+    if state["run_state"]["status"].as_str().unwrap_or_default() != "waiting_approval" {
+        return None;
+    }
+    let tool_call_id = state["tool_results"]
+        .as_array()?
+        .iter()
+        .find_map(|result| {
+            let error_code = value_str_any(result, &["errorCode", "error_code"]);
+            if error_code != "permission.required" {
+                return None;
+            }
+            let result_request_id = value_str_any(
+                &result["content"]["permissionRequest"],
+                &["requestId", "request_id"],
+            );
+            if result_request_id != request_id {
+                return None;
+            }
+            let tool_call_id = value_str_any(result, &["toolCallId", "tool_call_id"]);
+            if tool_call_id.is_empty() {
+                None
+            } else {
+                Some(tool_call_id)
+            }
+        })?;
+    state["model_runtime"]["agent_loop"]["planned_tools"]
+        .as_array()?
+        .iter()
+        .find(|tool| value_str_any(tool, &["tool_call_id", "toolCallId"]) == tool_call_id)
+        .and_then(|tool| serde_json::from_value::<PlannedLocalTool>(tool.clone()).ok())
+}
+
+fn value_str_any(value: &Value, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn merge_runtime_events(primary: &[Value], secondary: &[Value]) -> Vec<Value> {
+    let mut merged = Vec::new();
+    for event in primary.iter().chain(secondary.iter()) {
+        let event_id = event
+            .get("event_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let already_present = !event_id.is_empty()
+            && merged.iter().any(|existing: &Value| {
+                existing
+                    .get("event_id")
+                    .and_then(Value::as_str)
+                    .map(|value| value == event_id)
+                    .unwrap_or(false)
+            });
+        if !already_present {
+            merged.push(event.clone());
+        }
+    }
+    merged
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1004,10 +1135,23 @@ fn run_agent_loop_with(
             &request,
         );
         let model_result = model_runner(&request);
-        let current_planned_tools =
-            rank_local_tool_candidates(plan_local_tools(run_key, &model_result), &attempts);
+        let current_planned_tools = rank_local_tool_candidates(
+            plan_local_tools(run_key, &model_result)
+                .into_iter()
+                .map(|tool| repair_planned_tool_arguments(tool, &messages, workspace_root))
+                .collect(),
+            &attempts,
+        );
         let model_content = model_result.content.clone();
         model_steps.push(model_result.clone());
+        emit_progress_update_event(
+            event_sink,
+            runtime_session_id,
+            run_key,
+            model_steps.len(),
+            &model_result,
+            &current_planned_tools,
+        );
         emit_model_step_event(
             event_sink,
             runtime_session_id,
@@ -1060,13 +1204,44 @@ fn run_agent_loop_with(
                 tool_index + 1,
                 planned_tool_count,
             );
-            let result = tool_runner(ToolExecutionRequest {
+            emit_command_started_for_tool(
+                event_sink,
+                runtime_session_id,
+                run_key,
+                &tool,
+                effective_permission_decision.as_ref(),
+            );
+            let command_stream_index = Cell::new(0usize);
+            let command_stream_sink = |stream: &str, text: &str| {
+                let index = command_stream_index.get() + 1;
+                command_stream_index.set(index);
+                if let Some(sink) = event_sink {
+                    emit_command_output_chunk(
+                        sink,
+                        runtime_session_id,
+                        run_key,
+                        &tool,
+                        &command_arg(&tool),
+                        stream,
+                        text,
+                        false,
+                        Some(index),
+                    );
+                }
+            };
+            let tool_request = ToolExecutionRequest {
                 tool_call_id: Some(tool.tool_call_id.clone()),
                 name: tool.name.clone(),
                 arguments: tool.arguments.clone(),
                 workspace_path: workspace_root.to_string_lossy().to_string(),
                 permission_decision: effective_permission_decision.clone(),
-            });
+            };
+            let result = if tool.name.trim() == "run_command" {
+                execute_tool_with_command_output_sink(tool_request, Some(&command_stream_sink))
+            } else {
+                tool_runner(tool_request)
+            };
+            emit_command_result_events(event_sink, runtime_session_id, run_key, &tool, &result);
             emit_tool_result_event(event_sink, runtime_session_id, run_key, &result);
             let permission_denied = is_permission_denied_decision(permission_decision.as_ref())
                 && result.error_code == "permission.required";
@@ -1160,6 +1335,7 @@ fn emit_model_step_event(
                 "provider_id": result.provider_id,
                 "model_name": result.model_name,
                 "summary": result.summary,
+                "content_preview": truncate_inline(&result.content, 700),
                 "error_code": result.error_code,
                 "error": result.error,
                 "tool_call_count": result.tool_calls.len(),
@@ -1168,6 +1344,75 @@ fn emit_model_step_event(
             epoch_millis(),
         ));
     }
+}
+
+fn emit_progress_update_event(
+    event_sink: Option<&dyn Fn(Value)>,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    index: usize,
+    result: &ModelStepResult,
+    planned_tools: &[PlannedLocalTool],
+) {
+    let planned_tool_count = planned_tools.len();
+    if planned_tool_count == 0 {
+        return;
+    }
+    let summary = progress_update_summary(result, planned_tools);
+    if summary.trim().is_empty() {
+        return;
+    }
+    if let Some(sink) = event_sink {
+        sink(progress_update_event(
+            format!("evt_{runtime_session_id}_progress_{index}"),
+            runtime_session_id,
+            chat_session_id,
+            json!({
+                "index": index,
+                "status": "running",
+                "summary": summary,
+                "next_action": format!("执行模型请求的 {} 个本地工具调用", planned_tool_count),
+                "tool_call_count": planned_tool_count,
+                "provider_id": result.provider_id.as_str(),
+                "model_name": result.model_name.as_str(),
+                "created_at_epoch_ms": epoch_millis(),
+            }),
+            epoch_millis(),
+        ));
+    }
+}
+
+fn progress_update_summary(result: &ModelStepResult, planned_tools: &[PlannedLocalTool]) -> String {
+    let content_summary = truncate_inline(&result.content, 500);
+    if !content_summary.trim().is_empty() {
+        return content_summary;
+    }
+    let mut tool_summaries = planned_tools
+        .iter()
+        .take(3)
+        .map(|tool| {
+            let summary = tool.summary.trim();
+            if !summary.is_empty() {
+                summary.to_string()
+            } else {
+                format!("准备调用本地工具：{}", tool.name.trim())
+            }
+        })
+        .filter(|summary| !summary.trim().is_empty())
+        .collect::<Vec<_>>();
+    if planned_tools.len() > tool_summaries.len() {
+        tool_summaries.push(format!(
+            "另有 {} 个工具调用",
+            planned_tools.len() - tool_summaries.len()
+        ));
+    }
+    if tool_summaries.is_empty() {
+        return format!("准备执行模型请求的 {} 个本地工具调用", planned_tools.len());
+    }
+    truncate_inline(
+        &format!("准备执行本地工具：{}", tool_summaries.join("；")),
+        500,
+    )
 }
 
 fn emit_model_call_started_event(
@@ -1231,6 +1476,208 @@ fn emit_tool_call_started_event(
     }
 }
 
+fn emit_command_started_for_tool(
+    event_sink: Option<&dyn Fn(Value)>,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    tool: &PlannedLocalTool,
+    permission_decision: Option<&super::types::PermissionDecisionInput>,
+) {
+    if !should_emit_command_execution_events(tool, permission_decision) {
+        return;
+    }
+    let Some(sink) = event_sink else {
+        return;
+    };
+    let cmd = command_arg(tool);
+    let cwd = argument_string(&tool.arguments, "cwd").unwrap_or_else(|| ".".to_string());
+    sink(command_started_event(
+        format!(
+            "evt_{}_command_{}_started",
+            runtime_session_id,
+            sanitize_path_segment(&tool.tool_call_id)
+        ),
+        runtime_session_id,
+        chat_session_id,
+        json!({
+            "tool_call_id": tool.tool_call_id.as_str(),
+            "tool_name": tool.name.as_str(),
+            "cmd": cmd,
+            "cwd": cwd,
+            "status": "running",
+            "created_at_epoch_ms": epoch_millis(),
+        }),
+        epoch_millis(),
+    ));
+}
+
+fn emit_command_result_events(
+    event_sink: Option<&dyn Fn(Value)>,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    tool: &PlannedLocalTool,
+    result: &super::types::ToolExecutionResult,
+) {
+    if tool.name.trim() != "run_command" || result.error_code == "permission.required" {
+        return;
+    }
+    let Some(sink) = event_sink else {
+        return;
+    };
+    let cmd = command_arg(tool);
+    let cwd = result
+        .content
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| argument_string(&tool.arguments, "cwd"))
+        .unwrap_or_else(|| ".".to_string());
+    let stdout = result
+        .content
+        .get("stdout")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let stderr = result
+        .content
+        .get("stderr")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let streamed = result
+        .content
+        .get("streamed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !streamed && !stdout.trim().is_empty() {
+        emit_command_output_chunk(
+            sink,
+            runtime_session_id,
+            chat_session_id,
+            tool,
+            &cmd,
+            "stdout",
+            stdout,
+            false,
+            None,
+        );
+    }
+    if !streamed && !stderr.trim().is_empty() {
+        emit_command_output_chunk(
+            sink,
+            runtime_session_id,
+            chat_session_id,
+            tool,
+            &cmd,
+            "stderr",
+            stderr,
+            false,
+            None,
+        );
+    }
+    if result.ok && stdout.trim().is_empty() && stderr.trim().is_empty() {
+        emit_command_output_chunk(
+            sink,
+            runtime_session_id,
+            chat_session_id,
+            tool,
+            &cmd,
+            "stdout",
+            "(no output)",
+            true,
+            None,
+        );
+    }
+    sink(command_finished_event(
+        format!(
+            "evt_{}_command_{}_finished",
+            runtime_session_id,
+            sanitize_path_segment(&tool.tool_call_id)
+        ),
+        runtime_session_id,
+        chat_session_id,
+        json!({
+            "tool_call_id": tool.tool_call_id.as_str(),
+            "tool_name": tool.name.as_str(),
+            "cmd": cmd,
+            "cwd": cwd,
+            "ok": result.ok,
+            "status": if result.ok { "completed" } else { "failed" },
+            "exit_code": result.content.get("exit_code").and_then(Value::as_i64),
+            "duration_ms": result.content.get("duration_ms").and_then(Value::as_u64),
+            "summary": result.summary.as_str(),
+            "error_code": result.error_code.as_str(),
+            "error": result.error.as_str(),
+            "created_at_epoch_ms": epoch_millis(),
+        }),
+        epoch_millis(),
+    ));
+}
+
+fn emit_command_output_chunk(
+    sink: &dyn Fn(Value),
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    tool: &PlannedLocalTool,
+    cmd: &str,
+    stream: &str,
+    text: &str,
+    empty: bool,
+    chunk_index: Option<usize>,
+) {
+    let chunk_suffix = chunk_index
+        .map(|index| index.to_string())
+        .unwrap_or_else(|| "final".to_string());
+    sink(command_output_chunk_event(
+        format!(
+            "evt_{}_command_{}_{}_chunk_{}",
+            runtime_session_id,
+            sanitize_path_segment(&tool.tool_call_id),
+            stream,
+            chunk_suffix
+        ),
+        runtime_session_id,
+        chat_session_id,
+        json!({
+            "tool_call_id": tool.tool_call_id.as_str(),
+            "tool_name": tool.name.as_str(),
+            "cmd": cmd,
+            "stream": stream,
+            "text": truncate_inline(text, 4_000),
+            "empty": empty,
+            "created_at_epoch_ms": epoch_millis(),
+        }),
+        epoch_millis(),
+    ));
+}
+
+fn should_emit_command_execution_events(
+    tool: &PlannedLocalTool,
+    permission_decision: Option<&super::types::PermissionDecisionInput>,
+) -> bool {
+    if tool.name.trim() != "run_command" {
+        return false;
+    }
+    let cmd = command_arg(tool);
+    if cmd.is_empty() {
+        return false;
+    }
+    let approved = permission_decision
+        .map(|decision| decision.decision.trim().starts_with("approve"))
+        .unwrap_or(false);
+    if approved {
+        return true;
+    }
+    let (risk, _) = classify_command_risk(&cmd);
+    risk == "safe"
+}
+
+fn command_arg(tool: &PlannedLocalTool) -> String {
+    argument_string(&tool.arguments, "cmd")
+        .or_else(|| argument_string(&tool.arguments, "command"))
+        .unwrap_or_default()
+}
+
 fn truncate_inline(value: &str, max_chars: usize) -> String {
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.chars().count() <= max_chars {
@@ -1270,6 +1717,11 @@ fn emit_approval_required_event(
 ) {
     if let Some(permission_request) = result.content.get("permissionRequest") {
         if let Some(sink) = event_sink {
+            let mut payload = permission_request.clone();
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("tool_call_id".to_string(), json!(result.tool_call_id));
+                object.insert("tool_name".to_string(), json!(result.name));
+            }
             sink(approval_required_event(
                 format!(
                     "evt_{}_approval_{}",
@@ -1278,7 +1730,7 @@ fn emit_approval_required_event(
                 ),
                 runtime_session_id,
                 chat_session_id,
-                permission_request.clone(),
+                payload,
                 epoch_millis(),
             ));
         }
@@ -1487,6 +1939,127 @@ fn tool_verification_plan(tool_name: &str) -> Vec<String> {
         "list_files" | "search_files" => vec!["确认结果列表能支撑下一步定位".to_string()],
         "run_command" => vec!["检查退出码、stdout/stderr 与用户目标".to_string()],
         _ => vec!["检查工具结果 ok 与 summary".to_string()],
+    }
+}
+
+fn repair_planned_tool_arguments(
+    mut tool: PlannedLocalTool,
+    messages: &[RuntimeModelMessage],
+    workspace_root: &PathBuf,
+) -> PlannedLocalTool {
+    if tool.name.trim() == "write_file"
+        && argument_string(&tool.arguments, "path").is_none()
+        && argument_string(&tool.arguments, "content").is_some()
+    {
+        if let Some(path) = infer_recent_target_path(messages) {
+            if let Some(object) = tool.arguments.as_object_mut() {
+                object.insert("path".to_string(), json!(path.clone()));
+                tool.summary = if tool.summary.trim().is_empty() {
+                    format!("自动补全 write_file path={path}")
+                } else {
+                    format!("{}；自动补全 path={path}", tool.summary.trim())
+                };
+            }
+        }
+    }
+    if tool.name.trim() == "search_text" {
+        repair_search_text_file_path(&mut tool, workspace_root);
+    }
+    tool
+}
+
+fn repair_search_text_file_path(tool: &mut PlannedLocalTool, workspace_root: &PathBuf) {
+    let Some(path) = argument_string(&tool.arguments, "path") else {
+        return;
+    };
+    let Ok(target) = resolve_workspace_child(workspace_root, &path, true) else {
+        return;
+    };
+    if !target.is_file() {
+        return;
+    }
+    let Some(object) = tool.arguments.as_object_mut() else {
+        return;
+    };
+    let file_name = target
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if file_name.is_empty() {
+        return;
+    }
+    let parent = target
+        .parent()
+        .map(|value| workspace_relative_path(workspace_root, value))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| ".".to_string());
+    object.insert("path".to_string(), json!(parent.clone()));
+    object
+        .entry("glob".to_string())
+        .or_insert_with(|| json!(file_name.clone()));
+    tool.summary = if tool.summary.trim().is_empty() {
+        format!("自动修正 search_text path={path} 为目录 {parent}，glob={file_name}")
+    } else {
+        format!(
+            "{}；自动修正 search_text path={path} 为目录 {parent}，glob={file_name}",
+            tool.summary.trim()
+        )
+    };
+}
+
+fn argument_string(arguments: &Value, key: &str) -> Option<String> {
+    arguments
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn infer_recent_target_path(messages: &[RuntimeModelMessage]) -> Option<String> {
+    for message in messages.iter().rev() {
+        if message.role.trim() != "user" {
+            continue;
+        }
+        let candidates = extract_file_path_candidates(&message.content);
+        if let Some(candidate) = candidates.last() {
+            return Some(candidate.clone());
+        }
+    }
+    None
+}
+
+fn extract_file_path_candidates(text: &str) -> Vec<String> {
+    let allowed_extensions = [
+        "html", "htm", "css", "js", "ts", "tsx", "jsx", "vue", "json", "md", "txt", "py", "rs",
+        "toml", "yaml", "yml", "xml", "svg",
+    ];
+    let mut candidates = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/') {
+            current.push(ch);
+            continue;
+        }
+        push_file_path_candidate(&mut candidates, &current, &allowed_extensions);
+        current.clear();
+    }
+    push_file_path_candidate(&mut candidates, &current, &allowed_extensions);
+    candidates
+}
+
+fn push_file_path_candidate(output: &mut Vec<String>, raw: &str, allowed_extensions: &[&str]) {
+    let candidate = raw.trim_matches(|ch: char| matches!(ch, '.' | '/' | '-' | '_'));
+    if candidate.is_empty() || candidate.contains("..") {
+        return;
+    }
+    let extension = candidate
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if allowed_extensions.iter().any(|item| *item == extension) {
+        output.push(candidate.to_string());
     }
 }
 
@@ -1816,6 +2389,7 @@ fn tool_observation_content(
             })
         })
         .unwrap_or_else(|| json!({}));
+    let recovery_instruction = tool_recovery_instruction(result, permission_denied);
     json!({
         "tool_call_id": result.tool_call_id,
         "tool_name": result.name,
@@ -1826,13 +2400,44 @@ fn tool_observation_content(
         "error": if permission_denied { "user denied permission request" } else { result.error.as_str() },
         "content": result.content,
         "attempt": attempt_payload,
+        "recovery_instruction": recovery_instruction,
         "retry_instruction": if result.ok || permission_denied {
             ""
+        } else if !recovery_instruction.is_empty() {
+            recovery_instruction.as_str()
         } else {
             "当前方案验证失败。下一轮必须换一个不同 strategy_signature 的方案；不要原样重复同一个工具、参数和验证路径。"
         },
     })
     .to_string()
+}
+
+fn tool_recovery_instruction(
+    result: &super::types::ToolExecutionResult,
+    permission_denied: bool,
+) -> String {
+    if result.ok || permission_denied {
+        return String::new();
+    }
+    if result.name == "write_file"
+        && result.error_code == "tool.schema_invalid"
+        && result.error.contains("missing required argument: path")
+    {
+        return "write_file 调用失败：缺少必填字段 path。请从用户最近消息中提取目标文件名；如果用户提到 register.html，下一次必须使用 {\"path\":\"register.html\",\"content\":\"完整文件内容\",\"overwrite\":false}。不要再次省略 path。".to_string();
+    }
+    if result.name == "write_file"
+        && result.error_code == "tool.schema_invalid"
+        && result.error.contains("missing required argument: content")
+    {
+        return "write_file 调用失败：缺少必填字段 content。下一次必须同时提供 path 和完整 content；如果只想局部修改，请改用 apply_patch。".to_string();
+    }
+    if result.error_code == "tool.schema_invalid" {
+        return format!(
+            "{} 参数不符合工具契约：{}。下一轮必须修正参数字段后再调用，不要重复同一组参数。",
+            result.name, result.error
+        );
+    }
+    String::new()
 }
 
 fn plan_local_tools(run_key: &str, model_result: &ModelStepResult) -> Vec<PlannedLocalTool> {
@@ -2716,9 +3321,144 @@ fn epoch_millis() -> u128 {
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::cell::RefCell;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn repairs_write_file_path_from_latest_user_message() {
+        let workspace_root = std::env::temp_dir();
+        let messages = vec![RuntimeModelMessage::simple(
+            "user",
+            "浅色渐变商务风（南京嘉华运营平台）。 register.html这俩",
+        )];
+        let repaired = repair_planned_tool_arguments(
+            PlannedLocalTool {
+                tool_call_id: "call_write_register".to_string(),
+                name: "write_file".to_string(),
+                arguments: json!({"content": "<!doctype html><html></html>"}),
+                summary: "标准模型工具调用：write_file".to_string(),
+            },
+            &messages,
+            &workspace_root,
+        );
+        assert_eq!(repaired.arguments["path"], "register.html");
+        assert!(repaired.summary.contains("自动补全 path=register.html"));
+    }
+
+    #[test]
+    fn repairs_search_text_file_path_to_directory_and_glob() {
+        let dir = std::env::temp_dir().join(format!("liuagent_search_repair_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("register.html"), "<form></form>").unwrap();
+        let workspace_root = dir.canonicalize().unwrap();
+        let repaired = repair_planned_tool_arguments(
+            PlannedLocalTool {
+                tool_call_id: "call_search_register".to_string(),
+                name: "search_text".to_string(),
+                arguments: json!({"path": "register.html", "query": "<form"}),
+                summary: "标准模型工具调用：search_text".to_string(),
+            },
+            &[],
+            &workspace_root,
+        );
+
+        assert_eq!(repaired.arguments["path"], ".");
+        assert_eq!(repaired.arguments["glob"], "register.html");
+        assert!(repaired.summary.contains("自动修正 search_text"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn progress_update_only_emits_for_visible_model_content_before_tools() {
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+        let result = ModelStepResult {
+            ok: true,
+            mode: "mock".to_string(),
+            provider_id: "test".to_string(),
+            model_name: "test-model".to_string(),
+            status: "completed".to_string(),
+            content: "我已经确认目标文件是 register.html，下一步读取 login.html。".to_string(),
+            tool_calls: Vec::new(),
+            allow_compat_text_tool_call: false,
+            compat_text_tool_call_detected: false,
+            summary: "visible progress".to_string(),
+            error_code: String::new(),
+            error: String::new(),
+        };
+        let planned_tools = vec![PlannedLocalTool {
+            tool_call_id: "call_read_login".to_string(),
+            name: "read_file".to_string(),
+            arguments: json!({"path": "login.html"}),
+            summary: "标准模型工具调用：read_file".to_string(),
+        }];
+
+        emit_progress_update_event(Some(&sink), "runtime-test", "chat-test", 1, &result, &[]);
+        assert!(events.borrow().is_empty());
+
+        emit_progress_update_event(
+            Some(&sink),
+            "runtime-test",
+            "chat-test",
+            1,
+            &result,
+            &planned_tools,
+        );
+        let events = events.borrow();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "progress_update");
+        assert!(events[0]["payload"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("register.html"));
+        assert_eq!(events[0]["payload"]["tool_call_count"], 1);
+    }
+
+    #[test]
+    fn progress_update_emits_tool_summary_when_model_content_is_empty() {
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+        let result = ModelStepResult {
+            ok: true,
+            mode: "mock".to_string(),
+            provider_id: "test".to_string(),
+            model_name: "test-model".to_string(),
+            status: "completed".to_string(),
+            content: String::new(),
+            tool_calls: Vec::new(),
+            allow_compat_text_tool_call: false,
+            compat_text_tool_call_detected: false,
+            summary: String::new(),
+            error_code: String::new(),
+            error: String::new(),
+        };
+        let planned_tools = vec![PlannedLocalTool {
+            tool_call_id: "call_search".to_string(),
+            name: "search_text".to_string(),
+            arguments: json!({"path": ".", "query": "progress_update"}),
+            summary: "标准模型工具调用：search_text".to_string(),
+        }];
+
+        emit_progress_update_event(
+            Some(&sink),
+            "runtime-test",
+            "chat-test",
+            1,
+            &result,
+            &planned_tools,
+        );
+
+        let events = events.borrow();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "progress_update");
+        assert!(events[0]["payload"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("search_text"));
+        assert_eq!(events[0]["payload"]["tool_call_count"], 1);
+    }
 
     #[test]
     fn local_chat_writes_requirement_and_tool_summary() {
@@ -2741,7 +3481,6 @@ mod tests {
             max_tokens: None,
             model_runtime: None,
             permission_decision: None,
-            plan_decision: None,
         });
 
         assert!(result.ok, "{}", result.error);
@@ -2766,6 +3505,14 @@ mod tests {
             .runtime_events
             .iter()
             .any(|event| event["type"] == "state_changed"));
+        assert!(result
+            .runtime_events
+            .iter()
+            .any(|event| event["type"] == "model_call_started"));
+        assert!(result
+            .runtime_events
+            .iter()
+            .any(|event| event["type"] == "model_step"));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -3217,6 +3964,215 @@ mod tests {
     }
 
     #[test]
+    fn permission_continuation_replays_pending_tool_from_runtime_state() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_permission_replay_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let workspace_root = dir.canonicalize().unwrap();
+        let planned_tool = PlannedLocalTool {
+            tool_call_id: "call_write_replay".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": "approved.txt", "content": "approved"}),
+            summary: "标准模型工具调用：write_file".to_string(),
+        };
+        let pending_result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some(planned_tool.tool_call_id.clone()),
+            name: planned_tool.name.clone(),
+            arguments: planned_tool.arguments.clone(),
+            workspace_path: workspace_root.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+        assert_eq!(pending_result.error_code, "permission.required");
+        write_runtime_artifacts(RuntimePersistenceInput {
+            workspace_root: &workspace_root,
+            project_id: "proj-replay",
+            chat_session_id: "chat-replay",
+            session_id: "local-replay-old",
+            user_message_id: "msg-user",
+            assistant_message_id: "msg-assistant",
+            user_message: "写文件",
+            assistant_content: "等待授权",
+            run_status: "waiting_approval",
+            waiting_for: Some("approval"),
+            model_runtime: json!({
+                "agent_loop": {
+                    "planned_tools": [planned_tool.clone()]
+                }
+            }),
+            tool_results: &[pending_result],
+            operations: json!([]),
+            audit_logs: &[],
+        })
+        .unwrap();
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+        let replayed = replay_pending_permission_tool_if_available(
+            &workspace_root,
+            "proj-replay",
+            "chat-replay",
+            "local-replay-new",
+            &LocalChatRequest {
+                project_id: "proj-replay".to_string(),
+                chat_session_id: "chat-replay".to_string(),
+                message_id: None,
+                assistant_message_id: None,
+                message: "写文件".to_string(),
+                workspace_path: workspace_root.to_string_lossy().to_string(),
+                history: Vec::new(),
+                provider_id: None,
+                model_name: None,
+                system_prompt: None,
+                temperature: None,
+                max_tokens: None,
+                model_runtime: None,
+                permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
+                    request_id: Some("perm_call_write_replay_file_write".to_string()),
+                    decision: "approve_once".to_string(),
+                    grant_scope: Some("once".to_string()),
+                    comment: None,
+                }),
+            },
+            Some(&sink),
+        )
+        .expect("pending tool should replay");
+
+        assert!(replayed.result.ok, "{}", replayed.result.error);
+        assert_eq!(
+            fs::read_to_string(dir.join("approved.txt")).unwrap(),
+            "approved"
+        );
+        let event_types = events
+            .borrow()
+            .iter()
+            .map(|event| event["type"].as_str().unwrap_or("").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(event_types, vec!["tool_call_started", "tool_result"]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn run_command_emits_command_trace_events() {
+        let dir = std::env::temp_dir().join(format!("liuagent_command_trace_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("显示当前目录");
+        let model_call_count = Cell::new(0);
+        let model_runner = |_request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_pwd".to_string(),
+                        name: "run_command".to_string(),
+                        arguments: json!({"cmd": "pwd"}),
+                        summary: "标准模型工具调用：run_command".to_string(),
+                    }],
+                );
+            }
+            test_model_result("命令完成", Vec::new())
+        };
+        let tool_runner = |request: ToolExecutionRequest| execute_tool(request);
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+
+        let result = run_agent_loop_with(
+            "chat-command-trace-test",
+            "runtime-command-trace-test",
+            &request,
+            &dir,
+            None,
+            Some(&sink),
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok(), "{}", result.error());
+        let event_types = events
+            .borrow()
+            .iter()
+            .map(|event| event["type"].as_str().unwrap_or("").to_string())
+            .collect::<Vec<_>>();
+        assert!(event_types.contains(&"command_started".to_string()));
+        assert!(event_types.contains(&"command_output_chunk".to_string()));
+        assert!(event_types.contains(&"command_finished".to_string()));
+        let finished = events
+            .borrow()
+            .iter()
+            .find(|event| event["type"] == "command_finished")
+            .cloned()
+            .unwrap();
+        assert_eq!(finished["payload"]["exit_code"], 0);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn run_command_streams_distinct_output_chunk_events() {
+        let dir = std::env::temp_dir().join(format!("liuagent_command_stream_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("分段输出");
+        let model_call_count = Cell::new(0);
+        let model_runner = |_request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_stream".to_string(),
+                        name: "run_command".to_string(),
+                        arguments: json!({
+                            "cmd": "printf first; sleep 0.1; printf second",
+                            "timeout_ms": 5_000
+                        }),
+                        summary: "标准模型工具调用：run_command".to_string(),
+                    }],
+                );
+            }
+            test_model_result("命令完成", Vec::new())
+        };
+        let tool_runner = |request: ToolExecutionRequest| execute_tool(request);
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+
+        let result = run_agent_loop_with(
+            "chat-command-stream-test",
+            "runtime-command-stream-test",
+            &request,
+            &dir,
+            Some(crate::liuagent_core::types::PermissionDecisionInput {
+                request_id: Some("perm_call_stream_command_run".to_string()),
+                decision: "approve_once".to_string(),
+                grant_scope: Some("once".to_string()),
+                comment: None,
+            }),
+            Some(&sink),
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok(), "{}", result.error());
+        let events = events.borrow();
+        let chunks = events
+            .iter()
+            .filter(|event| event["type"] == "command_output_chunk")
+            .collect::<Vec<_>>();
+        assert!(chunks.len() >= 2, "{chunks:#?}");
+        assert!(chunks
+            .iter()
+            .any(|event| event["payload"]["text"] == "first"));
+        assert!(chunks
+            .iter()
+            .any(|event| event["payload"]["text"] == "second"));
+        let event_ids = chunks
+            .iter()
+            .map(|event| event["event_id"].as_str().unwrap_or(""))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(event_ids.len(), chunks.len());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn agent_loop_reuses_session_permission_for_same_action() {
         let dir = std::env::temp_dir().join(format!(
             "liuagent_loop_session_permission_{}",
@@ -3602,7 +4558,6 @@ mod tests {
             max_tokens: None,
             model_runtime: None,
             permission_decision: None,
-            plan_decision: None,
         });
 
         assert!(result.ok, "{}", result.error);
@@ -3641,7 +4596,6 @@ mod tests {
                 timeout_ms: None,
             }),
             permission_decision: None,
-            plan_decision: None,
         };
         let model_request = build_model_request(&request, "你好");
         let result = run_model_step(&model_request);
@@ -3885,9 +4839,8 @@ mod tests {
     }
 
     #[test]
-    fn plan_required_returned_for_implementation_request_without_decision() {
-        let dir = std::env::temp_dir()
-            .join(format!("liuagent_plan_required_{}", epoch_millis()));
+    fn implementation_request_runs_agent_loop_without_plan_gate() {
+        let dir = std::env::temp_dir().join(format!("liuagent_no_plan_gate_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
 
         let result = start_local_chat(LocalChatRequest {
@@ -3905,26 +4858,26 @@ mod tests {
             max_tokens: None,
             model_runtime: None,
             permission_decision: None,
-            plan_decision: None,
         });
 
         assert!(result.ok, "{}", result.error);
-        assert_eq!(result.plan_status, "plan_required");
+        assert!(result.plan_status.is_empty());
+        assert_eq!(result.model_result["mode"], "mock");
         assert!(result.tool_results.is_empty());
         assert!(result.error_code.is_empty());
         assert!(PathBuf::from(&result.requirement_record_path).exists());
         let req = serde_json::from_str::<Value>(
             &fs::read_to_string(&result.requirement_record_path).unwrap(),
-        ).unwrap();
-        assert_eq!(req["plan_status"], "plan_required");
+        )
+        .unwrap();
+        assert!(req["plan_status"].as_str().unwrap_or_default().is_empty());
         assert_eq!(req["task_tree"]["nodes"].as_array().unwrap().len(), 4);
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn query_request_bypasses_planning_gate() {
-        let dir = std::env::temp_dir()
-            .join(format!("liuagent_plan_bypass_{}", epoch_millis()));
+    fn query_request_runs_agent_loop() {
+        let dir = std::env::temp_dir().join(format!("liuagent_query_loop_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
 
         let result = start_local_chat(LocalChatRequest {
@@ -3942,12 +4895,11 @@ mod tests {
             max_tokens: None,
             model_runtime: None,
             permission_decision: None,
-            plan_decision: None,
         });
 
-        // Query型: 规划门不触发，走正常 agent loop (mock)
         assert!(result.ok, "{}", result.error);
-        assert_ne!(result.plan_status, "plan_required");
+        assert!(result.plan_status.is_empty());
+        assert_eq!(result.model_result["mode"], "mock");
         let _ = fs::remove_dir_all(dir);
     }
 }

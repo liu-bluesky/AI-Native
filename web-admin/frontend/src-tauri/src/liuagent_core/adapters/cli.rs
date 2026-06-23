@@ -4,10 +4,13 @@
 //! This helper keeps the first reusable boundary small: render events as NDJSON
 //! without changing core runtime semantics.
 
+#[cfg(test)]
 use serde_json::Value;
 
+#[cfg(test)]
 use crate::liuagent_core::types::ToolError;
 
+#[cfg(test)]
 pub fn runtime_events_to_ndjson(events: &[Value]) -> Result<String, ToolError> {
     let mut output = String::new();
     for event in events {

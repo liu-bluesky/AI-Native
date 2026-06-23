@@ -119,6 +119,74 @@ pub fn model_step_event(
     )
 }
 
+pub fn progress_update_event(
+    event_id: String,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    payload: Value,
+    created_at_epoch_ms: u128,
+) -> Value {
+    agent_runtime_event(
+        event_id,
+        runtime_session_id,
+        chat_session_id,
+        "progress_update",
+        payload,
+        created_at_epoch_ms,
+    )
+}
+
+pub fn command_started_event(
+    event_id: String,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    payload: Value,
+    created_at_epoch_ms: u128,
+) -> Value {
+    agent_runtime_event(
+        event_id,
+        runtime_session_id,
+        chat_session_id,
+        "command_started",
+        payload,
+        created_at_epoch_ms,
+    )
+}
+
+pub fn command_output_chunk_event(
+    event_id: String,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    payload: Value,
+    created_at_epoch_ms: u128,
+) -> Value {
+    agent_runtime_event(
+        event_id,
+        runtime_session_id,
+        chat_session_id,
+        "command_output_chunk",
+        payload,
+        created_at_epoch_ms,
+    )
+}
+
+pub fn command_finished_event(
+    event_id: String,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    payload: Value,
+    created_at_epoch_ms: u128,
+) -> Value {
+    agent_runtime_event(
+        event_id,
+        runtime_session_id,
+        chat_session_id,
+        "command_finished",
+        payload,
+        created_at_epoch_ms,
+    )
+}
+
 pub fn model_call_started_event(
     event_id: String,
     runtime_session_id: &str,

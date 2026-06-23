@@ -174,6 +174,19 @@
                 当项目聊天没有单独填写 `system_prompt` 时，会自动回退到这里。
               </div>
             </el-form-item>
+
+            <el-form-item label="桌面智能体提示词全局">
+              <el-input
+                v-model="form.desktop_agent_global_prompt"
+                type="textarea"
+                :rows="12"
+                resize="vertical"
+                placeholder="用于追加到桌面本地智能体的系统提示词；留空则不追加全局提示词。"
+              />
+              <div class="field-desc">
+                项目聊天启用桌面本地智能体时，会把这里的内容追加到项目 system prompt 后面。
+              </div>
+            </el-form-item>
           </el-form>
         </section>
 
@@ -1281,6 +1294,34 @@ const DEFAULT_BOT_PLATFORM_CONNECTORS = [];
 const DEFAULT_PUBLIC_CONTACT_CHANNELS = [];
 const DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT =
   "基于员工职责、目标、技能建议和 prompts.chat MCP 相关能力，为员工自动补全 1 到 3 条可直接落地的执行规则。优先生成问题排查、输出规范、风险控制、技术选型相关规则；规则内容必须具体、可执行、可绑定。";
+const DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT = `桌面本地智能体工作流：计划先行 · 选项驱动
+
+当收到用户需求时，默认按以下流程处理：
+
+步骤 1：快速扫描与计划输出
+- 基于已知信息，总结问题的核心。
+- 列出 2～3 条可行的解决路径；每条路径说明适用条件、优点和缺点。
+- 标注为了进一步细化还需要的关键信息，最多 2 项。
+- 输出标题必须是“初步解决路径清单”，用清晰分点呈现。
+
+步骤 2：等待用户选择与补充
+- 用户会从清单中选择一条路径，并回答必要信息。
+- 如果用户未明确选择，主动询问“你更倾向于哪个方向？”
+- 在用户明确选择前，不要调用会修改文件、执行命令、发起网络写入或改变 MCP 状态的工具。
+
+步骤 3：针对性追问
+- 只问与用户所选路径直接相关的必要信息，最多 3 个问题。
+- 如果信息已经足够，直接进入交付，不重复追问。
+
+步骤 4：交付完整方案
+- 基于用户选择和补充信息，给出具体代码、配置或操作步骤。
+- 附带必要解释和注意事项。
+
+附加原则：
+- 不替用户做选择；只把选项清楚摆出来。
+- 保持精简，避免冗长理论。
+- 如果方案无效，允许用户回到步骤 1 重新选择其他路径。
+- 如果用户已经明确指定路径并要求执行，可直接从步骤 3 或步骤 4 继续。`;
 const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MCP。
 
 详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：
@@ -1419,6 +1460,7 @@ const form = ref({
   chat_upload_max_limit: 6,
   chat_max_tokens: 512,
   default_chat_system_prompt: "",
+  desktop_agent_global_prompt: DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT,
   employee_auto_rule_generation_enabled: true,
   employee_auto_rule_generation_source_filters: ["prompts_chat_curated"],
   employee_auto_rule_generation_max_count: 3,
@@ -1975,6 +2017,10 @@ function applyConfigToForm(config, options = {}) {
     payload,
     "employee_auto_rule_generation_prompt",
   );
+  const hasDesktopAgentPrompt = Object.prototype.hasOwnProperty.call(
+    payload,
+    "desktop_agent_global_prompt",
+  );
   const hasMcpConfig = Object.prototype.hasOwnProperty.call(payload, "mcp_config");
 
   form.value = {
@@ -1989,6 +2035,12 @@ function applyConfigToForm(config, options = {}) {
       hasPrompt || !preservePrompt
         ? String(payload.default_chat_system_prompt || "")
         : String(form.value.default_chat_system_prompt || ""),
+    desktop_agent_global_prompt:
+      hasDesktopAgentPrompt
+        ? String(payload.desktop_agent_global_prompt || "")
+        : preservePrompt
+          ? String(form.value.desktop_agent_global_prompt || "")
+          : DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT,
     employee_auto_rule_generation_enabled:
       !Object.prototype.hasOwnProperty.call(
         payload,
@@ -2314,6 +2366,9 @@ async function saveConfig() {
       chat_max_tokens: Number(form.value.chat_max_tokens || 512),
       default_chat_system_prompt: String(
         form.value.default_chat_system_prompt || "",
+      ),
+      desktop_agent_global_prompt: String(
+        form.value.desktop_agent_global_prompt || "",
       ),
       employee_auto_rule_generation_enabled: Boolean(
         form.value.employee_auto_rule_generation_enabled,

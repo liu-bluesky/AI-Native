@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
@@ -189,15 +190,41 @@ async fn liuagent_start_local_chat(
     request: liuagent_core::LocalChatRequest,
 ) -> liuagent_core::LocalChatResult {
     let chat_session_id = request.chat_session_id.trim().to_string();
+    let live_events = Arc::new(Mutex::new(Vec::new()));
+    let live_events_for_worker = Arc::clone(&live_events);
     match tauri::async_runtime::spawn_blocking(move || {
         liuagent_core::start_local_chat_with_event_sink(request, |event| {
+            if let Ok(mut events) = live_events_for_worker.lock() {
+                events.push(event.clone());
+            }
             let _ = app.emit("liuagent-runtime-event", event.clone());
             let _ = app.emit("liuagent://runtime-event", event);
         })
     })
     .await
     {
-        Ok(result) => result,
+        Ok(mut result) => {
+            if let Ok(events) = live_events.lock() {
+                for event in events.iter() {
+                    let event_id = event
+                        .get("event_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let already_present = !event_id.is_empty()
+                        && result.runtime_events.iter().any(|existing| {
+                            existing
+                                .get("event_id")
+                                .and_then(serde_json::Value::as_str)
+                                .map(|value| value == event_id)
+                                .unwrap_or(false)
+                        });
+                    if !already_present {
+                        result.runtime_events.push(event.clone());
+                    }
+                }
+            }
+            result
+        }
         Err(error) => liuagent_core::LocalChatResult::failed(
             chat_session_id,
             liuagent_core::ToolError::new(
