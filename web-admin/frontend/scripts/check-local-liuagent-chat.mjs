@@ -25,6 +25,14 @@ const projectChatResponsiveCss = readFileSync(
   resolve(rootDir, "src/modules/project-chat/styles/project-chat-style-15.css"),
   "utf8",
 );
+const settingsCenterConfig = readFileSync(
+  resolve(rootDir, "src/modules/project-chat/constants/settingsCenterConfig.js"),
+  "utf8",
+);
+const style06 = readFileSync(
+  resolve(rootDir, "src/modules/project-chat/styles/project-chat-style-06.css"),
+  "utf8",
+);
 const llmProvidersRouter = readFileSync(
   resolve(rootDir, "../api/routers/llm_providers.py"),
   "utf8",
@@ -124,6 +132,18 @@ assert.match(
   runtime,
   /desktop-local-agent-requirement/,
   "local chat must persist a desktop-local-agent requirement record",
+);
+
+assert.match(
+  runtime,
+  /"original_request"[\s\S]*"intent_analysis"[\s\S]*"related_context"[\s\S]*"contextual_plan"[\s\S]*"model_input_snapshots"[\s\S]*"actions_taken"[\s\S]*"current_state_delta"[\s\S]*"current_state"/,
+  "local chat requirement records must include the two-loop requirement schema fields",
+);
+
+assert.match(
+  runtime,
+  /model_input_snapshots\.push\(build_task_processing_snapshot\([\s\S]*model_runner\(&request\)/,
+  "local chat must capture task-processing model input snapshots before each model request",
 );
 
 assert.match(
@@ -356,14 +376,172 @@ assert.match(
 
 assert.match(
   projectChat,
+  /function messageProcessEntryKind\(entry = \{\}\)[\s\S]*?inferMessageProcessEntryKind\(entry\)/,
+  "message-process-stream must use a typed renderer instead of plain text-only entries",
+);
+
+assert.match(
+  projectChat,
+  /function messageProcessDisplayEntries\(row\)[\s\S]*?messageProcessEntrySpanKey\(entry\)[\s\S]*?mergeMessageProcessSpanEntry\(group, entry\)/,
+  "message-process-stream must group entries with the same tool_call_id into render spans",
+);
+
+assert.match(
+  projectChat,
+  /v-for="entry in messageProcessDisplayEntries\([\s\S]*?messageProcessEntryChildRows\(entry\)/,
+  "message-process-stream must render grouped span child rows for tool started/result/output details",
+);
+
+assert.match(
+  projectChat,
+  /function messageProcessEntryDiffLines\(entry = \{\}\)[\s\S]*?tone = "hunk"[\s\S]*?tone = "add"[\s\S]*?tone = "remove"/,
+  "typed process entries must classify diff lines for add/remove/hunk styling",
+);
+
+assert.match(
+  projectChat,
+  /function clipFileReadProcessText\(value = ""\)[\s\S]*?lines\.slice\(0, 80\)[\s\S]*?lines\.slice\(-40\)[\s\S]*?已省略/,
+  "long read_file snippets must preserve both the beginning and the tail so later JS/content is not hidden",
+);
+
+assert.match(
+  projectChat,
+  /function shouldUpsertLocalLiuAgentRuntimeOperation\(event = \{\}, operation = null\)[\s\S]*?type === "approval_required"[\s\S]*?shouldShowMessageOperationCard\(operation\)/,
+  "local liuAgent runtime events must only create message operations for real user interactions",
+);
+
+assert.match(
+  projectChat,
+  /function localLiuAgentRuntimeEventProcessLogEntry\(event = \{\}, operation = null\)[\s\S]*?kind: localLiuAgentRuntimeEventProcessKind\(event\)[\s\S]*?payload: \{/,
+  "local liuAgent runtime events must preserve structured payloads in processLog entries",
+);
+
+assert.match(
+  projectChat,
+  /class="message-process-entry__diff-line"[\s\S]*?:class="`is-\$\{line\.tone\}`"/,
+  "message-process-stream must render typed diff lines with semantic classes",
+);
+
+assert.match(
+  style06,
+  /\.message-process-entry__diff-line\.is-add[\s\S]*?\.message-process-entry__diff-line\.is-remove[\s\S]*?\.message-process-entry__diff-line\.is-hunk/,
+  "typed process diff styles must include add/remove/hunk classes",
+);
+
+assert.match(
+  style06,
+  /\.message-process-entry__children[\s\S]*?\.message-process-entry__child[\s\S]*?\.message-process-entry__child-summary/,
+  "typed process span styles must include compact child rows",
+);
+
+assert.match(
+  projectChat,
   /messageProcessLogEntries\(row\)\.slice\(-8\)[\s\S]*?return items\.slice\(-12\)/,
   "live progress must keep enough recent execution details visible for drift detection",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /本轮运行轨迹/,
+  "message process must not render the legacy live-progress timeline alongside the Codex-style process stream",
+);
+
+assert.match(
+  projectChat,
+  /function shouldShowMessageOperationCard\(operation\)[\s\S]*?hasVisibleOperationInteractionForm\(operation\)[\s\S]*?operationActionButtons\(operation\)\.length > 0[\s\S]*?function isVisibleProcessOperation\(operation\)[\s\S]*?!shouldShowMessageOperationCard\(operation\)/,
+  "message operations must be reserved for actionable cards instead of duplicating process-stream display details",
+);
+
+assert.match(
+  projectChat,
+  /currentLocalLiuAgentPermissionPrompt[\s\S]*class="chat-approval-banner chat-approval-banner--local-agent"[\s\S]*submitCurrentLocalLiuAgentPermissionAction\('local_liuagent_allow_once'\)/,
+  "local liuAgent authorization must render as a single queued banner above the composer",
+);
+
+assert.match(
+  projectChat,
+  /const localLiuAgentPendingPermissionVersion = ref\(0\)[\s\S]*function setLocalLiuAgentPendingPermission\(requestId, pending = \{\}\)[\s\S]*localLiuAgentPendingPermissionVersion\.value \+= 1[\s\S]*function deleteLocalLiuAgentPendingPermission\(requestId\)[\s\S]*localLiuAgentPendingPermissionVersion\.value \+= 1/,
+  "local liuAgent pending permission queue must be reactive when items are added or removed",
+);
+
+assert.match(
+  projectChat,
+  /function isChatSessionBusy\(chatSessionId = currentChatSessionId\.value\)[\s\S]*hasPendingRequestForChatSession\(normalizedSessionId\)[\s\S]*Boolean\(localLiuAgentActiveRunForChatSession\(normalizedSessionId\)\)[\s\S]*const canSend = computed\(\(\) => \{[\s\S]*currentChatSessionLocalLiuAgentWaitingPermission\.value[\s\S]*return false[\s\S]*const isComposerDisabled = computed\(\(\) => \{[\s\S]*currentChatSessionLocalLiuAgentWaitingPermission\.value[\s\S]*return true/,
+  "composer must be unsendable while a local liuAgent authorization is queued without treating the queue as global chat loading",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /已恢复上次本机工具授权请求，请在输入框上方继续处理。|需要你确认本机工具授权后继续执行。|还需要你确认下一项本机操作后继续执行。/,
+  "local liuAgent authorization wait states must not be rendered as assistant result text before execution completes",
+);
+
+assert.match(
+  projectChat,
+  /const nextPermissionRequest = localLiuAgentPermissionRequestFromChatResult\(result\)[\s\S]*setLocalLiuAgentPendingPermission\(nextRequestId,[\s\S]*本机工具执行再次暂停，等待你在输入框上方处理下一项授权/,
+  "authorized local liuAgent continuations that hit another permission must enqueue the next prompt instead of ending the run",
+);
+
+assert.match(
+  projectChat,
+  /function shouldUpsertLocalLiuAgentRuntimeOperation\(event = \{\}, operation = null\)[\s\S]*type === "approval_required"\) return false/,
+  "local liuAgent approval_required events must not create duplicate message operation cards",
+);
+
+assert.match(
+  projectChat,
+  /String\(event\?\.type \|\| ""\)\.trim\(\) === "tool_result"[\s\S]*permission\.required[\s\S]*continue;/,
+  "permission.required tool_result payloads must not be rendered as raw process JSON",
+);
+
+const operationCardVisibilityBlock = projectChat.slice(
+  projectChat.indexOf("function shouldShowMessageOperationCard(operation)"),
+  projectChat.indexOf("function isVisibleProcessOperation(operation)"),
+);
+assert.doesNotMatch(
+  operationCardVisibilityBlock,
+  /messageOperationInteractionFormJson\(operation\)/,
+  "operation-card visibility filtering must not initialize interaction form models",
+);
+assert.doesNotMatch(
+  operationCardVisibilityBlock,
+  /operationPlanSteps\(operation\)|kind === "terminal"|local_liuagent_operation/,
+  "operation-card visibility must not show pure plan, terminal, or local runtime display records",
+);
+assert.match(
+  projectChat,
+  /function messageProcessOperations\(row\)[\s\S]*?!isMessageFooterActionOperation\(row, item\)/,
+  "operations already rendered as footer actions must not be duplicated in the message operations area",
 );
 
 assert.match(
   projectChat,
   /function handleNativeLiuAgentRuntimeEvent\(event = \{\}\) \{[\s\S]*?scrollToBottom\(\{ force: false \}\);[\s\S]*?\}/,
   "runtime progress events must only auto-scroll when the message viewport is already sticky to the bottom",
+);
+
+assert.doesNotMatch(
+  settingsCenterConfig,
+  /id:\s*"local-runner"|label:\s*"本地运行"|授权记录/,
+  "chat settings sidebar must not expose the unused local runner menu",
+);
+
+assert.match(
+  projectChat,
+  /v-if="settingsInternalItems\.length > 1"[\s\S]*?菜单导览/,
+  "settings guide button should be hidden when there is no left menu to guide",
+);
+
+assert.match(
+  projectChat,
+  /function syncSettingsRouteState\(\)[\s\S]*?activeSettingsPanel\.value = "chat"/,
+  "settings route state must collapse removed panels back to chat settings",
+);
+
+assert.match(
+  projectChat,
+  /<el-form-item\s+v-if="hasSelectedProject"[\s\S]*?AI 入口文件/,
+  "AI entry file setting must stay visible in chat settings for selected projects",
 );
 
 assert.match(
@@ -470,8 +648,8 @@ assert.match(
 
 assert.match(
   projectChat,
-  /localLiuAgentPendingPermissions\.delete\(requestId\);\s*removeLocalLiuAgentPermissionOperation\(row, requestId\);/,
-  "ProjectChat must hide the local liuAgent permission card immediately after a permission decision",
+  /deleteLocalLiuAgentPendingPermission\(requestId\);\s*removeLocalLiuAgentPermissionOperation\(row, requestId\);/,
+  "ProjectChat must remove the queued local liuAgent permission immediately after a permission decision",
 );
 
 assert.match(
@@ -582,28 +760,10 @@ assert.doesNotMatch(
   "main chat surface must not render local runner diagnostics beside the conversation",
 );
 
-assert.match(
-  projectChat,
-  /activeSettingsPanel === 'local-runner'[\s\S]*class="settings-local-runner-body"/,
-  "local runner diagnostics must live in the settings center local-runner panel",
-);
-
-assert.match(
-  projectChat,
-  /class="settings-local-runner-body"[\s\S]*settings-parameter-section--local-runner-workspace[\s\S]*项目工作区[\s\S]*promptProjectWorkspaceDirectory[\s\S]*saveProjectWorkspaceDirectory\(\)/,
-  "local-runner settings must expose a real project workspace picker and save action",
-);
-
-assert.match(
-  projectChat,
-  /hasSelectedProject &&\s*\(\s*showLocalRuntimeSettings \|\| isLocalRunnerSurface\s*\)/,
-  "local runner mode must expose project workspace selection in chat settings",
-);
-
-assert.match(
-  readFileSync(resolve(rootDir, "src/modules/project-chat/constants/settingsCenterConfig.js"), "utf8"),
+assert.doesNotMatch(
+  settingsCenterConfig,
   /id: "local-runner"[\s\S]*label: "本地运行"/,
-  "settings center must expose a local runner panel",
+  "settings center must not expose the local runner panel in the chat settings sidebar",
 );
 
 assert.match(

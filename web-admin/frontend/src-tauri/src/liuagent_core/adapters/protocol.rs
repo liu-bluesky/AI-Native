@@ -94,6 +94,7 @@ pub fn tool_result_event(
             "tool_call_id": result.tool_call_id,
             "tool_name": result.name,
             "ok": result.ok,
+            "content": result.content,
             "summary": result.summary,
             "error_code": result.error_code,
             "created_at_epoch_ms": created_at_epoch_ms

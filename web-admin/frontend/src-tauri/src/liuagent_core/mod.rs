@@ -719,6 +719,62 @@ mod tests {
     }
 
     #[test]
+    fn apply_patch_accepts_codex_update_file_format() {
+        let dir = test_workspace("patch_codex_update");
+        let target = dir.join("hello.txt");
+        std::fs::write(&target, "hello\nold\n").expect("write fixture");
+
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_patch_codex_ok".to_string()),
+            name: "apply_patch".to_string(),
+            arguments: json!({
+                "summary": "update hello fixture using Codex patch",
+                "patch": "*** Begin Patch\n*** Update File: hello.txt\n@@\n hello\n-old\n+new\n*** End Patch\n"
+            }),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: Some(types::PermissionDecisionInput {
+                request_id: Some("perm_call_patch_codex_ok_file_write".to_string()),
+                decision: "approve_once".to_string(),
+                grant_scope: Some("once".to_string()),
+                comment: None,
+            }),
+        });
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.content["applied"], true);
+        assert_eq!(result.content["changed_files"][0], "hello.txt");
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "hello\nnew\n");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn apply_patch_accepts_codex_insert_only_hunk() {
+        let dir = test_workspace("patch_codex_insert");
+        let target = dir.join("hello.txt");
+        std::fs::write(&target, "hello\n").expect("write fixture");
+
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_patch_codex_insert_ok".to_string()),
+            name: "apply_patch".to_string(),
+            arguments: json!({
+                "summary": "insert hello fixture line using Codex patch",
+                "patch": "*** Begin Patch\n*** Update File: hello.txt\n@@\n hello\n+new\n*** End Patch\n"
+            }),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: Some(types::PermissionDecisionInput {
+                request_id: Some("perm_call_patch_codex_insert_ok_file_write".to_string()),
+                decision: "approve_once".to_string(),
+                grant_scope: Some("once".to_string()),
+                comment: None,
+            }),
+        });
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "hello\nnew\n");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn apply_patch_rejects_workspace_escape() {
         let dir = test_workspace("patch_escape");
         let patch = "diff --git a/../outside.txt b/../outside.txt\n--- a/../outside.txt\n+++ b/../outside.txt\n@@ -1 +1 @@\n-old\n+new\n";

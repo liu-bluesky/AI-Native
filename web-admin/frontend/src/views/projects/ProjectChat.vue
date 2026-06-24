@@ -386,66 +386,6 @@
                               class="message-process-shell__body"
                             >
                               <div
-                                v-if="
-                                  messageLiveProgressItems(item, idx).length
-                                "
-                                class="message-live-progress"
-                              >
-                                <div class="message-live-progress__head">
-                                  <div>
-                                    <div class="message-live-progress__eyebrow">
-                                      本轮运行轨迹
-                                    </div>
-                                    <div class="message-live-progress__title">
-                                      {{ messageProcessTitle(item, idx) }}
-                                    </div>
-                                  </div>
-                                  <span
-                                    class="message-live-progress__badge"
-                                    :class="`is-${messageProcessStateTone(item, idx)}`"
-                                  >
-                                    {{ messageProcessStateLabel(item, idx) }}
-                                  </span>
-                                </div>
-                                <div class="message-live-progress__list">
-                                  <div
-                                    v-for="progressItem in messageLiveProgressItems(
-                                      item,
-                                      idx,
-                                    )"
-                                    :key="progressItem.id"
-                                    class="message-live-progress__item"
-                                    :class="`is-${progressItem.phase}`"
-                                  >
-                                    <span class="message-live-progress__marker">
-                                      <CircleCheck
-                                        v-if="
-                                          progressItem.phase === 'completed'
-                                        "
-                                        :size="13"
-                                      />
-                                      <span v-else></span>
-                                    </span>
-                                    <span class="message-live-progress__main">
-                                      <span
-                                        class="message-live-progress__item-title"
-                                      >
-                                        {{ progressItem.title }}
-                                      </span>
-                                      <span
-                                        v-if="progressItem.summary"
-                                        class="message-live-progress__item-summary"
-                                      >
-                                        {{ progressItem.summary }}
-                                      </span>
-                                    </span>
-                                    <span class="message-live-progress__phase">
-                                      {{ progressItem.phaseLabel }}
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-                              <div
                                 v-if="messageProcessOperations(item).length"
                                 class="message-operations"
                               >
@@ -748,23 +688,142 @@
                                 </article>
                               </div>
                               <div
-                                v-if="messageProcessLogEntries(item).length"
+                                v-if="messageProcessDisplayEntries(item).length"
                                 class="message-process-stream"
                               >
                                 <div
-                                  v-for="entry in messageProcessLogEntries(
+                                  v-for="entry in messageProcessDisplayEntries(
                                     item,
                                   )"
                                   :key="entry.id"
                                   class="message-process-stream__item"
-                                  :class="`is-${entry.level}`"
+                                  :class="[
+                                    `is-${entry.level}`,
+                                    `is-kind-${messageProcessEntryKind(entry)}`,
+                                  ]"
                                 >
                                   <span
                                     class="message-process-stream__dot"
                                   ></span>
-                                  <span class="message-process-stream__text">
-                                    {{ entry.text }}
-                                  </span>
+                                  <div class="message-process-entry">
+                                    <div class="message-process-entry__head">
+                                      <span
+                                        class="message-process-entry__title"
+                                      >
+                                        {{ messageProcessEntryTitle(entry) }}
+                                      </span>
+                                      <span
+                                        v-if="
+                                          messageProcessEntryStatus(entry)
+                                        "
+                                        class="message-process-entry__status"
+                                      >
+                                        {{ messageProcessEntryStatus(entry) }}
+                                      </span>
+                                    </div>
+                                    <div
+                                      v-if="
+                                        messageProcessEntryMeta(entry).length
+                                      "
+                                      class="message-process-entry__meta"
+                                    >
+                                      <span
+                                        v-for="meta in messageProcessEntryMeta(
+                                          entry,
+                                        )"
+                                        :key="meta"
+                                        class="message-process-entry__meta-item"
+                                      >
+                                        {{ meta }}
+                                      </span>
+                                    </div>
+                                    <ul
+                                      v-if="
+                                        messageProcessEntrySummary(entry)
+                                          .length
+                                      "
+                                      class="message-process-entry__summary"
+                                    >
+                                      <li
+                                        v-for="summary in messageProcessEntrySummary(
+                                          entry,
+                                        )"
+                                        :key="summary"
+                                      >
+                                        {{ summary }}
+                                      </li>
+                                    </ul>
+                                    <div
+                                      v-if="
+                                        messageProcessEntryChildRows(entry)
+                                          .length
+                                      "
+                                      class="message-process-entry__children"
+                                    >
+                                      <div
+                                        v-for="child in messageProcessEntryChildRows(
+                                          entry,
+                                        )"
+                                        :key="child.id"
+                                        class="message-process-entry__child"
+                                        :class="`is-${child.level}`"
+                                      >
+                                        <span
+                                          class="message-process-entry__child-title"
+                                        >
+                                          {{ child.title }}
+                                        </span>
+                                        <span
+                                          v-if="child.summary"
+                                          class="message-process-entry__child-summary"
+                                        >
+                                          {{ child.summary }}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div
+                                      v-if="
+                                        messageProcessEntryDiffLines(entry)
+                                          .length
+                                      "
+                                      class="message-process-entry__diff"
+                                    >
+                                      <div
+                                        v-for="line in messageProcessEntryDiffLines(
+                                          entry,
+                                        )"
+                                        :key="line.id"
+                                        class="message-process-entry__diff-line"
+                                        :class="`is-${line.tone}`"
+                                      >
+                                        {{ line.text }}
+                                      </div>
+                                    </div>
+                                    <details
+                                      v-if="messageProcessEntryCode(entry)"
+                                      class="message-process-entry__details"
+                                    >
+                                      <summary>
+                                        {{
+                                          messageProcessEntryCodeLabel(entry)
+                                        }}
+                                      </summary>
+                                      <pre
+                                        class="message-process-entry__code"
+                                        >{{ messageProcessEntryCode(entry) }}</pre
+                                      >
+                                    </details>
+                                    <details
+                                      v-if="messageProcessEntryJson(entry)"
+                                      class="message-process-entry__details"
+                                    >
+                                      <summary>查看结构化数据</summary>
+                                      <pre
+                                        class="message-process-entry__code"
+                                        >{{ messageProcessEntryJson(entry) }}</pre
+                                      >
+                                    </details>
+                                  </div>
                                 </div>
                               </div>
                             </div>
@@ -1325,6 +1384,62 @@
             :prompt="terminalApprovalPrompt"
             @choose="sendTerminalApprovalChoice"
           />
+          <div
+            v-if="currentLocalLiuAgentPermissionPrompt"
+            class="chat-approval-banner chat-approval-banner--local-agent"
+          >
+            <div class="chat-approval-banner__head">
+              <span class="chat-approval-banner__icon"></span>
+              <div class="chat-approval-banner__title-wrap">
+                <strong>{{ currentLocalLiuAgentPermissionPrompt.title }}</strong>
+                <div class="chat-approval-banner__meta">
+                  <span>{{ currentLocalLiuAgentPermissionPrompt.toolLabel }}</span>
+                  <span>{{ currentLocalLiuAgentPermissionPrompt.scopeLabel }}</span>
+                  <span>{{ currentLocalLiuAgentPermissionPrompt.riskLabel }}</span>
+                  <span
+                    v-if="currentLocalLiuAgentPermissionPrompt.queueLabel"
+                  >
+                    {{ currentLocalLiuAgentPermissionPrompt.queueLabel }}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <p class="chat-approval-banner__desc">
+              {{ currentLocalLiuAgentPermissionPrompt.description }}
+            </p>
+            <details
+              v-if="currentLocalLiuAgentPermissionPrompt.detailText"
+              class="chat-approval-banner__details"
+            >
+              <summary>查看操作详情</summary>
+              <pre>{{ currentLocalLiuAgentPermissionPrompt.detailText }}</pre>
+            </details>
+            <div class="chat-approval-banner__actions">
+              <el-button
+                size="small"
+                @click="submitCurrentLocalLiuAgentPermissionAction('local_liuagent_deny')"
+              >
+                拒绝
+              </el-button>
+              <el-button
+                size="small"
+                plain
+                type="primary"
+                :loading="localLiuAgentPermissionSubmitting"
+                @click="submitCurrentLocalLiuAgentPermissionAction('local_liuagent_allow_once')"
+              >
+                允许一次
+              </el-button>
+              <el-button
+                size="small"
+                type="primary"
+                :loading="localLiuAgentPermissionSubmitting"
+                @click="submitCurrentLocalLiuAgentPermissionAction('local_liuagent_allow_session')"
+              >
+                本会话允许
+              </el-button>
+            </div>
+          </div>
           <ChatComposer
             ref="chatComposerRef"
             v-model:draft-text="draftText"
@@ -1582,6 +1697,7 @@
           </div>
           <div class="settings-center-context-bar__actions">
             <el-button
+              v-if="settingsInternalItems.length > 1"
               type="primary"
               plain
               @click="startSettingsTour(true)"
@@ -1601,10 +1717,7 @@
         </div>
 
         <div
-          v-if="
-            activeSettingsPanel === 'chat' ||
-            activeSettingsPanel === 'local-runner'
-          "
+          v-if="activeSettingsPanel === 'chat'"
           class="settings-center-stage__body settings-center-stage__body--chat"
         >
           <div class="settings-chat-layout settings-chat-layout--single">
@@ -1869,10 +1982,7 @@
                           </p>
                         </div>
                         <el-form-item
-                          v-if="
-                            hasSelectedProject &&
-                            (showLocalRuntimeSettings || isLocalRunnerSurface)
-                          "
+                          v-if="hasSelectedProject"
                         >
                           <template #label>
                             <span class="label-with-tooltip">
@@ -2018,445 +2128,6 @@
                     </el-form>
                   </el-tab-pane>
                 </el-tabs>
-
-                <div
-                  v-if="activeSettingsPanel === 'local-runner'"
-                  class="settings-local-runner-body"
-                >
-                  <section
-                    class="settings-parameter-section settings-parameter-section--local-runner-workspace"
-                  >
-                    <div class="settings-parameter-section__header">
-                      <div class="settings-parameter-section__title">
-                        项目工作区
-                      </div>
-                      <p class="settings-parameter-section__desc">
-                        桌面本地智能体只在这台电脑的项目目录内读取和执行工具。
-                      </p>
-                    </div>
-                    <el-form
-                      label-position="left"
-                      label-width="160px"
-                      class="settings-form"
-                      size="default"
-                    >
-                      <el-form-item v-if="hasSelectedProject">
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            工作目录
-                            <el-tooltip
-                              content="当前项目在这台电脑上的真实目录。AI 执行本机工具、读取文件和解析相对路径时都会以这里为边界。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <div class="workspace-path-editor">
-                          <el-input
-                            v-model="projectWorkspaceDraft"
-                            class="full-width"
-                            placeholder="/Volumes/苹果1_5T/self/ai-employee"
-                          />
-                          <div class="workspace-path-actions">
-                            <el-button
-                              @click="promptProjectWorkspaceDirectory"
-                              :loading="projectWorkspacePicking"
-                            >
-                              选择目录
-                            </el-button>
-                            <el-button
-                              type="primary"
-                              :loading="projectWorkspaceSaving"
-                              @click="saveProjectWorkspaceDirectory()"
-                            >
-                              保存工作区
-                            </el-button>
-                          </div>
-                          <div class="workspace-path-hint">
-                            <template v-if="projectWorkspaceResolved">
-                              当前已保存：{{ projectWorkspaceResolved }}
-                            </template>
-                            <template v-else>
-                              当前项目还没有配置工作区路径，本地智能体不会执行本机工具。
-                            </template>
-                            <template v-if="projectWorkspaceDirty">
-                              当前输入尚未保存。
-                            </template>
-                          </div>
-                        </div>
-                      </el-form-item>
-                      <div v-else class="settings-empty">
-                        选择项目后才能配置本机工作目录。
-                      </div>
-                    </el-form>
-                  </section>
-
-                  <div class="local-runner-panel local-runner-panel--settings">
-                      <section class="local-runner-card local-runner-card--self-check">
-                        <div class="local-runner-card__head">
-                          <div>
-                            <div class="local-runner-card__eyebrow">Diagnostics</div>
-                            <div class="local-runner-card__title">本机 Runner 自检</div>
-                          </div>
-                          <el-button
-                            size="small"
-                            :loading="nativeRunnerSelfChecking"
-                            :disabled="!nativeDesktopBridgeAvailable"
-                            @click="runNativeRunnerSelfCheck"
-                          >
-                            运行自检
-                          </el-button>
-                        </div>
-                        <div
-                          v-if="!nativeDesktopBridgeAvailable"
-                          class="local-runner-empty"
-                        >
-                          当前是网页模式；Tauri 桌面端启动后才会提供本机 Runner。
-                        </div>
-                        <div
-                          v-else-if="nativeRunnerSelfCheckResults.length"
-                          class="local-runner-self-check"
-                        >
-                          <div
-                            v-for="item in nativeRunnerSelfCheckResults"
-                            :key="item.id"
-                            class="local-runner-self-check__item"
-                            :class="`is-${item.tone}`"
-                          >
-                            <div>
-                              <strong>{{ item.label }}</strong>
-                              <span>{{ item.summary }}</span>
-                            </div>
-                            <el-tag
-                              size="small"
-                              :type="runnerSelfCheckTagType(item)"
-                              effect="plain"
-                            >
-                              {{ runnerSelfCheckStatusLabel(item) }}
-                            </el-tag>
-                          </div>
-                        </div>
-                        <div v-else class="local-runner-empty">
-                          运行自检会检查原生桥、工作区和少量只读命令白名单。
-                        </div>
-                      </section>
-
-                      <section class="local-runner-card local-runner-card--approval">
-                        <div class="local-runner-card__head">
-                          <div>
-                            <div class="local-runner-card__eyebrow">Authorization Log</div>
-                            <div class="local-runner-card__title">授权记录</div>
-                          </div>
-                          <div class="local-runner-card__actions">
-                            <el-button
-                              size="small"
-                              text
-                              :loading="nativeRunnerPermissionRecordsLoading"
-                              :disabled="!nativeDesktopBridgeAvailable"
-                              @click="refreshNativeRunnerPermissionRecords"
-                            >
-                              刷新
-                            </el-button>
-                            <el-tag
-                              size="small"
-                              :type="terminalApprovalPrompt ? 'warning' : 'success'"
-                              effect="plain"
-                            >
-                              {{ terminalApprovalPrompt ? "聊天区待确认" : "空闲" }}
-                            </el-tag>
-                          </div>
-                        </div>
-                        <div v-if="terminalApprovalPrompt" class="local-approval-panel">
-                          <div class="local-approval-panel__title">
-                            {{ terminalApprovalPrompt.title }}
-                          </div>
-                          <p
-                            v-if="terminalApprovalPrompt.description"
-                            class="local-approval-panel__desc"
-                          >
-                            {{ terminalApprovalPrompt.description }}
-                          </p>
-                          <pre
-                            v-if="terminalApprovalPrompt.message"
-                            class="local-approval-panel__message"
-                            >{{ terminalApprovalPrompt.message }}</pre
-                          >
-                          <div
-                            v-if="terminalApprovalPrompt.commandPreview"
-                            class="local-approval-panel__command-preview"
-                          >
-                            <details>
-                              <summary>查看要执行的操作详情</summary>
-                              <pre>{{ terminalApprovalPrompt.commandPreview }}</pre>
-                            </details>
-                          </div>
-                          <el-alert
-                            type="warning"
-                            show-icon
-                            :closable="false"
-                            title="请在聊天主界面完成授权"
-                            description="这里仅展示诊断信息，不处理批准或拒绝。"
-                          />
-                        </div>
-                        <div v-else class="local-runner-empty">
-                          当前没有待确认操作；需要授权时会显示在聊天主界面。
-                        </div>
-                        <div
-                          v-if="nativeRunnerPermissionRecords.length"
-                          class="local-permission-records"
-                        >
-                          <div class="local-permission-records__title">
-                            最近授权记录
-                          </div>
-                          <div
-                            v-for="record in nativeRunnerPermissionRecords"
-                            :key="record.decisionId"
-                            class="local-permission-record"
-                          >
-                            <div>
-                              <strong>{{
-                                runnerPermissionDecisionLabel(record)
-                              }}</strong>
-                              <span>{{ runnerPermissionRecordSummary(record) }}</span>
-                            </div>
-                            <span>{{ runnerPermissionRecordTime(record) }}</span>
-                          </div>
-                        </div>
-                      </section>
-
-                      <section class="local-runner-card local-runner-card--process">
-                        <div class="local-runner-card__head">
-                          <div>
-                            <div class="local-runner-card__eyebrow">Process</div>
-                            <div class="local-runner-card__title">执行过程</div>
-                          </div>
-                          <el-tag
-                            size="small"
-                            effect="plain"
-                            :type="localRunnerProcessStatusTagType"
-                          >
-                            {{ terminalPanelStatusText }}
-                          </el-tag>
-                        </div>
-                        <div class="local-process-summary">
-                          <div>
-                            <span>会话</span>
-                            <strong>{{ hostTerminalSessionId || "未连接" }}</strong>
-                          </div>
-                          <div>
-                            <span>命令</span>
-                            <strong>{{ terminalActiveCommand || "等待任务" }}</strong>
-                          </div>
-                          <div>
-                            <span>日志</span>
-                            <strong>{{ terminalPanelLineCount }} 行</strong>
-                          </div>
-                        </div>
-                        <div class="local-process-timeline">
-                          <div
-                            v-for="item in localRunnerProcessItems"
-                            :key="item.id"
-                            class="local-process-timeline__item"
-                            :class="`is-${item.phase}`"
-                          >
-                            <span class="local-process-timeline__marker">
-                              <CircleCheck
-                                v-if="item.phase === 'completed'"
-                                :size="13"
-                              />
-                              <span v-else></span>
-                            </span>
-                            <span class="local-process-timeline__main">
-                              <span class="local-process-timeline__title">
-                                {{ item.title }}
-                              </span>
-                              <span
-                                v-if="item.summary"
-                                class="local-process-timeline__summary"
-                              >
-                                {{ item.summary }}
-                              </span>
-                            </span>
-                            <span class="local-process-timeline__phase">
-                              {{ item.phaseLabel }}
-                            </span>
-                          </div>
-                        </div>
-                      </section>
-
-                      <section class="local-runner-card local-runner-card--workspace">
-                        <div class="local-runner-card__head">
-                          <div>
-                            <div class="local-runner-card__eyebrow">Workspace</div>
-                            <div class="local-runner-card__title">文件树 / 编辑器</div>
-                          </div>
-                          <el-button
-                            size="small"
-                            text
-                            :loading="workspaceFileTreeLoading"
-                            :disabled="!canUseWorkspaceFiles"
-                            @click="refreshWorkspaceFileTree"
-                          >
-                            刷新
-                          </el-button>
-                        </div>
-                        <div class="local-workspace-root">
-                          {{ projectWorkspaceResolved || "未配置项目工作区" }}
-                        </div>
-                        <div v-if="canUseWorkspaceFiles" class="local-workspace-source">
-                          {{ workspaceFileBridgeLabel }}
-                        </div>
-                        <div v-if="!canUseWorkspaceFiles" class="local-runner-empty">
-                          先在设置中保存项目工作区后，才能直接浏览和编辑本机文件。
-                        </div>
-                        <template v-else>
-                          <div class="local-file-browser">
-                            <div class="local-file-browser__toolbar">
-                              <el-button
-                                size="small"
-                                text
-                                :disabled="!workspaceFileTreePath"
-                                @click="openWorkspaceDirectory(workspaceParentPath)"
-                              >
-                                上一级
-                              </el-button>
-                              <span>{{ workspaceFileTreePath || "." }}</span>
-                            </div>
-                            <div class="local-file-list">
-                              <button
-                                v-for="item in workspaceFileItems"
-                                :key="`${item.kind}:${item.path}`"
-                                type="button"
-                                class="local-file-item"
-                                :class="{
-                                  'is-active': item.path === activeWorkspaceFilePath,
-                                }"
-                                @click="handleWorkspaceFileClick(item)"
-                              >
-                                <span class="local-file-item__icon">
-                                  {{ item.kind === "directory" ? "DIR" : "TXT" }}
-                                </span>
-                                <span class="local-file-item__name">{{
-                                  item.name
-                                }}</span>
-                              </button>
-                              <div
-                                v-if="!workspaceFileItems.length"
-                                class="local-runner-empty"
-                              >
-                                当前目录没有可展示文件。
-                              </div>
-                            </div>
-                          </div>
-                          <div class="local-editor">
-                            <div class="local-editor__head">
-                              <span>{{ activeWorkspaceFilePath || "未选择文件" }}</span>
-                              <el-button
-                                size="small"
-                                type="primary"
-                                :loading="workspaceFileSaving"
-                                :disabled="
-                                  !activeWorkspaceFilePath || !workspaceFileDirty
-                                "
-                                @click="saveActiveWorkspaceFile"
-                              >
-                                {{ workspaceFileReadOnly ? "准备写入" : "保存" }}
-                              </el-button>
-                            </div>
-                            <el-input
-                              v-model="workspaceFileDraft"
-                              type="textarea"
-                              resize="none"
-                              :autosize="{ minRows: 8, maxRows: 14 }"
-                              :disabled="
-                                !activeWorkspaceFilePath || workspaceFileLoading
-                              "
-                              :readonly="false"
-                              :placeholder="
-                                workspaceFileReadOnly
-                                  ? '桌面端可编辑草稿；点击准备写入只生成确认摘要，不会直接保存。'
-                                  : '从上方文件树选择文本文件后可在这里编辑。'
-                              "
-                              class="local-editor__textarea"
-                            />
-                          </div>
-                          <div class="local-diff-preview">
-                            <div class="local-diff-preview__head">
-                              <div>
-                                <strong>差异预览</strong>
-                                <span>{{ workspaceDiffTargetLabel }}</span>
-                              </div>
-                              <div class="local-runner-card__actions">
-                                <el-tag size="small" effect="plain">
-                                  {{ workspaceDiffStatusLabel }}
-                                </el-tag>
-                                <el-button
-                                  size="small"
-                                  text
-                                  :loading="workspaceDiffLoading"
-                                  :disabled="!canPreviewWorkspaceDiff"
-                                  @click="refreshWorkspaceDiffPreview"
-                                >
-                                  预览
-                                </el-button>
-                              </div>
-                            </div>
-                            <div
-                              v-if="!canPreviewWorkspaceDiff"
-                              class="local-runner-empty"
-                            >
-                              差异预览需要 Tauri 桌面端原生桥和项目工作区。
-                            </div>
-                            <div
-                              v-else-if="
-                                workspaceDiffPreview?.reason &&
-                                !workspaceDiffPreview?.available
-                              "
-                              class="local-runner-empty"
-                            >
-                              {{ workspaceDiffPreview.reason }}
-                            </div>
-                            <pre
-                              v-else-if="
-                                workspaceDiffPreview?.diff ||
-                                workspaceDiffPreview?.summary ||
-                                workspaceDiffPreview?.status
-                              "
-                              class="local-diff-preview__output"
-                              >{{
-                                [
-                                  workspaceDiffPreview?.status,
-                                  workspaceDiffPreview?.summary,
-                                  workspaceDiffPreview?.diff,
-                                ]
-                                  .filter(Boolean)
-                                  .join("\n\n")
-                              }}</pre
-                            >
-                            <div v-else class="local-runner-empty">
-                              尚未生成差异预览；没有选中文件时会预览整个工作区。
-                            </div>
-                          </div>
-                        </template>
-                      </section>
-
-                      <section class="local-runner-card local-runner-card--terminal">
-                        <div class="local-runner-card__head">
-                          <div>
-                            <div class="local-runner-card__eyebrow">Terminal</div>
-                            <div class="local-runner-card__title">终端输出</div>
-                          </div>
-                          <el-tag size="small" effect="plain">
-                            {{ terminalPanelStatusText }}
-                          </el-tag>
-                        </div>
-                        <pre class="local-terminal-output">{{ terminalPanelText }}</pre>
-                      </section>
-                  </div>
-                </div>
 
                 <el-tabs v-if="activeSettingsPanel === 'chat'" class="settings-tabs">
                   <el-tab-pane label="生成回答">
@@ -3671,6 +3342,8 @@ let chatSessionListRefreshAfterSendTimer = null;
 const localLiuAgentBuiltinToolNames = ref(new Set());
 const localLiuAgentToolTasks = new Set();
 const localLiuAgentPendingPermissions = new Map();
+const localLiuAgentPendingPermissionVersion = ref(0);
+const localLiuAgentPermissionSubmitting = ref(false);
 const localLiuAgentActiveRuns = new Map();
 const localLiuAgentSeenRuntimeEventIds = new Set();
 const localLiuAgentActiveRunVersion = ref(0);
@@ -8272,6 +7945,8 @@ const emptyStateText = computed(() => {
 const composerPlaceholder = computed(() =>
   isTerminalInteractionMode.value
     ? "项目终端已连接，直接输入命令或交互内容，按 Enter 发送。"
+    : currentChatSessionLocalLiuAgentWaitingPermission.value
+      ? "请先处理输入框上方的本机操作授权；处理后系统会自动继续执行。"
     : isLocalRunnerSurface.value
       ? "输入需求，本地 liuAgent 会在桌面端调用模型并按模型结构化工具调用执行。"
     : agentWorkflowState.value.phase === "waiting_user"
@@ -8308,6 +7983,9 @@ const composerHintText = computed(() => {
   }
   if (isLocalRunnerSurface.value) {
     return "本地运行：模型请求和工具执行在桌面端发起";
+  }
+  if (currentChatSessionLocalLiuAgentWaitingPermission.value) {
+    return "等待你处理本机授权，完成后自动继续";
   }
   if (agentWorkflowState.value.phase === "waiting_user") {
     return "等待你在消息卡片确认，完成后自动继续";
@@ -8884,27 +8562,88 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
   };
 }
 
+function localLiuAgentRuntimeEventProcessKind(event = {}) {
+  const type = String(event?.type || "").trim();
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+  if (type === "progress_update") return "progress_update";
+  if (type === "model_call_started" || type === "model_step") return "model_call";
+  if (type === "approval_required") return "permission";
+  if (type === "command_output_chunk") return "command_output";
+  if (type === "command_started" || type === "command_finished") return "command";
+  if (toolName === "read_file") return "file_read";
+  if (["list_files", "search_text"].includes(toolName)) return "file_search";
+  if (["write_file", "apply_patch", "delete_file"].includes(toolName)) return "file_edit";
+  if (["call_mcp_tool", "list_mcp_tools", "read_mcp_resource"].includes(toolName)) {
+    return "mcp_call";
+  }
+  if (type === "tool_call_started") return "tool_call";
+  if (type === "tool_result") return "tool_result";
+  return "log";
+}
+
+function localLiuAgentRuntimeEventProcessLogEntry(event = {}, operation = null) {
+  const type = String(event?.type || "").trim();
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  const eventId = String(event?.event_id || event?.eventId || "").trim();
+  const transcriptText = localLiuAgentRuntimeEventTranscriptText(event);
+  const phase = operation
+    ? operation.phase
+    : localLiuAgentRuntimeEventPhase(event);
+  return {
+    id:
+      eventId ||
+      `local-agent-event:${String(event?.runtime_session_id || event?.runtimeSessionId || "").trim()}:${type}:${Date.now()}`,
+    text: transcriptText || operation?.summary || localLiuAgentRuntimeEventSummary(event),
+    level:
+      phase === "failed"
+        ? "error"
+        : phase === "waiting_user"
+          ? "warning"
+          : phase === "completed"
+            ? "success"
+            : "info",
+    kind: localLiuAgentRuntimeEventProcessKind(event),
+    eventType: type,
+    payload: {
+      ...payload,
+      event_type: type,
+      runtime_session_id: String(
+        event?.runtime_session_id || event?.runtimeSessionId || event?.session_id || "",
+      ).trim(),
+    },
+    toolCallId: String(payload?.tool_call_id || payload?.toolCallId || "").trim(),
+  };
+}
+
+function shouldUpsertLocalLiuAgentRuntimeOperation(event = {}, operation = null) {
+  if (!operation) return false;
+  const type = String(event?.type || "").trim();
+  if (type === "approval_required") return false;
+  return shouldShowMessageOperationCard(operation);
+}
+
 function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
   if (!row) return;
   for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
     if (!markLocalLiuAgentRuntimeEventSeen(event)) continue;
+    const payload = localLiuAgentRuntimeEventPayload(event);
+    if (
+      String(event?.type || "").trim() === "tool_result" &&
+      String(payload?.error_code || payload?.errorCode || "").trim() ===
+        "permission.required"
+    ) {
+      continue;
+    }
     const operation = localLiuAgentRuntimeEventOperation(event, {
       ...context,
       assistantMessageId: row.id,
     });
-    if (!operation) continue;
-    upsertMessageOperation(row, operation);
-    const transcriptText = localLiuAgentRuntimeEventTranscriptText(event);
+    if (shouldUpsertLocalLiuAgentRuntimeOperation(event, operation)) {
+      upsertMessageOperation(row, operation);
+    }
     appendMessageProcessLog(row, {
-      text: transcriptText || operation.summary,
-      level:
-        operation.phase === "failed"
-          ? "error"
-          : operation.phase === "waiting_user"
-            ? "warning"
-            : operation.phase === "completed"
-              ? "success"
-              : "info",
+      ...localLiuAgentRuntimeEventProcessLogEntry(event, operation),
     });
   }
 }
@@ -8972,24 +8711,24 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
   if (!markLocalLiuAgentRuntimeEventSeen(event)) return;
   const row = localLiuAgentActiveRunRow(run);
   if (!row) return;
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  if (
+    String(event?.type || "").trim() === "tool_result" &&
+    String(payload?.error_code || payload?.errorCode || "").trim() ===
+      "permission.required"
+  ) {
+    return;
+  }
   const operation = localLiuAgentRuntimeEventOperation(event, {
     chatSessionId,
     workspacePath: run.workspacePath,
     assistantMessageId: run.assistantMessageId,
   });
-  if (!operation) return;
-  upsertMessageOperation(row, operation);
-  const transcriptText = localLiuAgentRuntimeEventTranscriptText(event);
+  if (shouldUpsertLocalLiuAgentRuntimeOperation(event, operation)) {
+    upsertMessageOperation(row, operation);
+  }
   appendMessageProcessLog(row, {
-    text: transcriptText || operation.summary,
-    level:
-      operation.phase === "failed"
-        ? "error"
-        : operation.phase === "waiting_user"
-          ? "warning"
-          : operation.phase === "completed"
-            ? "success"
-            : "info",
+    ...localLiuAgentRuntimeEventProcessLogEntry(event, operation),
     autoExpand: true,
   });
   scrollToBottom({ force: false });
@@ -9132,12 +8871,49 @@ function localLiuAgentPendingPermissionFromRecovery(result = {}) {
   return null;
 }
 
-function findLocalLiuAgentRuntimeMessage(rows = []) {
-  return (
-    [...(Array.isArray(rows) ? rows : messages.value)]
-      .reverse()
-      .find((item) => item && item.role !== "user") || null
-  );
+function localLiuAgentRuntimeSessionIdFromRecovery(result = {}) {
+  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  return String(state?.session_id || state?.sessionId || "").trim();
+}
+
+function rowHasLocalLiuAgentRuntimeSession(row = {}, runtimeSessionId = "") {
+  const normalizedSessionId = String(runtimeSessionId || "").trim();
+  if (!row || !normalizedSessionId) return false;
+  return (Array.isArray(row.operations) ? row.operations : []).some((operation) => {
+    const meta =
+      operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+    return (
+      String(meta.session_id || meta.sessionId || "").trim() === normalizedSessionId ||
+      String(meta.runtime_session_id || meta.runtimeSessionId || "").trim() ===
+        normalizedSessionId
+    );
+  });
+}
+
+function findLocalLiuAgentRuntimeMessage(rows = [], result = {}) {
+  const normalizedRows = Array.isArray(rows) ? rows : messages.value;
+  const runtimeEvents = localLiuAgentRuntimeEventsFromResult(result);
+  const assistantMessageId =
+    localLiuAgentAssistantMessageIdFromRuntimeEvents(runtimeEvents);
+  if (assistantMessageId) {
+    return (
+      normalizedRows.find(
+        (item) => String(item?.id || "").trim() === assistantMessageId,
+      ) || null
+    );
+  }
+  const runtimeSessionId = localLiuAgentRuntimeSessionIdFromRecovery(result);
+  if (runtimeSessionId) {
+    return (
+      normalizedRows.find(
+        (item) =>
+          item &&
+          item.role !== "user" &&
+          rowHasLocalLiuAgentRuntimeSession(item, runtimeSessionId),
+      ) || null
+    );
+  }
+  return null;
 }
 
 async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows = []) {
@@ -9174,7 +8950,7 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
     state?.run_state && typeof state.run_state === "object" ? state.run_state : {};
   const status = String(runState?.status || "").trim();
   if (!["waiting_approval", "failed"].includes(status)) return;
-  const row = findLocalLiuAgentRuntimeMessage(rows);
+  const row = findLocalLiuAgentRuntimeMessage(rows, result);
   if (!row) return;
   applyLocalLiuAgentRuntimeEvents(row, result, {
     chatSessionId: activeChatSessionId,
@@ -9221,7 +8997,7 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
         String(permissionRequest?.toolName || permissionRequest?.tool_name || "").trim() ||
         "本地工具",
     };
-    localLiuAgentPendingPermissions.set(requestId, {
+    setLocalLiuAgentPendingPermission(requestId, {
       kind: "local_chat",
       localChatPayload,
       permissionRequest: normalizedPermissionRequest,
@@ -9234,10 +9010,6 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
         restored_from_local_runtime_state: true,
       },
     });
-    upsertLocalLiuAgentPermissionOperation(row, normalizedPermissionRequest);
-    row.content =
-      String(row.content || "").trim() ||
-      "已恢复上次本机工具授权请求，请在当前回答气泡中继续处理。";
     appendMessageProcessLog(row, {
       text: "已恢复上次待授权的本地 liuAgent 会话",
       level: "warning",
@@ -12009,6 +11781,9 @@ const canSend = computed(() => {
       String(draftText.value || "").trim() || hasLiveTerminalSession.value,
     );
   }
+  if (currentChatSessionLocalLiuAgentWaitingPermission.value) {
+    return false;
+  }
   if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
     return false;
   }
@@ -12045,6 +11820,7 @@ const isProjectOptionalEmployeeCreate = computed(
 
 const isComposerDisabled = computed(() => {
   if (isTerminalInteractionMode.value) return false;
+  if (currentChatSessionLocalLiuAgentWaitingPermission.value) return true;
   if (isProjectOptionalEmployeeCreate.value) return false;
   if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
     return true;
@@ -12816,6 +12592,10 @@ function appendMessageProcessLog(row, source = {}) {
   if (!row) return null;
   const text = String(source?.text || source?.content || "").trim();
   if (!text) return null;
+  const payload =
+    source?.payload && typeof source.payload === "object" && !Array.isArray(source.payload)
+      ? source.payload
+      : {};
   const logs = Array.isArray(row.processLog) ? row.processLog.slice() : [];
   const entry = {
     id:
@@ -12823,6 +12603,16 @@ function appendMessageProcessLog(row, source = {}) {
       `process-log-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     text,
     level: normalizeProcessLogLevel(source?.level),
+    kind: normalizeMessageProcessEntryKind(source?.kind || payload?.kind || ""),
+    payload,
+    eventType: String(source?.eventType || source?.event_type || payload?.event_type || "").trim(),
+    toolCallId: String(
+      source?.toolCallId ||
+        source?.tool_call_id ||
+        payload?.toolCallId ||
+        payload?.tool_call_id ||
+        "",
+    ).trim(),
     createdAt: String(
       source?.createdAt || source?.created_at || nowText(),
     ).trim(),
@@ -12893,8 +12683,538 @@ function messageProcessLogEntries(row) {
     : [];
 }
 
-function messageProcessLogSummary(row) {
+function messageProcessEntryChildren(entry = {}) {
+  return Array.isArray(entry?.children)
+    ? entry.children.filter((item) => item && String(item?.text || "").trim())
+    : [];
+}
+
+function messageProcessEntrySpanKey(entry = {}) {
+  const toolCallId = String(
+    entry?.toolCallId ||
+      entry?.tool_call_id ||
+      messageProcessEntryPayload(entry)?.tool_call_id ||
+      messageProcessEntryPayload(entry)?.toolCallId ||
+      "",
+  ).trim();
+  if (!toolCallId) return "";
+  const kind = messageProcessEntryKind(entry);
+  if (
+    [
+      "tool_call",
+      "tool_result",
+      "file_read",
+      "file_search",
+      "file_edit",
+      "command",
+      "command_output",
+      "mcp_call",
+      "permission",
+    ].includes(kind)
+  ) {
+    return `tool:${toolCallId}`;
+  }
+  return "";
+}
+
+function chooseMessageProcessSpanKind(currentKind = "", nextKind = "") {
+  const priority = [
+    "file_edit",
+    "command",
+    "file_read",
+    "file_search",
+    "mcp_call",
+    "permission",
+    "tool_call",
+    "tool_result",
+    "command_output",
+    "log",
+  ];
+  const currentIndex = priority.indexOf(currentKind) === -1 ? priority.length : priority.indexOf(currentKind);
+  const nextIndex = priority.indexOf(nextKind) === -1 ? priority.length : priority.indexOf(nextKind);
+  return nextIndex < currentIndex ? nextKind : currentKind || nextKind || "log";
+}
+
+function payloadHasUsefulProcessContent(payload = {}) {
+  if (!payload || typeof payload !== "object") return false;
+  const content =
+    payload.content && typeof payload.content === "object" && !Array.isArray(payload.content)
+      ? payload.content
+      : {};
+  if (Object.keys(content).length) return true;
+  return Boolean(payload.arguments && typeof payload.arguments === "object");
+}
+
+function mergeMessageProcessSpanEntry(group, entry) {
+  const nextKind = messageProcessEntryKind(entry);
+  group.children.push(entry);
+  group.kind = chooseMessageProcessSpanKind(group.kind, nextKind);
+  group.level = normalizeProcessLogLevel(entry?.level || group.level);
+  group.text = String(group.text || "").trim() || String(entry?.text || "").trim();
+  const payload = messageProcessEntryPayload(entry);
+  if (!payloadHasUsefulProcessContent(group.payload) || nextKind !== "command_output") {
+    group.payload = {
+      ...(group.payload || {}),
+      ...payload,
+      content:
+        payload?.content && typeof payload.content === "object"
+          ? payload.content
+          : group.payload?.content,
+      arguments:
+        payload?.arguments && typeof payload.arguments === "object"
+          ? payload.arguments
+          : group.payload?.arguments,
+    };
+  }
+  if (!group.eventType && messageProcessEntryEventType(entry)) {
+    group.eventType = messageProcessEntryEventType(entry);
+  }
+  return group;
+}
+
+function messageProcessDisplayEntries(row) {
   const entries = messageProcessLogEntries(row);
+  const grouped = [];
+  const groupsByKey = new Map();
+  for (const entry of entries) {
+    const spanKey = messageProcessEntrySpanKey(entry);
+    if (!spanKey) {
+      grouped.push(entry);
+      continue;
+    }
+    let group = groupsByKey.get(spanKey);
+    if (!group) {
+      group = {
+        ...entry,
+        id: `process-span-${spanKey}`,
+        spanKey,
+        isSpan: true,
+        children: [],
+        payload: {},
+        kind: "",
+      };
+      groupsByKey.set(spanKey, group);
+      grouped.push(group);
+    }
+    mergeMessageProcessSpanEntry(group, entry);
+  }
+  return grouped;
+}
+
+function normalizeMessageProcessEntryKind(kind = "") {
+  const normalized = String(kind || "")
+    .trim()
+    .toLowerCase();
+  return normalized.replace(/[^a-z0-9_:-]+/g, "_");
+}
+
+function messageProcessEntryPayload(entry = {}) {
+  return entry?.payload && typeof entry.payload === "object" && !Array.isArray(entry.payload)
+    ? entry.payload
+    : {};
+}
+
+function messageProcessEntryContent(entry = {}) {
+  const payload = messageProcessEntryPayload(entry);
+  if (payload?.content && typeof payload.content === "object" && !Array.isArray(payload.content)) {
+    return payload.content;
+  }
+  for (const child of messageProcessEntryChildren(entry)) {
+    const content = messageProcessEntryContent(child);
+    if (Object.keys(content).length) return content;
+  }
+  return {};
+}
+
+function messageProcessEntryArguments(entry = {}) {
+  const payload = messageProcessEntryPayload(entry);
+  if (payload?.arguments && typeof payload.arguments === "object" && !Array.isArray(payload.arguments)) {
+    return payload.arguments;
+  }
+  for (const child of messageProcessEntryChildren(entry)) {
+    const args = messageProcessEntryArguments(child);
+    if (Object.keys(args).length) return args;
+  }
+  return {};
+}
+
+function messageProcessEntryEventType(entry = {}) {
+  const payload = messageProcessEntryPayload(entry);
+  return String(entry?.eventType || entry?.event_type || payload?.event_type || "").trim();
+}
+
+function messageProcessEntryToolName(entry = {}) {
+  const payload = messageProcessEntryPayload(entry);
+  const direct = String(payload?.tool_name || payload?.toolName || "").trim();
+  if (direct) return direct;
+  for (const child of messageProcessEntryChildren(entry)) {
+    const childTool = messageProcessEntryToolName(child);
+    if (childTool) return childTool;
+  }
+  return "";
+}
+
+function messageProcessEntryPath(entry = {}) {
+  const payload = messageProcessEntryPayload(entry);
+  const content = messageProcessEntryContent(entry);
+  const args = messageProcessEntryArguments(entry);
+  const changedFiles = Array.isArray(content?.changed_files)
+    ? content.changed_files
+    : Array.isArray(content?.changedFiles)
+      ? content.changedFiles
+      : [];
+  return String(
+    content?.path ||
+      payload?.path ||
+      args?.path ||
+      args?.file ||
+      changedFiles[0] ||
+      "",
+  ).trim();
+}
+
+function inferMessageProcessEntryKind(entry = {}) {
+  const explicit = normalizeMessageProcessEntryKind(entry?.kind || "");
+  if (explicit) return explicit;
+  const eventType = messageProcessEntryEventType(entry);
+  const toolName = messageProcessEntryToolName(entry);
+  if (eventType === "progress_update") return "progress_update";
+  if (eventType === "model_call_started" || eventType === "model_step") return "model_call";
+  if (eventType === "approval_required") return "permission";
+  if (eventType === "command_output_chunk") return "command_output";
+  if (eventType === "command_started" || eventType === "command_finished") return "command";
+  if (["read_file"].includes(toolName)) return "file_read";
+  if (["list_files", "search_text"].includes(toolName)) return "file_search";
+  if (["write_file", "apply_patch", "delete_file"].includes(toolName)) return "file_edit";
+  if (["call_mcp_tool", "list_mcp_tools", "read_mcp_resource"].includes(toolName)) {
+    return "mcp_call";
+  }
+  if (eventType === "tool_call_started") return "tool_call";
+  if (eventType === "tool_result") return "tool_result";
+  return "log";
+}
+
+function messageProcessEntryKind(entry = {}) {
+  return inferMessageProcessEntryKind(entry);
+}
+
+function messageProcessEntryTextLines(entry = {}) {
+  return String(entry?.text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function messageProcessEntryFirstLine(entry = {}) {
+  return messageProcessEntryTextLines(entry)[0] || "";
+}
+
+function messageProcessEntryTitle(entry = {}) {
+  const kind = messageProcessEntryKind(entry);
+  const payload = messageProcessEntryPayload(entry);
+  const content = messageProcessEntryContent(entry);
+  const args = messageProcessEntryArguments(entry);
+  const eventType = messageProcessEntryEventType(entry);
+  const toolName = messageProcessEntryToolName(entry);
+  const path = messageProcessEntryPath(entry);
+  const firstLine = messageProcessEntryFirstLine(entry);
+  if (kind === "progress_update") return "Agent progress";
+  if (kind === "model_call") {
+    const index = Number(payload?.index || 0) || 0;
+    if (eventType === "model_step") {
+      return `Model step${index > 0 ? ` ${index}` : ""} completed`;
+    }
+    return `Computing${index > 0 ? ` (model step ${index})` : ""}`;
+  }
+  if (kind === "permission") return "Waiting for approval";
+  if (kind === "file_read") return `Read${path ? `(${path})` : ""}`;
+  if (kind === "file_search") {
+    const query = String(args?.query || args?.pattern || payload?.query || "").trim();
+    const subject =
+      toolName === "list_files"
+        ? path || String(args?.path || args?.directory || ".").trim() || "."
+        : query || path;
+    return `Explore${subject ? `(${subject})` : ""}`;
+  }
+  if (kind === "file_edit") {
+    const added = Number(content?.added || payload?.added || 0) || 0;
+    const removed = Number(content?.removed || payload?.removed || 0) || 0;
+    const stats = added || removed ? ` (+${added} -${removed})` : "";
+    return `Edited ${path || localLiuAgentToolResultLabel(toolName)}${stats}`;
+  }
+  if (kind === "command") {
+    const cmd = String(payload?.cmd || payload?.command || args?.cmd || args?.command || "").trim();
+    return cmd ? `Ran ${cmd}` : "Ran command";
+  }
+  if (kind === "command_output") {
+    const stream = String(payload?.stream || "stdout").trim() || "stdout";
+    return `Output (${stream})`;
+  }
+  if (kind === "mcp_call") {
+    const server = String(args?.server || payload?.server || "").trim();
+    const tool = String(args?.tool_name || args?.name || payload?.tool || "").trim();
+    const target = [server, tool].filter(Boolean).join(".");
+    return target ? `Called ${target}` : "Called MCP";
+  }
+  if (eventType === "tool_result") {
+    return `Result: ${localLiuAgentToolResultLabel(toolName)}`;
+  }
+  return firstLine || "Process entry";
+}
+
+function messageProcessEntryStatus(entry = {}) {
+  const children = messageProcessEntryChildren(entry);
+  if (children.length) {
+    return messageProcessEntryStatus(children[children.length - 1]);
+  }
+  const payload = messageProcessEntryPayload(entry);
+  const eventType = messageProcessEntryEventType(entry);
+  if (eventType === "tool_call_started" || eventType === "command_started") return "Running";
+  if (eventType === "command_finished") {
+    return payload?.ok === false ? "Failed" : "Finished";
+  }
+  if (eventType === "tool_result") return payload?.ok === false ? "Failed" : "Done";
+  if (eventType === "approval_required") return "Waiting";
+  return "";
+}
+
+function messageProcessEntryMeta(entry = {}) {
+  const kind = messageProcessEntryKind(entry);
+  const payload = messageProcessEntryPayload(entry);
+  const content = messageProcessEntryContent(entry);
+  const args = messageProcessEntryArguments(entry);
+  const meta = [];
+  const toolName = messageProcessEntryToolName(entry);
+  const path = messageProcessEntryPath(entry);
+  if (path && !["file_read", "file_search", "file_edit"].includes(kind)) {
+    meta.push(path);
+  }
+  if (kind === "file_read") {
+    const start = content?.start_line ?? content?.startLine;
+    const end = content?.end_line ?? content?.endLine;
+    const total = content?.total_lines ?? content?.totalLines;
+    if (start && end && total) meta.push(`lines ${start}-${end}/${total}`);
+    if (content?.truncated) meta.push("truncated");
+  }
+  if (kind === "file_search") {
+    const query = String(args?.query || args?.pattern || payload?.query || "").trim();
+    const glob = String(args?.glob || payload?.glob || "").trim();
+    const matches = Array.isArray(content?.matches) ? content.matches : [];
+    if (query) meta.push(`query "${query}"`);
+    if (glob) meta.push(`glob ${glob}`);
+    if (matches.length) meta.push(`${matches.length} matches`);
+    if (content?.truncated || payload?.truncated) meta.push("truncated");
+  }
+  if (kind === "file_edit") {
+    const changedFiles = Array.isArray(content?.changed_files)
+      ? content.changed_files
+      : Array.isArray(content?.changedFiles)
+        ? content.changedFiles
+        : [];
+    if (changedFiles.length > 1) meta.push(`${changedFiles.length} files`);
+    if (toolName) meta.push(toolName);
+  }
+  if (kind === "command" || kind === "command_output") {
+    const cwd = String(payload?.cwd || args?.cwd || "").trim();
+    const exitCode = payload?.exit_code ?? payload?.exitCode;
+    const durationMs = payload?.duration_ms ?? payload?.durationMs;
+    if (cwd) meta.push(`cwd=${cwd}`);
+    if (exitCode !== undefined && exitCode !== null) meta.push(`exit=${exitCode}`);
+    if (durationMs !== undefined && durationMs !== null) meta.push(`${durationMs}ms`);
+  }
+  if (kind === "mcp_call") {
+    const server = String(args?.server || payload?.server || "").trim();
+    const tool = String(args?.tool_name || args?.name || payload?.tool || "").trim();
+    if (server) meta.push(server);
+    if (tool) meta.push(tool);
+  }
+  const index = Number(payload?.tool_index || payload?.toolIndex || 0) || 0;
+  const count = Number(payload?.tool_count || payload?.toolCount || 0) || 0;
+  if (index > 0 && count > 0) meta.push(`${index}/${count}`);
+  return meta;
+}
+
+function normalizeProcessSummaryLine(line = "") {
+  return String(line || "")
+    .replace(/^[\s└\-•]+/, "")
+    .trim();
+}
+
+function messageProcessEntrySummary(entry = {}) {
+  const children = messageProcessEntryChildren(entry);
+  if (children.length) {
+    const summaryLines = [];
+    for (const child of children) {
+      const childSummary = messageProcessEntrySummary(child);
+      for (const line of childSummary) {
+        if (line && !summaryLines.includes(line)) summaryLines.push(line);
+      }
+      if (summaryLines.length >= 8) break;
+    }
+    return summaryLines.slice(0, 8);
+  }
+  const payload = messageProcessEntryPayload(entry);
+  const content = messageProcessEntryContent(entry);
+  const lines = messageProcessEntryTextLines(entry)
+    .slice(1)
+    .map(normalizeProcessSummaryLine)
+    .filter(Boolean);
+  const summary = String(payload?.summary || content?.summary || "").trim();
+  if (summary && !lines.includes(summary)) lines.unshift(summary);
+  const error = String(payload?.error || payload?.error_code || payload?.errorCode || "").trim();
+  if (error && !lines.includes(error)) lines.push(error);
+  return lines.slice(0, 6);
+}
+
+function clipMultilineProcessText(value = "", maxLines = 80, maxChars = 6000) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const lines = text.split(/\r?\n/);
+  const clippedLines = lines.slice(0, maxLines);
+  let clipped = clippedLines.join("\n");
+  let truncated = lines.length > maxLines;
+  if (clipped.length > maxChars) {
+    clipped = clipped.slice(0, maxChars);
+    truncated = true;
+  }
+  return truncated ? `${clipped}\n...` : clipped;
+}
+
+function clipFileReadProcessText(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const lines = text.split(/\r?\n/);
+  if (lines.length <= 140 && text.length <= 10000) return text;
+  const head = lines.slice(0, 80);
+  const tail = lines.slice(-40);
+  const omitted = Math.max(0, lines.length - head.length - tail.length);
+  let clipped = [
+    ...head,
+    omitted > 0 ? `... 已省略 ${omitted} 行 ...` : "...",
+    ...tail,
+  ].join("\n");
+  if (clipped.length > 12000) {
+    clipped = `${clipped.slice(0, 12000)}\n...`;
+  }
+  return clipped;
+}
+
+function messageProcessEntryCode(entry = {}) {
+  const kind = messageProcessEntryKind(entry);
+  const payload = messageProcessEntryPayload(entry);
+  const content = messageProcessEntryContent(entry);
+  const children = messageProcessEntryChildren(entry);
+  if (children.length && kind === "command") {
+    const chunks = children
+      .filter((child) => messageProcessEntryKind(child) === "command_output")
+      .map((child) => {
+        const childPayload = messageProcessEntryPayload(child);
+        const stream = String(childPayload?.stream || "stdout").trim() || "stdout";
+        const text = String(childPayload?.text || "").trim();
+        return text ? `[${stream}]\n${text}` : "";
+      })
+      .filter(Boolean);
+    return clipMultilineProcessText(chunks.join("\n\n"), 160, 10000);
+  }
+  if (children.length) {
+    const childWithCode = children.find((child) => messageProcessEntryCode(child));
+    if (childWithCode) return messageProcessEntryCode(childWithCode);
+  }
+  if (kind === "file_read") {
+    return clipFileReadProcessText(content?.content || "");
+  }
+  if (kind === "file_search") {
+    const matches = Array.isArray(content?.matches) ? content.matches : [];
+    if (!matches.length) return "";
+    return matches
+      .slice(0, 40)
+      .map((item) => {
+        const path = String(item?.path || "").trim();
+        const line = item?.line ?? item?.line_number ?? item?.lineNumber;
+        const preview = String(item?.preview || item?.text || "").trim();
+        return [path, line ? `:${line}` : "", preview ? ` ${preview}` : ""].join("");
+      })
+      .join("\n");
+  }
+  if (kind === "command_output") {
+    return clipMultilineProcessText(payload?.text || "", 120, 8000);
+  }
+  return "";
+}
+
+function messageProcessEntryCodeLabel(entry = {}) {
+  const kind = messageProcessEntryKind(entry);
+  if (kind === "file_read") return "查看读取片段";
+  if (kind === "file_search") return "查看命中列表";
+  if (kind === "command_output") return "查看输出内容";
+  return "查看详情";
+}
+
+function messageProcessEntryDiffText(entry = {}) {
+  const payload = messageProcessEntryPayload(entry);
+  const content = messageProcessEntryContent(entry);
+  const args = messageProcessEntryArguments(entry);
+  const direct = String(
+    content?.diff ||
+      payload?.diff ||
+      args?.patch ||
+      args?.diff ||
+      "",
+  ).trim();
+  if (direct) return direct;
+  for (const child of messageProcessEntryChildren(entry)) {
+    const childDiff = messageProcessEntryDiffText(child);
+    if (childDiff) return childDiff;
+  }
+  return "";
+}
+
+function messageProcessEntryDiffLines(entry = {}) {
+  const diff = messageProcessEntryDiffText(entry);
+  if (!diff) return [];
+  return diff
+    .split(/\r?\n/)
+    .slice(0, 180)
+    .map((text, index) => {
+      let tone = "context";
+      if (text.startsWith("@@")) tone = "hunk";
+      else if (text.startsWith("+") && !text.startsWith("+++")) tone = "add";
+      else if (text.startsWith("-") && !text.startsWith("---")) tone = "remove";
+      return { id: `${index}-${text.slice(0, 24)}`, text, tone };
+    });
+}
+
+function messageProcessEntryJson(entry = {}) {
+  const kind = messageProcessEntryKind(entry);
+  if (kind !== "mcp_call") return "";
+  const payload = messageProcessEntryPayload(entry);
+  const content = messageProcessEntryContent(entry);
+  const args = messageProcessEntryArguments(entry);
+  const value = Object.keys(content).length ? content : args;
+  if (!Object.keys(value || {}).length) return "";
+  try {
+    return clipMultilineProcessText(JSON.stringify(value, null, 2), 120, 8000);
+  } catch {
+    return "";
+  }
+}
+
+function messageProcessEntryChildRows(entry = {}) {
+  const children = messageProcessEntryChildren(entry);
+  if (children.length <= 1) return [];
+  return children.slice(0, 12).map((child) => {
+    const summary = messageProcessEntrySummary(child)[0] || "";
+    return {
+      id: String(child?.id || "").trim() || messageProcessEntryTitle(child),
+      level: normalizeProcessLogLevel(child?.level),
+      title: messageProcessEntryTitle(child),
+      summary,
+    };
+  });
+}
+
+function messageProcessLogSummary(row) {
+  const entries = messageProcessDisplayEntries(row);
   if (!entries.length) return [];
   const latestPerLevel = [];
   const seenLevels = new Set();
@@ -12915,8 +13235,17 @@ function rawMessageOperations(row) {
     : [];
 }
 
+function shouldShowMessageOperationCard(operation) {
+  if (!operation) return false;
+  return (
+    hasVisibleOperationInteractionForm(operation) ||
+    operationActionButtons(operation).length > 0
+  );
+}
+
 function isVisibleProcessOperation(operation) {
   if (!operation) return false;
+  if (!shouldShowMessageOperationCard(operation)) return false;
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   if (String(meta.hide_in_message_process || "").trim() === "true") {
@@ -12995,7 +13324,7 @@ function messageBodyHtml(row, idx) {
 
 function messageProcessStepCount(row, idx) {
   const operationCount = messageProcessOperations(row).length;
-  const logCount = messageProcessLogEntries(row).length;
+  const logCount = messageProcessDisplayEntries(row).length;
   return operationCount + logCount;
 }
 
@@ -13016,7 +13345,7 @@ function messageProcessLifecyclePhase(row, idx) {
   if (phases.includes("failed")) return "failed";
   if (phases.includes("running")) return "running";
   if (phases.includes("completed")) return "completed";
-  const logs = messageProcessLogEntries(row);
+  const logs = messageProcessDisplayEntries(row);
   const latestLogLevel = String(logs[logs.length - 1]?.level || "").trim();
   if (latestLogLevel === "error") return "failed";
   if (latestLogLevel === "warning") return "blocked";
@@ -13077,8 +13406,8 @@ function messageProcessTitle(row, idx) {
   const title = String(primaryOperation?.title || "").trim();
   const summary = String(primaryOperation?.summary || "").trim();
   const detail = String(primaryOperation?.detail || "").trim();
-  const logs = messageProcessLogEntries(row);
-  const latestLogText = String(logs[logs.length - 1]?.text || "").trim();
+  const logs = messageProcessDisplayEntries(row);
+  const latestLogText = logs.length ? messageProcessEntryTitle(logs[logs.length - 1]) : "";
   if (phase === "waiting_user") {
     return summary || title || detail || "等待你的处理";
   }
@@ -13775,6 +14104,173 @@ function nativeLiuAgentPermissionText(permissionRequest = {}, task = {}) {
     .join("\n\n");
 }
 
+function setLocalLiuAgentPendingPermission(requestId, pending = {}) {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (!normalizedRequestId || !pending || typeof pending !== "object") return;
+  localLiuAgentPendingPermissions.set(normalizedRequestId, {
+    ...pending,
+    requestId: normalizedRequestId,
+    createdAt: Number(pending.createdAt || Date.now()) || Date.now(),
+  });
+  localLiuAgentPendingPermissionVersion.value += 1;
+  syncChatLoadingWithCurrentSession();
+}
+
+function deleteLocalLiuAgentPendingPermission(requestId) {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (!normalizedRequestId) return false;
+  const deleted = localLiuAgentPendingPermissions.delete(normalizedRequestId);
+  if (deleted) {
+    localLiuAgentPendingPermissionVersion.value += 1;
+    syncChatLoadingWithCurrentSession();
+  }
+  return deleted;
+}
+
+function localLiuAgentPendingPermissionsForChatSession(chatSessionId = "") {
+  localLiuAgentPendingPermissionVersion.value;
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedChatSessionId) return [];
+  return Array.from(localLiuAgentPendingPermissions.entries())
+    .map(([requestId, pending]) => ({ requestId, ...(pending || {}) }))
+    .filter((pending) => {
+      const pendingChatSessionId = String(
+        pending.activeChatSessionId ||
+          pending.localChatPayload?.chatSessionId ||
+          pending.task?.chatSessionId ||
+          "",
+      ).trim();
+      return pendingChatSessionId === normalizedChatSessionId;
+    })
+    .sort((a, b) => (Number(a.createdAt || 0) || 0) - (Number(b.createdAt || 0) || 0));
+}
+
+const currentLocalLiuAgentPendingPermissions = computed(() =>
+  localLiuAgentPendingPermissionsForChatSession(currentChatSessionId.value),
+);
+
+const currentLocalLiuAgentPendingPermission = computed(
+  () => currentLocalLiuAgentPendingPermissions.value[0] || null,
+);
+
+const currentChatSessionLocalLiuAgentWaitingPermission = computed(
+  () => currentLocalLiuAgentPendingPermissions.value.length > 0,
+);
+
+function localLiuAgentRiskLabel(risk = "") {
+  const normalized = String(risk || "").trim().toLowerCase();
+  if (normalized === "high") return "高风险";
+  if (normalized === "medium") return "中风险";
+  if (normalized === "low") return "低风险";
+  if (normalized === "safe") return "安全";
+  return "需确认";
+}
+
+function localLiuAgentActionLabel(action = "") {
+  const normalized = String(action || "").trim();
+  if (normalized === "command.run") return "执行本地命令";
+  if (normalized === "file.write") return "写入文件";
+  if (normalized === "file.delete") return "删除文件";
+  if (normalized === "file.read") return "读取文件";
+  return normalized || "执行本机操作";
+}
+
+function localLiuAgentPermissionPreview(permissionRequest = {}) {
+  return permissionRequest?.preview && typeof permissionRequest.preview === "object"
+    ? permissionRequest.preview
+    : {};
+}
+
+function localLiuAgentPermissionCommand(permissionRequest = {}) {
+  const preview = localLiuAgentPermissionPreview(permissionRequest);
+  return String(
+    preview.cmd ||
+      preview.command ||
+      permissionRequest?.cmd ||
+      permissionRequest?.command ||
+      "",
+  ).trim();
+}
+
+function localLiuAgentPermissionScopeLabel(permissionRequest = {}, pending = {}) {
+  const preview = localLiuAgentPermissionPreview(permissionRequest);
+  const cwd = String(
+    preview.cwd ||
+      pending.workspacePath ||
+      pending.localChatPayload?.workspacePath ||
+      "",
+  ).trim();
+  if (cwd) return "当前工作区";
+  const scope = String(permissionRequest?.scope || "").trim();
+  return scope || "本机环境";
+}
+
+function localLiuAgentPermissionDetailText(permissionRequest = {}, pending = {}) {
+  const preview = localLiuAgentPermissionPreview(permissionRequest);
+  const cmd = localLiuAgentPermissionCommand(permissionRequest);
+  const cwd = String(
+    preview.cwd ||
+      pending.workspacePath ||
+      pending.localChatPayload?.workspacePath ||
+      "",
+  ).trim();
+  const reason = String(permissionRequest?.reason || "").trim();
+  const lines = [
+    cmd ? `命令：${cmd}` : "",
+    cwd ? `工作目录：${cwd}` : "",
+    reason ? `原因：${reason}` : "",
+    Object.keys(preview).length ? `预览：\n${JSON.stringify(preview, null, 2)}` : "",
+  ].filter(Boolean);
+  return lines.join("\n\n");
+}
+
+function buildLocalLiuAgentPermissionPrompt(pending = {}, queueCount = 1) {
+  if (!pending) return null;
+  const permissionRequest =
+    pending.permissionRequest && typeof pending.permissionRequest === "object"
+      ? pending.permissionRequest
+      : {};
+  const toolName = String(
+    permissionRequest.toolName ||
+      permissionRequest.tool_name ||
+      pending.task?.toolName ||
+      "",
+  ).trim();
+  const actionLabel = localLiuAgentActionLabel(permissionRequest.action);
+  const cmd = localLiuAgentPermissionCommand(permissionRequest);
+  const reason = String(permissionRequest.reason || "").trim();
+  const description = [
+    `本地智能体需要${actionLabel}来继续当前任务。`,
+    reason || (cmd ? `它将运行：${cmd}` : ""),
+    "允许后会继续当前这轮对话，期间输入框会保持运行中，避免同时发起新的任务。",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return {
+    requestId: String(pending.requestId || permissionRequest.requestId || "").trim(),
+    title: "需要授权本机操作",
+    description,
+    toolLabel: toolName || actionLabel,
+    scopeLabel: localLiuAgentPermissionScopeLabel(permissionRequest, pending),
+    riskLabel: localLiuAgentRiskLabel(permissionRequest.risk),
+    queueLabel: queueCount > 1 ? `队列 1/${queueCount}` : "",
+    detailText: localLiuAgentPermissionDetailText(permissionRequest, pending),
+  };
+}
+
+const currentLocalLiuAgentPermissionPrompt = computed(() => {
+  const pending = currentLocalLiuAgentPendingPermission.value;
+  if (!pending) return null;
+  const requestId = String(pending.requestId || "").trim();
+  return {
+    ...buildLocalLiuAgentPermissionPrompt(
+      pending,
+      currentLocalLiuAgentPendingPermissions.value.length,
+    ),
+    requestId,
+  };
+});
+
 function localLiuAgentPermissionOperationId(requestId, fallback = "") {
   const normalizedRequestId = String(requestId || "").trim();
   if (normalizedRequestId) return `local-liuagent-permission:${normalizedRequestId}`;
@@ -13850,11 +14346,11 @@ function upsertLocalLiuAgentContinuationOperation(
 }
 
 function upsertLocalLiuAgentPermissionOperation(row, permissionRequest = {}, patch = {}) {
-  if (!row || !permissionRequest) return null;
+  if (!permissionRequest) return null;
   const requestId = String(permissionRequest?.requestId || "").trim();
   const toolName = String(permissionRequest?.toolName || "本地工具").trim();
-  return upsertMessageOperation(row, {
-    operationId: localLiuAgentPermissionOperationId(requestId, row.id),
+  const operation = {
+    operationId: localLiuAgentPermissionOperationId(requestId, row?.id),
     kind: "approval",
     title: "桌面本地工具授权",
     summary: "等待你确认本机工具执行",
@@ -13870,7 +14366,10 @@ function upsertLocalLiuAgentPermissionOperation(row, permissionRequest = {}, pat
       risk: String(permissionRequest?.risk || "").trim(),
       ...(patch?.meta && typeof patch.meta === "object" ? patch.meta : {}),
     },
-  });
+  };
+  if (patch?.skipUpsert) return operation;
+  if (!row) return null;
+  return upsertMessageOperation(row, operation);
 }
 
 async function executeLocalLiuAgentToolWithPermission(task, workspacePath, row = null) {
@@ -13895,14 +14394,13 @@ async function executeLocalLiuAgentToolWithPermission(task, workspacePath, row =
   };
   const requestId = String(permissionRequest.requestId || "").trim();
   if (row && requestId) {
-    localLiuAgentPendingPermissions.set(requestId, {
+    setLocalLiuAgentPendingPermission(requestId, {
       kind: "desktop_tool",
       task,
       workspacePath,
       rowId: row.id,
       permissionRequest: normalizedPermissionRequest,
     });
-    upsertLocalLiuAgentPermissionOperation(row, normalizedPermissionRequest);
   }
   return result;
 }
@@ -14461,8 +14959,10 @@ function messageOperations(row) {
 }
 
 function messageProcessOperations(row) {
-  return messageOperations(row).filter((item) =>
-    isVisibleProcessOperation(item),
+  return messageOperations(row).filter(
+    (item) =>
+      isVisibleProcessOperation(item) &&
+      !isMessageFooterActionOperation(row, item),
   );
 }
 
@@ -14489,6 +14989,16 @@ function isOperationAwaitingInteraction(operation) {
     return Boolean(extractOperationUrl(operation));
   }
   return ["approval", "terminal"].includes(kind);
+}
+
+function hasVisibleOperationInteractionForm(operation) {
+  const interactionId = operationInteractionId(operation);
+  if (!interactionId) return false;
+  if (dismissedOperationInteractionIds.value.has(interactionId)) return false;
+  return Boolean(
+    operationInteractionSchema(operation) &&
+      isOperationAwaitingInteraction(operation),
+  );
 }
 
 function isNonTerminalUserWaitingOperation(operation) {
@@ -14557,6 +15067,7 @@ function hasLiveExecutionActivity() {
     hasPendingRequestForChatSession(currentChatSessionId.value) ||
     Boolean(getActiveRequestId()) ||
     currentChatSessionLocalLiuAgentRunning.value ||
+    currentChatSessionLocalLiuAgentWaitingPermission.value ||
     externalAgentWarmupLoading.value ||
     currentChatSessionNativeExternalAgentRunning.value ||
     backgroundTerminalCount.value > 0 ||
@@ -16402,6 +16913,40 @@ async function handleOperationAction(operation, actionKey) {
   }
 }
 
+async function submitCurrentLocalLiuAgentPermissionAction(actionKey) {
+  const pending = currentLocalLiuAgentPendingPermission.value;
+  const requestId = String(pending?.requestId || "").trim();
+  if (!pending || !requestId) {
+    ElMessage.warning("当前没有等待处理的本机授权");
+    return;
+  }
+  const permissionRequest =
+    pending.permissionRequest && typeof pending.permissionRequest === "object"
+      ? pending.permissionRequest
+      : {};
+  const operation = upsertLocalLiuAgentPermissionOperation(
+    null,
+    {
+      ...permissionRequest,
+      requestId,
+      toolName:
+        String(permissionRequest.toolName || permissionRequest.tool_name || "").trim() ||
+        String(pending.task?.toolName || "本地工具").trim(),
+    },
+    { skipUpsert: true },
+  );
+  if (!operation) {
+    ElMessage.warning("本地授权上下文已失效，请重新发送");
+    return;
+  }
+  localLiuAgentPermissionSubmitting.value = true;
+  try {
+    await submitLocalLiuAgentPermissionAction(operation, actionKey);
+  } finally {
+    localLiuAgentPermissionSubmitting.value = false;
+  }
+}
+
 async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
@@ -16424,7 +16969,7 @@ async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
 
   const denied = actionKey === "local_liuagent_deny";
   const allowSession = actionKey === "local_liuagent_allow_session";
-  localLiuAgentPendingPermissions.delete(requestId);
+  deleteLocalLiuAgentPendingPermission(requestId);
   removeLocalLiuAgentPermissionOperation(row, requestId);
   if (denied) {
     row.content = row.content || "已拒绝本次本机工具授权。";
@@ -16432,6 +16977,7 @@ async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
       text: "已拒绝本次本机工具授权，工具未执行",
       level: "warning",
     });
+    syncChatLoadingWithCurrentSession();
     scrollToBottom();
     return;
   }
@@ -16582,15 +17128,64 @@ async function continueLocalLiuAgentChatPermission(
       permissionRequest,
     ),
   };
-  const result = await startNativeLiuAgentLocalChat({
-    ...localChatPayload,
-    permissionDecision: {
-      requestId,
-      decision: allowSession ? "approve_session" : "approve_once",
-      grantScope: allowSession ? "session" : "once",
-      comment: String(permissionRequest?.reason || "").trim(),
+  const activeChatSessionId = String(
+    pending.activeChatSessionId || localChatPayload?.chatSessionId || "",
+  ).trim();
+  const workspacePath = String(localChatPayload?.workspacePath || "").trim();
+  const activeRun = {
+    chatSessionId: activeChatSessionId,
+    projectId: selectedProjectId.value,
+    assistantMessageId: row.id,
+    userMessageId: pending.userMessageId,
+    workspacePath,
+    cancelled: false,
+    startedAt: Date.now(),
+    resumedFromPermission: true,
+    permissionRequestId: requestId,
+  };
+  if (activeChatSessionId) {
+    setLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
+  }
+  upsertMessageOperation(row, {
+    operationId: `local-agent-running:${row.id}`,
+    kind: "request",
+    title: "桌面本地 Agent Runtime",
+    summary: "已授权，正在继续执行本地工具",
+    detail: "授权后的工具调用、模型续跑和结果会继续追加到运行轨迹。",
+    phase: "running",
+    actionType: "none",
+    meta: {
+      local_liuagent_operation: "true",
+      agent_runtime_event: "true",
+      source: "tauri_liuagent_local_chat",
+      chat_session_id: activeChatSessionId,
+      permission_request_id: requestId,
+      cwd: workspacePath,
     },
   });
+  appendMessageProcessLog(row, {
+    text: "已提交本机授权，Runtime 正在继续执行",
+    level: "info",
+    autoExpand: true,
+  });
+  syncChatLoadingWithCurrentSession();
+  let result;
+  try {
+    result = await startNativeLiuAgentLocalChat({
+      ...localChatPayload,
+      permissionDecision: {
+        requestId,
+        decision: allowSession ? "approve_session" : "approve_once",
+        grantScope: allowSession ? "session" : "once",
+        comment: String(permissionRequest?.reason || "").trim(),
+      },
+    });
+  } finally {
+    if (activeChatSessionId) {
+      deleteLocalLiuAgentActiveRun(activeChatSessionId);
+    }
+    syncChatLoadingWithCurrentSession();
+  }
   const ok = Boolean(result?.ok);
   row.content = String(
     result?.assistantContent || result?.assistant_content || result?.summary || "",
@@ -16603,6 +17198,55 @@ async function continueLocalLiuAgentChatPermission(
     chatSessionId: pending.activeChatSessionId,
     workspacePath: localChatPayload?.workspacePath,
   });
+  const nextPermissionRequest = localLiuAgentPermissionRequestFromChatResult(result);
+  if (nextPermissionRequest) {
+    const nextRequestId = String(nextPermissionRequest?.requestId || "").trim();
+    if (nextRequestId) {
+      setLocalLiuAgentPendingPermission(nextRequestId, {
+        kind: "local_chat",
+        localChatPayload,
+        permissionRequest: nextPermissionRequest,
+        assistantMessageId: row.id,
+        userMessageId: pending.userMessageId,
+        activeChatSessionId: pending.activeChatSessionId,
+        displayUserMessageContent: pending.displayUserMessageContent,
+        finalUserPrompt: pending.finalUserPrompt,
+        sourceContext: pending.sourceContext || {},
+      });
+    }
+    row.time = nowText();
+    removeLocalLiuAgentPermissionOperation(row, requestId);
+    appendMessageProcessLog(row, {
+      text: "本机工具执行再次暂停，等待你在输入框上方处理下一项授权",
+      level: "warning",
+      autoExpand: true,
+    });
+    await upsertProjectChatRequirementRecord({
+      chatSessionId: pending.activeChatSessionId,
+      status: "waiting_approval",
+      rootGoal: pending.displayUserMessageContent || pending.finalUserPrompt,
+      messageId: pending.userMessageId,
+      assistantMessageId: row.id,
+      resultSummary: row.content,
+      verificationResult: "授权续跑后再次遇到本机工具授权，已重新进入授权队列等待用户处理。",
+      source: "desktop_local_agent",
+      sourceContext: {
+        ...(pending.sourceContext || {}),
+        runtime: "tauri",
+        workspace_path: String(localChatPayload?.workspacePath || "").trim(),
+        permission_request_id: nextRequestId,
+      },
+    });
+    await syncLocalLiuAgentRuntimeOutbox({
+      projectId: selectedProjectId.value,
+      chatSessionId: pending.activeChatSessionId,
+      workspacePath: String(localChatPayload?.workspacePath || "").trim(),
+      rootGoal: pending.displayUserMessageContent || pending.finalUserPrompt,
+      messageId: pending.userMessageId,
+      assistantMessageId: row.id,
+    });
+    return;
+  }
   const operations = Array.isArray(result?.operations) ? result.operations : [];
   for (const item of operations) {
     upsertMessageOperation(
@@ -20079,11 +20723,17 @@ function syncSettingsRouteState() {
     activeSettingsPanel.value = "chat";
     return;
   }
-  activeSettingsPanel.value = inferSettingsPanelFromPath(route.path);
+  activeSettingsPanel.value = "chat";
 }
 
 function openSettingsCenter(panelId = "chat") {
-  const normalizedPanelId = String(panelId || "").trim() || "chat";
+  const requestedPanelId = String(panelId || "").trim() || "chat";
+  const availablePanelIds = new Set(
+    settingsInternalItems.value.map((item) => String(item?.id || "").trim()),
+  );
+  const normalizedPanelId = availablePanelIds.has(requestedPanelId)
+    ? requestedPanelId
+    : "chat";
   activeSettingsPanel.value = normalizedPanelId;
   const targetPath = isSettingsCenterRoute.value
     ? resolveSettingsAwarePanelPath(route.path, normalizedPanelId, "/chat")
@@ -20107,7 +20757,7 @@ function openComposerExecutionDetail() {
     void openTaskTreePanel();
     return;
   }
-  openSettingsCenter(isLocalRunnerSurface.value ? "local-runner" : "chat");
+  openSettingsCenter("chat");
 }
 
 async function handleComposerExecutionPrimaryAction() {
@@ -20116,7 +20766,7 @@ async function handleComposerExecutionPrimaryAction() {
     return;
   }
   if (!isExternalAgentMode.value) {
-    openSettingsCenter(isLocalRunnerSurface.value ? "local-runner" : "chat");
+    openSettingsCenter("chat");
     return;
   }
   if (
@@ -23578,7 +24228,7 @@ async function sendLocalLiuAgentChatRequest({
   if (localPermissionRequest) {
     const requestId = String(localPermissionRequest?.requestId || "").trim();
     if (requestId) {
-      localLiuAgentPendingPermissions.set(requestId, {
+      setLocalLiuAgentPendingPermission(requestId, {
         kind: "local_chat",
         localChatPayload,
         permissionRequest: localPermissionRequest,
@@ -23590,14 +24240,8 @@ async function sendLocalLiuAgentChatRequest({
         sourceContext,
       });
     }
-    upsertLocalLiuAgentPermissionOperation(assistantMessage, localPermissionRequest);
-    assistantMessage.content =
-      result?.assistantContent ||
-      result?.assistant_content ||
-      "需要你确认本机工具授权后继续执行。";
-    assistantMessage.time = nowText();
     appendMessageProcessLog(assistantMessage, {
-      text: "本机工具执行已暂停，等待你在当前回答气泡中授权",
+      text: "本机工具执行已暂停，等待你在输入框上方授权",
       level: "warning",
     });
     await upsertProjectChatRequirementRecord({
@@ -24101,6 +24745,10 @@ async function sendGlobalChatWithoutProject() {
 }
 
 function explainBlockedSend() {
+  if (currentChatSessionLocalLiuAgentWaitingPermission.value) {
+    ElMessage.warning("请先处理输入框上方的本机授权；处理后会自动继续执行");
+    return;
+  }
   if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
     ElMessage.warning("项目配置仍在加载，请稍后再发送");
     return;

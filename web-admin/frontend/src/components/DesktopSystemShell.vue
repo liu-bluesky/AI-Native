@@ -172,7 +172,7 @@
       </main>
 
       <div
-        v-if="hasMaximizedWindow"
+        v-if="shouldAutoHideDock"
         class="desktop-system__dock-trigger"
         aria-hidden="true"
         @pointerenter="revealDock"
@@ -340,9 +340,6 @@ const activeWindow = computed(
 const visibleWindows = computed(() => props.windows);
 
 const openAppIds = computed(() => props.windows.map((item) => item.appId));
-const hasMaximizedWindow = computed(() =>
-  props.windows.some((item) => item?.maximized && !item?.minimized),
-);
 const launcherSections = computed(() => {
   const sections = [];
   const sectionMap = new Map();
@@ -368,7 +365,7 @@ const draggingDockAppId = ref("");
 const dockDropTargetId = ref("");
 const dockDragPreparing = ref(false);
 const suppressDockClickAppId = ref("");
-const dockRevealed = ref(false);
+const dockRevealed = ref(true);
 const dockRef = ref(null);
 const dockDragOffsetX = ref(0);
 const dockDragOffsetY = ref(0);
@@ -415,7 +412,7 @@ const dockStyleVars = computed(() => ({
   "--dock-indicator": String(dockTone.value?.indicator || "rgba(15, 23, 42, 0.58)"),
 }));
 const shouldAutoHideDock = computed(
-  () => hasMaximizedWindow.value && !dockRevealed.value && !props.showLauncher,
+  () => !dockRevealed.value && !props.showLauncher,
 );
 const isDockSorting = computed(
   () => dockDragPreparing.value || Boolean(draggingDockAppId.value),
@@ -447,8 +444,10 @@ const dockDragState = {
   moved: false,
 };
 const DOCK_DRAG_THRESHOLD = 6;
+const DOCK_AUTO_HIDE_DELAY_MS = 3000;
 const dockFlipAnimations = new Map();
 let dockLayoutSnapshot = new Map();
+let dockAutoHideTimer = null;
 const resizeState = {
   pointerId: null,
   windowId: "",
@@ -1065,27 +1064,31 @@ function handleDockItemClick(item) {
   emit("launch-app", item);
 }
 
+function clearDockAutoHideTimer() {
+  if (dockAutoHideTimer == null) return;
+  globalThis.window?.clearTimeout(dockAutoHideTimer);
+  dockAutoHideTimer = null;
+}
+
 function revealDock() {
-  if (!hasMaximizedWindow.value) return;
+  clearDockAutoHideTimer();
   dockRevealed.value = true;
 }
 
 function hideDock() {
-  if (!hasMaximizedWindow.value || props.showLauncher) {
-    dockRevealed.value = false;
+  clearDockAutoHideTimer();
+  if (props.showLauncher) {
     clearDockTooltip();
     return;
   }
-  dockRevealed.value = false;
   clearDockTooltip();
-}
-
-watch(hasMaximizedWindow, (value) => {
-  if (!value) {
+  dockAutoHideTimer = globalThis.window?.setTimeout(() => {
+    dockAutoHideTimer = null;
+    if (props.showLauncher || isDockSorting.value) return;
     dockRevealed.value = false;
     clearDockTooltip();
-  }
-});
+  }, DOCK_AUTO_HIDE_DELAY_MS) ?? null;
+}
 
 watch(
   () => props.dockItems.map((item) => item.id).join("|"),
@@ -1098,12 +1101,11 @@ watch(
   () => props.showLauncher,
   (value) => {
     if (value) {
+      clearDockAutoHideTimer();
       dockRevealed.value = true;
       return;
     }
-    if (hasMaximizedWindow.value) {
-      dockRevealed.value = false;
-    }
+    clearDockAutoHideTimer();
   },
 );
 
@@ -1119,6 +1121,7 @@ onBeforeUnmount(() => {
   stopWindowDrag();
   stopWindowResize();
   stopDockDrag();
+  clearDockAutoHideTimer();
   cancelDockFlipAnimations();
 });
 </script>

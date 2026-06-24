@@ -233,7 +233,16 @@ pub fn recover_runtime_session(
 ) -> Result<(Value, Vec<Value>), ToolError> {
     let state = recover_runtime_state(workspace_root, project_id, chat_session_id)?;
     let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
-    let runtime_events = read_jsonl(&paths.transcript_path)?;
+    let runtime_session_id = state
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let runtime_events = filter_runtime_events_by_session(
+        read_jsonl(&paths.transcript_path)?,
+        runtime_session_id.as_str(),
+    );
     Ok((state, runtime_events))
 }
 
@@ -499,6 +508,30 @@ fn build_transcript_events(input: &RuntimePersistenceInput<'_>, now: u128) -> Ve
     events
 }
 
+fn filter_runtime_events_by_session(events: Vec<Value>, runtime_session_id: &str) -> Vec<Value> {
+    let normalized_session_id = runtime_session_id.trim();
+    if normalized_session_id.is_empty() {
+        return events;
+    }
+    events
+        .into_iter()
+        .filter(|event| runtime_event_session_id(event) == normalized_session_id)
+        .collect()
+}
+
+fn runtime_event_session_id(event: &Value) -> &str {
+    event
+        .get("runtime_session_id")
+        .or_else(|| event.get("runtimeSessionId"))
+        .or_else(|| event.get("session_id"))
+        .or_else(|| event.get("sessionId"))
+        .or_else(|| event.get("run_id"))
+        .or_else(|| event.get("runId"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+}
+
 fn ensure_parent(path: &Path) -> Result<(), ToolError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| {
@@ -682,6 +715,74 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recovery_filters_transcript_events_to_current_runtime_session() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_state_session_filter_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let old_tool_result = ToolExecutionResult::ok(
+            "old-result".to_string(),
+            "read_file".to_string(),
+            json!({"path": "old.md"}),
+            "read old".to_string(),
+        );
+        let new_tool_result = ToolExecutionResult::ok(
+            "new-result".to_string(),
+            "read_file".to_string(),
+            json!({"path": "new.md"}),
+            "read new".to_string(),
+        );
+
+        write_runtime_artifacts(RuntimePersistenceInput {
+            workspace_root: &dir,
+            project_id: "proj-test",
+            chat_session_id: "chat-mixed",
+            session_id: "session-old",
+            user_message_id: "user-old",
+            assistant_message_id: "assistant-old",
+            user_message: "old question",
+            assistant_content: "old answer",
+            run_status: "failed",
+            waiting_for: None,
+            model_runtime: json!({"status": "failed"}),
+            tool_results: &[old_tool_result],
+            operations: json!([]),
+            audit_logs: &[],
+        })
+        .unwrap();
+        write_runtime_artifacts(RuntimePersistenceInput {
+            workspace_root: &dir,
+            project_id: "proj-test",
+            chat_session_id: "chat-mixed",
+            session_id: "session-new",
+            user_message_id: "user-new",
+            assistant_message_id: "assistant-new",
+            user_message: "new question",
+            assistant_content: "new answer",
+            run_status: "failed",
+            waiting_for: None,
+            model_runtime: json!({"status": "failed"}),
+            tool_results: &[new_tool_result],
+            operations: json!([]),
+            audit_logs: &[],
+        })
+        .unwrap();
+
+        let (_state, events) = recover_runtime_session(&dir, "proj-test", "chat-mixed").unwrap();
+        assert!(!events.is_empty());
+        assert!(events
+            .iter()
+            .all(|event| runtime_event_session_id(event) == "session-new"));
+        assert!(events.iter().any(|event| {
+            event["type"] == "message" && event["payload"]["message_id"] == "assistant-new"
+        }));
+        assert!(!events.iter().any(|event| {
+            event["type"] == "message" && event["payload"]["message_id"] == "assistant-old"
+        }));
+
         let _ = fs::remove_dir_all(dir);
     }
 

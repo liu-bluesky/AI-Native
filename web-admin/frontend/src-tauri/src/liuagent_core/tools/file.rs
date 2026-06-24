@@ -43,7 +43,14 @@ pub fn list_files(workspace_path: &str, arguments: &Value) -> Result<(Value, Str
         entries.len(),
         if truncated { "（已截断）" } else { "" }
     );
-    Ok((json!({"entries": entries, "truncated": truncated}), summary))
+    Ok((
+        json!({
+            "path": workspace_relative_path(&root, &target),
+            "entries": entries,
+            "truncated": truncated
+        }),
+        summary,
+    ))
 }
 
 pub fn read_file(workspace_path: &str, arguments: &Value) -> Result<(Value, String), ToolError> {
@@ -67,7 +74,7 @@ pub fn read_file(workspace_path: &str, arguments: &Value) -> Result<(Value, Stri
     let raw = fs::read(&target)
         .map_err(|err| ToolError::new("tool.execution_failed", format!("read failed: {err}")))?;
     let text = String::from_utf8_lossy(&raw).to_string();
-    let lines: Vec<&str> = text.split('\n').collect();
+    let lines: Vec<&str> = text.lines().collect();
     let total_lines = lines.len();
     let from = start_line.saturating_sub(1).min(total_lines);
     let to = (from + line_count).min(total_lines);
@@ -121,7 +128,16 @@ pub fn search_text(workspace_path: &str, arguments: &Value) -> Result<(Value, St
         matches.len(),
         if truncated { "（已截断）" } else { "" }
     );
-    Ok((json!({"matches": matches, "truncated": truncated}), summary))
+    Ok((
+        json!({
+            "query": query,
+            "path": workspace_relative_path(&root, &target),
+            "glob": glob,
+            "matches": matches,
+            "truncated": truncated
+        }),
+        summary,
+    ))
 }
 
 pub fn write_file(
@@ -182,8 +198,15 @@ pub fn write_file(
             ToolError::new("tool.execution_failed", format!("create dir failed: {err}"))
         })?;
     }
+    let previous_content = if exists {
+        fs::read_to_string(&target).unwrap_or_default()
+    } else {
+        String::new()
+    };
     fs::write(&target, content.as_bytes())
         .map_err(|err| ToolError::new("tool.execution_failed", format!("write failed: {err}")))?;
+    let (added, removed, diff) =
+        build_file_diff_preview(&relative_path, &previous_content, &content);
     let summary = format!(
         "{} {}（{} 字节）",
         if exists { "覆盖" } else { "创建" },
@@ -195,7 +218,10 @@ pub fn write_file(
             "path": relative_path,
             "created": !exists,
             "overwritten": exists,
-            "bytes": next_size
+            "bytes": next_size,
+            "added": added,
+            "removed": removed,
+            "diff": diff
         }),
         summary,
     ))
@@ -239,6 +265,11 @@ pub fn delete_file(
         permission_decision,
     )?;
 
+    let previous_content = if previous_size <= 200_000 {
+        fs::read_to_string(&target).unwrap_or_default()
+    } else {
+        String::new()
+    };
     fs::remove_file(&target)
         .map_err(|err| ToolError::new("tool.execution_failed", format!("delete failed: {err}")))?;
     let exists_after = target.exists();
@@ -248,12 +279,16 @@ pub fn delete_file(
             "delete command returned but file still exists",
         ));
     }
+    let (added, removed, diff) = build_file_diff_preview(&relative_path, &previous_content, "");
     Ok((
         json!({
             "path": relative_path,
             "deleted": true,
             "exists_after": false,
-            "previous_size": previous_size
+            "previous_size": previous_size,
+            "added": added,
+            "removed": removed,
+            "diff": diff
         }),
         format!("删除 {relative_path}，已验证文件不存在"),
     ))
@@ -275,6 +310,7 @@ pub fn apply_patch(
     if patch.trim().is_empty() {
         return Err(ToolError::new("tool.schema_invalid", "patch is required"));
     }
+    let patch = normalize_apply_patch_input(&root, &patch)?;
     let changed_files = extract_patch_paths(&patch)?;
     for path in &changed_files {
         let target = resolve_workspace_write_target(&root, path)?;
@@ -306,13 +342,319 @@ pub fn apply_patch(
         changed_files.len(),
         summary_arg
     );
+    let (added, removed) = diff_line_stats(&patch);
     Ok((
         json!({
             "changed_files": changed_files,
-            "applied": true
+            "applied": true,
+            "added": added,
+            "removed": removed,
+            "diff": patch
         }),
         summary,
     ))
+}
+
+fn normalize_apply_patch_input(root: &Path, patch: &str) -> Result<String, ToolError> {
+    if !patch.lines().any(|line| line.trim() == "*** Begin Patch") {
+        return Ok(patch.to_string());
+    }
+    codex_patch_to_git_diff(root, patch)
+}
+
+fn codex_patch_to_git_diff(root: &Path, patch: &str) -> Result<String, ToolError> {
+    #[derive(Debug)]
+    struct Update {
+        path: String,
+        lines: Vec<String>,
+    }
+
+    let mut updates = Vec::<Update>::new();
+    let mut current: Option<Update> = None;
+    let mut seen_begin = false;
+    let mut seen_end = false;
+
+    for raw_line in patch.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if line == "*** Begin Patch" {
+            seen_begin = true;
+            continue;
+        }
+        if line == "*** End Patch" {
+            if let Some(update) = current.take() {
+                updates.push(update);
+            }
+            seen_end = true;
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Update File: ") {
+            if let Some(update) = current.take() {
+                updates.push(update);
+            }
+            current = Some(Update {
+                path: path.trim().to_string(),
+                lines: Vec::new(),
+            });
+            continue;
+        }
+        if line.starts_with("*** Add File: ")
+            || line.starts_with("*** Delete File: ")
+            || line.starts_with("*** Move to: ")
+        {
+            return Err(ToolError::new(
+                "tool.schema_invalid",
+                "Codex apply_patch format currently supports Update File hunks only",
+            ));
+        }
+        if !seen_begin || line.starts_with("@@") || line == "*** End of File" {
+            continue;
+        }
+        if let Some(update) = current.as_mut() {
+            if line.starts_with(' ') || line.starts_with('+') || line.starts_with('-') {
+                update.lines.push(line.to_string());
+            } else if !line.trim().is_empty() {
+                return Err(ToolError::new(
+                    "tool.schema_invalid",
+                    format!("invalid Codex patch line for {}: {}", update.path, line),
+                ));
+            }
+        }
+    }
+    if !seen_begin || !seen_end {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "invalid Codex apply_patch envelope",
+        ));
+    }
+    if updates.is_empty() {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "patch does not contain changed files",
+        ));
+    }
+
+    let mut git_diff = Vec::<String>::new();
+    for update in updates {
+        let relative_path = normalize_patch_path(&update.path);
+        if relative_path.is_empty()
+            || Path::new(&relative_path).is_absolute()
+            || relative_path.split('/').any(|part| part == "..")
+        {
+            return Err(ToolError::new(
+                "workspace.out_of_scope",
+                "patch path escapes workspace",
+            ));
+        }
+        let target = root.join(&relative_path);
+        let before = fs::read_to_string(&target).map_err(|err| {
+            ToolError::new(
+                "tool.execution_failed",
+                format!("read patch target failed: {relative_path}: {err}"),
+            )
+        })?;
+        let before_lines = before.lines().map(str::to_string).collect::<Vec<_>>();
+        let after_lines = apply_codex_update_lines(&relative_path, &before_lines, &update.lines)?;
+        let diff = build_unified_diff(&relative_path, &before_lines, &after_lines);
+        if !diff.is_empty() {
+            git_diff.push(diff);
+        }
+    }
+    if git_diff.is_empty() {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "patch does not contain changed files",
+        ));
+    }
+    Ok(git_diff.join("\n"))
+}
+
+fn apply_codex_update_lines(
+    path: &str,
+    before_lines: &[String],
+    patch_lines: &[String],
+) -> Result<Vec<String>, ToolError> {
+    let mut after = Vec::<String>::new();
+    let mut source_index = 0usize;
+    for patch_line in patch_lines {
+        let (marker, text) = patch_line.split_at(1);
+        match marker {
+            " " => {
+                let found =
+                    find_context_line(before_lines, source_index, text).ok_or_else(|| {
+                        ToolError::new(
+                            "tool.schema_invalid",
+                            format!("Codex patch context not found in {path}: {text}"),
+                        )
+                    })?;
+                after.extend(before_lines[source_index..found].iter().cloned());
+                after.push(before_lines[found].clone());
+                source_index = found + 1;
+            }
+            "-" => {
+                let found =
+                    find_context_line(before_lines, source_index, text).ok_or_else(|| {
+                        ToolError::new(
+                            "tool.schema_invalid",
+                            format!("Codex patch removal not found in {path}: {text}"),
+                        )
+                    })?;
+                after.extend(before_lines[source_index..found].iter().cloned());
+                source_index = found + 1;
+            }
+            "+" => after.push(text.to_string()),
+            _ => {
+                return Err(ToolError::new(
+                    "tool.schema_invalid",
+                    format!("invalid Codex patch marker in {path}: {marker}"),
+                ));
+            }
+        }
+    }
+    after.extend(before_lines[source_index..].iter().cloned());
+    Ok(after)
+}
+
+fn find_context_line(lines: &[String], start: usize, expected: &str) -> Option<usize> {
+    lines
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(index, line)| if line == expected { Some(index) } else { None })
+}
+
+fn build_unified_diff(path: &str, before_lines: &[String], after_lines: &[String]) -> String {
+    if before_lines == after_lines {
+        return String::new();
+    }
+    let mut prefix = 0usize;
+    while prefix < before_lines.len()
+        && prefix < after_lines.len()
+        && before_lines[prefix] == after_lines[prefix]
+    {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix + prefix < before_lines.len()
+        && suffix + prefix < after_lines.len()
+        && before_lines[before_lines.len() - 1 - suffix]
+            == after_lines[after_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let before_end = before_lines.len().saturating_sub(suffix);
+    let after_end = after_lines.len().saturating_sub(suffix);
+    let context_before = if prefix > 0 { 1 } else { 0 };
+    let context_after = if suffix > 0 { 1 } else { 0 };
+    let old_start_index = prefix.saturating_sub(context_before);
+    let new_start_index = prefix.saturating_sub(context_before);
+    let old_end = (before_end + context_after).min(before_lines.len());
+    let new_end = (after_end + context_after).min(after_lines.len());
+    let old_count = old_end.saturating_sub(old_start_index);
+    let new_count = new_end.saturating_sub(new_start_index);
+    let mut lines = vec![
+        format!("diff --git a/{path} b/{path}"),
+        format!("--- a/{path}"),
+        format!("+++ b/{path}"),
+        format!(
+            "@@ -{},{} +{},{} @@",
+            old_start_index + 1,
+            old_count,
+            new_start_index + 1,
+            new_count
+        ),
+    ];
+    for line in &before_lines[old_start_index..prefix] {
+        lines.push(format!(" {line}"));
+    }
+    for line in &before_lines[prefix..before_end] {
+        lines.push(format!("-{line}"));
+    }
+    for line in &after_lines[prefix..after_end] {
+        lines.push(format!("+{line}"));
+    }
+    for line in &before_lines[before_end..old_end] {
+        lines.push(format!(" {line}"));
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
+fn diff_line_stats(diff: &str) -> (usize, usize) {
+    let mut added = 0;
+    let mut removed = 0;
+    for line in diff.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    (added, removed)
+}
+
+fn build_file_diff_preview(path: &str, before: &str, after: &str) -> (usize, usize, String) {
+    if before == after {
+        return (0, 0, String::new());
+    }
+    let before_lines = split_diff_lines(before);
+    let after_lines = split_diff_lines(after);
+    let mut prefix = 0;
+    while prefix < before_lines.len()
+        && prefix < after_lines.len()
+        && before_lines[prefix] == after_lines[prefix]
+    {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix + prefix < before_lines.len()
+        && suffix + prefix < after_lines.len()
+        && before_lines[before_lines.len() - 1 - suffix]
+            == after_lines[after_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let before_changed_end = before_lines.len().saturating_sub(suffix);
+    let after_changed_end = after_lines.len().saturating_sub(suffix);
+    let removed_lines = &before_lines[prefix..before_changed_end];
+    let added_lines = &after_lines[prefix..after_changed_end];
+    let added = added_lines.len();
+    let removed = removed_lines.len();
+    let mut diff_lines = Vec::new();
+    diff_lines.push(format!("--- a/{path}"));
+    diff_lines.push(format!("+++ b/{path}"));
+    diff_lines.push(format!(
+        "@@ -{},{} +{},{} @@",
+        prefix + 1,
+        removed.max(1),
+        prefix + 1,
+        added.max(1)
+    ));
+    let mut emitted = 0usize;
+    for line in removed_lines.iter().take(80) {
+        diff_lines.push(format!("-{line}"));
+        emitted += 1;
+    }
+    for line in added_lines.iter().take(80) {
+        diff_lines.push(format!("+{line}"));
+        emitted += 1;
+    }
+    if removed + added > emitted {
+        diff_lines.push(format!(
+            "... diff truncated: {} changed lines total",
+            removed + added
+        ));
+    }
+    (added, removed, diff_lines.join("\n"))
+}
+
+fn split_diff_lines(value: &str) -> Vec<&str> {
+    if value.is_empty() {
+        Vec::new()
+    } else {
+        value.split('\n').collect::<Vec<_>>()
+    }
 }
 
 fn collect_file_entries(

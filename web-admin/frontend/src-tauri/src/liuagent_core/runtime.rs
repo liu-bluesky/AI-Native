@@ -28,7 +28,7 @@ use super::state::recover_runtime_session;
 use super::state::{
     append_runtime_event, delete_runtime_outbox_entries,
     list_runtime_events as read_runtime_events, list_runtime_outbox as read_runtime_outbox,
-    recover_runtime_state, write_runtime_artifacts, RuntimePersistenceInput,
+    recover_runtime_state, write_runtime_artifacts, RuntimeArtifactPaths, RuntimePersistenceInput,
 };
 use super::tools::command::classify_command_risk;
 use super::types::{
@@ -341,119 +341,30 @@ fn start_local_chat_inner(
         runtime_artifacts.runtime_events.as_slice(),
     );
     let requirement_path = requirement_record_path(&workspace_root, &project_id, &chat_session_id);
-    write_requirement_record(
-        &requirement_path,
-        json!({
-            "record_type": "desktop-local-agent-requirement",
-            "version": REQUIREMENT_SCHEMA_VERSION,
-            "storage_scope": "desktop-workspace",
-            "storage_mode": "local-first",
-            "gateway_protocol": "Agent Gateway",
-            "project_id": project_id,
-            "chat_session_id": chat_session_id,
-            "session_id": session_id,
-            "workspace_path": workspace_root.to_string_lossy(),
-            "title": user_message,
-            "root_goal": user_message,
-            "latest_status": run_status,
-            "phase": "local_chat",
-            "step": if awaiting_permission { "waiting_tool_permission" } else if !planned_tools.is_empty() { "model_and_tool_execution" } else { "model_execution" },
-            "workflow_skill": {
-                "id": "liuagent-cli",
-                "source": "docs/liuAgent-cli",
-                "runtime": "tauri"
-            },
-            "agent_gateway": {
-                "invocation": gateway_result.invocation.clone(),
-                "requirement_session": gateway_result.requirement_session.clone(),
-                "project_context_bundle": gateway_result.project_context_bundle.clone(),
-                "prompt_bundle": gateway_result.prompt_bundle.clone(),
-                "tool_manifest_bundle": gateway_result.tool_manifest_bundle.clone(),
-                "agent_runtime_session": gateway_result.agent_runtime_session.clone()
-            },
-            "runtime_state": runtime_artifacts.clone(),
-            "task_lifecycle": {
-                "status": run_status,
-                "waiting_for": waiting_for,
-                "stopped_reason": agent_loop.stopped_reason.as_str(),
-                "candidate_solutions": &agent_loop.candidate_solutions,
-                "attempts": &agent_loop.attempts,
-                "verification": &agent_loop.verification,
-            },
-            "task_tree": planning::TaskTree::finalize(
-                &session_id,
-                &user_message,
-                agent_loop.stopped_reason.as_str(),
-                awaiting_permission,
-                run_ok,
-            ),
-            "blockers": build_runtime_blockers(
-                &session_id,
-                agent_loop.stopped_reason.as_str(),
-                awaiting_permission,
-                &planned_tools,
-            ),
-            "current_task_node": {
-                "id": format!("node-execute-{session_id}"),
-                "title": "桌面端本地对话与工具执行",
-                "status": run_status,
-                "stage_key": "local_chat"
-            },
-            "task_branches": [
-                {
-                    "id": "local-node-run",
-                    "title": "在桌面端本机执行模型选择的本地工具",
-                    "status": run_status,
-                    "stage_key": "execution"
-                }
-            ],
-            "history": [
-                {
-                    "event": "user_message",
-                    "message_id": user_message_id,
-                    "content": user_message,
-                    "created_at_epoch_ms": epoch_millis()
-                },
-                {
-                    "event": "model_results",
-                    "round_count": agent_loop.model_steps.len(),
-                    "final_mode": model_result.mode,
-                    "final_provider_id": model_result.provider_id,
-                    "final_model_name": model_result.model_name,
-                    "final_ok": model_result.ok,
-                    "final_status": model_result.status,
-                    "final_summary": model_result.summary,
-                    "final_error_code": model_result.error_code,
-                    "stopped_reason": agent_loop.stopped_reason,
-                    "created_at_epoch_ms": epoch_millis()
-                },
-                {
-                    "event": "tool_results",
-                    "tool_count": tool_results.len(),
-                    "ok": !tool_results.is_empty() && tool_results.iter().all(|item| item.ok),
-                    "summaries": tool_results.iter().map(|item| json!({
-                        "tool_name": item.name.as_str(),
-                        "tool_call_id": item.tool_call_id.as_str(),
-                        "ok": item.ok,
-                        "summary": item.summary.as_str(),
-                        "error_code": item.error_code.as_str()
-                    })).collect::<Vec<_>>(),
-                    "created_at_epoch_ms": epoch_millis()
-                },
-                {
-                    "event": "assistant_message",
-                    "message_id": assistant_message_id,
-                    "content": assistant_content,
-                    "created_at_epoch_ms": epoch_millis()
-                }
-            ],
-            "model_runtime": agent_loop.audit_value(),
-            "tool_results": json!(tool_results),
-            "audit_logs": audit_logs,
-            "sync_status": "local_only",
-            "updated_at_epoch_ms": epoch_millis()
-        }),
-    )?;
+    let requirement_record = build_local_chat_requirement_record(
+        &project_id,
+        &chat_session_id,
+        &session_id,
+        &workspace_root,
+        &user_message,
+        &user_message_id,
+        &assistant_message_id,
+        run_status,
+        waiting_for,
+        awaiting_permission,
+        run_ok,
+        &model_request,
+        &model_result,
+        &agent_loop,
+        &planned_tools,
+        &tool_results,
+        operations.clone(),
+        &gateway_result,
+        runtime_artifacts.clone(),
+        &audit_logs,
+        &assistant_content,
+    );
+    write_requirement_record(&requirement_path, requirement_record)?;
 
     let result_error_code = if awaiting_permission {
         "permission.required".to_string()
@@ -540,6 +451,630 @@ fn build_runtime_blockers(
         )])
     } else {
         json!([])
+    }
+}
+
+fn build_local_chat_requirement_record(
+    project_id: &str,
+    chat_session_id: &str,
+    session_id: &str,
+    workspace_root: &PathBuf,
+    user_message: &str,
+    user_message_id: &str,
+    assistant_message_id: &str,
+    run_status: &str,
+    waiting_for: Option<&str>,
+    awaiting_permission: bool,
+    run_ok: bool,
+    model_request: &ModelStepRequest,
+    model_result: &ModelStepResult,
+    agent_loop: &AgentLoopResult,
+    planned_tools: &[PlannedLocalTool],
+    tool_results: &[super::types::ToolExecutionResult],
+    operations: Value,
+    gateway_result: &AgentInvocationResult,
+    runtime_artifacts: RuntimeArtifactPaths,
+    audit_logs: &[Value],
+    assistant_content: &str,
+) -> Value {
+    let intent_analysis = build_requirement_intent_analysis(user_message, &model_request.messages);
+    let related_context = build_requirement_related_context(
+        project_id,
+        chat_session_id,
+        workspace_root,
+        &intent_analysis,
+        gateway_result,
+    );
+    let contextual_plan = build_requirement_contextual_plan(
+        user_message,
+        &intent_analysis,
+        &related_context,
+        planned_tools,
+        awaiting_permission,
+    );
+    let mut model_input_snapshots = vec![build_requirement_understanding_snapshot(
+        session_id,
+        user_message_id,
+        user_message,
+        &intent_analysis,
+        &related_context,
+    )];
+    model_input_snapshots.extend(agent_loop.model_input_snapshots.clone());
+    let actions_taken =
+        build_requirement_actions_taken(agent_loop, planned_tools, tool_results, model_result);
+    let current_state_delta = build_requirement_current_state_delta(
+        run_status,
+        waiting_for,
+        agent_loop,
+        planned_tools,
+        tool_results,
+        &runtime_artifacts,
+    );
+    let current_state = build_requirement_current_state(
+        user_message,
+        run_status,
+        waiting_for,
+        &current_state_delta,
+        &runtime_artifacts,
+    );
+    let related_context_count = related_context
+        .get("items")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let mut record = serde_json::Map::new();
+    record.insert(
+        "record_type".to_string(),
+        json!("desktop-local-agent-requirement"),
+    );
+    record.insert("version".to_string(), json!(REQUIREMENT_SCHEMA_VERSION));
+    record.insert(
+        "id".to_string(),
+        json!(format!("req_{}", sanitize_path_segment(chat_session_id))),
+    );
+    record.insert("name".to_string(), json!(truncate_inline(user_message, 80)));
+    record.insert(
+        "description".to_string(),
+        intent_analysis["current_request_summary"].clone(),
+    );
+    record.insert(
+        "tags".to_string(),
+        json!(["requirement", "context", "task-tree", "desktop-local-agent"]),
+    );
+    record.insert("storage_scope".to_string(), json!("desktop-workspace"));
+    record.insert("storage_mode".to_string(), json!("local-first"));
+    record.insert("gateway_protocol".to_string(), json!("Agent Gateway"));
+    record.insert("project_id".to_string(), json!(project_id));
+    record.insert("chat_session_id".to_string(), json!(chat_session_id));
+    record.insert("session_id".to_string(), json!(session_id));
+    record.insert(
+        "workspace_path".to_string(),
+        json!(workspace_root.to_string_lossy()),
+    );
+    record.insert("title".to_string(), json!(user_message));
+    record.insert("root_goal".to_string(), json!(user_message));
+    record.insert("original_request".to_string(), json!(user_message));
+    record.insert("intent_analysis".to_string(), intent_analysis.clone());
+    record.insert("related_context".to_string(), related_context.clone());
+    record.insert("contextual_plan".to_string(), contextual_plan);
+    record.insert(
+        "model_input_snapshots".to_string(),
+        json!(model_input_snapshots),
+    );
+    record.insert("actions_taken".to_string(), actions_taken);
+    record.insert("current_state_delta".to_string(), current_state_delta);
+    record.insert("current_state".to_string(), current_state);
+    record.insert("latest_status".to_string(), json!(run_status));
+    record.insert("phase".to_string(), json!("local_chat"));
+    record.insert(
+        "step".to_string(),
+        json!(if awaiting_permission {
+            "waiting_tool_permission"
+        } else if !planned_tools.is_empty() {
+            "model_and_tool_execution"
+        } else {
+            "model_execution"
+        }),
+    );
+    record.insert(
+        "workflow_skill".to_string(),
+        json!({
+            "id": "liuagent-cli",
+            "source": "docs/liuAgent-cli",
+            "runtime": "tauri"
+        }),
+    );
+    record.insert(
+        "agent_gateway".to_string(),
+        json!({
+            "invocation": gateway_result.invocation.clone(),
+            "requirement_session": gateway_result.requirement_session.clone(),
+            "project_context_bundle": gateway_result.project_context_bundle.clone(),
+            "prompt_bundle": gateway_result.prompt_bundle.clone(),
+            "tool_manifest_bundle": gateway_result.tool_manifest_bundle.clone(),
+            "agent_runtime_session": gateway_result.agent_runtime_session.clone()
+        }),
+    );
+    record.insert("runtime_state".to_string(), json!(runtime_artifacts));
+    record.insert(
+        "task_lifecycle".to_string(),
+        json!({
+            "status": run_status,
+            "waiting_for": waiting_for,
+            "stopped_reason": agent_loop.stopped_reason.as_str(),
+            "candidate_solutions": &agent_loop.candidate_solutions,
+            "attempts": &agent_loop.attempts,
+            "verification": &agent_loop.verification
+        }),
+    );
+    record.insert(
+        "task_tree".to_string(),
+        json!(planning::TaskTree::finalize(
+            session_id,
+            user_message,
+            agent_loop.stopped_reason.as_str(),
+            awaiting_permission,
+            run_ok,
+        )),
+    );
+    record.insert(
+        "blockers".to_string(),
+        build_runtime_blockers(
+            session_id,
+            agent_loop.stopped_reason.as_str(),
+            awaiting_permission,
+            planned_tools,
+        ),
+    );
+    record.insert(
+        "current_task_node".to_string(),
+        json!({
+            "id": format!("node-execute-{session_id}"),
+            "title": "桌面端本地对话与工具执行",
+            "status": run_status,
+            "stage_key": "local_chat"
+        }),
+    );
+    record.insert(
+        "task_branches".to_string(),
+        json!([{
+            "id": "local-node-run",
+            "title": "在桌面端本机执行模型选择的本地工具",
+            "status": run_status,
+            "stage_key": "execution"
+        }]),
+    );
+    record.insert(
+        "history".to_string(),
+        json!([
+            {
+                "event": "user_message",
+                "message_id": user_message_id,
+                "content": user_message,
+                "created_at_epoch_ms": epoch_millis()
+            },
+            {
+                "event": "requirement_understanding",
+                "intent_analysis": intent_analysis,
+                "related_context_count": related_context_count,
+                "created_at_epoch_ms": epoch_millis()
+            },
+            {
+                "event": "model_results",
+                "round_count": agent_loop.model_steps.len(),
+                "final_mode": model_result.mode,
+                "final_provider_id": model_result.provider_id,
+                "final_model_name": model_result.model_name,
+                "final_ok": model_result.ok,
+                "final_status": model_result.status,
+                "final_summary": model_result.summary,
+                "final_error_code": model_result.error_code,
+                "stopped_reason": agent_loop.stopped_reason,
+                "created_at_epoch_ms": epoch_millis()
+            },
+            {
+                "event": "tool_results",
+                "tool_count": tool_results.len(),
+                "ok": !tool_results.is_empty() && tool_results.iter().all(|item| item.ok),
+                "summaries": tool_results.iter().map(|item| json!({
+                    "tool_name": item.name.as_str(),
+                    "tool_call_id": item.tool_call_id.as_str(),
+                    "ok": item.ok,
+                    "summary": item.summary.as_str(),
+                    "error_code": item.error_code.as_str()
+                })).collect::<Vec<_>>(),
+                "created_at_epoch_ms": epoch_millis()
+            },
+            {
+                "event": "assistant_message",
+                "message_id": assistant_message_id,
+                "content": assistant_content,
+                "created_at_epoch_ms": epoch_millis()
+            }
+        ]),
+    );
+    record.insert("model_runtime".to_string(), agent_loop.audit_value());
+    record.insert("tool_results".to_string(), json!(tool_results));
+    record.insert("operations".to_string(), operations);
+    record.insert("audit_logs".to_string(), json!(audit_logs));
+    record.insert("sync_status".to_string(), json!("local_only"));
+    record.insert("updated_at_epoch_ms".to_string(), json!(epoch_millis()));
+    Value::Object(record)
+}
+
+fn build_requirement_intent_analysis(
+    user_message: &str,
+    model_messages: &[RuntimeModelMessage],
+) -> Value {
+    let targets = extract_file_path_candidates(user_message);
+    let target_object = targets
+        .last()
+        .cloned()
+        .or_else(|| infer_recent_target_path(model_messages))
+        .unwrap_or_else(|| "current user request".to_string());
+    let keywords = requirement_keywords(user_message);
+    json!({
+        "current_request_summary": truncate_inline(user_message, 160),
+        "current_request_understanding": {
+            "target_object": target_object,
+            "target_capability": infer_requirement_capability(user_message),
+            "keywords": keywords,
+            "constraints": infer_requirement_constraints(user_message),
+            "context_lookup": build_context_lookup(user_message, &targets)
+        },
+        "focus": infer_requirement_focus(user_message),
+        "task_type": infer_requirement_task_type(user_message),
+        "relationship": "related",
+        "related_objects": targets,
+        "context_strategy": "continue_chain",
+        "context_queries": requirement_keywords(user_message),
+        "context_include": [
+            "current_state",
+            "recent_requirement_summary",
+            "project_context_bundle",
+            "tool_manifest_bundle"
+        ],
+        "needs_user_confirmation": false,
+        "reason": "本地桌面智能体按 chat_session_id 续写同一需求链；无关需求由上层入口创建新的 chat_session_id。"
+    })
+}
+
+fn build_requirement_related_context(
+    project_id: &str,
+    chat_session_id: &str,
+    workspace_root: &PathBuf,
+    intent_analysis: &Value,
+    gateway_result: &AgentInvocationResult,
+) -> Value {
+    json!({
+        "strategy": intent_analysis["context_strategy"].clone(),
+        "items": [
+            {
+                "source": "local_current_state",
+                "relationship": "related",
+                "reason": "同一 chat_session_id 下的本地 requirement、runtime state 和 task tree 是当前会话连续执行的权威来源。",
+                "project_id": project_id,
+                "chat_session_id": chat_session_id,
+                "workspace_path": workspace_root.to_string_lossy()
+            },
+            {
+                "source": "agent_gateway.project_context_bundle",
+                "relationship": "related",
+                "reason": "Agent Gateway 为本轮运行绑定项目上下文。",
+                "summary": gateway_result.project_context_bundle.clone()
+            },
+            {
+                "source": "agent_gateway.tool_manifest_bundle",
+                "relationship": "related",
+                "reason": "任务处理循环只能使用该工具包中暴露的桌面本地工具。",
+                "summary": gateway_result.tool_manifest_bundle.clone()
+            }
+        ]
+    })
+}
+
+fn build_requirement_contextual_plan(
+    user_message: &str,
+    intent_analysis: &Value,
+    related_context: &Value,
+    planned_tools: &[PlannedLocalTool],
+    awaiting_permission: bool,
+) -> Value {
+    json!({
+        "current_request_summary": intent_analysis["current_request_summary"].clone(),
+        "final_intent": intent_analysis["focus"].clone(),
+        "execution_focus": if planned_tools.is_empty() {
+            "answer_with_model_context"
+        } else {
+            "model_tool_loop"
+        },
+        "execution_boundary": {
+            "only_handle_current_request": true,
+            "requires_permission_to_continue": awaiting_permission,
+            "workspace_local_first": true
+        },
+        "context_used": related_context["items"].clone(),
+        "planned_tool_count": planned_tools.len(),
+        "plan": [
+            "用需求理解结果压缩本轮重点和上下文检索方向",
+            "只把相关 current_state、项目上下文和工具清单送入任务处理循环",
+            "执行模型选择的标准 tool_calls，并把工具结果回传给模型",
+            "结束后写回 actions_taken、current_state_delta、任务树和验证信息"
+        ],
+        "original_request": user_message
+    })
+}
+
+fn build_requirement_understanding_snapshot(
+    session_id: &str,
+    user_message_id: &str,
+    user_message: &str,
+    intent_analysis: &Value,
+    related_context: &Value,
+) -> Value {
+    let prompt = json!({
+        "user_message": user_message,
+        "intent_analysis": intent_analysis,
+        "related_context": related_context
+    });
+    let prompt_raw = serde_json::to_string(&prompt).unwrap_or_else(|_| prompt.to_string());
+    json!({
+        "turn_id": format!("{session_id}-understanding"),
+        "message_id": user_message_id,
+        "loop": "requirement_understanding",
+        "prompt_version": "desktop-local-agent-requirement-understanding/v1",
+        "model_name": "local-deterministic-requirement-parser",
+        "input_summary": "基于用户当前原文生成需求理解和上下文检索方向。",
+        "context_package": {
+            "current_request_summary": intent_analysis["current_request_summary"].clone(),
+            "related_work_summary": [],
+            "current_state_used": "local requirement/current_state candidates",
+            "task_focus": intent_analysis["focus"].clone()
+        },
+        "messages_hash": fnv1a_hex(&prompt_raw),
+        "messages_redacted": [
+            {
+                "role": "user",
+                "content_preview": truncate_inline(user_message, 600)
+            }
+        ],
+        "created_at_epoch_ms": epoch_millis()
+    })
+}
+
+fn build_task_processing_snapshot(
+    session_id: &str,
+    model_step_index: usize,
+    request: &ModelStepRequest,
+) -> Value {
+    let messages_raw = serde_json::to_string(&request.messages)
+        .unwrap_or_else(|_| format!("{:?}", request.messages));
+    json!({
+        "turn_id": format!("{session_id}-task-processing-{model_step_index}"),
+        "message_id": format!("model-step-{model_step_index}"),
+        "loop": "task_processing",
+        "prompt_version": "desktop-local-agent-task-processing/v1",
+        "model_name": request.model_name,
+        "provider_id": request.provider_id,
+        "mode": request.mode,
+        "input_summary": format!("任务处理循环第 {model_step_index} 次模型请求。"),
+        "context_package": {
+            "current_request_summary": request
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "user")
+                .map(|message| truncate_inline(&message.content, 180))
+                .unwrap_or_default(),
+            "related_work_summary": request
+                .messages
+                .iter()
+                .filter(|message| message.role == "tool")
+                .map(|message| truncate_inline(&message.content, 180))
+                .collect::<Vec<_>>(),
+            "current_state_used": "messages supplied to model runner",
+            "task_focus": "complete current request with standard tool_calls"
+        },
+        "messages_hash": fnv1a_hex(&messages_raw),
+        "messages_redacted": request.messages.iter().map(|message| json!({
+            "role": message.role,
+            "tool_call_id": message.tool_call_id,
+            "tool_call_count": message.tool_calls.len(),
+            "content_preview": truncate_inline(&message.content, 700)
+        })).collect::<Vec<_>>(),
+        "created_at_epoch_ms": epoch_millis()
+    })
+}
+
+fn build_requirement_actions_taken(
+    agent_loop: &AgentLoopResult,
+    planned_tools: &[PlannedLocalTool],
+    tool_results: &[super::types::ToolExecutionResult],
+    model_result: &ModelStepResult,
+) -> Value {
+    json!({
+        "model_steps": agent_loop.model_steps.iter().enumerate().map(|(index, step)| json!({
+            "index": index + 1,
+            "mode": step.mode,
+            "provider_id": step.provider_id,
+            "model_name": step.model_name,
+            "status": step.status,
+            "ok": step.ok,
+            "summary": step.summary,
+            "tool_call_count": step.tool_calls.len(),
+            "error_code": step.error_code
+        })).collect::<Vec<_>>(),
+        "planned_tools": planned_tools.iter().map(|tool| json!({
+            "tool_call_id": tool.tool_call_id,
+            "tool_name": tool.name,
+            "summary": tool.summary,
+            "arguments_hash": fnv1a_hex(&tool.arguments.to_string())
+        })).collect::<Vec<_>>(),
+        "tool_results": tool_results.iter().map(|result| json!({
+            "tool_call_id": result.tool_call_id,
+            "tool_name": result.name,
+            "ok": result.ok,
+            "summary": result.summary,
+            "error_code": result.error_code
+        })).collect::<Vec<_>>(),
+        "final_model_status": model_result.status,
+        "stopped_reason": agent_loop.stopped_reason
+    })
+}
+
+fn build_requirement_current_state_delta(
+    run_status: &str,
+    waiting_for: Option<&str>,
+    agent_loop: &AgentLoopResult,
+    planned_tools: &[PlannedLocalTool],
+    tool_results: &[super::types::ToolExecutionResult],
+    runtime_artifacts: &RuntimeArtifactPaths,
+) -> Value {
+    json!({
+        "latest_status": run_status,
+        "waiting_for": waiting_for.unwrap_or(""),
+        "model_round_count": agent_loop.model_steps.len(),
+        "planned_tool_count": planned_tools.len(),
+        "tool_result_count": tool_results.len(),
+        "changed_or_inspected_targets": changed_or_inspected_targets(planned_tools),
+        "verification": agent_loop.verification,
+        "runtime_state_path": runtime_artifacts.state_path,
+        "transcript_path": runtime_artifacts.transcript_path,
+        "outbox_path": runtime_artifacts.outbox_path
+    })
+}
+
+fn build_requirement_current_state(
+    user_message: &str,
+    run_status: &str,
+    waiting_for: Option<&str>,
+    current_state_delta: &Value,
+    runtime_artifacts: &RuntimeArtifactPaths,
+) -> Value {
+    json!({
+        "summary": format!(
+            "当前本地智能体需求状态={}{}；最近目标：{}",
+            run_status,
+            waiting_for
+                .map(|value| format!("，waiting_for={value}"))
+                .unwrap_or_default(),
+            truncate_inline(user_message, 120)
+        ),
+        "completed": if run_status == "completed" {
+            vec![truncate_inline(user_message, 160)]
+        } else {
+            Vec::<String>::new()
+        },
+        "capabilities_and_limits": [
+            "本地 requirement 记录保存需求理解、上下文包、模型输入快照、动作和状态增量。",
+            "完整模型 messages 只保存在本地记录中；服务端同步使用摘要和 hash。"
+        ],
+        "recent_artifacts": {
+            "runtime_state_path": runtime_artifacts.state_path,
+            "transcript_path": runtime_artifacts.transcript_path,
+            "checkpoint_path": runtime_artifacts.checkpoint_path
+        },
+        "last_delta": current_state_delta
+    })
+}
+
+fn changed_or_inspected_targets(planned_tools: &[PlannedLocalTool]) -> Vec<String> {
+    planned_tools
+        .iter()
+        .filter_map(|tool| {
+            argument_string(&tool.arguments, "path")
+                .or_else(|| argument_string(&tool.arguments, "target"))
+                .or_else(|| argument_string(&tool.arguments, "file"))
+        })
+        .collect()
+}
+
+fn requirement_keywords(user_message: &str) -> Vec<String> {
+    let mut keywords = extract_file_path_candidates(user_message);
+    for token in user_message.split(|ch: char| {
+        ch.is_whitespace()
+            || matches!(
+                ch,
+                ',' | '，' | '.' | '。' | ':' | '：' | ';' | '；' | '(' | ')' | '（' | '）'
+            )
+    }) {
+        let token = token.trim();
+        if token.chars().count() >= 2 && keywords.len() < 12 {
+            let value = token.chars().take(40).collect::<String>();
+            if !keywords.iter().any(|item| item == &value) {
+                keywords.push(value);
+            }
+        }
+    }
+    if keywords.is_empty() {
+        keywords.push(truncate_inline(user_message, 40));
+    }
+    keywords.truncate(12);
+    keywords
+}
+
+fn infer_requirement_capability(user_message: &str) -> String {
+    if user_message.contains("修改") || user_message.contains("改造") {
+        "modify_existing_artifact".to_string()
+    } else if user_message.contains("修复") || user_message.contains("解决") {
+        "fix_problem".to_string()
+    } else if user_message.contains("查询") || user_message.contains("查看") {
+        "answer_or_inspect".to_string()
+    } else {
+        "handle_current_request".to_string()
+    }
+}
+
+fn infer_requirement_constraints(user_message: &str) -> Vec<String> {
+    let mut constraints = Vec::new();
+    if user_message.contains("不要兜底") || user_message.contains("不兜底") {
+        constraints.push("禁止以兜底、兼容或静默降级掩盖根因。".to_string());
+    }
+    if user_message.contains("本质解决") || user_message.contains("根因") {
+        constraints.push("优先定位并修正根因，收敛到唯一规范入口。".to_string());
+    }
+    if constraints.is_empty() {
+        constraints.push("只围绕本轮用户输入处理，不主动扩大范围。".to_string());
+    }
+    constraints
+}
+
+fn build_context_lookup(user_message: &str, targets: &[String]) -> Vec<String> {
+    let mut lookup = vec![
+        "local requirement current_state".to_string(),
+        "project context bundle".to_string(),
+        "desktop tool manifest".to_string(),
+    ];
+    lookup.extend(
+        targets
+            .iter()
+            .map(|target| format!("workspace target {target}")),
+    );
+    if user_message.contains("历史") || user_message.contains("最近") {
+        lookup.push("recent requirement history".to_string());
+    }
+    lookup
+}
+
+fn infer_requirement_focus(user_message: &str) -> String {
+    let capability = infer_requirement_capability(user_message);
+    format!("{capability}: {}", truncate_inline(user_message, 120))
+}
+
+fn infer_requirement_task_type(user_message: &str) -> &'static str {
+    if user_message.contains("最近") || user_message.contains("历史") {
+        "history_recall"
+    } else if user_message.contains("修复") || user_message.contains("解决") {
+        "modification"
+    } else if user_message.contains("修改") || user_message.contains("改造") {
+        "modification"
+    } else if user_message.contains("吗")
+        || user_message.contains("?")
+        || user_message.contains("？")
+    {
+        "question"
+    } else {
+        "other"
     }
 }
 
@@ -956,6 +1491,7 @@ fn merge_runtime_events(primary: &[Value], secondary: &[Value]) -> Vec<Value> {
 #[derive(Debug, Clone, Serialize)]
 struct AgentLoopResult {
     model_steps: Vec<ModelStepResult>,
+    model_input_snapshots: Vec<Value>,
     planned_tools: Vec<PlannedLocalTool>,
     tool_results: Vec<super::types::ToolExecutionResult>,
     candidate_solutions: Vec<AgentLoopCandidateSolution>,
@@ -1030,6 +1566,7 @@ impl AgentLoopResult {
                     "stopped_reason": self.stopped_reason,
                     "awaiting_permission": self.awaiting_permission,
                     "model_steps": self.model_steps,
+                    "model_input_snapshots": self.model_input_snapshots,
                     "planned_tools": self.planned_tools,
                     "candidate_solutions": self.candidate_solutions,
                     "attempts": self.attempts,
@@ -1115,6 +1652,7 @@ fn run_agent_loop_with(
 ) -> AgentLoopResult {
     let mut messages = base_request.messages.clone();
     let mut model_steps = Vec::new();
+    let mut model_input_snapshots = Vec::new();
     let mut planned_tools = Vec::new();
     let mut tool_results = Vec::new();
     let mut candidate_solutions = Vec::new();
@@ -1127,6 +1665,11 @@ fn run_agent_loop_with(
     loop {
         let request = base_request.with_messages(messages.clone());
         let model_step_index = model_steps.len() + 1;
+        model_input_snapshots.push(build_task_processing_snapshot(
+            runtime_session_id,
+            model_step_index,
+            &request,
+        ));
         emit_model_call_started_event(
             event_sink,
             runtime_session_id,
@@ -1254,6 +1797,7 @@ fn run_agent_loop_with(
                 stopped_reason = "waiting_approval".to_string();
                 return finalize_agent_loop_result(
                     model_steps,
+                    model_input_snapshots,
                     planned_tools,
                     tool_results,
                     candidate_solutions,
@@ -1293,6 +1837,7 @@ fn run_agent_loop_with(
                 stopped_reason = "repeated_failure".to_string();
                 return finalize_agent_loop_result(
                     model_steps,
+                    model_input_snapshots,
                     planned_tools,
                     tool_results,
                     candidate_solutions,
@@ -1306,6 +1851,7 @@ fn run_agent_loop_with(
 
     finalize_agent_loop_result(
         model_steps,
+        model_input_snapshots,
         planned_tools,
         tool_results,
         candidate_solutions,
@@ -1739,6 +2285,7 @@ fn emit_approval_required_event(
 
 fn finalize_agent_loop_result(
     model_steps: Vec<ModelStepResult>,
+    model_input_snapshots: Vec<Value>,
     planned_tools: Vec<PlannedLocalTool>,
     tool_results: Vec<super::types::ToolExecutionResult>,
     candidate_solutions: Vec<AgentLoopCandidateSolution>,
@@ -1754,6 +2301,7 @@ fn finalize_agent_loop_result(
     );
     AgentLoopResult {
         model_steps,
+        model_input_snapshots,
         planned_tools,
         tool_results,
         candidate_solutions,
@@ -2789,6 +3337,43 @@ fn send_model_request_with_timeout_retry<T>(
     unreachable!("model request retry loop always returns");
 }
 
+fn model_gateway_header(headers: &HeaderMap, names: &[&str]) -> String {
+    for name in names {
+        if let Some(value) = headers.get(*name).and_then(|value| value.to_str().ok()) {
+            let normalized = value.trim();
+            if !normalized.is_empty() {
+                return normalized.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn model_gateway_http_error_message(status: u16, headers: &HeaderMap, body: &str) -> String {
+    let retry_after = model_gateway_header(headers, &["retry-after", "Retry-After"]);
+    let request_id = model_gateway_header(
+        headers,
+        &[
+            "x-request-id",
+            "x-trace-id",
+            "x-ratelimit-request-id",
+            "cf-ray",
+        ],
+    );
+    let body_preview = truncate_inline(body, 2_000);
+    let mut parts = vec![format!("model gateway returned HTTP {status}")];
+    if !retry_after.is_empty() {
+        parts.push(format!("retry-after={retry_after}"));
+    }
+    if !request_id.is_empty() {
+        parts.push(format!("request-id={request_id}"));
+    }
+    if !body_preview.is_empty() {
+        parts.push(format!("body={body_preview}"));
+    }
+    parts.join("; ")
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenAiCompatibleResponse {
     choices: Option<Vec<OpenAiCompatibleChoice>>,
@@ -3011,10 +3596,14 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
         };
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
+        let headers = response.headers().clone();
+        let body = response
+            .text()
+            .unwrap_or_else(|err| format!("failed to read model gateway error body: {err}"));
         return ModelStepResult::failed(
             request,
             "model.request_failed",
-            format!("model gateway returned HTTP {status}"),
+            model_gateway_http_error_message(status, &headers, &body),
         );
     }
     let payload = match response.json::<OpenAiCompatibleResponse>() {
@@ -3492,6 +4081,38 @@ mod tests {
             &fs::read_to_string(&result.requirement_record_path).unwrap(),
         )
         .unwrap();
+        assert_eq!(requirement["original_request"], "检查工作区");
+        assert_eq!(
+            requirement["intent_analysis"]["current_request_summary"],
+            "检查工作区"
+        );
+        assert!(requirement["related_context"]["items"]
+            .as_array()
+            .expect("related context items")
+            .iter()
+            .any(|item| item["source"] == "agent_gateway.tool_manifest_bundle"));
+        assert_eq!(
+            requirement["contextual_plan"]["execution_boundary"]["workspace_local_first"],
+            true
+        );
+        let snapshots = requirement["model_input_snapshots"]
+            .as_array()
+            .expect("model input snapshots");
+        assert!(snapshots
+            .iter()
+            .any(|item| item["loop"] == "requirement_understanding"));
+        assert!(snapshots
+            .iter()
+            .any(|item| item["loop"] == "task_processing"));
+        assert!(requirement["actions_taken"]["model_steps"].is_array());
+        assert_eq!(
+            requirement["current_state_delta"]["latest_status"],
+            "completed"
+        );
+        assert!(requirement["current_state"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("completed"));
         assert!(PathBuf::from(
             requirement["runtime_state"]["statePath"]
                 .as_str()
@@ -4644,6 +5265,64 @@ mod tests {
         assert_eq!(error.attempts, 1);
         assert_eq!(error.code, "model.request_failed");
         assert!(error.message.contains("HTTP 429"));
+    }
+
+    #[test]
+    fn direct_model_runtime_includes_gateway_error_body_and_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request_bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            let mut expected_len = None;
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                request_bytes.extend_from_slice(&buffer[..read]);
+                if expected_len.is_none() {
+                    let request = String::from_utf8_lossy(&request_bytes);
+                    if let Some(header_end) = request.find("\r\n\r\n") {
+                        let content_length = request
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("Content-Length:")
+                                    .or_else(|| line.strip_prefix("content-length:"))
+                                    .and_then(|value| value.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        expected_len = Some(header_end + 4 + content_length);
+                    }
+                }
+                if expected_len.is_some_and(|len| request_bytes.len() >= len) {
+                    break;
+                }
+            }
+
+            let body = r#"{"error":{"message":"quota exceeded","type":"rate_limit"}}"#;
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 17\r\nX-Request-ID: req-test-429\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.as_bytes().len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let mut model_request = test_model_request("解释 updateStrength");
+        model_request.base_url = format!("http://{address}");
+        model_request.timeout_ms = 5_000;
+
+        let result = run_model_step(&model_request);
+        server.join().unwrap();
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "model.request_failed");
+        assert!(result.error.contains("model gateway returned HTTP 429"));
+        assert!(result.error.contains("retry-after=17"));
+        assert!(result.error.contains("request-id=req-test-429"));
+        assert!(result.error.contains("quota exceeded"));
+        assert!(result.summary.contains("quota exceeded"));
     }
 
     #[test]

@@ -535,3 +535,490 @@ web-admin/frontend/src/modules/project-chat/components/agent-trace/AgentTraceIte
 5. 文件 diff 展示。
 
 完成这些后，桌面本地智能体的执行过程会从“状态摘要”升级为“可审计执行轨迹”。
+
+## Codex 风格执行审计补充计划
+
+### 背景差异
+
+当前桌面本地智能体已经可以把 Runtime 事件追加到执行过程，但展示内容仍更像“事件流水”：
+
+```text
+Read(register.html) 1/2
+  - 标准模型工具调用：read_file
+Running...
+Result: Read file
+  - 读取 register.html 行 1-200/595
+```
+
+Codex 风格的执行过程不是只告诉用户“工具跑完了”，而是形成一份可审计转录：
+
+```text
+Explored
+  └ Read register.html
+    - 读取 1-200/595
+    - 发现注册表单、手机号、验证码、密码字段
+
+Edited ProjectChat.vue (+0 -60)
+  - 删除旧 message-live-progress 模板
+
+Diff
+- <div class="message-live-progress">
+-   本轮运行轨迹
+- </div>
+```
+
+两者的核心差异：
+
+| 维度 | 当前桌面智能体 | 目标 Codex 风格 |
+|---|---|---|
+| 读取文件 | 只显示路径和行号 | 显示路径、行号、关键内容摘要、必要片段 |
+| 搜索文本 | 只显示命中数量 | 显示关键词、范围、命中位置、截断说明 |
+| 修改文件 | 常只显示工具结果 | 显示 `Edited <file> (+x -y)` 和 diff |
+| 删除内容 | 缺少颜色与上下文 | 用红色 diff 行展示删除内容 |
+| 新增内容 | 缺少颜色与上下文 | 用绿色 diff 行展示新增内容 |
+| 命令执行 | Running / Result 粗粒度 | 显示命令、cwd、stdout/stderr chunk、退出码 |
+| MCP 调用 | 只显示调用状态 | 显示工具名、参数摘要、返回摘要，可折叠 |
+| 用户纠偏 | 难判断是否跑偏 | 每步有意图、动作、结果，用户可中途暂停修正 |
+
+### 展示责任边界
+
+执行细节统一进入 `message-process-stream`。
+
+`message-operations` 只保留必须交互的入口：
+
+- 授权确认。
+- 结构化表单。
+- 打开链接。
+- 批准 / 拒绝。
+- 中止 / 继续。
+
+禁止再把以下内容放回 `message-operations`：
+
+- 普通计划步骤。
+- 工具运行状态。
+- 文件读取摘要。
+- 搜索结果摘要。
+- 命令输出。
+- Runtime 本轮运行轨迹。
+
+当前已做的边界修复：
+
+- 消息气泡里的旧 `message-live-progress` / “本轮运行轨迹”模板已移除。
+- `message-operations` 已收敛为交互卡片。
+- `message-process-stream` 成为执行细节的唯一主展示区。
+
+### Runtime 事件结构补强
+
+前端不能凭空生成 diff、文件摘要和命令输出，Runtime / 工具层必须提供结构化 payload。
+
+建议保留兼容字段：
+
+```ts
+type ProcessLogEntry = {
+  id: string;
+  level: "info" | "success" | "warning" | "error";
+  text: string;
+  kind?: ProcessEntryKind;
+  span_id?: string;
+  parent_span_id?: string;
+  tool_call_id?: string;
+  payload?: Record<string, unknown>;
+};
+```
+
+新增 `kind` 建议：
+
+```ts
+type ProcessEntryKind =
+  | "run_lifecycle"
+  | "model_call"
+  | "progress_update"
+  | "tool_call"
+  | "tool_result"
+  | "file_read"
+  | "file_search"
+  | "file_edit"
+  | "file_diff"
+  | "command"
+  | "command_output"
+  | "mcp_call"
+  | "permission"
+  | "verification";
+```
+
+`text` 用于兼容旧渲染；新 UI 优先按 `kind + payload` 渲染。
+
+### 工具结果 payload 规范
+
+#### read_file
+
+```json
+{
+  "kind": "file_read",
+  "path": "register.html",
+  "range": { "start": 1, "end": 200, "total": 595 },
+  "summary": [
+    "发现注册页面主体结构",
+    "包含手机号、验证码、密码输入区"
+  ],
+  "excerpts": [
+    {
+      "start": 42,
+      "end": 58,
+      "title": "注册表单字段",
+      "text": "<input ...>"
+    }
+  ]
+}
+```
+
+展示为：
+
+```text
+Read(register.html)
+  - 读取 1-200/595
+  - 发现注册页面主体结构
+```
+
+长片段默认折叠。
+
+#### search_text
+
+```json
+{
+  "kind": "file_search",
+  "query": "input",
+  "path": ".",
+  "glob": "register.html",
+  "hit_count": 17,
+  "truncated": false,
+  "matches": [
+    { "path": "register.html", "line": 48, "preview": "<input ...>" }
+  ]
+}
+```
+
+展示为：
+
+```text
+Explore(input)
+  - 在 register.html 搜索 "input"
+  - 命中 17 处
+  - register.html:48 <input ...>
+```
+
+#### apply_patch / write_file / replace_in_file
+
+```json
+{
+  "kind": "file_edit",
+  "path": "ProjectChat.vue",
+  "operation": "edit",
+  "added": 6,
+  "removed": 60,
+  "summary": [
+    "删除旧 message-live-progress 模板",
+    "保留 message-process-stream"
+  ],
+  "diff": "@@ ...\n- old\n+ new"
+}
+```
+
+展示为：
+
+```text
+Edited ProjectChat.vue (+6 -60)
+  - 删除旧 message-live-progress 模板
+  - 保留 message-process-stream
+```
+
+diff 需要逐行着色：
+
+- `+` 行：绿色。
+- `-` 行：红色。
+- `@@` 行：中性弱化。
+- 普通上下文行：等宽字体。
+
+#### run_command
+
+```json
+{
+  "kind": "command",
+  "command": "npm run build",
+  "cwd": "web-admin/frontend",
+  "stream": "stdout",
+  "chunk": "vite build...",
+  "exit_code": 0,
+  "duration_ms": 6850
+}
+```
+
+展示为：
+
+```text
+Ran npm run build
+  - cwd=web-admin/frontend
+  - exit=0, 6.85s
+```
+
+stdout / stderr 按 chunk 追加，长输出折叠成：
+
+```text
+... +147 lines
+```
+
+#### MCP 调用
+
+```json
+{
+  "kind": "mcp_call",
+  "server": "query-center",
+  "tool": "complete_task_node_with_verification",
+  "arguments_preview": {
+    "project_id": "proj-d16591a6",
+    "node_id": "ttn-xxx"
+  },
+  "result_summary": "节点已完成，进度 100%"
+}
+```
+
+展示为：
+
+```text
+Called query-center.complete_task_node_with_verification
+  - node_id=ttn-xxx
+  - 节点已完成，进度 100%
+```
+
+完整 JSON 默认折叠，避免像当前示例那样把大段任务树结果直接撑满执行过程。
+
+### 前端渲染改造
+
+当前模板核心位置：
+
+```vue
+<div
+  v-for="entry in messageProcessLogEntries(item)"
+  class="message-process-stream__item"
+>
+  <span class="message-process-stream__text">{{ entry.text }}</span>
+</div>
+```
+
+改造为 typed renderer：
+
+```vue
+<MessageProcessEntry
+  v-for="entry in messageProcessLogEntries(item)"
+  :key="entry.id"
+  :entry="entry"
+/>
+```
+
+`MessageProcessEntry` 内部按 `entry.kind` 分发：
+
+| `entry.kind` | 渲染组件 |
+|---|---|
+| `progress_update` | `ProcessProgressEntry` |
+| `model_call` | `ProcessModelEntry` |
+| `tool_call` / `tool_result` | `ProcessToolEntry` |
+| `file_read` | `ProcessFileReadEntry` |
+| `file_search` | `ProcessSearchEntry` |
+| `file_edit` / `file_diff` | `ProcessFileEditEntry` |
+| `command` / `command_output` | `ProcessCommandEntry` |
+| `mcp_call` | `ProcessMcpEntry` |
+| `permission` | `ProcessPermissionEntry` |
+
+首版可以不拆新文件，先在 `ProjectChat.vue` 内以函数分支实现；稳定后再抽组件。
+
+### CSS class 建议
+
+保留现有主类：
+
+- `message-process-stream`
+- `message-process-stream__item`
+- `message-process-stream__dot`
+- `message-process-stream__text`
+
+新增类型化 class：
+
+```css
+.message-process-entry {}
+.message-process-entry__title {}
+.message-process-entry__meta {}
+.message-process-entry__summary {}
+.message-process-entry__details {}
+.message-process-entry__code {}
+.message-process-entry__diff {}
+.message-process-entry__diff-line {}
+.message-process-entry__diff-line.is-add {}
+.message-process-entry__diff-line.is-remove {}
+.message-process-entry__diff-line.is-hunk {}
+.message-process-entry__collapsed {}
+```
+
+颜色策略：
+
+- 删除：浅红背景 + 深红文本。
+- 新增：浅绿背景 + 深绿文本。
+- 命令 stdout：中性等宽。
+- 命令 stderr：warning / danger 语义色。
+- MCP 大 JSON：默认折叠，不直接展开。
+
+### 分阶段落地
+
+#### 阶段 A：前端 typed renderer 骨架
+
+目标：不改 Runtime 协议也能兼容旧日志。
+
+- 为 `message-process-stream` 增加 typed renderer。
+- 没有 `kind` 时继续展示 `entry.text`。
+- 支持 `kind=command_output`、`kind=file_diff`、`kind=mcp_call` 的基础样式。
+- 加静态测试确保执行细节不回流到 `message-operations`。
+
+验收：
+
+- 旧日志仍可显示。
+- 新日志按类型展示。
+- “本轮运行轨迹”不再出现。
+
+#### 阶段 B：Runtime 工具结果 enrich
+
+目标：让工具结果带足够细节。
+
+- `read_file` 结果增加 `path`、`range`、`total_lines`、`excerpt`。
+- `search_text` 结果增加 `query`、`hit_count`、`matches`。
+- `apply_patch` / `write_file` / `replace_in_file` 结果增加 `added`、`removed`、`diff`。
+- `run_command` 输出按 stdout / stderr chunk 发送。
+- MCP 调用增加 `arguments_preview` 和 `result_summary`。
+
+验收：
+
+- 读取文件不只显示“读取成功”，还能显示读到的关键区域。
+- 修改文件显示 `Edited <file> (+x -y)`。
+- 命令输出不等结束后一次性塞进最终文本。
+
+#### 阶段 C：span 分组与折叠
+
+目标：接近 Codex 的 `Explored / Edited / Ran / Called` 分组。
+
+- 同一个 `tool_call_id` 合并为一个 span。
+- `tool_call_started` 是 span header。
+- `tool_result` / `command_output_chunk` / `file_diff` 挂到 span 下。
+- 长输出按行数折叠。
+- MCP 大结果默认折叠，只显示摘要。
+
+验收：
+
+- 一个 `read_file` 只出现一个 `Read(file)` 组。
+- 一个 `run_command` 只出现一个 `Ran(cmd)` 组，输出持续追加。
+- 任务树大 JSON 不再直接刷屏。
+
+#### 阶段 D：用户纠偏与滚动体验
+
+目标：用户能边看边纠偏，不被自动滚动打断。
+
+- 用户滚动离底部时，不强制拉到底。
+- 有新进度时显示“有新执行进度”提示。
+- 执行流旁保留暂停 / 中止 / 继续入口。
+- 当模型计划明显偏移时，用户可暂停并发新指令。
+
+验收：
+
+- 长任务运行时用户可以向上阅读历史。
+- 新事件持续追加，但不抢滚动。
+- 暂停入口不放在 `message-process-stream` 里，而由交互区或执行控制区承担。
+
+### 回归测试要求
+
+`web-admin/frontend/scripts/check-local-liuagent-chat.mjs` 需要覆盖：
+
+- `message-operations` 只用于交互卡片。
+- `message-process-stream` 是执行细节主展示区。
+- 业务源码不再出现“本轮运行轨迹”消息模板。
+- typed renderer 支持 `file_read`、`file_search`、`file_diff`、`command_output`、`mcp_call`。
+- diff 行必须有 add/remove/hunk class。
+- Runtime progress 事件不得强制滚动到底。
+
+Rust / Tauri 侧需要覆盖：
+
+- `read_file` 结果事件带路径和行范围。
+- `search_text` 结果事件带命中摘要。
+- `apply_patch` / 文件写入事件带 diff stats。
+- `run_command` 运行中输出多条 `command_output_chunk`。
+- 授权续跑后仍保留同一个 `tool_call_id` span。
+
+### 验收样例
+
+用户请求：
+
+```text
+检测注册页面有几个表单
+```
+
+目标执行过程：
+
+```text
+Local Agent Runtime started
+  - 正在创建本机会话
+
+Computing (model step 1)
+  - 模型：DeepSeek-V4-Flash
+  - 上下文：6 条
+
+Agent progress
+  - 我先读取 register.html 和 register2.html，确认表单字段。
+  - 下一步：读取两个文件的开头区域
+
+Read(register.html) 1/2
+  - 读取 1-200/595
+  - 发现注册页主体和第一组输入区域
+
+Read(register2.html) 2/2
+  - 读取 1-200/696
+  - 发现注册页主体、验证码和账号字段
+
+Explore(input) 1/2
+  - 在 register.html 搜索 "input"
+  - 命中 17 处
+
+Explore(input) 2/2
+  - 在 register2.html 搜索 "input"
+  - 命中 30 处，已截断
+
+Read(register.html)
+  - 读取 320-419/595
+  - 定位表单提交区域
+
+Read(register2.html)
+  - 读取 395-494/696
+  - 定位第二套表单字段区域
+
+Model step 4 completed
+  - No more tool calls
+```
+
+如果发生修改：
+
+```text
+Edited ProjectChat.vue (+6 -60)
+  - 删除重复的 message-live-progress 旧模板
+  - 保留 message-process-stream 作为唯一执行细节展示
+
+Diff
+- <div class="message-live-progress">
+-   本轮运行轨迹
+- </div>
+```
+
+### 退出条件
+
+满足以下条件后，本轮改造可视为完成：
+
+1. 桌面本地智能体执行过程不再是纯文本事件流水。
+2. 读、搜、改、删、命令、MCP 都有独立可识别展示。
+3. 文件修改至少能展示 `Edited <file> (+x -y)` 和 diff。
+4. 命令输出能流式追加并折叠长输出。
+5. 授权、表单和按钮仍保留在交互区，不混入普通执行细节。
+6. 用户滚动查看历史时不会被新进度强制拉到底。
+7. 回归测试覆盖重复展示、diff class、typed renderer 和 Runtime event payload。

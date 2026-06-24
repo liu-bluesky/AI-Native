@@ -68,23 +68,12 @@ export const SETTINGS_CENTER_ITEM_DEFS = [
     desc: "当前项目的 AI 对话运行参数",
     kind: "internal",
   },
-  {
-    id: "local-runner",
-    label: "本地运行",
-    desc: "桌面端本地 Runner、工作区和授权记录",
-    kind: "internal",
-  },
 ];
 export const SETTINGS_CENTER_PANEL_META = {
   chat: {
     label: "对话设置",
     desc: "当前项目的 AI 对话运行参数",
     contextLabel: "对话配置",
-  },
-  "local-runner": {
-    label: "本地运行",
-    desc: "桌面端本地 Runner、工作区和授权记录",
-    contextLabel: "本地运行",
   },
   projects: {
     label: "项目详情",
@@ -98,5 +87,4 @@ export const ROLE_LABEL_MAP = {
 };
 export const SETTINGS_GUIDE_REASON_MAP = {
   chat: "先把项目、执行员工、模型和工具预算收束到同一轮上下文里。",
-  "local-runner": "先确认桌面端 Runner、项目工作区和本机会话授权状态。",
 };
