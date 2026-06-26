@@ -4408,6 +4408,9 @@ def test_llm_model_type_catalog_normalizes_industry_aliases():
     from services.catalogs.llm_model_type_catalog import normalize_model_type
 
     assert normalize_model_type("chat_completion") == "text_generation"
+    assert normalize_model_type("Gemma4") == "text_generation"
+    assert normalize_model_type("gemma-3") == "text_generation"
+    assert normalize_model_type("llama") == "text_generation"
     assert normalize_model_type("vision-chat") == "multimodal_chat"
     assert normalize_model_type("Images") == "image_generation"
     assert normalize_model_type("speech_to_text") == "audio_transcription"

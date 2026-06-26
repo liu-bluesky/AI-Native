@@ -10,7 +10,7 @@ from core.deps import ensure_any_permission, ensure_permission, is_admin_like, r
 from services.catalogs.dictionary_catalog import get_dictionary_definition
 from services.catalogs.llm_model_type_catalog import DEFAULT_MODEL_TYPE, MODEL_TYPE_DICTIONARY_KEY
 from services.providers.llm_provider_service import LlmProviderConnectionTestError, get_llm_provider_service
-from models.requests import LlmProviderCreateReq, LlmProviderTestReq, LlmProviderUpdateReq
+from models.requests import LlmProviderCreateReq, LlmProviderDiscoverModelsReq, LlmProviderTestReq, LlmProviderUpdateReq
 
 def _require_llm_provider_permission(auth_payload: dict = Depends(require_auth)) -> None:
     ensure_permission(auth_payload, "menu.llm.providers")
@@ -129,6 +129,53 @@ async def create_llm_provider(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"status": "created", "provider": provider}
+
+
+@router.post("/providers/discover-models")
+async def discover_llm_provider_models(
+    req: LlmProviderDiscoverModelsReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _require_llm_provider_permission(auth_payload)
+    try:
+        result = get_llm_provider_service().discover_models(req.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"status": "ok", **result}
+
+
+@router.post("/providers/{provider_id}/discover-models")
+async def discover_existing_llm_provider_models(
+    provider_id: str,
+    req: LlmProviderDiscoverModelsReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _require_llm_provider_permission(auth_payload)
+    service = get_llm_provider_service()
+    provider = service.get_provider_raw(
+        provider_id,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+    )
+    if not provider:
+        raise HTTPException(404, f"LLM provider {provider_id} not found")
+    payload = req.model_dump()
+    discovery_provider = {
+        **provider,
+        "provider_type": payload.get("provider_type") or provider.get("provider_type"),
+        "base_url": payload.get("base_url") or provider.get("base_url"),
+        "api_key": payload.get("api_key") or provider.get("api_key") or "",
+        "extra_headers": payload.get("extra_headers") or provider.get("extra_headers") or {},
+    }
+    try:
+        result = service.discover_models(discovery_provider)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"status": "ok", **result}
 
 
 @router.patch("/providers/{provider_id}")

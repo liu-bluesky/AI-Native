@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
+from urllib.parse import urlparse
 import requests
 from starlette.concurrency import run_in_threadpool
 
@@ -823,7 +824,7 @@ class LlmProviderService:
                 normalized_max_tokens = int(max_tokens)
             except (TypeError, ValueError):
                 normalized_max_tokens = 1024
-            normalized_max_tokens = max(16, min(normalized_max_tokens, 8192))
+            normalized_max_tokens = max(16, normalized_max_tokens)
 
         if self._is_responses_provider(provider):
             endpoint = self._build_responses_url(str(provider.get("base_url") or ""))
@@ -908,7 +909,7 @@ class LlmProviderService:
             normalized_max_tokens = int(max_tokens)
         except (TypeError, ValueError):
             normalized_max_tokens = 1024
-        normalized_max_tokens = max(16, min(normalized_max_tokens, 8192))
+        normalized_max_tokens = max(16, normalized_max_tokens)
 
         if self._is_responses_provider(provider):
             raise ValueError(f"Provider {provider_id} uses 'responses' mode which does not support streaming. Please use chat_completion() instead.")
@@ -1122,15 +1123,31 @@ class LlmProviderService:
 
 
     @staticmethod
-    def _build_chat_completion_url(base_url: str) -> str:
+    def _normalize_openai_compatible_base_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")
+        if not base:
+            return base
+        parsed = urlparse(base)
+        host = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme in {"http", "https"}
+            and host in {"127.0.0.1", "localhost", "::1"}
+            and parsed.port == 11434
+            and parsed.path.rstrip("/") in {"", "/"}
+        ):
+            return f"{base}/v1"
+        return base
+
+    @staticmethod
+    def _build_chat_completion_url(base_url: str) -> str:
+        base = LlmProviderService._normalize_openai_compatible_base_url(base_url)
         if base.endswith("/chat/completions"):
             return base
         return f"{base}/chat/completions"
 
     @staticmethod
     def _build_responses_url(base_url: str) -> str:
-        base = str(base_url or "").strip().rstrip("/")
+        base = LlmProviderService._normalize_openai_compatible_base_url(base_url)
         if base.endswith("/responses"):
             return base
         if base.endswith("/chat/completions"):
@@ -1139,7 +1156,7 @@ class LlmProviderService:
 
     @staticmethod
     def _build_models_url(base_url: str) -> str:
-        base = str(base_url or "").strip().rstrip("/")
+        base = LlmProviderService._normalize_openai_compatible_base_url(base_url)
         if base.endswith("/models"):
             return base
         if base.endswith("/responses"):
@@ -1147,6 +1164,59 @@ class LlmProviderService:
         if base.endswith("/chat/completions"):
             return f"{base[:-len('/chat/completions')]}/models"
         return f"{base}/models"
+
+    @staticmethod
+    def _extract_model_names_from_models_payload(payload: Any) -> list[str]:
+        if isinstance(payload, dict):
+            raw_items = payload.get("data")
+            if raw_items is None:
+                raw_items = payload.get("models")
+        elif isinstance(payload, list):
+            raw_items = payload
+        else:
+            raw_items = []
+        if not isinstance(raw_items, list):
+            return []
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            if isinstance(item, dict):
+                name = str(item.get("id") or item.get("name") or item.get("model") or "").strip()
+            else:
+                name = str(item or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+        return names
+
+    def discover_models(self, provider: dict[str, Any]) -> dict[str, Any]:
+        base_url = str(provider.get("base_url") or "").strip()
+        if not base_url:
+            raise ValueError("Base URL is required")
+        provider_type = self._normalize_provider_type(provider.get("provider_type"))
+        if provider_type not in {"openai-compatible", "responses"}:
+            raise ValueError(f"Provider type {provider_type or 'unknown'} does not support model discovery")
+        endpoint = self._build_models_url(base_url)
+        payload = self._request_json(
+            "GET",
+            endpoint,
+            self._build_headers(
+                {
+                    "api_key": str(provider.get("api_key") or "").strip(),
+                    "extra_headers": provider.get("extra_headers") or {},
+                }
+            ),
+            timeout=20,
+        )
+        models = self._extract_model_names_from_models_payload(payload)
+        if not models:
+            raise RuntimeError("No models returned from provider /models endpoint")
+        return {
+            "models": models,
+            "models_url": endpoint,
+            "count": len(models),
+        }
 
     @staticmethod
     def _build_images_generation_url(base_url: str) -> str:
@@ -2253,6 +2323,27 @@ class LlmProviderService:
             pass
         raise RuntimeError(f"LLM SSE response parse failed: {stripped[:300]}")
 
+    @staticmethod
+    def _empty_model_response_message(payload: Any, model_name: str = "") -> str:
+        if isinstance(payload, dict):
+            usage = LlmProviderService._normalize_usage_payload(payload.get("usage"))
+            choices = payload.get("choices")
+            choice_count = len(choices) if isinstance(choices, list) else 0
+            finish_reason = ""
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                finish_reason = str(choices[0].get("finish_reason") or "").strip()
+            details: list[str] = []
+            normalized_model = str(payload.get("model") or model_name or "").strip()
+            if normalized_model:
+                details.append(f"model={normalized_model}")
+            details.append(f"choices={choice_count}")
+            if finish_reason:
+                details.append(f"finish_reason={finish_reason}")
+            if usage:
+                details.append(f"usage={json.dumps(usage, ensure_ascii=False)}")
+            return "model returned empty content" + (f" ({'; '.join(details)})" if details else "")
+        return "model returned empty content"
+
     def _call_chat_completion(
         self,
         provider: dict[str, Any],
@@ -2404,6 +2495,10 @@ class LlmProviderService:
                     }
                     completion_resp = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=25)
                     text = self._extract_content(completion_resp)
+                    if not text:
+                        raise RuntimeError(
+                            self._empty_model_response_message(completion_resp, chosen_model)
+                        )
                     completion_ok = True
                     completion_message = f"/responses 可用: {(text or 'ok')[:120]}"
                 else:
@@ -2412,11 +2507,15 @@ class LlmProviderService:
                         model_name=chosen_model,
                         temperature=0,
                         system_prompt="你是连通性测试助手。",
-                        user_prompt="返回 ok",
-                        max_tokens=32,
+                        user_prompt="只输出 ok 两个字母，不要解释。",
+                        max_tokens=128,
                         timeout=35,
                     )
                     text = self._extract_content(completion_resp)
+                    if not text:
+                        raise RuntimeError(
+                            self._empty_model_response_message(completion_resp, chosen_model)
+                        )
                     completion_ok = True
                     completion_message = f"/chat/completions(SSE) 可用: {(text or 'ok')[:120]}"
             except Exception as exc:

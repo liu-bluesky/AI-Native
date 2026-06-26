@@ -21,6 +21,10 @@ const gateway = readFileSync(
 );
 const bridge = readFileSync(resolve(rootDir, "src/utils/native-desktop-bridge.js"), "utf8");
 const projectChat = readFileSync(resolve(rootDir, "src/views/projects/ProjectChat.vue"), "utf8");
+const messageMappers = readFileSync(
+  resolve(rootDir, "src/modules/project-chat/mappers/messageMappers.js"),
+  "utf8",
+);
 const projectChatResponsiveCss = readFileSync(
   resolve(rootDir, "src/modules/project-chat/styles/project-chat-style-15.css"),
   "utf8",
@@ -414,6 +418,24 @@ assert.match(
   projectChat,
   /function localLiuAgentRuntimeEventProcessLogEntry\(event = \{\}, operation = null\)[\s\S]*?kind: localLiuAgentRuntimeEventProcessKind\(event\)[\s\S]*?payload: \{/,
   "local liuAgent runtime events must preserve structured payloads in processLog entries",
+);
+
+assert.match(
+  projectChat,
+  /function applyLocalLiuAgentReasoningContent\(row, event = \{\}\)[\s\S]*?event\?\.type[\s\S]*?model_step[\s\S]*?payload\?\.reasoning_content[\s\S]*?row\.reasoningContent = reasoningContent/,
+  "local liuAgent model_step events must persist reasoningContent onto assistant rows for follow-up history",
+);
+
+assert.match(
+  projectChat,
+  /result\?\.assistantReasoningContent \|\| result\?\.assistant_reasoning_content[\s\S]*?assistantMessage\.reasoningContent = assistantReasoningContent/,
+  "local liuAgent final result must persist assistant reasoningContent even when live events are missed",
+);
+
+assert.match(
+  messageMappers,
+  /reasoningContent: String\([\s\S]*?item\?\.reasoningContent \|\| item\?\.reasoning_content/,
+  "project chat history rows must include reasoningContent when building follow-up history",
 );
 
 assert.match(

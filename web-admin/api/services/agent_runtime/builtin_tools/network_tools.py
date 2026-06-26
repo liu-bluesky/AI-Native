@@ -142,7 +142,7 @@ async def download_file(workspace_path: str, args: dict[str, Any]) -> dict[str, 
                 content_type = response.headers.get("content-type", "")
                 total_bytes = 0
                 with open(dest, "wb") as f:
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
                         f.write(chunk)
                         total_bytes += len(chunk)
     except httpx.TimeoutException:

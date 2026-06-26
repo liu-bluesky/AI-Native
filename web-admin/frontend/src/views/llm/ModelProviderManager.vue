@@ -195,7 +195,7 @@
               点击上方模板可自动填充主流供应商的接口规范、Base URL 和示例模型；模型名可按实际账号权限调整。
             </div>
             <div class="provider-standard-note">
-              OpenAI 官方最新模型优先使用 Responses；DeepSeek、智谱、Gemini 优先使用 OpenAI-compatible；Claude 需通过兼容网关或后续 Anthropic 适配；Codex 属于外部执行器，不建议作为普通模型供应商。
+              OpenAI 官方最新模型优先使用 Responses；Ollama、DeepSeek、智谱、Gemini 优先使用 OpenAI-compatible；Claude 需通过兼容网关或后续 Anthropic 适配；Codex 属于外部执行器，不建议作为普通模型供应商。
             </div>
           </div>
         </el-form-item>
@@ -296,6 +296,13 @@
             </div>
             <div class="model-config-editor__actions">
               <el-button @click="addModelConfig">添加模型</el-button>
+              <el-button
+                :loading="discoveringModels"
+                :disabled="!form.base_url.trim()"
+                @click="discoverModels"
+              >
+                获取模型
+              </el-button>
               <span class="model-config-editor__hint">
                 模型能力来自字典模块；接口规范由上方供应商配置决定。
               </span>
@@ -378,6 +385,7 @@ import {
 const loading = ref(false)
 const saving = ref(false)
 const importingPresets = ref(false)
+const discoveringModels = ref(false)
 const providers = ref([])
 const shareUserOptions = ref([])
 const modelTypeOptions = ref(FALLBACK_MODEL_TYPE_OPTIONS)
@@ -479,6 +487,21 @@ watch(
 )
 
 const PROVIDER_PRESETS = [
+  {
+    key: 'ollama',
+    label: 'Ollama',
+    name: 'Ollama 本地模型',
+    provider_type: 'openai-compatible',
+    base_url: 'http://127.0.0.1:11434/v1',
+    note: 'Ollama 本地 OpenAI 兼容入口，适合接入 Gemma、Llama、Qwen、DeepSeek 等本机模型；API Key 可留空。',
+    model_configs: [
+      { name: 'gemma4', model_type: 'text_generation' },
+      { name: 'gemma3', model_type: 'text_generation' },
+      { name: 'llama3.3', model_type: 'text_generation' },
+      { name: 'qwen3', model_type: 'text_generation' },
+    ],
+    default_model: 'gemma4',
+  },
   {
     key: 'openai',
     label: 'OpenAI',
@@ -729,6 +752,27 @@ function addModelConfig() {
   form.model_configs.push(createModelConfig())
 }
 
+function mergeDiscoveredModelNames(modelNames) {
+  const existingNames = new Set(
+    form.model_configs
+      .map((item) => String(item?.name || '').trim())
+      .filter(Boolean),
+  )
+  let added = 0
+  modelNames.forEach((name) => {
+    const modelName = String(name || '').trim()
+    if (!modelName || existingNames.has(modelName)) return
+    existingNames.add(modelName)
+    form.model_configs.push(createModelConfig(modelName))
+    added += 1
+  })
+  if (added > 0) {
+    form.model_configs = form.model_configs.filter((item) => String(item?.name || '').trim())
+  }
+  syncDefaultModelSelection()
+  return added
+}
+
 function removeModelConfig(index) {
   form.model_configs.splice(index, 1)
   if (!form.model_configs.length) {
@@ -781,6 +825,47 @@ function parseHeaders() {
     throw new Error('invalid')
   } catch {
     throw new Error('额外请求头必须是 JSON 对象')
+  }
+}
+
+async function discoverModels() {
+  if (!form.base_url.trim()) {
+    ElMessage.warning('请先填写 Base URL')
+    return
+  }
+
+  let extraHeaders = {}
+  try {
+    extraHeaders = parseHeaders()
+  } catch (e) {
+    ElMessage.error(e.message || '额外请求头格式错误')
+    return
+  }
+
+  discoveringModels.value = true
+  try {
+    const discoverEndpoint = editingId.value
+      ? `/llm/providers/${encodeURIComponent(editingId.value)}/discover-models`
+      : '/llm/providers/discover-models'
+    const data = await api.post(discoverEndpoint, {
+      provider_type: form.provider_type,
+      base_url: form.base_url.trim(),
+      api_key: form.api_key.trim(),
+      extra_headers: extraHeaders,
+    })
+    const models = Array.isArray(data?.models) ? data.models : []
+    const added = mergeDiscoveredModelNames(models)
+    if (added > 0) {
+      ElMessage.success(`已获取 ${models.length} 个模型，新增 ${added} 个`)
+    } else if (models.length) {
+      ElMessage.info(`已获取 ${models.length} 个模型，当前列表已包含`)
+    } else {
+      ElMessage.warning('未获取到模型')
+    }
+  } catch (e) {
+    ElMessage.error(e.detail || e.message || '获取模型失败')
+  } finally {
+    discoveringModels.value = false
   }
 }
 

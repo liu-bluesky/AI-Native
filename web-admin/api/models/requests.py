@@ -1235,3 +1235,10 @@ class LlmProviderUpdateReq(BaseModel):
 
 class LlmProviderTestReq(BaseModel):
     model_name: str = ""
+
+
+class LlmProviderDiscoverModelsReq(BaseModel):
+    provider_type: str = "openai-compatible"
+    base_url: str
+    api_key: str = ""
+    extra_headers: dict = {}

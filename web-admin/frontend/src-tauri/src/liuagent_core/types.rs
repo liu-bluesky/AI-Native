@@ -80,6 +80,7 @@ pub struct LocalRuntimeEventsRequest {
 pub struct LocalChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(default, alias = "reasoning_content")]
     pub reasoning_content: Option<String>,
 }
 
@@ -170,6 +171,7 @@ pub struct LocalChatResult {
     pub requirement_record_path: String,
     pub gateway_result: Option<AgentInvocationResult>,
     pub assistant_content: String,
+    pub assistant_reasoning_content: String,
     pub model_result: Value,
     pub tool_results: Vec<ToolExecutionResult>,
     pub operations: Value,
@@ -189,6 +191,7 @@ impl LocalChatResult {
             requirement_record_path: String::new(),
             gateway_result: None,
             assistant_content: String::new(),
+            assistant_reasoning_content: String::new(),
             model_result: json!({}),
             tool_results: Vec::new(),
             operations: json!([]),

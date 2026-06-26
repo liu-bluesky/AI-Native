@@ -2179,7 +2179,6 @@
                           <el-input-number
                             v-model="chatMaxTokens"
                             :min="128"
-                            :max="8192"
                             :step="64"
                             class="full-width"
                           />
@@ -8380,6 +8379,17 @@ function localLiuAgentRuntimeEventProcessLogEntry(event = {}, operation = null) 
   };
 }
 
+function applyLocalLiuAgentReasoningContent(row, event = {}) {
+  if (!row || String(event?.type || "").trim() !== "model_step") return false;
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  const reasoningContent = String(
+    payload?.reasoning_content || payload?.reasoningContent || "",
+  ).trim();
+  if (!reasoningContent) return false;
+  row.reasoningContent = reasoningContent;
+  return true;
+}
+
 function shouldUpsertLocalLiuAgentRuntimeOperation(event = {}, operation = null) {
   if (!operation) return false;
   const type = String(event?.type || "").trim();
@@ -8399,6 +8409,7 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
     ) {
       continue;
     }
+    applyLocalLiuAgentReasoningContent(row, event);
     const operation = localLiuAgentRuntimeEventOperation(event, {
       ...context,
       assistantMessageId: row.id,
@@ -8483,6 +8494,7 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
   ) {
     return;
   }
+  applyLocalLiuAgentReasoningContent(row, event);
   const operation = localLiuAgentRuntimeEventOperation(event, {
     chatSessionId,
     workspacePath: run.workspacePath,
@@ -24343,6 +24355,12 @@ async function sendLocalLiuAgentChatRequest({
     return result;
   }
   const ok = Boolean(result?.ok);
+  const assistantReasoningContent = String(
+    result?.assistantReasoningContent || result?.assistant_reasoning_content || "",
+  ).trim();
+  if (assistantReasoningContent) {
+    assistantMessage.reasoningContent = assistantReasoningContent;
+  }
   assistantMessage.content = String(
     result?.assistantContent || result?.assistant_content || result?.summary || "",
   ).trim();

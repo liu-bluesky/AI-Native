@@ -268,7 +268,7 @@ fn start_local_chat_inner(
         let mut messages = model_request.messages.clone();
         messages.push(RuntimeModelMessage::assistant_tool_call(
             "用户已授权，继续执行之前等待授权的本地工具。",
-            "",
+            replayed.reasoning_content.clone(),
             vec![replayed.tool.clone()],
         ));
         let attempt = build_agent_loop_attempt(&replayed.tool, &replayed.result, 1);
@@ -427,6 +427,7 @@ fn start_local_chat_inner(
         requirement_record_path: requirement_path.to_string_lossy().to_string(),
         gateway_result: Some(gateway_result),
         assistant_content,
+        assistant_reasoning_content: model_result.reasoning_content,
         model_result: agent_loop.audit_value(),
         tool_results,
         operations,
@@ -1315,6 +1316,7 @@ struct PlannedLocalTool {
 struct ReplayedPermissionTool {
     tool: PlannedLocalTool,
     result: super::types::ToolExecutionResult,
+    reasoning_content: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1405,7 +1407,7 @@ fn replay_pending_permission_tool_if_available(
     if decision.decision.trim() == "deny" {
         return None;
     }
-    let pending_tool =
+    let (pending_tool, reasoning_content) =
         recover_pending_permission_tool(workspace_root, project_id, chat_session_id, decision)?;
     let mut tool = pending_tool;
     tool.summary = if tool.summary.trim().is_empty() {
@@ -1459,7 +1461,11 @@ fn replay_pending_permission_tool_if_available(
         &result,
     );
     emit_tool_result_event(event_sink, runtime_session_id, chat_session_id, &result);
-    Some(ReplayedPermissionTool { tool, result })
+    Some(ReplayedPermissionTool {
+        tool,
+        result,
+        reasoning_content,
+    })
 }
 
 fn recover_pending_permission_tool(
@@ -1467,7 +1473,7 @@ fn recover_pending_permission_tool(
     project_id: &str,
     chat_session_id: &str,
     decision: &super::types::PermissionDecisionInput,
-) -> Option<PlannedLocalTool> {
+) -> Option<(PlannedLocalTool, String)> {
     let request_id = decision.request_id.as_deref().map(str::trim)?;
     if request_id.is_empty() {
         return None;
@@ -1498,11 +1504,32 @@ fn recover_pending_permission_tool(
                 Some(tool_call_id)
             }
         })?;
-    state["model_runtime"]["agent_loop"]["planned_tools"]
+    let tool = state["model_runtime"]["agent_loop"]["planned_tools"]
         .as_array()?
         .iter()
         .find(|tool| value_str_any(tool, &["tool_call_id", "toolCallId"]) == tool_call_id)
-        .and_then(|tool| serde_json::from_value::<PlannedLocalTool>(tool.clone()).ok())
+        .and_then(|tool| serde_json::from_value::<PlannedLocalTool>(tool.clone()).ok())?;
+    let reasoning_content = state["model_runtime"]["agent_loop"]["model_steps"]
+        .as_array()
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                let has_tool_call = step["tool_calls"].as_array().is_some_and(|tools| {
+                    tools.iter().any(|tool| {
+                        value_str_any(tool, &["tool_call_id", "toolCallId"]) == tool_call_id
+                    })
+                });
+                if has_tool_call {
+                    Some(value_str_any(
+                        step,
+                        &["reasoning_content", "reasoningContent"],
+                    ))
+                } else {
+                    None
+                }
+            })
+        })
+        .filter(|value| !value.trim().is_empty())?;
+    Some((tool, reasoning_content))
 }
 
 fn value_str_any(value: &Value, keys: &[&str]) -> String {
@@ -1931,6 +1958,7 @@ fn emit_model_step_event(
                 "model_name": result.model_name,
                 "summary": result.summary,
                 "content_preview": truncate_inline(&result.content, 700),
+                "reasoning_content": result.reasoning_content,
                 "error_code": result.error_code,
                 "error": result.error,
                 "tool_call_count": result.tool_calls.len(),
@@ -3621,7 +3649,7 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
             .max_tokens
             .or(request.max_tokens)
             .unwrap_or(DEFAULT_MAX_TOKENS)
-            .clamp(16, 8192),
+            .max(16),
         timeout_ms: runtime
             .timeout_ms
             .unwrap_or(DEFAULT_MODEL_TIMEOUT_MS)
@@ -3804,6 +3832,21 @@ fn run_model_step(request: &ModelStepRequest) -> ModelStepResult {
     }
 }
 
+fn is_ollama_compatible_runtime(request: &ModelStepRequest) -> bool {
+    let provider_id = request.provider_id.to_ascii_lowercase();
+    if provider_id.contains("ollama") {
+        return true;
+    }
+    Url::parse(request.base_url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(|host| (host.to_string(), url.port())))
+        .is_some_and(|(host, port)| {
+            let normalized_host = host.to_ascii_lowercase();
+            matches!(normalized_host.as_str(), "127.0.0.1" | "localhost" | "::1")
+                && port == Some(11434)
+        })
+}
+
 fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResult {
     if request.base_url.trim().is_empty() {
         return ModelStepResult::skipped(
@@ -3812,7 +3855,8 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
             "direct-openai-compatible 模式缺少 baseUrl。",
         );
     }
-    if request.api_key.trim().is_empty() {
+    let is_ollama_compatible = is_ollama_compatible_runtime(request);
+    if request.api_key.trim().is_empty() && !is_ollama_compatible {
         return ModelStepResult::skipped(
             request,
             "unconfigured",
@@ -3840,27 +3884,32 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
     };
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    let auth_value = match HeaderValue::from_str(&format!("Bearer {}", request.api_key.trim())) {
-        Ok(value) => value,
-        Err(err) => {
-            return ModelStepResult::failed(
-                request,
-                "model.schema_invalid",
-                format!("invalid api key header: {err}"),
-            )
-        }
-    };
-    headers.insert(AUTHORIZATION, auth_value);
+    if !request.api_key.trim().is_empty() {
+        let auth_value = match HeaderValue::from_str(&format!("Bearer {}", request.api_key.trim()))
+        {
+            Ok(value) => value,
+            Err(err) => {
+                return ModelStepResult::failed(
+                    request,
+                    "model.schema_invalid",
+                    format!("invalid api key header: {err}"),
+                )
+            }
+        };
+        headers.insert(AUTHORIZATION, auth_value);
+    }
 
-    let request_body = json!({
+    let mut request_body = json!({
         "model": normalized_model_name,
         "temperature": request.temperature,
         "max_tokens": request.max_tokens,
         "stream": false,
-        "tools": openai_compatible_tool_schemas(),
-        "tool_choice": "auto",
         "messages": request.messages.iter().map(openai_compatible_message_payload).collect::<Vec<_>>()
     });
+    if !is_ollama_compatible {
+        request_body["tools"] = json!(openai_compatible_tool_schemas());
+        request_body["tool_choice"] = json!("auto");
+    }
 
     let client = match Client::builder()
         .timeout(Duration::from_millis(request.timeout_ms))
@@ -3996,20 +4045,23 @@ fn openai_compatible_message_payload(message: &RuntimeModelMessage) -> Value {
         });
     }
     if role == "assistant" && !message.tool_calls.is_empty() {
-        return with_assistant_reasoning_content(json!({
-            "role": "assistant",
-            "content": message.content,
-            "tool_calls": message.tool_calls.iter().map(|tool| {
-                json!({
-                    "id": tool.tool_call_id,
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "arguments": tool.arguments.to_string()
-                    }
-                })
-            }).collect::<Vec<_>>()
-        }), message);
+        return with_assistant_reasoning_content(
+            json!({
+                "role": "assistant",
+                "content": message.content,
+                "tool_calls": message.tool_calls.iter().map(|tool| {
+                    json!({
+                        "id": tool.tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "arguments": tool.arguments.to_string()
+                        }
+                    })
+                }).collect::<Vec<_>>()
+            }),
+            message,
+        );
     }
     if !message.content_parts.is_empty() {
         return json!({
@@ -4017,10 +4069,13 @@ fn openai_compatible_message_payload(message: &RuntimeModelMessage) -> Value {
             "content": message.content_parts
         });
     }
-    with_assistant_reasoning_content(json!({
-        "role": role,
-        "content": message.content
-    }), message)
+    with_assistant_reasoning_content(
+        json!({
+            "role": role,
+            "content": message.content
+        }),
+        message,
+    )
 }
 
 fn with_assistant_reasoning_content(mut payload: Value, message: &RuntimeModelMessage) -> Value {
@@ -4244,11 +4299,7 @@ fn upload_provider_file_inner(
         ToolError::new("model.response_invalid", format!("读取上传响应失败：{err}"))
     })?;
     if !(200..300).contains(&status) {
-        let provider_id = request
-            .provider_id
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or("");
+        let provider_id = request.provider_id.as_deref().map(str::trim).unwrap_or("");
         let request_diagnostic = model_gateway_upload_diagnostic(
             "POST",
             &endpoint,
@@ -4817,6 +4868,82 @@ mod tests {
     }
 
     #[test]
+    fn agent_loop_preserves_reasoning_content_before_tool_observation_continuation() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_reasoning_continuation_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("README.md"), "local agent loop").unwrap();
+        let request = test_model_request("读取 README.md");
+        let model_call_count = Cell::new(0);
+        let emitted_events = RefCell::new(Vec::<Value>::new());
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                let mut result = test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_read".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: json!({"path": "README.md"}),
+                        summary: "标准模型工具调用：read_file".to_string(),
+                    }],
+                );
+                result.reasoning_content = "先确认文件是否存在，再读取内容。".to_string();
+                return result;
+            }
+
+            let assistant_message = request
+                .messages
+                .iter()
+                .find(|message| message.role == "assistant" && !message.tool_calls.is_empty())
+                .expect("second model call must include assistant tool-call message");
+            assert_eq!(
+                assistant_message.reasoning_content,
+                "先确认文件是否存在，再读取内容。"
+            );
+            let payload = openai_compatible_message_payload(assistant_message);
+            assert_eq!(
+                payload["reasoning_content"],
+                "先确认文件是否存在，再读取内容。"
+            );
+            assert!(
+                request.messages.iter().any(|message| message.role == "tool"
+                    && message.content.contains("local agent loop")),
+                "second model call must receive tool observation"
+            );
+            test_model_result("README.md 内容是 local agent loop", Vec::new())
+        };
+        let tool_runner = |request: ToolExecutionRequest| execute_tool(request);
+        let event_sink = |event: Value| {
+            emitted_events.borrow_mut().push(event);
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-reasoning-continuation-test",
+            "runtime-chat-loop-reasoning-continuation-test",
+            &request,
+            &dir,
+            None,
+            Some(&event_sink),
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok(), "{}", result.error());
+        assert_eq!(model_call_count.get(), 2);
+        assert_eq!(result.model_steps.len(), 2);
+        assert_eq!(result.tool_results.len(), 1);
+        assert!(emitted_events.borrow().iter().any(|event| {
+            event["type"] == "model_step"
+                && event["payload"]["reasoning_content"] == "先确认文件是否存在，再读取内容。"
+        }));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn agent_loop_feeds_failure_signature_and_switch_instruction_to_model() {
         let dir = std::env::temp_dir().join(format!("liuagent_loop_switch_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
@@ -5180,6 +5307,12 @@ mod tests {
             waiting_for: Some("approval"),
             model_runtime: json!({
                 "agent_loop": {
+                    "model_steps": [
+                        {
+                            "reasoning_content": "先创建空文件，再等待用户授权写入。",
+                            "tool_calls": [planned_tool.clone()]
+                        }
+                    ],
                     "planned_tools": [planned_tool.clone()]
                 }
             }),
@@ -5222,6 +5355,10 @@ mod tests {
         .expect("pending tool should replay");
 
         assert!(replayed.result.ok, "{}", replayed.result.error);
+        assert_eq!(
+            replayed.reasoning_content,
+            "先创建空文件，再等待用户授权写入。"
+        );
         assert_eq!(
             fs::read_to_string(dir.join("approved.txt")).unwrap(),
             "approved"
@@ -5794,6 +5931,76 @@ mod tests {
     }
 
     #[test]
+    fn direct_model_runtime_allows_ollama_without_api_key_and_omits_tools() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request_bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            let mut expected_len = None;
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                request_bytes.extend_from_slice(&buffer[..read]);
+                if expected_len.is_none() {
+                    let request = String::from_utf8_lossy(&request_bytes);
+                    if let Some(header_end) = request.find("\r\n\r\n") {
+                        let content_length = request
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("Content-Length:")
+                                    .or_else(|| line.strip_prefix("content-length:"))
+                                    .and_then(|value| value.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        expected_len = Some(header_end + 4 + content_length);
+                    }
+                }
+                if expected_len.is_some_and(|len| request_bytes.len() >= len) {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&request_bytes);
+            assert!(request.starts_with("POST /v1/chat/completions "));
+            assert!(!request.to_ascii_lowercase().contains("authorization:"));
+            assert!(!request.contains("\"tools\""));
+            assert!(!request.contains("\"tool_choice\""));
+
+            let body = json!({
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "ok"
+                        }
+                    }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.as_bytes().len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let mut model_request = test_model_request("返回 ok");
+        model_request.provider_id = "ollama-local".to_string();
+        model_request.base_url = format!("http://{address}");
+        model_request.api_key = String::new();
+        model_request.timeout_ms = 5_000;
+
+        let result = run_model_step(&model_request);
+        server.join().unwrap();
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.content, "ok");
+    }
+
+    #[test]
     fn local_chat_attachments_build_text_and_image_parts() {
         let request = LocalChatRequest {
             project_id: "proj-test".to_string(),
@@ -5994,7 +6201,9 @@ mod tests {
         assert!(result.error.contains("request-id=req-test-429"));
         assert!(result.error.contains("quota exceeded"));
         assert!(result.error.contains("\"method\":\"POST\""));
-        assert!(result.error.contains(&format!("\"url\":\"http://{address}/v1/chat/completions\"")));
+        assert!(result
+            .error
+            .contains(&format!("\"url\":\"http://{address}/v1/chat/completions\"")));
         assert!(result.error.contains("\"path\":\"/v1/chat/completions\""));
         assert!(result.error.contains("\"provider_id\":\"test-provider\""));
         assert!(result.error.contains("\"model\":\"test-model\""));
@@ -6118,6 +6327,7 @@ mod tests {
             assert!(request
                 .to_ascii_lowercase()
                 .contains("authorization: bearer test-key"));
+            assert!(request.contains("\"max_tokens\":12000"));
             assert!(request.contains("\"tools\""));
             assert!(request.contains("\"name\":\"read_file\""));
 
@@ -6152,6 +6362,7 @@ mod tests {
         });
         let mut model_request = test_model_request("读取 README");
         model_request.base_url = format!("http://{address}");
+        model_request.max_tokens = 12_000;
         model_request.timeout_ms = 5_000;
 
         let result = run_model_step(&model_request);
@@ -6173,6 +6384,322 @@ mod tests {
         );
         assert_eq!(result.tool_calls[0].name, "read_file");
         assert_eq!(result.tool_calls[0].arguments["path"], "README.md");
+    }
+
+    #[test]
+    fn direct_agent_loop_continuation_request_preserves_reasoning_content() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_http_reasoning_continuation_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("README.md"), "local agent loop").unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_http_request(&mut stream);
+                assert!(request.starts_with("POST /v1/chat/completions "));
+                let body_start = request.find("\r\n\r\n").unwrap() + 4;
+                let request_body = serde_json::from_str::<Value>(&request[body_start..]).unwrap();
+                if index == 1 {
+                    let messages = request_body["messages"].as_array().unwrap();
+                    let assistant_message = messages
+                        .iter()
+                        .find(|message| {
+                            message["role"] == "assistant"
+                                && message["tool_calls"]
+                                    .as_array()
+                                    .is_some_and(|items| !items.is_empty())
+                        })
+                        .expect("continuation request must include assistant tool-call message");
+                    assert_eq!(
+                        assistant_message["reasoning_content"],
+                        "先确认文件是否存在，再读取内容。"
+                    );
+                    assert!(
+                        messages.iter().any(|message| message["role"] == "tool"
+                            && message["content"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .contains("local agent loop")),
+                        "continuation request must include tool observation"
+                    );
+                }
+
+                let response_body = if index == 0 {
+                    json!({
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "reasoning_content": "先确认文件是否存在，再读取内容。",
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_read",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "read_file",
+                                                "arguments": "{\"path\":\"README.md\"}"
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    })
+                    .to_string()
+                } else {
+                    json!({
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "README.md 内容是 local agent loop"
+                                }
+                            }
+                        ]
+                    })
+                    .to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.as_bytes().len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+
+        let mut request = test_model_request("读取 README.md");
+        request.base_url = format!("http://{address}");
+        request.timeout_ms = 5_000;
+        let model_runner = |request: &ModelStepRequest| run_model_step(request);
+        let tool_runner = |request: ToolExecutionRequest| execute_tool(request);
+
+        let result = run_agent_loop_with(
+            "chat-loop-http-reasoning-continuation-test",
+            "runtime-chat-loop-http-reasoning-continuation-test",
+            &request,
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        server.join().unwrap();
+        assert!(result.ok(), "{}", result.error());
+        assert_eq!(result.model_steps.len(), 2);
+        assert_eq!(result.tool_results.len(), 1);
+        assert_eq!(
+            result.final_model_result().content,
+            "README.md 内容是 local agent loop"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn permission_resume_continuation_request_preserves_original_reasoning_content() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_permission_resume_reasoning_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let first_request = LocalChatRequest {
+            project_id: "proj-resume-reasoning".to_string(),
+            chat_session_id: "chat-resume-reasoning".to_string(),
+            message_id: Some("msg-user".to_string()),
+            assistant_message_id: Some("msg-assistant".to_string()),
+            message: "创建一个 demo.md 文件空内容".to_string(),
+            workspace_path: dir.to_string_lossy().to_string(),
+            history: Vec::new(),
+            provider_id: Some("test-provider".to_string()),
+            model_name: Some("test-model".to_string()),
+            system_prompt: None,
+            temperature: None,
+            max_tokens: None,
+            model_runtime: Some(LocalModelRuntimeConfig {
+                mode: Some("direct-openai-compatible".to_string()),
+                provider_id: Some("test-provider".to_string()),
+                model_name: Some("test-model".to_string()),
+                base_url: Some(format!("http://{address}")),
+                api_key: Some("test-key".to_string()),
+                api_key_env: None,
+                gateway_url: None,
+                temperature: Some(0.1),
+                max_tokens: Some(8192),
+                timeout_ms: Some(5_000),
+            }),
+            attachments: Vec::new(),
+            permission_decision: None,
+        };
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            assert!(request.starts_with("POST /v1/chat/completions "));
+            let first_response_body = json!({
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "reasoning_content": "需要创建 demo.md 空文件，先请求写文件授权。",
+                            "tool_calls": [
+                                {
+                                    "id": "call_write_demo",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "write_file",
+                                        "arguments": "{\"path\":\"demo.md\",\"content\":\"\"}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            })
+            .to_string();
+            let first_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                first_response_body.as_bytes().len(),
+                first_response_body
+            );
+            stream.write_all(first_response.as_bytes()).unwrap();
+
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            assert!(request.starts_with("POST /v1/chat/completions "));
+            let body_start = request.find("\r\n\r\n").unwrap() + 4;
+            let request_body = serde_json::from_str::<Value>(&request[body_start..]).unwrap();
+            let messages = request_body["messages"].as_array().unwrap();
+            let assistant_message = messages
+                .iter()
+                .find(|message| {
+                    message["role"] == "assistant"
+                        && message["tool_calls"]
+                            .as_array()
+                            .is_some_and(|items| !items.is_empty())
+                })
+                .expect("permission resume continuation must include assistant tool-call message");
+            assert_eq!(
+                assistant_message["reasoning_content"],
+                "需要创建 demo.md 空文件，先请求写文件授权。"
+            );
+            assert!(
+                messages.iter().any(|message| message["role"] == "tool"
+                    && message["content"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("demo.md")),
+                "permission resume continuation must include replayed tool observation"
+            );
+            let second_response_body = json!({
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "demo.md 已创建。"
+                        }
+                    }
+                ]
+            })
+            .to_string();
+            let second_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                second_response_body.as_bytes().len(),
+                second_response_body
+            );
+            stream.write_all(second_response.as_bytes()).unwrap();
+        });
+
+        let first_result = start_local_chat(first_request);
+        assert!(!first_result.ok);
+        assert_eq!(first_result.error_code, "permission.required");
+        assert!(!dir.join("demo.md").exists());
+        let permission_request_id = first_result.tool_results[0].content["permissionRequest"]
+            ["requestId"]
+            .as_str()
+            .expect("permission request id")
+            .to_string();
+
+        let second_result = start_local_chat(LocalChatRequest {
+            project_id: "proj-resume-reasoning".to_string(),
+            chat_session_id: "chat-resume-reasoning".to_string(),
+            message_id: Some("msg-user".to_string()),
+            assistant_message_id: Some("msg-assistant".to_string()),
+            message: "创建一个 demo.md 文件空内容".to_string(),
+            workspace_path: dir.to_string_lossy().to_string(),
+            history: Vec::new(),
+            provider_id: Some("test-provider".to_string()),
+            model_name: Some("test-model".to_string()),
+            system_prompt: None,
+            temperature: None,
+            max_tokens: None,
+            model_runtime: Some(LocalModelRuntimeConfig {
+                mode: Some("direct-openai-compatible".to_string()),
+                provider_id: Some("test-provider".to_string()),
+                model_name: Some("test-model".to_string()),
+                base_url: Some(format!("http://{address}")),
+                api_key: Some("test-key".to_string()),
+                api_key_env: None,
+                gateway_url: None,
+                temperature: Some(0.1),
+                max_tokens: Some(8192),
+                timeout_ms: Some(5_000),
+            }),
+            attachments: Vec::new(),
+            permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
+                request_id: Some(permission_request_id),
+                decision: "approve_once".to_string(),
+                grant_scope: Some("once".to_string()),
+                comment: None,
+            }),
+        });
+
+        server.join().unwrap();
+        assert!(second_result.ok, "{}", second_result.error);
+        assert!(dir.join("demo.md").exists());
+        assert_eq!(fs::read_to_string(dir.join("demo.md")).unwrap(), "");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut request_bytes = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        let mut expected_len = None;
+        loop {
+            let read = stream.read(&mut buffer).unwrap();
+            request_bytes.extend_from_slice(&buffer[..read]);
+            if expected_len.is_none() {
+                let request = String::from_utf8_lossy(&request_bytes);
+                if let Some(header_end) = request.find("\r\n\r\n") {
+                    let content_length = request
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("Content-Length:")
+                                .or_else(|| line.strip_prefix("content-length:"))
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    expected_len = Some(header_end + 4 + content_length);
+                }
+            }
+            if expected_len.is_some_and(|len| request_bytes.len() >= len) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&request_bytes).to_string()
     }
 
     fn test_model_request(user_message: &str) -> ModelStepRequest {
@@ -6236,6 +6763,57 @@ mod tests {
             payload["tool_calls"][0]["function"]["arguments"],
             "{\"path\":\"工作月报.md\"}"
         );
+    }
+
+    #[test]
+    fn build_model_request_preserves_history_reasoning_content() {
+        for (payload, expected) in [
+            (
+                json!({
+                    "projectId": "proj-test",
+                    "chatSessionId": "chat-test",
+                    "message": "继续",
+                    "workspacePath": ".",
+                    "history": [
+                        {
+                            "role": "assistant",
+                            "content": "上一轮回答",
+                            "reasoningContent": "先保留前端 camelCase 推理内容。"
+                        }
+                    ]
+                }),
+                "先保留前端 camelCase 推理内容。",
+            ),
+            (
+                json!({
+                    "projectId": "proj-test",
+                    "chatSessionId": "chat-test",
+                    "message": "继续",
+                    "workspacePath": ".",
+                    "history": [
+                        {
+                            "role": "assistant",
+                            "content": "上一轮回答",
+                            "reasoning_content": "先保留服务端 snake_case 推理内容。"
+                        }
+                    ]
+                }),
+                "先保留服务端 snake_case 推理内容。",
+            ),
+        ] {
+            let request = serde_json::from_value::<LocalChatRequest>(payload).unwrap();
+
+            let model_request = build_model_request(&request, "继续");
+            let assistant_message = model_request
+                .messages
+                .iter()
+                .find(|message| message.role == "assistant")
+                .expect("assistant history message");
+            assert_eq!(assistant_message.reasoning_content, expected);
+
+            let payload = openai_compatible_message_payload(assistant_message);
+            assert_eq!(payload["reasoning_content"], expected);
+        }
     }
 
     #[test]

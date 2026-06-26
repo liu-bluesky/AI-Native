@@ -6369,11 +6369,13 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _coerce_int(value: Any, default: int, *, min_value: int, max_value: int) -> int:
+def _coerce_int(value: Any, default: int, *, min_value: int, max_value: int | None) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
         return default
+    if max_value is None:
+        return max(min_value, parsed)
     return max(min_value, min(max_value, parsed))
 
 
@@ -6451,7 +6453,7 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["provider_id"] = str(source.get("provider_id", settings["provider_id"]) or "").strip()
     settings["model_name"] = str(source.get("model_name", settings["model_name"]) or "").strip()
     settings["temperature"] = _coerce_float(source.get("temperature"), settings["temperature"], min_value=0.0, max_value=2.0)
-    settings["max_tokens"] = _coerce_int(source.get("max_tokens"), settings["max_tokens"], min_value=128, max_value=8192)
+    settings["max_tokens"] = _coerce_int(source.get("max_tokens"), settings["max_tokens"], min_value=128, max_value=None)
     settings["system_prompt"] = str(source.get("system_prompt", settings["system_prompt"]) or "").strip()[:4000]
     settings["auto_use_tools_explicit"] = _coerce_bool(
         source.get("auto_use_tools_explicit"),
@@ -10008,7 +10010,7 @@ def _resolve_default_chat_system_prompt(custom_system_prompt: Any = None) -> str
 def _resolve_chat_max_tokens(request_max_tokens: int | None) -> int:
     cfg = system_config_store.get_global()
     configured = int(getattr(cfg, "chat_max_tokens", 512) or 512)
-    configured = max(128, min(configured, 8192))
+    configured = max(128, configured)
     if request_max_tokens is None:
         return configured
     try:
@@ -10017,7 +10019,7 @@ def _resolve_chat_max_tokens(request_max_tokens: int | None) -> int:
         return configured
     if request_value <= 0:
         return configured
-    return max(128, min(request_value, 8192))
+    return max(128, request_value)
 
 
 def _normalize_project_username(value: Any) -> str:

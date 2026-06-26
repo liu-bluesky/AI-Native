@@ -155,7 +155,6 @@
                 <el-input-number
                   v-model="form.chat_max_tokens"
                   :min="128"
-                  :max="8192"
                   :step="64"
                 />
                 <div class="field-desc">控制 AI 对话默认最大输出长度。</div>

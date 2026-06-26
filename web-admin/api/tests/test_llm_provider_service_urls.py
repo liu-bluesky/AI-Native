@@ -26,6 +26,99 @@ def test_llm_provider_service_supports_bigmodel_openai_compatible_base_url():
     )
 
 
+def test_llm_provider_service_normalizes_ollama_root_base_url_to_v1():
+    base_url = "http://localhost:11434"
+
+    assert LlmProviderService._build_models_url(base_url) == "http://localhost:11434/v1/models"
+    assert LlmProviderService._build_chat_completion_url(base_url) == (
+        "http://localhost:11434/v1/chat/completions"
+    )
+
+
+def test_llm_provider_service_keeps_ollama_v1_base_url_unchanged():
+    base_url = "http://127.0.0.1:11434/v1"
+
+    assert LlmProviderService._build_models_url(base_url) == "http://127.0.0.1:11434/v1/models"
+    assert LlmProviderService._build_chat_completion_url(base_url) == (
+        "http://127.0.0.1:11434/v1/chat/completions"
+    )
+
+
+def test_llm_provider_service_extracts_model_names_from_openai_models_payload():
+    payload = {
+        "data": [
+            {"id": "gemma4"},
+            {"id": "qwen3:8b"},
+            {"id": "gemma4"},
+            {"id": ""},
+        ]
+    }
+
+    assert LlmProviderService._extract_model_names_from_models_payload(payload) == [
+        "gemma4",
+        "qwen3:8b",
+    ]
+
+
+def test_llm_provider_service_extracts_model_names_from_models_key_payload():
+    payload = {
+        "models": [
+            "llama3.2",
+            {"name": "deepseek-r1"},
+            {"model": "gemma3"},
+            {"name": "llama3.2"},
+            None,
+        ]
+    }
+
+    assert LlmProviderService._extract_model_names_from_models_payload(payload) == [
+        "llama3.2",
+        "deepseek-r1",
+        "gemma3",
+    ]
+
+
+def test_llm_provider_service_discovers_models_with_ollama_root_url(monkeypatch):
+    captured = {}
+
+    def fake_request_json(method, endpoint, headers, *, body=None, timeout=30):
+        captured.update(
+            {
+                "method": method,
+                "endpoint": endpoint,
+                "headers": headers,
+                "body": body,
+                "timeout": timeout,
+            }
+        )
+        return {"data": [{"id": "gemma4"}, {"id": "qwen3:8b"}]}
+
+    monkeypatch.setattr(LlmProviderService, "_request_json", staticmethod(fake_request_json))
+
+    service = LlmProviderService.__new__(LlmProviderService)
+
+    result = service.discover_models(
+        {
+            "provider_type": "openai-compatible",
+            "base_url": "http://localhost:11434",
+            "api_key": "",
+            "extra_headers": {"X-Debug": "1"},
+        }
+    )
+
+    assert result == {
+        "models": ["gemma4", "qwen3:8b"],
+        "models_url": "http://localhost:11434/v1/models",
+        "count": 2,
+    }
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "http://localhost:11434/v1/models"
+    assert captured["headers"]["X-Debug"] == "1"
+    assert "Authorization" not in captured["headers"]
+    assert captured["body"] is None
+    assert captured["timeout"] == 20
+
+
 def test_llm_provider_service_resolves_desktop_runtime_model_from_model_config():
     provider = {
         "default_model": "",
@@ -34,6 +127,39 @@ def test_llm_provider_service_resolves_desktop_runtime_model_from_model_config()
     }
 
     assert LlmProviderService.resolve_provider_model_name(provider) == "solver-v2"
+
+
+@pytest.mark.asyncio
+async def test_llm_provider_service_does_not_cap_high_max_tokens(monkeypatch):
+    captured = {}
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "id": "provider-1",
+        "name": "Provider 1",
+        "provider_type": "openai-compatible",
+        "base_url": "https://gateway.example.com/v1",
+        "enabled": True,
+        "default_model": "deepseek-v4-flash",
+        "models": [],
+    }
+    service.get_provider_raw = lambda *args, **kwargs: provider
+
+    def fake_request_json(method, endpoint, headers, *, body=None, timeout=30):
+        captured["body"] = body
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(LlmProviderService, "_request_json", staticmethod(fake_request_json))
+
+    await service.chat_completion(
+        "provider-1",
+        "deepseek-v4-flash",
+        [{"role": "user", "content": "hello"}],
+        temperature=0.1,
+        max_tokens=12000,
+        timeout=30,
+    )
+
+    assert captured["body"]["max_tokens"] == 12000
 
 
 def test_llm_provider_service_extracts_reasoning_content_from_sse_chunk():
@@ -279,6 +405,68 @@ def test_llm_provider_service_test_connection_uses_model_config_model_alias():
         "https://gateway.example.com/v1/models",
         "https://gateway.example.com/v1/chat/completions",
     ]
+
+
+def test_llm_provider_service_test_connection_normalizes_ollama_root_urls():
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "id": "ollama-provider",
+        "name": "Ollama",
+        "provider_type": "openai-compatible",
+        "base_url": "http://localhost:11434",
+        "enabled": True,
+        "default_model": "Gemma4",
+        "models": [],
+        "model_configs": [{"name": "Gemma4", "model_type": "text_generation"}],
+    }
+    captured = {}
+
+    service.get_provider_raw = lambda *args, **kwargs: provider
+
+    def _fake_call_chat_completion_sse(**kwargs):
+        captured["model_name"] = kwargs["model_name"]
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    service._call_chat_completion_sse = _fake_call_chat_completion_sse
+
+    result = service.test_provider_connection("ollama-provider")
+
+    assert captured["model_name"] == "Gemma4"
+    assert result["reachable"] is True
+    assert result["completion_url"] == "http://localhost:11434/v1/chat/completions"
+    assert result["request_urls"] == [
+        "http://localhost:11434/v1/models",
+        "http://localhost:11434/v1/chat/completions",
+    ]
+
+
+def test_llm_provider_service_test_connection_rejects_empty_model_content():
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "id": "provider-1",
+        "name": "Provider 1",
+        "provider_type": "openai-compatible",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "enabled": True,
+        "default_model": "gemma4",
+        "models": [],
+        "model_configs": [{"name": "gemma4", "model_type": "text_generation"}],
+    }
+    service.get_provider_raw = lambda *args, **kwargs: provider
+    service._call_chat_completion_sse = lambda **kwargs: {
+        "model": "gemma4",
+        "choices": [{"message": {"content": ""}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 8, "completion_tokens": 0, "total_tokens": 8},
+    }
+
+    with pytest.raises(LlmProviderConnectionTestError) as exc_info:
+        service.test_provider_connection("provider-1")
+
+    result = exc_info.value.result
+    assert result["reachable"] is False
+    assert result["model_tested"] == "gemma4"
+    assert "model returned empty content" in result["message"]
+    assert "output_tokens" in result["message"]
 
 
 def test_llm_provider_service_test_connection_returns_addresses_when_model_missing():

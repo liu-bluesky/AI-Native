@@ -353,6 +353,9 @@ export function mapHistoryMessage(item) {
     id: String(item?.id || ""),
     role: String(item?.role || "assistant"),
     content: String(item?.content || ""),
+    reasoningContent: String(
+      item?.reasoningContent || item?.reasoning_content || "",
+    ).trim(),
     displayMode: String(item?.display_mode || "").trim(),
     terminalLog: Array.isArray(runtimeTrace.terminal_log)
       ? runtimeTrace.terminal_log

@@ -7,6 +7,14 @@ const MODEL_TYPE_ALIASES = {
   completion: 'text_generation',
   text: 'text_generation',
   text_generation: 'text_generation',
+  gemma: 'text_generation',
+  gemma4: 'text_generation',
+  gemma_4: 'text_generation',
+  gemma3: 'text_generation',
+  gemma_3: 'text_generation',
+  llama: 'text_generation',
+  qwen: 'text_generation',
+  deepseek: 'text_generation',
   vision: 'multimodal_chat',
   vision_chat: 'multimodal_chat',
   multimodal: 'multimodal_chat',
@@ -332,7 +340,7 @@ export function normalizeProviderModelConfigs(provider, options = FALLBACK_MODEL
   }
   rawConfigs.forEach((item) => {
     if (!item || typeof item !== 'object') return
-    push(item.name || item.model_name, item.model_type)
+    push(item.name || item.model_name || item.model, item.model_type)
   })
   if (Array.isArray(provider?.models)) {
     provider.models.forEach((item) => push(item, DEFAULT_MODEL_TYPE))

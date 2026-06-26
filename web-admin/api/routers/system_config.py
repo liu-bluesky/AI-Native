@@ -596,8 +596,8 @@ async def patch_system_config(
             value = int(updates["chat_max_tokens"])
         except (TypeError, ValueError) as exc:
             raise HTTPException(400, "chat_max_tokens must be an integer") from exc
-        if value < 128 or value > 8192:
-            raise HTTPException(400, "chat_max_tokens must be between 128 and 8192")
+        if value < 128:
+            raise HTTPException(400, "chat_max_tokens must be greater than or equal to 128")
         updates["chat_max_tokens"] = value
 
     if "default_chat_system_prompt" in updates:

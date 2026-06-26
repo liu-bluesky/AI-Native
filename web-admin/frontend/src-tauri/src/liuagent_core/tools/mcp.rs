@@ -459,7 +459,7 @@ fn parse_content_length_messages(output: &str) -> Result<Vec<Value>, ToolError> 
             if last_four == *b"\r\n\r\n" {
                 break;
             }
-            if header.len() > 8192 {
+            if header.len() > 65536 {
                 return Err(ToolError::new("mcp.failed", "MCP frame header too large"));
             }
         }
