@@ -71,6 +71,32 @@ def _build_dictionary_payload(
         chat_parameter_mode = str((raw or {}).get("chat_parameter_mode") or "").strip()
         if chat_parameter_mode:
             option["chat_parameter_mode"] = chat_parameter_mode
+        project_chat_allowed_file_types = (raw or {}).get(
+            "project_chat_allowed_file_types"
+        )
+        if isinstance(project_chat_allowed_file_types, list):
+            option["project_chat_allowed_file_types"] = [
+                str(item or "").strip()
+                for item in project_chat_allowed_file_types
+                if str(item or "").strip()
+            ]
+        attachment_mode = str((raw or {}).get("attachment_mode") or "").strip().lower()
+        if attachment_mode:
+            option["attachment_mode"] = attachment_mode
+        attachment_max_files = (raw or {}).get("attachment_max_files")
+        if attachment_max_files is not None:
+            try:
+                option["attachment_max_files"] = int(attachment_max_files)
+            except (TypeError, ValueError):
+                pass
+        attachment_max_file_size_mb = (raw or {}).get(
+            "attachment_max_file_size_mb"
+        )
+        if attachment_max_file_size_mb is not None:
+            try:
+                option["attachment_max_file_size_mb"] = int(attachment_max_file_size_mb)
+            except (TypeError, ValueError):
+                pass
         options.append(option)
 
     if not options:

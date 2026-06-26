@@ -67,6 +67,9 @@
             <el-descriptions-item label="最近测试时间">{{ formatDateTime(getConnectionMeta(row.id, 'tested_at'), { withSeconds: true }) }}</el-descriptions-item>
             <el-descriptions-item label="测试模型">{{ getConnectionMeta(row.id, 'model_tested') || '-' }}</el-descriptions-item>
             <el-descriptions-item label="延迟(ms)">{{ getConnectionMeta(row.id, 'latency_ms') || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="请求地址" :span="2">
+              {{ formatConnectionRequestAddresses(row.id) || '-' }}
+            </el-descriptions-item>
             <el-descriptions-item label="返回信息" :span="2">
               {{ getConnectionMeta(row.id, 'message') || '-' }}
             </el-descriptions-item>
@@ -185,22 +188,44 @@
             <div v-if="activePresetMeta" class="provider-preset-note">
               <div>{{ activePresetMeta.note }}</div>
               <div>Base URL：{{ activePresetMeta.base_url }}</div>
+              <div>接口规范：{{ formatProviderInterfaceLabel(activePresetMeta.provider_type) }}（已自动选择）</div>
               <div>示例模型：{{ activePresetMeta.model_configs.map((item) => item.name).join('、') }}</div>
             </div>
             <div v-else class="provider-preset-note">
-              点击上方模板可自动填充主流供应商的类型、Base URL 和示例模型；模型名可按实际账号权限调整。
+              点击上方模板可自动填充主流供应商的接口规范、Base URL 和示例模型；模型名可按实际账号权限调整。
+            </div>
+            <div class="provider-standard-note">
+              OpenAI 官方最新模型优先使用 Responses；DeepSeek、智谱、Gemini 优先使用 OpenAI-compatible；Claude 需通过兼容网关或后续 Anthropic 适配；Codex 属于外部执行器，不建议作为普通模型供应商。
             </div>
           </div>
         </el-form-item>
         <el-form-item label="供应商名称" required>
           <el-input v-model="form.name" placeholder="例如：OpenAI 主账号" />
         </el-form-item>
-        <el-form-item label="供应商类型">
-          <el-select v-model="form.provider_type" style="width: 220px">
-            <el-option label="openai-compatible" value="openai-compatible" />
-            <el-option label="responses" value="responses" />
-            <el-option label="custom" value="custom" />
-          </el-select>
+        <el-form-item label="接口规范">
+          <div class="provider-interface-panel">
+            <el-radio-group v-model="form.provider_type" class="provider-interface-options">
+              <el-radio-button
+                v-for="option in PROVIDER_INTERFACE_OPTIONS"
+                :key="option.value"
+                :label="option.value"
+              >
+                {{ option.label }}
+              </el-radio-button>
+            </el-radio-group>
+            <div class="provider-interface-help">
+              <div class="provider-interface-help__head">
+                <strong>{{ activeProviderTypeMeta.label }}</strong>
+                <el-tag size="small" :type="providerInterfaceAssistTagType" effect="plain">
+                  {{ providerInterfaceAssistText }}
+                </el-tag>
+              </div>
+              <span>{{ activeProviderTypeMeta.description }}</span>
+              <span v-if="activePresetMeta && !isUsingPresetProviderType" class="provider-interface-help__warning">
+                {{ activePresetMeta.label }} 模板推荐 {{ formatProviderInterfaceLabel(activePresetMeta.provider_type) }}。
+              </span>
+            </div>
+          </div>
         </el-form-item>
         <el-form-item label="Base URL" required>
           <el-input v-model="form.base_url" placeholder="例如：https://api.openai.com/v1" />
@@ -215,6 +240,12 @@
         </el-form-item>
         <el-form-item label="模型配置">
           <div class="model-config-editor">
+            <div class="model-config-header">
+              <span>模型名称</span>
+              <span>能力类型</span>
+              <span>默认</span>
+              <span>操作</span>
+            </div>
             <div
               v-for="(item, index) in form.model_configs"
               :key="item.key"
@@ -223,20 +254,30 @@
               <el-input
                 v-model="item.name"
                 class="model-config-row__name"
-                placeholder="模型名，例如：gpt-4.1"
+                placeholder="模型名，例如：gpt-5.5"
               />
-              <el-select
-                v-model="item.model_type"
-                class="model-config-row__type"
-                placeholder="选择模型类型"
-              >
-                <el-option
-                  v-for="option in modelTypeOptions"
-                  :key="option.id"
-                  :label="option.label"
-                  :value="option.id"
-                />
-              </el-select>
+              <div class="model-config-row__type-cell">
+                <el-select
+                  v-model="item.model_type"
+                  class="model-config-row__type"
+                  placeholder="选择模型类型"
+                >
+                  <el-option
+                    v-for="option in modelTypeOptions"
+                    :key="option.id"
+                    :label="option.label"
+                    :value="option.id"
+                  >
+                    <div class="model-type-option">
+                      <span>{{ option.label }}</span>
+                      <span>{{ option.id }}</span>
+                    </div>
+                  </el-option>
+                </el-select>
+                <div class="model-config-row__type-help">
+                  {{ getModelTypeDescription(item.model_type) }}
+                </div>
+              </div>
               <el-button
                 :type="form.default_model === String(item.name || '').trim() ? 'primary' : ''"
                 plain
@@ -256,7 +297,7 @@
             <div class="model-config-editor__actions">
               <el-button @click="addModelConfig">添加模型</el-button>
               <span class="model-config-editor__hint">
-                模型类型来自字典模块，后续可以继续扩展新的能力分类。
+                模型能力来自字典模块；接口规范由上方供应商配置决定。
               </span>
             </div>
           </div>
@@ -321,7 +362,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
 import { formatDateTime, parseDateTime } from '@/utils/date.js'
@@ -366,8 +407,27 @@ const form = reactive({
   shared_usernames: [],
 })
 
+const PROVIDER_INTERFACE_OPTIONS = [
+  {
+    value: 'openai-compatible',
+    label: 'OpenAI-compatible',
+    description: '统一走 /chat/completions，适合 DeepSeek、智谱、Gemini、OpenRouter 和多数兼容网关。',
+  },
+  {
+    value: 'responses',
+    label: 'OpenAI Responses',
+    description: '统一走 /responses，适合明确支持 Responses API 的 OpenAI 系模型。',
+  },
+  {
+    value: 'custom',
+    label: 'Custom',
+    description: '仅用于保留非标准接入配置；保存前请确认后端调用层已适配该接口。',
+  },
+]
+
 const modelTypeMetaMap = computed(() => buildModelTypeMetaMap(modelTypeOptions.value))
 const normalizedFormModelConfigs = computed(() => normalizeProviderModelConfigs({ model_configs: form.model_configs }, modelTypeOptions.value))
+const activeProviderTypeMeta = computed(() => resolveProviderInterfaceOption(form.provider_type))
 const providerTypeOptions = computed(() =>
   Array.from(
     new Set(
@@ -423,14 +483,14 @@ const PROVIDER_PRESETS = [
     key: 'openai',
     label: 'OpenAI',
     name: 'OpenAI',
-    provider_type: 'openai-compatible',
+    provider_type: 'responses',
     base_url: 'https://api.openai.com/v1',
-    note: '官方标准 OpenAI 兼容入口，适合作为通用基准供应商。',
+    note: 'OpenAI 官方 Responses 入口，适合作为最新旗舰模型的通用基准供应商。',
     model_configs: [
-      { name: 'gpt-4.1', model_type: 'multimodal_chat' },
-      { name: 'gpt-4o-mini', model_type: 'multimodal_chat' },
+      { name: 'gpt-5.5', model_type: 'multimodal_chat' },
+      { name: 'gpt-5.4', model_type: 'multimodal_chat' },
     ],
-    default_model: 'gpt-4.1',
+    default_model: 'gpt-5.5',
   },
   {
     key: 'deepseek',
@@ -438,12 +498,12 @@ const PROVIDER_PRESETS = [
     name: 'DeepSeek',
     provider_type: 'openai-compatible',
     base_url: 'https://api.deepseek.com',
-    note: 'DeepSeek 官方 OpenAI 兼容入口，适合通用对话与推理模型。',
+    note: 'DeepSeek 官方 OpenAI 兼容入口，适合通用对话与推理模型；旧别名 deepseek-chat/deepseek-reasoner 已不再作为默认模板。',
     model_configs: [
-      { name: 'deepseek-chat', model_type: 'text_generation' },
-      { name: 'deepseek-reasoner', model_type: 'text_generation' },
+      { name: 'deepseek-v4-flash', model_type: 'text_generation' },
+      { name: 'deepseek-v4-pro', model_type: 'text_generation' },
     ],
-    default_model: 'deepseek-chat',
+    default_model: 'deepseek-v4-flash',
   },
   {
     key: 'gemini',
@@ -451,12 +511,12 @@ const PROVIDER_PRESETS = [
     name: 'Google Gemini',
     provider_type: 'openai-compatible',
     base_url: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    note: 'Google Gemini 的 OpenAI 兼容入口，适合图文理解与通用对话。',
+    note: 'Google Gemini 的 OpenAI 兼容入口，适合图文理解、推理与通用对话。',
     model_configs: [
-      { name: 'gemini-2.5-flash', model_type: 'multimodal_chat' },
-      { name: 'gemini-2.5-pro', model_type: 'multimodal_chat' },
+      { name: 'gemini-3.5-flash', model_type: 'multimodal_chat' },
+      { name: 'gemini-3.1-pro', model_type: 'multimodal_chat' },
     ],
-    default_model: 'gemini-2.5-flash',
+    default_model: 'gemini-3.5-flash',
   },
   {
     key: 'zhipu',
@@ -464,15 +524,16 @@ const PROVIDER_PRESETS = [
     name: '智谱 GLM',
     provider_type: 'openai-compatible',
     base_url: 'https://open.bigmodel.cn/api/paas/v4',
-    note: '智谱 OpenAI 兼容入口，已适配 /api/paas/v4，并可用于 TTS 与音色复刻场景。',
+    note: '智谱 OpenAI 兼容入口，已适配 /api/paas/v4，并可用于文本、视觉、TTS、音色复刻和 ASR 场景。',
     model_configs: [
-      { name: 'glm-5', model_type: 'text_generation' },
+      { name: 'glm-5.2', model_type: 'text_generation' },
+      { name: 'glm-5v-turbo', model_type: 'multimodal_chat' },
       { name: 'glm-4.5-air', model_type: 'text_generation' },
       { name: 'glm-tts', model_type: 'audio_generation' },
       { name: 'glm-tts-clone', model_type: 'audio_generation' },
       { name: 'glm-asr-2512', model_type: 'audio_transcription' },
     ],
-    default_model: 'glm-5',
+    default_model: 'glm-5.2',
   },
   {
     key: 'dashscope',
@@ -480,7 +541,7 @@ const PROVIDER_PRESETS = [
     name: '阿里云百炼',
     provider_type: 'openai-compatible',
     base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    note: 'DashScope OpenAI 兼容入口，适合 Qwen 系列模型接入。',
+    note: 'DashScope OpenAI 兼容入口，适合 Qwen 系列模型接入；官方推荐工作空间专属域名，通用域名仍可作为模板起点。',
     model_configs: [
       { name: 'qwen-plus', model_type: 'text_generation' },
       { name: 'qwen-max', model_type: 'text_generation' },
@@ -495,23 +556,23 @@ const PROVIDER_PRESETS = [
     base_url: 'https://openrouter.ai/api/v1',
     note: '聚合路由入口，适合统一接入多家模型；如需归因统计可额外补请求头。',
     model_configs: [
-      { name: 'openai/gpt-4o-mini', model_type: 'multimodal_chat' },
-      { name: 'deepseek/deepseek-chat', model_type: 'text_generation' },
+      { name: 'openai/gpt-5.5', model_type: 'multimodal_chat' },
+      { name: 'deepseek/deepseek-v4-flash', model_type: 'text_generation' },
     ],
-    default_model: 'openai/gpt-4o-mini',
+    default_model: 'openai/gpt-5.5',
   },
   {
     key: 'moonshot',
     label: 'Moonshot',
     name: 'Moonshot AI',
     provider_type: 'openai-compatible',
-    base_url: 'https://api.moonshot.cn/v1',
-    note: 'Moonshot/Kimi 官方兼容入口，适合中文长文本与通用对话。',
+    base_url: 'https://api.moonshot.ai/v1',
+    note: 'Moonshot/Kimi 官方 OpenAI 兼容入口，适合中文长文本、多模态、工具调用和通用对话。',
     model_configs: [
-      { name: 'kimi-latest', model_type: 'text_generation' },
-      { name: 'moonshot-v1-8k', model_type: 'text_generation' },
+      { name: 'kimi-k2.7-code', model_type: 'multimodal_chat' },
+      { name: 'kimi-k2.6', model_type: 'multimodal_chat' },
     ],
-    default_model: 'kimi-latest',
+    default_model: 'kimi-k2.7-code',
   },
   {
     key: 'siliconflow',
@@ -522,15 +583,42 @@ const PROVIDER_PRESETS = [
     note: 'SiliconFlow 聚合入口，适合快速试用开源与商用模型。',
     model_configs: [
       { name: 'Qwen/Qwen3-32B', model_type: 'text_generation' },
-      { name: 'deepseek-ai/DeepSeek-V3', model_type: 'text_generation' },
+      { name: 'deepseek-ai/DeepSeek-V4-Flash', model_type: 'text_generation' },
     ],
     default_model: 'Qwen/Qwen3-32B',
   },
 ]
 
 const activePresetMeta = computed(() => PROVIDER_PRESETS.find((item) => item.key === appliedPresetKey.value) || null)
+const isUsingPresetProviderType = computed(() => {
+  if (!activePresetMeta.value) return false
+  return String(form.provider_type || '').trim() === String(activePresetMeta.value.provider_type || '').trim()
+})
+const providerInterfaceAssistTagType = computed(() => {
+  if (!activePresetMeta.value) return 'info'
+  return isUsingPresetProviderType.value ? 'success' : 'warning'
+})
+const providerInterfaceAssistText = computed(() => {
+  if (!activePresetMeta.value) {
+    return String(form.provider_type || '').trim() === 'openai-compatible' ? '默认推荐' : '已手动选择'
+  }
+  if (isUsingPresetProviderType.value) return `${activePresetMeta.value.label} 模板已选择`
+  return '已手动调整'
+})
 
 let modelConfigSeed = 0
+
+function resolveProviderInterfaceOption(value) {
+  const normalized = String(value || '').trim()
+  return (
+    PROVIDER_INTERFACE_OPTIONS.find((item) => item.value === normalized) ||
+    PROVIDER_INTERFACE_OPTIONS[0]
+  )
+}
+
+function formatProviderInterfaceLabel(value) {
+  return resolveProviderInterfaceOption(value).label
+}
 
 function createModelConfig(name = '', modelType = '') {
   modelConfigSeed += 1
@@ -667,6 +755,11 @@ function syncDefaultModelSelection() {
 function formatModelTypeLabel(modelType) {
   const meta = modelTypeMetaMap.value.get(String(modelType || '').trim())
   return meta?.label || '文本生成'
+}
+
+function getModelTypeDescription(modelType) {
+  const meta = modelTypeMetaMap.value.get(String(modelType || '').trim())
+  return meta?.description || '选择该模型在系统中的能力分类。'
 }
 
 function formatProviderModels(row) {
@@ -942,6 +1035,19 @@ function getConnectionMeta(providerId, key) {
   return state[key] || ''
 }
 
+function formatConnectionRequestAddresses(providerId) {
+  const state = connectionResultByProvider[String(providerId || '')]
+  if (!state || typeof state !== 'object') return ''
+  const urls = Array.isArray(state.request_urls)
+    ? state.request_urls.map((item) => String(item || '').trim()).filter(Boolean)
+    : []
+  const fallbackUrls = [
+    String(state.models_url || '').trim(),
+    String(state.completion_url || '').trim(),
+  ].filter(Boolean)
+  return (urls.length ? urls : fallbackUrls).join('；')
+}
+
 function connectionTagType(providerId) {
   const state = connectionResultByProvider[String(providerId || '')]
   if (!state) return 'info'
@@ -979,6 +1085,38 @@ function isTestingAction(providerId, modelName = '') {
   return testingProviderId.value === String(providerId || '') && testingModelName.value === String(modelName || '').trim()
 }
 
+function buildConnectionFailureMessage(result, fallbackMessage = '') {
+  const message = String(result?.message || fallbackMessage || '模型接口连接测试失败').trim()
+  const addresses = Array.isArray(result?.request_urls)
+    ? result.request_urls.map((item) => String(item || '').trim()).filter(Boolean)
+    : [
+        String(result?.models_url || '').trim(),
+        String(result?.completion_url || '').trim(),
+      ].filter(Boolean)
+  const modelName = String(result?.model_tested || '').trim()
+  return h('div', { class: 'connection-failure-detail' }, [
+    h('p', message),
+    modelName ? h('p', `测试模型：${modelName}`) : h('p', '测试模型：未解析到可用模型'),
+    addresses.length
+      ? h('div', [
+          h('p', '请求地址：'),
+          h('ul', addresses.map((item) => h('li', item))),
+        ])
+      : h('p', '请求地址：-'),
+  ])
+}
+
+function showConnectionTestFailure(result, fallbackMessage = '') {
+  void ElMessageBox.alert(
+    buildConnectionFailureMessage(result, fallbackMessage),
+    '模型接口连接测试失败',
+    {
+      type: 'error',
+      confirmButtonText: '关闭',
+    },
+  )
+}
+
 async function testConnection(row, modelName = '') {
   const providerId = String(row?.id || '').trim()
   if (!providerId) return
@@ -994,7 +1132,7 @@ async function testConnection(row, modelName = '') {
     if (response.status === 'ok' && result.reachable) {
       ElMessage.success('模型接口连接测试成功')
     } else {
-      ElMessage.error(result.message || '模型接口连接测试失败')
+      showConnectionTestFailure(result, result.message)
     }
   } catch (e) {
     connectionResultByProvider[providerId] = {
@@ -1002,7 +1140,7 @@ async function testConnection(row, modelName = '') {
       message: e.detail || '连接失败',
       tested_at: new Date().toISOString(),
     }
-    ElMessage.error(e.detail || '模型接口连接测试失败')
+    showConnectionTestFailure(connectionResultByProvider[providerId], e.detail || '模型接口连接测试失败')
   } finally {
     testingProviderId.value = ''
     testingModelName.value = ''
@@ -1160,6 +1298,64 @@ onMounted(async () => {
   line-height: 1.7;
 }
 
+.provider-standard-note {
+  border-left: 3px solid #2563eb;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(37, 99, 235, 0.07);
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.provider-interface-panel {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.provider-interface-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.provider-interface-help {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.86);
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.provider-interface-help__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.provider-interface-help strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.provider-interface-help__warning {
+  color: #b45309;
+}
+
+.model-config-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(160px, 220px) auto auto;
+  gap: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
 .model-config-row {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(160px, 220px) auto auto;
@@ -1174,6 +1370,33 @@ onMounted(async () => {
 .model-config-row__name,
 .model-config-row__type {
   width: 100%;
+}
+
+.model-config-row__type-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.model-config-row__type-help {
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-type-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-type-option span:last-child {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 .model-config-editor__actions {
@@ -1213,6 +1436,10 @@ onMounted(async () => {
 
   .model-config-row {
     grid-template-columns: 1fr;
+  }
+
+  .model-config-header {
+    display: none;
   }
 }
 

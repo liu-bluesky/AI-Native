@@ -552,26 +552,68 @@ assert.match(
 
 assert.match(
   projectChat,
-  /if \(isLocalRunnerSurface\.value\) \{\s*await sendLocalLiuAgentChatRequest/s,
-  "local-runner chat sends must use the local liuAgent runtime path",
+  /await sendLocalLiuAgentChatRequest\(\{/,
+  "desktop local chat sends must use the local liuAgent runtime path",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /shouldPrepareRemoteAttachmentPayload/,
+  "desktop local chat must not keep the old remote attachment preprocessing switch",
 );
 
 assert.match(
   projectChat,
-  /const shouldPrepareRemoteAttachmentPayload = !isLocalRunnerSurface\.value;/,
-  "local-runner sends must skip remote attachment preprocessing before the message enters the chat",
+  /function shouldAttemptProviderFileUpload\(\) \{[\s\S]*selectedProviderId\.value \|\| defaultProviderId\.value/,
+  "provider-file upload attempts must be based on the selected provider instead of the llm_model_types attachment_mode",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /uploadFileToProviderWithBackendProxy|\/llm\/providers\/\$\{encodeURIComponent\(providerId\)\}\/upload-file/,
+  "desktop local provider-file upload must not call the backend upload proxy",
 );
 
 assert.match(
   projectChat,
-  /const base64Images = shouldPrepareRemoteAttachmentPayload\s*\?\s*await Promise\.all\(imageFiles\.map\(readAsBase64\)\)\s*:\s*\[\];/s,
-  "image base64 conversion must be limited to the remote chat path",
+  /async function uploadFileToProviderWithNativeRuntime[\s\S]*uploadNativeLiuAgentProviderFile/,
+  "local-runner provider-file uploads must use the native desktop bridge",
 );
 
 assert.match(
+  projectChat,
+  /nativeDesktopBridgeAvailable\.value = hasNativeDesktopBridge\(\);[\s\S]*if \(!nativeDesktopBridgeAvailable\.value\) \{[\s\S]*throw new Error\("桌面端原生桥未接入，无法上传给模型供应商"\);[\s\S]*await uploadFileToProviderWithNativeRuntime/,
+  "provider-file upload must require the native desktop bridge instead of falling back to backend upload",
+);
+
+assert.match(
+  projectChat,
+  /const localLiuAgentAttachments =\s*await buildLocalLiuAgentAttachments\(uploadFiles\.value\);/s,
+  "desktop local chat must build structured attachments for the liuAgent path",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /const base64Images = \[\];/,
+  "desktop local chat must not keep a dead remote image payload variable",
+);
+
+assert.doesNotMatch(
   projectChat,
   /if \(shouldPrepareRemoteAttachmentPayload && docFiles\.length > 0\)/,
-  "document text extraction must be limited to the remote chat path",
+  "desktop local chat must not keep remote document preprocessing",
+);
+
+assert.match(
+  projectChat,
+  /routingMode: "provider_file"[\s\S]*extractionStatus: "provider_file_ready"[\s\S]*providerFileId/,
+  "local-runner attachment routing must preserve provider_file attachments after native upload",
+);
+
+assert.match(
+  projectChat,
+  /const hasUploadingAttachments = computed[\s\S]*"uploading"[\s\S]*"error"[\s\S]*if \(hasUploadingAttachments\.value\) \{[\s\S]*return false/,
+  "composer must block sends while provider-file uploads are pending or failed",
 );
 
 assert.match(
@@ -606,14 +648,14 @@ assert.match(
 
 assert.doesNotMatch(
   projectChat,
-  /if \(isLocalRunnerSurface\.value\) return false;/,
-  "local-runner composer must show a working status bar while local execution continues",
+  /isLocalRunnerSurface|isDesktopLocalSession/,
+  "desktop local chat must not keep the old local/web surface switch",
 );
 
 assert.match(
   projectChat,
-  /!isLocalRunnerSurface\.value &&\s*Boolean\(String\(selectedProjectId\.value/,
-  "local-runner composer must not show global agent workflow failures above the input",
+  /const showAgentWorkflowStatusStrip = computed\(\s*\(\) => false,\s*\);/,
+  "desktop local composer must not show global agent workflow failures above the input",
 );
 
 assert.match(
@@ -696,7 +738,7 @@ assert.match(
 
 assert.doesNotMatch(
   projectChat,
-  /const showWorkingStatusBar = computed\(\(\) => \{[\s\S]*if \(isLocalRunnerSurface\.value\) return false;/,
+  /const showWorkingStatusBar = computed\(\(\) => \{[\s\S]*if \(isLocalRunnerSurface|isDesktopLocalSession\)/,
   "local-runner mode must not be excluded from the working status bar",
 );
 
@@ -714,8 +756,14 @@ assert.doesNotMatch(
 
 assert.match(
   projectChat,
-  /if \(isLocalRunnerSurface\.value\) \{[\s\S]*assistantMessage\.content = `执行失败：\$\{errorMessage\}`;[\s\S]*source: "desktop_local_agent"[\s\S]*\} else \{[\s\S]*ElMessage\.error/,
-  "local-runner thrown errors must be rendered in the assistant bubble while non-local chat keeps the global error toast",
+  /assistantMessage\.content = `执行失败：\$\{errorMessage\}`;[\s\S]*source: "desktop_local_agent"/,
+  "desktop local thrown errors must be rendered in the assistant bubble and recorded as desktop local events",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /ElMessage\.error\(errorMessage \|\| "对话失败"\)/,
+  "desktop local chat must not use the old web-chat global error toast path",
 );
 
 assert.match(
@@ -750,13 +798,13 @@ assert.doesNotMatch(
 
 assert.doesNotMatch(
   projectChat,
-  /if \(isLocalRunnerSurface\.value && hasNativeDesktopBridge\(\)\)/,
+  /if \((isLocalRunnerSurface|isDesktopLocalSession)\.value && hasNativeDesktopBridge\(\)\)/,
   "local-runner chat must not silently fall back to backend WebSocket when Tauri is unavailable",
 );
 
 assert.doesNotMatch(
   projectChat,
-  /<aside v-if="isLocalRunnerSurface" class="local-runner-panel">/,
+  /<aside v-if="(isLocalRunnerSurface|isDesktopLocalSession)" class="local-runner-panel">/,
   "main chat surface must not render local runner diagnostics beside the conversation",
 );
 

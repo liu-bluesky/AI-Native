@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.deps import ensure_any_permission, ensure_permission, is_admin_like, require_auth, user_store
 from services.catalogs.dictionary_catalog import get_dictionary_definition
 from services.catalogs.llm_model_type_catalog import DEFAULT_MODEL_TYPE, MODEL_TYPE_DICTIONARY_KEY
-from services.providers.llm_provider_service import get_llm_provider_service
+from services.providers.llm_provider_service import LlmProviderConnectionTestError, get_llm_provider_service
 from models.requests import LlmProviderCreateReq, LlmProviderTestReq, LlmProviderUpdateReq
 
 def _require_llm_provider_permission(auth_payload: dict = Depends(require_auth)) -> None:
@@ -61,6 +61,7 @@ async def get_llm_provider_desktop_runtime(
             400,
             f"Provider type {provider_type or 'unknown'} is not supported by desktop runtime",
         )
+    resolved_model = get_llm_provider_service().resolve_provider_model_name(provider)
     return {
         "runtime": {
             "mode": "direct-openai-compatible",
@@ -68,7 +69,8 @@ async def get_llm_provider_desktop_runtime(
             "provider_type": provider_type,
             "base_url": str(provider.get("base_url") or "").strip().rstrip("/"),
             "api_key": str(provider.get("api_key") or "").strip(),
-            "default_model": str(provider.get("default_model") or "").strip(),
+            "default_model": resolved_model,
+            "model_name": resolved_model,
         }
     }
 
@@ -184,6 +186,11 @@ async def test_llm_provider(
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except LlmProviderConnectionTestError as exc:
+        return {
+            "status": "failed",
+            "result": exc.result,
+        }
     except RuntimeError as exc:
         return {
             "status": "failed",

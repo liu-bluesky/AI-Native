@@ -766,6 +766,10 @@ class DictionaryOptionReq(BaseModel):
     label: str = ""
     description: str = ""
     chat_parameter_mode: str = ""
+    project_chat_allowed_file_types: list[str] | None = None
+    attachment_mode: str = ""
+    attachment_max_files: int | None = None
+    attachment_max_file_size_mb: int | None = None
 
 
 class DictionaryUpdateReq(BaseModel):

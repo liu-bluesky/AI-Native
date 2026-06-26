@@ -365,6 +365,18 @@ class ProjectWorkLogTemplateUpdateReq(BaseModel):
     fields: int | None = Field(None, ge=1, le=50)
 
 
+_LEGACY_PROJECT_CHAT_ALLOWED_FILE_TYPES = [
+    "image/*",
+    ".wps",
+    ".doc",
+    ".docx",
+    ".pdf",
+    ".txt",
+    ".csv",
+    ".xlsx",
+    ".xls",
+]
+
 _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "chat_mode": "system",
     "external_agent_type": "codex_cli",
@@ -395,17 +407,7 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "max_file_size_mb": 15,
     "doc_max_chars_per_file": 1200,
     "doc_max_chars_total": 3000,
-    "allowed_file_types": [
-        "image/*",
-        ".wps",
-        ".doc",
-        ".docx",
-        ".pdf",
-        ".txt",
-        ".csv",
-        ".xlsx",
-        ".xls",
-    ],
+    "allowed_file_types": [],
     "high_risk_tool_confirm": True,
     "tool_timeout_sec": 0,
     "tool_retry_count": 0,
@@ -5931,6 +5933,18 @@ def _to_unique_string_list(values: Any, *, max_items: int = 100, max_item_len: i
     return result
 
 
+def _normalize_project_chat_allowed_file_types(values: Any) -> list[str]:
+    normalized = _to_unique_string_list(values, max_items=40, max_item_len=20)
+    legacy = _to_unique_string_list(
+        _LEGACY_PROJECT_CHAT_ALLOWED_FILE_TYPES,
+        max_items=40,
+        max_item_len=20,
+    )
+    if {item.lower() for item in normalized} == {item.lower() for item in legacy}:
+        return []
+    return normalized
+
+
 def _guess_material_image_mime_type(url: str, fallback: Any = "") -> str:
     preferred = str(fallback or "").strip().lower()
     if preferred.startswith("image/"):
@@ -6462,7 +6476,7 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["max_file_size_mb"] = _coerce_int(source.get("max_file_size_mb"), settings["max_file_size_mb"], min_value=1, max_value=100)
     settings["doc_max_chars_per_file"] = _coerce_int(source.get("doc_max_chars_per_file"), settings["doc_max_chars_per_file"], min_value=100, max_value=20000)
     settings["doc_max_chars_total"] = _coerce_int(source.get("doc_max_chars_total"), settings["doc_max_chars_total"], min_value=500, max_value=100000)
-    settings["allowed_file_types"] = _to_unique_string_list(source.get("allowed_file_types"), max_items=40, max_item_len=20)
+    settings["allowed_file_types"] = _normalize_project_chat_allowed_file_types(source.get("allowed_file_types"))
     settings["high_risk_tool_confirm"] = _coerce_bool(source.get("high_risk_tool_confirm"), settings["high_risk_tool_confirm"])
     settings["tool_timeout_sec"] = _coerce_int(source.get("tool_timeout_sec"), settings["tool_timeout_sec"], min_value=0, max_value=600)
     settings["tool_retry_count"] = _coerce_int(source.get("tool_retry_count"), settings["tool_retry_count"], min_value=0, max_value=5)

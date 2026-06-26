@@ -185,6 +185,34 @@ fn liuagent_execute_tool(
 }
 
 #[tauri::command]
+async fn liuagent_upload_provider_file(
+    request: liuagent_core::ProviderFileUploadRequest,
+) -> liuagent_core::ProviderFileUploadResult {
+    let fallback_request = liuagent_core::ProviderFileUploadRequest {
+        provider_id: request.provider_id.clone(),
+        base_url: request.base_url.clone(),
+        api_key: request.api_key.clone(),
+        filename: request.filename.clone(),
+        mime_type: request.mime_type.clone(),
+        purpose: request.purpose.clone(),
+        file_bytes: Vec::new(),
+        timeout_ms: request.timeout_ms,
+    };
+    match tauri::async_runtime::spawn_blocking(move || liuagent_core::upload_provider_file(request))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => liuagent_core::ProviderFileUploadResult::failed(
+            fallback_request,
+            liuagent_core::ToolError::new(
+                "runtime.join_failed",
+                format!("provider file upload worker failed: {error}"),
+            ),
+        ),
+    }
+}
+
+#[tauri::command]
 async fn liuagent_start_local_chat(
     app: tauri::AppHandle,
     request: liuagent_core::LocalChatRequest,
@@ -1194,6 +1222,7 @@ fn main() {
             list_runner_permission_decisions,
             liuagent_builtin_tool_definitions,
             liuagent_execute_tool,
+            liuagent_upload_provider_file,
             liuagent_start_local_chat,
             liuagent_prepare_agent_invocation,
             liuagent_recover_runtime_state,

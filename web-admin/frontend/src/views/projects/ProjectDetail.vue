@@ -2454,6 +2454,7 @@ import ProjectWorkspaceBlock from "@/components/project-workspace/ProjectWorkspa
 import ProjectWorkspaceToolbar from "@/components/project-workspace/ProjectWorkspaceToolbar.vue";
 import RequirementRecordCard from "@/components/project-workspace/RequirementRecordCard.vue";
 import WorkSessionDetailPanel from "@/components/WorkSessionDetailPanel.vue";
+import { fetchProjectChatProviders } from "@/modules/project-chat/services/projectChatSettingsApi.js";
 import { normalizeTaskTreeHealth } from "@/modules/task-tree-feedback/taskTreeFeedback";
 import api from "@/utils/api.js";
 import { formatDateTime } from "@/utils/date.js";
@@ -2472,6 +2473,7 @@ import {
   fetchConfiguredRuntimeOrigin,
 } from "@/utils/runtime-url.js";
 import { setStoredProjectContextId } from "@/utils/desktop-shell.js";
+import { normalizeProviderModelNames } from "@/utils/llm-models.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -5157,49 +5159,70 @@ async function fetchCodeRepositories(targetProjectId = projectId.value) {
 }
 
 async function fetchExperienceProviders() {
+  const effectiveProjectId = String(projectId.value || "").trim();
+  if (!effectiveProjectId) {
+    experienceProviderOptions.value = [];
+    experienceSummaryProviderId.value = "";
+    experienceSummaryModelName.value = "";
+    return;
+  }
   experienceProvidersLoading.value = true;
   try {
-    const data = await api.get("/llm/providers", {
-      params: { enabled_only: true },
-    });
+    const data = await fetchProjectChatProviders(effectiveProjectId);
+    if (effectiveProjectId !== projectId.value) return;
     const providers = Array.isArray(data?.providers) ? data.providers : [];
     experienceProviderOptions.value = providers
-      .map((item) => ({
-        id: String(item.id || "").trim(),
-        name: String(item.name || item.id || "未命名模型源").trim(),
-        models: Array.isArray(item.models)
-          ? item.models
-              .map((model) => String(model || "").trim())
-              .filter(Boolean)
-          : [],
-        default_model: String(item.default_model || "").trim(),
-        is_default: !!item.is_default,
-      }))
+      .map((item) => {
+        const models = normalizeProviderModelNames(item);
+        return {
+          id: String(item.id || "").trim(),
+          name: String(item.name || item.id || "未命名模型源").trim(),
+          models,
+          default_model: String(item.default_model || models[0] || "").trim(),
+          is_default:
+            String(item.id || "").trim() ===
+              String(data?.default_provider_id || "").trim() ||
+            !!item.is_default,
+        };
+      })
       .filter((item) => item.id && item.models.length);
     const preferred =
       experienceProviderOptions.value.find(
         (item) => item.id === experienceSummaryProviderId.value,
+      ) ||
+      experienceProviderOptions.value.find(
+        (item) =>
+          item.id === String(data?.chat_settings?.provider_id || "").trim(),
       ) ||
       experienceProviderOptions.value.find((item) => item.is_default) ||
       experienceProviderOptions.value[0] ||
       null;
     experienceSummaryProviderId.value = preferred?.id || "";
     const availableModels = preferred?.models || [];
+    const preferredModel = String(
+      data?.chat_settings?.model_name || data?.default_model_name || "",
+    ).trim();
     if (
       !availableModels.includes(
         String(experienceSummaryModelName.value || "").trim(),
       )
     ) {
       experienceSummaryModelName.value =
-        preferred?.default_model || availableModels[0] || "";
+        (availableModels.includes(preferredModel) ? preferredModel : "") ||
+        preferred?.default_model ||
+        availableModels[0] ||
+        "";
     }
   } catch (err) {
+    if (effectiveProjectId !== projectId.value) return;
     experienceProviderOptions.value = [];
     experienceSummaryProviderId.value = "";
     experienceSummaryModelName.value = "";
     ElMessage.error(err?.detail || err?.message || "加载模型列表失败");
   } finally {
-    experienceProvidersLoading.value = false;
+    if (effectiveProjectId === projectId.value) {
+      experienceProvidersLoading.value = false;
+    }
   }
 }
 

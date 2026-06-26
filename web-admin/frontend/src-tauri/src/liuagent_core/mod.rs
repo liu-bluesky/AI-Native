@@ -19,17 +19,17 @@ mod workspace;
 
 pub use definitions::builtin_tool_definitions;
 pub use gateway::prepare_agent_invocation;
-pub use runtime::start_local_chat_with_event_sink;
 pub use runtime::{
     ack_local_runtime_outbox, list_local_runtime_events, list_local_runtime_outbox,
     recover_local_runtime_state,
 };
+pub use runtime::{start_local_chat_with_event_sink, upload_provider_file};
 pub use types::{
     AgentInvocationRequest, AgentInvocationResult, LocalChatRequest, LocalChatResult,
     LocalRuntimeEventsRequest, LocalRuntimeEventsResult, LocalRuntimeOutboxAckRequest,
     LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest,
-    LocalRuntimeRecoveryResult, ToolDefinition, ToolError, ToolExecutionRequest,
-    ToolExecutionResult,
+    LocalRuntimeRecoveryResult, ProviderFileUploadRequest, ProviderFileUploadResult,
+    ToolDefinition, ToolError, ToolExecutionRequest, ToolExecutionResult,
 };
 
 use tools::command::{check_command_risk, run_command, run_command_with_output_sink};
@@ -474,6 +474,45 @@ mod tests {
         assert!(result.ok);
         assert_eq!(result.tool_call_id, "call_1");
         assert_eq!(result.content["content"], "# Hello");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn read_file_accepts_workspace_absolute_path() {
+        let dir = test_workspace("read_file_absolute");
+        let target = dir.join("README.md");
+        std::fs::write(&target, "# Hello\nSecond\n").expect("write");
+
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_read_abs".to_string()),
+            name: "read_file".to_string(),
+            arguments: json!({"path": target.to_string_lossy()}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.content["path"], "README.md");
+        assert_eq!(result.content["content"], "# Hello\nSecond");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn read_file_rejects_external_absolute_path() {
+        let dir = test_workspace("read_file_external_absolute");
+        let external = dir.parent().unwrap().join("outside-read.txt");
+        std::fs::write(&external, "outside").expect("write external fixture");
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_read_external_abs".to_string()),
+            name: "read_file".to_string(),
+            arguments: json!({"path": external.to_string_lossy()}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "workspace.out_of_scope");
+        let _ = std::fs::remove_file(external);
         let _ = std::fs::remove_dir_all(dir);
     }
 

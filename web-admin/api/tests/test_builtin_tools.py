@@ -63,7 +63,15 @@ class TestWorkspacePathSecurity:
         with pytest.raises(WorkspacePathError):
             resolve_workspace_path(str(workspace), "../../../etc/passwd")
 
-    def test_absolute_path_rejected(self, workspace: Path) -> None:
+    def test_workspace_absolute_path_resolves(self, workspace: Path) -> None:
+        result = resolve_workspace_path(
+            str(workspace),
+            str(workspace / "src" / "main.py"),
+            must_exist=True,
+        )
+        assert result == workspace / "src" / "main.py"
+
+    def test_external_absolute_path_rejected(self, workspace: Path) -> None:
         with pytest.raises(WorkspacePathError):
             resolve_workspace_path(str(workspace), "/etc/passwd")
 
@@ -149,6 +157,17 @@ class TestFileTools:
         assert result["ok"] is True
         assert "hello" in result["content"]
         assert result["start_line"] == 1
+
+    @pytest.mark.asyncio()
+    async def test_read_file_accepts_workspace_absolute_path(self, workspace: Path) -> None:
+        result = await execute_builtin_tool(
+            "read_file",
+            {"path": str(workspace / "src" / "main.py")},
+            workspace_path=str(workspace),
+        )
+        assert result["ok"] is True
+        assert result["path"] == "src/main.py"
+        assert "hello" in result["content"]
 
     @pytest.mark.asyncio()
     async def test_read_file_with_line_range(self, workspace: Path) -> None:

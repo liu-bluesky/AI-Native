@@ -1,6 +1,7 @@
 //! workspace 路径安全。
 //!
-//! 本地工具只能访问用户选择的 workspace，拒绝绝对路径和 `../` 逃逸。
+//! 本地工具只能访问用户选择的 workspace。模型可以传入 workspace 内绝对路径，
+//! 但 `../` 或外部绝对路径仍会被拒绝。
 
 use std::path::{Path, PathBuf};
 
@@ -35,14 +36,10 @@ pub fn resolve_workspace_child(
     must_exist: bool,
 ) -> Result<PathBuf, ToolError> {
     let raw = raw_path.trim();
-    if PathBuf::from(raw).is_absolute() {
-        return Err(ToolError::new(
-            "workspace.out_of_scope",
-            "absolute paths are not allowed",
-        ));
-    }
     let candidate = if raw.is_empty() {
         root.to_path_buf()
+    } else if PathBuf::from(raw).is_absolute() {
+        PathBuf::from(raw)
     } else {
         root.join(raw)
     };
@@ -70,13 +67,12 @@ pub fn resolve_workspace_write_target(root: &Path, raw_path: &str) -> Result<Pat
     if raw.is_empty() {
         return Err(ToolError::new("tool.schema_invalid", "path is required"));
     }
-    if PathBuf::from(raw).is_absolute() {
-        return Err(ToolError::new(
-            "workspace.out_of_scope",
-            "absolute paths are not allowed",
-        ));
-    }
-    let candidate = root.join(raw);
+    let raw_path = PathBuf::from(raw);
+    let candidate = if raw_path.is_absolute() {
+        raw_path
+    } else {
+        root.join(raw_path)
+    };
     let parent = candidate
         .parent()
         .ok_or_else(|| ToolError::new("tool.schema_invalid", "path must include a file name"))?;

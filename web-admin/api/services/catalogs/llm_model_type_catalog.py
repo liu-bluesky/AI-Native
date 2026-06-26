@@ -20,11 +20,44 @@ _MODEL_TYPE_MAP = {
     if str(item.get("id") or "").strip()
 }
 
+_MODEL_TYPE_ALIASES = {
+    "chat": "text_generation",
+    "chat_completion": "text_generation",
+    "chat_completions": "text_generation",
+    "completion": "text_generation",
+    "text": "text_generation",
+    "text_generation": "text_generation",
+    "vision": "multimodal_chat",
+    "vision_chat": "multimodal_chat",
+    "multimodal": "multimodal_chat",
+    "multimodal_chat": "multimodal_chat",
+    "image": "image_generation",
+    "images": "image_generation",
+    "image_generation": "image_generation",
+    "video": "video_generation",
+    "videos": "video_generation",
+    "video_generation": "video_generation",
+    "speech": "audio_generation",
+    "tts": "audio_generation",
+    "text_to_speech": "audio_generation",
+    "audio": "audio_generation",
+    "audio_generation": "audio_generation",
+    "transcription": "audio_transcription",
+    "transcriptions": "audio_transcription",
+    "speech_to_text": "audio_transcription",
+    "stt": "audio_transcription",
+    "asr": "audio_transcription",
+    "audio_transcription": "audio_transcription",
+}
+
 
 def normalize_model_type(value: Any) -> str:
-    normalized = str(value or "").strip().lower()
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     if normalized in _MODEL_TYPE_MAP:
         return normalized
+    aliased = _MODEL_TYPE_ALIASES.get(normalized)
+    if aliased in _MODEL_TYPE_MAP:
+        return aliased
     return DEFAULT_MODEL_TYPE
 
 

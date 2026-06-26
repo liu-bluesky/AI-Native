@@ -1,4 +1,6 @@
-from services.providers.llm_provider_service import LlmProviderService
+import pytest
+
+from services.providers.llm_provider_service import LlmProviderConnectionTestError, LlmProviderService
 
 
 def test_llm_provider_service_supports_bigmodel_openai_compatible_base_url():
@@ -22,6 +24,16 @@ def test_llm_provider_service_supports_bigmodel_openai_compatible_base_url():
     assert LlmProviderService._build_async_result_url(base_url, "req-123") == (
         "https://open.bigmodel.cn/api/paas/v4/async-result/req-123"
     )
+
+
+def test_llm_provider_service_resolves_desktop_runtime_model_from_model_config():
+    provider = {
+        "default_model": "",
+        "models": [],
+        "model_configs": [{"model": "solver-v2", "model_type": "text_generation"}],
+    }
+
+    assert LlmProviderService.resolve_provider_model_name(provider) == "solver-v2"
 
 
 def test_llm_provider_service_extracts_reasoning_content_from_sse_chunk():
@@ -233,3 +245,66 @@ def test_llm_provider_service_summarizes_json_errors():
 
     assert summary == "missing required scope(s): im:message.send_as_user"
     assert "missing required scope" in diagnostic
+
+
+def test_llm_provider_service_test_connection_uses_model_config_model_alias():
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "id": "provider-1",
+        "name": "Provider 1",
+        "provider_type": "openai-compatible",
+        "base_url": "https://gateway.example.com/v1",
+        "enabled": True,
+        "default_model": "",
+        "models": [],
+        "model_configs": [{"model": "solver-v2", "model_type": "text_generation"}],
+    }
+    captured = {}
+
+    service.get_provider_raw = lambda *args, **kwargs: provider
+
+    def _fake_call_chat_completion_sse(**kwargs):
+        captured["model_name"] = kwargs["model_name"]
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    service._call_chat_completion_sse = _fake_call_chat_completion_sse
+
+    result = service.test_provider_connection("provider-1")
+
+    assert captured["model_name"] == "solver-v2"
+    assert result["reachable"] is True
+    assert result["model_tested"] == "solver-v2"
+    assert result["completion_url"] == "https://gateway.example.com/v1/chat/completions"
+    assert result["request_urls"] == [
+        "https://gateway.example.com/v1/models",
+        "https://gateway.example.com/v1/chat/completions",
+    ]
+
+
+def test_llm_provider_service_test_connection_returns_addresses_when_model_missing():
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "id": "provider-1",
+        "name": "Provider 1",
+        "provider_type": "openai-compatible",
+        "base_url": "https://gateway.example.com/v1",
+        "enabled": True,
+        "default_model": "",
+        "models": [],
+        "model_configs": [],
+    }
+    service.get_provider_raw = lambda *args, **kwargs: provider
+    service._call_chat_completion_sse = lambda **kwargs: pytest.fail("empty model should not be sent")
+
+    with pytest.raises(LlmProviderConnectionTestError) as exc_info:
+        service.test_provider_connection("provider-1")
+
+    result = exc_info.value.result
+    assert result["reachable"] is False
+    assert result["model_tested"] == ""
+    assert "未指定测试模型" in result["message"]
+    assert result["completion_url"] == "https://gateway.example.com/v1/chat/completions"
+    assert result["request_urls"] == [
+        "https://gateway.example.com/v1/models",
+        "https://gateway.example.com/v1/chat/completions",
+    ]

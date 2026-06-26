@@ -1463,6 +1463,10 @@
             :slash-command-highlight-index="slashCommandHighlightIndex"
             :is-external-agent-mode="isExternalAgentMode"
             :provider-model-groups="providerModelGroups"
+            :upload-accept="uploadAccept"
+            :attachment-supported="currentModelAttachmentSupported"
+            :attachment-mode="currentModelAttachmentMode"
+            :attachment-mode-label="currentModelAttachmentModeLabel"
             :chat-loading="chatLoading"
             :external-agent-display-label="externalAgentDisplayLabel"
             :has-selected-project="hasSelectedProject"
@@ -1852,11 +1856,7 @@
                       <div class="settings-execution-section">
                         <span>执行入口</span>
                         <strong>
-                          {{
-                            isLocalRunnerSurface
-                              ? "桌面端本地 liuAgent Runtime"
-                              : "项目聊天统一由系统模型处理。"
-                          }}
+                          桌面端本地 liuAgent Runtime
                         </strong>
                       </div>
 
@@ -1969,16 +1969,7 @@
                             项目上下文
                           </div>
                           <p class="settings-parameter-section__desc">
-                            <template
-                              v-if="
-                                showLocalRuntimeSettings || isLocalRunnerSurface
-                              "
-                            >
-                              让系统知道真实工作区、入口规则文件以及这一轮的最高优先级提示词。
-                            </template>
-                            <template v-else>
-                              这里只保留当前对话真正需要的项目级上下文，不展示本机开发控制项。
-                            </template>
+                            让系统知道真实工作区、入口规则文件以及这一轮的最高优先级提示词。
                           </p>
                         </div>
                         <el-form-item
@@ -2034,10 +2025,7 @@
                         </el-form-item>
 
                         <el-form-item
-                          v-if="
-                            hasSelectedProject &&
-                            (showLocalRuntimeSettings || isLocalRunnerSurface)
-                          "
+                          v-if="hasSelectedProject"
                         >
                           <template #label>
                             <span class="label-with-tooltip">
@@ -2790,6 +2778,7 @@
 // ============================================================
 import {
   computed,
+  h,
   onMounted,
   onUnmounted,
   reactive,
@@ -2849,6 +2838,7 @@ import { formatRelativeDateTime } from "@/utils/date.js";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
+  ATTACHMENT_MODE_LABELS,
   buildModelTypeMetaMap,
   DEFAULT_MODEL_TYPE,
   FALLBACK_MODEL_TYPE_OPTIONS,
@@ -2857,6 +2847,7 @@ import {
   getChatParameterDictionaryKey,
   getChatParameterDefaultValue,
   listChatParameterKeys,
+  normalizeAttachmentMode,
   normalizeChatParameterValue,
   normalizeProviderModelConfigs,
   normalizeProviderModelNames,
@@ -2901,6 +2892,7 @@ import {
   subscribeNativeExternalAgentSessionEvents,
   subscribeNativeLiuAgentRuntimeEvents,
   startNativeLiuAgentLocalChat,
+  uploadNativeLiuAgentProviderFile,
   writeNativeExternalAgentSessionInput,
   executeNativeLiuAgentTool,
 } from "@/utils/native-desktop-bridge.js";
@@ -3090,7 +3082,10 @@ import {
   normalizeDoneEventExecutionState,
   normalizeProjectChatWsEvent,
 } from "@/modules/project-chat/services/projectChatWsProtocol.js";
-import { CHAT_SETTINGS_DEFAULTS } from "@/modules/project-chat/constants/chatSettingsDefaults.js";
+import {
+  CHAT_SETTINGS_DEFAULTS,
+  LEGACY_CHAT_ALLOWED_FILE_TYPES,
+} from "@/modules/project-chat/constants/chatSettingsDefaults.js";
 import {
   isTaskTreeArchivedOrDone,
   resolveTaskTreeEventPayload,
@@ -3555,18 +3550,9 @@ const mcpDialogProjectLabel = computed(() => {
 const chatSurface = computed(() => {
   return "local-runner";
 });
-const isLocalRunnerSurface = computed(
-  () => chatSurface.value === "local-runner",
-);
-const chatSurfaceMark = computed(() =>
-  isLocalRunnerSurface.value ? "LR" : "AI",
-);
-const chatSurfaceName = computed(() =>
-  isLocalRunnerSurface.value ? "本地运行" : "AI 对话",
-);
-const chatSurfaceMeta = computed(() =>
-  isLocalRunnerSurface.value ? "系统模型 · 本机执行" : "项目会话",
-);
+const chatSurfaceMark = computed(() => "LR");
+const chatSurfaceName = computed(() => "本地运行");
+const chatSurfaceMeta = computed(() => "系统模型 · 本机执行");
 const canUseExternalAgent = computed(
   () =>
     hasSelectedProject.value &&
@@ -3582,12 +3568,7 @@ const isChatSettingsDisplayReady = computed(() => {
   );
 });
 const isExternalAgentMode = computed(() => false);
-const chatModeLabel = computed(() => {
-  if (isLocalRunnerSurface.value) return "本地运行";
-  if (!isChatSettingsDisplayReady.value) return "";
-  if (isExternalAgentMode.value) return "Runner";
-  return "系统对话";
-});
+const chatModeLabel = computed(() => "本地运行");
 const projectWorkspaceResolved = computed(() =>
   String(projectWorkspacePath.value || "").trim(),
 );
@@ -4252,79 +4233,27 @@ const externalAgentStatusSummary = computed(() => {
 const executionRuntimeTitle = computed(() => {
   if (!hasSelectedProject.value) return "未选择项目";
   if (!isChatSettingsDisplayReady.value) return "项目配置加载中";
-  if (isLocalRunnerSurface.value) {
-    if (!nativeDesktopBridgeAvailable.value) return "本地 Runtime 未接入";
-    if (!projectWorkspaceResolved.value) return "待选择本机工作区";
-    return "本地智能体已启用";
-  }
-  if (!isExternalAgentMode.value) return "系统对话";
-  if (
-    externalAgentDesktopRunnerRequired.value &&
-    !usingNativeDesktopRuntime.value
-  ) {
-    return "Runner 未就绪";
-  }
-  if (!workspacePathConfigured.value) return "待选择本机工作区";
-  if (workspacePathDirty.value) return "工作区未保存";
-  if (externalAgentWarmupLoading.value) return "Runner 预热中";
-  if (externalAgentInfo.value.ready) {
-    return `${externalAgentDisplayLabel.value} 已就绪`;
-  }
-  if (nativeDesktopBridgeAvailable.value && nativeRunnerSelfCheckPassed.value) {
-    return `${externalAgentDisplayLabel.value} 自检通过`;
-  }
-  return `${externalAgentDisplayLabel.value} 待检查`;
+  if (!nativeDesktopBridgeAvailable.value) return "本地 Runtime 未接入";
+  if (!projectWorkspaceResolved.value) return "待选择本机工作区";
+  return "本地智能体已启用";
 });
 const executionRuntimeDescription = computed(() => {
   if (!hasSelectedProject.value) return "选择项目后才能绑定执行环境。";
   if (!isChatSettingsDisplayReady.value) {
     return "正在读取项目执行方式，加载完成前不会显示系统对话或Runner 状态。";
   }
-  if (isLocalRunnerSurface.value) {
-    if (!nativeDesktopBridgeAvailable.value) {
-      return "当前不是桌面端 Tauri 环境，本地智能体无法执行本机工具。";
-    }
-    if (!projectWorkspaceResolved.value) {
-      return "请在对话设置里选择本机工作区，本地智能体会以该目录作为工具执行边界。";
-    }
-    return "对话由桌面端本地 liuAgent Runtime 执行；后端只负责配置、记录和同步。";
+  if (!nativeDesktopBridgeAvailable.value) {
+    return "当前不是桌面端 Tauri 环境，本地智能体无法执行本机工具。";
   }
-  if (!isExternalAgentMode.value) {
-    return currentModelSummary.value || "使用服务端模型和项目工具回答。";
+  if (!projectWorkspaceResolved.value) {
+    return "请在对话设置里选择本机工作区，本地智能体会以该目录作为工具执行边界。";
   }
-  if (externalAgentDesktopRunnerRequired.value) {
-    return "Runner 只支持桌面端 Runner。请在桌面端打开项目后执行。";
-  }
-  if (nativeDesktopBridgeAvailable.value) {
-    if (nativeRunnerSelfCheckPassed.value) {
-      return "Runner 自检已通过；本机基础命令和工作区检查可用，可继续启动Runner。";
-    }
-    return "桌面端已接入原生桥，可选择本机目录并检测 Codex / Hermes。";
-  }
-  if (!workspacePathConfigured.value) {
-    return "这是运行执行器的那台电脑上的绝对路径。";
-  }
-  if (workspacePathDirty.value) {
-    return "保存工作区后才能继续环境检查和执行。";
-  }
-  const parts = [
-    externalAgentRuntimeLabel.value,
-    nativeDesktopBridgeAvailable.value
-      ? nativeDesktopRuntimeLabel.value
-      : "桌面端 Runner 未接入",
-    workspacePathResolved.value,
-  ].filter(Boolean);
-  return parts.join(" · ") || externalAgentStatusSummary.value;
+  return "对话由桌面端本地 liuAgent Runtime 执行；后端只负责配置、记录和同步。";
 });
 const executionRuntimeActionLabel = computed(() => {
   if (!hasSelectedProject.value) return "选择项目";
   if (!isChatSettingsDisplayReady.value) return "加载中";
-  if (isLocalRunnerSurface.value) return "本地设置";
-  if (!isExternalAgentMode.value) return "切换执行方式";
-  if (externalAgentDesktopRunnerRequired.value) return "打开桌面端";
-  if (!workspacePathConfigured.value || workspacePathDirty.value)
-    return "配置工作区";
-  return nativeDesktopBridgeAvailable.value ? "检查环境" : "环境设置";
+  return "本地设置";
 });
 const composerExecutionStatusTagType = computed(() => {
   const tone = String(executionRuntimeToneClass.value || "").trim();
@@ -4336,32 +4265,14 @@ const composerExecutionStatusTagType = computed(() => {
 });
 const composerExecutionStatusLabel = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "加载中";
-  if (isLocalRunnerSurface.value) {
-    if (!nativeDesktopBridgeAvailable.value || !projectWorkspaceResolved.value) {
-      return "未就绪";
-    }
-    return "本地运行";
-  }
-  if (!isExternalAgentMode.value) return "系统对话";
-  if (externalAgentUnavailable.value) return "不可用";
-  if (externalAgentDesktopRunnerRequired.value || !workspacePathConfigured.value) {
+  if (!nativeDesktopBridgeAvailable.value || !projectWorkspaceResolved.value) {
     return "未就绪";
   }
-  if (workspacePathDirty.value) return "待保存";
-  if (externalAgentWarmupLoading.value || nativeExternalAgentRunning.value) {
-    return "运行中";
-  }
-  if (externalAgentInfo.value.ready || nativeRunnerSelfCheckPassed.value) {
-    return "已就绪";
-  }
-  return "待检查";
+  return "本地运行";
 });
 const composerExecutionRuntimeLocation = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "读取配置";
-  if (isLocalRunnerSurface.value) return "桌面端本地";
-  if (!isExternalAgentMode.value) return "服务端模型";
-  if (nativeDesktopBridgeAvailable.value) return "桌面端原生桥";
-  return "需桌面端 Runner";
+  return "桌面端本地";
 });
 const composerExecutionSummaryItems = computed(() => [
   {
@@ -4370,24 +4281,14 @@ const composerExecutionSummaryItems = computed(() => [
   },
   {
     label: "执行器",
-    value: isLocalRunnerSurface.value
-      ? "liuAgent Runtime"
-      : isExternalAgentMode.value
-      ? externalAgentDisplayLabel.value
-      : currentModelSummary.value || "系统模型",
+    value: "liuAgent Runtime",
   },
   {
     label: "工作区",
     value: executionWorkspaceLabel.value,
   },
 ]);
-const composerExecutionDetailAvailable = computed(
-  () =>
-    isLocalRunnerSurface.value ||
-    hasChatTaskTree.value ||
-    terminalPanelLineCount.value > 0 ||
-    Boolean(terminalApprovalPrompt.value),
-);
+const composerExecutionDetailAvailable = computed(() => true);
 const nativeRunnerSelfCheckPassed = computed(() => {
   const results = nativeRunnerSelfCheckResults.value || [];
   return (
@@ -4422,52 +4323,16 @@ const externalAgentUnavailable = computed(() => {
 const executionRuntimeToneClass = computed(() => {
   if (!hasSelectedProject.value) return "is-muted";
   if (!isChatSettingsDisplayReady.value) return "is-muted";
-  if (isLocalRunnerSurface.value) {
-    if (!nativeDesktopBridgeAvailable.value || !projectWorkspaceResolved.value) {
-      return "is-warning";
-    }
-    return "is-ready";
-  }
-  if (!isExternalAgentMode.value) return "is-system";
-  if (externalAgentUnavailable.value) return "is-danger";
-  if (
-    (externalAgentDesktopRunnerRequired.value &&
-      !usingNativeDesktopRuntime.value) ||
-    !workspacePathConfigured.value ||
-    workspacePathDirty.value
-  ) {
+  if (!nativeDesktopBridgeAvailable.value || !projectWorkspaceResolved.value) {
     return "is-warning";
   }
-  if (externalAgentWarmupLoading.value) return "is-running";
-  if (externalAgentInfo.value.ready) return "is-ready";
-  if (nativeDesktopBridgeAvailable.value && nativeRunnerSelfCheckPassed.value) {
-    return "is-ready";
-  }
-  return "is-pending";
+  return "is-ready";
 });
 const composerExecutionChipLabel = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "项目配置加载中";
-  if (isLocalRunnerSurface.value) {
-    if (!nativeDesktopBridgeAvailable.value) return "本地智能体 · 桌面端未接入";
-    if (!projectWorkspaceResolved.value) return "本地智能体 · 请选择工作区";
-    return "本地智能体 · 本机执行";
-  }
-  if (!isExternalAgentMode.value)
-    return `系统对话 · ${currentModelSummary.value}`;
-  if (externalAgentInfo.value.ready) {
-    return `${externalAgentDisplayLabel.value} · 本机就绪`;
-  }
-  if (nativeDesktopBridgeAvailable.value && nativeRunnerSelfCheckPassed.value) {
-    return `${externalAgentDisplayLabel.value} · 自检通过`;
-  }
-  if (nativeDesktopBridgeAvailable.value) return "桌面端原生桥已接入";
-  if (externalAgentDesktopRunnerRequired.value) return "Runner 未就绪";
-  if (!workspacePathConfigured.value) return "请选择工作区";
-  if (workspacePathDirty.value) return "工作区未保存";
-  if (externalAgentWarmupLoading.value) return "环境检查中";
-  if (externalAgentUnavailable.value)
-    return `${externalAgentDisplayLabel.value} 不可用`;
-  return "Runner 待检查";
+  if (!nativeDesktopBridgeAvailable.value) return "本地智能体 · 桌面端未接入";
+  if (!projectWorkspaceResolved.value) return "本地智能体 · 请选择工作区";
+  return "本地智能体 · 本机执行";
 });
 const executionTaskTreeTitle = computed(() =>
   clipText(
@@ -5175,7 +5040,7 @@ function buildExternalAgentStatusRefreshKey() {
   return JSON.stringify({
     projectId: String(selectedProjectId.value || "").trim(),
     chatMode: String(projectChatSettings.value.chat_mode || "").trim(),
-    surface: isLocalRunnerSurface.value ? "local-runner" : "main-chat",
+    surface: "local-runner",
     agentType: String(
       projectChatSettings.value.external_agent_type || "codex_cli",
     ).trim(),
@@ -5194,7 +5059,6 @@ async function refreshExternalAgentStatusSilently({ force = false } = {}) {
     return;
   }
   if (!selectedProjectId.value) return;
-  if (!isExternalAgentMode.value && !isLocalRunnerSurface.value) return;
   if (nativeRunnerSelfChecking.value || nativeExecutorDetecting.value) return;
   const refreshKey = buildExternalAgentStatusRefreshKey();
   if (!force && refreshKey && refreshKey === externalAgentStatusRefreshKey) {
@@ -7422,9 +7286,6 @@ async function logoutFromChat() {
 
 const localRunnerSummary = computed(() => {
   if (!showLocalRuntimeSettings) return "当前部署已隐藏本机控制项";
-  if (!isLocalRunnerSurface.value) {
-    return projectWorkspaceResolved.value ? "项目工作区可用" : "未配置工作区";
-  }
   if (!hasSelectedProject.value) return "待选择项目";
   if (!projectWorkspaceResolved.value) return "待配置工作区";
   return "系统模型 · 本机执行";
@@ -7613,6 +7474,28 @@ const currentModelTypeMeta = computed(
   () =>
     modelTypeMetaMap.value.get(currentModelType.value) ||
     modelTypeMetaMap.value.get(DEFAULT_MODEL_TYPE),
+);
+const currentModelAllowedFileTypes = computed(() =>
+  normalizeChatAllowedFileTypes(
+    currentModelTypeMeta.value?.project_chat_allowed_file_types,
+  ).map((item) => item.toLowerCase()),
+);
+const currentModelAttachmentMode = computed(() =>
+  normalizeAttachmentMode(currentModelTypeMeta.value?.attachment_mode),
+);
+const currentModelAttachmentSupported = computed(() =>
+  Boolean(
+    String(selectedProviderId.value || defaultProviderId.value || "").trim(),
+  ),
+);
+const currentModelAttachmentMaxFiles = computed(() =>
+  Number(currentModelTypeMeta.value?.attachment_max_files || 0) || 0,
+);
+const currentModelAttachmentMaxFileSizeMb = computed(() =>
+  Number(currentModelTypeMeta.value?.attachment_max_file_size_mb || 0) || 0,
+);
+const currentModelAttachmentModeLabel = computed(
+  () => ATTACHMENT_MODE_LABELS[currentModelAttachmentMode.value] || "",
 );
 const currentModelTypeLabel = computed(
   () =>
@@ -7886,149 +7769,30 @@ const groupedChatSessions = computed(() => {
     items,
   }));
 });
-const starterPrompts = computed(() => {
-  if (isLocalRunnerSurface.value) {
-    return [
-      "检查当前工作区状态并给出下一步",
-      "帮我执行一个需要本机环境的任务",
-      "用系统模型分析并调用本地工具处理",
-    ];
-  }
-  if (!hasSelectedProject.value && ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT) {
-    return [
-      "帮我梳理这个问题的思路",
-      "先给结论，再展开步骤",
-      "把我的想法优化成可执行方案",
-    ];
-  }
-  if (!hasAccessibleProjects.value || !hasSelectedProject.value) return [];
-  return [
-    "帮我分析这个项目的当前问题",
-    "先给一个实现方案",
-    "把需求拆成可执行步骤",
-  ];
-});
-const emptyStateTitle = computed(() => {
-  if (isLocalRunnerSurface.value) return "启动本地运行窗口";
-  if (!hasAccessibleProjects.value) return "暂无可访问项目";
-  if (!hasSelectedProject.value) {
-    return ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-      ? "开始一轮通用对话"
-      : "先选择一个项目";
-  }
-  return "开始一轮新的对话";
-});
-const emptyStateText = computed(() => {
-  if (isLocalRunnerSurface.value) {
-    return hasSelectedProject.value
-      ? "当前入口复用系统已配置的大模型 Provider，不使用 Ollama；需要执行命令、读写文件或调用飞书时，会通过本机运行环境和审批流程推进。"
-      : "选择项目后可带入项目工作区、员工、规则和工具；模型仍使用系统供应商配置，本地窗口只负责执行和权限边界。";
-  }
-  if (!hasAccessibleProjects.value) {
-    if (activeComposerAssistMeta.value?.id === "employee_create") {
-      return "当前没有可访问项目，但你仍然可以直接描述岗位职责，AI 会先帮你生成员工草稿，确认后即可创建到员工管理。";
-    }
-    return ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-      ? "当前账号还没有被分配任何项目，但你仍然可以直接进行通用对话；如果需要创建 AI 员工，也可以点击“创建员工”。"
-      : "当前账号还没有被分配任何项目。你仍然可以点击“创建员工”，先在这里生成并创建 AI 员工。";
-  }
-  if (!hasSelectedProject.value) {
-    return activeComposerAssistMeta.value?.id === "employee_create"
-      ? "当前将直接生成员工草稿，无需选择项目；确认后会直接创建到员工管理。"
-      : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-        ? "当前是通用对话模式。你可以直接聊天；如果需要项目上下文或项目员工，再从顶部选择项目。"
-        : "请先从顶部选择一个项目，再进行普通对话或上传附件。";
-  }
-  return "选择项目后，你可以直接提问、上传附件，或让系统基于项目上下文给方案与实现建议。";
-});
+const starterPrompts = computed(() => [
+  "检查当前工作区状态并给出下一步",
+  "帮我执行一个需要本机环境的任务",
+  "用系统模型分析并调用本地工具处理",
+]);
+const emptyStateTitle = computed(() => "启动本地运行窗口");
+const emptyStateText = computed(() =>
+  hasSelectedProject.value
+    ? "当前入口复用系统已配置的大模型 Provider，不使用 Ollama；需要执行命令、读写文件或调用飞书时，会通过本机运行环境和审批流程推进。"
+    : "选择项目后可带入项目工作区、员工、规则和工具；模型仍使用系统供应商配置，本地窗口只负责执行和权限边界。",
+);
 
 const composerPlaceholder = computed(() =>
   isTerminalInteractionMode.value
     ? "项目终端已连接，直接输入命令或交互内容，按 Enter 发送。"
     : currentChatSessionLocalLiuAgentWaitingPermission.value
       ? "请先处理输入框上方的本机操作授权；处理后系统会自动继续执行。"
-    : isLocalRunnerSurface.value
-      ? "输入需求，本地 liuAgent 会在桌面端调用模型并按模型结构化工具调用执行。"
-    : agentWorkflowState.value.phase === "waiting_user"
-      ? "请先在消息卡片完成确认或授权；完成后系统会自动继续执行。"
-      : agentWorkflowState.value.phase === "running"
-        ? "智能体正在执行；输入补充会排队，并在当前回合结束后自动合并。"
-        : agentWorkflowState.value.phase === "queued"
-          ? "已有补充排队，继续输入可追加更多上下文。"
-          : ["blocked", "failed"].includes(agentWorkflowState.value.phase)
-            ? "当前执行未完成，可补充处理意见后重新发送。"
-            : isAwaitingCardActionInteraction.value
-              ? "请点击消息卡片中的授权按钮；授权后 AI 会自动继续执行。"
-              : isAwaitingUserInteraction.value
-                ? "当前有交互等待处理，可补充下一条消息，按 Enter 发送。"
-                : !hasAccessibleProjects.value
-                  ? activeComposerAssistMeta.value?.id === "employee_create"
-                    ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
-                    : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-                      ? "当前没有可访问项目，也可以直接开始通用对话；如需创建员工，可点击上方“创建员工”。"
-                      : "当前没有可访问项目；如需创建员工，可先点击上方“创建员工”。"
-                  : !hasSelectedProject.value
-                    ? activeComposerAssistMeta.value?.id === "employee_create"
-                      ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
-                      : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-                        ? "直接输入问题开始通用对话；如需项目上下文，再从顶部选择项目。"
-                        : "请先从顶部选择项目；如需快速创建员工，也可直接点击“创建员工”。"
-                    : !isChatSettingsDisplayReady.value
-                      ? "正在加载项目配置，完成后即可发送。"
-                    : "输入你的问题，按 Enter 发送，Shift + Enter 换行。输入 / 可查看可用命令。",
+      : "输入需求，本地 liuAgent 会在桌面端调用模型并按模型结构化工具调用执行。",
 );
 const composerHintText = computed(() => {
   if (isTerminalInteractionMode.value) {
     return "当前主输入框已切换为项目终端输入，Enter 发送";
   }
-  if (isLocalRunnerSurface.value) {
-    return "本地运行：模型请求和工具执行在桌面端发起";
-  }
-  if (currentChatSessionLocalLiuAgentWaitingPermission.value) {
-    return "等待你处理本机授权，完成后自动继续";
-  }
-  if (agentWorkflowState.value.phase === "waiting_user") {
-    return "等待你在消息卡片确认，完成后自动继续";
-  }
-  if (agentWorkflowState.value.phase === "running") {
-    return "执行中，补充内容会自动排队";
-  }
-  if (agentWorkflowState.value.phase === "queued") {
-    return "补充已排队，等待当前回合结束";
-  }
-  if (agentWorkflowState.value.phase === "blocked") {
-    return "执行已阻断，请查看等待项";
-  }
-  if (agentWorkflowState.value.phase === "failed") {
-    return "执行失败，可补充修复要求后继续";
-  }
-  if (isAwaitingCardActionInteraction.value) {
-    return "等待授权，点击消息卡片按钮后自动继续";
-  }
-  if (isAwaitingUserInteraction.value) {
-    return "当前处于交互等待状态，可补充下一条消息";
-  }
-  if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
-    return "正在加载项目执行配置";
-  }
-  if (!hasAccessibleProjects.value) {
-    return activeComposerAssistMeta.value?.id === "employee_create"
-      ? "当前将直接生成员工草稿，无需选择项目"
-      : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-        ? "当前是通用对话"
-        : "暂无可访问项目";
-  }
-  if (!hasSelectedProject.value) {
-    return activeComposerAssistMeta.value?.id === "employee_create"
-      ? "当前将直接生成员工草稿，无需选择项目"
-      : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-        ? "当前是通用对话，Enter 发送"
-        : "请先选择项目";
-  }
-  if (activeComposerAssistMeta.value) {
-    return `${activeComposerAssistMeta.value.label} 已激活，Enter 发送`;
-  }
-  return "Enter 发送，Shift + Enter 换行，/ 查看命令";
+  return "本地运行：模型请求和工具执行在桌面端发起";
 });
 const shortThreadId = computed(() => {
   const value = String(externalAgentInfo.value.thread_id || "").trim();
@@ -9347,11 +9111,7 @@ const agentWorkflowState = computed(() => {
 });
 
 const showAgentWorkflowStatusStrip = computed(
-  () =>
-    !isLocalRunnerSurface.value &&
-    Boolean(String(selectedProjectId.value || "").trim()) &&
-    !isAwaitingCardActionInteraction.value &&
-    agentWorkflowState.value.phase !== "idle",
+  () => false,
 );
 
 const agentWorkflowMetaItems = computed(() => {
@@ -9447,30 +9207,12 @@ const workingStatusElapsedLabel = computed(
   () => `(${formatWorkingDuration(workingStatusElapsedSeconds.value)})`,
 );
 
-const workingStatusTitle = computed(() => {
-  if (isLocalRunnerSurface.value) {
-    return "本地智能体执行中";
-  }
-  if (backgroundTerminalCount.value > 0 && !chatLoading.value) {
-    return "Terminal running";
-  }
-  return "Working";
-});
+const workingStatusTitle = computed(() => "本地智能体执行中");
 
-const workingStatusMetaItems = computed(() => {
-  if (isLocalRunnerSurface.value) {
-    return ["本机模型/工具运行中", "等待结果返回"];
-  }
-  const items = ["esc to interrupt"];
-  const terminalCount = Number(backgroundTerminalCount.value || 0);
-  if (terminalCount > 0) {
-    items.push(
-      `${terminalCount} background terminal${terminalCount === 1 ? "" : "s"} running`,
-    );
-  }
-  items.push("/ps to view", "/stop to close");
-  return items;
-});
+const workingStatusMetaItems = computed(() => [
+  "本机模型/工具运行中",
+  "等待结果返回",
+]);
 
 function formatWorkingDuration(totalSeconds) {
   const seconds = Math.max(0, Number(totalSeconds || 0));
@@ -11581,6 +11323,25 @@ function effectiveToolSourceTagType(source) {
   );
 }
 
+const LEGACY_CHAT_ALLOWED_FILE_TYPE_KEY = buildFileTypeRuleKey(
+  LEGACY_CHAT_ALLOWED_FILE_TYPES,
+);
+
+function buildFileTypeRuleKey(values) {
+  return normalizeStringList(values || [], 40)
+    .map((item) => item.toLowerCase())
+    .sort()
+    .join("|");
+}
+
+function normalizeChatAllowedFileTypes(values) {
+  const normalized = normalizeStringList(values || [], 40);
+  if (buildFileTypeRuleKey(normalized) === LEGACY_CHAT_ALLOWED_FILE_TYPE_KEY) {
+    return [];
+  }
+  return normalized;
+}
+
 function normalizeProjectChatSettings(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const legacySelected = String(source.selected_employee_id || "").trim();
@@ -11662,10 +11423,7 @@ function normalizeProjectChatSettings(raw) {
     tool_priority: normalizeStringList(
       source.tool_priority || CHAT_SETTINGS_DEFAULTS.tool_priority,
     ),
-    allowed_file_types: normalizeStringList(
-      source.allowed_file_types || CHAT_SETTINGS_DEFAULTS.allowed_file_types,
-      40,
-    ),
+    allowed_file_types: normalizeChatAllowedFileTypes(source.allowed_file_types),
   };
 }
 
@@ -11736,14 +11494,44 @@ const effectiveUploadLimit = computed(() => {
   const systemLimit = Number(
     maxUploadLimit.value || CHAT_SETTINGS_DEFAULTS.upload_file_limit,
   );
-  return Math.max(1, Math.min(projectLimit, systemLimit));
+  let limit = Math.max(1, Math.min(projectLimit, systemLimit));
+  const modelMaxFiles = currentModelAttachmentMaxFiles.value;
+  if (currentModelAttachmentSupported.value && modelMaxFiles > 0) {
+    limit = Math.min(limit, modelMaxFiles);
+  }
+  return limit;
 });
 
-const maxFileSizeMb = computed(() =>
-  Number(
+const maxFileSizeMb = computed(() => {
+  let limit = Number(
     projectChatSettings.value.max_file_size_mb ||
       CHAT_SETTINGS_DEFAULTS.max_file_size_mb,
-  ),
+  );
+  const modelMaxSize = currentModelAttachmentMaxFileSizeMb.value;
+  if (currentModelAttachmentSupported.value && modelMaxSize > 0) {
+    limit = Math.min(limit, modelMaxSize);
+  }
+  return limit;
+});
+
+watch(
+  () => currentModelAttachmentSupported.value,
+  (supported, prevSupported) => {
+    if (prevSupported && !supported && uploadFiles.value.length) {
+      uploadFiles.value = [];
+      ElMessage.warning("当前模型不支持附件输入，已清空待发送附件");
+    }
+  },
+);
+
+watch(
+  () => effectiveUploadLimit.value,
+  (limit) => {
+    if (uploadFiles.value.length > limit) {
+      uploadFiles.value = uploadFiles.value.slice(0, limit);
+      ElMessage.warning(`当前模型最多支持 ${limit} 个附件，已截断多余附件`);
+    }
+  },
 );
 
 const historyLimit = computed(() =>
@@ -11768,11 +11556,39 @@ const docMaxCharsTotal = computed(() =>
 );
 
 const allowedFileTypes = computed(() =>
-  normalizeStringList(
-    projectChatSettings.value.allowed_file_types ||
-      CHAT_SETTINGS_DEFAULTS.allowed_file_types,
-    40,
+  normalizeChatAllowedFileTypes(
+    projectChatSettings.value.allowed_file_types,
   ).map((item) => item.toLowerCase()),
+);
+
+const effectiveAllowedFileTypes = computed(() => {
+  const modelRules = currentModelAllowedFileTypes.value;
+  const projectRules = allowedFileTypes.value;
+  if (modelRules.length && projectRules.length) {
+    const modelRuleSet = new Set(modelRules);
+    return projectRules.filter((item) => modelRuleSet.has(item));
+  }
+  if (modelRules.length) return modelRules;
+  return projectRules;
+});
+
+const uploadAccept = computed(() =>
+  effectiveAllowedFileTypes.value.length
+    ? effectiveAllowedFileTypes.value.join(",")
+    : "",
+);
+
+const effectiveUploadAllowedFileTypes = computed(() =>
+  effectiveAllowedFileTypes.value,
+);
+
+const hasUploadingAttachments = computed(() =>
+  uploadFiles.value.some(
+    (item) =>
+      ["uploading", "error"].includes(
+        String(item?.uploadStatus || "").trim(),
+      ),
+  ),
 );
 
 const canSend = computed(() => {
@@ -11785,6 +11601,9 @@ const canSend = computed(() => {
     return false;
   }
   if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
+    return false;
+  }
+  if (hasUploadingAttachments.value) {
     return false;
   }
   if (
@@ -18565,6 +18384,14 @@ function normalizeInlineEditingDraft() {
   return String(inlineEditingDraft.value || "").trim();
 }
 
+function applyReplaySourceTruncateLocally(source) {
+  if (!source) return;
+  const sourceIndex = Number(source.index);
+  if (!Number.isInteger(sourceIndex) || sourceIndex < 0) return;
+  messages.value = messages.value.slice(0, sourceIndex);
+  chatHistoryLoadedCount.value = messages.value.length;
+}
+
 async function truncateConversationFromSource(source) {
   if (!source) return;
   const projectId = String(selectedProjectId.value || "").trim();
@@ -18574,18 +18401,27 @@ async function truncateConversationFromSource(source) {
     if (!messageId) {
       throw new Error("当前消息尚未保存完成，请稍后再试");
     }
-    await api.post(
-      `/projects/${encodeURIComponent(projectId)}/chat/history/truncate`,
-      {
-        chat_session_id: chatSessionId,
-        message_id: messageId,
-        fallback_user_content: String(source.item?.content || "").trim(),
-        fallback_user_turn_index: countUserMessagesBefore(source.index),
-      },
-    );
+    try {
+      await api.post(
+        `/projects/${encodeURIComponent(projectId)}/chat/history/truncate`,
+        {
+          chat_session_id: chatSessionId,
+          message_id: messageId,
+          fallback_user_content: String(source.item?.content || "").trim(),
+          fallback_user_turn_index: countUserMessagesBefore(source.index),
+        },
+      );
+    } catch (err) {
+      if (!isChatHistoryTruncateNotFound(err)) {
+        throw err;
+      }
+      applyReplaySourceTruncateLocally(source);
+      clearPersistedChatRuntime(projectId, chatSessionId);
+      rememberCurrentChatSessionMessages();
+      return;
+    }
   }
-  messages.value = messages.value.slice(0, source.index);
-  chatHistoryLoadedCount.value = messages.value.length;
+  applyReplaySourceTruncateLocally(source);
 }
 
 async function deleteMessageAt(messageIndex) {
@@ -20162,8 +19998,12 @@ function applyStarterPrompt(prompt) {
 function handleFileChange(file) {
   const raw = file.raw;
   if (!raw) return;
+  if (!currentModelAttachmentSupported.value) {
+    ElMessage.error("当前模型不支持附件输入，请切换模型或粘贴文本内容");
+    return;
+  }
   const isImage = isImageFile(raw);
-  if (!isAllowedFileType(raw, allowedFileTypes.value)) {
+  if (!isAllowedFileType(raw, effectiveUploadAllowedFileTypes.value)) {
     ElMessage.error("文件类型不在当前项目对话设置允许范围内");
     return;
   }
@@ -20184,8 +20024,135 @@ function handleFileChange(file) {
     file.url = "";
     file.kind = "document";
   }
+  file.attachmentId = createLocalAttachmentId(uploadFiles.value.length);
+  file.sizeLabel = raw.size >= 1024 * 1024
+    ? `${(raw.size / 1024 / 1024).toFixed(1)}MB`
+    : `${(raw.size / 1024).toFixed(0)}KB`;
+  file.processingLabel = resolveUploadProcessingLabel(file.kind);
+  file.providerFileId = "";
+  file.uploadStatus = shouldAttemptProviderFileUpload() ? "uploading" : "ready";
+  file.uploadError = "";
+  file.rawFile = raw;
   uploadFiles.value.push(file);
   rememberCurrentChatSessionComposerState();
+  if (file.uploadStatus === "uploading") {
+    void uploadFileToProvider(file, raw);
+  } else {
+    ElMessage.success(`已添加附件：${file.name || raw.name}（${file.sizeLabel}）`);
+  }
+}
+
+function resolveUploadProcessingLabel(kind) {
+  if (shouldAttemptProviderFileUpload()) return "将上传给模型供应商";
+  const mode = currentModelAttachmentMode.value;
+  const isImage = String(kind || "").toLowerCase() === "image";
+  if (mode === "inline_image") {
+    return isImage ? "将作为图片输入" : "将本地解析为文本";
+  }
+  if (mode === "retrieval") return "将分块检索";
+  return "将本地解析为文本";
+}
+
+function shouldAttemptProviderFileUpload() {
+  return (
+    currentModelAttachmentMode.value === "provider_file" &&
+    Boolean(
+      String(selectedProviderId.value || defaultProviderId.value || "").trim(),
+    )
+  );
+}
+
+function resolveProviderFilePurpose(kind) {
+  return String(kind || "").toLowerCase() === "image"
+    ? "vision"
+    : "file-extract";
+}
+
+async function uploadFileToProvider(fileObj, rawFile) {
+  const providerId = String(
+    selectedProviderId.value || defaultProviderId.value || "",
+  ).trim();
+  const purpose = resolveProviderFilePurpose(fileObj?.kind);
+  try {
+    nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
+    if (!nativeDesktopBridgeAvailable.value) {
+      throw new Error("桌面端原生桥未接入，无法上传给模型供应商");
+    }
+    const result = await uploadFileToProviderWithNativeRuntime(
+      fileObj,
+      rawFile,
+      providerId,
+      purpose,
+    );
+    const providerFileId = String(
+      result?.providerFileId ||
+        result?.provider_file_id ||
+        result?.fileId ||
+        result?.file_id ||
+        result?.id ||
+        "",
+    ).trim();
+    if (!providerFileId) {
+      throw new Error("供应商上传成功但未返回文件 ID");
+    }
+    if (!uploadFiles.value.includes(fileObj)) return;
+    fileObj.providerFileId = providerFileId;
+    fileObj.uploadStatus = "ready";
+    fileObj.uploadError = "";
+    fileObj.processingLabel = `供应商文件：${providerFileId}`;
+    rememberCurrentChatSessionComposerState();
+    ElMessage.success(
+      `已上传给模型供应商：${fileObj.name || rawFile?.name || "附件"}`,
+    );
+  } catch (err) {
+    if (!uploadFiles.value.includes(fileObj)) return;
+    fileObj.providerFileId = "";
+    fileObj.uploadStatus = "error";
+    fileObj.uploadError = String(
+      err?.message || err || "供应商文件上传失败",
+    ).trim();
+    fileObj.processingLabel = "供应商上传失败";
+    rememberCurrentChatSessionComposerState();
+    showManualCloseErrorDialog(
+      "供应商文件上传失败",
+      fileObj.uploadError || "供应商文件上传失败",
+      [
+        `providerId=${providerId || "-"}`,
+        `filename=${String(rawFile?.name || fileObj?.name || "-").trim()}`,
+        `purpose=${purpose || "-"}`,
+        fileObj.uploadError || "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+}
+
+async function uploadFileToProviderWithNativeRuntime(
+  fileObj,
+  rawFile,
+  providerId,
+  purpose,
+) {
+  const runtime = await fetchLocalLiuAgentDesktopModelRuntime(providerId);
+  const result = await uploadNativeLiuAgentProviderFile({
+    providerId,
+    baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
+    apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
+    filename: String(rawFile?.name || fileObj?.name || "upload.bin").trim(),
+    mimeType: String(rawFile?.type || "").trim(),
+    purpose,
+    fileBytes: await readFileAsByteArray(rawFile),
+    timeoutMs: 120000,
+  });
+  if (!result?.ok) {
+    throw new Error(
+      String(
+        result?.error || result?.message || "桌面端模型文件上传失败",
+      ).trim(),
+    );
+  }
+  return result;
 }
 
 function handleDragOver() {
@@ -20469,6 +20436,104 @@ async function buildFollowupFilePayload(queueItems = []) {
   };
 }
 
+function createLocalAttachmentId(index) {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `att_${crypto.randomUUID()}`;
+  }
+  return `att_${Date.now()}_${index}`;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function readFileAsByteArray(file) {
+  if (!file || typeof file.arrayBuffer !== "function") {
+    throw new Error("当前附件无法读取为二进制内容");
+  }
+  return Array.from(new Uint8Array(await file.arrayBuffer()));
+}
+
+async function buildLocalLiuAgentAttachments(uploadItems = []) {
+  const normalizedItems = Array.isArray(uploadItems)
+    ? uploadItems.filter(Boolean)
+    : [];
+  let remainingTextBudget = Math.max(0, Number(docMaxCharsTotal.value || 0));
+  const modelMode = currentModelAttachmentMode.value;
+  const attachments = [];
+  for (const [index, item] of normalizedItems.entries()) {
+    const rawFile = item?.raw || item;
+    const isImage = isImageFile(rawFile);
+    const providerFileId = String(item?.providerFileId || "").trim();
+    const routingMode = resolveLocalRunnerAttachmentRoutingMode(
+      modelMode,
+      isImage,
+    );
+    const base = {
+      attachmentId:
+        String(item?.attachmentId || "").trim() ||
+        createLocalAttachmentId(index),
+      name: String(rawFile?.name || item?.name || `attachment-${index + 1}`).trim(),
+      mimeType: String(rawFile?.type || "").trim(),
+      size: Number(rawFile?.size || 0),
+      kind: isImage ? "image" : "file",
+      routingMode,
+      extractionStatus: "metadata_only",
+      dataUrl: "",
+      extractedText: "",
+      providerFileId: "",
+      error: "",
+    };
+    if (
+      providerFileId &&
+      String(item?.uploadStatus || "").trim() === "ready"
+    ) {
+      attachments.push({
+        ...base,
+        routingMode: "provider_file",
+        extractionStatus: "provider_file_ready",
+        providerFileId,
+      });
+      continue;
+    }
+    try {
+      if (isImage && routingMode === "inline_image") {
+        base.dataUrl = await readFileAsDataUrl(rawFile);
+        base.extractionStatus = base.dataUrl ? "image_data_url" : "metadata_only";
+      } else if (remainingTextBudget > 0) {
+        const extracted = String(await extractTextFromFile(rawFile) || "").trim();
+        if (extracted) {
+          const perFileLimit = Math.min(
+            Math.max(0, Number(docMaxCharsPerFile.value || 0)),
+            remainingTextBudget,
+          );
+          base.extractedText = clipText(extracted, perFileLimit);
+          remainingTextBudget -= base.extractedText.length;
+          base.kind = "document";
+          base.extractionStatus = "text_extracted";
+        }
+      }
+    } catch (err) {
+      base.extractionStatus = "error";
+      base.error = String(err?.message || err || "附件读取失败").trim();
+    }
+    attachments.push(base);
+  }
+  return attachments;
+}
+
+function resolveLocalRunnerAttachmentRoutingMode(modelMode, isImage) {
+  const mode = String(modelMode || "").trim();
+  if (mode === "inline_image") return isImage ? "inline_image" : "local_extract";
+  if (mode === "provider_file") return isImage ? "inline_image" : "local_extract";
+  return "local_extract";
+}
+
 function buildMergedFollowupPrompt(queueItems = [], docsText = "") {
   const followupBlocks = (Array.isArray(queueItems) ? queueItems : [])
     .map((item, index) => {
@@ -20602,6 +20667,9 @@ function toHistoryRows(sourceMessages, limit = 20) {
         .trim()
         .toLowerCase(),
       content: String(item.content || "").trim(),
+      reasoningContent: String(
+        item.reasoningContent || item.reasoning_content || "",
+      ).trim(),
     }))
     .filter(
       (item) =>
@@ -24117,6 +24185,7 @@ async function sendLocalLiuAgentChatRequest({
   historyRows = [],
   displayUserMessageContent = "",
   sourceContext = {},
+  attachments = [],
 }) {
   const workspacePath = localLiuAgentWorkspacePath();
   if (!hasNativeDesktopBridge()) {
@@ -24172,6 +24241,7 @@ async function sendLocalLiuAgentChatRequest({
     temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
     maxTokens: Number(chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens),
     modelRuntime,
+    attachments,
   };
   const activeRun = {
     chatSessionId: activeChatSessionId,
@@ -24279,6 +24349,23 @@ async function sendLocalLiuAgentChatRequest({
   if (!assistantMessage.content && !ok) {
     assistantMessage.content = `执行失败：${String(result?.error || "桌面端本地对话失败").trim()}`;
   }
+  if (!ok) {
+    const runtimeError = String(
+      result?.error || result?.summary || assistantMessage.content || "桌面端本地对话失败",
+    ).trim();
+    showManualCloseErrorDialog(
+      runtimeError.includes("model gateway returned HTTP")
+        ? "模型网关请求失败"
+        : "桌面本地 Agent Runtime 失败",
+      runtimeError,
+      [
+        `providerId=${String(localChatPayload?.providerId || "-").trim() || "-"}`,
+        `modelName=${String(localChatPayload?.modelName || "-").trim() || "-"}`,
+        `workspacePath=${workspacePath || "-"}`,
+        runtimeError,
+      ].join("\n"),
+    );
+  }
   assistantMessage.time = nowText();
   const operations = Array.isArray(result?.operations) ? result.operations : [];
   for (const operation of operations) {
@@ -24374,10 +24461,28 @@ async function buildLocalLiuAgentModelRuntime() {
     selectedModelName.value || defaultModelName.value || "",
   ).trim();
   const runtime = await fetchLocalLiuAgentDesktopModelRuntime(providerId);
+  const resolvedModelName = String(
+    modelName ||
+      runtime.model_name ||
+      runtime.modelName ||
+      runtime.default_model ||
+      runtime.defaultModel ||
+      "",
+  ).trim();
+  if (!resolvedModelName) {
+    throw new Error(
+      [
+        "当前模型供应商没有可用模型名，已停止发送模型网关请求。",
+        `providerId=${providerId || "-"}`,
+        `selectedModel=${modelName || "-"}`,
+        `runtimeDefaultModel=${String(runtime.default_model || runtime.defaultModel || "-").trim() || "-"}`,
+      ].join("\n"),
+    );
+  }
   return {
     mode: "direct-openai-compatible",
     providerId,
-    modelName: modelName || String(runtime.default_model || "").trim(),
+    modelName: resolvedModelName,
     baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
     apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
     temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
@@ -24436,6 +24541,36 @@ function cancelPendingChatRequestFast(requestId, pending) {
   resolvePendingRequestFast(requestId, pending, row?.content || message);
   scrollToBottom();
   return true;
+}
+
+function showManualCloseErrorDialog(title, message, detail = "") {
+  const normalizedTitle = String(title || "请求失败").trim();
+  const normalizedMessage = String(message || "操作失败").trim();
+  const normalizedDetail = String(detail || "").trim();
+  void ElMessageBox.alert(
+    h("div", { class: "manual-close-error-dialog" }, [
+      h("p", { style: "margin:0 0 10px;font-weight:600;" }, normalizedMessage),
+      normalizedDetail
+        ? h(
+            "pre",
+            {
+              style:
+                "max-height:360px;overflow:auto;margin:0;padding:10px;border-radius:6px;background:#0f172a;color:#e2e8f0;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.55;",
+            },
+            normalizedDetail,
+          )
+        : null,
+    ]),
+    normalizedTitle,
+    {
+      type: "error",
+      showClose: true,
+      showConfirmButton: false,
+      closeOnClickModal: false,
+      closeOnPressEscape: false,
+      customClass: "manual-close-error-message-box",
+    },
+  );
 }
 
 function sendCancelRequestNow(requestId) {
@@ -24753,6 +24888,10 @@ function explainBlockedSend() {
     ElMessage.warning("项目配置仍在加载，请稍后再发送");
     return;
   }
+  if (hasUploadingAttachments.value) {
+    ElMessage.warning("附件上传未完成或失败，请删除后重试");
+    return;
+  }
   if (
     isExternalAgentMode.value &&
     isNativeExternalAgentRunningForChatSession(currentChatSessionId.value)
@@ -24845,11 +24984,6 @@ async function doSend(options = {}) {
   }
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   const files = uploadFiles.value.map((item) => item.raw).filter(Boolean);
-  const imageFiles = files.filter((file) => isImageFile(file));
-
-  const activeSessionSourceContext = normalizeChatSourceContext(
-    currentChatSession.value || {},
-  );
   const historyRows = toHistoryRows(messages.value, historyLimit.value);
   const imageUrls = uploadFiles.value
     .filter((item) => item.kind === "image")
@@ -24859,33 +24993,10 @@ async function doSend(options = {}) {
     .map((file) => String(file?.name || "").trim())
     .filter(Boolean);
 
-  const readAsBase64 = (f) =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(f);
-    });
-  const shouldPrepareRemoteAttachmentPayload = !isLocalRunnerSurface.value;
-  const base64Images = shouldPrepareRemoteAttachmentPayload
-    ? await Promise.all(imageFiles.map(readAsBase64))
-    : [];
+  const localLiuAgentAttachments =
+    await buildLocalLiuAgentAttachments(uploadFiles.value);
 
   let docsText = "";
-  const docFiles = files.filter((file) => !isImageFile(file));
-  if (shouldPrepareRemoteAttachmentPayload && docFiles.length > 0) {
-    for (const file of docFiles) {
-      const content = await extractTextFromFile(file);
-      if (content) {
-        const clipped = clipText(content, docMaxCharsPerFile.value);
-        docsText += `\n\n【文档附件：${file.name}】\n${clipped}`;
-      }
-      if (docsText.length >= docMaxCharsTotal.value) {
-        docsText = clipText(docsText, docMaxCharsTotal.value);
-        break;
-      }
-    }
-  }
 
   const slashCommand = resolveSlashCommand(text);
   const slashAssistAction =
@@ -25078,146 +25189,87 @@ async function doSend(options = {}) {
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
 
-  const assistantIndex = messages.value.length - 1;
   chatLoading.value = true;
   startWorkingStatusTimer(assistantMessage.id, activeChatSessionId);
   resetDraft();
   scrollToBottom();
 
   let requestCancelled = false;
-  let localLiuAgentHandled = false;
   try {
-    if (isLocalRunnerSurface.value) {
-      await sendLocalLiuAgentChatRequest({
-        projectId: selectedProjectId.value,
-        activeChatSessionId,
-        userMessage,
-        assistantMessage,
-        finalUserPrompt,
-        historyRows,
-        displayUserMessageContent,
-        sourceContext: {
-          chat_mode: "system",
-          surface: chatSurface.value,
-          slash_command: slashCommand?.entry?.kind || "",
-          attachment_names: attachmentNames,
-          employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
-        },
-      });
-      localLiuAgentHandled = true;
-    } else {
-      const sendResult = await sendProjectChatRequest({
-        projectId: selectedProjectId.value,
-        activeChatSessionId,
-        userMessageId: userMessage.id,
-        assistantMessage,
-        assistantIndex,
-        finalUserPrompt,
-        activeSessionSourceContext,
-        attachmentNames,
-        base64Images,
-        historyRows,
-        effectiveAutoUseTools,
-        effectiveToolPriority,
-        enabledProjectToolNames: effectiveSelectedProjectToolNames,
-        assistAction,
-        assistToolNames,
-        onAfterDone:
-          assistAction?.id === "employee_create"
-            ? async () => {
-                await autoCreateEmployeeFromDraftMessage(
-                  messages.value[assistantIndex],
-                  {
-                    resetAssist: true,
-                  },
-                );
-              }
-            : null,
-      });
-      requestCancelled = Boolean(sendResult?.cancelled);
-      if (requestCancelled) return;
-    }
-    const finalAssistantContent = String(assistantMessage.content || "").trim();
-    if (!localLiuAgentHandled) {
-      await upsertProjectChatRequirementRecord({
-        chatSessionId: activeChatSessionId,
-        status: "done",
-        rootGoal: displayUserMessageContent,
-        messageId: userMessage.id,
-        assistantMessageId: assistantMessage.id,
-        resultSummary: finalAssistantContent,
-        verificationResult: "AI 对话已返回最终回答并写入当前聊天。",
-        source: "project_chat",
-        sourceContext: {
-          chat_mode: "system",
-          surface: chatSurface.value,
-          slash_command: slashCommand?.entry?.kind || "",
-          attachment_names: attachmentNames,
-          employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
-        },
-      });
-    }
+    await sendLocalLiuAgentChatRequest({
+      projectId: selectedProjectId.value,
+      activeChatSessionId,
+      userMessage,
+      assistantMessage,
+      finalUserPrompt,
+      historyRows,
+      displayUserMessageContent,
+      attachments: localLiuAgentAttachments,
+      sourceContext: {
+        chat_mode: "system",
+        surface: chatSurface.value,
+        slash_command: slashCommand?.entry?.kind || "",
+        attachment_names: attachmentNames,
+        attachment_count: localLiuAgentAttachments.length,
+        attachment_processing: localLiuAgentAttachments.map((item) => ({
+          name: item.name,
+          kind: item.kind,
+          status: item.extractionStatus,
+        })),
+        employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
+      },
+    });
   } catch (err) {
     const errorMessage = String(err?.message || "未知错误").trim();
-    if (isLocalRunnerSurface.value) {
-      assistantMessage.content = `执行失败：${errorMessage}`;
-      assistantMessage.time = nowText();
-      upsertMessageOperation(assistantMessage, {
-        operationId: `local-agent:${assistantMessage.id}`,
-        kind: "request",
-        title: "桌面本地 Agent Runtime",
-        summary: "本地会话失败",
-        detail: errorMessage,
-        phase: "failed",
-        actionType: "none",
-        meta: {
-          local_liuagent_operation: "true",
-          source: "tauri_liuagent_local_chat",
-          chat_session_id: activeChatSessionId,
-          cwd: localLiuAgentWorkspacePath(),
-        },
-      });
-      appendMessageProcessLog(assistantMessage, {
-        text: errorMessage,
-        level: "error",
-        autoExpand: true,
-      });
-      void upsertProjectChatRequirementRecord({
-        chatSessionId: activeChatSessionId,
-        status: "blocked",
-        rootGoal: displayUserMessageContent,
-        messageId: userMessage.id,
-        assistantMessageId: assistantMessage.id,
-        resultSummary: assistantMessage.content,
-        verificationResult: errorMessage || "桌面端本地 liuAgent 执行失败。",
-        source: "desktop_local_agent",
-        sourceContext: {
-          chat_mode: "system",
-          surface: chatSurface.value,
-          runtime: "tauri",
-          workspace_path: localLiuAgentWorkspacePath(),
-          error: err?.detail || errorMessage,
-        },
-      });
-    } else {
-      assistantMessage.content = `请求失败：${errorMessage}`;
-      void upsertProjectChatRequirementRecord({
-        chatSessionId: activeChatSessionId,
-        status: "blocked",
-        rootGoal: displayUserMessageContent,
-        messageId: userMessage.id,
-        assistantMessageId: assistantMessage.id,
-        resultSummary: assistantMessage.content,
-        verificationResult: errorMessage || "AI 对话请求失败。",
-        source: "project_chat",
-        sourceContext: {
-          chat_mode: "system",
-          surface: chatSurface.value,
-          error: err?.detail || errorMessage,
-        },
-      });
-      ElMessage.error(errorMessage || "对话失败");
-    }
+    showManualCloseErrorDialog(
+      "桌面本地 Agent Runtime 启动失败",
+      errorMessage,
+      [
+        `providerId=${String(selectedProviderId.value || defaultProviderId.value || "-").trim() || "-"}`,
+        `modelName=${String(selectedModelName.value || defaultModelName.value || "-").trim() || "-"}`,
+        `workspacePath=${localLiuAgentWorkspacePath() || "-"}`,
+        errorMessage,
+      ].join("\n"),
+    );
+    assistantMessage.content = `执行失败：${errorMessage}`;
+    assistantMessage.time = nowText();
+    upsertMessageOperation(assistantMessage, {
+      operationId: `local-agent:${assistantMessage.id}`,
+      kind: "request",
+      title: "桌面本地 Agent Runtime",
+      summary: "本地会话失败",
+      detail: errorMessage,
+      phase: "failed",
+      actionType: "none",
+      meta: {
+        local_liuagent_operation: "true",
+        source: "tauri_liuagent_local_chat",
+        chat_session_id: activeChatSessionId,
+        cwd: localLiuAgentWorkspacePath(),
+      },
+    });
+    appendMessageProcessLog(assistantMessage, {
+      text: errorMessage,
+      level: "error",
+      autoExpand: true,
+    });
+    void upsertProjectChatRequirementRecord({
+      chatSessionId: activeChatSessionId,
+      status: "blocked",
+      rootGoal: displayUserMessageContent,
+      messageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      resultSummary: assistantMessage.content,
+      verificationResult: errorMessage || "桌面端本地 liuAgent 执行失败。",
+      source: "desktop_local_agent",
+      sourceContext: {
+        chat_mode: "system",
+        surface: chatSurface.value,
+        runtime: "tauri",
+        workspace_path: localLiuAgentWorkspacePath(),
+        error: err?.detail || errorMessage,
+      },
+    });
   } finally {
     syncChatLoadingWithCurrentSession();
     singleRoundAnswerOnly.value = false;
@@ -25303,14 +25355,12 @@ watch(
     String(workspacePathDraftNormalized.value || "").trim(),
     String(projectWorkspaceResolved.value || "").trim(),
     nativeDesktopBridgeAvailable.value ? "native" : "web",
-    isLocalRunnerSurface.value ? "local-runner" : "main-chat",
+    "local-runner",
   ],
   () => {
     if (projectSettingsHydrating.value) return;
     scheduleExternalAgentStatusRefresh();
-    if (isLocalRunnerSurface.value) {
-      void refreshNativeExternalAgentSessionRecords({ silent: true });
-    }
+    void refreshNativeExternalAgentSessionRecords({ silent: true });
   },
   { immediate: true },
 );
@@ -25338,12 +25388,11 @@ watch(
 
 watch(
   () => [
-    isLocalRunnerSurface.value ? "local-runner" : "main-chat",
+    "local-runner",
     String(selectedProjectId.value || "").trim(),
     String(projectWorkspaceResolved.value || "").trim(),
   ],
-  ([surface]) => {
-    if (surface !== "local-runner") return;
+  () => {
     void refreshNativeRunnerPermissionRecords();
     if (!canUseWorkspaceFiles.value) {
       resetWorkspaceFilePanel();

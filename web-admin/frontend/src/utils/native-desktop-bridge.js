@@ -23,6 +23,7 @@ const TAURI_COMMAND_NAMES = {
   listRunnerPermissionDecisions: "list_runner_permission_decisions",
   liuagentBuiltinToolDefinitions: "liuagent_builtin_tool_definitions",
   liuagentExecuteTool: "liuagent_execute_tool",
+  liuagentUploadProviderFile: "liuagent_upload_provider_file",
   liuagentStartLocalChat: "liuagent_start_local_chat",
   liuagentPrepareAgentInvocation: "liuagent_prepare_agent_invocation",
   liuagentRecoverRuntimeState: "liuagent_recover_runtime_state",
@@ -305,6 +306,11 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
           : request?.model_runtime && typeof request.model_runtime === "object"
             ? request.model_runtime
             : null,
+      attachments: Array.isArray(request?.attachments)
+        ? request.attachments
+        : Array.isArray(request?.localAttachments)
+          ? request.localAttachments
+          : [],
       permissionDecision:
         request?.permissionDecision && typeof request.permissionDecision === "object"
           ? request.permissionDecision
@@ -320,6 +326,47 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
         ok: false,
         errorCode: "native_bridge.unavailable",
         error: "native liuAgent local chat runtime is unavailable",
+      };
+}
+
+export async function uploadNativeLiuAgentProviderFile(request = {}) {
+  const baseUrl = String(request?.baseUrl || request?.base_url || "").trim();
+  const apiKey = String(request?.apiKey || request?.api_key || "").trim();
+  const filename = String(request?.filename || request?.name || "").trim();
+  const fileBytes = Array.isArray(request?.fileBytes)
+    ? request.fileBytes
+    : Array.isArray(request?.file_bytes)
+      ? request.file_bytes
+      : [];
+  if (!baseUrl || !apiKey || !filename || !fileBytes.length) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "baseUrl, apiKey, filename and fileBytes are required",
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentUploadProviderFile", {
+    request: {
+      providerId: String(request?.providerId || request?.provider_id || "").trim(),
+      baseUrl,
+      apiKey,
+      filename,
+      mimeType: String(request?.mimeType || request?.mime_type || "").trim(),
+      purpose: String(request?.purpose || "").trim(),
+      fileBytes,
+      timeoutMs:
+        Number.isFinite(Number(request?.timeoutMs || request?.timeout_ms)) &&
+        (request?.timeoutMs || request?.timeout_ms) !== ""
+          ? Number(request?.timeoutMs || request?.timeout_ms)
+          : null,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent provider file upload is unavailable",
       };
 }
 

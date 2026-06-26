@@ -1,5 +1,35 @@
 export const DEFAULT_MODEL_TYPE = 'text_generation'
 
+const MODEL_TYPE_ALIASES = {
+  chat: 'text_generation',
+  chat_completion: 'text_generation',
+  chat_completions: 'text_generation',
+  completion: 'text_generation',
+  text: 'text_generation',
+  text_generation: 'text_generation',
+  vision: 'multimodal_chat',
+  vision_chat: 'multimodal_chat',
+  multimodal: 'multimodal_chat',
+  multimodal_chat: 'multimodal_chat',
+  image: 'image_generation',
+  images: 'image_generation',
+  image_generation: 'image_generation',
+  video: 'video_generation',
+  videos: 'video_generation',
+  video_generation: 'video_generation',
+  speech: 'audio_generation',
+  tts: 'audio_generation',
+  text_to_speech: 'audio_generation',
+  audio: 'audio_generation',
+  audio_generation: 'audio_generation',
+  transcription: 'audio_transcription',
+  transcriptions: 'audio_transcription',
+  speech_to_text: 'audio_transcription',
+  stt: 'audio_transcription',
+  asr: 'audio_transcription',
+  audio_transcription: 'audio_transcription',
+}
+
 const CHAT_PARAMETER_FALLBACKS = {
   image_resolution: {
     dictionaryKey: 'llm_image_resolutions',
@@ -60,42 +90,87 @@ const CHAT_PARAMETER_FALLBACKS = {
   },
 }
 
+export const DEFAULT_ATTACHMENT_MODE = 'local_extract'
+export const UNSUPPORTED_ATTACHMENT_MODE = 'unsupported'
+
+export const ATTACHMENT_MODE_LABELS = {
+  provider_file: '供应商文件直传',
+  inline_image: '图片内联输入',
+  local_extract: '本地解析文本',
+  retrieval: '检索增强',
+  unsupported: '不支持附件',
+}
+
+export function normalizeAttachmentMode(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (ATTACHMENT_MODE_LABELS[normalized]) return normalized
+  return DEFAULT_ATTACHMENT_MODE
+}
+
+export function isAttachmentSupportedMode(mode) {
+  return normalizeAttachmentMode(mode) !== UNSUPPORTED_ATTACHMENT_MODE
+}
+
 export const FALLBACK_MODEL_TYPE_OPTIONS = [
   {
     id: 'text_generation',
-    label: '文本生成',
-    description: '适合问答、写作、代码与通用对话。',
+    label: 'Chat Completions / 文本对话',
+    description: '适合问答、写作、代码与通用对话；常见别名：chat_completion、text。',
     chat_parameter_mode: 'text',
+    project_chat_allowed_file_types: [],
+    attachment_mode: 'local_extract',
+    attachment_max_files: 6,
+    attachment_max_file_size_mb: 15,
   },
   {
     id: 'multimodal_chat',
-    label: '多模态对话',
-    description: '支持图文理解和通用对话，参数面板沿用文本模式。',
+    label: 'Vision Chat / 多模态对话',
+    description: '支持图文理解和通用对话；常见别名：vision_chat、multimodal。',
     chat_parameter_mode: 'text',
+    project_chat_allowed_file_types: [],
+    attachment_mode: 'inline_image',
+    attachment_max_files: 6,
+    attachment_max_file_size_mb: 15,
   },
   {
     id: 'image_generation',
-    label: '图片生成',
-    description: '适合根据提示词或参考图生成图片。',
+    label: 'Images / 图片生成',
+    description: '适合根据提示词或参考图生成图片；常见别名：image、images。',
     chat_parameter_mode: 'image',
+    project_chat_allowed_file_types: [],
+    attachment_mode: 'unsupported',
+    attachment_max_files: 0,
+    attachment_max_file_size_mb: 0,
   },
   {
     id: 'video_generation',
-    label: '视频生成',
-    description: '适合生成短视频或动画片段。',
+    label: 'Videos / 视频生成',
+    description: '适合生成短视频或动画片段；常见别名：video、videos。',
     chat_parameter_mode: 'video',
+    project_chat_allowed_file_types: [],
+    attachment_mode: 'unsupported',
+    attachment_max_files: 0,
+    attachment_max_file_size_mb: 0,
   },
   {
     id: 'audio_generation',
-    label: '音频生成',
-    description: '适合语音、配音或音频内容生成。',
+    label: 'Speech / 音频生成',
+    description: '适合语音、配音或音频内容生成；常见别名：speech、tts。',
     chat_parameter_mode: 'text',
+    project_chat_allowed_file_types: [],
+    attachment_mode: 'unsupported',
+    attachment_max_files: 0,
+    attachment_max_file_size_mb: 0,
   },
   {
     id: 'audio_transcription',
-    label: '音频转写',
-    description: '适合语音识别、语音转文本与实时转写场景。',
+    label: 'Transcriptions / 音频转写',
+    description: '适合语音识别、语音转文本与实时转写场景；常见别名：transcription、speech_to_text、asr。',
     chat_parameter_mode: 'text',
+    project_chat_allowed_file_types: [],
+    attachment_mode: 'unsupported',
+    attachment_max_files: 0,
+    attachment_max_file_size_mb: 0,
   },
 ]
 
@@ -184,9 +259,11 @@ export function formatChatParameterValueLabel(parameterKey, value, options = [])
 }
 
 export function normalizeModelType(value, options = FALLBACK_MODEL_TYPE_OPTIONS) {
-  const normalized = String(value || '').trim().toLowerCase()
+  const normalized = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_')
   const allowed = new Set((Array.isArray(options) ? options : []).map((item) => String(item?.id || '').trim()).filter(Boolean))
   if (allowed.has(normalized)) return normalized
+  const aliased = MODEL_TYPE_ALIASES[normalized]
+  if (allowed.has(aliased)) return aliased
   return DEFAULT_MODEL_TYPE
 }
 
@@ -201,6 +278,10 @@ export function buildModelTypeMetaMap(options = FALLBACK_MODEL_TYPE_OPTIONS) {
       label: String(item?.label || id).trim(),
       description: String(item?.description || '').trim(),
       chat_parameter_mode: String(item?.chat_parameter_mode || 'text').trim() || 'text',
+      project_chat_allowed_file_types: normalizeModelTypeFileTypes(item?.project_chat_allowed_file_types),
+      attachment_mode: normalizeAttachmentMode(item?.attachment_mode),
+      attachment_max_files: coercePositiveInt(item?.attachment_max_files, 6),
+      attachment_max_file_size_mb: coercePositiveInt(item?.attachment_max_file_size_mb, 15),
     })
   })
   if (!map.has(DEFAULT_MODEL_TYPE)) {
@@ -209,9 +290,31 @@ export function buildModelTypeMetaMap(options = FALLBACK_MODEL_TYPE_OPTIONS) {
       label: '文本生成',
       description: '',
       chat_parameter_mode: 'text',
+      project_chat_allowed_file_types: [],
+      attachment_mode: DEFAULT_ATTACHMENT_MODE,
+      attachment_max_files: 6,
+      attachment_max_file_size_mb: 15,
     })
   }
   return map
+}
+
+function coercePositiveInt(value, fallback) {
+  const normalized = Number(value)
+  if (!Number.isFinite(normalized) || normalized < 0) return fallback
+  return Math.floor(normalized)
+}
+
+function normalizeModelTypeFileTypes(value) {
+  if (!Array.isArray(value)) return []
+  const seen = new Set()
+  return value
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter((item) => {
+      if (!item || seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
 }
 
 export function normalizeProviderModelConfigs(provider, options = FALLBACK_MODEL_TYPE_OPTIONS) {

@@ -73,13 +73,41 @@
             :key="idx"
             class="preview-item"
           >
-            <img v-if="file.url" :src="file.url" class="preview-img" />
-            <div v-else class="preview-doc">
-              <el-icon :size="24"><Document /></el-icon>
-              <span class="doc-name">{{ file.name }}</span>
-              <span class="doc-type">
-                {{ formatUploadFileType(file.name) }}
-              </span>
+            <div class="preview-item__icon">
+              <img v-if="file.url" :src="file.url" class="preview-img" />
+              <el-icon v-else :size="28"><Document /></el-icon>
+            </div>
+            <div class="preview-item__body">
+              <span class="preview-item__name">{{ file.name }}</span>
+              <div class="preview-item__meta">
+                <span
+                  v-if="file.uploadStatus === 'uploading'"
+                  class="preview-item__status preview-item__status--uploading"
+                >上传中...</span>
+                <span
+                  v-else-if="file.uploadStatus === 'ready' && file.providerFileId"
+                  class="preview-item__id"
+                >{{ file.providerFileId }}</span>
+                <span
+                  v-else-if="file.uploadStatus === 'fallback'"
+                  class="preview-item__status preview-item__status--fallback"
+                >本地解析</span>
+                <span
+                  v-else-if="file.uploadStatus === 'error'"
+                  class="preview-item__status preview-item__status--error"
+                >上传失败</span>
+                <span v-if="file.sizeLabel" class="preview-item__size">
+                  {{ file.sizeLabel }}
+                </span>
+                <span
+                  v-if="attachmentSupported && file.processingLabel"
+                  class="preview-item__mode"
+                >{{ file.processingLabel }}</span>
+              </div>
+              <span
+                v-if="file.uploadStatus === 'error' && file.uploadError"
+                class="preview-item__error"
+              >{{ file.uploadError }}</span>
             </div>
             <div class="remove-mask" @click="$emit('remove-file', idx)">
               <el-icon><Delete /></el-icon>
@@ -178,10 +206,11 @@
               项目配置加载中
             </div>
             <el-upload
+              v-if="attachmentSupported"
               action="#"
               :auto-upload="false"
               :show-file-list="false"
-              accept="image/*"
+              :accept="uploadAccept"
               :multiple="true"
               :on-change="emitFileChange"
               :disabled="isExternalAgentMode || !selectedProjectId"
@@ -193,10 +222,11 @@
               </el-tooltip>
             </el-upload>
             <el-upload
+              v-if="attachmentSupported"
               action="#"
               :auto-upload="false"
               :show-file-list="false"
-              accept=".wps,.doc,.docx,.pdf,.txt,.csv,.xlsx,.xls"
+              :accept="uploadAccept"
               :multiple="true"
               :on-change="emitFileChange"
               :disabled="isExternalAgentMode || !selectedProjectId"
@@ -207,6 +237,15 @@
                 </el-button>
               </el-tooltip>
             </el-upload>
+            <el-tooltip
+              v-else
+              :content="`当前模型不支持附件输入${attachmentModeLabel ? '（' + attachmentModeLabel + '）' : ''}`"
+              placement="top"
+            >
+              <el-button text circle disabled>
+                <el-icon><Document /></el-icon>
+              </el-button>
+            </el-tooltip>
             <slot name="media-parameters" />
           </div>
           <div class="footer-right">
@@ -278,6 +317,10 @@ const props = defineProps([
   "showPauseGenerationButton",
   "showWorkingStatusBar",
   "slashCommandHighlightIndex",
+  "attachmentSupported",
+  "attachmentMode",
+  "attachmentModeLabel",
+  "uploadAccept",
   "uploadFiles",
   "workingStatusElapsedLabel",
   "workingStatusMetaItems",
@@ -319,12 +362,6 @@ const selectedModelOptionValueModel = computed({
   get: () => props.selectedModelOptionValue,
   set: (value) => emit("update:selectedModelOptionValue", value),
 });
-
-function formatUploadFileType(name) {
-  return typeof props.formatFileType === "function"
-    ? props.formatFileType(name)
-    : "";
-}
 
 function emitFileChange(uploadFile, uploadFiles) {
   emit("file-change", uploadFile, uploadFiles);

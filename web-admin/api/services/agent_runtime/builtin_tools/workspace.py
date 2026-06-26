@@ -1,7 +1,8 @@
 """Workspace 路径安全检查。
 
 所有文件/命令工具的 path/cwd/dest_path 参数都必须经过 resolve_workspace_path，
-确保不会逃逸到 workspace 之外。路径穿越（../）直接拒绝。
+确保不会逃逸到 workspace 之外。允许模型传入 workspace 内的绝对路径，并统一
+按 workspace 作用域校验。
 """
 
 from __future__ import annotations
@@ -42,11 +43,8 @@ def resolve_workspace_path(
     if not raw:
         raw = "."
 
-    # 拒绝绝对路径
-    if Path(raw).is_absolute():
-        raise WorkspacePathError(raw, "absolute paths are not allowed")
-
-    resolved = (workspace / raw).resolve()
+    raw_path = Path(raw)
+    resolved = raw_path.resolve() if raw_path.is_absolute() else (workspace / raw).resolve()
 
     # 检查是否在 workspace 内
     try:

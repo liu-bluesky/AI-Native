@@ -20,6 +20,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class LlmProviderConnectionTestError(RuntimeError):
+    def __init__(self, message: str, result: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.result = result
+
+
 class LlmProviderService:
     def __init__(self, store: LlmProviderStorePostgres) -> None:
         self._store = store
@@ -78,7 +84,7 @@ class LlmProviderService:
         seen: set[str] = set()
         for item in raw_items:
             if isinstance(item, dict):
-                name = str(item.get("name") or item.get("model_name") or "").strip()
+                name = str(item.get("name") or item.get("model_name") or item.get("model") or "").strip()
                 model_type = normalize_model_type(item.get("model_type"))
             else:
                 name = str(item or "").strip()
@@ -218,8 +224,30 @@ class LlmProviderService:
         default_model = str(provider.get("default_model") or "").strip()
         if default_model:
             return default_model
+        model_configs = LlmProviderService._normalize_model_configs(
+            provider.get("model_configs"),
+            provider.get("models"),
+        )
+        for item in model_configs:
+            model_name = str(item.get("name") or "").strip()
+            if model_name:
+                return model_name
         models = provider.get("models") or []
         return str(models[0]).strip() if models else ""
+
+    @classmethod
+    def _resolve_test_model_name(cls, provider: dict[str, Any], model_name: str = "") -> str:
+        requested_model = str(model_name or "").strip()
+        if requested_model:
+            return requested_model
+        return cls._pick_default_model(provider)
+
+    @classmethod
+    def resolve_provider_model_name(cls, provider: dict[str, Any], model_name: str = "") -> str:
+        requested_model = str(model_name or "").strip()
+        if requested_model:
+            return requested_model
+        return cls._pick_default_model(provider)
 
     @classmethod
     def get_model_config(cls, provider: dict[str, Any], model_name: str) -> dict[str, Any] | None:
@@ -720,31 +748,31 @@ class LlmProviderService:
             if role not in {"system", "user", "assistant", "tool"}:
                 role = "user"
             
-            if role == "tool":
-                normalized.append({
-                    "role": role,
-                    "tool_call_id": str(item.get("tool_call_id") or ""),
-                    "content": str(item.get("content") or "")
-                })
-                continue
-                
             if role == "assistant" and "tool_calls" in item:
                 msg = {"role": role, "tool_calls": item.get("tool_calls")}
                 content = item.get("content")
                 if content:
                     msg["content"] = str(content)
+                if "reasoning_content" in item:
+                    msg["reasoning_content"] = item["reasoning_content"]
                 normalized.append(msg)
                 continue
 
             content = item.get("content")
             if isinstance(content, list):
-                normalized.append({"role": role, "content": content})
+                msg = {"role": role, "content": content}
+                if role == "assistant" and "reasoning_content" in item:
+                    msg["reasoning_content"] = item["reasoning_content"]
+                normalized.append(msg)
                 continue
 
             str_content = cls._normalize_chat_message_content(content)
             if not str_content:
                 continue
-            normalized.append({"role": role, "content": str_content})
+            msg = {"role": role, "content": str_content}
+            if role == "assistant" and "reasoning_content" in item:
+                msg["reasoning_content"] = item["reasoning_content"]
+            normalized.append(msg)
         return normalized
 
     @staticmethod
@@ -1052,7 +1080,8 @@ class LlmProviderService:
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             async with client.stream("POST", url, headers=headers, json=body) as resp:
                 if resp.status_code >= 400:
-                    error_text = await resp.aread()
+                    error_text_raw = await resp.aread()
+                    error_text = error_text_raw.decode("utf-8", errors="replace") if isinstance(error_text_raw, bytes) else str(error_text_raw)
                     content_type = str(resp.headers.get("Content-Type") or "").strip()
                     summary, diagnostic = LlmProviderService._summarize_http_error_response(
                         error_text,
@@ -1066,7 +1095,11 @@ class LlmProviderService:
                         content_type or "-",
                         diagnostic,
                     )
-                    raise RuntimeError(f"LLM stream request failed: HTTP {resp.status_code} {summary}")
+                    yield {
+                        "content": f"\n\n**API 报错**: HTTP {resp.status_code} {summary}",
+                        "finish_reason": "error",
+                    }
+                    return
 
                 async for line in resp.aiter_lines():
                     line = line.strip()
@@ -1093,105 +1126,61 @@ class LlmProviderService:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/chat/completions"):
             return base
-        if base.endswith("/v1"):
-            return f"{base}/chat/completions"
-        if base.endswith("/openai"):
-            return f"{base}/chat/completions"
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/chat/completions"
-        return f"{base}/v1/chat/completions"
+        return f"{base}/chat/completions"
 
     @staticmethod
     def _build_responses_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/responses"):
             return base
-        if base.endswith("/v1"):
-            return f"{base}/responses"
-        if base.endswith("/openai"):
-            return f"{base}/responses"
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/responses"
         if base.endswith("/chat/completions"):
             return f"{base[:-len('/chat/completions')]}/responses"
-        return f"{base}/v1/responses"
+        return f"{base}/responses"
 
     @staticmethod
     def _build_models_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")
+        if base.endswith("/models"):
+            return base
         if base.endswith("/responses"):
             return f"{base[:-len('/responses')]}/models"
-        if base.endswith("/v1"):
-            return f"{base}/models"
-        if base.endswith("/openai"):
-            return f"{base}/models"
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/models"
         if base.endswith("/chat/completions"):
             return f"{base[:-len('/chat/completions')]}/models"
-        return f"{base}/v1/models"
+        return f"{base}/models"
 
     @staticmethod
     def _build_images_generation_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/images/generations"):
             return base
-        if base.endswith("/v1"):
-            return f"{base}/images/generations"
-        if base.endswith("/openai"):
-            return f"{base}/images/generations"
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/images/generations"
-        return f"{base}/v1/images/generations"
+        return f"{base}/images/generations"
 
     @staticmethod
     def _build_videos_generation_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/videos/generations"):
             return base
-        if base.endswith("/v1"):
-            return f"{base}/videos/generations"
-        if base.endswith("/openai"):
-            return f"{base}/videos/generations"
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/videos/generations"
-        return f"{base}/v1/videos/generations"
+        return f"{base}/videos/generations"
 
     @staticmethod
     def _build_audio_speech_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/audio/speech"):
             return base
-        if base.endswith("/v1"):
-            return f"{base}/audio/speech"
-        if base.endswith("/openai"):
-            return f"{base}/audio/speech"
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/audio/speech"
-        return f"{base}/v1/audio/speech"
+        return f"{base}/audio/speech"
 
     @staticmethod
     def _build_audio_transcriptions_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/audio/transcriptions"):
             return base
-        if base.endswith("/v1"):
-            return f"{base}/audio/transcriptions"
-        if base.endswith("/openai"):
-            return f"{base}/audio/transcriptions"
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/audio/transcriptions"
-        return f"{base}/v1/audio/transcriptions"
+        return f"{base}/audio/transcriptions"
 
     @staticmethod
     def _build_voice_list_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/voice/list"):
             return base
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/voice/list"
-        if base.endswith("/v1"):
-            return f"{base[:-len('/v1')]}/voice/list"
         return f"{base}/voice/list"
 
     @staticmethod
@@ -1199,10 +1188,6 @@ class LlmProviderService:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/voice/clone"):
             return base
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/voice/clone"
-        if base.endswith("/v1"):
-            return f"{base[:-len('/v1')]}/voice/clone"
         return f"{base}/voice/clone"
 
     @staticmethod
@@ -1210,10 +1195,6 @@ class LlmProviderService:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/voice/delete"):
             return base
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/voice/delete"
-        if base.endswith("/v1"):
-            return f"{base[:-len('/v1')]}/voice/delete"
         return f"{base}/voice/delete"
 
     @staticmethod
@@ -1221,10 +1202,6 @@ class LlmProviderService:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/files"):
             return base
-        if base.endswith("/api/paas/v4"):
-            return f"{base}/files"
-        if base.endswith("/v1"):
-            return f"{base[:-len('/v1')]}/files"
         return f"{base}/files"
 
     @staticmethod
@@ -1235,8 +1212,6 @@ class LlmProviderService:
             return ""
         if base.endswith("/async-result"):
             return f"{base}/{normalized_request_id}"
-        if base.endswith("/v1"):
-            return f"{base[:-len('/v1')]}/async-result/{normalized_request_id}"
         return f"{base}/async-result/{normalized_request_id}"
 
     @staticmethod
@@ -2088,13 +2063,14 @@ class LlmProviderService:
                         )
                         raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {summary}")
                     if not stream:
+                        resp.encoding = "utf-8"
                         return resp.text or ""
                     lines: list[str] = []
-                    for line in resp.iter_lines(decode_unicode=True):
+                    for line in resp.iter_lines(decode_unicode=False):
                         if line is None:
                             continue
                         if isinstance(line, bytes):
-                            lines.append(line.decode("utf-8", errors="ignore"))
+                            lines.append(line.decode("utf-8", errors="replace"))
                         else:
                             lines.append(str(line))
                     return "\n".join(lines)
@@ -2242,8 +2218,11 @@ class LlmProviderService:
         endpoint = self._build_chat_completion_url(str(provider.get("base_url") or ""))
         if not endpoint:
             raise ValueError("provider base_url is empty")
+        normalized_model_name = str(model_name or "").strip()
+        if not normalized_model_name:
+            raise ValueError("model_name is required")
         body = {
-            "model": model_name,
+            "model": normalized_model_name,
             "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -2391,7 +2370,16 @@ class LlmProviderService:
         if not bool(provider.get("enabled", True)):
             raise ValueError(f"LLM provider {provider_id} is disabled")
 
-        chosen_model = str(model_name or "").strip() or self._pick_default_model(provider)
+        chosen_model = self._resolve_test_model_name(provider, model_name)
+        base_url = str(provider.get("base_url") or "").strip().rstrip("/")
+        provider_type = self._normalize_provider_type(provider.get("provider_type"))
+        models_url = self._build_models_url(base_url) if base_url else ""
+        completion_url = (
+            self._build_responses_url(base_url)
+            if self._is_responses_provider(provider)
+            else self._build_chat_completion_url(base_url)
+        ) if base_url else ""
+        request_urls = [item for item in [models_url, completion_url] if item]
         started = time.monotonic()
         models_ok = False
         models_message = "/models 已跳过（SSE 测试模式）"
@@ -2441,11 +2429,11 @@ class LlmProviderService:
 
         latency_ms = int((time.monotonic() - started) * 1000)
         reachable = bool(completion_ok)
-        if not reachable:
-            raise RuntimeError(f"{models_message}; {completion_message}")
-        return {
+        result = {
             "provider_id": provider_id,
             "provider_name": provider.get("name") or provider_id,
+            "provider_type": provider_type,
+            "provider_base_url": base_url,
             "reachable": reachable,
             "models_ok": models_ok,
             "model_count": model_count,
@@ -2454,7 +2442,13 @@ class LlmProviderService:
             "message": f"{models_message}; {completion_message}",
             "latency_ms": latency_ms,
             "tested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "models_url": models_url,
+            "completion_url": completion_url,
+            "request_urls": request_urls,
         }
+        if not reachable:
+            raise LlmProviderConnectionTestError(result["message"], result)
+        return result
 
     def reflect_bug(
         self,

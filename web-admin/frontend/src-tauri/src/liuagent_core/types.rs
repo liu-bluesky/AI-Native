@@ -33,6 +33,8 @@ pub struct LocalChatRequest {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
     pub model_runtime: Option<LocalModelRuntimeConfig>,
+    #[serde(default)]
+    pub attachments: Vec<LocalChatAttachment>,
     pub permission_decision: Option<PermissionDecisionInput>,
 }
 
@@ -78,6 +80,69 @@ pub struct LocalRuntimeEventsRequest {
 pub struct LocalChatMessage {
     pub role: String,
     pub content: String,
+    pub reasoning_content: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalChatAttachment {
+    pub attachment_id: Option<String>,
+    pub name: String,
+    pub mime_type: Option<String>,
+    pub size: Option<u64>,
+    pub kind: Option<String>,
+    pub routing_mode: Option<String>,
+    pub extraction_status: Option<String>,
+    pub data_url: Option<String>,
+    pub extracted_text: Option<String>,
+    pub provider_file_id: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderFileUploadRequest {
+    pub provider_id: Option<String>,
+    pub base_url: String,
+    pub api_key: String,
+    pub filename: String,
+    pub mime_type: Option<String>,
+    pub purpose: Option<String>,
+    #[serde(default)]
+    pub file_bytes: Vec<u8>,
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderFileUploadResult {
+    pub ok: bool,
+    pub provider_id: String,
+    pub provider_file_id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub purpose: String,
+    pub status: String,
+    pub raw: Value,
+    pub error_code: String,
+    pub error: String,
+}
+
+impl ProviderFileUploadResult {
+    pub fn failed(request: ProviderFileUploadRequest, error: ToolError) -> Self {
+        Self {
+            ok: false,
+            provider_id: request.provider_id.unwrap_or_default(),
+            provider_file_id: String::new(),
+            filename: request.filename,
+            mime_type: request.mime_type.unwrap_or_default(),
+            purpose: request.purpose.unwrap_or_default(),
+            status: "failed".to_string(),
+            raw: json!({}),
+            error_code: error.code,
+            error: error.message,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

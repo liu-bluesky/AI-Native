@@ -4377,6 +4377,41 @@ def test_dictionary_catalog_includes_llm_model_types():
     assert definition["default_value"] == "text_generation"
     assert any(item["id"] == "image_generation" for item in definition["options"])
     assert any(item["id"] == "audio_transcription" for item in definition["options"])
+    assert all("project_chat_allowed_file_types" in item for item in definition["options"])
+
+
+def test_llm_model_type_options_carry_attachment_capability():
+    from services.catalogs.dictionary_catalog import get_dictionary_definition
+
+    definition = get_dictionary_definition("llm_model_types")
+    by_id = {item["id"]: item for item in definition["options"]}
+
+    text_meta = by_id["text_generation"]
+    assert text_meta["attachment_mode"] == "local_extract"
+    assert text_meta["attachment_max_files"] > 0
+    assert text_meta["attachment_max_file_size_mb"] > 0
+
+    vision_meta = by_id["multimodal_chat"]
+    assert vision_meta["attachment_mode"] == "inline_image"
+
+    for unsupported_id in (
+        "image_generation",
+        "video_generation",
+        "audio_generation",
+        "audio_transcription",
+    ):
+        assert by_id[unsupported_id]["attachment_mode"] == "unsupported"
+        assert by_id[unsupported_id]["attachment_max_files"] == 0
+
+
+def test_llm_model_type_catalog_normalizes_industry_aliases():
+    from services.catalogs.llm_model_type_catalog import normalize_model_type
+
+    assert normalize_model_type("chat_completion") == "text_generation"
+    assert normalize_model_type("vision-chat") == "multimodal_chat"
+    assert normalize_model_type("Images") == "image_generation"
+    assert normalize_model_type("speech_to_text") == "audio_transcription"
+    assert normalize_model_type("tts") == "audio_generation"
 
 
 def test_dictionary_catalog_includes_llm_chat_parameter_dictionaries():
@@ -22146,6 +22181,28 @@ def test_normalize_project_chat_settings_supports_employee_coordination_mode():
     assert default_settings["employee_coordination_mode"] == "auto"
     assert manual_settings["employee_coordination_mode"] == "manual"
     assert invalid_settings["employee_coordination_mode"] == "auto"
+
+
+def test_normalize_project_chat_settings_treats_legacy_file_type_defaults_as_unrestricted():
+    from routers.projects import _normalize_project_chat_settings
+
+    settings = _normalize_project_chat_settings(
+        {
+            "allowed_file_types": [
+                "image/*",
+                ".wps",
+                ".doc",
+                ".docx",
+                ".pdf",
+                ".txt",
+                ".csv",
+                ".xlsx",
+                ".xls",
+            ]
+        }
+    )
+
+    assert settings["allowed_file_types"] == []
 
 
 def test_build_project_chat_messages_includes_multi_employee_coordination_prompt():

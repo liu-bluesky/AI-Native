@@ -1,5 +1,17 @@
 // Default runtime settings for ProjectChat.
 
+export const LEGACY_CHAT_ALLOWED_FILE_TYPES = [
+  "image/*",
+  ".wps",
+  ".doc",
+  ".docx",
+  ".pdf",
+  ".txt",
+  ".csv",
+  ".xlsx",
+  ".xls",
+];
+
 export const CHAT_SETTINGS_DEFAULTS = {
   chat_mode: "system",
   external_agent_type: "codex_cli",
@@ -30,17 +42,7 @@ export const CHAT_SETTINGS_DEFAULTS = {
   max_file_size_mb: 15,
   doc_max_chars_per_file: 1200,
   doc_max_chars_total: 3000,
-  allowed_file_types: [
-    "image/*",
-    ".wps",
-    ".doc",
-    ".docx",
-    ".pdf",
-    ".txt",
-    ".csv",
-    ".xlsx",
-    ".xls",
-  ],
+  allowed_file_types: [],
   high_risk_tool_confirm: true,
   tool_timeout_sec: 0,
   tool_retry_count: 0,

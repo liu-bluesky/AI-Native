@@ -32,10 +32,11 @@ use super::state::{
 };
 use super::tools::command::classify_command_risk;
 use super::types::{
-    AgentInvocationRequest, AgentInvocationResult, LocalChatMessage, LocalChatRequest,
-    LocalChatResult, LocalModelRuntimeConfig, LocalRuntimeEventsRequest, LocalRuntimeEventsResult,
-    LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult,
-    LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult, ToolError, ToolExecutionRequest,
+    AgentInvocationRequest, AgentInvocationResult, LocalChatAttachment, LocalChatMessage,
+    LocalChatRequest, LocalChatResult, LocalModelRuntimeConfig, LocalRuntimeEventsRequest,
+    LocalRuntimeEventsResult, LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest,
+    LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult,
+    ProviderFileUploadRequest, ProviderFileUploadResult, ToolError, ToolExecutionRequest,
 };
 use super::workspace::resolve_workspace_root;
 use super::workspace::{resolve_workspace_child, workspace_relative_path};
@@ -80,6 +81,13 @@ pub fn recover_local_runtime_state(
     match recover_local_runtime_state_inner(&request) {
         Ok(result) => result,
         Err(error) => LocalRuntimeRecoveryResult::failed(request, error),
+    }
+}
+
+pub fn upload_provider_file(request: ProviderFileUploadRequest) -> ProviderFileUploadResult {
+    match upload_provider_file_inner(&request) {
+        Ok(result) => result,
+        Err(error) => ProviderFileUploadResult::failed(request, error),
     }
 }
 
@@ -260,6 +268,7 @@ fn start_local_chat_inner(
         let mut messages = model_request.messages.clone();
         messages.push(RuntimeModelMessage::assistant_tool_call(
             "用户已授权，继续执行之前等待授权的本地工具。",
+            "",
             vec![replayed.tool.clone()],
         ));
         let attempt = build_agent_loop_attempt(&replayed.tool, &replayed.result, 1);
@@ -1312,8 +1321,22 @@ struct ReplayedPermissionTool {
 struct RuntimeModelMessage {
     role: String,
     content: String,
+    reasoning_content: String,
+    content_parts: Vec<RuntimeModelContentPart>,
     tool_call_id: Option<String>,
     tool_calls: Vec<PlannedLocalTool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RuntimeModelContentPart {
+    Text { text: String },
+    ImageUrl { image_url: RuntimeModelImageUrl },
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RuntimeModelImageUrl {
+    url: String,
 }
 
 impl RuntimeModelMessage {
@@ -1321,15 +1344,38 @@ impl RuntimeModelMessage {
         Self {
             role: role.into(),
             content: content.into(),
+            reasoning_content: String::new(),
+            content_parts: Vec::new(),
             tool_call_id: None,
             tool_calls: Vec::new(),
         }
     }
 
-    fn assistant_tool_call(content: impl Into<String>, tool_calls: Vec<PlannedLocalTool>) -> Self {
+    fn with_content_parts(
+        role: impl Into<String>,
+        content: impl Into<String>,
+        content_parts: Vec<RuntimeModelContentPart>,
+    ) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            reasoning_content: String::new(),
+            content_parts,
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        }
+    }
+
+    fn assistant_tool_call(
+        content: impl Into<String>,
+        reasoning_content: impl Into<String>,
+        tool_calls: Vec<PlannedLocalTool>,
+    ) -> Self {
         Self {
             role: "assistant".to_string(),
             content: content.into(),
+            reasoning_content: reasoning_content.into(),
+            content_parts: Vec::new(),
             tool_call_id: None,
             tool_calls,
         }
@@ -1339,6 +1385,8 @@ impl RuntimeModelMessage {
         Self {
             role: "tool".to_string(),
             content: content.into(),
+            reasoning_content: String::new(),
+            content_parts: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             tool_calls: Vec::new(),
         }
@@ -1725,6 +1773,7 @@ fn run_agent_loop_with(
         }
         messages.push(RuntimeModelMessage::assistant_tool_call(
             model_content,
+            model_result.reasoning_content.clone(),
             current_planned_tools.clone(),
         ));
 
@@ -3204,6 +3253,7 @@ struct ModelStepResult {
     model_name: String,
     status: String,
     content: String,
+    reasoning_content: String,
     tool_calls: Vec<PlannedLocalTool>,
     allow_compat_text_tool_call: bool,
     compat_text_tool_call_detected: bool,
@@ -3220,6 +3270,7 @@ impl ModelStepResult {
             "provider_id": self.provider_id,
             "model_name": self.model_name,
             "status": self.status,
+            "reasoning_content": self.reasoning_content,
             "tool_calls": self.tool_calls.as_slice(),
             "tool_call_count": self.tool_calls.len(),
             "compat_text_tool_call_detected": self.compat_text_tool_call_detected,
@@ -3237,6 +3288,7 @@ impl ModelStepResult {
             model_name: request.model_name.clone(),
             status: status.to_string(),
             content: String::new(),
+            reasoning_content: String::new(),
             tool_calls: Vec::new(),
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
@@ -3259,6 +3311,7 @@ impl ModelStepResult {
             model_name: request.model_name.clone(),
             status: "failed".to_string(),
             content: String::new(),
+            reasoning_content: String::new(),
             tool_calls: Vec::new(),
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
@@ -3276,6 +3329,7 @@ impl ModelStepResult {
             model_name: "unconfigured".to_string(),
             status: "failed".to_string(),
             content: String::new(),
+            reasoning_content: String::new(),
             tool_calls: Vec::new(),
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
@@ -3349,7 +3403,87 @@ fn model_gateway_header(headers: &HeaderMap, names: &[&str]) -> String {
     String::new()
 }
 
-fn model_gateway_http_error_message(status: u16, headers: &HeaderMap, body: &str) -> String {
+fn model_gateway_body_diagnostic(body: &Value) -> Value {
+    let messages_count = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let message_roles = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("role").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({
+        "model": body.get("model").cloned().unwrap_or_else(|| json!("")),
+        "temperature": body.get("temperature").cloned().unwrap_or(Value::Null),
+        "max_tokens": body.get("max_tokens").cloned().unwrap_or(Value::Null),
+        "stream": body.get("stream").cloned().unwrap_or(Value::Null),
+        "tool_choice": body.get("tool_choice").cloned().unwrap_or(Value::Null),
+        "messages_count": messages_count,
+        "message_roles": message_roles,
+        "tools_count": body.get("tools").and_then(Value::as_array).map(|items| items.len()).unwrap_or(0),
+    })
+}
+
+fn model_gateway_request_diagnostic(
+    method: &str,
+    endpoint: &str,
+    provider_id: &str,
+    model_name: &str,
+    body: Option<&Value>,
+) -> String {
+    let parsed = Url::parse(endpoint).ok();
+    let diagnostic = json!({
+        "method": method,
+        "url": endpoint,
+        "path": parsed.as_ref().map(|url| url.path()).unwrap_or(""),
+        "query": parsed.as_ref().and_then(|url| url.query()).unwrap_or(""),
+        "provider_id": provider_id,
+        "model": model_name,
+        "body": body.map(model_gateway_body_diagnostic).unwrap_or_else(|| json!({})),
+    });
+    serde_json::to_string(&diagnostic).unwrap_or_else(|_| String::new())
+}
+
+fn model_gateway_upload_diagnostic(
+    method: &str,
+    endpoint: &str,
+    provider_id: &str,
+    filename: &str,
+    mime_type: &str,
+    purpose: &str,
+    file_size: usize,
+) -> String {
+    let parsed = Url::parse(endpoint).ok();
+    let diagnostic = json!({
+        "method": method,
+        "url": endpoint,
+        "path": parsed.as_ref().map(|url| url.path()).unwrap_or(""),
+        "query": parsed.as_ref().and_then(|url| url.query()).unwrap_or(""),
+        "provider_id": provider_id,
+        "body": {
+            "filename": filename,
+            "mime_type": mime_type,
+            "purpose": purpose,
+            "file_size": file_size,
+        },
+    });
+    serde_json::to_string(&diagnostic).unwrap_or_else(|_| String::new())
+}
+
+fn model_gateway_http_error_message(
+    status: u16,
+    headers: &HeaderMap,
+    body: &str,
+    request_diagnostic: &str,
+) -> String {
     let retry_after = model_gateway_header(headers, &["retry-after", "Retry-After"]);
     let request_id = model_gateway_header(
         headers,
@@ -3362,6 +3496,9 @@ fn model_gateway_http_error_message(status: u16, headers: &HeaderMap, body: &str
     );
     let body_preview = truncate_inline(body, 2_000);
     let mut parts = vec![format!("model gateway returned HTTP {status}")];
+    if !request_diagnostic.trim().is_empty() {
+        parts.push(format!("request={}", request_diagnostic.trim()));
+    }
     if !retry_after.is_empty() {
         parts.push(format!("retry-after={retry_after}"));
     }
@@ -3387,6 +3524,7 @@ struct OpenAiCompatibleChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAiCompatibleMessage {
     content: Option<Value>,
+    reasoning_content: Option<Value>,
     tool_calls: Option<Vec<OpenAiCompatibleToolCall>>,
 }
 
@@ -3445,17 +3583,26 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
         if ["user", "assistant", "system"].contains(&message.role.trim())
             && !message.content.trim().is_empty()
         {
-            Some(RuntimeModelMessage::simple(
+            let mut runtime_message = RuntimeModelMessage::simple(
                 message.role.trim().to_string(),
                 message.content.clone(),
-            ))
+            );
+            if message.role.trim() == "assistant" {
+                runtime_message.reasoning_content = message
+                    .reasoning_content
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .to_string();
+            }
+            Some(runtime_message)
         } else {
             None
         }
     }));
-    messages.push(RuntimeModelMessage::simple(
-        "user",
-        user_message.to_string(),
+    messages.push(build_user_message_with_attachments(
+        user_message,
+        &request.attachments,
     ));
 
     ModelStepRequest {
@@ -3480,6 +3627,155 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
             .unwrap_or(DEFAULT_MODEL_TIMEOUT_MS)
             .clamp(1_000, 120_000),
         messages,
+    }
+}
+
+fn build_user_message_with_attachments(
+    user_message: &str,
+    attachments: &[LocalChatAttachment],
+) -> RuntimeModelMessage {
+    if attachments.is_empty() {
+        return RuntimeModelMessage::simple("user", user_message.to_string());
+    }
+    let attachment_context = build_attachment_prompt_context(attachments);
+    let text_content = [user_message.trim(), attachment_context.trim()]
+        .into_iter()
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let image_parts = attachments
+        .iter()
+        .filter_map(|attachment| {
+            let routing_mode = attachment
+                .routing_mode
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("");
+            if routing_mode != "inline_image" && routing_mode != "provider_file" {
+                return None;
+            }
+            let data_url = attachment
+                .data_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| value.starts_with("data:image/"))?;
+            Some(RuntimeModelContentPart::ImageUrl {
+                image_url: RuntimeModelImageUrl {
+                    url: data_url.to_string(),
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    if image_parts.is_empty() {
+        return RuntimeModelMessage::simple("user", text_content);
+    }
+    let mut content_parts = Vec::with_capacity(1 + image_parts.len());
+    content_parts.push(RuntimeModelContentPart::Text {
+        text: text_content.clone(),
+    });
+    content_parts.extend(image_parts);
+    RuntimeModelMessage::with_content_parts("user", text_content, content_parts)
+}
+
+fn build_attachment_prompt_context(attachments: &[LocalChatAttachment]) -> String {
+    let blocks = attachments
+        .iter()
+        .enumerate()
+        .map(|(index, attachment)| {
+            let name = attachment.name.trim();
+            let display_name = if name.is_empty() {
+                format!("attachment-{}", index + 1)
+            } else {
+                name.to_string()
+            };
+            let mime_type = attachment
+                .mime_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("unknown");
+            let kind = attachment
+                .kind
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("file");
+            let status = attachment
+                .extraction_status
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("metadata_only");
+            let routing_mode = attachment
+                .routing_mode
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("local_extract");
+            let size_label = attachment
+                .size
+                .map(format_attachment_size)
+                .unwrap_or_else(|| "unknown size".to_string());
+            let mut lines = vec![
+                format!("附件 {}：{}", index + 1, display_name),
+                format!("- 类型：{kind}"),
+                format!("- MIME：{mime_type}"),
+                format!("- 大小：{size_label}"),
+                format!("- 路由方式：{routing_mode}"),
+                format!("- 处理状态：{status}"),
+            ];
+            if let Some(provider_file_id) = attachment
+                .provider_file_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                lines.push(format!("- provider_file_id：{provider_file_id}"));
+            }
+            if let Some(error) = attachment
+                .error
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                lines.push(format!("- 处理错误：{error}"));
+            }
+            if let Some(text) = attachment
+                .extracted_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                lines.push("- 可读内容：".to_string());
+                lines.push(text.to_string());
+            } else if (routing_mode == "inline_image" || routing_mode == "provider_file")
+                && attachment
+                    .data_url
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| value.starts_with("data:image/"))
+            {
+                lines.push("- 图片内容已作为多模态 image_url 一并发送。".to_string());
+            } else {
+                lines.push("- 未抽取到可读内容，请基于元数据说明限制。".to_string());
+            }
+            lines.join("\n")
+        })
+        .collect::<Vec<_>>();
+    if blocks.is_empty() {
+        String::new()
+    } else {
+        format!("附件上下文：\n{}", blocks.join("\n\n"))
+    }
+}
+
+fn format_attachment_size(size: u64) -> String {
+    if size >= 1024 * 1024 {
+        format!("{:.2} MB", size as f64 / 1024.0 / 1024.0)
+    } else if size >= 1024 {
+        format!("{:.2} KB", size as f64 / 1024.0)
+    } else {
+        format!("{size} B")
     }
 }
 
@@ -3523,11 +3819,16 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
             "direct-openai-compatible 模式缺少 apiKey 或 apiKeyEnv。",
         );
     }
-    if request.model_name == "unconfigured" {
+    let normalized_model_name = request.model_name.trim();
+    if normalized_model_name.is_empty() || normalized_model_name == "unconfigured" {
         return ModelStepResult::skipped(
             request,
             "unconfigured",
-            "direct-openai-compatible 模式缺少 modelName。",
+            format!(
+                "direct-openai-compatible 模式缺少 modelName，已停止发送模型请求。provider_id={} base_url={}",
+                request.provider_id,
+                request.base_url
+            ),
         );
     }
 
@@ -3551,8 +3852,8 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
     };
     headers.insert(AUTHORIZATION, auth_value);
 
-    let body = json!({
-        "model": request.model_name,
+    let request_body = json!({
+        "model": normalized_model_name,
         "temperature": request.temperature,
         "max_tokens": request.max_tokens,
         "stream": false,
@@ -3580,7 +3881,7 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
             client
                 .post(endpoint.clone())
                 .headers(headers.clone())
-                .json(&body)
+                .json(&request_body)
                 .send()
                 .map_err(|err| ModelRequestError {
                     kind: if err.is_timeout() {
@@ -3597,13 +3898,20 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
         let headers = response.headers().clone();
-        let body = response
+        let response_body = response
             .text()
             .unwrap_or_else(|err| format!("failed to read model gateway error body: {err}"));
+        let request_diagnostic = model_gateway_request_diagnostic(
+            "POST",
+            &endpoint,
+            &request.provider_id,
+            normalized_model_name,
+            Some(&request_body),
+        );
         return ModelStepResult::failed(
             request,
             "model.request_failed",
-            model_gateway_http_error_message(status, &headers, &body),
+            model_gateway_http_error_message(status, &headers, &response_body, &request_diagnostic),
         );
     }
     let payload = match response.json::<OpenAiCompatibleResponse>() {
@@ -3624,6 +3932,10 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
         .as_ref()
         .and_then(|message| stringify_model_content(message.content.clone()))
         .unwrap_or_default();
+    let reasoning_content = message
+        .as_ref()
+        .and_then(|message| stringify_model_content(message.reasoning_content.clone()))
+        .unwrap_or_default();
     let tool_calls = message
         .and_then(|message| collect_openai_tool_calls(&request.provider_id, message.tool_calls))
         .unwrap_or_default();
@@ -3640,15 +3952,16 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
         ok: true,
         mode: request.mode.clone(),
         provider_id: request.provider_id.clone(),
-        model_name: request.model_name.clone(),
+        model_name: normalized_model_name.to_string(),
         status: "completed".to_string(),
         summary: format!(
             "模型已在桌面端本机调用：{} / {}，返回 {} 个工具调用",
             request.provider_id,
-            request.model_name,
+            normalized_model_name,
             tool_calls.len()
         ),
         content,
+        reasoning_content,
         tool_calls,
         allow_compat_text_tool_call: false,
         compat_text_tool_call_detected,
@@ -3683,7 +3996,7 @@ fn openai_compatible_message_payload(message: &RuntimeModelMessage) -> Value {
         });
     }
     if role == "assistant" && !message.tool_calls.is_empty() {
-        return json!({
+        return with_assistant_reasoning_content(json!({
             "role": "assistant",
             "content": message.content,
             "tool_calls": message.tool_calls.iter().map(|tool| {
@@ -3696,12 +4009,35 @@ fn openai_compatible_message_payload(message: &RuntimeModelMessage) -> Value {
                     }
                 })
             }).collect::<Vec<_>>()
+        }), message);
+    }
+    if !message.content_parts.is_empty() {
+        return json!({
+            "role": role,
+            "content": message.content_parts
         });
     }
-    json!({
+    with_assistant_reasoning_content(json!({
         "role": role,
         "content": message.content
-    })
+    }), message)
+}
+
+fn with_assistant_reasoning_content(mut payload: Value, message: &RuntimeModelMessage) -> Value {
+    if normalize_model_message_role(&message.role) != "assistant" {
+        return payload;
+    }
+    let reasoning_content = message.reasoning_content.trim();
+    if reasoning_content.is_empty() {
+        return payload;
+    }
+    if let Value::Object(map) = &mut payload {
+        map.insert(
+            "reasoning_content".to_string(),
+            Value::String(reasoning_content.to_string()),
+        );
+    }
+    payload
 }
 
 fn collect_openai_tool_calls(
@@ -3759,6 +4095,228 @@ fn build_chat_completion_url(base_url: &str) -> Result<String, ToolError> {
         ));
     }
     Ok(url.to_string())
+}
+
+fn build_provider_files_url(base_url: &str) -> Result<String, ToolError> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let endpoint = if trimmed.ends_with("/files") {
+        trimmed.to_string()
+    } else if trimmed.ends_with("/v1") {
+        format!("{trimmed}/files")
+    } else if trimmed.ends_with("/chat/completions") {
+        format!("{}/files", trimmed.trim_end_matches("/chat/completions"))
+    } else {
+        format!("{trimmed}/v1/files")
+    };
+    let url = Url::parse(&endpoint)
+        .map_err(|err| ToolError::new("model.schema_invalid", format!("invalid baseUrl: {err}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(ToolError::new(
+            "model.schema_invalid",
+            "model baseUrl only supports http and https",
+        ));
+    }
+    Ok(url.to_string())
+}
+
+fn multipart_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\r', "")
+        .replace('\n', "")
+}
+
+fn build_provider_file_multipart_body(
+    boundary: &str,
+    filename: &str,
+    mime_type: &str,
+    purpose: &str,
+    file_bytes: &[u8],
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    if !purpose.trim().is_empty() {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(b"Content-Disposition: form-data; name=\"purpose\"\r\n\r\n");
+        body.extend_from_slice(purpose.trim().as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\n",
+            multipart_escape(filename)
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(format!("Content-Type: {mime_type}\r\n\r\n").as_bytes());
+    body.extend_from_slice(file_bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
+fn upload_provider_file_inner(
+    request: &ProviderFileUploadRequest,
+) -> Result<ProviderFileUploadResult, ToolError> {
+    let base_url = request.base_url.trim();
+    let api_key = request.api_key.trim();
+    let filename = if request.filename.trim().is_empty() {
+        "upload.bin"
+    } else {
+        request.filename.trim()
+    };
+    let mime_type = request
+        .mime_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("application/octet-stream");
+    let purpose = request
+        .purpose
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("file-extract");
+    if base_url.is_empty() {
+        return Err(ToolError::new(
+            "model.schema_invalid",
+            "provider baseUrl is required",
+        ));
+    }
+    if api_key.is_empty() {
+        return Err(ToolError::new(
+            "model.schema_invalid",
+            "provider apiKey is required",
+        ));
+    }
+    if request.file_bytes.is_empty() {
+        return Err(ToolError::new("model.schema_invalid", "上传文件为空"));
+    }
+    let endpoint = build_provider_files_url(base_url)?;
+    let timeout_ms = request.timeout_ms.unwrap_or(120_000).clamp(1_000, 300_000);
+    let boundary = format!("----liuagent-provider-file-{}", epoch_millis());
+    let body = build_provider_file_multipart_body(
+        &boundary,
+        filename,
+        mime_type,
+        purpose,
+        &request.file_bytes,
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(&format!("multipart/form-data; boundary={boundary}")).map_err(
+            |err| {
+                ToolError::new(
+                    "model.schema_invalid",
+                    format!("invalid multipart header: {err}"),
+                )
+            },
+        )?,
+    );
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|err| {
+            ToolError::new(
+                "model.schema_invalid",
+                format!("invalid api key header: {err}"),
+            )
+        })?,
+    );
+    let client = Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .user_agent("liuAgent-desktop-provider-file-upload/0.1")
+        .build()
+        .map_err(|err| {
+            ToolError::new("model.request_failed", format!("创建上传客户端失败：{err}"))
+        })?;
+    let response = client
+        .post(endpoint.clone())
+        .headers(headers)
+        .body(body)
+        .send()
+        .map_err(|err| {
+            ToolError::new("model.request_failed", format!("模型文件上传失败：{err}"))
+        })?;
+    let status = response.status().as_u16();
+    let response_headers = response.headers().clone();
+    let response_text = response.text().map_err(|err| {
+        ToolError::new("model.response_invalid", format!("读取上传响应失败：{err}"))
+    })?;
+    if !(200..300).contains(&status) {
+        let provider_id = request
+            .provider_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("");
+        let request_diagnostic = model_gateway_upload_diagnostic(
+            "POST",
+            &endpoint,
+            provider_id,
+            filename,
+            mime_type,
+            purpose,
+            request.file_bytes.len(),
+        );
+        return Err(ToolError::new(
+            "model.request_failed",
+            model_gateway_http_error_message(
+                status,
+                &response_headers,
+                &response_text,
+                &request_diagnostic,
+            ),
+        ));
+    }
+    let payload = serde_json::from_str::<Value>(&response_text).map_err(|err| {
+        ToolError::new(
+            "model.response_invalid",
+            format!(
+                "模型文件上传响应不是合法 JSON：{err}; body={}",
+                truncate_inline(&response_text, 500)
+            ),
+        )
+    })?;
+    let provider_file_id = payload
+        .get("id")
+        .or_else(|| payload.get("file_id"))
+        .or_else(|| payload.get("provider_file_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    if provider_file_id.is_empty() {
+        return Err(ToolError::new(
+            "model.response_invalid",
+            format!(
+                "模型文件上传成功但未返回文件 id；body={}",
+                truncate_inline(&response_text, 500)
+            ),
+        ));
+    }
+    let provider_id = request
+        .provider_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    let upload_status = payload
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("uploaded")
+        .to_string();
+    Ok(ProviderFileUploadResult {
+        ok: true,
+        provider_id,
+        provider_file_id,
+        filename: filename.to_string(),
+        mime_type: mime_type.to_string(),
+        purpose: purpose.to_string(),
+        status: upload_status,
+        raw: payload,
+        error_code: String::new(),
+        error: String::new(),
+    })
 }
 
 fn stringify_model_content(value: Option<Value>) -> Option<String> {
@@ -3970,6 +4528,7 @@ mod tests {
             model_name: "test-model".to_string(),
             status: "completed".to_string(),
             content: "我已经确认目标文件是 register.html，下一步读取 login.html。".to_string(),
+            reasoning_content: String::new(),
             tool_calls: Vec::new(),
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
@@ -4016,6 +4575,7 @@ mod tests {
             model_name: "test-model".to_string(),
             status: "completed".to_string(),
             content: String::new(),
+            reasoning_content: String::new(),
             tool_calls: Vec::new(),
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
@@ -4069,6 +4629,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             model_runtime: None,
+            attachments: Vec::new(),
             permission_decision: None,
         });
 
@@ -4146,6 +4707,7 @@ mod tests {
             model_name: "test-model".to_string(),
             status: "completed".to_string(),
             content: String::new(),
+            reasoning_content: String::new(),
             tool_calls: vec![PlannedLocalTool {
                 tool_call_id: "call_write".to_string(),
                 name: "write_file".to_string(),
@@ -4187,6 +4749,7 @@ mod tests {
                 }
             })
             .to_string(),
+            reasoning_content: String::new(),
             tool_calls: Vec::new(),
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: true,
@@ -4646,6 +5209,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 model_runtime: None,
+                attachments: Vec::new(),
                 permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                     request_id: Some("perm_call_write_replay_file_write".to_string()),
                     decision: "approve_once".to_string(),
@@ -5178,6 +5742,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             model_runtime: None,
+            attachments: Vec::new(),
             permission_decision: None,
         });
 
@@ -5216,6 +5781,7 @@ mod tests {
                 max_tokens: None,
                 timeout_ms: None,
             }),
+            attachments: Vec::new(),
             permission_decision: None,
         };
         let model_request = build_model_request(&request, "你好");
@@ -5225,6 +5791,111 @@ mod tests {
         assert_eq!(result.mode, "direct-openai-compatible");
         assert_eq!(result.status, "unconfigured");
         assert!(result.summary.contains("apiKey"));
+    }
+
+    #[test]
+    fn local_chat_attachments_build_text_and_image_parts() {
+        let request = LocalChatRequest {
+            project_id: "proj-test".to_string(),
+            chat_session_id: "chat-test".to_string(),
+            message_id: None,
+            assistant_message_id: None,
+            message: "请分析附件".to_string(),
+            workspace_path: ".".to_string(),
+            history: Vec::new(),
+            provider_id: Some("openai".to_string()),
+            model_name: Some("gpt-test".to_string()),
+            system_prompt: None,
+            temperature: None,
+            max_tokens: None,
+            model_runtime: None,
+            attachments: vec![
+                LocalChatAttachment {
+                    attachment_id: Some("att_doc".to_string()),
+                    name: "需求.md".to_string(),
+                    mime_type: Some("text/markdown".to_string()),
+                    size: Some(12),
+                    kind: Some("document".to_string()),
+                    routing_mode: Some("local_extract".to_string()),
+                    extraction_status: Some("text_extracted".to_string()),
+                    data_url: None,
+                    extracted_text: Some("这是文档内容".to_string()),
+                    provider_file_id: None,
+                    error: None,
+                },
+                LocalChatAttachment {
+                    attachment_id: Some("att_img".to_string()),
+                    name: "截图.png".to_string(),
+                    mime_type: Some("image/png".to_string()),
+                    size: Some(32),
+                    kind: Some("image".to_string()),
+                    routing_mode: Some("inline_image".to_string()),
+                    extraction_status: Some("image_data_url".to_string()),
+                    data_url: Some("data:image/png;base64,AAAA".to_string()),
+                    extracted_text: None,
+                    provider_file_id: None,
+                    error: None,
+                },
+            ],
+            permission_decision: None,
+        };
+        let model_request = build_model_request(&request, "请分析附件");
+        let user_message = model_request.messages.last().unwrap();
+        assert!(user_message.content.contains("附件上下文"));
+        assert!(user_message.content.contains("这是文档内容"));
+        assert_eq!(user_message.content_parts.len(), 2);
+
+        let payload = openai_compatible_message_payload(user_message);
+        let content = payload["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(
+            content[1]["image_url"]["url"].as_str().unwrap(),
+            "data:image/png;base64,AAAA"
+        );
+    }
+
+    #[test]
+    fn local_chat_local_extract_mode_skips_image_url_parts() {
+        let request = LocalChatRequest {
+            project_id: "proj-test".to_string(),
+            chat_session_id: "chat-test".to_string(),
+            message_id: None,
+            assistant_message_id: None,
+            message: "请分析附件".to_string(),
+            workspace_path: ".".to_string(),
+            history: Vec::new(),
+            provider_id: Some("openai".to_string()),
+            model_name: Some("gpt-test".to_string()),
+            system_prompt: None,
+            temperature: None,
+            max_tokens: None,
+            model_runtime: None,
+            attachments: vec![LocalChatAttachment {
+                attachment_id: Some("att_img".to_string()),
+                name: "截图.png".to_string(),
+                mime_type: Some("image/png".to_string()),
+                size: Some(32),
+                kind: Some("image".to_string()),
+                routing_mode: Some("local_extract".to_string()),
+                extraction_status: Some("metadata_only".to_string()),
+                data_url: Some("data:image/png;base64,AAAA".to_string()),
+                extracted_text: None,
+                provider_file_id: None,
+                error: None,
+            }],
+            permission_decision: None,
+        };
+        let model_request = build_model_request(&request, "请分析附件");
+        let user_message = model_request.messages.last().unwrap();
+        // local_extract routing must NOT emit image_url content parts even when
+        // a data_url is present; the image should only appear as metadata text.
+        assert!(
+            user_message.content_parts.is_empty(),
+            "local_extract mode should not produce image_url parts"
+        );
+        assert!(user_message.content.contains("附件上下文"));
+        assert!(user_message.content.contains("路由方式：local_extract"));
     }
 
     #[test]
@@ -5322,7 +5993,27 @@ mod tests {
         assert!(result.error.contains("retry-after=17"));
         assert!(result.error.contains("request-id=req-test-429"));
         assert!(result.error.contains("quota exceeded"));
+        assert!(result.error.contains("\"method\":\"POST\""));
+        assert!(result.error.contains(&format!("\"url\":\"http://{address}/v1/chat/completions\"")));
+        assert!(result.error.contains("\"path\":\"/v1/chat/completions\""));
+        assert!(result.error.contains("\"provider_id\":\"test-provider\""));
+        assert!(result.error.contains("\"model\":\"test-model\""));
+        assert!(result.error.contains("\"messages_count\":1"));
         assert!(result.summary.contains("quota exceeded"));
+    }
+
+    #[test]
+    fn direct_model_runtime_rejects_empty_model_before_gateway_request() {
+        let mut model_request = test_model_request("解释 updateStrength");
+        model_request.model_name = "  ".to_string();
+
+        let result = run_model_step(&model_request);
+
+        assert!(!result.ok);
+        assert_eq!(result.status, "unconfigured");
+        assert!(result.summary.contains("缺少 modelName"));
+        assert!(result.summary.contains("已停止发送模型请求"));
+        assert!(!result.summary.contains("model gateway returned HTTP"));
     }
 
     #[test]
@@ -5436,6 +6127,7 @@ mod tests {
                         "message": {
                             "role": "assistant",
                             "content": "我会读取 README。",
+                            "reasoning_content": "先确认需要读取的文件路径。",
                             "tool_calls": [
                                 {
                                     "id": "call_readme",
@@ -5468,6 +6160,7 @@ mod tests {
         assert!(result.ok, "{}", result.error);
         assert_eq!(result.status, "completed");
         assert_eq!(result.content, "我会读取 README。");
+        assert_eq!(result.reasoning_content, "先确认需要读取的文件路径。");
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(
             result.tool_calls[0].tool_call_id,
@@ -5508,6 +6201,7 @@ mod tests {
             model_name: "test-model".to_string(),
             status: "completed".to_string(),
             content: content.to_string(),
+            reasoning_content: String::new(),
             tool_calls,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
@@ -5515,6 +6209,33 @@ mod tests {
             error_code: String::new(),
             error: String::new(),
         }
+    }
+
+    #[test]
+    fn assistant_tool_call_payload_preserves_reasoning_content() {
+        let message = RuntimeModelMessage::assistant_tool_call(
+            "我需要读取文件。",
+            "先判断用户要读取的路径，再调用本机工具。",
+            vec![PlannedLocalTool {
+                tool_call_id: "call_read".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": "工作月报.md"}),
+                summary: "标准模型工具调用：read_file".to_string(),
+            }],
+        );
+
+        let payload = openai_compatible_message_payload(&message);
+
+        assert_eq!(payload["role"], "assistant");
+        assert_eq!(
+            payload["reasoning_content"],
+            "先判断用户要读取的路径，再调用本机工具。"
+        );
+        assert_eq!(payload["tool_calls"][0]["id"], "call_read");
+        assert_eq!(
+            payload["tool_calls"][0]["function"]["arguments"],
+            "{\"path\":\"工作月报.md\"}"
+        );
     }
 
     #[test]
@@ -5536,6 +6257,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             model_runtime: None,
+            attachments: Vec::new(),
             permission_decision: None,
         });
 
@@ -5573,6 +6295,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             model_runtime: None,
+            attachments: Vec::new(),
             permission_decision: None,
         });
 

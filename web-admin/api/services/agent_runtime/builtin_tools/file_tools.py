@@ -118,10 +118,11 @@ async def read_file(workspace_path: str, args: dict[str, Any]) -> dict[str, Any]
     content = "\n".join(selected)
     truncated = end_line < total_lines
 
-    summary = f"读取 {target_path} 行 {start_line}-{end_line}/{total_lines}"
+    relative_target_path = safe_relative_path(workspace_path, str(target))
+    summary = f"读取 {relative_target_path} 行 {start_line}-{end_line}/{total_lines}"
     return {
         "ok": True,
-        "path": target_path,
+        "path": relative_target_path,
         "content": content,
         "start_line": start_line,
         "end_line": end_line,
