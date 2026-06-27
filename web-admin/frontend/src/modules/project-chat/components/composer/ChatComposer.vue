@@ -83,31 +83,39 @@
                 <span
                   v-if="file.uploadStatus === 'uploading'"
                   class="preview-item__status preview-item__status--uploading"
-                >上传中...</span>
+                  >上传中...</span
+                >
                 <span
-                  v-else-if="file.uploadStatus === 'ready' && file.providerFileId"
+                  v-else-if="
+                    file.uploadStatus === 'ready' && file.providerFileId
+                  "
                   class="preview-item__id"
-                >{{ file.providerFileId }}</span>
+                  >{{ file.providerFileId }}</span
+                >
                 <span
                   v-else-if="file.uploadStatus === 'fallback'"
                   class="preview-item__status preview-item__status--fallback"
-                >本地解析</span>
+                  >本地解析</span
+                >
                 <span
                   v-else-if="file.uploadStatus === 'error'"
                   class="preview-item__status preview-item__status--error"
-                >上传失败</span>
+                  >上传失败</span
+                >
                 <span v-if="file.sizeLabel" class="preview-item__size">
                   {{ file.sizeLabel }}
                 </span>
                 <span
                   v-if="attachmentSupported && file.processingLabel"
                   class="preview-item__mode"
-                >{{ file.processingLabel }}</span>
+                  >{{ file.processingLabel }}</span
+                >
               </div>
               <span
                 v-if="file.uploadStatus === 'error' && file.uploadError"
                 class="preview-item__error"
-              >{{ file.uploadError }}</span>
+                >{{ file.uploadError }}</span
+              >
             </div>
             <div class="remove-mask" @click="$emit('remove-file', idx)">
               <el-icon><Delete /></el-icon>
@@ -189,7 +197,7 @@
                         {{ option.modelName }}
                       </span>
                       <span class="chat-model-option__provider">
-                        {{ option.providerLabel }}
+                        <!-- {{ option.providerLabel }} -->
                       </span>
                     </div>
                     <span class="chat-model-option__type">
@@ -199,16 +207,10 @@
                 </el-option>
               </el-option-group>
             </el-select>
-            <span
-              v-if="modelProviderOffline"
-              class="chat-model-offline-badge"
-            >
+            <span v-if="modelProviderOffline" class="chat-model-offline-badge">
               离线
             </span>
-            <el-tooltip
-              :content="modelProviderSyncTooltip"
-              placement="top"
-            >
+            <el-tooltip :content="modelProviderSyncTooltip" placement="top">
               <el-button
                 class="chat-model-sync-button"
                 text

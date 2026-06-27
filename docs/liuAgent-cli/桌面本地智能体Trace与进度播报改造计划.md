@@ -51,6 +51,10 @@
 | Progress Update | AI 面向用户生成的阶段性进度播报，不是隐藏思维链。 |
 | Tool Transcript | 工具调用和工具结果的可见转录。 |
 | Runtime Event Stream | Runner 实时推送给前端的事件流。 |
+| Self-Test Plan | 候选结果交付前生成的自测计划，用于判断是否真的满足目标。 |
+| Self-Feedback | 自测失败后的结构化反馈，说明失败类型、根因、影响节点和可修正方向。 |
+| Self-Correction Plan | 根据反馈生成的修正计划，决定回到搜索、计划、工具、草稿修改或请求用户确认。 |
+| Loop Budget | 自动修正循环边界，防止重复失败和无限重试。 |
 
 ## 事件协议设计
 
@@ -102,11 +106,12 @@
 
 ## 事件类型全集
 
-建议完整协议包含 67 个事件类型。
+建议完整协议包含 84 个事件类型。新增事件必须把“自测、反馈、修正、重试边界”作为一等运行轨迹，而不是藏在最终回答里。
 
 | 类别 | 数量 | 事件类型 |
 |---|---:|---|
-| 运行生命周期 | 8 | `run_queued`、`run_started`、`run_resumed`、`run_paused`、`run_cancelled`、`run_finished`、`run_failed`、`run_state_changed` |
+| 运行生命周期 | 10 | `run_queued`、`run_started`、`run_resumed`、`run_paused`、`run_cancelled`、`run_finished`、`run_failed`、`run_blocked`、`run_state_changed`、`request_parsed` |
+| 上下文与观察 | 3 | `context_built`、`observation_merged`、`prompt_stack_resolved` |
 | 模型调用 | 5 | `model_call_started`、`model_token_chunk`、`model_call_finished`、`model_call_failed`、`model_output_normalized` |
 | 计划与步骤 | 7 | `plan_created`、`plan_updated`、`plan_replaced`、`plan_step_started`、`plan_step_finished`、`plan_step_failed`、`plan_step_blocked` |
 | 通用工具调用 | 5 | `tool_call_planned`、`tool_call_started`、`tool_call_progress`、`tool_call_finished`、`tool_call_failed` |
@@ -115,7 +120,9 @@
 | MCP 调用 | 4 | `mcp_tool_started`、`mcp_tool_finished`、`mcp_resource_read`、`mcp_failed` |
 | 网络/下载 | 5 | `network_request_started`、`network_response_received`、`download_started`、`download_finished`、`network_failed` |
 | 权限确认 | 4 | `permission_required`、`permission_granted`、`permission_denied`、`permission_expired` |
-| 验证与恢复 | 8 | `verification_started`、`verification_finished`、`test_started`、`test_finished`、`repair_attempted`、`schema_repaired`、`retry_scheduled`、`loop_paused` |
+| 自测反馈修正 | 12 | `draft_created`、`self_test_plan_created`、`self_test_started`、`self_test_finished`、`self_test_failed`、`self_feedback_created`、`self_correction_planned`、`retry_scheduled`、`loop_budget_checked`、`loop_budget_exceeded`、`repair_attempted`、`schema_repaired` |
+| 验证与恢复 | 6 | `verification_started`、`verification_finished`、`test_started`、`test_finished`、`loop_paused`、`response_formatted` |
+| 记忆与状态 | 2 | `memory_write_planned`、`memory_updated` |
 | UI/安全展示 | 5 | `output_collapsed`、`output_expanded`、`secret_redacted`、`artifact_created`、`user_input_required` |
 
 ## 第一阶段最小闭环
@@ -184,11 +191,24 @@
 
 ```text
 run_started
+request_parsed
+context_built
 progress_update
+plan_created
 model_call_started
 model_call_finished
 tool_call_started
 tool_call_finished
+observation_merged
+draft_created
+self_test_plan_created
+self_test_started
+self_test_finished
+self_test_failed
+self_feedback_created
+self_correction_planned
+retry_scheduled
+loop_budget_exceeded
 file_read_finished
 file_diff_generated
 file_written
@@ -197,6 +217,9 @@ command_output_chunk
 command_finished
 permission_required
 schema_repaired
+verification_started
+verification_finished
+response_formatted
 run_finished
 ```
 
@@ -228,6 +251,15 @@ Diff
 Verification
   - 回读 register.html
   - 文件已创建
+
+Self test
+  - 检查 register.html 是否包含注册字段
+  - 检查是否没有误改 login.html
+  - 检查样式是否引用已有设计变量
+
+Self feedback
+  - 自测发现验证码按钮缺少 disabled 状态
+  - 修正方向：补齐按钮状态并重跑页面检查
 ```
 
 ## AI 进度播报设计
@@ -251,6 +283,18 @@ progress_update
 
 这不是隐藏思维链。它是 AI 主动生成的可见工作说明。
 
+进度播报必须覆盖自测反馈修正闭环：
+
+| 阶段 | 播报目的 | 示例摘要 |
+|---|---|---|
+| `Build Self-Test Plan` | 告诉用户本轮如何判断结果是否达标。 | 已根据目标生成 4 条自测项，覆盖文件存在、内容要求、范围约束和最终验证。 |
+| `Run Self-Test` | 展示每个自测项的开始、通过或失败。 | 自测失败：构建命令退出 1，错误指向类型字段不一致。 |
+| `Self-Feedback Analyzer` | 展示失败归因，不展示隐藏思维链。 | 失败原因归类为实现缺陷，影响当前修改节点，可自动修正。 |
+| `Self-Correction Planner` | 展示下一轮修正策略。 | 修正方向是更新字段映射并重新运行构建。 |
+| `Loop Budget Check` | 展示自动修正边界。 | 当前第 1/3 轮修正，失败签名未重复，可继续重试。 |
+| `Retry Router` | 展示系统回到哪个执行阶段。 | 将回到文件修改阶段，修正后重新进入自测。 |
+| `Verification Engine` | 展示正式交付前的验证结论。 | 自测通过，正在生成四维验证报告。 |
+
 ### 示例
 
 ```json
@@ -263,6 +307,39 @@ progress_update
   "metadata": {
     "selected_style_source": "login.html",
     "target_file": "register.html"
+  }
+}
+```
+
+### 自测失败后的播报示例
+
+```json
+{
+  "type": "progress_update",
+  "status": "failed",
+  "title": "自测未通过",
+  "summary": "构建命令失败，错误指向 ProjectChat.vue 中的 ProcessLogEntry 字段不匹配。",
+  "next_action": "分析字段来源并生成修正计划。",
+  "metadata": {
+    "phase": "Run Self-Test",
+    "test_name": "npm run build",
+    "evidence": "exit=1"
+  }
+}
+```
+
+```json
+{
+  "type": "progress_update",
+  "status": "running",
+  "title": "准备自动修正",
+  "summary": "失败归因为类型定义缺少 payload 字段，不需要用户业务决策。",
+  "next_action": "修改类型定义后重新运行构建自测。",
+  "metadata": {
+    "phase": "Self-Correction Planner",
+    "failure_type": "implementation_defect",
+    "retry_round": 1,
+    "max_retry_rounds": 3
   }
 }
 ```
@@ -285,7 +362,22 @@ pub fn progress_update_event(...)
 pub fn command_output_chunk_event(...)
 pub fn file_diff_generated_event(...)
 pub fn schema_repaired_event(...)
+pub fn self_test_plan_created_event(...)
+pub fn self_test_started_event(...)
+pub fn self_test_finished_event(...)
+pub fn self_feedback_created_event(...)
+pub fn self_correction_planned_event(...)
+pub fn loop_budget_checked_event(...)
 ```
+
+注释：
+
+- `agent_trace_event` 是统一入口，保证所有事件都有 `event_id`、`run_id`、`chat_session_id`、时间和状态。
+- `progress_update_event` 只承载用户可见状态，不承载隐藏思维链。
+- `self_test_*` 事件用于展示候选结果是否真的满足目标。
+- `self_feedback_created_event` 用于展示失败归因，不要求模型暴露完整推理过程。
+- `self_correction_planned_event` 用于展示下一轮动作，让用户知道系统不是盲目重试。
+- `loop_budget_checked_event` 用于展示自动修正边界，避免无声死循环。
 
 ### 2. 模型循环发事件
 
@@ -312,6 +404,19 @@ model_call_finished
 ```text
 progress_update
 ```
+
+候选结果生成后：
+
+```text
+draft_created
+self_test_plan_created
+```
+
+注释：
+
+- `draft_created` 只表示已有候选解，不能直接等同任务完成。
+- `self_test_plan_created` 必须带 `tests[]`、`pass_criteria`、`risk_level` 和 `requires_tool_execution`。
+- 实现型任务、修复任务、部署任务必须进入自测计划；纯解释型问题可由 Runtime 标记 `self_test_skipped` 到 metadata，但最终仍要说明验证边界。
 
 ### 3. 工具执行发事件
 
@@ -353,7 +458,69 @@ command_failed
 command_timeout
 ```
 
-### 4. 自动修复发事件
+### 4. 自测反馈修正控制器
+
+位置建议：
+
+```text
+web-admin/frontend/src-tauri/src/liuagent_core/self_test.rs
+web-admin/frontend/src-tauri/src/liuagent_core/runtime.rs
+```
+
+新增核心对象：
+
+```rust
+struct SelfTestPlan {
+    plan_id: String,
+    run_id: String,
+    target_node_id: String,
+    tests: Vec<SelfTestCase>,
+    pass_criteria: Vec<String>,
+    risk_level: String,
+    max_rounds: u32,
+}
+
+struct SelfTestCase {
+    test_id: String,
+    name: String,
+    kind: String,
+    command: Option<String>,
+    expected: String,
+    evidence_required: bool,
+}
+
+struct SelfTestResult {
+    test_id: String,
+    status: String,
+    evidence: Vec<String>,
+    failure_signature: Option<String>,
+}
+
+struct SelfFeedback {
+    failure_type: String,
+    root_cause: String,
+    affected_node_id: String,
+    retryable: bool,
+    repair_options: Vec<String>,
+}
+
+struct SelfCorrectionPlan {
+    correction_id: String,
+    route: String,
+    actions: Vec<String>,
+    requires_user_decision: bool,
+}
+```
+
+注释：
+
+- `SelfTestPlan` 由模型建议，Runtime 校验并补齐默认测试。
+- `SelfTestResult` 必须来自可见证据，优先来自工具、命令、文件回读或接口返回。
+- `SelfFeedback` 只记录结构化失败归因，不保存隐藏推理链。
+- `SelfCorrectionPlan.route` 只能是 `Search`、`Plan`、`Tool`、`Draft`、`AskUser` 之一，避免任意跳转。
+- Runtime 负责 `max_rounds`、`failure_signature` 和高风险动作拦截，不能让模型自己无限循环。
+
+### 5. 自动修复发事件
 
 当前已开始修复：
 
@@ -366,6 +533,9 @@ command_timeout
 schema_repaired
 repair_attempted
 retry_scheduled
+self_feedback_created
+self_correction_planned
+loop_budget_checked
 ```
 
 示例：
@@ -410,6 +580,15 @@ web-admin/frontend/src/modules/project-chat/components/agent-trace/AgentTraceIte
 | `file_diff_generated` | diff 折叠块 |
 | `permission_required` | 授权确认卡片 |
 | `schema_repaired` | 自动修复说明 |
+| `self_test_plan_created` | 自测计划卡片，列出测试项和通过标准 |
+| `self_test_started` | 自测运行状态 |
+| `self_test_finished` | 自测通过结果，展示证据 |
+| `self_test_failed` | 自测失败结果，展示失败摘要和证据 |
+| `self_feedback_created` | 失败归因卡片，展示失败类型、影响节点、是否可重试 |
+| `self_correction_planned` | 修正计划卡片，展示修正路由和下一步动作 |
+| `loop_budget_checked` | 自动修正预算状态 |
+| `loop_budget_exceeded` | 自动修正达到边界，展示需要用户确认的信息 |
+| `verification_finished` | 正式验证报告 |
 | `run_finished` | 完成摘要 |
 
 ### 3. 去重
@@ -480,6 +659,7 @@ web-admin/frontend/src/modules/project-chat/components/agent-trace/AgentTraceIte
 - 新增 `AgentTraceEvent`。
 - 补 `progress_update`。
 - 补模型、工具、文件、命令的核心事件。
+- 补 `request_parsed`、`context_built`、`observation_merged`，让用户能看到系统不是直接把历史聊天丢给模型。
 - 前端展示 `Computing / Explore / Read / Edit / Bash / Result`。
 - 按 `event_id` 去重。
 
@@ -490,13 +670,32 @@ web-admin/frontend/src/modules/project-chat/components/agent-trace/AgentTraceIte
 - 命令执行流式展示 stdout/stderr。
 - 长输出折叠。
 
-### 阶段 3：恢复和错误修复
+### 阶段 3：自测反馈修正闭环
+
+- 候选结果生成后发 `draft_created`。
+- Runtime 生成或校验 `SelfTestPlan`，发 `self_test_plan_created`。
+- 执行每个自测项，发 `self_test_started` / `self_test_finished` / `self_test_failed`。
+- 自测失败时生成 `SelfFeedback`，发 `self_feedback_created`。
+- 根据反馈生成 `SelfCorrectionPlan`，发 `self_correction_planned`。
+- 每轮修正前检查 `LoopBudget`，发 `loop_budget_checked`。
+- 可自动修正时发 `retry_scheduled` 并回到 Search / Plan / Tool / Draft 对应阶段。
+- 达到预算、重复失败或需要业务决策时发 `loop_budget_exceeded` / `run_blocked` / `user_input_required`。
+
+注释：
+
+- 这个阶段是“更聪明”的关键，不是 UI 装饰。
+- 工具成功不能直接结束，必须经过自测和验证。
+- 自测失败不能立即甩给用户，必须先做可重试判断。
+- 自动修正不能绕过权限确认和高风险 gate。
+
+### 阶段 4：恢复和错误修复
 
 - 完整持久化 `trace.jsonl`。
 - 恢复失败任务时重建 Trace。
 - `schema_repaired`、`retry_scheduled`、`loop_paused` 展示清楚。
+- 恢复时必须能重建 `SelfTestPlan`、`SelfTestResult`、`SelfFeedback` 和 `SelfCorrectionPlan`。
 
-### 阶段 4：高阶工具
+### 阶段 5：高阶工具
 
 - 新增 `copy_file`。
 - 新增 `replace_in_file`。
@@ -513,7 +712,11 @@ web-admin/frontend/src/modules/project-chat/components/agent-trace/AgentTraceIte
 6. 权限确认能明确展示工具、风险、影响范围。
 7. 刷新页面后能恢复同一条运行轨迹，不重复显示历史事件。
 8. `write_file` 缺 `path` 这类 schema 错误能自动修复或给模型明确修复建议。
-9. 整体体验接近 Codex / Claude 的执行过程展示，但不展示隐藏思维链。
+9. 实现型任务必须生成自测计划，且用户能看到自测项、执行结果和证据。
+10. 自测失败后必须展示失败归因、修正计划和是否可自动重试。
+11. 自动重试必须受循环预算控制，同一失败签名重复后必须改变策略或进入 blocked。
+12. 最终回答必须包含验证结果或明确阻塞原因，不能只说工具执行成功。
+13. 整体体验接近 Codex / Claude 的执行过程展示，但不展示隐藏思维链。
 
 ## 当前已完成的相关修复
 
@@ -530,11 +733,13 @@ web-admin/frontend/src/modules/project-chat/components/agent-trace/AgentTraceIte
 
 1. `AgentTraceEvent` 正式协议化。
 2. `progress_update` 由 AI 动态生成。
-3. 前端 Trace Viewer 去重和折叠。
-4. 命令输出 chunk 流式展示。
-5. 文件 diff 展示。
+3. `SelfTestPlan` / `SelfTestResult` / `SelfFeedback` / `SelfCorrectionPlan` 对象落地。
+4. 前端 Trace Viewer 去重和折叠。
+5. 命令输出 chunk 流式展示。
+6. 文件 diff 展示。
+7. 自测失败后的反馈、修正、重试和 blocked 状态可见化。
 
-完成这些后，桌面本地智能体的执行过程会从“状态摘要”升级为“可审计执行轨迹”。
+完成这些后，桌面本地智能体的执行过程会从“状态摘要”升级为“可审计执行轨迹 + 自我测试反馈修正闭环”。
 
 ## Codex 风格执行审计补充计划
 

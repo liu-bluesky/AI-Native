@@ -1,106 +1,565 @@
+本地桌面智能体自我测试反馈修正闭环方案
+
+目标:
+  当前本地桌面智能体的问题不是缺少某一条提示词，而是缺少稳定的执行闭环。
+  本方案用于把桌面智能体升级成可以自己理解任务、自己执行、自己测试、自己反馈、自己修正的运行系统。
+
+问题边界:
+  1. 不把“你是什么模型”这类单点回答错误当作唯一问题处理。
+     注释: 模型身份回答错误只是暴露出来的症状，真正问题可能来自提示词装配、历史污染、运行诊断混入对话、模型网关元信息缺失或上下文合并策略错误。
+  2. 不使用关键词过滤、固定回答模板或静默兜底掩盖问题。
+     注释: 这类修法容易让当前案例看似正常，但会继续在其他任务中跑偏。
+  3. 目标是升级本地桌面智能体的通用执行能力。
+     注释: Runtime 必须能在每轮任务里主动建立目标、上下文、计划、测试、反馈、修正和验证闭环。
+  4. 进度播报方案必须同步升级。
+     注释: 用户需要看到智能体正在理解什么、执行什么、测试什么、失败后如何修正，而不是只看到“模型计算中”或工具流水。
+
+核心原则:
+  1. 模型负责理解、规划、判断和生成修正方案。
+  2. Runtime 负责状态机、工具执行、权限、审计、测试调度和循环边界。
+  3. 每一步都必须有结构化状态和可见进度播报，不能只靠自然语言聊天历史维持上下文。
+  4. 工具调用成功不等于任务完成，必须经过自测和验收标准判断。
+  5. 测试失败不能立刻甩给用户，应先进入反馈分析和自动修正；只有超出预算或需要用户业务决策时才暂停。
+
+
+完整流程:
+
 START
  │
  ▼
 Receive Request
+  注释: 接收用户输入，保留原文、附件、当前项目、会话 ID、工作区路径和模型配置。
+  播报: "收到请求，正在确认本轮目标和可用上下文。"
  │
  ▼
 Parse Request
+  注释: 解析用户真正要做什么，识别任务类型、目标对象、影响范围、期望结果和风险等级。
+  输出:
+    - task_type: query / implementation / fix / deploy / destructive / ambiguous
+    - target_objects: 文件、页面、接口、项目、文档、部署产物等
+    - expected_result: 用户希望看到的最终结果
+    - risk_level: safe / medium / high / critical
+  播报: "已识别任务类型，正在拆解目标对象和验收条件。"
  │
  ▼
 Build Working Context
+  注释: 构建工作上下文，不是简单拼接聊天历史。
+  输入:
+    - 当前用户输入
+    - 对话历史摘要
+    - 当前项目配置
+    - requirement 状态
+    - 本地 state/transcript/audit
+    - 文件、图片、附件抽取结果
+    - 可用工具和模型能力
+  要求:
+    - 运行诊断、模型网关错误、内部 JSON 错误不能当作普通 assistant 历史污染模型。
+    - 工具结果要变成 observation，再按需要压缩进入模型。
+  播报: "正在整理工作上下文，过滤运行诊断并保留对任务有用的信息。"
  │
  ▼
 Resolve Prompt Stack
+  注释: 解析本轮真正发给模型的提示词来源，记录每段 prompt 来自哪里。
+  Prompt 来源:
+    - 项目聊天 system_prompt
+    - desktop_agent_global_prompt
+    - 当前任务的 runtime policy
+    - 工具契约说明
+    - 验证与修正规则
+  输出:
+    - prompt_stack.items
+    - resolved_system_prompt
+    - prompt_warnings
+  播报: "正在装配模型指令和工具规则，准备进入执行规划。"
  │
  ▼
 Execution Planning
+  注释: 生成可执行计划，不只是让模型说一段计划文本。
+  计划对象:
+    - plan_id
+    - root_goal
+    - task_nodes
+    - current_node
+    - expected_artifacts
+    - test_plan
+    - pass_criteria
+  要求:
+    - 每个任务节点必须有预期结果。
+    - 每个实现型节点必须有测试或验证方式。
+  播报: "已形成执行计划，正在检查是否需要先向用户确认。"
  │
  ▼
 Need Clarification?
+  注释: 判断是否需要追问用户。
+  需要追问的情况:
+    - 目标不清楚
+    - 操作对象不明确
+    - 存在多个合理实现方向且会影响结果
+    - 涉及破坏性、外部写入、部署、删除等高风险动作
+  不需要追问的情况:
+    - 查询型问题足够清楚
+    - 用户已经明确指定目标文件/目标目录/输出位置
+    - 写文档、分析代码等可安全推进
  │
  ├──────────────Yes──────────────┐
  │                               │
  ▼                               │
 Ask User                         │
+  注释: 只问必要问题，不能把能自行确认的事情丢给用户。
+  播报: "当前还缺少关键信息，需要你确认后才能继续。"
  │                               │
  └──────────────┬────────────────┘
                 ▼
           Update Context
+            注释: 用户补充后更新 working_context、plan_state 和 pass_criteria，不要重新丢失前面已完成的分析。
+            播报: "已合并你的补充，正在更新计划和验收条件。"
                 │
                 ▼
         Execution Scheduler
+          注释: Runtime 调度器按 plan_node 推进，不让模型无限自由循环。
+          状态:
+            - waiting_model
+            - waiting_tool
+            - waiting_approval
+            - waiting_test
+            - waiting_user
+            - completed
+            - failed
+            - blocked
+          播报: "开始执行当前节点，后续会展示模型计算、工具调用和测试结果。"
                 │
                 ▼
         Need Tool ?
+          注释: 判断下一步是模型直接推理，还是需要调用文件、命令、网络、MCP、浏览器等工具。
      ┌──────────┴────────────┐
      │                       │
      ▼                       ▼
 Reasoning              Tool Execution
+  注释: 模型直接分析、      注释: 执行本地工具。所有工具调用必须有 tool_call_id、
+  生成方案、解释结果。      参数校验、权限判断、开始事件、结果事件和审计记录。
+  播报: "正在分析当前       播报:
+  信息并形成下一步。"         - "准备调用工具: <tool_name>"
+                              - "正在执行: <tool_name>"
+                              - "工具完成: <summary>"
      │                       │
      └──────────┬────────────┘
                 ▼
          Context Merge
+           注释: 合并模型输出、工具结果和用户补充，生成结构化 observation。
+           observation 类型:
+             - model_output
+             - tool_result
+             - runtime_error
+             - test_result
+             - user_feedback
+           要求:
+             - runtime_error 默认只进入诊断区，不进入普通模型历史。
+             - tool_result 进入模型前要压缩为对任务有用的事实。
+           播报: "已合并执行结果，正在判断是否需要继续推理或测试。"
                 │
                 ▼
          Continue Reasoning
+           注释: 模型根据 observation 决定是否继续执行、生成草稿、进入测试或请求用户确认。
+           播报: "正在基于最新结果判断下一步动作。"
                 │
                 ▼
           Draft Solution
+           注释: 形成当前候选解。候选解不能直接交付，必须进入测试闭环。
+           候选解包括:
+             - 代码修改
+             - 文档内容
+             - 配置变更
+             - 命令执行结果
+             - 调查结论
+           播报: "已形成候选结果，准备进入自测。"
                 │
                 ▼
-     Verification Engine
- ┌─────────┬──────────┬──────────┐
- │         │          │          │
- ▼         ▼          ▼          ▼
-Fact     Logic    Constraint   Goal
- │         │          │          │
- └─────────┴──────┬───┴──────────┘
-                  ▼
-         Retry Router
-                  │
-                  ▼
-      Search / Plan / Tool / Draft
-                  │
-                  ▼
-        Response Formatter
-                  │
-                  ▼
-       Memory Classifier
-                  │
-                  ▼
-      Long / Short / Project
-                  │
-                  ▼
-      Update Memory Store
-                  │
-                  ▼
-      Conversation Continue?
+       Build Self-Test Plan
+           注释: 根据任务类型生成自测计划，这是本方案的核心新增步骤。
+           测试来源:
+             - 用户显式验收条件
+             - Runtime 默认验收规则
+             - 文件/命令/接口/页面/构建/截图等可执行检查
+             - 模型生成的自检清单
+           示例:
+             - 文档任务: 目标文件存在、内容覆盖用户要求、没有误改代码
+             - 代码任务: 单测、构建、lint、关键路径运行
+             - 页面任务: 构建、截图、DOM/样式检查
+             - 接口任务: 请求返回、错误路径、日志
+             - 部署任务: 产物存在、上传成功、服务端 artifact ID、部署状态
+           播报: "正在生成自测计划，确认结果是否真的满足目标。"
+                │
+                ▼
+       Run Self-Test
+           注释: 执行自测。能用工具验证的必须优先用工具验证，不能只让模型口头自检。
+           测试类型:
+             - fact_test: 文件是否存在、命令是否成功、接口是否返回
+             - logic_test: 内容是否符合需求、流程是否闭合
+             - constraint_test: 是否越权、是否误改、是否违反安全规则
+             - goal_test: 是否达到用户最终目标
+           播报:
+             - "开始自测: <test_name>"
+             - "自测通过: <summary>"
+             - "自测失败: <summary>"
+                │
+                ▼
+       Self-Test Passed?
+           注释: 判断自测是否全部达到 pass_criteria。
+           不能只看工具 ok=true；必须看目标是否满足。
+        ┌───────┴────────┐
+        │                │
+       Yes              No
+        │                │
+        ▼                ▼
+ Verification Engine    Self-Feedback Analyzer
+  注释: 生成正式验证报告。   注释: 对失败结果做结构化反馈分析。
+  维度:                     输入:
+    - Fact                   - test_result
+    - Logic                  - failed_observation
+    - Constraint             - current_plan
+    - Goal                   - recent_actions
+  播报: "自测通过，           输出:
+  正在生成验证报告。"          - failure_type
+                              - root_cause
+                              - affected_node
+                              - repair_options
+                              - retryable
+                            播报: "自测未通过，正在分析失败原因和可修正方案。"
+        │                │
+        │                ▼
+        │        Self-Correction Planner
+        │          注释: 根据反馈分析生成修正动作。
+        │          修正方向:
+        │            - Search: 补充搜索/读取上下文
+        │            - Plan: 调整计划或拆分任务
+        │            - Tool: 重新调用工具或修正参数
+        │            - Draft: 修改候选结果
+        │            - Ask User: 需要用户业务决策
+        │          播报: "已确定修正方向: <Search/Plan/Tool/Draft/Ask User>。"
+        │                │
+        │                ▼
+        │        Loop Budget Check
+        │          注释: 防止死循环。
+        │          判断:
+        │            - 是否超过最大修正轮次
+        │            - 是否重复同一失败签名
+        │            - 是否需要用户提供无法推断的信息
+        │            - 是否涉及高风险动作
+        │        ┌───────┴────────┐
+        │        │                │
+        │      Can Retry         Stop
+        │        │                │
+        │        ▼                ▼
+        │   Retry Router       Block / Ask User
+        │     注释: 进入修正路由。  注释: 明确告诉用户卡在哪里、
+        │     播报: "准备按         已尝试什么、需要用户提供什么。
+        │     修正方案重新执行。"   播报: "自动修正已达到边界，需要你确认下一步。"
+        │        │
+        │        ▼
+        │ Search / Plan / Tool / Draft
+        │     注释: 根据修正方向回到对应步骤。
+        │        │
+        └────────┴───────────────┐
+                                 ▼
+                         Context Merge
+                         注释: 修正动作结果重新合并进入上下文，再进入继续推理和自测。
+
+Verification Engine
+  注释: 自测通过后生成最终验证报告，作为能否交付的依据。
+  验证维度:
+    - Fact: 事实是否成立
+    - Logic: 逻辑是否自洽
+    - Constraint: 是否满足权限、安全、范围、用户约束
+    - Goal: 是否达到用户目标
+  播报: "验证完成，正在整理交付结果。"
+ │
+ ▼
+Response Formatter
+  注释: 生成最终回答。回答必须区分:
+    - 用户可见结论
+    - 已执行动作
+    - 自测与验证结果
+    - 未完成/阻塞项
+    - 调试诊断信息
+  要求:
+    - 不把内部 JSON、provider 诊断、runtime_error 直接混入普通回答。
+    - 如果失败，要说明失败原因和已尝试修正，不假装成功。
+  播报: "正在整理最终回复和验证证据。"
+ │
+ ▼
+Memory Classifier
+  注释: 分类本轮结果要写到哪里。
+  分类:
+    - Short: 当前会话短期状态，写 state.json
+    - Project: 项目需求事实，写 requirements 和 outbox
+    - Long: 可复用经验，生成候选长期记忆，等待后续确认或策略写入
+  播报: "正在归档本轮执行事实和可复用经验。"
+ │
+ ▼
+Update Memory Store
+  注释: 写入本地状态和待同步 outbox。
+  写入:
+    - state.json
+    - transcript.jsonl
+    - audit.jsonl
+    - checkpoint.json
+    - requirements/<project_id>/<chat_session_id>.json
+    - query-mcp/outbox
+  播报: "本地状态已更新，待同步记录已写入。"
+ │
+ ▼
+Conversation Continue?
+  注释: 判断是否等待用户下一轮输入，还是结束当前 run。
           │               │
          Yes             No
           │               │
           ▼               ▼
  Wait Next User         END
+  注释: 保留当前上下文，   注释: 当前 run 完成，所有结果应可恢复、可回放、可审计。
+  等待用户继续追加。       播报: "本轮已完成。"
 
 
+自我测试反馈修正循环的最小事件:
 
- 输入:
+  run_started
+    注释: 本轮开始。
+
+  request_parsed
+    注释: 用户请求已解析。
+
+  context_built
+    注释: 工作上下文已构建。
+
+  plan_created / plan_updated
+    注释: 执行计划创建或更新。
+
+  model_call_started / model_call_finished
+    注释: 模型计算开始/结束。
+
+  tool_call_started / tool_call_finished / tool_call_failed
+    注释: 工具调用开始/成功/失败。
+
+  observation_merged
+    注释: 模型输出、工具结果或错误已合并为 observation。
+
+  draft_created
+    注释: 候选结果已生成。
+
+  self_test_plan_created
+    注释: 自测计划已生成。
+
+  self_test_started / self_test_finished / self_test_failed
+    注释: 单项或整组自测开始/完成/失败。
+
+  self_feedback_created
+    注释: 自测失败后的反馈分析已生成。
+
+  self_correction_planned
+    注释: 修正方案已生成。
+
+  retry_scheduled
+    注释: 准备按修正方案重新执行。
+
+  loop_budget_exceeded
+    注释: 自动修正达到预算或重复失败边界。
+
+  verification_started / verification_finished
+    注释: 正式验证开始/结束。
+
+  response_formatted
+    注释: 最终回答已整理。
+
+  memory_write_planned / memory_updated
+    注释: 记忆和状态写入计划生成/完成。
+
+  run_finished / run_failed / run_blocked
+    注释: 本轮完成/失败/阻塞。
+
+
+进度播报规范:
+
+  播报不是隐藏思维链，只展示可见工作状态。
+  播报必须覆盖执行闭环的关键阶段，尤其是自测、反馈、修正和重试。
+
+  每条播报建议包含:
+    - phase: 当前阶段
+    - summary: 当前做到了什么
+    - next_action: 下一步要做什么
+    - evidence: 可见证据，如文件、命令、测试名、工具名
+    - status: running / completed / failed / blocked
+
+  示例:
+    phase: Build Working Context
+    summary: 已读取当前需求、相关设计文档和桌面智能体入口代码。
+    next_action: 继续生成可执行计划和自测标准。
+    evidence: 方案记录.txt, ProjectChat.vue, runtime.rs
+    status: completed
+
+  示例:
+    phase: Run Self-Test
+    summary: 构建命令失败，错误指向 TypeScript 类型不匹配。
+    next_action: 分析错误位置并生成修正方案。
+    evidence: npm run build exit=1
+    status: failed
+
+  示例:
+    phase: Self-Correction Planner
+    summary: 已确认失败原因是字段名不一致，准备修改 mapper。
+    next_action: 修改字段映射后重新运行构建测试。
+    evidence: src/modules/.../mapper.ts
+    status: running
+
+  必须支持的播报阶段:
+    - Receive Request
+      注释: 让用户知道请求已经进入本地智能体运行，不是普通聊天回显。
+    - Parse Request
+      注释: 展示已识别的任务类型、对象和风险，不展示隐藏推理。
+    - Build Working Context
+      注释: 展示正在读取哪些上下文，以及哪些诊断信息被隔离。
+    - Resolve Prompt Stack
+      注释: 展示模型指令已装配完成，但不泄露完整内部提示词。
+    - Execution Planning
+      注释: 展示可执行计划和验收条件已经形成。
+    - Tool Execution
+      注释: 展示工具名、参数摘要、影响范围和执行结果。
+    - Build Self-Test Plan
+      注释: 展示本轮会用什么标准判断“真的完成”。
+    - Run Self-Test
+      注释: 展示每个自测项的开始、通过、失败和证据。
+    - Self-Feedback Analyzer
+      注释: 展示失败归因，例如上下文不足、工具参数错误、代码验证失败或目标理解偏差。
+    - Self-Correction Planner
+      注释: 展示下一轮修正方向，例如补充搜索、调整计划、重跑工具、修改候选结果或请求用户决策。
+    - Loop Budget Check
+      注释: 展示自动修正是否还在预算内，避免用户看不到死循环边界。
+    - Retry Router
+      注释: 展示系统将回到搜索、计划、工具还是草稿修改阶段。
+    - Verification Engine
+      注释: 展示最终验证报告，不把工具成功误判为目标完成。
+    - Response Formatter
+      注释: 展示正在整理最终结论、已做动作、验证证据和阻塞项。
+
+
+循环边界:
+
+  max_model_steps:
+    默认 20，避免模型无限推理。
+
+  max_tool_rounds:
+    默认 6，避免工具无限调用。
+
+  max_self_test_rounds:
+    默认 3，同一任务节点最多自动测试修正 3 轮。
+
+  repeated_failure_threshold:
+    默认 2，同一失败签名重复 2 次必须改变策略或暂停。
+
+  high_risk_gate:
+    删除、覆盖、部署、发送外部消息、运行危险命令必须单独确认，不能自动修正绕过。
+
+
+输入:
   - 当前用户输入
-  - 对话历史
-  - 长期记忆
+  - 对话历史摘要
+  - 长期记忆候选
+  - 项目 requirement
+  - state.json
+  - transcript.jsonl
+  - audit.jsonl
   - 文件
-  - 图片
-  - 其它上下文
+  - 图片/附件抽取结果
+  - 模型能力配置
+  - 工具定义和权限策略
 
 执行内容:
-  - 理解什么？
-  - 分析什么？
-  - 判断什么？
-  - 决策什么？
-  - 是否需要追问？
-  - 是否需要循环执行？
+  - 理解当前任务
+  - 构建工作上下文
+  - 生成执行计划
+  - 判断是否追问
+  - 调度模型和工具
+  - 合并 observation
+  - 生成候选结果
+  - 生成自测计划
+  - 执行自测
+  - 分析失败反馈
+  - 自动修正
+  - 重新测试
+  - 达标后验证交付
+  - 写入状态和记忆
 
 输出:
   - 当前状态结果
   - 决策结果
+  - 可见进度播报
+  - 工具执行轨迹
+  - 自测结果
+  - 反馈分析
+  - 修正动作
+  - 验证报告
+  - 最终回答
   - 新增上下文
   - 下一步执行信息
+
+
+当前系统落地点:
+
+  前端入口:
+    web-admin/frontend/src/views/projects/ProjectChat.vue
+
+  桥接层:
+    web-admin/frontend/src/utils/native-desktop-bridge.js
+
+  Tauri 命令:
+    web-admin/frontend/src-tauri/src/main.rs
+
+  Runtime 主循环:
+    web-admin/frontend/src-tauri/src/liuagent_core/runtime.rs
+
+  类型定义:
+    web-admin/frontend/src-tauri/src/liuagent_core/types.rs
+
+  本地工具:
+    web-admin/frontend/src-tauri/src/liuagent_core/tools/
+
+  本地状态:
+    .ai-employee/agent-runtime-v2/sessions/<chat_session_id>/
+
+  本地需求记录:
+    .ai-employee/requirements/<project_id>/<chat_session_id>.json
+
+  同步 outbox:
+    .ai-employee/query-mcp/outbox/<project_id>__<chat_session_id>.jsonl
+
+
+第一版落地优先级:
+
+  P0:
+    - 自测计划对象 SelfTestPlan
+    - 自测结果 SelfTestResult
+    - 反馈对象 SelfFeedback
+    - 修正计划 SelfCorrectionPlan
+    - Runtime 循环预算和重复失败签名
+    - 对应 progress_update / self_test_* / self_feedback_* / self_correction_* 事件
+
+  P1:
+    - Observation 隔离，避免运行诊断污染模型历史
+    - PromptStack 来源记录
+    - ResponseFormatter 区分用户回答和调试诊断
+    - VerificationReport 四维验证
+
+  P2:
+    - 更完整的 Retry Router
+    - MemoryClassifier
+    - 前端 Trace Viewer 分组展示自测和修正循环
+
+
+验收标准:
+
+  1. 本地智能体执行实现型任务时，必须能生成自测计划。
+  2. 工具成功后不能直接完成，必须进入自测。
+  3. 自测失败后，必须生成反馈分析和修正计划。
+  4. 能自动修正的问题应至少重试一轮。
+  5. 重复失败必须改变策略或进入 blocked，不能死循环。
+  6. 用户能在界面看到执行、测试、反馈、修正、再测试的进度播报。
+  7. 最终回答必须包含验证结果或阻塞原因。
+  8. 所有关键状态可从 state/transcript/requirement 恢复。
