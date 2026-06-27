@@ -151,14 +151,6 @@
                 </div>
               </el-form-item>
 
-              <el-form-item label="模型默认 Max Tokens">
-                <el-input-number
-                  v-model="form.chat_max_tokens"
-                  :min="128"
-                  :step="64"
-                />
-                <div class="field-desc">控制 AI 对话默认最大输出长度。</div>
-              </el-form-item>
             </div>
 
             <el-form-item label="AI 对话中心默认系统提示词">
@@ -1457,7 +1449,6 @@ const form = ref({
   enable_project_manual_generation: false,
   enable_employee_manual_generation: false,
   chat_upload_max_limit: 6,
-  chat_max_tokens: 512,
   default_chat_system_prompt: "",
   desktop_agent_global_prompt: DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT,
   employee_auto_rule_generation_enabled: true,
@@ -2029,7 +2020,6 @@ function applyConfigToForm(config, options = {}) {
     enable_employee_manual_generation:
       !!payload.enable_employee_manual_generation,
     chat_upload_max_limit: Number(payload.chat_upload_max_limit || 6),
-    chat_max_tokens: Number(payload.chat_max_tokens || 512),
     default_chat_system_prompt:
       hasPrompt || !preservePrompt
         ? String(payload.default_chat_system_prompt || "")
@@ -2362,7 +2352,6 @@ async function saveConfig() {
       enable_employee_manual_generation:
         !!form.value.enable_employee_manual_generation,
       chat_upload_max_limit: Number(form.value.chat_upload_max_limit || 6),
-      chat_max_tokens: Number(form.value.chat_max_tokens || 512),
       default_chat_system_prompt: String(
         form.value.default_chat_system_prompt || "",
       ),

@@ -74,8 +74,6 @@ class OperationResumeCoordinator:
         provider_id: str = "",
         model_name: str = "",
         temperature: float = 0.2,
-        max_tokens: int = 1024,
-        max_model_steps: int = 3,
     ) -> ResumeOperationResult:
         task_run = self._state_store.load(run_id)
         if task_run is None:
@@ -185,7 +183,6 @@ class OperationResumeCoordinator:
                     state_store=self._state_store,
                     transcript_store=self._transcript_store,
                     event_log=self._event_log,
-                    max_model_steps=max_model_steps,
                 ).run(
                     task_run,
                     messages=continuation_messages,
@@ -193,7 +190,6 @@ class OperationResumeCoordinator:
                     provider_id=provider_id or str(task_run.metadata.get("provider_id") or ""),
                     model_name=model_name or str(task_run.metadata.get("model_name") or ""),
                     temperature=temperature,
-                    max_tokens=max_tokens,
                     task_tree_verified=True,
                     goal_covered=True,
                 )
@@ -252,8 +248,6 @@ class OperationResumeCoordinator:
         provider_id: str = "",
         model_name: str = "",
         temperature: float = 0.2,
-        max_tokens: int = 1024,
-        max_model_steps: int = 3,
     ) -> ResumeOperationResult:
         task_run = self._state_store.load(run_id)
         if task_run is None:
@@ -341,7 +335,6 @@ class OperationResumeCoordinator:
                     state_store=self._state_store,
                     transcript_store=self._transcript_store,
                     event_log=self._event_log,
-                    max_model_steps=max_model_steps,
                 ).run(
                     task_run,
                     messages=continuation_messages,
@@ -349,7 +342,6 @@ class OperationResumeCoordinator:
                     provider_id=provider_id or str(task_run.metadata.get("provider_id") or ""),
                     model_name=model_name or str(task_run.metadata.get("model_name") or ""),
                     temperature=temperature,
-                    max_tokens=max_tokens,
                     task_tree_verified=True,
                     goal_covered=True,
                 )

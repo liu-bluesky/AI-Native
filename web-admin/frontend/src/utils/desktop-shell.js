@@ -5,7 +5,7 @@ export const DESKTOP_WALLPAPER_STORAGE_KEY = "desktop_wallpaper_config";
 export const DESKTOP_WINDOW_SESSION_STORAGE_KEY = "desktop_window_session";
 const DESKTOP_DOCK_APP_IDS_STORAGE_KEY = "desktop_dock_app_ids";
 const DESKTOP_DOCK_ORDER_STORAGE_KEY = "desktop_dock_order";
-const DESKTOP_REQUIRED_DOCK_APP_IDS = ["chat", "tasks", "workbench"];
+const DESKTOP_REQUIRED_DOCK_APP_IDS = ["chat", "tasks", "workbench", "settings-providers"];
 
 export const DESKTOP_WALLPAPER_PRESETS = [
   {
@@ -200,6 +200,31 @@ function createApp(config) {
     ...config,
     icon: resolveDesktopAppIcon(config),
   };
+}
+
+function getFallbackDesktopApp() {
+  return (
+    DESKTOP_APP_ITEMS.find((item) => item.id === "workbench")
+    || DESKTOP_APP_ITEMS[0]
+  );
+}
+
+function normalizeDesktopRoutePath(pathname) {
+  const rawPath = String(pathname || "").trim();
+  if (!rawPath) return "/";
+  let routePath = rawPath;
+  try {
+    const parsed = new URL(rawPath, "http://desktop.local");
+    const hashRoute = parsed.hash.startsWith("#/") ? parsed.hash.slice(1) : "";
+    routePath = hashRoute || `${parsed.pathname}${parsed.search}`;
+  } catch {
+    routePath = rawPath;
+  }
+  const pathOnly = String(routePath || "/")
+    .split("#")[0]
+    .split("?")[0]
+    .trim() || "/";
+  return pathOnly.startsWith("/") ? pathOnly : `/${pathOnly}`;
 }
 
 const DESKTOP_APP_ITEMS = [
@@ -878,7 +903,7 @@ export function resolveDesktopWallpaperAppearance(config = {}) {
 
 export function getDesktopAppById(appId) {
   const normalizedId = String(appId || "").trim();
-  return DESKTOP_APP_ITEMS.find((item) => item.id === normalizedId) || DESKTOP_APP_ITEMS[0];
+  return DESKTOP_APP_ITEMS.find((item) => item.id === normalizedId) || getFallbackDesktopApp();
 }
 
 export function canAccessDesktopApp(target) {
@@ -898,8 +923,10 @@ export function canPinDesktopApp(appId) {
 }
 
 export function resolveDesktopAppMeta(pathname) {
-  const normalizedPath = String(pathname || "").trim() || "/";
-  const activeItem = DESKTOP_APP_ITEMS.find((item) => item.match?.(normalizedPath)) || DESKTOP_APP_ITEMS[0];
+  const normalizedPath = normalizeDesktopRoutePath(pathname);
+  const activeItem =
+    DESKTOP_APP_ITEMS.find((item) => item.match?.(normalizedPath))
+    || getFallbackDesktopApp();
 
   return {
     appId: activeItem.id,
@@ -928,15 +955,20 @@ export function buildEmbeddedAppUrl(pathname, options = {}) {
   const normalizedPath = String(pathname || "").trim() || "/";
   const routePath = normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`;
   const params = new URLSearchParams();
+  const routeUrl = new URL(routePath, "http://desktop.local");
   params.set("embedded", "1");
+  routeUrl.searchParams.set("embedded", "1");
   const windowId = String(options.windowId || "").trim();
   if (windowId) {
     params.set("desktop_window_id", windowId);
+    routeUrl.searchParams.set("desktop_window_id", windowId);
   }
   const reloadKey = String(options.reloadKey || "").trim();
   if (reloadKey) {
     params.set("desktop_reload_key", reloadKey);
+    routeUrl.searchParams.set("desktop_reload_key", reloadKey);
   }
   const rootQuery = params.toString();
-  return `/${rootQuery ? `?${rootQuery}` : ""}#${routePath}`;
+  const hashRoute = `${routeUrl.pathname}${routeUrl.search}`;
+  return `/${rootQuery ? `?${rootQuery}` : ""}#${hashRoute}`;
 }

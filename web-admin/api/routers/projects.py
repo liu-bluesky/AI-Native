@@ -390,18 +390,11 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "provider_id": "",
     "model_name": "",
     "temperature": 0.1,
-    "max_tokens": 512,
     "system_prompt": "",
     "auto_use_tools": False,
     "auto_use_tools_explicit": False,
     "enabled_project_tool_names": [],
     "tool_priority": [],
-    "max_tool_calls_per_round": 6,
-    "max_loop_rounds": 20,
-    "max_tool_rounds": 6,
-    "repeated_tool_call_threshold": 2,
-    "tool_only_threshold": 3,
-    "tool_budget_strategy": "finalize",
     "history_limit": 20,
     "upload_file_limit": 6,
     "max_file_size_mb": 15,
@@ -409,8 +402,6 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "doc_max_chars_total": 3000,
     "allowed_file_types": [],
     "high_risk_tool_confirm": True,
-    "tool_timeout_sec": 0,
-    "tool_retry_count": 0,
     "answer_style": "concise",
     "prefer_conclusion_first": True,
     "task_tree_enabled": True,
@@ -6453,7 +6444,6 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["provider_id"] = str(source.get("provider_id", settings["provider_id"]) or "").strip()
     settings["model_name"] = str(source.get("model_name", settings["model_name"]) or "").strip()
     settings["temperature"] = _coerce_float(source.get("temperature"), settings["temperature"], min_value=0.0, max_value=2.0)
-    settings["max_tokens"] = _coerce_int(source.get("max_tokens"), settings["max_tokens"], min_value=128, max_value=None)
     settings["system_prompt"] = str(source.get("system_prompt", settings["system_prompt"]) or "").strip()[:4000]
     settings["auto_use_tools_explicit"] = _coerce_bool(
         source.get("auto_use_tools_explicit"),
@@ -6466,13 +6456,6 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     )
     settings["enabled_project_tool_names"] = _to_unique_string_list(source.get("enabled_project_tool_names"), max_items=200, max_item_len=160)
     settings["tool_priority"] = _to_unique_string_list(source.get("tool_priority"), max_items=200, max_item_len=160)
-    settings["max_tool_calls_per_round"] = _coerce_int(source.get("max_tool_calls_per_round"), settings["max_tool_calls_per_round"], min_value=1, max_value=30)
-    settings["max_loop_rounds"] = _coerce_int(source.get("max_loop_rounds"), settings["max_loop_rounds"], min_value=1, max_value=60)
-    settings["max_tool_rounds"] = _coerce_int(source.get("max_tool_rounds"), settings["max_tool_rounds"], min_value=1, max_value=30)
-    settings["repeated_tool_call_threshold"] = _coerce_int(source.get("repeated_tool_call_threshold"), settings["repeated_tool_call_threshold"], min_value=1, max_value=10)
-    settings["tool_only_threshold"] = _coerce_int(source.get("tool_only_threshold"), settings["tool_only_threshold"], min_value=1, max_value=10)
-    strategy = str(source.get("tool_budget_strategy", settings["tool_budget_strategy"]) or "").strip().lower()
-    settings["tool_budget_strategy"] = strategy if strategy in {"stop", "finalize"} else settings["tool_budget_strategy"]
     settings["history_limit"] = _coerce_int(source.get("history_limit"), settings["history_limit"], min_value=1, max_value=50)
     settings["upload_file_limit"] = _coerce_int(source.get("upload_file_limit"), settings["upload_file_limit"], min_value=1, max_value=20)
     settings["max_file_size_mb"] = _coerce_int(source.get("max_file_size_mb"), settings["max_file_size_mb"], min_value=1, max_value=100)
@@ -6480,8 +6463,6 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["doc_max_chars_total"] = _coerce_int(source.get("doc_max_chars_total"), settings["doc_max_chars_total"], min_value=500, max_value=100000)
     settings["allowed_file_types"] = _normalize_project_chat_allowed_file_types(source.get("allowed_file_types"))
     settings["high_risk_tool_confirm"] = _coerce_bool(source.get("high_risk_tool_confirm"), settings["high_risk_tool_confirm"])
-    settings["tool_timeout_sec"] = _coerce_int(source.get("tool_timeout_sec"), settings["tool_timeout_sec"], min_value=0, max_value=600)
-    settings["tool_retry_count"] = _coerce_int(source.get("tool_retry_count"), settings["tool_retry_count"], min_value=0, max_value=5)
     style = str(source.get("answer_style", settings["answer_style"]) or "").strip().lower()
     settings["answer_style"] = style if style in {"concise", "balanced", "detailed"} else settings["answer_style"]
     settings["prefer_conclusion_first"] = _coerce_bool(source.get("prefer_conclusion_first"), settings["prefer_conclusion_first"])
@@ -7886,20 +7867,11 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
         "provider_id": req.provider_id,
         "model_name": req.model_name,
         "temperature": req.temperature,
-        "max_tokens": req.max_tokens,
         "system_prompt": req.system_prompt,
         "enabled_project_tool_names": req.enabled_project_tool_names,
         "auto_use_tools": req.auto_use_tools,
         "tool_priority": req.tool_priority,
-        "max_tool_calls_per_round": req.max_tool_calls_per_round,
-        "max_loop_rounds": req.max_loop_rounds,
-        "max_tool_rounds": req.max_tool_rounds,
-        "repeated_tool_call_threshold": req.repeated_tool_call_threshold,
-        "tool_only_threshold": req.tool_only_threshold,
-        "tool_budget_strategy": req.tool_budget_strategy,
         "history_limit": req.history_limit,
-        "tool_timeout_sec": req.tool_timeout_sec,
-        "tool_retry_count": req.tool_retry_count,
         "answer_style": req.answer_style,
         "prefer_conclusion_first": req.prefer_conclusion_first,
         "task_tree_enabled": getattr(req, "task_tree_enabled", None),
@@ -9289,10 +9261,6 @@ def _summarize_project_chat_completion(payload: dict[str, Any]) -> tuple[str, st
         return "completed", "本轮执行已结束"
     summary_map = {
         "cancelled": "执行已取消",
-        "max_loops": "达到最大处理轮次",
-        "tool_budget_exceeded": "达到工具调用上限",
-        "repeated_tool_signature": "重复工具调用已被拦截",
-        "tool_only_loops": "连续工具循环已被拦截",
         "waiting_user_authorization": "等待你完成浏览器授权",
         "waiting_user_action": "等待你完成当前操作",
     }
@@ -10005,21 +9973,6 @@ def _resolve_default_chat_system_prompt(custom_system_prompt: Any = None) -> str
     if custom_prompt:
         return custom_prompt
     return None
-
-
-def _resolve_chat_max_tokens(request_max_tokens: int | None) -> int:
-    cfg = system_config_store.get_global()
-    configured = int(getattr(cfg, "chat_max_tokens", 512) or 512)
-    configured = max(128, configured)
-    if request_max_tokens is None:
-        return configured
-    try:
-        request_value = int(request_max_tokens)
-    except (TypeError, ValueError):
-        return configured
-    if request_value <= 0:
-        return configured
-    return max(128, request_value)
 
 
 def _normalize_project_username(value: Any) -> str:
@@ -14717,19 +14670,10 @@ async def ws_global_assistant_chat(websocket: WebSocket):
                     "provider_id": req.provider_id,
                     "model_name": req.model_name,
                     "temperature": req.temperature,
-                    "max_tokens": req.max_tokens,
                     "system_prompt": req.system_prompt,
                     "history_limit": req.history_limit,
                     "answer_style": req.answer_style,
                     "prefer_conclusion_first": req.prefer_conclusion_first,
-                    "max_loop_rounds": req.max_loop_rounds,
-                    "max_tool_rounds": req.max_tool_rounds,
-                    "repeated_tool_call_threshold": req.repeated_tool_call_threshold,
-                    "tool_only_threshold": req.tool_only_threshold,
-                    "tool_budget_strategy": req.tool_budget_strategy,
-                    "max_tool_calls_per_round": req.max_tool_calls_per_round,
-                    "tool_timeout_sec": req.tool_timeout_sec,
-                    "tool_retry_count": req.tool_retry_count,
                 }
             )
             resolved_runtime = await _resolve_global_assistant_chat_runtime(
@@ -14843,7 +14787,6 @@ async def ws_global_assistant_chat(websocket: WebSocket):
                     user_message=effective_user_message,
                     runtime_context=runtime_context,
                     temperature=float(runtime_settings.get("temperature") or 0.1),
-                    max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
                     cancel_event=cancel_event,
                     role_ids=_current_role_ids(auth_payload),
                     global_assistant_bridge_handler=lambda tool_name, args: call_browser_tool(
@@ -14954,7 +14897,6 @@ async def chat_without_project(
             "provider_id": req.provider_id,
             "model_name": req.model_name,
             "temperature": req.temperature,
-            "max_tokens": req.max_tokens,
             "system_prompt": req.system_prompt,
             "history_limit": req.history_limit,
             "answer_style": req.answer_style,
@@ -15066,7 +15008,6 @@ async def chat_without_project(
                 user_message=effective_user_message,
                 runtime_context=runtime_context,
                 temperature=float(runtime_settings.get("temperature") or 0.1),
-                max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
                 cancel_event=asyncio.Event(),
                 role_ids=_current_role_ids(auth_payload),
             )
@@ -24248,7 +24189,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 employee_id=employee_id_val,
                 project=project,
                 user_message=effective_user_message,
-                timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 20),
+                timeout_sec=20,
             )
             if direct_lark_cli is not None:
                 try:
@@ -24460,7 +24401,6 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     await _send_project_chat_event({"type": "error", "request_id": request_id, "message": str(exc)})
                 return
 
-            max_tokens = _resolve_chat_max_tokens(runtime_settings.get("max_tokens"))
             temperature = float(runtime_settings.get("temperature") if runtime_settings.get("temperature") is not None else 0.1)
             temperature = max(0.0, min(temperature, 2.0))
             effective_workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
@@ -24682,7 +24622,6 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     user_message=effective_user_message,
                     runtime_context=runtime_context,
                     temperature=temperature,
-                    max_tokens=max_tokens,
                     cancel_event=cancel_event,
                 )
             ):
@@ -25433,7 +25372,7 @@ async def stream_project_chat(
         employee_id=employee_id_val,
         project=project,
         user_message=effective_user_message,
-        timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 20),
+        timeout_sec=20,
     )
     if direct_lark_cli is not None:
         try:
@@ -25683,7 +25622,6 @@ async def stream_project_chat(
             },
         )
 
-    max_tokens = _resolve_chat_max_tokens(runtime_settings.get("max_tokens"))
     temperature = float(runtime_settings.get("temperature") if runtime_settings.get("temperature") is not None else 0.1)
     temperature = max(0.0, min(temperature, 2.0))
     assistant_workflow_state = prepare_assistant_workflow_state(
@@ -25862,7 +25800,6 @@ async def stream_project_chat(
                     user_message=effective_user_message,
                     runtime_context=runtime_context,
                     temperature=temperature,
-                    max_tokens=max_tokens,
                     cancel_event=cancel_event,
                 )
             ):

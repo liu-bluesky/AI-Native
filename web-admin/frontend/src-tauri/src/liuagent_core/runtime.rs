@@ -26,9 +26,10 @@ use super::permission::{cached_session_grant_comment, permission_request_id};
 use super::planning;
 use super::state::recover_runtime_session;
 use super::state::{
-    append_runtime_event, delete_runtime_outbox_entries,
+    append_runtime_event, cleanup_synced_offline_cache, delete_runtime_outbox_entries,
     list_runtime_events as read_runtime_events, list_runtime_outbox as read_runtime_outbox,
-    recover_runtime_state, write_runtime_artifacts, RuntimeArtifactPaths, RuntimePersistenceInput,
+    load_offline_cache_record, recover_runtime_state, save_offline_cache_record,
+    write_runtime_artifacts, RuntimeArtifactPaths, RuntimePersistenceInput,
 };
 use super::tools::command::classify_command_risk;
 use super::types::{
@@ -36,7 +37,9 @@ use super::types::{
     LocalChatRequest, LocalChatResult, LocalModelRuntimeConfig, LocalRuntimeEventsRequest,
     LocalRuntimeEventsResult, LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest,
     LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult,
-    ProviderFileUploadRequest, ProviderFileUploadResult, ToolError, ToolExecutionRequest,
+    OfflineCacheCleanupRequest, OfflineCacheLoadRequest, OfflineCacheResult,
+    OfflineCacheSaveRequest, ProviderFileUploadRequest, ProviderFileUploadResult, ToolError,
+    ToolExecutionRequest,
 };
 use super::workspace::resolve_workspace_root;
 use super::workspace::{resolve_workspace_child, workspace_relative_path};
@@ -47,7 +50,6 @@ use super::{
 
 const REQUIREMENT_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_MODEL_TIMEOUT_MS: u64 = 45_000;
-const DEFAULT_MAX_TOKENS: u32 = 1024;
 const DEFAULT_MAX_VERIFICATION_REPROMPTS: usize = 1;
 const MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS: usize = 5;
 const PERMISSION_CACHE_VERSION: u32 = 1;
@@ -122,6 +124,30 @@ pub fn ack_local_runtime_outbox(request: LocalRuntimeOutboxAckRequest) -> LocalR
     }
 }
 
+pub fn save_local_offline_cache(request: OfflineCacheSaveRequest) -> OfflineCacheResult {
+    let workspace_path = request.workspace_path.clone();
+    match save_local_offline_cache_inner(&request) {
+        Ok(result) => OfflineCacheResult::ok(workspace_path, result),
+        Err(error) => OfflineCacheResult::failed(workspace_path, error),
+    }
+}
+
+pub fn load_local_offline_cache(request: OfflineCacheLoadRequest) -> OfflineCacheResult {
+    let workspace_path = request.workspace_path.clone();
+    match load_local_offline_cache_inner(&request) {
+        Ok(result) => OfflineCacheResult::ok(workspace_path, result),
+        Err(error) => OfflineCacheResult::failed(workspace_path, error),
+    }
+}
+
+pub fn cleanup_local_offline_cache(request: OfflineCacheCleanupRequest) -> OfflineCacheResult {
+    let workspace_path = request.workspace_path.clone();
+    match cleanup_local_offline_cache_inner(&request) {
+        Ok(result) => OfflineCacheResult::ok(workspace_path, result),
+        Err(error) => OfflineCacheResult::failed(workspace_path, error),
+    }
+}
+
 fn recover_local_runtime_state_inner(
     request: &LocalRuntimeRecoveryRequest,
 ) -> Result<LocalRuntimeRecoveryResult, ToolError> {
@@ -145,6 +171,44 @@ fn recover_local_runtime_state_inner(
         error_code: String::new(),
         error: String::new(),
     })
+}
+
+fn save_local_offline_cache_inner(request: &OfflineCacheSaveRequest) -> Result<Value, ToolError> {
+    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    save_offline_cache_record(
+        &workspace_root,
+        &request.cache_kind,
+        request.project_id.as_deref(),
+        request.chat_session_id.as_deref(),
+        request.provider_id.as_deref(),
+        request.payload.clone(),
+    )
+}
+
+fn load_local_offline_cache_inner(request: &OfflineCacheLoadRequest) -> Result<Value, ToolError> {
+    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    load_offline_cache_record(
+        &workspace_root,
+        &request.cache_kind,
+        request.project_id.as_deref(),
+        request.chat_session_id.as_deref(),
+        request.provider_id.as_deref(),
+    )
+}
+
+fn cleanup_local_offline_cache_inner(
+    request: &OfflineCacheCleanupRequest,
+) -> Result<Value, ToolError> {
+    let project_id = required_non_empty(&request.project_id, "projectId")?;
+    let chat_session_id = required_non_empty(&request.chat_session_id, "chatSessionId")?;
+    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    cleanup_synced_offline_cache(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        &request.event_ids,
+        request.server_refs.clone(),
+    )
 }
 
 fn list_local_runtime_events_inner(
@@ -3251,7 +3315,6 @@ struct ModelStepRequest {
     api_key: String,
     gateway_url: String,
     temperature: f64,
-    max_tokens: u32,
     timeout_ms: u64,
     messages: Vec<RuntimeModelMessage>,
 }
@@ -3266,7 +3329,6 @@ impl ModelStepRequest {
             api_key: self.api_key.clone(),
             gateway_url: self.gateway_url.clone(),
             temperature: self.temperature,
-            max_tokens: self.max_tokens,
             timeout_ms: self.timeout_ms,
             messages,
         }
@@ -3451,7 +3513,6 @@ fn model_gateway_body_diagnostic(body: &Value) -> Value {
     json!({
         "model": body.get("model").cloned().unwrap_or_else(|| json!("")),
         "temperature": body.get("temperature").cloned().unwrap_or(Value::Null),
-        "max_tokens": body.get("max_tokens").cloned().unwrap_or(Value::Null),
         "stream": body.get("stream").cloned().unwrap_or(Value::Null),
         "tool_choice": body.get("tool_choice").cloned().unwrap_or(Value::Null),
         "messages_count": messages_count,
@@ -3580,7 +3641,6 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
             api_key_env: None,
             gateway_url: None,
             temperature: None,
-            max_tokens: None,
             timeout_ms: None,
         });
     let mode = normalize_model_mode(runtime.mode.as_deref());
@@ -3645,11 +3705,6 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
             .or(request.temperature)
             .unwrap_or(0.2)
             .clamp(0.0, 2.0),
-        max_tokens: runtime
-            .max_tokens
-            .or(request.max_tokens)
-            .unwrap_or(DEFAULT_MAX_TOKENS)
-            .max(16),
         timeout_ms: runtime
             .timeout_ms
             .unwrap_or(DEFAULT_MODEL_TIMEOUT_MS)
@@ -3902,7 +3957,6 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
     let mut request_body = json!({
         "model": normalized_model_name,
         "temperature": request.temperature,
-        "max_tokens": request.max_tokens,
         "stream": false,
         "messages": request.messages.iter().map(openai_compatible_message_payload).collect::<Vec<_>>()
     });
@@ -4678,7 +4732,6 @@ mod tests {
             model_name: None,
             system_prompt: None,
             temperature: None,
-            max_tokens: None,
             model_runtime: None,
             attachments: Vec::new(),
             permission_decision: None,
@@ -5340,7 +5393,6 @@ mod tests {
                 model_name: None,
                 system_prompt: None,
                 temperature: None,
-                max_tokens: None,
                 model_runtime: None,
                 attachments: Vec::new(),
                 permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
@@ -5877,7 +5929,6 @@ mod tests {
             model_name: None,
             system_prompt: None,
             temperature: None,
-            max_tokens: None,
             model_runtime: None,
             attachments: Vec::new(),
             permission_decision: None,
@@ -5905,7 +5956,6 @@ mod tests {
             model_name: Some("gpt-test".to_string()),
             system_prompt: None,
             temperature: None,
-            max_tokens: None,
             model_runtime: Some(LocalModelRuntimeConfig {
                 mode: Some("direct-openai-compatible".to_string()),
                 provider_id: None,
@@ -5915,7 +5965,6 @@ mod tests {
                 api_key_env: None,
                 gateway_url: None,
                 temperature: None,
-                max_tokens: None,
                 timeout_ms: None,
             }),
             attachments: Vec::new(),
@@ -6014,7 +6063,6 @@ mod tests {
             model_name: Some("gpt-test".to_string()),
             system_prompt: None,
             temperature: None,
-            max_tokens: None,
             model_runtime: None,
             attachments: vec![
                 LocalChatAttachment {
@@ -6076,7 +6124,6 @@ mod tests {
             model_name: Some("gpt-test".to_string()),
             system_prompt: None,
             temperature: None,
-            max_tokens: None,
             model_runtime: None,
             attachments: vec![LocalChatAttachment {
                 attachment_id: Some("att_img".to_string()),
@@ -6327,7 +6374,7 @@ mod tests {
             assert!(request
                 .to_ascii_lowercase()
                 .contains("authorization: bearer test-key"));
-            assert!(request.contains("\"max_tokens\":12000"));
+            assert!(!request.contains("\"max_tokens\""));
             assert!(request.contains("\"tools\""));
             assert!(request.contains("\"name\":\"read_file\""));
 
@@ -6362,7 +6409,6 @@ mod tests {
         });
         let mut model_request = test_model_request("读取 README");
         model_request.base_url = format!("http://{address}");
-        model_request.max_tokens = 12_000;
         model_request.timeout_ms = 5_000;
 
         let result = run_model_step(&model_request);
@@ -6524,7 +6570,6 @@ mod tests {
             model_name: Some("test-model".to_string()),
             system_prompt: None,
             temperature: None,
-            max_tokens: None,
             model_runtime: Some(LocalModelRuntimeConfig {
                 mode: Some("direct-openai-compatible".to_string()),
                 provider_id: Some("test-provider".to_string()),
@@ -6534,7 +6579,6 @@ mod tests {
                 api_key_env: None,
                 gateway_url: None,
                 temperature: Some(0.1),
-                max_tokens: Some(8192),
                 timeout_ms: Some(5_000),
             }),
             attachments: Vec::new(),
@@ -6642,7 +6686,6 @@ mod tests {
             model_name: Some("test-model".to_string()),
             system_prompt: None,
             temperature: None,
-            max_tokens: None,
             model_runtime: Some(LocalModelRuntimeConfig {
                 mode: Some("direct-openai-compatible".to_string()),
                 provider_id: Some("test-provider".to_string()),
@@ -6652,7 +6695,6 @@ mod tests {
                 api_key_env: None,
                 gateway_url: None,
                 temperature: Some(0.1),
-                max_tokens: Some(8192),
                 timeout_ms: Some(5_000),
             }),
             attachments: Vec::new(),
@@ -6711,7 +6753,6 @@ mod tests {
             api_key: "test-key".to_string(),
             gateway_url: String::new(),
             temperature: 0.2,
-            max_tokens: 1024,
             timeout_ms: 1_000,
             messages: vec![RuntimeModelMessage::simple(
                 "user",
@@ -6833,7 +6874,6 @@ mod tests {
             model_name: None,
             system_prompt: None,
             temperature: None,
-            max_tokens: None,
             model_runtime: None,
             attachments: Vec::new(),
             permission_decision: None,
@@ -6871,7 +6911,6 @@ mod tests {
             model_name: None,
             system_prompt: None,
             temperature: None,
-            max_tokens: None,
             model_runtime: None,
             attachments: Vec::new(),
             permission_decision: None,

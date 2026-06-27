@@ -29,7 +29,6 @@ def test_build_orchestrator_run_kwargs_uses_runtime_context_defaults():
         user_message="继续执行",
         runtime_context=runtime_context,
         temperature=0.3,
-        max_tokens=256,
         cancel_event=object(),
     )
 
@@ -42,7 +41,7 @@ def test_build_orchestrator_run_kwargs_uses_runtime_context_defaults():
     assert payload["provider_id"] == "provider-1"
     assert payload["model_name"] == "glm-test"
     assert payload["temperature"] == 0.3
-    assert payload["max_tokens"] == 256
+    assert "max_tokens" not in payload
     assert payload["tools"] == [{"name": "tool-a"}]
     assert payload["messages"] == [{"role": "user", "content": "hello"}]
     assert payload["local_connector"] == {"id": "connector-1"}
@@ -75,7 +74,6 @@ def test_build_orchestrator_run_kwargs_includes_optional_global_assistant_fields
         user_message="打开浏览器",
         runtime_context=runtime_context,
         temperature=0.1,
-        max_tokens=512,
         cancel_event=object(),
         role_ids=["admin"],
         global_assistant_bridge_handler=bridge_handler,
@@ -112,7 +110,6 @@ def test_build_orchestrator_run_kwargs_includes_assistant_workflow_metadata():
         user_message="帮我改代码并验证",
         runtime_context=runtime_context,
         temperature=0.2,
-        max_tokens=256,
         cancel_event=object(),
     )
 
@@ -144,7 +141,6 @@ def test_build_orchestrator_run_kwargs_includes_capability_routing_metadata():
         user_message="帮我更新飞书文档",
         runtime_context=runtime_context,
         temperature=0.2,
-        max_tokens=256,
         cancel_event=object(),
     )
 

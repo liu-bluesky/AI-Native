@@ -319,7 +319,7 @@ class ProviderStreamAdapter:
         self,
         events: Iterable[ProviderStreamEvent],
         *,
-        max_tool_calls: int = 6,
+        max_tool_calls: int | None = None,
     ) -> Any:
         from services.agent_runtime.v2.llm_step import LLMStepResult
 

@@ -1,0 +1,106 @@
+START
+ │
+ ▼
+Receive Request
+ │
+ ▼
+Parse Request
+ │
+ ▼
+Build Working Context
+ │
+ ▼
+Resolve Prompt Stack
+ │
+ ▼
+Execution Planning
+ │
+ ▼
+Need Clarification?
+ │
+ ├──────────────Yes──────────────┐
+ │                               │
+ ▼                               │
+Ask User                         │
+ │                               │
+ └──────────────┬────────────────┘
+                ▼
+          Update Context
+                │
+                ▼
+        Execution Scheduler
+                │
+                ▼
+        Need Tool ?
+     ┌──────────┴────────────┐
+     │                       │
+     ▼                       ▼
+Reasoning              Tool Execution
+     │                       │
+     └──────────┬────────────┘
+                ▼
+         Context Merge
+                │
+                ▼
+         Continue Reasoning
+                │
+                ▼
+          Draft Solution
+                │
+                ▼
+     Verification Engine
+ ┌─────────┬──────────┬──────────┐
+ │         │          │          │
+ ▼         ▼          ▼          ▼
+Fact     Logic    Constraint   Goal
+ │         │          │          │
+ └─────────┴──────┬───┴──────────┘
+                  ▼
+         Retry Router
+                  │
+                  ▼
+      Search / Plan / Tool / Draft
+                  │
+                  ▼
+        Response Formatter
+                  │
+                  ▼
+       Memory Classifier
+                  │
+                  ▼
+      Long / Short / Project
+                  │
+                  ▼
+      Update Memory Store
+                  │
+                  ▼
+      Conversation Continue?
+          │               │
+         Yes             No
+          │               │
+          ▼               ▼
+ Wait Next User         END
+
+
+
+ 输入:
+  - 当前用户输入
+  - 对话历史
+  - 长期记忆
+  - 文件
+  - 图片
+  - 其它上下文
+
+执行内容:
+  - 理解什么？
+  - 分析什么？
+  - 判断什么？
+  - 决策什么？
+  - 是否需要追问？
+  - 是否需要循环执行？
+
+输出:
+  - 当前状态结果
+  - 决策结果
+  - 新增上下文
+  - 下一步执行信息

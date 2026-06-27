@@ -30,6 +30,9 @@ const TAURI_COMMAND_NAMES = {
   liuagentListRuntimeEvents: "liuagent_list_runtime_events",
   liuagentListRuntimeOutbox: "liuagent_list_runtime_outbox",
   liuagentAckRuntimeOutbox: "liuagent_ack_runtime_outbox",
+  liuagentSaveOfflineCache: "liuagent_save_offline_cache",
+  liuagentLoadOfflineCache: "liuagent_load_offline_cache",
+  liuagentCleanupOfflineCache: "liuagent_cleanup_offline_cache",
 };
 
 function canUseWindow() {
@@ -295,11 +298,6 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
         request?.temperature !== ""
           ? Number(request.temperature)
           : null,
-      maxTokens:
-        Number.isFinite(Number(request?.maxTokens || request?.max_tokens)) &&
-        (request?.maxTokens || request?.max_tokens) !== ""
-          ? Number(request?.maxTokens || request?.max_tokens)
-          : null,
       modelRuntime:
         request?.modelRuntime && typeof request.modelRuntime === "object"
           ? request.modelRuntime
@@ -563,6 +561,127 @@ export async function ackNativeLiuAgentRuntimeOutbox(request = {}) {
         errorCode: "native_bridge.unavailable",
         error: "native liuAgent runtime outbox ack is unavailable",
         deletedCount: 0,
+      };
+}
+
+export async function saveNativeLiuAgentOfflineCache(request = {}) {
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  const cacheKind = String(
+    request?.cacheKind || request?.cache_kind || "",
+  ).trim();
+  if (!workspacePath || !cacheKind) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "workspacePath and cacheKind are required",
+      result: {},
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentSaveOfflineCache", {
+    request: {
+      workspacePath,
+      cacheKind,
+      projectId: String(request?.projectId || request?.project_id || "").trim() || null,
+      chatSessionId:
+        String(request?.chatSessionId || request?.chat_session_id || "").trim() ||
+        null,
+      providerId: String(request?.providerId || request?.provider_id || "").trim() || null,
+      payload:
+        request?.payload && typeof request.payload === "object"
+          ? request.payload
+          : {},
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent offline cache save is unavailable",
+        result: {},
+      };
+}
+
+export async function loadNativeLiuAgentOfflineCache(request = {}) {
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  const cacheKind = String(
+    request?.cacheKind || request?.cache_kind || "",
+  ).trim();
+  if (!workspacePath || !cacheKind) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "workspacePath and cacheKind are required",
+      result: {},
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentLoadOfflineCache", {
+    request: {
+      workspacePath,
+      cacheKind,
+      projectId: String(request?.projectId || request?.project_id || "").trim() || null,
+      chatSessionId:
+        String(request?.chatSessionId || request?.chat_session_id || "").trim() ||
+        null,
+      providerId: String(request?.providerId || request?.provider_id || "").trim() || null,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent offline cache load is unavailable",
+        result: {},
+      };
+}
+
+export async function cleanupNativeLiuAgentOfflineCache(request = {}) {
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  const projectId = String(request?.projectId || request?.project_id || "").trim();
+  const chatSessionId = String(
+    request?.chatSessionId || request?.chat_session_id || "",
+  ).trim();
+  const eventIds = Array.isArray(request?.eventIds || request?.event_ids)
+    ? (request.eventIds || request.event_ids)
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    : [];
+  if (!workspacePath || !projectId || !chatSessionId) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "workspacePath, projectId and chatSessionId are required",
+      result: {},
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentCleanupOfflineCache", {
+    request: {
+      workspacePath,
+      projectId,
+      chatSessionId,
+      eventIds,
+      serverRefs:
+        request?.serverRefs && typeof request.serverRefs === "object"
+          ? request.serverRefs
+          : request?.server_refs && typeof request.server_refs === "object"
+            ? request.server_refs
+            : {},
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent offline cache cleanup is unavailable",
+        result: {},
       };
 }
 

@@ -31,7 +31,6 @@ pub struct LocalChatRequest {
     pub model_name: Option<String>,
     pub system_prompt: Option<String>,
     pub temperature: Option<f64>,
-    pub max_tokens: Option<u32>,
     pub model_runtime: Option<LocalModelRuntimeConfig>,
     #[serde(default)]
     pub attachments: Vec<LocalChatAttachment>,
@@ -73,6 +72,40 @@ pub struct LocalRuntimeEventsRequest {
     pub workspace_path: String,
     pub after_event_id: Option<String>,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfflineCacheSaveRequest {
+    pub workspace_path: String,
+    pub cache_kind: String,
+    pub project_id: Option<String>,
+    pub chat_session_id: Option<String>,
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfflineCacheLoadRequest {
+    pub workspace_path: String,
+    pub cache_kind: String,
+    pub project_id: Option<String>,
+    pub chat_session_id: Option<String>,
+    pub provider_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfflineCacheCleanupRequest {
+    pub workspace_path: String,
+    pub project_id: String,
+    pub chat_session_id: String,
+    #[serde(default)]
+    pub event_ids: Vec<String>,
+    #[serde(default)]
+    pub server_refs: Value,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -157,7 +190,6 @@ pub struct LocalModelRuntimeConfig {
     pub api_key_env: Option<String>,
     pub gateway_url: Option<String>,
     pub temperature: Option<f64>,
-    pub max_tokens: Option<u32>,
     pub timeout_ms: Option<u64>,
 }
 
@@ -342,6 +374,46 @@ impl AgentInvocationResult {
             tool_manifest_bundle: ToolManifestBundleSummary::empty(),
             agent_runtime_session: AgentRuntimeSessionSummary::empty(),
             requirement_record_path: String::new(),
+            summary: error.message.clone(),
+            error_code: error.code,
+            error: error.message,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfflineCacheResult {
+    pub ok: bool,
+    pub workspace_path: String,
+    pub result: Value,
+    pub summary: String,
+    pub error_code: String,
+    pub error: String,
+}
+
+impl OfflineCacheResult {
+    pub fn ok(workspace_path: String, result: Value) -> Self {
+        let summary = result
+            .get("summary")
+            .and_then(Value::as_str)
+            .unwrap_or("offline cache operation completed")
+            .to_string();
+        Self {
+            ok: true,
+            workspace_path,
+            result,
+            summary,
+            error_code: String::new(),
+            error: String::new(),
+        }
+    }
+
+    pub fn failed(workspace_path: String, error: ToolError) -> Self {
+        Self {
+            ok: false,
+            workspace_path,
+            result: json!({}),
             summary: error.message.clone(),
             error_code: error.code,
             error: error.message,

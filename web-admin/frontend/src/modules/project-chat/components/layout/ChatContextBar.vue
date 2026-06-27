@@ -7,13 +7,24 @@
           {{ hasSelectedProject ? projectLabel : surfaceName }}
         </div>
         <div class="chat-context-bar__meta">
-          <span>{{ chatModeLabel }}</span>
           <span v-if="sessionSourceLabel">{{ sessionSourceLabel }}</span>
           <span>{{ modelSummary }}</span>
           <span>{{ statusText }}</span>
+          <span v-if="offlineStatusText">{{ offlineStatusText }}</span>
         </div>
       </div>
       <div class="chat-context-bar__actions">
+        <el-button
+          v-if="pendingSyncCount > 0"
+          size="small"
+          type="primary"
+          plain
+          class="chat-context-bar__action-button chat-context-bar__action-button--sync"
+          :loading="syncing"
+          @click="emit('sync-local-cache')"
+        >
+          同步 {{ pendingSyncCount }} 条
+        </el-button>
         <el-button
           ref="guideButtonRef"
           size="small"
@@ -78,10 +89,12 @@ defineProps({
   hasSelectedProject: { type: Boolean, default: false },
   projectLabel: { type: String, default: "" },
   surfaceName: { type: String, default: "" },
-  chatModeLabel: { type: String, default: "" },
   sessionSourceLabel: { type: String, default: "" },
   modelSummary: { type: String, default: "" },
   statusText: { type: String, default: "" },
+  offlineStatusText: { type: String, default: "" },
+  pendingSyncCount: { type: Number, default: 0 },
+  syncing: { type: Boolean, default: false },
   canTrustWorkspace: { type: Boolean, default: false },
   workspaceTrustSaving: { type: Boolean, default: false },
 });
@@ -90,6 +103,7 @@ const emit = defineEmits([
   "start-guide",
   "open-project-detail",
   "open-material-library",
+  "sync-local-cache",
   "trust-workspace",
   "open-mcp",
   "open-skill-resource",

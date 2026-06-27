@@ -518,6 +518,25 @@
   min-width: 0;
 }
 
+.chat-model-sync-button {
+  flex: 0 0 auto;
+}
+
+.chat-model-offline-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(217, 119, 6, 0.22);
+  border-radius: 999px;
+  background: rgba(254, 243, 199, 0.72);
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .chat-model-select :deep(.el-select__wrapper),
 .chat-model-pill {
   min-height: 32px;

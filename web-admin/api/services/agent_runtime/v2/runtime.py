@@ -213,7 +213,6 @@ class AgentTaskRuntime:
         provider_id: str,
         model_name: str,
         temperature: float,
-        max_tokens: int,
         role_ids: list[str] | None,
         local_connector: Any | None,
         local_connector_workspace_path: str,
@@ -252,7 +251,6 @@ class AgentTaskRuntime:
             "provider_id": str(provider_id or "").strip(),
             "model_name": str(model_name or "").strip(),
             "temperature": float(temperature),
-            "max_tokens": int(max_tokens),
             "tools": tool_pool.openai_tools(),
             "tool_pool": tool_pool.summary(),
             "role_ids": [
@@ -280,7 +278,6 @@ class AgentTaskRuntime:
         provider_id: str,
         model_name: str,
         temperature: float,
-        max_tokens: int,
         project_id: str,
         employee_id: str,
         cancel_event: asyncio.Event,
@@ -325,7 +322,6 @@ class AgentTaskRuntime:
                     provider_id=provider_id,
                     model_name=model_name,
                     temperature=temperature,
-                    max_tokens=max_tokens,
                     role_ids=role_ids,
                     local_connector=local_connector,
                     local_connector_workspace_path=local_connector_workspace_path,
@@ -378,7 +374,6 @@ class AgentTaskRuntime:
             provider_id=provider_id,
             model_name=model_name,
             temperature=temperature,
-            max_tokens=max_tokens,
             project_id=project_id,
             employee_id=employee_id,
             username=username,
@@ -404,7 +399,6 @@ class AgentTaskRuntime:
         provider_id: str,
         model_name: str,
         temperature: float,
-        max_tokens: int,
         project_id: str,
         employee_id: str,
         username: str,
@@ -485,12 +479,6 @@ class AgentTaskRuntime:
             state_store=self._state_store,
             transcript_store=self._transcript_store,
             event_log=self._event_log,
-            max_model_steps=self._runtime_options.get("max_model_steps", 3),
-            max_tool_calls_per_round=self._runtime_options.get(
-                "max_tool_calls_per_round",
-                6,
-            ),
-            max_tool_calls_total=self._runtime_options.get("max_tool_calls_total"),
         )
         run_messages = list(messages or [])
         if not run_messages:
@@ -503,7 +491,6 @@ class AgentTaskRuntime:
             provider_id=provider_id,
             model_name=model_name,
             temperature=temperature,
-            max_tokens=max_tokens,
             **completion_gate,
         )
         yield {

@@ -260,7 +260,7 @@
         <el-form-item v-if="showProjectLocationFields" label="AI 入口文件">
           <el-input
             v-model="createForm.ai_entry_file"
-            placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
+            placeholder="AIENTRY.md"
           >
             <template #append>
               <el-button @click="selectCreateAiEntryFile">选择文件</el-button>
@@ -333,7 +333,7 @@
         <el-form-item v-if="showProjectLocationFields" label="AI 入口文件">
           <el-input
             v-model="editForm.ai_entry_file"
-            placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
+            placeholder="AIENTRY.md"
           >
             <template #append>
               <el-button @click="selectEditAiEntryFile">选择文件</el-button>
@@ -688,7 +688,7 @@ async function pickWorkspaceDirectory(currentPath = "") {
 async function pickAiEntryFile(currentPath = "", workspacePath = "") {
   const picked = await openWorkspaceFilePicker(currentPath, {
     title: "选择 AI 入口文件",
-    placeholder: ".ai/ENTRY.md",
+    placeholder: "AIENTRY.md",
     basePath: workspacePath,
   });
   if (picked === null) return null;

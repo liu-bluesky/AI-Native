@@ -299,6 +299,27 @@ fn liuagent_ack_runtime_outbox(
 }
 
 #[tauri::command]
+fn liuagent_save_offline_cache(
+    request: liuagent_core::OfflineCacheSaveRequest,
+) -> liuagent_core::OfflineCacheResult {
+    liuagent_core::save_local_offline_cache(request)
+}
+
+#[tauri::command]
+fn liuagent_load_offline_cache(
+    request: liuagent_core::OfflineCacheLoadRequest,
+) -> liuagent_core::OfflineCacheResult {
+    liuagent_core::load_local_offline_cache(request)
+}
+
+#[tauri::command]
+fn liuagent_cleanup_offline_cache(
+    request: liuagent_core::OfflineCacheCleanupRequest,
+) -> liuagent_core::OfflineCacheResult {
+    liuagent_core::cleanup_local_offline_cache(request)
+}
+
+#[tauri::command]
 fn pick_workspace_directory(title: Option<String>, initial_path: Option<String>) -> PickPathResult {
     let mut dialog = rfd::FileDialog::new();
     if let Some(title) = title.filter(|value| !value.trim().is_empty()) {
@@ -1228,7 +1249,10 @@ fn main() {
             liuagent_recover_runtime_state,
             liuagent_list_runtime_events,
             liuagent_list_runtime_outbox,
-            liuagent_ack_runtime_outbox
+            liuagent_ack_runtime_outbox,
+            liuagent_save_offline_cache,
+            liuagent_load_offline_cache,
+            liuagent_cleanup_offline_cache
         ])
         .run(tauri::generate_context!())
         .expect("error while running AI Employee Factory desktop app");

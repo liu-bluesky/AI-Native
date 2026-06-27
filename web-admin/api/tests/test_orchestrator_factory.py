@@ -7,73 +7,20 @@ from services.runtime.orchestrator_factory import (
 )
 
 
-def test_resolve_orchestrator_runtime_settings_uses_runtime_values():
-    settings = resolve_orchestrator_runtime_settings(
-        {
-            "max_loop_rounds": 11,
-            "max_tool_rounds": 7,
-            "repeated_tool_call_threshold": 4,
-            "tool_only_threshold": 5,
-            "tool_budget_strategy": "stop",
-            "max_tool_calls_per_round": 8,
-            "max_tool_calls_total": 13,
-            "tool_timeout_sec": 90,
-            "tool_retry_count": 2,
-        }
-    )
+def test_resolve_orchestrator_runtime_settings_ignores_budget_guard_values():
+    settings = resolve_orchestrator_runtime_settings({"agent_runtime_enabled": False})
 
-    assert settings == {
-        "max_loops": 11,
-        "max_tool_rounds": 7,
-        "repeated_tool_call_threshold": 4,
-        "tool_only_threshold": 5,
-        "tool_budget_strategy": "stop",
-        "max_tool_calls_per_round": 8,
-        "max_tool_calls_total": 13,
-        "tool_timeout_sec": 90,
-        "tool_retry_count": 2,
-    }
+    assert settings == {}
 
 
 def test_build_agent_orchestrator_applies_runtime_settings():
     orchestrator = build_agent_orchestrator(
         MagicMock(),
         MagicMock(),
-        {
-            "max_loop_rounds": 9,
-            "max_tool_rounds": 4,
-            "repeated_tool_call_threshold": 3,
-            "tool_only_threshold": 4,
-            "tool_budget_strategy": "stop",
-            "max_tool_calls_per_round": 5,
-            "max_tool_calls_total": 12,
-            "tool_timeout_sec": 33,
-            "tool_retry_count": 1,
-            "agent_runtime_enabled": False,
-        },
+        {"agent_runtime_enabled": False},
     )
 
-    assert orchestrator._runtime_options["max_loops"] == 9
-    assert orchestrator._runtime_options["max_tool_rounds"] == 4
-    assert orchestrator._runtime_options["repeated_tool_call_threshold"] == 3
-    assert orchestrator._runtime_options["tool_only_threshold"] == 4
-    assert orchestrator._runtime_options["tool_budget_strategy"] == "stop"
-    assert orchestrator._runtime_options["max_tool_calls_per_round"] == 5
-    assert orchestrator._runtime_options["max_tool_calls_total"] == 12
-    assert orchestrator._runtime_options["tool_timeout_sec"] == 33
-    assert orchestrator._runtime_options["tool_retry_count"] == 1
-
-
-def test_resolve_orchestrator_runtime_settings_preserves_zero_timeout():
-    settings = resolve_orchestrator_runtime_settings(
-        {
-            "tool_timeout_sec": 0,
-            "tool_retry_count": 0,
-        }
-    )
-
-    assert settings["tool_timeout_sec"] == 0
-    assert settings["tool_retry_count"] == 0
+    assert orchestrator._runtime_options == {}
 
 
 def test_should_enable_agent_runtime_v2_defaults_to_true(monkeypatch):

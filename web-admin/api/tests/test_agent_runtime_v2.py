@@ -1052,7 +1052,6 @@ async def test_query_engine_can_complete_from_failed_tool_with_useful_stdout(tmp
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -1128,7 +1127,6 @@ async def test_query_engine_creates_observation_and_continues_after_tool(tmp_pat
         state_store=state_store,
         event_log=event_log,
         transcript_store=transcript_store,
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -1156,7 +1154,7 @@ async def test_query_engine_creates_observation_and_continues_after_tool(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_query_engine_stops_before_total_tool_call_budget_is_exceeded(tmp_path):
+async def test_query_engine_does_not_stop_on_total_tool_call_budget(tmp_path):
     from services.agent_runtime.core.event_log import RuntimeEventLog
     from services.agent_runtime.v2.llm_step import LLMStep
     from services.agent_runtime.v2.query_engine import QueryEngine
@@ -1170,6 +1168,9 @@ async def test_query_engine_stops_before_total_tool_call_budget_is_exceeded(tmp_
 
         async def chat_completion_stream(self, **kwargs):
             self.calls += 1
+            if self.calls > 1:
+                yield {"content": "工具执行完成"}
+                return
             yield {
                 "tool_calls": [
                     {
@@ -1210,9 +1211,6 @@ async def test_query_engine_stops_before_total_tool_call_budget_is_exceeded(tmp_
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=3,
-        max_tool_calls_per_round=1,
-        max_tool_calls_total=1,
     )
 
     result = await engine.run(
@@ -1234,13 +1232,12 @@ async def test_query_engine_stops_before_total_tool_call_budget_is_exceeded(tmp_
 
     events = [item.event_type for item in event_log.list_events(task_run.run_id)]
     assert executor.calls == 1
-    assert result.task_run.status == "failed"
+    assert result.task_run.status == "completed"
     assert result.total_tool_calls == 1
     assert result.completion_decision is not None
-    assert result.completion_decision.action == "fail"
-    assert "tool_call_budget_exceeded" in result.completion_decision.reasons
-    assert "tool_call_budget_exceeded" in events
-    assert "工具调用次数已达到上限" in result.final_content
+    assert result.completion_decision.action == "complete"
+    assert "tool_call_budget_exceeded" not in events
+    assert result.final_content == "工具执行完成"
 
 
 @pytest.mark.asyncio
@@ -1296,7 +1293,6 @@ async def test_query_engine_fails_when_tool_succeeds_but_model_never_answers(tmp
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=2,
     )
 
     result = await engine.run(
@@ -1377,7 +1373,6 @@ async def test_query_engine_waits_when_permission_required(tmp_path):
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -1462,7 +1457,6 @@ async def test_query_engine_continues_when_operation_wait_has_no_user_action(tmp
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -1543,7 +1537,6 @@ async def test_query_engine_waits_when_background_operation_has_interaction_sche
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -1627,7 +1620,6 @@ async def test_query_engine_waiting_operation_ignores_model_command_tutorial(tmp
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -1713,7 +1705,6 @@ async def test_query_engine_executes_dsml_text_tool_call_without_showing_protoco
         state_store=state_store,
         event_log=event_log,
         transcript_store=transcript_store,
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -1805,7 +1796,6 @@ async def test_query_engine_executes_harmony_text_tool_call_without_showing_prot
         state_store=state_store,
         event_log=event_log,
         transcript_store=transcript_store,
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -1867,7 +1857,6 @@ async def test_query_engine_does_not_complete_harmony_tool_call_leak(tmp_path):
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=1,
     )
 
     result = await engine.run(
@@ -1953,7 +1942,6 @@ async def test_query_engine_auth_operation_queued_reports_actionable_waiting_sta
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -2030,7 +2018,6 @@ async def test_query_engine_reports_missing_host_workspace_as_environment_block(
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -2109,7 +2096,6 @@ async def test_query_engine_returns_llm_error_content_when_stream_raises(tmp_pat
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -2203,7 +2189,6 @@ def test_query_engine_blocks_when_permission_rule_denies(tmp_path):
             state_store=state_store,
             event_log=event_log,
             transcript_store=TranscriptStore(tmp_path / "transcripts"),
-            max_model_steps=3,
         )
 
         result = await engine.run(
@@ -2229,7 +2214,8 @@ def test_query_engine_blocks_when_permission_rule_denies(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_query_engine_empty_model_response_does_not_complete(tmp_path):
+async def test_query_engine_retries_empty_model_response_until_content(tmp_path):
+    from services.agent_runtime.shared.completion_policy import CompletionDecision
     from services.agent_runtime.core.event_log import RuntimeEventLog
     from services.agent_runtime.v2.llm_step import LLMStep
     from services.agent_runtime.v2.query_engine import QueryEngine
@@ -2237,10 +2223,21 @@ async def test_query_engine_empty_model_response_does_not_complete(tmp_path):
     from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _EmptyLLM:
-        async def chat_completion_stream(self, **kwargs):
-            if False:
-                yield {}
+        def __init__(self):
+            self.calls = 0
 
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            if self.calls > 1:
+                yield {"content": "第二轮生成回答"}
+
+    class _CompleteOnContentPolicy:
+        def evaluate(self, **kwargs):
+            if str(kwargs.get("response_content") or "").strip():
+                return CompletionDecision("complete", ["content_after_retry"])
+            return CompletionDecision("retry_model", ["empty_model_response"])
+
+    llm = _EmptyLLM()
     state_store = TaskRunStore(tmp_path / "runs")
     event_log = RuntimeEventLog(tmp_path / "events")
     task_run = state_store.create(
@@ -2251,11 +2248,11 @@ async def test_query_engine_empty_model_response_does_not_complete(tmp_path):
         user_goal="查询状态",
     )
     engine = QueryEngine(
-        llm_step=LLMStep(_EmptyLLM()),
+        llm_step=LLMStep(llm),
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=1,
+        completion_policy=_CompleteOnContentPolicy(),
     )
 
     result = await engine.run(
@@ -2270,10 +2267,11 @@ async def test_query_engine_empty_model_response_does_not_complete(tmp_path):
         goal_covered=True,
     )
 
-    assert result.task_run.status == "failed"
+    assert llm.calls == 2
+    assert result.task_run.status == "completed"
     assert result.completion_decision is not None
-    assert result.completion_decision.action == "fail"
-    assert "model_step_budget_exceeded" in result.completion_decision.reasons
+    assert result.completion_decision.action == "complete"
+    assert "content_after_retry" in result.completion_decision.reasons
 
 
 @pytest.mark.asyncio
@@ -2320,7 +2318,6 @@ async def test_query_engine_continue_decision_runs_another_model_step(tmp_path):
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
         completion_policy=policy,
-        max_model_steps=3,
     )
 
     result = await engine.run(
@@ -2342,7 +2339,8 @@ async def test_query_engine_continue_decision_runs_another_model_step(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_query_engine_continue_budget_exceeded_fails_not_running(tmp_path):
+async def test_query_engine_continue_decision_runs_until_policy_completes(tmp_path):
+    from services.agent_runtime.shared.completion_policy import CompletionDecision
     from services.agent_runtime.core.event_log import RuntimeEventLog
     from services.agent_runtime.v2.llm_step import LLMStep
     from services.agent_runtime.v2.query_engine import QueryEngine
@@ -2357,7 +2355,18 @@ async def test_query_engine_continue_budget_exceeded_fails_not_running(tmp_path)
             self.calls += 1
             yield {"content": f"未收口响应 {self.calls}"}
 
+    class _ContinueTwiceThenCompletePolicy:
+        def __init__(self):
+            self.calls = 0
+
+        def evaluate(self, **kwargs):
+            self.calls += 1
+            if self.calls < 3:
+                return CompletionDecision("continue", ["needs_more_work"])
+            return CompletionDecision("complete", ["policy_completed"])
+
     llm = _FakeLLM()
+    policy = _ContinueTwiceThenCompletePolicy()
     state_store = TaskRunStore(tmp_path / "runs")
     event_log = RuntimeEventLog(tmp_path / "events")
     task_run = state_store.create(
@@ -2372,7 +2381,7 @@ async def test_query_engine_continue_budget_exceeded_fails_not_running(tmp_path)
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
-        max_model_steps=2,
+        completion_policy=policy,
     )
 
     result = await engine.run(
@@ -2387,12 +2396,12 @@ async def test_query_engine_continue_budget_exceeded_fails_not_running(tmp_path)
         goal_covered=False,
     )
 
-    assert llm.calls == 2
-    assert result.task_run.status == "failed"
+    assert llm.calls == 3
+    assert policy.calls == 3
+    assert result.task_run.status == "completed"
     assert result.completion_decision is not None
-    assert result.completion_decision.action == "fail"
-    assert "model_step_budget_exceeded" in result.completion_decision.reasons
-    assert "query_engine_paused" not in [event["type"] for event in result.task_run.events]
+    assert result.completion_decision.action == "complete"
+    assert "policy_completed" in result.completion_decision.reasons
 
 
 @pytest.mark.asyncio
@@ -2413,7 +2422,7 @@ async def test_agent_runtime_v2_query_engine_requires_real_completion_evidence(t
     llm = _FakeLLM()
     runtime = AgentTaskRuntime(
         llm_service=llm,
-        runtime_options={"max_model_steps": 2},
+        runtime_options={},
         state_store=TaskRunStore(tmp_path / "runs"),
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
         event_log=RuntimeEventLog(tmp_path / "events"),
@@ -3872,7 +3881,6 @@ async def test_operation_resume_can_continue_query_engine_after_allow_once(tmp_p
         tools=[{"tool_name": "project_host_run_command"}],
         provider_id="provider-1",
         model_name="model-1",
-        max_model_steps=1,
     )
 
     events = [item.event_type for item in event_log.list_events(task_run.run_id)]
@@ -3979,7 +3987,6 @@ async def test_operation_resume_can_continue_after_background_task_completion(tm
         tools=[{"tool_name": "project_host_run_command"}],
         provider_id="provider-1",
         model_name="model-1",
-        max_model_steps=1,
     )
 
     events = [item.event_type for item in event_log.list_events(task_run.run_id)]

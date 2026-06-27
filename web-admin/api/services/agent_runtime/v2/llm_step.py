@@ -44,9 +44,9 @@ class LLMStep:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.2,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         timeout: int = 120,
-        max_tool_calls: int = 6,
+        max_tool_calls: int | None = None,
     ) -> LLMStepResult:
         from services.agent_runtime.shared.provider_events import (
             ProviderStreamAdapter,

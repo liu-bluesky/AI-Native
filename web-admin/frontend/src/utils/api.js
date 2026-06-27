@@ -5,6 +5,7 @@ import { buildApiBaseUrl } from './server-profile.js'
 
 const api = axios.create({ baseURL: buildApiBaseUrl() })
 const AUTH_PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
+const DESKTOP_OFFLINE_MODE_STORAGE_KEY = 'desktop_offline_mode'
 
 function normalizeHashPath(hash) {
   return String(hash || '#/intro')
@@ -59,6 +60,28 @@ function normalizeApiError(err) {
   }
 }
 
+function markDesktopBackendOnline() {
+  try {
+    window.sessionStorage?.removeItem(DESKTOP_OFFLINE_MODE_STORAGE_KEY)
+  } catch {}
+}
+
+function markDesktopBackendOffline(error) {
+  const status = Number(error?.status || 0)
+  const code = String(error?.code || '').trim()
+  const detail = String(error?.detail || error?.message || '').trim()
+  const looksOffline =
+    status === 0 ||
+    status >= 500 ||
+    code === 'ERR_NETWORK' ||
+    code === 'ECONNABORTED' ||
+    /ECONNREFUSED|Network Error|服务不可用|network/i.test(detail)
+  if (!looksOffline) return
+  try {
+    window.sessionStorage?.setItem(DESKTOP_OFFLINE_MODE_STORAGE_KEY, '1')
+  } catch {}
+}
+
 api.interceptors.request.use((config) => {
   config.baseURL = buildApiBaseUrl()
   const token = getStoredToken()
@@ -71,13 +94,18 @@ api.interceptors.request.use((config) => {
 })
 
 api.interceptors.response.use(
-  (res) => res.data,
+  (res) => {
+    markDesktopBackendOnline()
+    return res.data
+  },
   (err) => {
     if (err.response?.status === 401) {
       clearAuthSession()
       redirectToLogin()
     }
-    return Promise.reject(normalizeApiError(err))
+    const normalizedError = normalizeApiError(err)
+    markDesktopBackendOffline(normalizedError)
+    return Promise.reject(normalizedError)
   },
 )
 

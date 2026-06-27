@@ -383,6 +383,207 @@ pub fn delete_runtime_outbox_entries(
     Ok(deleted)
 }
 
+pub fn save_offline_cache_record(
+    workspace_root: &Path,
+    cache_kind: &str,
+    project_id: Option<&str>,
+    chat_session_id: Option<&str>,
+    provider_id: Option<&str>,
+    payload: Value,
+) -> Result<Value, ToolError> {
+    let now = epoch_millis();
+    match normalize_cache_kind(cache_kind).as_str() {
+        "project" => {
+            let project_id = required_cache_id(project_id, "projectId")?;
+            let path = offline_project_index_path(workspace_root);
+            ensure_parent(&path)?;
+            let mut index = read_json_or_default(
+                &path,
+                json!({
+                    "record_type": "liuagent-offline-project-index",
+                    "version": 1,
+                    "projects": []
+                }),
+            )?;
+            let mut projects = index
+                .get("projects")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut record = payload;
+            record["project_id"] = json!(project_id);
+            record["projectId"] = json!(project_id);
+            record["updated_at_epoch_ms"] = json!(now);
+            projects.retain(|item| {
+                item.get("project_id")
+                    .or_else(|| item.get("projectId"))
+                    .and_then(Value::as_str)
+                    .map(|value| value != project_id)
+                    .unwrap_or(true)
+            });
+            projects.insert(0, record.clone());
+            index["projects"] = Value::Array(projects);
+            index["updated_at_epoch_ms"] = json!(now);
+            write_json(&path, &index)?;
+            Ok(json!({
+                "ok": true,
+                "cache_kind": "project",
+                "path": path.to_string_lossy(),
+                "record": record
+            }))
+        }
+        "session" => {
+            let project_id = required_cache_id(project_id, "projectId")?;
+            let chat_session_id = required_cache_id(chat_session_id, "chatSessionId")?;
+            let path = offline_session_cache_path(workspace_root, project_id, chat_session_id);
+            ensure_parent(&path)?;
+            let mut record = payload;
+            record["record_type"] = json!("liuagent-offline-session-cache");
+            record["version"] = json!(1);
+            record["project_id"] = json!(project_id);
+            record["projectId"] = json!(project_id);
+            record["chat_session_id"] = json!(chat_session_id);
+            record["chatSessionId"] = json!(chat_session_id);
+            record["updated_at_epoch_ms"] = json!(now);
+            if record.get("sync_status").is_none() && record.get("syncStatus").is_none() {
+                record["sync_status"] = json!("pending");
+            }
+            write_json(&path, &record)?;
+            Ok(json!({
+                "ok": true,
+                "cache_kind": "session",
+                "path": path.to_string_lossy(),
+                "record": record
+            }))
+        }
+        "runtime_config" => {
+            let provider_id = required_cache_id(provider_id, "providerId")?;
+            let path = offline_runtime_config_path(workspace_root, provider_id);
+            ensure_parent(&path)?;
+            let mut record = payload;
+            record["record_type"] = json!("liuagent-offline-runtime-config-cache");
+            record["version"] = json!(1);
+            record["provider_id"] = json!(provider_id);
+            record["providerId"] = json!(provider_id);
+            record["updated_at_epoch_ms"] = json!(now);
+            write_json(&path, &record)?;
+            Ok(json!({
+                "ok": true,
+                "cache_kind": "runtime_config",
+                "path": path.to_string_lossy(),
+                "record": record
+            }))
+        }
+        other => Err(ToolError::new(
+            "cache.kind_invalid",
+            format!("unsupported offline cache kind: {other}"),
+        )),
+    }
+}
+
+pub fn load_offline_cache_record(
+    workspace_root: &Path,
+    cache_kind: &str,
+    project_id: Option<&str>,
+    chat_session_id: Option<&str>,
+    provider_id: Option<&str>,
+) -> Result<Value, ToolError> {
+    match normalize_cache_kind(cache_kind).as_str() {
+        "project" => {
+            let path = offline_project_index_path(workspace_root);
+            let index = read_json_or_default(
+                &path,
+                json!({
+                    "record_type": "liuagent-offline-project-index",
+                    "version": 1,
+                    "projects": []
+                }),
+            )?;
+            Ok(json!({
+                "ok": true,
+                "cache_kind": "project",
+                "path": path.to_string_lossy(),
+                "record": index
+            }))
+        }
+        "session" => {
+            let project_id = required_cache_id(project_id, "projectId")?;
+            let chat_session_id = required_cache_id(chat_session_id, "chatSessionId")?;
+            let path = offline_session_cache_path(workspace_root, project_id, chat_session_id);
+            let record = read_json_or_default(&path, json!({}))?;
+            Ok(json!({
+                "ok": true,
+                "cache_kind": "session",
+                "path": path.to_string_lossy(),
+                "record": record
+            }))
+        }
+        "runtime_config" => {
+            let provider_id = required_cache_id(provider_id, "providerId")?;
+            let path = offline_runtime_config_path(workspace_root, provider_id);
+            let record = read_json_or_default(&path, json!({}))?;
+            Ok(json!({
+                "ok": true,
+                "cache_kind": "runtime_config",
+                "path": path.to_string_lossy(),
+                "record": record
+            }))
+        }
+        other => Err(ToolError::new(
+            "cache.kind_invalid",
+            format!("unsupported offline cache kind: {other}"),
+        )),
+    }
+}
+
+pub fn cleanup_synced_offline_cache(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    event_ids: &[String],
+    server_refs: Value,
+) -> Result<Value, ToolError> {
+    let deleted_count =
+        delete_runtime_outbox_entries(workspace_root, project_id, chat_session_id, event_ids)?;
+    let now = epoch_millis();
+    let session_path = offline_session_cache_path(workspace_root, project_id, chat_session_id);
+    let mut session_cache = read_json_or_default(&session_path, json!({}))?;
+    if session_cache.is_object() {
+        session_cache["sync_status"] = json!("synced");
+        session_cache["syncStatus"] = json!("synced");
+        session_cache["last_synced_at_epoch_ms"] = json!(now);
+        session_cache["lastSyncedAtEpochMs"] = json!(now);
+        session_cache["pending_outbox_count"] = json!(0);
+        session_cache["pendingOutboxCount"] = json!(0);
+        session_cache["server_refs"] = server_refs.clone();
+        ensure_parent(&session_path)?;
+        write_json(&session_path, &session_cache)?;
+    }
+    let maintenance_path = offline_maintenance_log_path(workspace_root);
+    ensure_parent(&maintenance_path)?;
+    append_jsonl(
+        &maintenance_path,
+        &[json!({
+            "event_id": format!("cache-cleanup-{}-{}", sanitize_path_segment(chat_session_id), now),
+            "event_type": "offline_cache_cleanup",
+            "project_id": project_id,
+            "chat_session_id": chat_session_id,
+            "deleted_outbox_count": deleted_count,
+            "server_refs": server_refs,
+            "created_at_epoch_ms": now
+        })],
+    )?;
+    Ok(json!({
+        "ok": true,
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "deleted_outbox_count": deleted_count,
+        "session_cache_path": session_path.to_string_lossy(),
+        "maintenance_log_path": maintenance_path.to_string_lossy(),
+        "summary": format!("cleaned {deleted_count} synced outbox entries")
+    }))
+}
+
 struct RuntimeArtifactPathBufs {
     state_path: PathBuf,
     transcript_path: PathBuf,
@@ -391,6 +592,56 @@ struct RuntimeArtifactPathBufs {
     active_session_path: PathBuf,
     session_history_path: PathBuf,
     outbox_path: PathBuf,
+}
+
+fn normalize_cache_kind(value: &str) -> String {
+    str::trim(value).replace('-', "_").to_ascii_lowercase()
+}
+
+fn required_cache_id<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str, ToolError> {
+    value
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .ok_or_else(|| ToolError::new("cache.schema_invalid", format!("{field_name} is required")))
+}
+
+fn offline_project_index_path(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join(".ai-employee")
+        .join("agent-runtime-v2")
+        .join("project-cache")
+        .join("index.json")
+}
+
+fn offline_session_cache_path(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+) -> PathBuf {
+    workspace_root
+        .join(".ai-employee")
+        .join("agent-runtime-v2")
+        .join("session-cache")
+        .join(format!(
+            "{}__{}.json",
+            sanitize_path_segment(project_id),
+            sanitize_path_segment(chat_session_id)
+        ))
+}
+
+fn offline_runtime_config_path(workspace_root: &Path, provider_id: &str) -> PathBuf {
+    workspace_root
+        .join(".ai-employee")
+        .join("agent-runtime-v2")
+        .join("runtime-config")
+        .join(format!("{}.json", sanitize_path_segment(provider_id)))
+}
+
+fn offline_maintenance_log_path(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join(".ai-employee")
+        .join("agent-runtime-v2")
+        .join("maintenance.jsonl")
 }
 
 fn runtime_artifact_paths(
@@ -555,6 +806,23 @@ fn write_json(path: &Path, value: &Value) -> Result<(), ToolError> {
         .map_err(|err| ToolError::new("state.write_failed", format!("write state failed: {err}")))
 }
 
+fn read_json_or_default(path: &Path, default_value: Value) -> Result<Value, ToolError> {
+    if !path.exists() {
+        return Ok(default_value);
+    }
+    let raw = fs::read_to_string(path).map_err(|err| {
+        ToolError::new(
+            "state.read_failed",
+            format!("read json state failed: {err}"),
+        )
+    })?;
+    if raw.trim().is_empty() {
+        return Ok(default_value);
+    }
+    serde_json::from_str::<Value>(&raw)
+        .map_err(|err| ToolError::new("state.invalid", format!("parse json state failed: {err}")))
+}
+
 fn append_jsonl(path: &Path, values: &[Value]) -> Result<(), ToolError> {
     if values.is_empty() {
         return Ok(());
@@ -715,6 +983,74 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saves_loads_and_cleans_offline_cache() {
+        let dir = std::env::temp_dir().join(format!("liuagent_offline_cache_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let project = save_offline_cache_record(
+            &dir,
+            "project",
+            Some("proj-test"),
+            None,
+            None,
+            json!({"name": "Test Project", "workspace_path": dir.to_string_lossy()}),
+        )
+        .unwrap();
+        assert_eq!(project["ok"], true);
+        let project_index = load_offline_cache_record(&dir, "project", None, None, None).unwrap();
+        assert_eq!(
+            project_index["record"]["projects"][0]["project_id"],
+            "proj-test"
+        );
+
+        let session = save_offline_cache_record(
+            &dir,
+            "session",
+            Some("proj-test"),
+            Some("chat-test"),
+            None,
+            json!({"status": "in_progress", "messages": [{"role": "user"}]}),
+        )
+        .unwrap();
+        assert_eq!(session["record"]["sync_status"], "pending");
+        let loaded_session =
+            load_offline_cache_record(&dir, "session", Some("proj-test"), Some("chat-test"), None)
+                .unwrap();
+        assert_eq!(loaded_session["record"]["status"], "in_progress");
+
+        let paths = runtime_artifact_paths(&dir, "proj-test", "chat-test");
+        ensure_parent(&paths.outbox_path).unwrap();
+        append_jsonl(
+            &paths.outbox_path,
+            &[
+                json!({"event_id": "evt-1", "created_at": "1"}),
+                json!({"event_id": "evt-2", "created_at": "2"}),
+            ],
+        )
+        .unwrap();
+        let cleanup = cleanup_synced_offline_cache(
+            &dir,
+            "proj-test",
+            "chat-test",
+            &["evt-1".to_string()],
+            json!({"server_message_ids": ["msg-1"]}),
+        )
+        .unwrap();
+        assert_eq!(cleanup["deleted_outbox_count"], 1);
+        let remaining = list_runtime_outbox(&dir, "proj-test", Some("chat-test"), 10).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0]["event_id"], "evt-2");
+        let cleaned_session =
+            load_offline_cache_record(&dir, "session", Some("proj-test"), Some("chat-test"), None)
+                .unwrap();
+        assert_eq!(cleaned_session["record"]["sync_status"], "synced");
+        assert_eq!(cleaned_session["record"]["pending_outbox_count"], 0);
+        assert!(offline_maintenance_log_path(&dir).exists());
+
         let _ = fs::remove_dir_all(dir);
     }
 

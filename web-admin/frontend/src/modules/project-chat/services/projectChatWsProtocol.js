@@ -287,27 +287,11 @@ export function formatGuardSummary(eventData) {
     .toLowerCase();
   const reason = String(eventData?.guard_reason || "").trim();
   const message = String(eventData?.guard_message || "").trim();
-  const details =
-    eventData?.guard_details && typeof eventData.guard_details === "object"
-      ? eventData.guard_details
-      : {};
   if (completedReason === "background_task_pending") return "";
   if (completedReason === "waiting_user_action") return "";
   if (message) return message;
-  if (reason === "tool_budget_exceeded") {
-    return `工具调用达到预算上限（${Number(details.tool_rounds || 0)}/${Number(details.max_tool_rounds || 0)} 轮）`;
-  }
-  if (reason === "repeated_tool_signature") {
-    return `检测到重复工具调用且没有正文输出（${Number(details.repeated_tool_signature_rounds || 0)}/${Number(details.repeated_tool_call_threshold || 0)} 次）`;
-  }
-  if (reason === "tool_only_loops") {
-    return `连续多轮只有工具调用没有正文输出（${Number(details.tool_only_loops || 0)}/${Number(details.tool_only_threshold || 0)} 轮）`;
-  }
   if (reason === "missing_final_response_after_tool") {
     return "工具执行已经完成，但模型没有继续生成最终回答。本轮未完成，请重新运行或检查模型续写链路。";
-  }
-  if (reason === "max_loops") {
-    return `达到最大处理轮次（${Number(details.loop_count || 0)}/${Number(details.max_loops || 0)} 轮）`;
   }
   return "";
 }

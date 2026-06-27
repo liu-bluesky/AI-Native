@@ -131,9 +131,12 @@ const router = createRouter({
 })
 
 const PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
+const OFFLINE_DESKTOP_STARTUP_STORAGE_KEY = 'desktop_offline_startup'
+const DESKTOP_OFFLINE_MODE_STORAGE_KEY = 'desktop_offline_mode'
 let initializationStatus = null
 let initializationStatusPromise = null
 let initializationStatusOrigin = ''
+let pendingOfflineDesktopStartup = false
 
 export function markSystemInitialized() {
   initializationStatus = true
@@ -164,35 +167,99 @@ async function isSystemInitialized() {
   return initializationStatusPromise
 }
 
+function hasOfflineDesktopChatEntry() {
+  try {
+    return Boolean(
+      getStoredToken() ||
+        String(window.localStorage?.getItem('project_id') || '').trim() ||
+        String(window.localStorage?.getItem('liuagent:cached-project-list') || '').trim(),
+    )
+  } catch {
+    return Boolean(getStoredToken())
+  }
+}
+
+function consumeOfflineDesktopStartupFlag() {
+  try {
+    if (window.sessionStorage?.getItem(OFFLINE_DESKTOP_STARTUP_STORAGE_KEY) !== '1') {
+      return false
+    }
+    window.sessionStorage.removeItem(OFFLINE_DESKTOP_STARTUP_STORAGE_KEY)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function isDesktopOfflineMode() {
+  try {
+    return window.sessionStorage?.getItem(DESKTOP_OFFLINE_MODE_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function isEmbeddedDesktopRoute(routeLocation = {}) {
+  try {
+    return (
+      String(routeLocation?.query?.embedded || '').trim() === '1' ||
+      new URLSearchParams(window.location.search).get('embedded') === '1'
+    )
+  } catch {
+    return false
+  }
+}
+
 router.beforeEach(async (to, from) => {
   const normalizedPath = String(to.path || '').trim() || '/'
+  let backendUnavailableForRoute = false
 
   if (normalizedPath === '/') {
-    return '/loading'
+    if (hasOfflineDesktopChatEntry()) {
+      pendingOfflineDesktopStartup = true
+      return '/workbench'
+    }
+    return { path: '/loading', query: { offline_entry: '1' } }
   }
 
   if (normalizedPath === '/loading') {
     return true
   }
 
-  try {
-    const initialized = await isSystemInitialized()
-    if (!initialized && normalizedPath !== '/init') {
-      return '/init'
-    }
-    if (initialized && normalizedPath === '/init') {
-      return getStoredToken() ? getFallbackPath() : '/login'
-    }
-  } catch {
-    if (normalizedPath === '/') {
-      return '/init'
+  const skipStartupStatusCheck =
+    isEmbeddedDesktopRoute(to) ||
+    (
+      normalizedPath === '/workbench' &&
+      (pendingOfflineDesktopStartup || consumeOfflineDesktopStartupFlag())
+    )
+  if (skipStartupStatusCheck) {
+    pendingOfflineDesktopStartup = false
+  } else {
+    try {
+      const initialized = await isSystemInitialized()
+      if (!initialized && normalizedPath !== '/init') {
+        return '/init'
+      }
+      if (initialized && normalizedPath === '/init') {
+        return getStoredToken() ? getFallbackPath() : '/login'
+      }
+    } catch {
+      backendUnavailableForRoute = true
+      if (normalizedPath === '/') {
+        return '/init'
+      }
     }
   }
 
   const token = getStoredToken()
   const isPublic = PUBLIC_PATHS.has(normalizedPath)
+  const bypassDesktopFallbacks = backendUnavailableForRoute || isDesktopOfflineMode()
+  const allowOfflineDesktopShell =
+    skipStartupStatusCheck && (normalizedPath === '/workbench' || isEmbeddedDesktopRoute(to))
+  const allowOfflineDesktopChat =
+    normalizedPath.startsWith('/ai/chat') && hasOfflineDesktopChatEntry()
 
-  if (!token && !isPublic) {
+  if (!token && !isPublic && !allowOfflineDesktopShell && !allowOfflineDesktopChat) {
     return '/login'
   }
 
@@ -200,7 +267,12 @@ router.beforeEach(async (to, from) => {
     return getFallbackPath()
   }
 
+  if (isEmbeddedDesktopRoute(to)) {
+    return true
+  }
+
   if (
+    !bypassDesktopFallbacks &&
     isChatSettingsRoutePath(from.path) &&
     !isChatSettingsRoutePath(to.path) &&
     to.path.startsWith('/') &&
@@ -218,7 +290,7 @@ router.beforeEach(async (to, from) => {
   }
 
   const requiredPermission = pathPermission(to.path)
-  if (requiredPermission && !hasPermission(requiredPermission)) {
+  if (!bypassDesktopFallbacks && requiredPermission && !hasPermission(requiredPermission)) {
     const fallback = getFallbackPath()
     if (fallback === to.path) {
       return '/login'
@@ -226,7 +298,11 @@ router.beforeEach(async (to, from) => {
     return fallback
   }
 
-  if (to.matched.some((record) => record.meta?.superAdminOnly) && !isSuperAdmin()) {
+  if (
+    !bypassDesktopFallbacks &&
+    to.matched.some((record) => record.meta?.superAdminOnly) &&
+    !isSuperAdmin()
+  ) {
     const fallback = getFallbackPath()
     if (fallback === to.path) {
       return '/ai/chat'

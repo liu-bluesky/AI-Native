@@ -163,7 +163,7 @@
         <div class="input-footer">
           <div class="footer-left">
             <el-select
-              v-if="isChatSettingsDisplayReady && !isExternalAgentMode"
+              v-if="isChatSettingsDisplayReady"
               v-model="selectedModelOptionValueModel"
               class="chat-model-select"
               popper-class="chat-model-select-dropdown"
@@ -199,10 +199,31 @@
                 </el-option>
               </el-option-group>
             </el-select>
-            <div v-else-if="isExternalAgentMode" class="chat-model-pill">
-              {{ externalAgentDisplayLabel }}
-            </div>
-            <div v-else class="chat-model-pill is-loading">
+            <span
+              v-if="modelProviderOffline"
+              class="chat-model-offline-badge"
+            >
+              离线
+            </span>
+            <el-tooltip
+              :content="modelProviderSyncTooltip"
+              placement="top"
+            >
+              <el-button
+                class="chat-model-sync-button"
+                text
+                circle
+                :loading="modelProviderSyncing"
+                :disabled="chatLoading"
+                @click="$emit('sync-model-providers')"
+              >
+                <el-icon><Refresh /></el-icon>
+              </el-button>
+            </el-tooltip>
+            <div
+              v-if="!isChatSettingsDisplayReady"
+              class="chat-model-pill is-loading"
+            >
               项目配置加载中
             </div>
             <el-upload
@@ -289,6 +310,7 @@ import {
   Document,
   Picture,
   Promotion,
+  Refresh,
   VideoPause,
 } from "@element-plus/icons-vue";
 
@@ -310,6 +332,9 @@ const props = defineProps([
   "isDragging",
   "isExternalAgentMode",
   "isSlashCommandMenuVisible",
+  "modelProviderOffline",
+  "modelProviderSyncing",
+  "modelProviderSyncTooltip",
   "providerModelGroups",
   "selectedModelOptionValue",
   "selectedProjectId",
@@ -340,6 +365,7 @@ const emit = defineEmits([
   "file-change",
   "remove-file",
   "send",
+  "sync-model-providers",
   "stop-generation",
   "update:draftText",
   "update:inputFocused",

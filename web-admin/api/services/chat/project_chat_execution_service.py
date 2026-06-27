@@ -173,7 +173,7 @@ async def run_project_chat_once(
         employee_id=employee_id_val,
         project=project,
         user_message=effective_user_message,
-        timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 20),
+        timeout_sec=20,
     )
     if direct_lark_cli is not None:
         try:
@@ -351,7 +351,6 @@ async def run_project_chat_once(
             selected_employee_ids=selected_employee_ids,
         )
 
-    max_tokens = projects_router._resolve_chat_max_tokens(runtime_settings.get("max_tokens"))
     temperature = float(runtime_settings.get("temperature") if runtime_settings.get("temperature") is not None else 0.1)
     temperature = max(0.0, min(temperature, 2.0))
     assistant_workflow_state = prepare_assistant_workflow_state(
@@ -479,7 +478,6 @@ async def run_project_chat_once(
                 user_message=effective_user_message,
                 runtime_context=runtime_context,
                 temperature=temperature,
-                max_tokens=max_tokens,
                 cancel_event=cancel_event,
             )
         ):

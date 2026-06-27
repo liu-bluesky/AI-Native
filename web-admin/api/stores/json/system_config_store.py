@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1481,7 +1481,6 @@ class SystemConfig:
     enable_employee_manual_generation: bool = False
     enable_user_register: bool = True
     chat_upload_max_limit: int = 6
-    chat_max_tokens: int = 512
     default_chat_system_prompt: str = ""
     desktop_agent_global_prompt: str = DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT
     employee_auto_rule_generation_enabled: bool = True
@@ -1644,6 +1643,17 @@ class SystemConfig:
         self.mcp_config = normalize_system_mcp_config(self.mcp_config)
 
 
+def normalize_system_config_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    allowed_fields = {item.name for item in fields(SystemConfig)}
+    return {
+        str(key): value
+        for key, value in payload.items()
+        if isinstance(key, str) and key in allowed_fields
+    }
+
+
 class SystemConfigStore:
     def __init__(self, data_dir: Path) -> None:
         self._path = data_dir / "system-config.json"
@@ -1652,7 +1662,8 @@ class SystemConfigStore:
         if not self._path.exists():
             return SystemConfig()
         data = json.loads(self._path.read_text(encoding="utf-8"))
-        config = SystemConfig(**data)
+        payload = normalize_system_config_payload(data)
+        config = SystemConfig(**payload)
         if asdict(config) != data:
             self.save_global(config)
         return config

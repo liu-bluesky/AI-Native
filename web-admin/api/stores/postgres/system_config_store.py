@@ -8,7 +8,11 @@ from dataclasses import asdict
 from stores.postgres._connection import connect
 from psycopg.rows import dict_row
 
-from stores.json.system_config_store import SystemConfig, _now_iso
+from stores.json.system_config_store import (
+    SystemConfig,
+    _now_iso,
+    normalize_system_config_payload,
+)
 
 
 class SystemConfigStorePostgres:
@@ -33,9 +37,11 @@ class SystemConfigStorePostgres:
             row = cur.fetchone()
         if row is None:
             return SystemConfig()
-        payload = row["payload"] if isinstance(row["payload"], dict) else {}
+        payload = normalize_system_config_payload(
+            row["payload"] if isinstance(row["payload"], dict) else {}
+        )
         config = SystemConfig(**payload)
-        if asdict(config) != payload:
+        if asdict(config) != row["payload"]:
             self.save_global(config)
         return config
 

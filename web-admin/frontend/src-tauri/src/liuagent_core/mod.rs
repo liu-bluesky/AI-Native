@@ -20,16 +20,18 @@ mod workspace;
 pub use definitions::builtin_tool_definitions;
 pub use gateway::prepare_agent_invocation;
 pub use runtime::{
-    ack_local_runtime_outbox, list_local_runtime_events, list_local_runtime_outbox,
-    recover_local_runtime_state,
+    ack_local_runtime_outbox, cleanup_local_offline_cache, list_local_runtime_events,
+    list_local_runtime_outbox, load_local_offline_cache, recover_local_runtime_state,
+    save_local_offline_cache,
 };
 pub use runtime::{start_local_chat_with_event_sink, upload_provider_file};
 pub use types::{
     AgentInvocationRequest, AgentInvocationResult, LocalChatRequest, LocalChatResult,
     LocalRuntimeEventsRequest, LocalRuntimeEventsResult, LocalRuntimeOutboxAckRequest,
     LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest,
-    LocalRuntimeRecoveryResult, ProviderFileUploadRequest, ProviderFileUploadResult,
-    ToolDefinition, ToolError, ToolExecutionRequest, ToolExecutionResult,
+    LocalRuntimeRecoveryResult, OfflineCacheCleanupRequest, OfflineCacheLoadRequest,
+    OfflineCacheResult, OfflineCacheSaveRequest, ProviderFileUploadRequest,
+    ProviderFileUploadResult, ToolDefinition, ToolError, ToolExecutionRequest, ToolExecutionResult,
 };
 
 use tools::command::{check_command_risk, run_command, run_command_with_output_sink};

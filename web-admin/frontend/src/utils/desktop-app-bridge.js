@@ -27,9 +27,17 @@ export function normalizeDesktopBridgePath(path) {
   if (!normalized) return "";
   try {
     const parsed = new URL(normalized, window.location.origin);
-    const hashRoute = parsed.hash.startsWith("#/") ? parsed.hash.slice(1) : "";
+    let hashRoute = parsed.hash.startsWith("#/") ? parsed.hash.slice(1) : "";
+    if (hashRoute) {
+      const hashUrl = new URL(hashRoute, window.location.origin);
+      hashUrl.searchParams.delete("embedded");
+      hashUrl.searchParams.delete("desktop_window_id");
+      hashUrl.searchParams.delete("desktop_reload_key");
+      hashRoute = `${hashUrl.pathname}${hashUrl.search}`;
+    }
     parsed.searchParams.delete("embedded");
     parsed.searchParams.delete("desktop_window_id");
+    parsed.searchParams.delete("desktop_reload_key");
     if (parsed.origin === window.location.origin) {
       if (hashRoute) {
         return hashRoute;

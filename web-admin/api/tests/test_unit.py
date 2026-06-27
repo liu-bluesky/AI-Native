@@ -5990,6 +5990,33 @@ def test_json_system_config_store_normalizes_reminder_volume(tmp_path):
     assert persisted["voice_output_reminder_volume"] == 100
 
 
+def test_json_system_config_store_drops_legacy_unknown_fields(tmp_path):
+    from stores.json.system_config_store import SystemConfigStore
+
+    data_dir = tmp_path / "api-data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    system_config_path = data_dir / "system-config.json"
+    system_config_path.write_text(
+        json.dumps(
+            {
+                "id": "global",
+                "chat_upload_max_limit": 8,
+                "chat_max_tokens": 12000,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    store = SystemConfigStore(data_dir)
+    config = store.get_global()
+    persisted = json.loads(system_config_path.read_text(encoding="utf-8"))
+
+    assert config.chat_upload_max_limit == 8
+    assert "chat_max_tokens" not in persisted
+    assert persisted["chat_upload_max_limit"] == 8
+
+
 def test_dictionary_routes_support_custom_dictionary_crud(tmp_path, monkeypatch):
     from core import config as core_config
     from core.deps import require_auth

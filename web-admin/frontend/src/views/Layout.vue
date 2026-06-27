@@ -922,8 +922,12 @@ async function clearDesktopCache() {
 function updateWindowFromEmbeddedPath(path, payload = {}) {
   const normalizedPath = normalizeDesktopBridgePath(path);
   if (!normalizedPath) return;
-  if (normalizedPath === "/login") {
-    void router.replace("/login");
+  if (
+    normalizedPath === "/login" ||
+    normalizedPath === "/init" ||
+    normalizedPath === "/loading" ||
+    normalizedPath === "/register"
+  ) {
     return;
   }
 

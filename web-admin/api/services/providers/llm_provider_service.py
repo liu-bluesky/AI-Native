@@ -884,7 +884,7 @@ class LlmProviderService:
         model_name: str,
         messages: list[dict[str, Any]],
         temperature: float = 0.2,
-        max_tokens: int = 1024,
+        max_tokens: int | None = 1024,
         timeout: int = 120,
         tools: list[dict[str, Any]] | None = None,
     ):
@@ -905,11 +905,15 @@ class LlmProviderService:
             raise ValueError("messages is required")
 
         normalized_temperature = self._clamp_temperature(temperature)
-        try:
-            normalized_max_tokens = int(max_tokens)
-        except (TypeError, ValueError):
-            normalized_max_tokens = 1024
-        normalized_max_tokens = max(16, normalized_max_tokens)
+        normalized_max_tokens: int | None
+        if max_tokens is None:
+            normalized_max_tokens = None
+        else:
+            try:
+                normalized_max_tokens = int(max_tokens)
+            except (TypeError, ValueError):
+                normalized_max_tokens = 1024
+            normalized_max_tokens = max(16, normalized_max_tokens)
 
         if self._is_responses_provider(provider):
             raise ValueError(f"Provider {provider_id} uses 'responses' mode which does not support streaming. Please use chat_completion() instead.")
@@ -922,10 +926,11 @@ class LlmProviderService:
             "model": chosen_model,
             "temperature": normalized_temperature,
             "messages": normalized_messages,
-            "max_tokens": normalized_max_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if normalized_max_tokens is not None:
+            body["max_tokens"] = normalized_max_tokens
         if tools:
             body["tools"] = tools
 

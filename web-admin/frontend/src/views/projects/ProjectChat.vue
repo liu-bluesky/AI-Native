@@ -43,15 +43,18 @@
             :has-selected-project="hasSelectedProject"
             :project-label="currentProjectLabel"
             :surface-name="chatSurfaceName"
-            :chat-mode-label="chatModeLabel"
             :session-source-label="currentChatSessionSourceLabel"
             :model-summary="currentModelSummary"
             :status-text="chatHeaderStatusText"
+            :offline-status-text="localOfflineStatusText"
+            :pending-sync-count="pendingLocalOutboxCount"
+            :syncing="localOutboxSyncing"
             :can-trust-workspace="canTrustAgentRuntimeWorkspace"
             :workspace-trust-saving="workspaceTrustSaving"
             @start-guide="startChatTour"
             @open-project-detail="openCurrentProjectDetail"
             @open-material-library="openCurrentMaterialLibrary"
+            @sync-local-cache="syncCurrentLocalLiuAgentRuntimeOutbox"
             @trust-workspace="trustAgentRuntimeWorkspace"
             @open-mcp="openUnifiedMcpDialog"
             @open-skill-resource="openSkillResourceCenter"
@@ -1463,6 +1466,9 @@
             :slash-command-highlight-index="slashCommandHighlightIndex"
             :is-external-agent-mode="isExternalAgentMode"
             :provider-model-groups="providerModelGroups"
+            :model-provider-offline="modelProviderOffline"
+            :model-provider-syncing="modelProviderSyncing"
+            :model-provider-sync-tooltip="modelProviderSyncTooltip"
             :upload-accept="uploadAccept"
             :attachment-supported="currentModelAttachmentSupported"
             :attachment-mode="currentModelAttachmentMode"
@@ -1485,6 +1491,7 @@
             @editor-composition-end="handleEditorCompositionEnd"
             @apply-slash-command-selection="applySlashCommandSelection"
             @file-change="handleFileChange"
+            @sync-model-providers="syncModelProvidersFromServer"
             @stop-generation="stopGeneration"
             @send="doSend"
           >
@@ -1860,22 +1867,6 @@
                         </strong>
                       </div>
 
-                      <el-form-item label="执行方式">
-                        <div
-                          v-if="!isChatSettingsDisplayReady"
-                          class="settings-loading-placeholder"
-                        >
-                          正在加载项目配置...
-                        </div>
-                        <el-select
-                          v-else
-                          v-model="projectChatSettings.chat_mode"
-                          class="full-width"
-                          :disabled="!selectedProjectId"
-                        >
-                          <el-option label="系统对话" value="system" />
-                        </el-select>
-                      </el-form-item>
                       <div class="settings-execution-section">
                         <span>协作策略</span>
                         <strong
@@ -1969,7 +1960,7 @@
                             项目上下文
                           </div>
                           <p class="settings-parameter-section__desc">
-                            让系统知道真实工作区、入口规则文件以及这一轮的最高优先级提示词。
+                            让系统知道真实工作区和项目级 AI 入口文件；入口文件是可选项。
                           </p>
                         </div>
                         <el-form-item
@@ -2044,7 +2035,7 @@
                             <el-input
                               v-model="aiEntryFileDraft"
                               class="full-width"
-                              placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
+                              placeholder="AIENTRY.md"
                             />
                             <div class="workspace-path-actions">
                               <el-button
@@ -2060,6 +2051,12 @@
                               >
                                 保存入口
                               </el-button>
+                              <el-button
+                                :loading="aiEntryFileCreating"
+                                @click="createDefaultAiEntryFile"
+                              >
+                                创建 AIENTRY.md
+                              </el-button>
                             </div>
                             <div class="workspace-path-hint">
                               <template
@@ -2074,7 +2071,7 @@
                                 }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话统一复用。
                               </template>
                               <template v-else>
-                                当前项目还没有平台工作区路径时，建议直接填写相对路径或绝对路径。
+                                入口文件不是必选项；未设置时，系统继续使用内置统一入口。
                               </template>
                               <template v-if="aiEntryFileResolved">
                                 当前已保存：{{ aiEntryFileResolved }}
@@ -2084,33 +2081,6 @@
                               </template>
                             </div>
                           </div>
-                        </el-form-item>
-
-                        <el-form-item>
-                          <template #label>
-                            <span class="label-with-tooltip">
-                              系统提示词
-                              <el-tooltip
-                                content="(System Prompt) 设定 AI 的角色背景和最高优先级的行为准则。"
-                                placement="top"
-                              >
-                                <el-icon class="label-icon"
-                                  ><InfoFilled
-                                /></el-icon>
-                              </el-tooltip>
-                            </span>
-                          </template>
-                          <el-input
-                            type="textarea"
-                            v-model="systemPrompt"
-                            :rows="3"
-                            :placeholder="
-                              isExternalAgentMode
-                                ? `补充给 ${externalAgentDisplayLabel} 的启动上下文...`
-                                : '你是项目开发助手...'
-                            "
-                            class="full-width"
-                          />
                         </el-form-item>
                       </section>
                     </el-form>
@@ -2159,28 +2129,6 @@
                             :step="0.1"
                             show-input
                             :show-input-controls="false"
-                          />
-                        </el-form-item>
-
-                        <el-form-item>
-                          <template #label>
-                            <span class="label-with-tooltip">
-                              最大输出 Token
-                              <el-tooltip
-                                content="限制 AI 单次回答的最大长度，1 个 Token 大约对应 0.5 个汉字或 1 个英文单词。"
-                                placement="top"
-                              >
-                                <el-icon class="label-icon"
-                                  ><InfoFilled
-                                /></el-icon>
-                              </el-tooltip>
-                            </span>
-                          </template>
-                          <el-input-number
-                            v-model="chatMaxTokens"
-                            :min="128"
-                            :step="64"
-                            class="full-width"
                           />
                         </el-form-item>
 
@@ -2357,20 +2305,6 @@
                               }}
                             </span>
                           </div>
-                          <div class="settings-tools-overview__item">
-                            <span class="settings-tools-overview__label"
-                              >熔断后策略</span
-                            >
-                            <strong class="settings-tools-overview__value">{{
-                              projectChatSettings.tool_budget_strategy ===
-                              "stop"
-                                ? "直接停止"
-                                : "强制总结"
-                            }}</strong>
-                            <span class="settings-tools-overview__meta">
-                              超过轮次或预算后的默认收口方式
-                            </span>
-                          </div>
                         </div>
                       </section>
 
@@ -2380,157 +2314,12 @@
                             MCP 模块范围
                           </div>
                           <p class="settings-parameter-section__desc">
-                            这里控制本轮对话可见的项目工具，不会修改模块定义本身。
+                            系统内置 MCP 由后台自动管理；这里只维护当前项目额外接入的外部 MCP。
                           </p>
                         </div>
                         <el-form-item label="MCP 模块">
-                          <div class="mcp-source-switch">
-                            <button
-                              type="button"
-                              class="mcp-source-switch__item"
-                              :class="{
-                                'is-active': activeMcpSource === 'system',
-                              }"
-                              @click="activeMcpSource = 'system'"
-                            >
-                              系统提供 ({{ systemMcpTotal }})
-                            </button>
-                            <button
-                              v-if="hasSelectedProject"
-                              type="button"
-                              class="mcp-source-switch__item"
-                              :class="{
-                                'is-active': activeMcpSource === 'external',
-                              }"
-                              @click="activeMcpSource = 'external'"
-                            >
-                              外部 ({{ externalMcpTotal }})
-                            </button>
-                          </div>
-
-                          <div
-                            v-show="activeMcpSource === 'system'"
-                            class="mcp-source-panel"
-                          >
-                            <el-select
-                              v-model="activeSystemScope"
-                              size="small"
-                              class="full-width mcp-scope-select"
-                            >
-                              <el-option
-                                :label="`项目关联的所有 (${systemProjectRelatedModules.length})`"
-                                value="project_related"
-                              />
-                              <el-option
-                                :label="`系统本身提供的所有 (${systemGlobalModules.length})`"
-                                value="system_global"
-                              />
-                            </el-select>
-                            <div class="mcp-section-tip">
-                              系统提供的 MCP
-                              仅展示；此处勾选只控制当前项目对话可用工具，不修改模块定义。
-                            </div>
-                            <div
-                              v-if="
-                                activeSystemScope === 'project_related' &&
-                                projectToolModules.length
-                              "
-                              class="mcp-tool-actions"
-                            >
-                              <span class="mcp-tool-count"
-                                >本轮启用
-                                {{ selectedProjectToolNames.length }}/{{
-                                  projectToolModules.length
-                                }}</span
-                              >
-                              <div class="mcp-tool-buttons">
-                                <el-button
-                                  text
-                                  size="small"
-                                  @click="selectAllProjectTools"
-                                  >全选</el-button
-                                >
-                                <el-button
-                                  text
-                                  size="small"
-                                  @click="clearProjectTools"
-                                  >清空</el-button
-                                >
-                              </div>
-                            </div>
-                            <div class="mcp-module-list">
-                              <el-empty
-                                v-if="!activeSystemModules.length"
-                                description="暂无系统模块"
-                                :image-size="48"
-                              />
-                              <template v-else>
-                                <div
-                                  v-for="item in activeSystemModules.slice(
-                                    0,
-                                    12,
-                                  )"
-                                  :key="item.id || item.tool_name"
-                                  class="mcp-module-item"
-                                >
-                                  <div class="mcp-module-row">
-                                    <div class="mcp-module-head">
-                                      <el-checkbox
-                                        v-if="
-                                          item.scope === 'project_related' &&
-                                          item.tool_name
-                                        "
-                                        :model-value="
-                                          isProjectToolSelected(item.tool_name)
-                                        "
-                                        @change="
-                                          (val) =>
-                                            toggleProjectTool(
-                                              item.tool_name,
-                                              val,
-                                            )
-                                        "
-                                      />
-                                      <span class="mcp-module-name">{{
-                                        item.name || item.id || "-"
-                                      }}</span>
-                                    </div>
-                                    <el-tag
-                                      size="small"
-                                      :type="moduleTagType(item.module_type)"
-                                      >{{
-                                        moduleTypeLabel(item.module_type)
-                                      }}</el-tag
-                                    >
-                                  </div>
-                                  <div
-                                    v-if="item.description"
-                                    class="mcp-module-desc"
-                                  >
-                                    {{ item.description }}
-                                  </div>
-                                  <div
-                                    v-if="moduleMetaText(item)"
-                                    class="mcp-module-meta"
-                                  >
-                                    {{ moduleMetaText(item) }}
-                                  </div>
-                                </div>
-                                <div
-                                  v-if="activeSystemModules.length > 12"
-                                  class="mcp-module-more"
-                                >
-                                  其余
-                                  {{ activeSystemModules.length - 12 }}
-                                  个模块未展示
-                                </div>
-                              </template>
-                            </div>
-                          </div>
-
                           <div
                             v-if="hasSelectedProject"
-                            v-show="activeMcpSource === 'external'"
                             class="mcp-source-panel"
                           >
                             <ExternalMcpManager
@@ -2546,173 +2335,6 @@
                         </el-form-item>
                       </section>
 
-                      <section class="settings-parameter-section">
-                        <div class="settings-parameter-section__header">
-                          <div class="settings-parameter-section__title">
-                            执行护栏
-                          </div>
-                          <p class="settings-parameter-section__desc">
-                            这些参数只约束 AI 的循环与工具预算。`工具执行超时 =
-                            0` 表示不限制。
-                          </p>
-                        </div>
-                        <el-collapse class="settings-constraint-collapse">
-                          <el-collapse-item title="高级护栏参数">
-                            <div class="settings-constraint-grid">
-                              <el-form-item>
-                                <template #label>
-                                  <span class="label-with-tooltip">
-                                    工具执行超时
-                                    <el-tooltip
-                                      content="单个工具允许执行的最长时间（秒）。填 0 表示不限制。"
-                                      placement="top"
-                                    >
-                                      <el-icon class="label-icon"
-                                        ><InfoFilled
-                                      /></el-icon>
-                                    </el-tooltip>
-                                  </span>
-                                </template>
-                                <div class="settings-field-stack">
-                                  <el-input-number
-                                    v-model="
-                                      projectChatSettings.tool_timeout_sec
-                                    "
-                                    :min="0"
-                                    :max="600"
-                                    class="full-width"
-                                  />
-                                  <div class="settings-inline-helper">
-                                    0 = 不限制。适合长时间
-                                    MCP、CLI、终端或批处理任务。
-                                  </div>
-                                </div>
-                              </el-form-item>
-
-                              <el-form-item>
-                                <template #label>
-                                  <span class="label-with-tooltip">
-                                    失败重试次数
-                                    <el-tooltip
-                                      content="工具执行失败时的自动重试次数。"
-                                      placement="top"
-                                    >
-                                      <el-icon class="label-icon"
-                                        ><InfoFilled
-                                      /></el-icon>
-                                    </el-tooltip>
-                                  </span>
-                                </template>
-                                <el-input-number
-                                  v-model="projectChatSettings.tool_retry_count"
-                                  :min="0"
-                                  :max="5"
-                                  class="full-width"
-                                />
-                              </el-form-item>
-
-                              <el-form-item>
-                                <template #label>
-                                  <span class="label-with-tooltip">
-                                    最大循环轮次
-                                    <el-tooltip
-                                      content="AI 与工具之间交互迭代的最大次数，防止陷入无限死循环。"
-                                      placement="top"
-                                    >
-                                      <el-icon class="label-icon"
-                                        ><InfoFilled
-                                      /></el-icon>
-                                    </el-tooltip>
-                                  </span>
-                                </template>
-                                <el-input-number
-                                  v-model="projectChatSettings.max_loop_rounds"
-                                  :min="1"
-                                  :max="60"
-                                  class="full-width"
-                                />
-                              </el-form-item>
-
-                              <el-form-item>
-                                <template #label>
-                                  <span class="label-with-tooltip">
-                                    最大工具轮次
-                                    <el-tooltip
-                                      content="一轮对话中，允许连续调用工具的最高批次数。"
-                                      placement="top"
-                                    >
-                                      <el-icon class="label-icon"
-                                        ><InfoFilled
-                                      /></el-icon>
-                                    </el-tooltip>
-                                  </span>
-                                </template>
-                                <el-input-number
-                                  v-model="projectChatSettings.max_tool_rounds"
-                                  :min="1"
-                                  :max="30"
-                                  class="full-width"
-                                />
-                              </el-form-item>
-
-                              <el-form-item>
-                                <template #label>
-                                  <span class="label-with-tooltip">
-                                    单批工具调用数
-                                    <el-tooltip
-                                      content="每次向模型请求时，AI 并行发起工具调用的最大数量。"
-                                      placement="top"
-                                    >
-                                      <el-icon class="label-icon"
-                                        ><InfoFilled
-                                      /></el-icon>
-                                    </el-tooltip>
-                                  </span>
-                                </template>
-                                <el-input-number
-                                  v-model="
-                                    projectChatSettings.max_tool_calls_per_round
-                                  "
-                                  :min="1"
-                                  :max="30"
-                                  class="full-width"
-                                />
-                              </el-form-item>
-
-                              <el-form-item>
-                                <template #label>
-                                  <span class="label-with-tooltip">
-                                    熔断后策略
-                                    <el-tooltip
-                                      content="当超过上述最大轮次限制（熔断）后，系统采取的动作：直接中断(Stop)或要求强制总结(Finalize)。"
-                                      placement="top"
-                                    >
-                                      <el-icon class="label-icon"
-                                        ><InfoFilled
-                                      /></el-icon>
-                                    </el-tooltip>
-                                  </span>
-                                </template>
-                                <el-select
-                                  v-model="
-                                    projectChatSettings.tool_budget_strategy
-                                  "
-                                  class="full-width"
-                                >
-                                  <el-option
-                                    label="强制收敛回答 (Finalize)"
-                                    value="finalize"
-                                  />
-                                  <el-option
-                                    label="直接停止 (Stop)"
-                                    value="stop"
-                                  />
-                                </el-select>
-                              </el-form-item>
-                            </div>
-                          </el-collapse-item>
-                        </el-collapse>
-                      </section>
                     </el-form>
                   </el-tab-pane>
                 </el-tabs>
@@ -2865,14 +2487,15 @@ import {
 import {
   classifyNativeRunnerCommand,
   cancelNativeExternalAgentSession,
+  cleanupNativeLiuAgentOfflineCache,
   detectNativeExecutors,
   getNativeExternalAgentSession,
   getNativeRuntimeInfo,
   hardKillNativeExternalAgentSession,
   hasNativeDesktopBridge,
-  ackNativeLiuAgentRuntimeOutbox,
   listNativeExternalAgentSessions,
   listNativeLiuAgentBuiltinTools,
+  loadNativeLiuAgentOfflineCache,
   listNativeLiuAgentRuntimeEvents,
   listNativeLiuAgentRuntimeOutbox,
   listNativeRunnerPermissionDecisions,
@@ -2885,6 +2508,7 @@ import {
   resolveNativeExternalAgentPermission,
   recoverNativeLiuAgentRuntimeState,
   runNativeRunnerCommand,
+  saveNativeLiuAgentOfflineCache,
   startNativeExternalAgentSession as startNativeExternalAgentSessionCommand,
   sendNativeExternalAgentPrompt as sendNativeExternalAgentPromptCommand,
   warmupNativeExternalAgentSession as warmupNativeExternalAgentSessionCommand,
@@ -3113,6 +2737,17 @@ import {
 } from "@/modules/project-chat/constants/settingsCenterConfig.js";
 
 const CREATE_CHAT_SESSION_QUERY_KEY = "create_chat_session";
+const DEFAULT_AI_ENTRY_FILE = "AIENTRY.md";
+const DEFAULT_AI_ENTRY_FILE_CONTENT = `# AI 入口
+
+这是当前项目的可选 AI 入口文件。
+
+## 项目约定
+
+- 在这里补充项目目录、开发规范、验证要求和交付偏好。
+- 不需要在这里配置系统 MCP；系统内置 MCP 由平台自动接入。
+- 外部 MCP 服务在项目 AI 对话设置的外部 MCP 中维护。
+`;
 
 const route = useRoute();
 const router = useRouter();
@@ -3162,6 +2797,11 @@ function applyLocalConnectorRuntimeSettings(baseSettings) {
 const loading = ref(false);
 const chatLoading = ref(false);
 const workspaceTrustSaving = ref(false);
+const projectListOffline = ref(false);
+const modelProviderOffline = ref(false);
+const modelProviderSyncing = ref(false);
+const pendingLocalOutboxCount = ref(0);
+const localOutboxSyncing = ref(false);
 const projectWorkspaceSaving = ref(false);
 const autoSaveState = ref("idle");
 const autoSaveUpdatedAt = ref("");
@@ -3323,6 +2963,7 @@ const creatingChatSession = ref(false);
 const deletingChatSessionId = ref("");
 const aiEntryFilePicking = ref(false);
 const aiEntryFileSaving = ref(false);
+const aiEntryFileCreating = ref(false);
 let terminalApprovalFallbackTimer = null;
 let chatRuntimePersistTimer = null;
 let chatRuntimeRemotePersistTimer = null;
@@ -3516,7 +3157,6 @@ const settingsTourVisible = ref(false);
 const settingsTourCurrent = ref(0);
 
 const maxUploadLimit = ref(6);
-const chatMaxTokens = ref(512);
 const conversationSidebarRef = ref(null);
 const chatSettingsButtonRef = computed(
   () => conversationSidebarRef.value?.settingsButtonRef || null,
@@ -3567,7 +3207,6 @@ const isChatSettingsDisplayReady = computed(() => {
   );
 });
 const isExternalAgentMode = computed(() => false);
-const chatModeLabel = computed(() => "本地运行");
 const projectWorkspaceResolved = computed(() =>
   String(projectWorkspacePath.value || "").trim(),
 );
@@ -4239,7 +3878,7 @@ const executionRuntimeTitle = computed(() => {
 const executionRuntimeDescription = computed(() => {
   if (!hasSelectedProject.value) return "选择项目后才能绑定执行环境。";
   if (!isChatSettingsDisplayReady.value) {
-    return "正在读取项目执行方式，加载完成前不会显示系统对话或Runner 状态。";
+    return "正在读取项目执行配置，加载完成前不会启动桌面本地 Runtime。";
   }
   if (!nativeDesktopBridgeAvailable.value) {
     return "当前不是桌面端 Tauri 环境，本地智能体无法执行本机工具。";
@@ -4462,6 +4101,7 @@ const executionPermissionItems = computed(() => [
 ]);
 const chatHeaderStatusText = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "配置加载中";
+  if (projectListOffline.value) return "离线项目缓存";
   if (!isExternalAgentMode.value) return wsStatusText.value;
   if (externalAgentDesktopRunnerRequired.value) return "需桌面端 Runner";
   if (nativeDesktopBridgeAvailable.value && !workspacePathConfigured.value)
@@ -4472,6 +4112,19 @@ const chatHeaderStatusText = computed(() => {
   if (externalAgentInfo.value.ready) return "已就绪";
   return "未就绪";
 });
+const localOfflineStatusText = computed(() => {
+  if (pendingLocalOutboxCount.value > 0) {
+    return `待同步 ${pendingLocalOutboxCount.value} 条`;
+  }
+  if (modelProviderOffline.value) return "离线 · 本地模型";
+  if (projectListOffline.value) return "离线 · 本地项目";
+  return "";
+});
+const modelProviderSyncTooltip = computed(() =>
+  modelProviderOffline.value
+    ? "同步模型供应商配置"
+    : "刷新模型供应商配置",
+);
 const chatHeaderStatusType = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "info";
   if (!isExternalAgentMode.value) return wsStatusType.value;
@@ -7346,8 +6999,8 @@ const chatTourSteps = computed(() => [
       ? `${currentProjectLabel.value} 的主要能力入口`
       : "先看当前对话工作台",
     description: hasSelectedProject.value
-      ? "项目详情、素材库、MCP 接入、提示词和本地工作区设置都集中在设置中心；对话页面只保留消息流和输入。"
-      : "设置中心用于选择项目、模型、MCP 和本地工作区；对话页面只保留消息流和输入。",
+      ? "项目详情、素材库、外部 MCP、AI 入口文件和本地工作区设置都集中在设置中心；对话页面只保留消息流和输入。"
+      : "设置中心用于选择项目、模型、外部 MCP 和本地工作区；对话页面只保留消息流和输入。",
     target: () => resolveTourTarget(chatSettingsButtonRef),
     placement: "right-start",
   },
@@ -7375,7 +7028,7 @@ const chatTourSteps = computed(() => [
   {
     title: "需要收束结果时进入设置中心",
     description:
-      "当你要调整执行员工、系统提示词、模型参数或工具预算时，从这里进入设置中心。那里会按你当前角色只展示真正可用的菜单。",
+      "当你要调整执行员工、AI 入口文件、模型参数或工具预算时，从这里进入设置中心。那里会按你当前角色只展示真正可用的菜单。",
     target: () => resolveTourTarget(chatSettingsButtonRef),
     placement: "left",
   },
@@ -8763,7 +8416,6 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
       modelName: selectedModelName.value || defaultModelName.value || "",
       systemPrompt: buildLocalLiuAgentSystemPrompt(),
       temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
-      maxTokens: Number(chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens),
       modelRuntime,
     };
     const normalizedPermissionRequest = {
@@ -13900,6 +13552,430 @@ function localLiuAgentWorkspacePath() {
   ).trim();
 }
 
+const LOCAL_LIUAGENT_LAST_WORKSPACE_KEY = "liuagent:last-workspace-path";
+const LOCAL_LIUAGENT_PROJECT_LIST_KEY = "liuagent:cached-project-list";
+const LOCAL_LIUAGENT_PROVIDER_MODELS_KEY = "liuagent:cached-provider-models";
+
+function rememberLocalLiuAgentWorkspacePath(workspacePath = "") {
+  const normalized = String(workspacePath || "").trim();
+  if (!normalized) return;
+  try {
+    window.localStorage?.setItem(LOCAL_LIUAGENT_LAST_WORKSPACE_KEY, normalized);
+  } catch {
+    // Local storage can be unavailable in hardened runtimes.
+  }
+}
+
+function readRememberedLocalLiuAgentWorkspacePath() {
+  try {
+    return String(
+      window.localStorage?.getItem(LOCAL_LIUAGENT_LAST_WORKSPACE_KEY) || "",
+    ).trim();
+  } catch {
+    return "";
+  }
+}
+
+function normalizeOfflineProjectListItem(item = {}) {
+  const id = String(item?.id || item?.project_id || item?.projectId || "").trim();
+  if (!id) return null;
+  return {
+    ...item,
+    id,
+    name: String(item?.name || item?.project_label || item?.projectLabel || id).trim(),
+    workspace_path: String(item?.workspace_path || item?.workspacePath || "").trim(),
+    is_offline_cached: Boolean(item?.is_offline_cached),
+  };
+}
+
+function saveProjectListOfflineSnapshot(list = []) {
+  const projects = (Array.isArray(list) ? list : [])
+    .map(normalizeOfflineProjectListItem)
+    .filter(Boolean)
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      workspace_path: item.workspace_path,
+      last_chat_session_id: String(
+        item?.last_chat_session_id || item?.lastChatSessionId || "",
+      ).trim(),
+      cached_at: new Date().toISOString(),
+    }));
+  if (!projects.length) return;
+  try {
+    window.localStorage?.setItem(
+      LOCAL_LIUAGENT_PROJECT_LIST_KEY,
+      JSON.stringify({ version: 1, projects, updated_at: new Date().toISOString() }),
+    );
+  } catch {
+    // Ignore localStorage failures; workspace cache remains the stronger source.
+  }
+}
+
+function readProjectListOfflineSnapshot() {
+  try {
+    const raw = window.localStorage?.getItem(LOCAL_LIUAGENT_PROJECT_LIST_KEY) || "";
+    if (!raw.trim()) return [];
+    const parsed = JSON.parse(raw);
+    return (Array.isArray(parsed?.projects) ? parsed.projects : [])
+      .map((item) => ({
+        ...item,
+        is_offline_cached: true,
+      }))
+      .map(normalizeOfflineProjectListItem)
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function providerModelSnapshotScope(projectId = "") {
+  return String(projectId || "").trim() || "global";
+}
+
+function normalizeProviderModelSnapshotItem(provider = {}) {
+  const id = String(provider?.id || provider?.provider_id || "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(provider?.name || provider?.label || id).trim(),
+    default_model: String(provider?.default_model || "").trim(),
+    models: Array.isArray(provider?.models)
+      ? provider.models.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    model_configs: Array.isArray(provider?.model_configs)
+      ? provider.model_configs
+          .map((item) => ({
+            name: String(item?.name || item?.model_name || item?.model || "").trim(),
+            model_type: String(item?.model_type || DEFAULT_MODEL_TYPE).trim(),
+          }))
+          .filter((item) => item.name)
+      : [],
+  };
+}
+
+function readProviderModelOfflineSnapshots() {
+  try {
+    const raw =
+      window.localStorage?.getItem(LOCAL_LIUAGENT_PROVIDER_MODELS_KEY) || "";
+    if (!raw.trim()) return {};
+    const parsed = JSON.parse(raw);
+    return parsed?.scopes && typeof parsed.scopes === "object"
+      ? parsed.scopes
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveProviderModelOfflineSnapshot(projectId = "") {
+  const normalizedProviders = (Array.isArray(providers.value) ? providers.value : [])
+    .map(normalizeProviderModelSnapshotItem)
+    .filter(Boolean);
+  if (!normalizedProviders.length) return;
+  const scope = providerModelSnapshotScope(projectId);
+  const snapshots = readProviderModelOfflineSnapshots();
+  snapshots[scope] = {
+    providers: normalizedProviders,
+    default_provider_id: String(defaultProviderId.value || "").trim(),
+    default_model_name: String(defaultModelName.value || "").trim(),
+    selected_provider_id: String(selectedProviderId.value || "").trim(),
+    selected_model_name: String(selectedModelName.value || "").trim(),
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    window.localStorage?.setItem(
+      LOCAL_LIUAGENT_PROVIDER_MODELS_KEY,
+      JSON.stringify({ version: 1, scopes: snapshots }),
+    );
+  } catch {
+    // Ignore localStorage failures; model choices can still be restored online.
+  }
+}
+
+function applyProviderModelOfflineSnapshot(projectId = "") {
+  const snapshots = readProviderModelOfflineSnapshots();
+  const scoped =
+    snapshots[providerModelSnapshotScope(projectId)] || snapshots.global || null;
+  const snapshotProviders = (Array.isArray(scoped?.providers)
+    ? scoped.providers
+    : []
+  )
+    .map(normalizeProviderModelSnapshotItem)
+    .filter(Boolean);
+  if (!snapshotProviders.length) return false;
+  providers.value = snapshotProviders;
+  modelProviderOffline.value = true;
+  defaultProviderId.value = String(
+    scoped?.default_provider_id || snapshotProviders[0]?.id || "",
+  ).trim();
+  const defaultProvider =
+    snapshotProviders.find((item) => item.id === defaultProviderId.value) ||
+    snapshotProviders[0] ||
+    {};
+  const defaultModels = normalizeProviderModelNames(
+    defaultProvider,
+    modelTypeOptions.value,
+  );
+  defaultModelName.value = String(
+    scoped?.default_model_name ||
+      defaultProvider?.default_model ||
+      defaultModels[0] ||
+      "",
+  ).trim();
+  const preferredProviderId = String(
+    scoped?.selected_provider_id || defaultProviderId.value || "",
+  ).trim();
+  selectedProviderId.value = snapshotProviders.some(
+    (item) => item.id === preferredProviderId,
+  )
+    ? preferredProviderId
+    : defaultProviderId.value;
+  const selectedProvider =
+    snapshotProviders.find((item) => item.id === selectedProviderId.value) ||
+    defaultProvider;
+  const selectedModels = normalizeProviderModelNames(
+    selectedProvider,
+    modelTypeOptions.value,
+  );
+  const preferredModelName = String(scoped?.selected_model_name || "").trim();
+  selectedModelName.value =
+    preferredModelName && selectedModels.includes(preferredModelName)
+      ? preferredModelName
+      : String(defaultModelName.value || selectedModels[0] || "").trim();
+  return true;
+}
+
+function markOfflineProjectList(list = []) {
+  return (Array.isArray(list) ? list : [])
+    .map((item) =>
+      normalizeOfflineProjectListItem({
+        ...item,
+        is_offline_cached: true,
+      }),
+    )
+    .filter(Boolean);
+}
+
+function mergeOfflineProjectLists(...lists) {
+  const merged = [];
+  const seen = new Set();
+  lists.flat().forEach((item) => {
+    const normalized = normalizeOfflineProjectListItem(item);
+    const id = String(normalized?.id || "").trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    merged.push(normalized);
+  });
+  return merged;
+}
+
+function offlineProjectIdHints() {
+  const hints = [
+    String(selectedProjectId.value || "").trim(),
+    readSelectedProjectId(),
+    String(routeChatTarget().projectId || "").trim(),
+  ].filter(Boolean);
+  return Array.from(new Set(hints));
+}
+
+function buildHintedOfflineProjects() {
+  return offlineProjectIdHints().map((id) => ({
+    id,
+    name: id,
+    is_offline_cached: true,
+  }));
+}
+
+async function loadLocalLiuAgentOfflineProjects() {
+  const workspacePath = String(
+    localLiuAgentWorkspacePath() || readRememberedLocalLiuAgentWorkspacePath(),
+  ).trim();
+  if (!workspacePath || !hasNativeDesktopBridge()) return [];
+  try {
+    const result = await loadNativeLiuAgentOfflineCache({
+      workspacePath,
+      cacheKind: "project",
+    });
+    const record =
+      result?.result?.record && typeof result.result.record === "object"
+        ? result.result.record
+        : {};
+    return (Array.isArray(record.projects) ? record.projects : [])
+      .map((item) => {
+        const normalized = normalizeOfflineProjectListItem({
+          ...item,
+          workspace_path: String(
+            item?.workspace_path || item?.workspacePath || workspacePath,
+          ).trim(),
+          is_offline_cached: true,
+        });
+        return normalized;
+      })
+      .filter(Boolean);
+  } catch (err) {
+    console.warn("load local liuAgent offline projects failed", err);
+    return [];
+  }
+}
+
+async function resolveProjectListOfflineFallback(currentProjects = []) {
+  const snapshotProjects = readProjectListOfflineSnapshot();
+  const offlineProjects = await loadLocalLiuAgentOfflineProjects();
+  return mergeOfflineProjectLists(
+    markOfflineProjectList(currentProjects),
+    markOfflineProjectList(snapshotProjects),
+    markOfflineProjectList(offlineProjects),
+    buildHintedOfflineProjects(),
+  );
+}
+
+function sanitizeLocalLiuAgentModelRuntimeForCache(modelRuntime = {}) {
+  if (!modelRuntime || typeof modelRuntime !== "object") return {};
+  const { apiKey: _apiKey, api_key: _api_key, ...rest } = modelRuntime;
+  return {
+    ...rest,
+    hasApiKey: Boolean(modelRuntime.apiKey || modelRuntime.api_key),
+  };
+}
+
+async function saveLocalLiuAgentProjectOfflineCache({
+  projectId = "",
+  chatSessionId = "",
+  workspacePath = "",
+} = {}) {
+  const normalizedProjectId = String(projectId || selectedProjectId.value || "").trim();
+  const normalizedWorkspacePath = String(workspacePath || localLiuAgentWorkspacePath()).trim();
+  if (!normalizedProjectId || !normalizedWorkspacePath || !hasNativeDesktopBridge()) return;
+  try {
+    rememberLocalLiuAgentWorkspacePath(normalizedWorkspacePath);
+    await saveNativeLiuAgentOfflineCache({
+      workspacePath: normalizedWorkspacePath,
+      cacheKind: "project",
+      projectId: normalizedProjectId,
+      payload: {
+        project_id: normalizedProjectId,
+        name: currentProjectLabel.value || normalizedProjectId,
+        workspace_path: normalizedWorkspacePath,
+        last_chat_session_id: String(chatSessionId || currentChatSessionId.value || "").trim(),
+        updated_at: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    console.warn("save local liuAgent project offline cache failed", err);
+  }
+}
+
+async function saveLocalLiuAgentSessionOfflineCache({
+  projectId = "",
+  chatSessionId = "",
+  workspacePath = "",
+  status = "pending",
+  userMessage = null,
+  assistantMessage = null,
+  historyRows = [],
+  rootGoal = "",
+  modelRuntime = null,
+  result = null,
+} = {}) {
+  const normalizedProjectId = String(projectId || selectedProjectId.value || "").trim();
+  const normalizedChatSessionId = String(
+    chatSessionId || currentChatSessionId.value || "",
+  ).trim();
+  const normalizedWorkspacePath = String(workspacePath || localLiuAgentWorkspacePath()).trim();
+  if (
+    !normalizedProjectId ||
+    !normalizedChatSessionId ||
+    !normalizedWorkspacePath ||
+    !hasNativeDesktopBridge()
+  ) {
+    return;
+  }
+  try {
+    await saveLocalLiuAgentProjectOfflineCache({
+      projectId: normalizedProjectId,
+      chatSessionId: normalizedChatSessionId,
+      workspacePath: normalizedWorkspacePath,
+    });
+    await saveNativeLiuAgentOfflineCache({
+      workspacePath: normalizedWorkspacePath,
+      cacheKind: "session",
+      projectId: normalizedProjectId,
+      chatSessionId: normalizedChatSessionId,
+      payload: {
+        project_id: normalizedProjectId,
+        chat_session_id: normalizedChatSessionId,
+        project_label: currentProjectLabel.value || normalizedProjectId,
+        workspace_path: normalizedWorkspacePath,
+        root_goal: String(rootGoal || "").trim(),
+        status,
+        sync_status: status === "synced" ? "synced" : "pending",
+        history: Array.isArray(historyRows) ? historyRows.slice(-40) : [],
+        latest_user_message: userMessage
+          ? {
+              id: userMessage.id,
+              content: userMessage.content,
+              time: userMessage.time,
+            }
+          : null,
+        latest_assistant_message: assistantMessage
+          ? {
+              id: assistantMessage.id,
+              content: assistantMessage.content,
+              reasoning_content: assistantMessage.reasoningContent || "",
+              time: assistantMessage.time,
+            }
+          : null,
+        model_runtime: sanitizeLocalLiuAgentModelRuntimeForCache(modelRuntime || {}),
+        runtime_result: result
+          ? {
+              ok: Boolean(result.ok),
+              session_id: String(result.sessionId || result.session_id || "").trim(),
+              requirement_record_path: String(
+                result.requirementRecordPath || result.requirement_record_path || "",
+              ).trim(),
+              summary: String(result.summary || result.error || "").trim(),
+            }
+          : null,
+        updated_at: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    console.warn("save local liuAgent session offline cache failed", err);
+  }
+}
+
+async function saveLocalLiuAgentRuntimeConfigOfflineCache({
+  workspacePath = "",
+  providerId = "",
+  modelRuntime = null,
+} = {}) {
+  const normalizedWorkspacePath = String(workspacePath || localLiuAgentWorkspacePath()).trim();
+  const normalizedProviderId = String(providerId || "").trim();
+  if (
+    !normalizedWorkspacePath ||
+    !normalizedProviderId ||
+    !modelRuntime ||
+    !hasNativeDesktopBridge()
+  ) {
+    return;
+  }
+  try {
+    await saveNativeLiuAgentOfflineCache({
+      workspacePath: normalizedWorkspacePath,
+      cacheKind: "runtime_config",
+      providerId: normalizedProviderId,
+      payload: {
+        ...sanitizeLocalLiuAgentModelRuntimeForCache(modelRuntime),
+        provider_id: normalizedProviderId,
+        updated_at: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    console.warn("save local liuAgent runtime config offline cache failed", err);
+  }
+}
+
 async function ensureLocalLiuAgentBuiltinToolNames() {
   if (localLiuAgentBuiltinToolNames.value.size) {
     return localLiuAgentBuiltinToolNames.value;
@@ -16438,54 +16514,16 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
     provider_id: selectedProviderId.value || undefined,
     model_name: selectedModelName.value || undefined,
     temperature: Number(temperature.value),
-    max_tokens: Number(chatMaxTokens.value || 512),
-    system_prompt: systemPrompt.value || undefined,
+    system_prompt: undefined,
     auto_use_tools: projectChatToolsExplicitlyEnabled(),
     tool_priority: mergeToolPriority(
       projectChatSettings.value.tool_priority || [],
       [],
     ),
-    max_tool_calls_per_round: resolveNumericChatSetting(
-      projectChatSettings.value.max_tool_calls_per_round,
-      CHAT_SETTINGS_DEFAULTS.max_tool_calls_per_round,
-      { min: 1, max: 30 },
-    ),
-    max_loop_rounds: resolveNumericChatSetting(
-      projectChatSettings.value.max_loop_rounds,
-      CHAT_SETTINGS_DEFAULTS.max_loop_rounds,
-      { min: 1, max: 60 },
-    ),
-    max_tool_rounds: resolveNumericChatSetting(
-      projectChatSettings.value.max_tool_rounds,
-      CHAT_SETTINGS_DEFAULTS.max_tool_rounds,
-      { min: 1, max: 30 },
-    ),
-    repeated_tool_call_threshold: Number(
-      projectChatSettings.value.repeated_tool_call_threshold ||
-        CHAT_SETTINGS_DEFAULTS.repeated_tool_call_threshold,
-    ),
-    tool_only_threshold: Number(
-      projectChatSettings.value.tool_only_threshold ||
-        CHAT_SETTINGS_DEFAULTS.tool_only_threshold,
-    ),
-    tool_budget_strategy: String(
-      projectChatSettings.value.tool_budget_strategy ||
-        CHAT_SETTINGS_DEFAULTS.tool_budget_strategy,
-    ),
     history_limit: resolveNumericChatSetting(
       projectChatSettings.value.history_limit,
       CHAT_SETTINGS_DEFAULTS.history_limit,
       { min: 1, max: 50 },
-    ),
-    tool_timeout_sec: resolveNumericChatSetting(
-      projectChatSettings.value.tool_timeout_sec,
-      CHAT_SETTINGS_DEFAULTS.tool_timeout_sec,
-      { min: 0, max: 600 },
-    ),
-    tool_retry_count: resolveNumericChatSetting(
-      projectChatSettings.value.tool_retry_count,
-      CHAT_SETTINGS_DEFAULTS.tool_retry_count,
-      { min: 0, max: 5 },
     ),
     answer_style: String(
       projectChatSettings.value.answer_style ||
@@ -19085,6 +19123,59 @@ async function upsertProjectChatRequirementRecord({
   }
 }
 
+async function refreshPendingLocalLiuAgentOutboxCount({
+  projectId = "",
+  chatSessionId = "",
+  workspacePath = "",
+} = {}) {
+  const normalizedProjectId = String(projectId || selectedProjectId.value || "").trim();
+  const normalizedWorkspacePath = String(workspacePath || localLiuAgentWorkspacePath()).trim();
+  if (!normalizedProjectId || !normalizedWorkspacePath || !hasNativeDesktopBridge()) {
+    pendingLocalOutboxCount.value = 0;
+    return 0;
+  }
+  try {
+    const outbox = await listNativeLiuAgentRuntimeOutbox({
+      projectId: normalizedProjectId,
+      chatSessionId: "",
+      workspacePath: normalizedWorkspacePath,
+      limit: 200,
+    });
+    const count = Array.isArray(outbox?.entries) ? outbox.entries.length : 0;
+    pendingLocalOutboxCount.value = count;
+    return count;
+  } catch (err) {
+    console.warn("refresh local liuAgent outbox count failed", err);
+    return pendingLocalOutboxCount.value;
+  }
+}
+
+async function syncCurrentLocalLiuAgentRuntimeOutbox() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const workspacePath = localLiuAgentWorkspacePath();
+  if (!projectId || !workspacePath) return;
+  localOutboxSyncing.value = true;
+  try {
+    const result = await syncLocalLiuAgentRuntimeOutbox({
+      projectId,
+      chatSessionId: "",
+      workspacePath,
+    });
+    await refreshPendingLocalLiuAgentOutboxCount({
+      projectId,
+      chatSessionId: "",
+      workspacePath,
+    });
+    if (result.synced > 0) {
+      ElMessage.success(`已同步 ${result.synced} 条本地记录`);
+    }
+  } catch (err) {
+    ElMessage.error(err?.message || "同步本地记录失败");
+  } finally {
+    localOutboxSyncing.value = false;
+  }
+}
+
 async function syncLocalLiuAgentRuntimeOutbox({
   projectId = "",
   chatSessionId = "",
@@ -19095,10 +19186,11 @@ async function syncLocalLiuAgentRuntimeOutbox({
 } = {}) {
   const normalizedProjectId = String(projectId || selectedProjectId.value || "").trim();
   const normalizedChatSessionId = String(
-    chatSessionId || currentChatSessionId.value || "",
+    chatSessionId || "",
   ).trim();
   const normalizedWorkspacePath = String(workspacePath || "").trim();
   if (!normalizedProjectId || !normalizedWorkspacePath || !hasNativeDesktopBridge()) {
+    pendingLocalOutboxCount.value = 0;
     return { synced: 0, pending: 0 };
   }
   let outbox = null;
@@ -19107,13 +19199,14 @@ async function syncLocalLiuAgentRuntimeOutbox({
       projectId: normalizedProjectId,
       chatSessionId: normalizedChatSessionId,
       workspacePath: normalizedWorkspacePath,
-      limit: 50,
+      limit: 500,
     });
   } catch (err) {
     console.warn("list local liuAgent runtime outbox failed", err);
     return { synced: 0, pending: 0 };
   }
   const entries = Array.isArray(outbox?.entries) ? outbox.entries : [];
+  pendingLocalOutboxCount.value = entries.length;
   if (!entries.length) return { synced: 0, pending: 0 };
   const ackByChatSession = new Map();
   let synced = 0;
@@ -19160,17 +19253,32 @@ async function syncLocalLiuAgentRuntimeOutbox({
   }
   for (const [entryChatSessionId, eventIds] of ackByChatSession.entries()) {
     try {
-      await ackNativeLiuAgentRuntimeOutbox({
+      await cleanupNativeLiuAgentOfflineCache({
         projectId: normalizedProjectId,
         chatSessionId: entryChatSessionId,
         workspacePath: normalizedWorkspacePath,
         eventIds,
+        serverRefs: {
+          source: "project_chat_requirement_record",
+          synced_count: eventIds.length,
+          synced_at: new Date().toISOString(),
+        },
       });
     } catch (err) {
-      console.warn("ack local liuAgent runtime outbox failed", err);
+      console.warn("cleanup local liuAgent offline cache failed", err);
     }
   }
-  return { synced, pending: Math.max(entries.length - synced, 0) };
+  const remainingOutbox = await listNativeLiuAgentRuntimeOutbox({
+    projectId: normalizedProjectId,
+    chatSessionId: "",
+    workspacePath: normalizedWorkspacePath,
+    limit: 500,
+  });
+  const pending = Array.isArray(remainingOutbox?.entries)
+    ? remainingOutbox.entries.length
+    : Math.max(entries.length - synced, 0);
+  pendingLocalOutboxCount.value = pending;
+  return { synced, pending };
 }
 
 function resolveSlashCommand(text) {
@@ -20978,9 +21086,6 @@ async function fetchSystemConfig() {
     if (data?.config?.chat_upload_max_limit) {
       maxUploadLimit.value = Number(data.config.chat_upload_max_limit);
     }
-    if (data?.config?.chat_max_tokens) {
-      chatMaxTokens.value = Number(data.config.chat_max_tokens);
-    }
     desktopAgentGlobalPrompt.value = String(
       data?.config?.desktop_agent_global_prompt || "",
     );
@@ -21067,7 +21172,41 @@ async function fetchChatParameterOptions() {
 }
 
 async function fetchProjects() {
-  projects.value = await fetchAllVisibleProjects();
+  const currentProjects = Array.isArray(projects.value)
+    ? projects.value.filter((item) => String(item?.id || "").trim())
+    : [];
+  try {
+    const onlineProjects = (await fetchAllVisibleProjects())
+      .map(normalizeOfflineProjectListItem)
+      .filter(Boolean);
+    if (onlineProjects.length) {
+      projects.value = onlineProjects;
+      saveProjectListOfflineSnapshot(projects.value);
+      projectListOffline.value = false;
+    } else {
+      const fallbackProjects =
+        await resolveProjectListOfflineFallback(currentProjects);
+      if (fallbackProjects.length) {
+        projects.value = fallbackProjects;
+        saveProjectListOfflineSnapshot(projects.value);
+        projectListOffline.value = true;
+      } else {
+        projects.value = [];
+        projectListOffline.value = false;
+      }
+    }
+  } catch (err) {
+    const fallbackProjects =
+      await resolveProjectListOfflineFallback(currentProjects);
+    if (fallbackProjects.length) {
+      projects.value = fallbackProjects;
+      saveProjectListOfflineSnapshot(projects.value);
+      projectListOffline.value = true;
+    } else {
+      projectListOffline.value = true;
+      throw err;
+    }
+  }
   if (!projects.value.length) {
     clearSelectedProjectId();
     return;
@@ -21077,61 +21216,93 @@ async function fetchProjects() {
     savedProjectId &&
     !(projects.value || []).some((item) => item.id === savedProjectId)
   ) {
+    if (projectListOffline.value) return;
     clearSelectedProjectId();
   }
 }
 
 async function fetchGlobalProviders() {
-  const providerData = await api.get("/llm/providers", {
-    params: { enabled_only: true },
-  });
-  const list = Array.isArray(providerData?.providers)
-    ? providerData.providers
-    : [];
-  providers.value = list;
-  globalDefaultProviderId.value = String(
-    list.find((item) => Boolean(item?.is_default))?.id || list[0]?.id || "",
-  ).trim();
-  const provider =
-    list.find((item) => item.id === globalDefaultProviderId.value) ||
-    list[0] ||
-    {};
-  const models = normalizeProviderModelNames(provider, modelTypeOptions.value);
-  globalDefaultModelName.value = String(
-    provider?.default_model || models[0] || "",
-  ).trim();
-  defaultProviderId.value = globalDefaultProviderId.value;
-  defaultModelName.value = globalDefaultModelName.value;
-
-  const currentProviderValid = list.some(
-    (item) =>
-      String(item?.id || "").trim() ===
-      String(selectedProviderId.value || "").trim(),
-  );
-  if (!currentProviderValid) {
-    selectedProviderId.value = globalDefaultProviderId.value;
-  }
-  const selectedProvider =
-    list.find((item) => item.id === selectedProviderId.value) || provider;
-  const selectedModels = normalizeProviderModelNames(
-    selectedProvider,
-    modelTypeOptions.value,
-  );
-  if (
-    !selectedModelName.value ||
-    !selectedModels.includes(String(selectedModelName.value || "").trim())
-  ) {
-    selectedModelName.value = String(
-      selectedProvider?.default_model ||
-        selectedModels[0] ||
-        globalDefaultModelName.value ||
-        "",
+  try {
+    const providerData = await api.get("/llm/providers", {
+      params: { enabled_only: true },
+    });
+    const list = Array.isArray(providerData?.providers)
+      ? providerData.providers
+      : [];
+    providers.value = list;
+    modelProviderOffline.value = false;
+    globalDefaultProviderId.value = String(
+      list.find((item) => Boolean(item?.is_default))?.id || list[0]?.id || "",
     ).trim();
+    const provider =
+      list.find((item) => item.id === globalDefaultProviderId.value) ||
+      list[0] ||
+      {};
+    const models = normalizeProviderModelNames(provider, modelTypeOptions.value);
+    globalDefaultModelName.value = String(
+      provider?.default_model || models[0] || "",
+    ).trim();
+    defaultProviderId.value = globalDefaultProviderId.value;
+    defaultModelName.value = globalDefaultModelName.value;
+
+    const currentProviderValid = list.some(
+      (item) =>
+        String(item?.id || "").trim() ===
+        String(selectedProviderId.value || "").trim(),
+    );
+    if (!currentProviderValid) {
+      selectedProviderId.value = globalDefaultProviderId.value;
+    }
+    const selectedProvider =
+      list.find((item) => item.id === selectedProviderId.value) || provider;
+    const selectedModels = normalizeProviderModelNames(
+      selectedProvider,
+      modelTypeOptions.value,
+    );
+    if (
+      !selectedModelName.value ||
+      !selectedModels.includes(String(selectedModelName.value || "").trim())
+    ) {
+      selectedModelName.value = String(
+        selectedProvider?.default_model ||
+          selectedModels[0] ||
+          globalDefaultModelName.value ||
+        "",
+      ).trim();
+    }
+    saveProviderModelOfflineSnapshot("global");
+  } catch (err) {
+    console.warn("加载全局模型供应商失败，保留本地离线状态", err);
+    applyProviderModelOfflineSnapshot(String(selectedProjectId.value || "").trim());
   }
   projectChatSettings.value = applyLocalConnectorRuntimeSettings(
     projectChatSettings.value,
     String(selectedProjectId.value || "").trim(),
   );
+}
+
+async function syncModelProvidersFromServer() {
+  if (modelProviderSyncing.value) return;
+  const projectId = String(selectedProjectId.value || "").trim();
+  modelProviderSyncing.value = true;
+  try {
+    if (projectId) {
+      await fetchProvidersByProject(projectId);
+    } else {
+      await fetchGlobalProviders();
+    }
+    if (modelProviderOffline.value) {
+      ElMessage.warning("后端不可用，继续使用本地模型供应商缓存");
+      return;
+    }
+    saveProviderModelOfflineSnapshot(projectId || "global");
+    ElMessage.success("模型供应商配置已同步");
+  } catch (err) {
+    applyProviderModelOfflineSnapshot(projectId);
+    ElMessage.error(err?.detail || err?.message || "同步模型供应商失败");
+  } finally {
+    modelProviderSyncing.value = false;
+  }
 }
 
 function syncProjectFromRoute() {
@@ -21178,12 +21349,11 @@ async function fetchProvidersByProject(projectId) {
     mcpModules.value = normalizeMcpModules({});
     runtimeExternalTools.value = [];
     externalMcpTotal.value = 0;
-    activeMcpSource.value = "system";
+    activeMcpSource.value = "external";
     selectedProjectToolNames.value = [];
     selectedEmployeeIds.value = [];
     systemPrompt.value = "";
     temperature.value = CHAT_SETTINGS_DEFAULTS.temperature;
-    chatMaxTokens.value = CHAT_SETTINGS_DEFAULTS.max_tokens;
     activeComposerAssist.value = "";
     void stopTerminalMirror().catch(() => {});
     resetTerminalPanel();
@@ -21191,7 +21361,7 @@ async function fetchProvidersByProject(projectId) {
     projectWorkspaceDraft.value = "";
     workspacePathDraft.value = "";
     projectAiEntryFile.value = "";
-    aiEntryFileDraft.value = "";
+    aiEntryFileDraft.value = DEFAULT_AI_ENTRY_FILE;
     chatSessions.value = [];
     currentChatSessionId.value = "";
     applyTaskTreePayload(null);
@@ -21215,6 +21385,7 @@ async function fetchProvidersByProject(projectId) {
         ? data.chat_settings
         : {};
     providers.value = data.providers || [];
+    modelProviderOffline.value = false;
     const settings = applyLocalConnectorRuntimeSettings(rawSettings);
     projectChatSettings.value = settings;
     projectEmployees.value = data.employees || [];
@@ -21232,7 +21403,7 @@ async function fetchProvidersByProject(projectId) {
     ).trim();
     projectWorkspaceDraft.value = projectWorkspacePath.value;
     projectAiEntryFile.value = String(data?.project_ai_entry_file || "").trim();
-    aiEntryFileDraft.value = projectAiEntryFile.value;
+    aiEntryFileDraft.value = projectAiEntryFile.value || DEFAULT_AI_ENTRY_FILE;
     workspacePathDraft.value = String(
       settings.connector_workspace_path ||
         data?.workspace_path ||
@@ -21305,13 +21476,49 @@ async function fetchProvidersByProject(projectId) {
       );
     }
 
-    systemPrompt.value = String(settings.system_prompt || "");
+    systemPrompt.value = "";
     temperature.value = Number(
       settings.temperature ?? CHAT_SETTINGS_DEFAULTS.temperature,
     );
-    chatMaxTokens.value = Number(
-      settings.max_tokens ?? CHAT_SETTINGS_DEFAULTS.max_tokens,
+    saveProviderModelOfflineSnapshot(normalizedProjectId);
+    hydrated = true;
+  } catch (err) {
+    const offlineProject = (projects.value || []).find(
+      (item) =>
+        String(item?.id || "").trim() === normalizedProjectId &&
+        Boolean(item?.is_offline_cached),
     );
+    if (!offlineProject) {
+      throw err;
+    }
+    projectListOffline.value = true;
+    const offlineWorkspacePath = String(
+      offlineProject.workspace_path || offlineProject.workspacePath || "",
+    ).trim();
+    if (offlineWorkspacePath) {
+      projectWorkspacePath.value = offlineWorkspacePath;
+      projectWorkspaceDraft.value = offlineWorkspacePath;
+      workspacePathDraft.value = offlineWorkspacePath;
+      rememberLocalLiuAgentWorkspacePath(offlineWorkspacePath);
+    }
+    projectChatSettings.value = applyLocalConnectorRuntimeSettings({
+      ...CHAT_SETTINGS_DEFAULTS,
+      connector_workspace_path: offlineWorkspacePath,
+    });
+    projectEmployees.value = [];
+    externalAgentInfo.value = normalizeExternalAgentInfo({
+      workspace_path: offlineWorkspacePath,
+      implemented: true,
+      ready: Boolean(offlineWorkspacePath),
+    });
+    mcpModules.value = normalizeMcpModules({});
+    runtimeExternalTools.value = [];
+    externalMcpTotal.value = 0;
+    selectedProjectToolNames.value = [];
+    selectedEmployeeIds.value = [];
+    applyProviderModelOfflineSnapshot(normalizedProjectId);
+    systemPrompt.value = "";
+    temperature.value = CHAT_SETTINGS_DEFAULTS.temperature;
     hydrated = true;
   } finally {
     if (
@@ -21323,6 +21530,10 @@ async function fetchProvidersByProject(projectId) {
       projectSettingsHydratedProjectId.value = normalizedProjectId;
       autoSaveState.value = "saved";
       scheduleExternalAgentStatusRefresh({ force: true });
+      void refreshPendingLocalLiuAgentOutboxCount({
+        projectId: normalizedProjectId,
+        workspacePath: localLiuAgentWorkspacePath(),
+      });
     }
     projectSettingsHydrating.value = false;
   }
@@ -21448,10 +21659,7 @@ function buildProjectChatSettingsPayload() {
     temperature: Number(
       temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
     ),
-    max_tokens: Number(
-      chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens,
-    ),
-    system_prompt: String(systemPrompt.value || ""),
+    system_prompt: "",
     auto_use_tools_explicit: Boolean(
       projectChatSettings.value.auto_use_tools_explicit,
     ),
@@ -21510,12 +21718,9 @@ function applySavedProjectChatSettings(settings) {
   if (nextModelName && providerModels.includes(nextModelName)) {
     selectedModelName.value = nextModelName;
   }
-  systemPrompt.value = String(nextSettings.system_prompt || "");
+  systemPrompt.value = "";
   temperature.value = Number(
     nextSettings.temperature ?? CHAT_SETTINGS_DEFAULTS.temperature,
-  );
-  chatMaxTokens.value = Number(
-    nextSettings.max_tokens ?? CHAT_SETTINGS_DEFAULTS.max_tokens,
   );
 }
 
@@ -23775,7 +23980,7 @@ async function promptProjectAiEntryFile() {
       aiEntryFileDraftNormalized.value || aiEntryFileResolved.value || "",
       {
         title: "选择 AI 入口文件",
-        placeholder: ".ai/ENTRY.md",
+        placeholder: DEFAULT_AI_ENTRY_FILE,
         basePath:
           projectWorkspaceDraftNormalized.value || projectWorkspacePath.value,
       },
@@ -23871,6 +24076,47 @@ async function saveProjectAiEntryFile(aiEntryFileOverride = null) {
     ElMessage.error(err?.detail || err?.message || "保存 AI 入口文件失败");
   } finally {
     aiEntryFileSaving.value = false;
+  }
+}
+
+async function createDefaultAiEntryFile() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  const workspacePath = String(
+    projectWorkspaceDraftNormalized.value || projectWorkspacePath.value || "",
+  ).trim();
+  if (!workspacePath) {
+    ElMessage.warning("请先保存项目工作区");
+    return;
+  }
+  aiEntryFileCreating.value = true;
+  try {
+    try {
+      await readProjectWorkspaceFile(projectId, DEFAULT_AI_ENTRY_FILE);
+      await saveProjectAiEntryFile(DEFAULT_AI_ENTRY_FILE);
+      ElMessage.success(`${DEFAULT_AI_ENTRY_FILE} 已存在，已设为 AI 入口文件`);
+      return;
+    } catch (err) {
+      const status = Number(err?.response?.status || err?.status || 0);
+      if (status && status !== 404) {
+        throw err;
+      }
+    }
+    const saved = await saveProjectWorkspaceFile(projectId, {
+      path: DEFAULT_AI_ENTRY_FILE,
+      content: DEFAULT_AI_ENTRY_FILE_CONTENT,
+    });
+    const savedPath = String(saved?.path || DEFAULT_AI_ENTRY_FILE).trim();
+    await saveProjectAiEntryFile(savedPath);
+    aiEntryFileDraft.value = savedPath;
+    ElMessage.success(`${savedPath} 已创建`);
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "创建 AIENTRY.md 失败");
+  } finally {
+    aiEntryFileCreating.value = false;
   }
 }
 
@@ -24071,53 +24317,15 @@ async function sendProjectChatRequest({
     provider_id: selectedProviderId.value || undefined,
     model_name: selectedModelName.value || undefined,
     temperature: Number(temperature.value),
-    max_tokens: Number(chatMaxTokens.value || 512),
-    system_prompt: systemPrompt.value || undefined,
+    system_prompt: undefined,
     attachment_names: attachmentNames,
     images: base64Images,
     auto_use_tools: effectiveAutoUseTools,
     tool_priority: effectiveToolPriority,
-    max_tool_calls_per_round: resolveNumericChatSetting(
-      projectChatSettings.value.max_tool_calls_per_round,
-      CHAT_SETTINGS_DEFAULTS.max_tool_calls_per_round,
-      { min: 1, max: 30 },
-    ),
-    max_loop_rounds: resolveNumericChatSetting(
-      projectChatSettings.value.max_loop_rounds,
-      CHAT_SETTINGS_DEFAULTS.max_loop_rounds,
-      { min: 1, max: 60 },
-    ),
-    max_tool_rounds: resolveNumericChatSetting(
-      projectChatSettings.value.max_tool_rounds,
-      CHAT_SETTINGS_DEFAULTS.max_tool_rounds,
-      { min: 1, max: 30 },
-    ),
-    repeated_tool_call_threshold: Number(
-      projectChatSettings.value.repeated_tool_call_threshold ||
-        CHAT_SETTINGS_DEFAULTS.repeated_tool_call_threshold,
-    ),
-    tool_only_threshold: Number(
-      projectChatSettings.value.tool_only_threshold ||
-        CHAT_SETTINGS_DEFAULTS.tool_only_threshold,
-    ),
-    tool_budget_strategy: String(
-      projectChatSettings.value.tool_budget_strategy ||
-        CHAT_SETTINGS_DEFAULTS.tool_budget_strategy,
-    ),
     history_limit: resolveNumericChatSetting(
       projectChatSettings.value.history_limit,
       CHAT_SETTINGS_DEFAULTS.history_limit,
       { min: 1, max: 50 },
-    ),
-    tool_timeout_sec: resolveNumericChatSetting(
-      projectChatSettings.value.tool_timeout_sec,
-      CHAT_SETTINGS_DEFAULTS.tool_timeout_sec,
-      { min: 0, max: 600 },
-    ),
-    tool_retry_count: resolveNumericChatSetting(
-      projectChatSettings.value.tool_retry_count,
-      CHAT_SETTINGS_DEFAULTS.tool_retry_count,
-      { min: 0, max: 5 },
     ),
     answer_style: String(
       projectChatSettings.value.answer_style ||
@@ -24239,6 +24447,11 @@ async function sendLocalLiuAgentChatRequest({
     },
   });
   const modelRuntime = await buildLocalLiuAgentModelRuntime();
+  await saveLocalLiuAgentRuntimeConfigOfflineCache({
+    workspacePath,
+    providerId: selectedProviderId.value || defaultProviderId.value || "",
+    modelRuntime,
+  });
   const localChatPayload = {
     projectId,
     chatSessionId: activeChatSessionId,
@@ -24251,10 +24464,20 @@ async function sendLocalLiuAgentChatRequest({
     modelName: selectedModelName.value || defaultModelName.value || "",
     systemPrompt: buildLocalLiuAgentSystemPrompt(),
     temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
-    maxTokens: Number(chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens),
     modelRuntime,
     attachments,
   };
+  await saveLocalLiuAgentSessionOfflineCache({
+    projectId,
+    chatSessionId: activeChatSessionId,
+    workspacePath,
+    status: "in_progress",
+    userMessage,
+    assistantMessage,
+    historyRows,
+    rootGoal: displayUserMessageContent || finalUserPrompt,
+    modelRuntime,
+  });
   const activeRun = {
     chatSessionId: activeChatSessionId,
     projectId,
@@ -24349,6 +24572,18 @@ async function sendLocalLiuAgentChatRequest({
       rootGoal: displayUserMessageContent || finalUserPrompt,
       messageId: userMessage.id,
       assistantMessageId: assistantMessage.id,
+    });
+    await saveLocalLiuAgentSessionOfflineCache({
+      projectId,
+      chatSessionId: activeChatSessionId,
+      workspacePath,
+      status: "waiting_approval",
+      userMessage,
+      assistantMessage,
+      historyRows,
+      rootGoal: displayUserMessageContent || finalUserPrompt,
+      modelRuntime,
+      result,
     });
     deleteLocalLiuAgentActiveRun(activeChatSessionId);
     syncChatLoadingWithCurrentSession();
@@ -24448,6 +24683,18 @@ async function sendLocalLiuAgentChatRequest({
     messageId: userMessage.id,
     assistantMessageId: assistantMessage.id,
   });
+  await saveLocalLiuAgentSessionOfflineCache({
+    projectId,
+    chatSessionId: activeChatSessionId,
+    workspacePath,
+    status: ok ? "done" : "blocked",
+    userMessage,
+    assistantMessage,
+    historyRows,
+    rootGoal: displayUserMessageContent || finalUserPrompt,
+    modelRuntime,
+    result,
+  });
   deleteLocalLiuAgentActiveRun(activeChatSessionId);
   syncChatLoadingWithCurrentSession();
   return result;
@@ -24504,7 +24751,6 @@ async function buildLocalLiuAgentModelRuntime() {
     baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
     apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
     temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
-    maxTokens: Number(chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens),
   };
 }
 
@@ -24868,10 +25114,7 @@ async function sendGlobalChatWithoutProject() {
       temperature: Number(
         temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
       ),
-      max_tokens: Number(
-        chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens,
-      ),
-      system_prompt: String(systemPrompt.value || "").trim(),
+      system_prompt: "",
       skill_resource_directory: String(
         skillResourceDirectoryResolved.value || "",
       ).trim(),
@@ -25550,6 +25793,37 @@ async function loadSelectedProjectConversation(projectId) {
     await fetchProvidersByProject(normalizedProjectId);
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
+    if (projectListOffline.value) {
+      const offlineProject = (projects.value || []).find(
+        (item) => String(item?.id || "").trim() === normalizedProjectId,
+      );
+      const offlineChatSessionId = String(
+        offlineProject?.last_chat_session_id ||
+          offlineProject?.lastChatSessionId ||
+          currentChatSessionId.value ||
+          `offline-${normalizedProjectId}`,
+      ).trim();
+      chatSessions.value = [
+        {
+          id: offlineChatSessionId,
+          title: "本地离线会话",
+          preview: "后端不可用，正在使用本地项目缓存",
+          message_count: messages.value.length,
+          source: "desktop_offline_cache",
+          created_at: "",
+          updated_at: "",
+          last_message_at: "",
+        },
+      ];
+      currentChatSessionId.value = offlineChatSessionId;
+      rememberChatSession(normalizedProjectId, offlineChatSessionId);
+      await refreshPendingLocalLiuAgentOutboxCount({
+        projectId: normalizedProjectId,
+        chatSessionId: offlineChatSessionId,
+        workspacePath: localLiuAgentWorkspacePath(),
+      });
+      return;
+    }
     const restoredTask =
       routeChatSessionId || shouldCreateWindowSession
         ? null
@@ -25730,6 +26004,23 @@ watch(
     if (noticeSessionId && sessionId && noticeSessionId !== sessionId) {
       clearOngoingTaskRestoreNotice();
     }
+  },
+);
+
+watch(
+  () => [
+    String(selectedProjectId.value || "").trim(),
+    String(selectedProviderId.value || "").trim(),
+    String(selectedModelName.value || "").trim(),
+    providerModelGroups.value
+      .map((group) => `${group.providerId}:${group.options.length}`)
+      .join("|"),
+  ],
+  () => {
+    if (!providerModelGroups.value.length) return;
+    saveProviderModelOfflineSnapshot(
+      String(selectedProjectId.value || "").trim() || "global",
+    );
   },
 );
 

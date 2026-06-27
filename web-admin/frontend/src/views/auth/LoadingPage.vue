@@ -33,12 +33,24 @@ import { useRouter } from 'vue-router'
 import api from '@/utils/api.js'
 import { getStoredToken } from '@/utils/auth-storage.js'
 
+const OFFLINE_DESKTOP_STARTUP_STORAGE_KEY = 'desktop_offline_startup'
+const DESKTOP_OFFLINE_MODE_STORAGE_KEY = 'desktop_offline_mode'
+
 const router = useRouter()
 const statusText = ref('正在确认是否需要初始化')
 const errorText = ref('')
 
 function resolveSetupRequired(payload = {}) {
   return payload.setup_required === true || payload.initialized === false
+}
+
+function markOfflineDesktopStartup() {
+  try {
+    window.sessionStorage?.setItem(OFFLINE_DESKTOP_STARTUP_STORAGE_KEY, '1')
+    window.sessionStorage?.setItem(DESKTOP_OFFLINE_MODE_STORAGE_KEY, '1')
+  } catch {
+    // Ignore storage failures; the router can still try the normal workbench route.
+  }
 }
 
 async function checkStatus() {
@@ -53,9 +65,10 @@ async function checkStatus() {
     }
     statusText.value = '正在打开登录入口'
     await router.replace(getStoredToken() ? '/workbench' : '/login')
-  } catch (err) {
-    errorText.value = err?.detail || err?.message || '系统状态检查失败'
-    statusText.value = errorText.value
+  } catch {
+    markOfflineDesktopStartup()
+    statusText.value = '后端不可用，正在打开桌面工作台'
+    await router.replace('/workbench')
   }
 }
 

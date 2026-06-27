@@ -123,7 +123,6 @@ class AgentRuntimeResumeService:
             provider_id=str(resume_context.get("provider_id") or "").strip(),
             model_name=str(resume_context.get("model_name") or "").strip(),
             temperature=self._coerce_float(resume_context.get("temperature"), 0.2),
-            max_tokens=self._coerce_int(resume_context.get("max_tokens"), 1024),
         )
 
     async def resume_background_operation(
@@ -205,7 +204,6 @@ class AgentRuntimeResumeService:
             provider_id=str(resume_context.get("provider_id") or "").strip(),
             model_name=str(resume_context.get("model_name") or "").strip(),
             temperature=self._coerce_float(resume_context.get("temperature"), 0.2),
-            max_tokens=self._coerce_int(resume_context.get("max_tokens"), 1024),
         )
 
     def _resume_tools(
