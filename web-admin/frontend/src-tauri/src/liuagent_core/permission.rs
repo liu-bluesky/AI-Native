@@ -58,6 +58,9 @@ fn is_approved(
     let decision_value = decision.decision.trim();
     let grant_scope = decision.grant_scope.as_deref().unwrap_or("").trim();
     let _comment = decision.comment.as_deref().unwrap_or("").trim();
+    if is_full_access_decision(decision) {
+        return true;
+    }
     let expected_request_id = permission_request_id(tool_call_id, action);
     if decision_value == "approve_once" {
         if !grant_scope.is_empty() && grant_scope != "once" {
@@ -80,6 +83,18 @@ fn is_approved(
         return _comment == cached_session_grant_comment(action);
     }
     false
+}
+
+pub fn is_full_access_decision(decision: &PermissionDecisionInput) -> bool {
+    let decision_value = decision.decision.trim();
+    let grant_scope = decision.grant_scope.as_deref().unwrap_or("").trim();
+    if decision_value != "approve_session" {
+        return false;
+    }
+    matches!(
+        grant_scope,
+        "session_full_access" | "full_access" | "workspace_full_access"
+    )
 }
 
 fn permission_required_error(request: PermissionRequest) -> ToolError {

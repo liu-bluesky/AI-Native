@@ -293,6 +293,22 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
       systemPrompt: String(
         request?.systemPrompt || request?.system_prompt || "",
       ).trim(),
+      systemPromptParts: (
+        Array.isArray(request?.systemPromptParts)
+          ? request.systemPromptParts
+          : Array.isArray(request?.system_prompt_parts)
+            ? request.system_prompt_parts
+            : []
+      )
+        .map((part) => ({
+          source: String(part?.source || "").trim(),
+          priority:
+            Number.isFinite(Number(part?.priority)) && part?.priority !== ""
+              ? Number(part.priority)
+              : null,
+          content: String(part?.content || "").trim(),
+        }))
+        .filter((part) => part.content),
       temperature:
         Number.isFinite(Number(request?.temperature)) &&
         request?.temperature !== ""

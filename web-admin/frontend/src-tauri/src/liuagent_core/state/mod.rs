@@ -37,6 +37,14 @@ pub struct RuntimePersistenceInput<'a> {
     pub run_status: &'a str,
     pub waiting_for: Option<&'a str>,
     pub model_runtime: Value,
+    pub agent_run_context: Value,
+    pub observations: Value,
+    pub scheduler_state: Value,
+    pub verification_report: Value,
+    pub clarity_assessment: Value,
+    pub plan_state: Value,
+    pub retry_decision: Value,
+    pub memory_write_plan: Value,
     pub tool_results: &'a [ToolExecutionResult],
     pub operations: Value,
     pub audit_logs: &'a [Value],
@@ -71,27 +79,83 @@ pub fn write_runtime_artifacts(
         .filter(|result| !result.ok)
         .map(|result| result.tool_call_id.clone())
         .collect::<Vec<_>>();
+    let scheduler_run_state = input
+        .scheduler_state
+        .get("runState")
+        .or_else(|| input.scheduler_state.get("run_state"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let pending_request_id = scheduler_run_state
+        .get("pendingRequestId")
+        .or_else(|| scheduler_run_state.get("pending_request_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            pending_permissions
+                .first()
+                .and_then(|value| value.get("requestId"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        });
+    let pending_tool_batch_id = scheduler_run_state
+        .get("pendingToolBatchId")
+        .or_else(|| scheduler_run_state.get("pending_tool_batch_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            pending_tool_calls
+                .first()
+                .map(|tool_call_id| format!("tool_batch_{}", sanitize_path_segment(tool_call_id)))
+                .unwrap_or_default()
+        });
+    let run_state = if scheduler_run_state
+        .as_object()
+        .is_some_and(|object| !object.is_empty())
+    {
+        scheduler_run_state
+    } else {
+        json!({
+            "version": "run-state/v1",
+            "status": input.run_status,
+            "waiting_for": input.waiting_for.unwrap_or(""),
+            "pending_request_id": pending_request_id,
+            "pending_tool_call_ids": pending_tool_calls,
+            "pending_tool_batch_id": pending_tool_batch_id,
+            "pending_adapter_action_id": "",
+            "updated_at_epoch_ms": now
+        })
+    };
     let transcript_events = build_transcript_events(&input, now);
+    let mut model_runtime = input.model_runtime.clone();
+    if let Some(runtime_object) = model_runtime.as_object_mut() {
+        runtime_object.insert("context".to_string(), input.agent_run_context.clone());
+    } else {
+        model_runtime = json!({
+            "raw": model_runtime,
+            "context": input.agent_run_context.clone()
+        });
+    }
     let state = json!({
         "record_type": "liuagent-runtime-session-state",
         "version": 1,
         "project_id": input.project_id,
         "chat_session_id": input.chat_session_id,
         "session_id": input.session_id,
-        "run_state": {
+        "run_state": merge_runtime_run_state(run_state, pending_permissions),
+        "model_runtime": model_runtime,
+        "current_state": {
             "status": input.run_status,
             "waiting_for": input.waiting_for.unwrap_or(""),
-            "pending_request_id": pending_permissions
-                .first()
-                .and_then(|value| value.get("requestId"))
-                .and_then(Value::as_str)
-                .unwrap_or(""),
-            "pending_tool_call_ids": pending_tool_calls,
-            "pending_permissions": pending_permissions,
-            "pending_adapter_actions": [],
+            "scheduler_state": input.scheduler_state.clone(),
+            "observations": input.observations.clone(),
+            "verification_report": input.verification_report.clone(),
+            "clarity_assessment": input.clarity_assessment.clone(),
+            "plan_state": input.plan_state.clone(),
+            "retry_decision": input.retry_decision.clone(),
+            "memory_write_plan": input.memory_write_plan.clone(),
             "updated_at_epoch_ms": now
         },
-        "model_runtime": input.model_runtime,
         "operations": input.operations,
         "tool_results": input.tool_results,
         "artifact_paths": {
@@ -167,7 +231,8 @@ pub fn write_runtime_artifacts(
                 "goal": input.user_message,
                 "facts": [
                     format!("runtime_state_path={}", paths.state_path.to_string_lossy()),
-                    format!("tool_result_count={}", input.tool_results.len())
+                    format!("tool_result_count={}", input.tool_results.len()),
+                    format!("memory_write_plan={}", compact_json_string(&input.memory_write_plan))
                 ],
                 "verification": [
                     format!("runtime_status={}", input.run_status)
@@ -195,6 +260,25 @@ pub fn write_runtime_artifacts(
     })
 }
 
+fn merge_runtime_run_state(mut run_state: Value, pending_permissions: Vec<Value>) -> Value {
+    if !run_state
+        .as_object()
+        .is_some_and(|object| !object.is_empty())
+    {
+        run_state = json!({});
+    }
+    if let Some(object) = run_state.as_object_mut() {
+        object.insert(
+            "pending_permissions".to_string(),
+            json!(pending_permissions),
+        );
+        object
+            .entry("pending_adapter_actions".to_string())
+            .or_insert_with(|| json!([]));
+    }
+    run_state
+}
+
 pub fn append_runtime_event(
     workspace_root: &Path,
     project_id: &str,
@@ -204,6 +288,10 @@ pub fn append_runtime_event(
     let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
     ensure_parent(&paths.transcript_path)?;
     append_jsonl(&paths.transcript_path, &[event.clone()])
+}
+
+fn compact_json_string(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
 }
 
 pub fn recover_runtime_state(
@@ -693,6 +781,16 @@ fn build_transcript_events(input: &RuntimePersistenceInput<'_>, now: u128) -> Ve
         .filter(|result| !result.ok)
         .map(|result| result.tool_call_id.clone())
         .collect::<Vec<_>>();
+    let pending_tool_batch_id = input
+        .scheduler_state
+        .get("runState")
+        .or_else(|| input.scheduler_state.get("run_state"))
+        .and_then(|run_state| {
+            run_state
+                .get("pendingToolBatchId")
+                .or_else(|| run_state.get("pending_tool_batch_id"))
+        })
+        .and_then(Value::as_str);
     let mut events = vec![
         message_event(
             format!("evt_{}_user", input.session_id),
@@ -741,6 +839,7 @@ fn build_transcript_events(input: &RuntimePersistenceInput<'_>, now: u128) -> Ve
         input.waiting_for,
         pending_request_id,
         &pending_tool_call_ids,
+        pending_tool_batch_id,
         now,
     ));
     for result in input.tool_results {
@@ -933,6 +1032,14 @@ mod tests {
             run_status: "waiting_approval",
             waiting_for: Some("approval"),
             model_runtime: json!({"status": "completed"}),
+            agent_run_context: json!({"version": "agent-run-context/test"}),
+            observations: json!([]),
+            scheduler_state: json!({"version": "runtime-scheduler-state/test"}),
+            verification_report: json!({"overall_status": "blocked"}),
+            clarity_assessment: json!({"version": "clarity-assessment/test"}),
+            plan_state: json!({"version": "plan-state/test"}),
+            retry_decision: json!({"version": "retry-decision/test"}),
+            memory_write_plan: json!({"version": "memory-write-plan/test"}),
             tool_results: &[tool_result],
             operations: json!([]),
             audit_logs: &[json!({"audit_id": "audit-test"})],
@@ -949,6 +1056,14 @@ mod tests {
             recovered["run_state"]["pending_request_id"],
             "perm_call_write_file_write"
         );
+        assert_eq!(
+            recovered["run_state"]["pending_permissions"][0]["requestId"],
+            "perm_call_write_file_write"
+        );
+        assert!(recovered["run_state"]
+            .get("pending_adapter_actions")
+            .and_then(Value::as_array)
+            .is_some());
         let transcript = fs::read_to_string(&paths.transcript_path).unwrap();
         assert!(transcript.contains("\"type\":\"approval_required\""));
         assert!(transcript.contains("\"type\":\"state_changed\""));
@@ -1084,6 +1199,14 @@ mod tests {
             run_status: "failed",
             waiting_for: None,
             model_runtime: json!({"status": "failed"}),
+            agent_run_context: json!({"version": "agent-run-context/test-old"}),
+            observations: json!([]),
+            scheduler_state: json!({"version": "runtime-scheduler-state/test-old"}),
+            verification_report: json!({"overall_status": "failed"}),
+            clarity_assessment: json!({"version": "clarity-assessment/test-old"}),
+            plan_state: json!({"version": "plan-state/test-old"}),
+            retry_decision: json!({"version": "retry-decision/test-old"}),
+            memory_write_plan: json!({"version": "memory-write-plan/test-old"}),
             tool_results: &[old_tool_result],
             operations: json!([]),
             audit_logs: &[],
@@ -1101,6 +1224,14 @@ mod tests {
             run_status: "failed",
             waiting_for: None,
             model_runtime: json!({"status": "failed"}),
+            agent_run_context: json!({"version": "agent-run-context/test-new"}),
+            observations: json!([]),
+            scheduler_state: json!({"version": "runtime-scheduler-state/test-new"}),
+            verification_report: json!({"overall_status": "failed"}),
+            clarity_assessment: json!({"version": "clarity-assessment/test-new"}),
+            plan_state: json!({"version": "plan-state/test-new"}),
+            retry_decision: json!({"version": "retry-decision/test-new"}),
+            memory_write_plan: json!({"version": "memory-write-plan/test-new"}),
             tool_results: &[new_tool_result],
             operations: json!([]),
             audit_logs: &[],
@@ -1149,6 +1280,14 @@ mod tests {
             run_status: "failed",
             waiting_for: None,
             model_runtime: json!({"status": "completed"}),
+            agent_run_context: json!({"version": "agent-run-context/test"}),
+            observations: json!([]),
+            scheduler_state: json!({"version": "runtime-scheduler-state/test"}),
+            verification_report: json!({"overall_status": "failed"}),
+            clarity_assessment: json!({"version": "clarity-assessment/test"}),
+            plan_state: json!({"version": "plan-state/test"}),
+            retry_decision: json!({"version": "retry-decision/test"}),
+            memory_write_plan: json!({"version": "memory-write-plan/test"}),
             tool_results: &[tool_result],
             operations: json!([]),
             audit_logs: &[json!({"audit_id": "audit-failed"})],
@@ -1161,6 +1300,10 @@ mod tests {
         assert_eq!(
             recovered["run_state"]["pending_tool_call_ids"][0],
             "call_missing"
+        );
+        assert_eq!(
+            recovered["run_state"]["pending_tool_batch_id"],
+            "tool_batch_call_missing"
         );
         assert!(PathBuf::from(&paths.checkpoint_path).exists());
         assert!(PathBuf::from(&paths.active_session_path).exists());

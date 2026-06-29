@@ -1431,7 +1431,7 @@
                 :loading="localLiuAgentPermissionSubmitting"
                 @click="submitCurrentLocalLiuAgentPermissionAction('local_liuagent_allow_once')"
               >
-                允许一次
+                本次授权
               </el-button>
               <el-button
                 size="small"
@@ -1439,7 +1439,7 @@
                 :loading="localLiuAgentPermissionSubmitting"
                 @click="submitCurrentLocalLiuAgentPermissionAction('local_liuagent_allow_session')"
               >
-                本会话允许
+                会话授权
               </el-button>
             </div>
           </div>
@@ -1447,8 +1447,10 @@
             ref="chatComposerRef"
             v-model:draft-text="draftText"
             v-model:input-focused="inputFocused"
+            v-model:local-agent-auth-level="localLiuAgentAuthLevelModel"
             v-model:selected-model-option-value="selectedModelOptionValue"
             :show-agent-workflow-status-strip="showAgentWorkflowStatusStrip"
+            :show-local-agent-auth-level="nativeDesktopBridgeAvailable"
             :agent-workflow-state="agentWorkflowState"
             :agent-workflow-meta-items="agentWorkflowMetaItems"
             :show-working-status-bar="showWorkingStatusBar"
@@ -2927,12 +2929,24 @@ const temperature = ref(0.1);
 const systemPrompt = ref("");
 const desktopAgentGlobalPrompt = ref("");
 
-function buildLocalLiuAgentSystemPrompt() {
+function buildLocalLiuAgentSystemPromptParts() {
   return [
-    String(systemPrompt.value || "").trim(),
-    String(desktopAgentGlobalPrompt.value || "").trim(),
-  ]
-    .filter(Boolean)
+    {
+      source: "project_chat_settings.system_prompt",
+      priority: 100,
+      content: String(systemPrompt.value || "").trim(),
+    },
+    {
+      source: "system_config.desktop_agent_global_prompt",
+      priority: 80,
+      content: String(desktopAgentGlobalPrompt.value || "").trim(),
+    },
+  ].filter((part) => part.content);
+}
+
+function buildLocalLiuAgentSystemPrompt() {
+  return buildLocalLiuAgentSystemPromptParts()
+    .map((part) => part.content)
     .join("\n\n");
 }
 const activeMcpSource = ref("system");
@@ -2979,12 +2993,59 @@ const localLiuAgentToolTasks = new Set();
 const localLiuAgentPendingPermissions = new Map();
 const localLiuAgentPendingPermissionVersion = ref(0);
 const localLiuAgentPermissionSubmitting = ref(false);
+const LOCAL_LIUAGENT_AUTH_LEVEL_STORAGE_KEY = "local_liuagent_auth_level";
+const localLiuAgentAuthLevel = ref(readLocalLiuAgentAuthLevel());
 const localLiuAgentActiveRuns = new Map();
 const localLiuAgentSeenRuntimeEventIds = new Set();
 const localLiuAgentActiveRunVersion = ref(0);
 let nativeLiuAgentRuntimeEventUnlisten = null;
 let localLiuAgentRuntimeEventPollTimer = null;
 let localLiuAgentRuntimeEventPollInFlight = false;
+
+function readLocalLiuAgentAuthLevel() {
+  if (typeof window === "undefined") return "ask";
+  try {
+    const value = String(
+      window.localStorage?.getItem(LOCAL_LIUAGENT_AUTH_LEVEL_STORAGE_KEY) || "",
+    ).trim();
+    return value === "full_access" ? "full_access" : "ask";
+  } catch (_error) {
+    return "ask";
+  }
+}
+
+function setLocalLiuAgentAuthLevel(value) {
+  const normalized = value === "full_access" ? "full_access" : "ask";
+  localLiuAgentAuthLevel.value = normalized;
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage?.setItem(LOCAL_LIUAGENT_AUTH_LEVEL_STORAGE_KEY, normalized);
+  } catch (_error) {
+    // localStorage may be unavailable in restricted WebViews.
+  }
+}
+
+function localLiuAgentFullAccessEnabled() {
+  return localLiuAgentAuthLevel.value === "full_access";
+}
+
+const localLiuAgentAuthLevelModel = computed({
+  get: () => localLiuAgentAuthLevel.value,
+  set: (value) => setLocalLiuAgentAuthLevel(value),
+});
+
+function buildLocalLiuAgentPermissionDecision(requestId, permissionRequest = {}, options = {}) {
+  const allowSession = Boolean(options?.allowSession);
+  const fullAccess = Boolean(options?.fullAccess);
+  return {
+    requestId: fullAccess ? "" : String(requestId || "").trim(),
+    decision: allowSession || fullAccess ? "approve_session" : "approve_once",
+    grantScope: fullAccess ? "session_full_access" : allowSession ? "session" : "once",
+    comment:
+      String(permissionRequest?.reason || "").trim() ||
+      (fullAccess ? "desktop_local_agent_full_access" : ""),
+  };
+}
 
 // ============================================================
 // Composable 初始化（pending requests、native agent、workspace、terminal、settings、transport）
@@ -7616,12 +7677,16 @@ function compactLocalLiuAgentInline(value, limit = 180) {
 
 function localLiuAgentToolTraceVerb(toolName = "") {
   const normalized = String(toolName || "").trim();
-  if (["list_files", "search_text"].includes(normalized)) return "Explore";
-  if (normalized === "read_file") return "Read";
-  if (["run_command", "check_command_risk"].includes(normalized)) return "Run";
-  if (["write_file", "apply_patch", "delete_file"].includes(normalized)) return "Edit";
-  if (["http_get", "http_post", "download_file"].includes(normalized)) return "Network";
-  if (["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"].includes(normalized)) return "MCP";
+  if (normalized === "list_files") return "查看目录";
+  if (normalized === "search_text") return "搜索文本";
+  if (normalized === "read_file") return "读取文件";
+  if (normalized === "run_command") return "执行命令";
+  if (normalized === "check_command_risk") return "检查命令风险";
+  if (normalized === "write_file") return "写入文件";
+  if (normalized === "apply_patch") return "应用补丁";
+  if (normalized === "delete_file") return "删除文件";
+  if (["http_get", "http_post", "download_file"].includes(normalized)) return "访问网络";
+  if (["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"].includes(normalized)) return "调用 MCP";
   return normalized || "Tool";
 }
 
@@ -7664,21 +7729,29 @@ function localLiuAgentToolTraceSubject(payload = {}) {
 
 function localLiuAgentToolResultLabel(toolName = "") {
   const normalized = String(toolName || "").trim();
-  if (normalized === "list_files") return "Explore directory";
-  if (normalized === "search_text") return "Search text";
-  if (normalized === "read_file") return "Read file";
-  if (normalized === "run_command") return "Run command";
-  if (normalized === "check_command_risk") return "Check command risk";
-  if (normalized === "write_file") return "Write file";
-  if (normalized === "apply_patch") return "Apply patch";
-  if (normalized === "delete_file") return "Delete file";
+  if (normalized === "list_files") return "查看目录";
+  if (normalized === "search_text") return "搜索文本";
+  if (normalized === "read_file") return "读取文件";
+  if (normalized === "run_command") return "执行命令";
+  if (normalized === "check_command_risk") return "检查命令风险";
+  if (normalized === "write_file") return "写入文件";
+  if (normalized === "apply_patch") return "应用补丁";
+  if (normalized === "delete_file") return "删除文件";
   if (normalized === "http_get") return "HTTP GET";
   if (normalized === "http_post") return "HTTP POST";
-  if (normalized === "download_file") return "Download file";
-  if (normalized === "call_mcp_tool") return "MCP tool";
-  if (normalized === "list_mcp_tools") return "List MCP tools";
-  if (normalized === "read_mcp_resource") return "Read MCP resource";
+  if (normalized === "download_file") return "下载文件";
+  if (normalized === "call_mcp_tool") return "调用 MCP 工具";
+  if (normalized === "list_mcp_tools") return "列出 MCP 工具";
+  if (normalized === "read_mcp_resource") return "读取 MCP 资源";
   return normalized || "Tool";
+}
+
+function localLiuAgentModelStepGoal(index = 0, payload = {}) {
+  const step = Number(index || payload?.index || 0) || 0;
+  const toolCount = Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0;
+  if (step <= 1) return "理解目标并制定下一步";
+  if (toolCount > 0) return "根据工具结果规划下一步";
+  return "整理结果并判断是否完成";
 }
 
 function localLiuAgentRuntimeEventTranscriptText(event = {}) {
@@ -7686,13 +7759,17 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
   const payload = localLiuAgentRuntimeEventPayload(event);
   if (type === "progress_update") {
     const summary = compactLocalLiuAgentInline(payload?.summary || "", 360);
+    const currentFocus = compactLocalLiuAgentInline(
+      payload?.current_focus || payload?.currentFocus || "",
+      260,
+    );
     const nextAction = compactLocalLiuAgentInline(
       payload?.next_action || payload?.nextAction || "",
       260,
     );
     return [
-      "Agent progress",
-      summary ? `  - ${summary}` : "",
+      currentFocus || summary || "推进当前任务",
+      currentFocus && summary && summary !== currentFocus ? `  - ${summary}` : "",
       nextAction ? `  - 下一步：${nextAction}` : "",
     ]
       .filter(Boolean)
@@ -7705,7 +7782,8 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
     const runtime = [provider, model].filter(Boolean).join(" / ");
     const messageCount = Number(payload?.message_count || payload?.messageCount || 0) || 0;
     return [
-      `Computing${index > 0 ? ` (model step ${index})` : ""}`,
+      `正在${localLiuAgentModelStepGoal(index, payload)}`,
+      index > 0 ? `  - 模型步骤：${index}` : "",
       runtime ? `  - 模型：${runtime}` : "",
       messageCount > 0 ? `  - 上下文：${messageCount} 条` : "",
     ]
@@ -7716,9 +7794,11 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
     const index = Number(payload?.index || 0) || 0;
     const toolCount = Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0;
     const error = compactLocalLiuAgentInline(payload?.error || payload?.error_code || "", 260);
+    const ok = payload?.ok !== false;
     return [
-      `Model step${index > 0 ? ` ${index}` : ""} completed`,
-      toolCount > 0 ? `  - Planned tool calls: ${toolCount}` : "  - No more tool calls",
+      ok ? `已完成${localLiuAgentModelStepGoal(index, payload)}` : "模型调用失败",
+      index > 0 ? `  - 模型步骤：${index}` : "",
+      toolCount > 0 ? `  - 下一步工具调用：${toolCount} 个` : "  - 没有继续调用工具",
       error ? `  - 错误：${error}` : "",
     ]
       .filter(Boolean)
@@ -7728,9 +7808,8 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
     const cmd = compactLocalLiuAgentInline(payload?.cmd || payload?.command || "", 260);
     const cwd = String(payload?.cwd || "").trim();
     return [
-      cmd ? `Ran ${cmd}` : "Ran command",
+      cmd ? `正在执行命令：${cmd}` : "正在执行命令",
       cwd ? `  - cwd=${cwd}` : "",
-      "Running...",
     ]
       .filter(Boolean)
       .join("\n");
@@ -7745,7 +7824,7 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
     const durationMs = payload?.duration_ms ?? payload?.durationMs;
     const summary = compactLocalLiuAgentInline(payload?.summary || payload?.error || "", 260);
     return [
-      "Command finished",
+      "命令执行完成",
       exitCode !== undefined && exitCode !== null ? `  - exit_code=${exitCode}` : "",
       durationMs !== undefined && durationMs !== null ? `  - duration=${durationMs}ms` : "",
       summary ? `  - ${summary}` : "",
@@ -7760,7 +7839,10 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
     const count = Number(payload?.tool_count || payload?.toolCount || 0) || 0;
     const progress = index > 0 && count > 0 ? ` ${index}/${count}` : "";
     const summary = compactLocalLiuAgentInline(payload?.summary || "", 260);
-    return [subject ? `${subject}${progress}` : `${toolName || "Tool"}${progress}`, summary ? `  - ${summary}` : "", "Running..."]
+    return [
+      subject ? `正在${subject}${progress}` : `正在调用工具${progress}`,
+      summary ? `  - ${summary}` : "",
+    ]
       .filter(Boolean)
       .join("\n");
   }
@@ -7771,7 +7853,7 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
       payload?.summary || payload?.error_code || payload?.error || "",
       260,
     );
-    return [`Result: ${resultLabel}`, summary ? `  - ${summary}` : ""]
+    return [`完成：${resultLabel}`, summary ? `  - ${summary}` : ""]
       .filter(Boolean)
       .join("\n");
   }
@@ -7783,7 +7865,7 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
       payload?.preview && typeof payload.preview === "object" ? payload.preview : {};
     const cmd = compactLocalLiuAgentInline(preview.cmd || preview.command || "", 260);
     return [
-      "Waiting for approval",
+      "等待授权",
       toolName ? `  - 工具：${toolName}` : "",
       cmd ? `  - 命令：${cmd}` : "",
       action ? `  - 动作：${action}` : "",
@@ -7800,8 +7882,9 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
   const payload = localLiuAgentRuntimeEventPayload(event);
   if (type === "progress_update") {
     const summary = String(payload?.summary || "").trim();
+    const currentFocus = String(payload?.current_focus || payload?.currentFocus || "").trim();
     const nextAction = String(payload?.next_action || payload?.nextAction || "").trim();
-    return [summary || "Agent progress", nextAction ? `下一步：${nextAction}` : ""]
+    return [currentFocus || summary || "推进当前任务", nextAction ? `下一步：${nextAction}` : ""]
       .filter(Boolean)
       .join(" · ");
   }
@@ -7822,11 +7905,22 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
   if (type === "model_step") {
     const index = Number(payload?.index || 0) || 0;
     const summary = String(payload?.summary || "").trim();
+    const error = String(payload?.error || "").trim();
+    const errorCode = String(payload?.error_code || payload?.errorCode || "").trim();
     const provider = String(payload?.provider_id || payload?.providerId || "").trim();
     const model = String(payload?.model_name || payload?.modelName || "").trim();
     const toolCount = Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0;
     const title = index > 0 ? `模型步骤 ${index}` : "模型步骤";
     const runtime = [provider, model].filter(Boolean).join(" / ");
+    if (payload?.ok === false) {
+      const failure = compactLocalLiuAgentInline(
+        [errorCode, error || summary].filter(Boolean).join(" "),
+        220,
+      );
+      return [title, runtime, failure ? `调用失败：${failure}` : "调用失败"]
+        .filter(Boolean)
+        .join(" · ");
+    }
     const toolText = toolCount > 0 ? `返回 ${toolCount} 个工具调用` : "未继续调用工具";
     return [title, runtime, summary || toolText].filter(Boolean).join(" · ");
   }
@@ -7842,7 +7936,7 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
   }
   if (type === "command_started") {
     const cmd = String(payload?.cmd || payload?.command || "").trim();
-    return cmd ? `Ran ${cmd}` : "Ran command";
+    return cmd ? `执行命令：${cmd}` : "执行命令";
   }
   if (type === "command_output_chunk") {
     const stream = String(payload?.stream || "stdout").trim();
@@ -7869,14 +7963,14 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
     const argumentsPreview = String(
       payload?.arguments_preview || payload?.argumentsPreview || "",
     ).trim();
-    return [toolLabel, summary || argumentsPreview || "Running..."]
+    return [toolLabel, summary || argumentsPreview || "运行中"]
       .filter(Boolean)
       .join(" · ");
   }
   if (type === "tool_result") {
     const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
     const summary = String(payload?.summary || "").trim();
-    return [`Result: ${localLiuAgentToolResultLabel(toolName)}`, summary]
+    return [`完成：${localLiuAgentToolResultLabel(toolName)}`, summary]
       .filter(Boolean)
       .join(" · ");
   }
@@ -7926,19 +8020,19 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
       type === "approval_required"
         ? "桌面本地工具授权"
         : type === "command_started"
-          ? "Ran command"
+          ? "执行命令"
         : type === "command_output_chunk"
           ? "Command output"
         : type === "command_finished"
           ? "Command finished"
         : type === "progress_update"
-          ? "Agent progress"
+          ? "推进当前任务"
         : type === "model_step"
           ? `本地模型步骤 ${modelStepIndex || ""}`.trim()
         : type === "model_call_started"
           ? `本地模型步骤 ${modelStepIndex || ""} 请求中`.trim()
         : type === "tool_result"
-          ? `Result: ${localLiuAgentToolResultLabel(toolName)}`
+          ? `完成：${localLiuAgentToolResultLabel(toolName)}`
         : type === "tool_call_started"
           ? localLiuAgentToolTraceSubject(payload)
           : "桌面本地 Agent Runtime",
@@ -8043,6 +8137,85 @@ function applyLocalLiuAgentReasoningContent(row, event = {}) {
   return true;
 }
 
+function modelStepFailureMessageFromEvent(event = {}) {
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  const index = Number(payload?.index || 0) || 0;
+  const provider = String(payload?.provider_id || payload?.providerId || "").trim();
+  const model = String(payload?.model_name || payload?.modelName || "").trim();
+  const errorCode = String(payload?.error_code || payload?.errorCode || "").trim();
+  const error = String(payload?.error || "").trim();
+  const summary = String(payload?.summary || "").trim();
+  const detail = compactLocalLiuAgentInline(
+    stripLocalLiuAgentRequestDiagnostic(error || summary),
+    260,
+  );
+  const lines = [
+    `模型调用失败${index > 0 ? `（模型步骤 ${index}）` : ""}。`,
+    [provider, model].filter(Boolean).length
+      ? `模型：${[provider, model].filter(Boolean).join(" / ")}`
+      : "",
+    errorCode ? `错误码：${errorCode}` : "",
+    detail ? `原因：${detail}` : "",
+    "完整诊断见运行详情。",
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+function stripLocalLiuAgentRequestDiagnostic(value = "") {
+  let text = String(value || "").trim();
+  for (const marker of [" request={", " request=[", "\nrequest={", "\nrequest=["]) {
+    const index = text.indexOf(marker);
+    if (index >= 0) {
+      text = text.slice(0, index).trim();
+    }
+  }
+  return text;
+}
+
+function applyLocalLiuAgentModelStepFailure(row, event = {}, context = {}) {
+  if (!row || String(event?.type || "").trim() !== "model_step") return false;
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  if (payload?.ok !== false) return false;
+  const message = modelStepFailureMessageFromEvent(event);
+  row.content = String(row.content || "").trim() || message;
+  row.time = nowText();
+  upsertMessageOperation(row, {
+    operationId: `local-agent-running:${row.id}`,
+    kind: "request",
+    title: "桌面本地 Agent Runtime",
+    summary: "本地模型调用失败",
+    detail: String(payload?.error || payload?.summary || "").trim(),
+    phase: "failed",
+    actionType: "none",
+    meta: {
+      local_liuagent_operation: "true",
+      agent_runtime_event: "true",
+      source: "tauri_liuagent_local_chat",
+      chat_session_id: String(context?.chatSessionId || "").trim(),
+      cwd: String(context?.workspacePath || "").trim(),
+      error_code: String(payload?.error_code || payload?.errorCode || "").trim(),
+    },
+  });
+  upsertMessageOperation(row, {
+    operationId: `local-agent:${row.id}`,
+    kind: "request",
+    title: "桌面本地 Agent Runtime",
+    summary: "本地模型调用失败",
+    detail: String(payload?.error || payload?.summary || "").trim(),
+    phase: "failed",
+    actionType: "none",
+    meta: {
+      local_liuagent_operation: "true",
+      source: "tauri_liuagent_local_chat",
+      chat_session_id: String(context?.chatSessionId || "").trim(),
+      cwd: String(context?.workspacePath || "").trim(),
+      error_code: String(payload?.error_code || payload?.errorCode || "").trim(),
+    },
+  });
+  row.processExpanded = true;
+  return true;
+}
+
 function shouldUpsertLocalLiuAgentRuntimeOperation(event = {}, operation = null) {
   if (!operation) return false;
   const type = String(event?.type || "").trim();
@@ -8063,6 +8236,7 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
       continue;
     }
     applyLocalLiuAgentReasoningContent(row, event);
+    applyLocalLiuAgentModelStepFailure(row, event, context);
     const operation = localLiuAgentRuntimeEventOperation(event, {
       ...context,
       assistantMessageId: row.id,
@@ -8072,6 +8246,156 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
     }
     appendMessageProcessLog(row, {
       ...localLiuAgentRuntimeEventProcessLogEntry(event, operation),
+    });
+  }
+}
+
+function localLiuAgentResultModelRuntime(result = {}) {
+  const modelResult =
+    result?.modelResult && typeof result.modelResult === "object"
+      ? result.modelResult
+      : result?.model_result && typeof result.model_result === "object"
+        ? result.model_result
+        : {};
+  return modelResult && typeof modelResult === "object" ? modelResult : {};
+}
+
+function localLiuAgentResultCurrentStateDelta(result = {}) {
+  const modelRuntime = localLiuAgentResultModelRuntime(result);
+  const currentStateDelta =
+    modelRuntime?.currentStateDelta && typeof modelRuntime.currentStateDelta === "object"
+      ? modelRuntime.currentStateDelta
+      : modelRuntime?.current_state_delta &&
+          typeof modelRuntime.current_state_delta === "object"
+        ? modelRuntime.current_state_delta
+        : result?.currentStateDelta && typeof result.currentStateDelta === "object"
+          ? result.currentStateDelta
+          : result?.current_state_delta && typeof result.current_state_delta === "object"
+            ? result.current_state_delta
+            : {};
+  return currentStateDelta && typeof currentStateDelta === "object"
+    ? currentStateDelta
+    : {};
+}
+
+function localLiuAgentResultStructuredState(result = {}, key = "") {
+  const currentStateDelta = localLiuAgentResultCurrentStateDelta(result);
+  const camelKey = String(key || "").replace(/_([a-z])/g, (_, char) =>
+    String(char || "").toUpperCase(),
+  );
+  const value =
+    currentStateDelta?.[camelKey] && typeof currentStateDelta[camelKey] === "object"
+      ? currentStateDelta[camelKey]
+      : currentStateDelta?.[key] && typeof currentStateDelta[key] === "object"
+        ? currentStateDelta[key]
+        : {};
+  return value && typeof value === "object" ? value : {};
+}
+
+function localLiuAgentVerificationSummary(verificationReport = {}) {
+  const checks = Array.isArray(verificationReport?.checks)
+    ? verificationReport.checks
+    : [];
+  const status = String(
+    verificationReport?.overallStatus || verificationReport?.overall_status || "",
+  ).trim();
+  const checkSummary = checks
+    .map((check) => {
+      const type = String(check?.type || check?.checkType || check?.check_type || "").trim();
+      const checkStatus = String(check?.status || "").trim();
+      return [type, checkStatus].filter(Boolean).join(":");
+    })
+    .filter(Boolean)
+    .join(", ");
+  return [`Verification ${status || "-"}`, checkSummary].filter(Boolean).join(" · ");
+}
+
+function appendLocalLiuAgentStructuredStateOperations(row, result = {}, context = {}) {
+  if (!row) return;
+  const planState = localLiuAgentResultStructuredState(result, "plan_state");
+  const verificationReport = localLiuAgentResultStructuredState(
+    result,
+    "verification_report",
+  );
+  const memoryWritePlan = localLiuAgentResultStructuredState(result, "memory_write_plan");
+  const baseMeta = {
+    local_liuagent_operation: "true",
+    agent_runtime_event: "true",
+    source: "tauri_liuagent_local_chat",
+    chat_session_id: String(context?.chatSessionId || "").trim(),
+    cwd: String(context?.workspacePath || "").trim(),
+  };
+  if (String(planState?.version || "").trim()) {
+    const nodes = Array.isArray(planState?.nodes) ? planState.nodes : [];
+    upsertMessageOperation(row, {
+      operationId: `local-agent-plan:${row.id}`,
+      kind: "request",
+      title: "Plan state",
+      summary: `Plan ${String(planState?.status || "-").trim()} · ${nodes.length} nodes`,
+      detail: String(planState?.rootGoal || planState?.root_goal || "").trim(),
+      phase:
+        String(planState?.status || "").trim() === "completed"
+          ? "completed"
+          : "running",
+      actionType: "none",
+      meta: {
+        ...baseMeta,
+        structured_state: "plan_state",
+        current_node_id: String(
+          planState?.currentNodeId || planState?.current_node_id || "",
+        ).trim(),
+      },
+    });
+  }
+  if (String(verificationReport?.version || "").trim()) {
+    const overallStatus = String(
+      verificationReport?.overallStatus || verificationReport?.overall_status || "",
+    ).trim();
+    upsertMessageOperation(row, {
+      operationId: `local-agent-verification:${row.id}`,
+      kind: "request",
+      title: "Verification report",
+      summary: localLiuAgentVerificationSummary(verificationReport),
+      detail: (Array.isArray(verificationReport?.evidence)
+        ? verificationReport.evidence
+        : []
+      )
+        .filter(Boolean)
+        .join("\n"),
+      phase:
+        overallStatus === "passed"
+          ? "completed"
+          : overallStatus === "blocked"
+            ? "blocked"
+            : "failed",
+      actionType: "none",
+      meta: {
+        ...baseMeta,
+        structured_state: "verification_report",
+        overall_status: overallStatus,
+      },
+    });
+    appendMessageProcessLog(row, {
+      id: `local-agent-verification-log:${row.id}`,
+      text: localLiuAgentVerificationSummary(verificationReport),
+      level:
+        overallStatus === "passed"
+          ? "success"
+          : overallStatus === "blocked"
+            ? "warning"
+            : "error",
+      kind: "verification",
+      payload: verificationReport,
+    });
+  }
+  if (String(memoryWritePlan?.version || "").trim()) {
+    const items = Array.isArray(memoryWritePlan?.items) ? memoryWritePlan.items : [];
+    appendMessageProcessLog(row, {
+      id: `local-agent-memory-log:${row.id}`,
+      text: `Memory classifier · ${items.length} writes/candidates`,
+      level: "info",
+      kind: "memory",
+      payload: memoryWritePlan,
     });
   }
 }
@@ -8415,6 +8739,7 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
       providerId: selectedProviderId.value || defaultProviderId.value || "",
       modelName: selectedModelName.value || defaultModelName.value || "",
       systemPrompt: buildLocalLiuAgentSystemPrompt(),
+      systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
       temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
       modelRuntime,
     };
@@ -12401,46 +12726,48 @@ function messageProcessEntryTitle(entry = {}) {
   const toolName = messageProcessEntryToolName(entry);
   const path = messageProcessEntryPath(entry);
   const firstLine = messageProcessEntryFirstLine(entry);
-  if (kind === "progress_update") return "Agent progress";
+  if (kind === "progress_update") return "推进当前任务";
   if (kind === "model_call") {
     const index = Number(payload?.index || 0) || 0;
     if (eventType === "model_step") {
-      return `Model step${index > 0 ? ` ${index}` : ""} completed`;
+      return payload?.ok === false
+        ? `模型步骤${index > 0 ? ` ${index}` : ""}调用失败`
+        : `已完成${localLiuAgentModelStepGoal(index, payload)}`;
     }
-    return `Computing${index > 0 ? ` (model step ${index})` : ""}`;
+    return `正在${localLiuAgentModelStepGoal(index, payload)}`;
   }
-  if (kind === "permission") return "Waiting for approval";
-  if (kind === "file_read") return `Read${path ? `(${path})` : ""}`;
+  if (kind === "permission") return "等待授权";
+  if (kind === "file_read") return `读取文件${path ? `(${path})` : ""}`;
   if (kind === "file_search") {
     const query = String(args?.query || args?.pattern || payload?.query || "").trim();
     const subject =
       toolName === "list_files"
         ? path || String(args?.path || args?.directory || ".").trim() || "."
         : query || path;
-    return `Explore${subject ? `(${subject})` : ""}`;
+    return `${toolName === "list_files" ? "查看目录" : "搜索文本"}${subject ? `(${subject})` : ""}`;
   }
   if (kind === "file_edit") {
     const added = Number(content?.added || payload?.added || 0) || 0;
     const removed = Number(content?.removed || payload?.removed || 0) || 0;
     const stats = added || removed ? ` (+${added} -${removed})` : "";
-    return `Edited ${path || localLiuAgentToolResultLabel(toolName)}${stats}`;
+    return `编辑 ${path || localLiuAgentToolResultLabel(toolName)}${stats}`;
   }
   if (kind === "command") {
     const cmd = String(payload?.cmd || payload?.command || args?.cmd || args?.command || "").trim();
-    return cmd ? `Ran ${cmd}` : "Ran command";
+    return cmd ? `执行命令：${cmd}` : "执行命令";
   }
   if (kind === "command_output") {
     const stream = String(payload?.stream || "stdout").trim() || "stdout";
-    return `Output (${stream})`;
+    return `命令输出 (${stream})`;
   }
   if (kind === "mcp_call") {
     const server = String(args?.server || payload?.server || "").trim();
     const tool = String(args?.tool_name || args?.name || payload?.tool || "").trim();
     const target = [server, tool].filter(Boolean).join(".");
-    return target ? `Called ${target}` : "Called MCP";
+    return target ? `调用 MCP：${target}` : "调用 MCP";
   }
   if (eventType === "tool_result") {
-    return `Result: ${localLiuAgentToolResultLabel(toolName)}`;
+    return `完成：${localLiuAgentToolResultLabel(toolName)}`;
   }
   return firstLine || "Process entry";
 }
@@ -12452,12 +12779,12 @@ function messageProcessEntryStatus(entry = {}) {
   }
   const payload = messageProcessEntryPayload(entry);
   const eventType = messageProcessEntryEventType(entry);
-  if (eventType === "tool_call_started" || eventType === "command_started") return "Running";
+  if (eventType === "tool_call_started" || eventType === "command_started") return "运行中";
   if (eventType === "command_finished") {
-    return payload?.ok === false ? "Failed" : "Finished";
+    return payload?.ok === false ? "失败" : "完成";
   }
-  if (eventType === "tool_result") return payload?.ok === false ? "Failed" : "Done";
-  if (eventType === "approval_required") return "Waiting";
+  if (eventType === "tool_result") return payload?.ok === false ? "失败" : "完成";
+  if (eventType === "approval_required") return "等待";
   return "";
 }
 
@@ -14014,10 +14341,14 @@ function nativeLiuAgentPermissionText(permissionRequest = {}, task = {}) {
 function setLocalLiuAgentPendingPermission(requestId, pending = {}) {
   const normalizedRequestId = String(requestId || "").trim();
   if (!normalizedRequestId || !pending || typeof pending !== "object") return;
+  const existing = localLiuAgentPendingPermissions.get(normalizedRequestId);
   localLiuAgentPendingPermissions.set(normalizedRequestId, {
+    ...(existing || {}),
     ...pending,
     requestId: normalizedRequestId,
-    createdAt: Number(pending.createdAt || Date.now()) || Date.now(),
+    createdAt:
+      Number(existing?.createdAt || pending.createdAt || Date.now()) || Date.now(),
+    updatedAt: Date.now(),
   });
   localLiuAgentPendingPermissionVersion.value += 1;
   syncChatLoadingWithCurrentSession();
@@ -14032,6 +14363,16 @@ function deleteLocalLiuAgentPendingPermission(requestId) {
     syncChatLoadingWithCurrentSession();
   }
   return deleted;
+}
+
+function localLiuAgentPendingPermissionRow(pending = {}) {
+  return (
+    (pending?.rowId ? messages.value.find((item) => item?.id === pending.rowId) : null) ||
+    (pending?.assistantMessageId
+      ? messages.value.find((item) => item?.id === pending.assistantMessageId)
+      : null) ||
+    null
+  );
 }
 
 function localLiuAgentPendingPermissionsForChatSession(chatSessionId = "") {
@@ -14064,6 +14405,33 @@ const currentChatSessionLocalLiuAgentWaitingPermission = computed(
   () => currentLocalLiuAgentPendingPermissions.value.length > 0,
 );
 
+function clearLocalLiuAgentPendingPermissionsForChatSession(
+  chatSessionId = currentChatSessionId.value,
+  reason = "已停止本地智能体执行，已取消待授权操作",
+) {
+  const pendingItems = localLiuAgentPendingPermissionsForChatSession(chatSessionId);
+  if (!pendingItems.length) return false;
+  for (const pending of pendingItems) {
+    const requestId = String(pending?.requestId || "").trim();
+    if (!requestId) continue;
+    const row = localLiuAgentPendingPermissionRow(pending);
+    localLiuAgentPendingPermissions.delete(requestId);
+    if (row) {
+      removeLocalLiuAgentPermissionOperation(row, requestId);
+      appendMessageProcessLog(row, {
+        level: "warning",
+        text: reason,
+        autoExpand: true,
+      });
+      row.processExpanded = true;
+    }
+  }
+  localLiuAgentPendingPermissionVersion.value += 1;
+  syncChatLoadingWithCurrentSession();
+  scrollToBottom();
+  return true;
+}
+
 function localLiuAgentRiskLabel(risk = "") {
   const normalized = String(risk || "").trim().toLowerCase();
   if (normalized === "high") return "高风险";
@@ -14075,6 +14443,7 @@ function localLiuAgentRiskLabel(risk = "") {
 
 function localLiuAgentActionLabel(action = "") {
   const normalized = String(action || "").trim();
+  if (normalized === "confirm_plan") return "确认执行计划";
   if (normalized === "command.run") return "执行本地命令";
   if (normalized === "file.write") return "写入文件";
   if (normalized === "file.delete") return "删除文件";
@@ -14114,6 +14483,7 @@ function localLiuAgentPermissionScopeLabel(permissionRequest = {}, pending = {})
 
 function localLiuAgentPermissionDetailText(permissionRequest = {}, pending = {}) {
   const preview = localLiuAgentPermissionPreview(permissionRequest);
+  const action = String(permissionRequest?.action || "").trim();
   const cmd = localLiuAgentPermissionCommand(permissionRequest);
   const cwd = String(
     preview.cwd ||
@@ -14122,6 +14492,19 @@ function localLiuAgentPermissionDetailText(permissionRequest = {}, pending = {})
       "",
   ).trim();
   const reason = String(permissionRequest?.reason || "").trim();
+  if (action === "confirm_plan") {
+    const userRequest = String(preview.userRequest || preview.user_request || "").trim();
+    const taskType = String(preview.taskType || preview.task_type || "").trim();
+    const score = preview.score ?? "";
+    const lines = [
+      userRequest ? `请求：${userRequest}` : "",
+      taskType ? `类型：${taskType}` : "",
+      score !== "" ? `清晰度：${score}/5` : "",
+      reason ? `原因：${reason}` : "",
+      Object.keys(preview).length ? `预览：\n${JSON.stringify(preview, null, 2)}` : "",
+    ].filter(Boolean);
+    return lines.join("\n\n");
+  }
   const lines = [
     cmd ? `命令：${cmd}` : "",
     cwd ? `工作目录：${cwd}` : "",
@@ -14143,19 +14526,29 @@ function buildLocalLiuAgentPermissionPrompt(pending = {}, queueCount = 1) {
       pending.task?.toolName ||
       "",
   ).trim();
+  const action = String(permissionRequest.action || "").trim();
   const actionLabel = localLiuAgentActionLabel(permissionRequest.action);
   const cmd = localLiuAgentPermissionCommand(permissionRequest);
   const reason = String(permissionRequest.reason || "").trim();
-  const description = [
-    `本地智能体需要${actionLabel}来继续当前任务。`,
-    reason || (cmd ? `它将运行：${cmd}` : ""),
-    "允许后会继续当前这轮对话，期间输入框会保持运行中，避免同时发起新的任务。",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const isPlanConfirmation = action === "confirm_plan";
+  const description = isPlanConfirmation
+    ? [
+        "本地智能体需要先确认执行计划，才会调用模型或本机工具继续当前任务。",
+        reason,
+        "确认后会继续当前这轮对话，期间输入框会保持运行中，避免同时发起新的任务。",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : [
+        `本地智能体需要${actionLabel}来继续当前任务。`,
+        reason || (cmd ? `它将运行：${cmd}` : ""),
+        "允许后会继续当前这轮对话，期间输入框会保持运行中，避免同时发起新的任务。",
+      ]
+        .filter(Boolean)
+        .join("\n");
   return {
     requestId: String(pending.requestId || permissionRequest.requestId || "").trim(),
-    title: "需要授权本机操作",
+    title: isPlanConfirmation ? "需要确认执行计划" : "需要授权本机操作",
     description,
     toolLabel: toolName || actionLabel,
     scopeLabel: localLiuAgentPermissionScopeLabel(permissionRequest, pending),
@@ -14217,13 +14610,24 @@ function upsertLocalLiuAgentContinuationOperation(
 ) {
   if (!row) return null;
   const isDesktopTool = pending?.kind === "desktop_tool";
-  const toolName = String(pending?.task?.toolName || "本地工具").trim();
+  const action = String(pending?.permissionRequest?.action || "").trim();
+  const isPlanConfirmation = action === "confirm_plan";
+  const toolName = String(
+    pending?.task?.toolName ||
+      pending?.permissionRequest?.toolName ||
+      pending?.permissionRequest?.tool_name ||
+      (isPlanConfirmation ? "执行计划确认" : "本地工具"),
+  ).trim();
   const operation = upsertMessageOperation(row, {
     operationId: isDesktopTool
       ? `desktop-tool:${String(pending?.task?.taskId || requestId).trim()}`
       : `local-agent:${row.id}`,
     kind: isDesktopTool ? "tool" : "request",
-    title: isDesktopTool ? `桌面本地工具：${toolName}` : "桌面本地 Agent Runtime",
+    title: isDesktopTool
+      ? `桌面本地工具：${toolName}`
+      : isPlanConfirmation
+        ? "桌面本地 Agent 执行计划确认"
+        : "桌面本地 Agent Runtime",
     summary: allowSession
       ? "已允许本会话，AI 正在继续执行"
       : "已允许一次，AI 正在继续执行",
@@ -14285,6 +14689,9 @@ async function executeLocalLiuAgentToolWithPermission(task, workspacePath, row =
     name: task.toolName,
     arguments: task.toolArgs,
     workspacePath,
+    permissionDecision: localLiuAgentFullAccessEnabled()
+      ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
+      : null,
   });
   const errorCode = String(result?.errorCode || result?.error_code || "").trim();
   const permissionRequest =
@@ -16643,8 +17050,8 @@ function operationActionButtons(operation) {
   if (actionType === "approve") {
     if (String(meta.local_liuagent_permission || "").trim() === "true") {
       return [
-        { key: "local_liuagent_allow_once", label: "允许一次" },
-        { key: "local_liuagent_allow_session", label: "本会话允许" },
+        { key: "local_liuagent_allow_once", label: "本次授权" },
+        { key: "local_liuagent_allow_session", label: "会话授权" },
         { key: "local_liuagent_deny", label: "拒绝", type: "danger" },
       ];
     }
@@ -16838,6 +17245,7 @@ async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
 
   const denied = actionKey === "local_liuagent_deny";
   const allowSession = actionKey === "local_liuagent_allow_session";
+  const fullAccess = allowSession && localLiuAgentFullAccessEnabled();
   deleteLocalLiuAgentPendingPermission(requestId);
   removeLocalLiuAgentPermissionOperation(row, requestId);
   if (denied) {
@@ -16852,7 +17260,11 @@ async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
   }
 
   appendMessageProcessLog(row, {
-    text: allowSession ? "已允许本会话，正在继续执行" : "已允许一次，正在继续执行",
+    text: fullAccess
+      ? "已启用完全访问，正在继续执行"
+      : allowSession
+        ? "已允许本会话，正在继续执行"
+        : "已允许一次，正在继续执行",
     level: "info",
   });
   upsertLocalLiuAgentContinuationOperation(row, pending, requestId, allowSession);
@@ -16870,9 +17282,16 @@ async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
         row,
         requestId,
         allowSession,
+        fullAccess,
       );
     } else {
-      await continueLocalLiuAgentChatPermission(pending, row, requestId, allowSession);
+      await continueLocalLiuAgentChatPermission(
+        pending,
+        row,
+        requestId,
+        allowSession,
+        fullAccess,
+      );
     }
   } catch (err) {
     upsertMessageOperation(row, {
@@ -16923,6 +17342,7 @@ async function continueLocalLiuAgentDesktopToolPermission(
   row,
   requestId,
   allowSession = false,
+  fullAccess = false,
 ) {
   const task = pending.task || {};
   const workspacePath = String(pending.workspacePath || "").trim();
@@ -16935,12 +17355,10 @@ async function continueLocalLiuAgentDesktopToolPermission(
     name: task.toolName,
     arguments: task.toolArgs,
     workspacePath,
-    permissionDecision: {
-      requestId,
-      decision: allowSession ? "approve_session" : "approve_once",
-      grantScope: allowSession ? "session" : "once",
-      comment: String(permissionRequest?.reason || "").trim(),
-    },
+    permissionDecision: buildLocalLiuAgentPermissionDecision(requestId, permissionRequest, {
+      allowSession,
+      fullAccess,
+    }),
   });
   const ok = Boolean(result?.ok);
 
@@ -16985,6 +17403,7 @@ async function continueLocalLiuAgentChatPermission(
   row,
   requestId,
   allowSession = false,
+  fullAccess = false,
 ) {
   const permissionRequest =
     pending?.permissionRequest && typeof pending.permissionRequest === "object"
@@ -17042,12 +17461,10 @@ async function continueLocalLiuAgentChatPermission(
   try {
     result = await startNativeLiuAgentLocalChat({
       ...localChatPayload,
-      permissionDecision: {
-        requestId,
-        decision: allowSession ? "approve_session" : "approve_once",
-        grantScope: allowSession ? "session" : "once",
-        comment: String(permissionRequest?.reason || "").trim(),
-      },
+      permissionDecision: buildLocalLiuAgentPermissionDecision(requestId, permissionRequest, {
+        allowSession,
+        fullAccess,
+      }),
     });
   } finally {
     if (activeChatSessionId) {
@@ -17064,6 +17481,10 @@ async function continueLocalLiuAgentChatPermission(
   }
   row.time = nowText();
   applyLocalLiuAgentRuntimeEvents(row, result, {
+    chatSessionId: pending.activeChatSessionId,
+    workspacePath: localChatPayload?.workspacePath,
+  });
+  appendLocalLiuAgentStructuredStateOperations(row, result, {
     chatSessionId: pending.activeChatSessionId,
     workspacePath: localChatPayload?.workspacePath,
   });
@@ -20782,20 +21203,62 @@ function nowText() {
 function toHistoryRows(sourceMessages, limit = 20) {
   const safeLimit = Math.max(1, Math.min(Number(limit || 20), 50));
   return (sourceMessages || [])
-    .map((item) => ({
-      role: String(item.role || "")
+    .map((item) => {
+      const role = String(item.role || "")
         .trim()
-        .toLowerCase(),
-      content: String(item.content || "").trim(),
-      reasoningContent: String(
-        item.reasoningContent || item.reasoning_content || "",
-      ).trim(),
-    }))
+        .toLowerCase();
+      const content = String(item.content || "").trim();
+      const sourceKind = localLiuAgentHistorySourceKind(item);
+      const diagnostic = shouldMarkLocalLiuAgentHistoryDiagnostic(item);
+      return {
+        role,
+        content,
+        reasoningContent: String(
+          item.reasoningContent || item.reasoning_content || "",
+        ).trim(),
+        sourceKind,
+        diagnostic,
+        visibility: diagnostic ? "user_visible" : "model_context",
+      };
+    })
     .filter(
       (item) =>
         (item.role === "user" || item.role === "assistant") && item.content,
     )
     .slice(-safeLimit);
+}
+
+function localLiuAgentHistorySourceKind(row = {}) {
+  const operations = Array.isArray(row?.operations) ? row.operations : [];
+  const hasLocalRuntimeOperation = operations.some((operation) => {
+    const meta = operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+    return (
+      String(meta?.source || "").trim() === "tauri_liuagent_local_chat" ||
+      String(meta?.local_liuagent_operation || "").trim() === "true"
+    );
+  });
+  return hasLocalRuntimeOperation ? "desktop_local_agent_runtime" : "";
+}
+
+function shouldMarkLocalLiuAgentHistoryDiagnostic(row = {}) {
+  if (String(row?.role || "").trim().toLowerCase() !== "assistant") return false;
+  const operations = Array.isArray(row?.operations) ? row.operations : [];
+  const hasFailedLocalRuntimeOperation = operations.some((operation) => {
+    const meta = operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+    const isLocalRuntime =
+      String(meta?.source || "").trim() === "tauri_liuagent_local_chat" ||
+      String(meta?.local_liuagent_operation || "").trim() === "true";
+    if (!isLocalRuntime) return false;
+    return ["failed", "blocked", "waiting_user"].includes(
+      String(operation?.phase || "").trim(),
+    );
+  });
+  if (hasFailedLocalRuntimeOperation) return true;
+  const content = String(row?.content || "").trim();
+  return (
+    localLiuAgentHistorySourceKind(row) === "desktop_local_agent_runtime" &&
+    /^(执行失败|模型调用失败|本轮没有完成|桌面端本地对话失败)/.test(content)
+  );
 }
 
 function normalizeMcpModules(payload) {
@@ -24430,7 +24893,14 @@ async function sendLocalLiuAgentChatRequest({
     },
   });
   appendMessageProcessLog(assistantMessage, {
-    text: "Local Agent Runtime started\n  - 正在创建本机会话\n  - 等待 Runtime 返回模型调用事件",
+    text: [
+      "本轮目标",
+      `  - ${displayUserMessageContent || finalUserPrompt}`,
+      `  - 工作区：${workspacePath}`,
+      "  - 执行方式：桌面端本地智能体",
+    ]
+      .filter(Boolean)
+      .join("\n"),
     level: "info",
   });
   await upsertProjectChatRequirementRecord({
@@ -24463,9 +24933,13 @@ async function sendLocalLiuAgentChatRequest({
     providerId: selectedProviderId.value || defaultProviderId.value || "",
     modelName: selectedModelName.value || defaultModelName.value || "",
     systemPrompt: buildLocalLiuAgentSystemPrompt(),
+    systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
     temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
     modelRuntime,
     attachments,
+    permissionDecision: localLiuAgentFullAccessEnabled()
+      ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
+      : null,
   };
   await saveLocalLiuAgentSessionOfflineCache({
     projectId,
@@ -24505,7 +24979,7 @@ async function sendLocalLiuAgentChatRequest({
     },
   });
   appendMessageProcessLog(assistantMessage, {
-    text: "已提交本地模型请求\n  - 后续 Computing、工具调用和结果由 Runtime 事件驱动追加",
+    text: "开始执行\n  - 正在创建本地模型请求\n  - 后续会按“理解目标、规划工具、执行工具、整理结果”展示进度",
     level: "info",
     autoExpand: true,
   });
@@ -24526,6 +25000,10 @@ async function sendLocalLiuAgentChatRequest({
     return { cancelled: true };
   }
   applyLocalLiuAgentRuntimeEvents(assistantMessage, result, {
+    chatSessionId: activeChatSessionId,
+    workspacePath,
+  });
+  appendLocalLiuAgentStructuredStateOperations(assistantMessage, result, {
     chatSessionId: activeChatSessionId,
     workspacePath,
   });
@@ -24865,6 +25343,7 @@ function cancelActiveLocalLiuAgentRun() {
   if (!run || run.cancelled) return false;
   run.cancelled = true;
   deleteLocalLiuAgentActiveRun(chatSessionId);
+  clearLocalLiuAgentPendingPermissionsForChatSession(chatSessionId);
   const row = localLiuAgentActiveRunRow(run);
   const message = "已停止本地智能体执行。";
   if (row) {
@@ -24918,6 +25397,10 @@ function closeIdleChatWsAfterFastCancel() {
 function stopGeneration() {
   if (cancelActiveLocalLiuAgentRun()) {
     ElMessage.info("已停止本地智能体执行");
+    return;
+  }
+  if (clearLocalLiuAgentPendingPermissionsForChatSession()) {
+    ElMessage.info("已取消待授权操作");
     return;
   }
   const currentRequestId = getActiveRequestId();

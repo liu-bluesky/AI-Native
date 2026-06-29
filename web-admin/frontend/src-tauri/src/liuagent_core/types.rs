@@ -30,11 +30,21 @@ pub struct LocalChatRequest {
     pub provider_id: Option<String>,
     pub model_name: Option<String>,
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub system_prompt_parts: Vec<LocalChatPromptPart>,
     pub temperature: Option<f64>,
     pub model_runtime: Option<LocalModelRuntimeConfig>,
     #[serde(default)]
     pub attachments: Vec<LocalChatAttachment>,
     pub permission_decision: Option<PermissionDecisionInput>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalChatPromptPart {
+    pub source: String,
+    pub priority: Option<i64>,
+    pub content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,6 +125,12 @@ pub struct LocalChatMessage {
     pub content: String,
     #[serde(default, alias = "reasoning_content")]
     pub reasoning_content: Option<String>,
+    #[serde(default, alias = "source_kind")]
+    pub source_kind: Option<String>,
+    #[serde(default)]
+    pub diagnostic: Option<bool>,
+    #[serde(default)]
+    pub visibility: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -131,6 +147,286 @@ pub struct LocalChatAttachment {
     pub extracted_text: Option<String>,
     pub provider_file_id: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunContext {
+    pub version: String,
+    pub project_id: String,
+    pub chat_session_id: String,
+    pub run_id: String,
+    pub workspace_path: String,
+    pub user_request: AgentRunUserRequest,
+    pub history_context: AgentRunHistoryContext,
+    pub project_context: AgentRunProjectContext,
+    pub runtime_context: AgentRunRuntimeContext,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunUserRequest {
+    pub raw: String,
+    pub normalized: String,
+    pub attachments: Vec<AgentRunAttachmentSummary>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunAttachmentSummary {
+    pub attachment_id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub kind: String,
+    pub routing_mode: String,
+    pub extraction_status: String,
+    pub has_data_url: bool,
+    pub has_extracted_text: bool,
+    pub has_provider_file_id: bool,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunHistoryContext {
+    pub conversation_summary: String,
+    pub recent_user_messages: Vec<AgentRunHistoryMessageSummary>,
+    pub recent_assistant_messages: Vec<AgentRunHistoryMessageSummary>,
+    pub excluded_diagnostics: Vec<AgentRunHistoryMessageSummary>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunHistoryMessageSummary {
+    pub role: String,
+    pub source_kind: String,
+    pub visibility: String,
+    pub diagnostic: bool,
+    pub content_preview: String,
+    pub reasoning_content_preview: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunProjectContext {
+    pub project_id: String,
+    pub chat_session_id: String,
+    pub workspace_path: String,
+    pub chat_settings: Value,
+    pub workspace_snapshot: Value,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunRuntimeContext {
+    pub provider_id: String,
+    pub model_name: String,
+    pub mode: String,
+    pub model_capabilities: Vec<String>,
+    pub prompt_stack: PromptStack,
+    pub provider_profile: ModelCompatibilityProfile,
+    pub attachment_routes: Vec<AgentRunAttachmentRoute>,
+    pub available_tools: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCompatibilityProfile {
+    pub version: String,
+    pub provider_id: String,
+    pub model_name: String,
+    pub mode: String,
+    pub supports_tools: bool,
+    pub supports_reasoning_content_replay: bool,
+    pub requires_reasoning_content_replay: bool,
+    pub supports_image_url: bool,
+    pub image_input_status: String,
+    pub image_part_count: usize,
+    pub tool_role_mode: String,
+    pub stream_mode: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunAttachmentRoute {
+    pub attachment_id: String,
+    pub name: String,
+    pub routing_mode: String,
+    pub mime_type: String,
+    pub requested_image_input: bool,
+    pub included_as_image_part: bool,
+    pub included_as_text_context: bool,
+    pub downgrade_reason: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Observation {
+    pub observation_id: String,
+    pub source: String,
+    pub visibility: String,
+    pub summary: String,
+    pub content_ref: String,
+    pub tool_call_id: String,
+    pub error_code: String,
+    pub created_at_epoch_ms: u128,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSchedulerState {
+    pub version: String,
+    pub status: String,
+    pub waiting_for: String,
+    pub run_state: RunState,
+    pub tool_batches: Vec<ToolBatchState>,
+    pub model_round_count: usize,
+    pub tool_round_count: usize,
+    pub planned_tool_count: usize,
+    pub completed_tool_count: usize,
+    pub failed_tool_count: usize,
+    pub pending_tool_call_ids: Vec<String>,
+    pub next_action: String,
+    pub stopped_reason: String,
+    pub updated_at_epoch_ms: u128,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RunState {
+    pub version: String,
+    pub status: String,
+    pub waiting_for: String,
+    pub pending_request_id: String,
+    pub pending_tool_call_ids: Vec<String>,
+    pub pending_tool_batch_id: String,
+    pub pending_adapter_action_id: String,
+    pub updated_at_epoch_ms: u128,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolBatchState {
+    pub batch_id: String,
+    pub status: String,
+    pub tool_call_ids: Vec<String>,
+    pub pending_tool_call_ids: Vec<String>,
+    pub completed_tool_call_ids: Vec<String>,
+    pub failed_tool_call_ids: Vec<String>,
+    pub created_at_epoch_ms: u128,
+    pub updated_at_epoch_ms: u128,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptStack {
+    pub version: String,
+    pub items: Vec<PromptStackItem>,
+    pub resolved_system_prompt_hash: String,
+    pub resolved_system_prompt_preview: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptStackItem {
+    pub source: String,
+    pub priority: i64,
+    pub content_hash: String,
+    pub content_preview: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ClarityAssessment {
+    pub version: String,
+    pub score: u8,
+    pub task_type: String,
+    pub goal_clear: bool,
+    pub target_clear: bool,
+    pub scope_clear: bool,
+    pub expected_result_clear: bool,
+    pub requires_confirmation: bool,
+    pub confirmation_reason: String,
+    pub interpretation: String,
+    pub ambiguities: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanState {
+    pub version: String,
+    pub plan_id: String,
+    pub status: String,
+    pub root_goal: String,
+    pub nodes: Vec<PlanNode>,
+    pub current_node_id: String,
+    pub destructive_steps: Vec<String>,
+    pub created_at_epoch_ms: u128,
+    pub updated_at_epoch_ms: u128,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanNode {
+    pub node_id: String,
+    pub title: String,
+    pub status: String,
+    pub verification_result: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryDecision {
+    pub version: String,
+    pub decision_id: String,
+    pub route: String,
+    pub failure_type: String,
+    pub reason: String,
+    pub retry_allowed: bool,
+    pub max_attempts: usize,
+    pub observed_attempts: usize,
+    pub exit_condition: String,
+    pub created_at_epoch_ms: u128,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryWritePlan {
+    pub version: String,
+    pub items: Vec<MemoryWritePlanItem>,
+    pub long_memory_candidates: Vec<String>,
+    pub created_at_epoch_ms: u128,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryWritePlanItem {
+    pub scope: String,
+    pub target: String,
+    pub content: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VerificationReport {
+    pub version: String,
+    pub verification_id: String,
+    pub target_node_id: String,
+    pub overall_status: String,
+    pub checks: Vec<VerificationCheck>,
+    pub evidence: Vec<String>,
+    pub created_at_epoch_ms: u128,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VerificationCheck {
+    #[serde(rename = "type")]
+    pub check_type: String,
+    pub status: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,12 +505,16 @@ pub struct LocalChatResult {
     pub operations: Value,
     pub runtime_events: Vec<Value>,
     pub summary: String,
+    pub user_visible_error_summary: String,
+    pub diagnostic: Value,
     pub error_code: String,
     pub error: String,
 }
 
 impl LocalChatResult {
     pub fn failed(chat_session_id: String, error: ToolError) -> Self {
+        let error_code = error.code;
+        let error_message = error.message;
         Self {
             ok: false,
             plan_status: String::new(),
@@ -228,9 +528,16 @@ impl LocalChatResult {
             tool_results: Vec::new(),
             operations: json!([]),
             runtime_events: Vec::new(),
-            summary: error.message.clone(),
-            error_code: error.code,
-            error: error.message,
+            summary: error_message.clone(),
+            user_visible_error_summary: error_message.clone(),
+            diagnostic: json!({
+                "version": "response-format/v1",
+                "diagnostic_separated": true,
+                "error_code": error_code.clone(),
+                "error": error_message.clone()
+            }),
+            error_code,
+            error: error_message,
         }
     }
 }

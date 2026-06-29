@@ -56,6 +56,7 @@ pub fn state_changed_event(
     waiting_for: Option<&str>,
     pending_request_id: Option<&str>,
     pending_tool_call_ids: &[String],
+    pending_tool_batch_id: Option<&str>,
     created_at_epoch_ms: u128,
 ) -> Value {
     agent_runtime_event(
@@ -69,7 +70,7 @@ pub fn state_changed_event(
             "waiting_for": waiting_for.unwrap_or(""),
             "pending_request_id": pending_request_id.unwrap_or(""),
             "pending_tool_call_ids": pending_tool_call_ids,
-            "pending_tool_batch_id": Value::Null,
+            "pending_tool_batch_id": pending_tool_batch_id.unwrap_or(""),
             "pending_adapter_action_id": Value::Null,
             "created_at_epoch_ms": created_at_epoch_ms
         }),

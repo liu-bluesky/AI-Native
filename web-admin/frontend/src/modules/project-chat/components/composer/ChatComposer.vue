@@ -270,6 +270,26 @@
               </el-button>
             </el-tooltip>
             <slot name="media-parameters" />
+            <div
+              v-if="showLocalAgentAuthLevel"
+              class="local-agent-auth-level"
+            >
+              <span class="local-agent-auth-level__label">授权级别</span>
+              <el-select
+                v-model="localAgentAuthLevelModel"
+                class="local-agent-auth-level__control"
+                size="small"
+                :disabled="chatLoading"
+                :teleported="true"
+              >
+                <el-option
+                  v-for="option in localAgentAuthLevelOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+            </div>
           </div>
           <div class="footer-right">
             <span class="hint-text">{{ composerHintText }}</span>
@@ -334,6 +354,7 @@ const props = defineProps([
   "isDragging",
   "isExternalAgentMode",
   "isSlashCommandMenuVisible",
+  "localAgentAuthLevel",
   "modelProviderOffline",
   "modelProviderSyncing",
   "modelProviderSyncTooltip",
@@ -341,6 +362,7 @@ const props = defineProps([
   "selectedModelOptionValue",
   "selectedProjectId",
   "showAgentWorkflowStatusStrip",
+  "showLocalAgentAuthLevel",
   "showPauseGenerationButton",
   "showWorkingStatusBar",
   "slashCommandHighlightIndex",
@@ -371,6 +393,7 @@ const emit = defineEmits([
   "stop-generation",
   "update:draftText",
   "update:inputFocused",
+  "update:localAgentAuthLevel",
   "update:selectedModelOptionValue",
 ]);
 
@@ -389,6 +412,16 @@ const inputFocusedModel = computed({
 const selectedModelOptionValueModel = computed({
   get: () => props.selectedModelOptionValue,
   set: (value) => emit("update:selectedModelOptionValue", value),
+});
+
+const localAgentAuthLevelOptions = [
+  { label: "询问", value: "ask" },
+  { label: "完全访问", value: "full_access" },
+];
+
+const localAgentAuthLevelModel = computed({
+  get: () => props.localAgentAuthLevel || "ask",
+  set: (value) => emit("update:localAgentAuthLevel", value),
 });
 
 function emitFileChange(uploadFile, uploadFiles) {
