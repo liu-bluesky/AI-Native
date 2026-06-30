@@ -2944,7 +2944,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`，避免产生影子链路。",
             "- 接入约束: 每个 CLI 会话都应自行生成唯一 `chat_session_id`；如能解析项目工作区，优先持久化到项目目录 `.ai-employee/query-mcp/`，否则再退回 CLI 自己的本地存储。同一轮任务内固定复用，只有新开的并行 CLI 或新任务才重新生成。",
             "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
-            "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`，并通过 MCP（start_project_workflow / start_work_session / save_work_facts / append_session_event / 任务树工具）把同一条需求回写到服务端，本地与服务端追溯到同一条需求。",
+            "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象只记录需求内容和必要定位字段，不写入任务树、任务节点、执行历史或项目智能体上下文。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 部署约束: 用户提“部署 / 发布到服务器 / 上线”需求时，先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 是否带 deploy_command 判断方式；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。",
             "- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须在桌面端 Runner 中运行；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。",
@@ -2995,7 +2995,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 部署约束: 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给模型或本地命令；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时直接报告 `blocked` / `missing`。",
             "- 接入约束: 每个 Codex CLI 会话都应先持久化自己生成的 `chat_session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Codex 自己的本地存储。同一进程整轮任务固定复用，只有新开的并行任务或全新需求才重新生成。",
             "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
-            "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`。",
+            "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象只记录需求内容和必要定位字段，不写入任务树、任务节点、执行历史或项目智能体上下文。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 查询约束: 仅在缺少明确的 `project_id` / `employee_id` / `rule_id`，或需要跨项目检索时，再调用 `search_ids(keyword=\"<用户原始问题>\")`；当前项目和对象已明确时，可直接读取 `get_manual_content(project_id=...)` 或进入 `start_project_workflow(...)`。",
             f"- 交互约束: {clarity_threshold_line}",
@@ -3033,7 +3033,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 工具优先: 能调用 MCP 工具时不要只口头总结；查询走对应业务工具，实现/修复走 start_project_workflow，长任务走 start_work_session + save_work_facts/append_session_event。",
             "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
             "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Hermes 自己的本地存储，这样中断后才能稳定续跑。",
-            "- 接入约束: 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`；并通过 MCP（start_project_workflow / start_work_session / save_work_facts / append_session_event / 任务树工具）把同一条需求回写到服务端，确保 Hermes 也能用 MCP 记录项目需求，而不是只写本地或只口头描述。",
+            "- 接入约束: 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，requirement 对象只记录需求内容和必要定位字段；任务树、工作事实、项目智能体上下文各自走独立链路，不混写进需求记录。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
             f"- 交互约束: {clarity_threshold_line}",
@@ -3061,7 +3061,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 工具优先: 能调用 MCP 工具时不要只口头总结；查询走对应业务工具，实现/修复走 start_project_workflow，长任务走 start_work_session + save_work_facts/append_session_event。",
             "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
             "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 CLI 自己的本地存储，这样中断后才能稳定续跑。",
-            "- 接入约束: 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`；并通过 MCP（start_project_workflow / start_work_session / save_work_facts / append_session_event / 任务树工具）把同一条需求回写到服务端，确保通用 CLI 也能用 MCP 记录项目需求，而不是只写本地或只口头描述。",
+            "- 接入约束: 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，requirement 对象只记录需求内容和必要定位字段；任务树、工作事实、项目智能体上下文各自走独立链路，不混写进需求记录。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
             f"- 交互约束: {clarity_threshold_line}",
@@ -3139,7 +3139,7 @@ def build_query_usage_guide_text() -> str:
         "4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。\n"
         "4.2 query-mcp 本地持久化必须使用唯一文件规范：每进程/窗口会话文件为 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每个 CLI 进程或窗口写自己的独立文件，避免多进程和多窗口冲突）；历史索引文件为 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录文件为 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。\n"
         "4.3 每个需求还必须单独维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；一条需求一个对象，不要把多个需求混写到同一聚合文件。\n"
-        "4.4 requirement 对象应至少记录 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`，保证本地推进和服务端任务树都能追溯到同一条需求。\n"
+        "4.4 requirement 对象只记录需求内容和必要定位字段；不要把 `workflow_skill`、`task_tree`、`current_task_node`、`task_branches`、`history`、项目智能体上下文等过程结构写入需求记录。\n"
         "5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若 URL 已带 project_id 或本地 canonical 状态可恢复 project_id，不要再要求用户重复提供；确实没有项目 ID 时才提示补充。\n"
         "6. 仅在缺少明确的 project_id / employee_id / rule_id，或需要跨项目检索时，再调用 search_ids(keyword=\"<用户原始问题>\")；已明确当前项目且在项目内执行时，可直接 get_manual_content、start_project_workflow 或进入本地实现。\n"
         "7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。\n"

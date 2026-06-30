@@ -6,12 +6,23 @@
       <div class="workbench-app__hero-copy">
         <div class="workbench-app__eyebrow">AI Desktop</div>
         <h1>工作台现在直接看统计。</h1>
-        <p>这里不只负责打开应用，也负责快速进入关键观测入口。统计已经从设置区挪回工作台，方便直接判断 MCP 活跃度、会话推进和当前观测盲区。</p>
+        <p>
+          这里不只负责打开应用，也负责快速进入关键观测入口。统计已经从设置区挪回工作台，方便直接判断
+          MCP 活跃度、会话推进和当前观测盲区。
+        </p>
         <div class="workbench-app__actions">
-          <button type="button" class="workbench-app__primary" @click="openApp('chat')">
+          <button
+            type="button"
+            class="workbench-app__primary"
+            @click="openApp('chat')"
+          >
             打开 AI 控制台
           </button>
-          <button type="button" class="workbench-app__secondary" @click="openApp('settings-statistics')">
+          <button
+            type="button"
+            class="workbench-app__secondary"
+            @click="openApp('settings-statistics')"
+          >
             打开统计
           </button>
         </div>
@@ -30,11 +41,7 @@
     </header>
 
     <div class="workbench-app__grid">
-      <article
-        v-for="app in apps"
-        :key="app.id"
-        class="workbench-app__card"
-      >
+      <article v-for="app in apps" :key="app.id" class="workbench-app__card">
         <button
           type="button"
           class="workbench-app__card-main"
@@ -46,16 +53,11 @@
           <strong>{{ app.label }}</strong>
           <small>{{ app.summary }}</small>
         </button>
-        <button
-          type="button"
-          class="workbench-app__pin"
-          @click="pinApp(app)"
-        >
+        <button type="button" class="workbench-app__pin" @click="pinApp(app)">
           加入 Dock
         </button>
       </article>
     </div>
-
   </section>
 </template>
 
@@ -80,8 +82,10 @@ function desktopIconStyle(app) {
   return {
     "--desktop-app-icon-top": String(app?.icon?.top || "").trim(),
     "--desktop-app-icon-bottom": String(app?.icon?.bottom || "").trim(),
-    "--desktop-app-icon-text": String(app?.icon?.text || "").trim() || "#ffffff",
-    "--desktop-app-icon-glow": String(app?.icon?.glow || "").trim() || "rgba(15, 23, 42, 0.12)",
+    "--desktop-app-icon-text":
+      String(app?.icon?.text || "").trim() || "#ffffff",
+    "--desktop-app-icon-glow":
+      String(app?.icon?.glow || "").trim() || "rgba(15, 23, 42, 0.12)",
   };
 }
 
@@ -106,9 +110,7 @@ function pinApp(app) {
 
 const apps = computed(() =>
   DESKTOP_LAUNCHER_ITEMS.filter(
-    (item) =>
-      item.id !== "workbench"
-      && canAccessDesktopApp(item),
+    (item) => item.id !== "workbench" && canAccessDesktopApp(item),
   ),
 );
 </script>
@@ -121,8 +123,16 @@ const apps = computed(() =>
   overflow-x: hidden;
   overflow-y: auto;
   background:
-    radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.18), transparent 26%),
-    radial-gradient(circle at 88% 14%, rgba(103, 232, 249, 0.14), transparent 22%),
+    radial-gradient(
+      circle at 12% 0%,
+      rgba(125, 211, 252, 0.18),
+      transparent 26%
+    ),
+    radial-gradient(
+      circle at 88% 14%,
+      rgba(103, 232, 249, 0.14),
+      transparent 22%
+    ),
     linear-gradient(180deg, #f5f4ef 0%, #f8fafc 42%, #edf2f7 100%);
   box-sizing: border-box;
 }

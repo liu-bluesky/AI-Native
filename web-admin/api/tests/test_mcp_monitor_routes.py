@@ -128,7 +128,7 @@ def test_mcp_monitor_routes_test_single_module(tmp_path, monkeypatch):
         )
     )
 
-    def _fake_run_external_mcp_connection_test(endpoint_http, endpoint_sse, timeout_sec=8):
+    def _fake_run_external_mcp_connection_test(endpoint_http, endpoint_sse, timeout_sec=8, headers=None):
         return {
             "ok": True,
             "summary": "连接测试通过：已测试 2 个端点，成功 2 个",

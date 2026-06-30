@@ -254,8 +254,11 @@ def query_project_mcp_modules_runtime(project_id: str, keyword: str = "", limit:
         values = [
             name,
             str(getattr(item, "description", "") or ""),
+            str(getattr(item, "transport_type", "") or ""),
             str(getattr(item, "endpoint_http", "") or ""),
             str(getattr(item, "endpoint_sse", "") or ""),
+            str(getattr(item, "command", "") or ""),
+            " ".join(str(key) for key in (getattr(item, "headers", {}) or {}).keys()),
             "external_mcp_service",
         ]
         if not _matches(values):
@@ -265,8 +268,10 @@ def query_project_mcp_modules_runtime(project_id: str, keyword: str = "", limit:
                 "name": name,
                 "module_type": "external_mcp_service",
                 "project_id": module_project_id,
+                "transport_type": str(getattr(item, "transport_type", "") or ""),
                 "endpoint_http": str(getattr(item, "endpoint_http", "") or ""),
                 "endpoint_sse": str(getattr(item, "endpoint_sse", "") or ""),
+                "command": str(getattr(item, "command", "") or ""),
             }
         )
     external_modules = external_modules[:limit_value]

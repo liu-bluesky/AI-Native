@@ -20,18 +20,19 @@ mod workspace;
 pub use definitions::builtin_tool_definitions;
 pub use gateway::prepare_agent_invocation;
 pub use runtime::{
-    ack_local_runtime_outbox, cleanup_local_offline_cache, list_local_runtime_events,
-    list_local_runtime_outbox, load_local_offline_cache, recover_local_runtime_state,
-    save_local_offline_cache,
+    ack_local_runtime_outbox, cancel_local_runtime_job, cleanup_local_offline_cache,
+    list_local_runtime_events, list_local_runtime_outbox, load_local_offline_cache,
+    recover_local_runtime_state, refresh_local_runtime_job, save_local_offline_cache,
 };
 pub use runtime::{start_local_chat_with_event_sink, upload_provider_file};
 pub use types::{
     AgentInvocationRequest, AgentInvocationResult, LocalChatRequest, LocalChatResult,
-    LocalRuntimeEventsRequest, LocalRuntimeEventsResult, LocalRuntimeOutboxAckRequest,
-    LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest,
-    LocalRuntimeRecoveryResult, OfflineCacheCleanupRequest, OfflineCacheLoadRequest,
-    OfflineCacheResult, OfflineCacheSaveRequest, ProviderFileUploadRequest,
-    ProviderFileUploadResult, ToolDefinition, ToolError, ToolExecutionRequest, ToolExecutionResult,
+    LocalRuntimeEventsRequest, LocalRuntimeEventsResult, LocalRuntimeJobRequest,
+    LocalRuntimeJobResult, LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest,
+    LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult,
+    OfflineCacheCleanupRequest, OfflineCacheLoadRequest, OfflineCacheResult,
+    OfflineCacheSaveRequest, ProviderFileUploadRequest, ProviderFileUploadResult, ToolDefinition,
+    ToolError, ToolExecutionRequest, ToolExecutionResult,
 };
 
 use tools::command::{check_command_risk, run_command, run_command_with_output_sink};
@@ -142,6 +143,16 @@ mod tests {
         assert!(tools.iter().any(|item| item.name == "delete_file"));
         assert!(tools.iter().any(|item| item.name == "run_command"));
         assert!(tools.iter().any(|item| item.name == "call_mcp_tool"));
+    }
+
+    #[test]
+    fn mcp_builtin_tools_are_described_as_external_adapter_only() {
+        let tools = builtin_tool_definitions();
+        for name in ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"] {
+            let tool = tools.iter().find(|item| item.name == name).unwrap();
+            assert!(tool.description.contains("外部 MCP adapter"));
+            assert!(tool.description.contains("桌面端系统 MCP"));
+        }
     }
 
     #[test]
@@ -476,6 +487,88 @@ mod tests {
         assert!(result.ok);
         assert_eq!(result.tool_call_id, "call_1");
         assert_eq!(result.content["content"], "# Hello");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn read_file_blocks_cli_entry_file_without_explicit_policy() {
+        let dir = test_workspace("read_file_cli_entry_blocked");
+        std::fs::write(dir.join("AGENTS.md"), "cli rules").expect("write");
+
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_read_agents".to_string()),
+            name: "read_file".to_string(),
+            arguments: json!({"path": "AGENTS.md"}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "entry_file.not_allowed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn read_file_allows_cli_entry_file_when_configured_as_ai_entry() {
+        let dir = test_workspace("read_file_cli_entry_allowed");
+        std::fs::write(dir.join("AGENTS.md"), "cli rules").expect("write");
+
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_read_agents_allowed".to_string()),
+            name: "read_file".to_string(),
+            arguments: json!({
+                "path": "AGENTS.md",
+                "file_access_policy": {
+                    "ai_entry_file": "AGENTS.md",
+                    "cli_entry_files": ["AGENTS.md", "CLAUDE.md", "HERMES.md"],
+                    "explicit_cli_entry_files": []
+                }
+            }),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.content["content"], "cli rules");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn search_text_skips_cli_entry_files_by_default() {
+        let dir = test_workspace("search_cli_entry_skipped");
+        std::fs::write(dir.join("AGENTS.md"), "needle from cli entry").expect("write agents");
+        std::fs::write(dir.join("README.md"), "needle from readme").expect("write readme");
+
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_search".to_string()),
+            name: "search_text".to_string(),
+            arguments: json!({"query": "needle"}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+
+        assert!(result.ok, "{}", result.error);
+        let matches = result.content["matches"].as_array().expect("matches");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["path"], "README.md");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn search_text_blocks_explicit_cli_entry_glob_without_policy() {
+        let dir = test_workspace("search_cli_entry_blocked");
+        std::fs::write(dir.join("AGENTS.md"), "needle from cli entry").expect("write agents");
+
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_search_agents".to_string()),
+            name: "search_text".to_string(),
+            arguments: json!({"query": "needle", "glob": "AGENTS.md"}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "entry_file.not_allowed");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -15,6 +15,7 @@ from stores.json.project_chat_task_store import ProjectChatTaskStore
 from stores.json.project_deploy_store import ProjectDeployStore
 from stores.json.project_experience_summary_store import ProjectExperienceSummaryStore
 from stores.json.project_material_store import ProjectMaterialStore
+from stores.json.project_requirement_record_store import ProjectRequirementRecordStore
 from stores.json.project_studio_export_store import ProjectStudioExportStore
 from stores.json.project_store import ProjectStore
 from stores.json.role_store import RoleStore
@@ -41,6 +42,7 @@ __all__ = [
     "ProjectDeployStore",
     "ProjectExperienceSummaryStore",
     "ProjectMaterialStore",
+    "ProjectRequirementRecordStore",
     "ProjectStudioExportStore",
     "ProjectStore",
     "RoleStore",

@@ -314,10 +314,31 @@
 .chat-layout .message-row.is-ai .message-bubble > .message-process,
 .chat-layout .message-row.is-ai .message-bubble > .message-audit,
 .chat-layout .message-row.is-ai .message-bubble > .message-employee-draft,
+.chat-layout .message-row.is-ai .message-bubble > .message-ai-context-actions,
 .chat-layout .message-row.is-ai .message-bubble > .message-images,
 .chat-layout .message-row.is-ai .message-bubble > .message-videos,
 .chat-layout .message-row.is-ai .message-bubble > .message-attachments {
   max-width: min(920px, 100%);
+}
+
+.chat-layout .message-ai-context-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.chat-layout .message-ai-context-actions__button {
+  min-height: 28px;
+  padding: 0 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.chat-layout .message-ai-context-actions__button:hover {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.04);
 }
 
 .chat-layout .message-text {

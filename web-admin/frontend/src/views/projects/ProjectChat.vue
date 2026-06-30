@@ -1349,6 +1349,25 @@
                             </span>
                           </div>
                         </div>
+                        <div
+                          v-if="canViewAiRequestContext(item)"
+                          class="message-ai-context-actions"
+                        >
+                          <el-button
+                            size="small"
+                            text
+                            :icon="View"
+                            class="message-ai-context-actions__button"
+                            :loading="
+                              aiContextDialogLoading &&
+                              aiContextDialogMessageId ===
+                                String(item.id || '').trim()
+                            "
+                            @click="openAiRequestContextDialog(item)"
+                          >
+                            查看上下文
+                          </el-button>
+                        </div>
                       </div>
                       <div
                         v-if="
@@ -1357,6 +1376,11 @@
                         "
                         class="message-actions"
                       >
+                        <span
+                          v-if="messageAgentRuntimeDurationLabel(item)"
+                          class="message-runtime-duration"
+                          >{{ messageAgentRuntimeDurationLabel(item) }}</span
+                        >
                         <el-tooltip
                           v-for="action in getMessageActions(item, idx)"
                           :key="`${idx}-${action.key}`"
@@ -1557,6 +1581,47 @@
     :srcdoc="codePreviewSrcdoc"
     :error="codePreviewError"
   />
+
+  <el-dialog
+    v-model="aiContextDialogVisible"
+    title="发送给 AI 的上下文"
+    width="min(960px, 92vw)"
+    class="ai-context-dialog"
+    append-to-body
+  >
+    <div class="ai-context-dialog__body" v-loading="aiContextDialogLoading">
+      <el-alert
+        v-if="aiContextDialogError"
+        :title="aiContextDialogError"
+        type="error"
+        show-icon
+        :closable="false"
+      />
+      <template v-else>
+        <div class="ai-context-dialog__summary">
+          <span>
+            {{ aiContextDialogProviderLabel }}
+          </span>
+          <span>
+            消息 {{ aiContextDialogMessageId || "-" }}
+          </span>
+        </div>
+        <pre class="ai-context-dialog__pre">{{
+          formattedAiContextDialogPayload
+        }}</pre>
+      </template>
+    </div>
+    <template #footer>
+      <el-button @click="aiContextDialogVisible = false">关闭</el-button>
+      <el-button
+        type="primary"
+        :disabled="!aiContextDialogPayload"
+        @click="copyAiRequestContext"
+      >
+        复制 JSON
+      </el-button>
+    </template>
+  </el-dialog>
 
   <ProjectEmployeeDraftCreateDialog
     v-model="employeeDraftDialogVisible"
@@ -2453,6 +2518,7 @@ import {
   Files,
   RefreshRight,
   InfoFilled,
+  View,
   CircleCheck,
 } from "@element-plus/icons-vue";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
@@ -2507,8 +2573,10 @@ import {
   previewNativeWorkspaceDiff,
   readNativeWorkspaceFile,
   recordNativeRunnerPermissionDecision,
+  cancelNativeLiuAgentRuntimeJob,
   resolveNativeExternalAgentPermission,
   recoverNativeLiuAgentRuntimeState,
+  refreshNativeLiuAgentRuntimeJob,
   runNativeRunnerCommand,
   saveNativeLiuAgentOfflineCache,
   startNativeExternalAgentSession as startNativeExternalAgentSessionCommand,
@@ -2531,6 +2599,10 @@ import {
 import {
   CHAT_BASE_ROUTE_PATH,
   EMPLOYEE_DRAFT_BLOCK_RE,
+  AGENT_COMMAND,
+  AGENT_COMMAND_ALIASES,
+  FILE_COMMAND,
+  FILE_COMMAND_ALIASES,
   HOST_RUN_COMMAND,
   HOST_RUN_COMMAND_ALIASES,
   LARK_CLI_COMMAND,
@@ -2543,7 +2615,13 @@ import {
   PROJECT_STATS_COMMAND,
   PROJECT_STATS_COMMAND_ALIASES,
   PROJECT_STATS_REPORT_DAYS,
+  RULE_COMMAND,
+  RULE_COMMAND_ALIASES,
+  SKILL_COMMAND,
+  SKILL_COMMAND_ALIASES,
   STATISTICS_ANALYSIS_DRAFT_QUERY_KEY,
+  SYSTEM_MCP_COMMAND,
+  SYSTEM_MCP_COMMAND_ALIASES,
 } from "@/modules/project-chat/constants/projectChatConstants.js";
 import {
   escapeHtml,
@@ -2742,13 +2820,28 @@ const CREATE_CHAT_SESSION_QUERY_KEY = "create_chat_session";
 const DEFAULT_AI_ENTRY_FILE = "AIENTRY.md";
 const DEFAULT_AI_ENTRY_FILE_CONTENT = `# AI 入口
 
-这是当前项目的可选 AI 入口文件。
+这是当前项目的 AI 入口文件，供桌面应用、项目聊天和项目 MCP 在处理当前项目需求时读取。
+
+## 桌面应用 MCP 入口
+
+- 当前宿主是桌面应用项目聊天，不是 Codex CLI、Claude Code 或 Hermes CLI。
+- 系统 MCP 是平台内置能力，用来读取项目配置、项目手册、规则、成员、工具、提示词、任务树、需求记录和工作轨迹。
+- 系统 MCP 通过项目聊天上下文、项目 ID、当前聊天会话 ID 和系统提供的工具调用。
+- 外部 stdio MCP adapter 是本机扩展能力，适用于用户明确接入本机外部 MCP 且配置里包含本地 \`command\` 的场景。
+- 本机外部 MCP adapter 的配置文件是 \`.ai-employee/mcp-adapter/servers.json\`，只服务于外部 adapter。
+- 桌面端本地文件、命令、构建和验证走项目工作区与桌面 Runner；项目资料、提示词、规则和任务树走系统/项目 MCP。
+
+## 工作区和入口文件
+
+- 项目工作区以系统配置的 workspace_path 为准。
+- 相对路径以项目工作区为基准解析。
+- 本文件用于补充当前项目约定，不替代系统 MCP 的项目配置。
 
 ## 项目约定
 
-- 在这里补充项目目录、开发规范、验证要求和交付偏好。
-- 不需要在这里配置系统 MCP；系统内置 MCP 由平台自动接入。
-- 外部 MCP 服务在项目 AI 对话设置的外部 MCP 中维护。
+- 在这里补充目录结构、开发规范、验证命令和交付偏好。
+- 涉及修改、删除、部署、外部写入或凭据时，必须先说明对象、影响范围和可恢复性，并取得明确确认。
+- 交付前说明实际验证方式；无法验证时明确阻塞原因。
 `;
 
 const route = useRoute();
@@ -2913,6 +3006,11 @@ const codePreviewVisible = ref(false);
 const codePreviewTitle = ref("代码预览");
 const codePreviewSrcdoc = ref("");
 const codePreviewError = ref("");
+const aiContextDialogVisible = ref(false);
+const aiContextDialogLoading = ref(false);
+const aiContextDialogMessageId = ref("");
+const aiContextDialogPayload = ref(null);
+const aiContextDialogError = ref("");
 
 const selectedProjectId = ref("");
 let selectedProjectConversationLoadingKey = "";
@@ -2928,9 +3026,29 @@ const chatParameterOptions = ref({});
 const temperature = ref(0.1);
 const systemPrompt = ref("");
 const desktopAgentGlobalPrompt = ref("");
+const systemMcpConfig = ref(null);
+
+function buildDesktopLocalAgentEntryPolicyPrompt() {
+  const aiEntryFile = String(projectAiEntryFile.value || "").trim();
+  const configuredEntry = aiEntryFile || DEFAULT_AI_ENTRY_FILE;
+  return [
+    "桌面端本地智能体入口边界：",
+    "- 当前宿主是桌面应用项目聊天，不是 Codex CLI、Claude Code 或 Hermes CLI。",
+    `- 项目级 AI 入口文件只使用系统配置的路径：${configuredEntry}；不要因为仓库里存在 AGENTS.md、CLAUDE.md、HERMES.md 或其他 CLI 入口文件就主动读取它们。`,
+    "- 只有用户明确要求读取某个 CLI 入口文件，或项目设置把该文件配置为 AI 入口文件时，才读取它。",
+    "- 桌面端系统 MCP 是宿主系统内置项目能力，用于读取项目上下文、配置、提示词、规则、技能、任务树、需求记录和工作轨迹。",
+    "- 不要为了使用桌面端系统 MCP 去调用本地外部 adapter 工具 list_mcp_tools、read_mcp_resource 或 call_mcp_tool；这些工具只服务于已显式配置的本机外部 MCP adapter。",
+    "- 当需要项目事实且当前请求可由页面已加载的项目配置、系统 MCP 面板数据或斜杠命令直接回答时，直接基于这些宿主数据回答，不要再交给模型绕一轮本地 MCP adapter。",
+  ].join("\n");
+}
 
 function buildLocalLiuAgentSystemPromptParts() {
   return [
+    {
+      source: "desktop_local_agent.entry_policy",
+      priority: 120,
+      content: buildDesktopLocalAgentEntryPolicyPrompt(),
+    },
     {
       source: "project_chat_settings.system_prompt",
       priority: 100,
@@ -4256,6 +4374,28 @@ const currentRoleId = computed(
       .toLowerCase() || "user",
 );
 const currentRoleLabel = computed(() => formatRoleLabel(currentRoleId.value));
+const canUseAiRequestContextViewer = computed(() => isSuperAdmin());
+const formattedAiContextDialogPayload = computed(() => {
+  if (!aiContextDialogPayload.value) return "";
+  try {
+    return JSON.stringify(aiContextDialogPayload.value, null, 2);
+  } catch (_error) {
+    return String(aiContextDialogPayload.value || "");
+  }
+});
+const aiContextDialogProviderLabel = computed(() => {
+  const context =
+    aiContextDialogPayload.value && typeof aiContextDialogPayload.value === "object"
+      ? aiContextDialogPayload.value
+      : {};
+  const provider = String(context.provider_id || "").trim();
+  const model = String(context.model_name || "").trim();
+  const temperatureValue =
+    context.temperature === undefined || context.temperature === null
+      ? ""
+      : `temperature=${context.temperature}`;
+  return [provider, model, temperatureValue].filter(Boolean).join(" · ") || "AI 请求上下文";
+});
 const {
   displayedChatTaskTree,
   hasChatTaskTree,
@@ -5796,6 +5936,35 @@ function findNativeExternalAgentMessage(sessionId = "") {
   return rows.find((item) => String(item?.id || "").trim() === messageId);
 }
 
+function nativeExternalAgentOutputWaitsForUserConfirmation(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return false;
+  const compact = normalized.replace(/\s+/g, " ");
+  const hasWaitRequest =
+    /(请|需要|等待|收到后|回复|明确)?(?:再)?(?:确认|回复|输入|发送).{0,24}(确认开始执行|开始执行|继续执行|确认继续|确认开始|确认)/i.test(
+      compact,
+    ) ||
+    /(确认开始执行|确认继续|继续执行|proceed|continue)/i.test(compact) ||
+    /收到后.{0,24}(我会|将会|再).{0,24}(开始|继续|执行|实现|修改)/i.test(compact);
+  if (!hasWaitRequest) return false;
+  const hasActualCompletion =
+    /(已完成|已经完成|完成了|实现完成|修复完成|已实现|已修复|已验证|验证通过|测试通过|构建通过)/.test(
+      compact,
+    ) &&
+    !/(不会删除|不会覆盖|收到后|确认开始执行)/.test(compact);
+  return !hasActualCompletion;
+}
+
+function nativeExternalAgentRequirementStatusForFinal(snapshot = {}, output = "") {
+  const status = String(snapshot?.status || "").trim();
+  if (status === "completed") {
+    return nativeExternalAgentOutputWaitsForUserConfirmation(output)
+      ? "in_progress"
+      : "done";
+  }
+  return "blocked";
+}
+
 function applyNativeExternalAgentCancellingMessage(snapshot = null) {
   const row = findNativeExternalAgentMessage(snapshot?.sessionId || "");
   if (!row) return;
@@ -5818,11 +5987,17 @@ function upsertNativeExternalAgentMessageOperation(snapshot) {
   const status = String(snapshot.status || "").trim();
   const permissionExpired = isNativeExternalAgentPermissionExpired(snapshot);
   const runningStatus = buildNativeExternalAgentRunningStatus(snapshot);
+  const finalOutput = resolveNativeExternalAgentFinalOutput(snapshot);
+  const waitsForConfirmation =
+    status === "completed" &&
+    nativeExternalAgentOutputWaitsForUserConfirmation(finalOutput);
   const operationPhase =
     permissionExpired
       ? "blocked"
       : status === "running"
       ? "running"
+      : waitsForConfirmation
+        ? "running"
       : status === "completed" ||
           status === "cancelled" ||
           status === "cancelling"
@@ -5839,6 +6014,8 @@ function upsertNativeExternalAgentMessageOperation(snapshot) {
         ? runningStatus?.summary || "正在处理"
         : status === "cancelling"
           ? "正在取消"
+          : waitsForConfirmation
+            ? "等待你确认"
           : status === "completed"
             ? "已完成"
             : status === "cancelled"
@@ -6264,6 +6441,11 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
       : "Runner 会话已结束",
   );
   const finalOutput = resolveNativeExternalAgentFinalOutput(snapshot);
+  const requirementStatus = nativeExternalAgentRequirementStatusForFinal(
+    snapshot,
+    finalOutput,
+  );
+  const waitsForConfirmation = requirementStatus === "in_progress";
   const deviceAuthReply = resolveDeviceAuthReply(snapshot);
   const blockedReason = shouldShowNativeExternalAgentBlockedReason(
     snapshot,
@@ -6309,13 +6491,15 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
       : "";
   void upsertProjectChatRequirementRecord({
     chatSessionId: normalizedChatSessionId,
-    status: status === "completed" ? "done" : "blocked",
+    status: requirementStatus,
     rootGoal,
     messageId: userMessage?.id || "",
     assistantMessageId: row.id,
     resultSummary: row.content,
     verificationResult:
-      status === "completed"
+      waitsForConfirmation
+        ? "Runner 已返回计划确认提示，等待用户明确确认后继续执行。"
+        : status === "completed"
         ? "Runner 已返回最终回答并写入当前聊天。"
         : blockedReason || "Runner 未完成，已写入当前聊天。",
     runnerSessionId: snapshot.sessionId,
@@ -7641,6 +7825,92 @@ function localLiuAgentRuntimeEventsFromResult(result = {}) {
   return [];
 }
 
+function localLiuAgentConversationLifecycleFromResult(result = {}) {
+  const lifecycle =
+    result?.conversationLifecycle && typeof result.conversationLifecycle === "object"
+      ? result.conversationLifecycle
+      : result?.conversation_lifecycle && typeof result.conversation_lifecycle === "object"
+        ? result.conversation_lifecycle
+        : null;
+  if (!lifecycle || !Array.isArray(lifecycle.nodes)) return null;
+  return lifecycle;
+}
+
+function localLiuAgentLifecycleNodeStatus(node = {}) {
+  const normalized = String(node?.status || "").trim();
+  if (normalized === "ended") return "success";
+  if (normalized === "completed") return "success";
+  if (normalized === "failed") return "error";
+  if (normalized === "waiting") return "warning";
+  return "info";
+}
+
+function localLiuAgentLifecycleNodeKind(node = {}) {
+  const type = String(node?.type || "").trim();
+  if (type === "understand_requirement") return "model_call";
+  if (type === "execute_task") {
+    return normalizeMessageProcessEntryKind(node?.kind || "tool_result");
+  }
+  if (type === "final_solution") return "model_call";
+  return "progress_update";
+}
+
+function localLiuAgentLifecycleNodeTitle(node = {}) {
+  const type = String(node?.type || "").trim();
+  const title = String(node?.title || "").trim();
+  if (type === "start") return title || "开始";
+  if (type === "understand_requirement") return title || "理解需求";
+  if (type === "execute_task") return title || "执行任务";
+  if (type === "final_solution") return title || "最终方案";
+  return title || "生命周期节点";
+}
+
+function localLiuAgentLifecycleNodeProcessEntry(node = {}, lifecycle = {}) {
+  const id = String(node?.id || "").trim() || `lifecycle-${Date.now()}`;
+  const summary = String(node?.summary || "").trim();
+  const title = localLiuAgentLifecycleNodeTitle(node);
+  const toolCallId = String(node?.tool_call_id || node?.toolCallId || "").trim();
+  return {
+    id,
+    text: [title, summary ? `  - ${summary}` : ""].filter(Boolean).join("\n"),
+    level: localLiuAgentLifecycleNodeStatus(node),
+    kind: localLiuAgentLifecycleNodeKind(node),
+    eventType: "conversation_lifecycle",
+    toolCallId,
+    payload: {
+      ...node,
+      event_type: "conversation_lifecycle",
+      lifecycle_version: lifecycle?.version || "desktop-conversation-lifecycle/v1",
+      runtime_session_id: lifecycle?.session_id || lifecycle?.sessionId || "",
+      chat_session_id: lifecycle?.chat_session_id || lifecycle?.chatSessionId || "",
+      conversation_context:
+        lifecycle?.conversation_context || lifecycle?.conversationContext || {},
+      content: node?.content || {},
+      arguments: node?.arguments || {},
+    },
+    autoExpand: false,
+  };
+}
+
+function applyLocalLiuAgentConversationLifecycle(row, result = {}) {
+  const lifecycle = localLiuAgentConversationLifecycleFromResult(result);
+  if (!row || !lifecycle) return false;
+  const lifecycleEntries = lifecycle.nodes.map((node) =>
+    localLiuAgentLifecycleNodeProcessEntry(node, lifecycle),
+  );
+  if (result?.ok === false) {
+    const existing = Array.isArray(row.processLog) ? row.processLog.slice() : [];
+    const existingIds = new Set(existing.map((item) => String(item?.id || "").trim()));
+    row.processLog = existing.concat(
+      lifecycleEntries.filter((item) => !existingIds.has(String(item?.id || "").trim())),
+    );
+  } else {
+    row.processLog = lifecycleEntries;
+  }
+  row.processExpanded = true;
+  return true;
+}
+
 function localLiuAgentRuntimeEventPayload(event = {}) {
   return event?.payload && typeof event.payload === "object" ? event.payload : {};
 }
@@ -7729,14 +7999,14 @@ function localLiuAgentToolTraceSubject(payload = {}) {
 
 function localLiuAgentToolResultLabel(toolName = "") {
   const normalized = String(toolName || "").trim();
-  if (normalized === "list_files") return "查看目录";
-  if (normalized === "search_text") return "搜索文本";
-  if (normalized === "read_file") return "读取文件";
+  if (normalized === "list_files") return "List files";
+  if (normalized === "search_text") return "Search text";
+  if (normalized === "read_file") return "Read file";
   if (normalized === "run_command") return "执行命令";
   if (normalized === "check_command_risk") return "检查命令风险";
-  if (normalized === "write_file") return "写入文件";
-  if (normalized === "apply_patch") return "应用补丁";
-  if (normalized === "delete_file") return "删除文件";
+  if (normalized === "write_file") return "Write file";
+  if (normalized === "apply_patch") return "Apply patch";
+  if (normalized === "delete_file") return "Delete file";
   if (normalized === "http_get") return "HTTP GET";
   if (normalized === "http_post") return "HTTP POST";
   if (normalized === "download_file") return "下载文件";
@@ -7767,10 +8037,15 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
       payload?.next_action || payload?.nextAction || "",
       260,
     );
+    const argumentsPreview = compactLocalLiuAgentInline(
+      payload?.arguments_preview || payload?.argumentsPreview || "",
+      1200,
+    );
     return [
       currentFocus || summary || "推进当前任务",
       currentFocus && summary && summary !== currentFocus ? `  - ${summary}` : "",
       nextAction ? `  - 下一步：${nextAction}` : "",
+      argumentsPreview ? `  - 工具参数：${argumentsPreview}` : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -7839,9 +8114,14 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
     const count = Number(payload?.tool_count || payload?.toolCount || 0) || 0;
     const progress = index > 0 && count > 0 ? ` ${index}/${count}` : "";
     const summary = compactLocalLiuAgentInline(payload?.summary || "", 260);
+    const argumentsPreview = compactLocalLiuAgentInline(
+      payload?.arguments_preview || payload?.argumentsPreview || "",
+      1200,
+    );
     return [
       subject ? `正在${subject}${progress}` : `正在调用工具${progress}`,
       summary ? `  - ${summary}` : "",
+      argumentsPreview ? `  - 参数：${argumentsPreview}` : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -7853,7 +8133,15 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
       payload?.summary || payload?.error_code || payload?.error || "",
       260,
     );
-    return [`完成：${resultLabel}`, summary ? `  - ${summary}` : ""]
+    const argumentsPreview = compactLocalLiuAgentInline(
+      payload?.arguments_preview || payload?.argumentsPreview || "",
+      1200,
+    );
+    return [
+      `完成：${resultLabel}`,
+      summary ? `  - ${summary}` : "",
+      argumentsPreview ? `  - 参数：${argumentsPreview}` : "",
+    ]
       .filter(Boolean)
       .join("\n");
   }
@@ -8223,8 +8511,211 @@ function shouldUpsertLocalLiuAgentRuntimeOperation(event = {}, operation = null)
   return shouldShowMessageOperationCard(operation);
 }
 
+function normalizeLocalLiuAgentRuntimeEpochMs(value) {
+  const timestamp = Number(value || 0);
+  return Number.isFinite(timestamp) && timestamp > 0 ? Math.round(timestamp) : 0;
+}
+
+function localLiuAgentRuntimeEventIsTerminal(event = {}) {
+  const type = String(event?.type || "").trim();
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  if (type === "model_step" && payload?.ok === false) return true;
+  if (type !== "state_changed") return false;
+  const to = String(payload?.to || "").trim();
+  return ["completed", "failed", "cancelled"].includes(to);
+}
+
+function normalizeLocalLiuAgentRuntimeTiming({
+  startedAt = 0,
+  endedAt = 0,
+  latestAt = 0,
+  running = false,
+} = {}) {
+  const start = normalizeLocalLiuAgentRuntimeEpochMs(startedAt);
+  const end = normalizeLocalLiuAgentRuntimeEpochMs(endedAt);
+  const latest = normalizeLocalLiuAgentRuntimeEpochMs(latestAt);
+  const effectiveEnd = end || (!running ? latest : 0);
+  const duration =
+    start && effectiveEnd && effectiveEnd >= start ? effectiveEnd - start : 0;
+  return {
+    startedAtEpochMs: start,
+    endedAtEpochMs: effectiveEnd,
+    latestEventAtEpochMs: latest,
+    durationMs: duration,
+  };
+}
+
+function applyLocalLiuAgentRuntimeTiming(row, timing = {}) {
+  if (!row) return null;
+  const current = normalizeLocalLiuAgentRuntimeTiming({
+    startedAt: row.agentRuntimeStartedAtEpochMs,
+    endedAt: row.agentRuntimeEndedAtEpochMs,
+    latestAt: row.agentRuntimeLatestEventAtEpochMs,
+    running: !row.agentRuntimeEndedAtEpochMs,
+  });
+  const incoming = normalizeLocalLiuAgentRuntimeTiming({
+    startedAt: timing.startedAt,
+    endedAt: timing.endedAt,
+    latestAt: timing.latestAt,
+    running: timing.running,
+  });
+  const startedAt =
+    current.startedAtEpochMs && incoming.startedAtEpochMs
+      ? Math.min(current.startedAtEpochMs, incoming.startedAtEpochMs)
+      : current.startedAtEpochMs || incoming.startedAtEpochMs;
+  const latestAt = Math.max(
+    current.latestEventAtEpochMs,
+    incoming.latestEventAtEpochMs,
+    incoming.endedAtEpochMs,
+  );
+  const endedAt =
+    current.endedAtEpochMs && incoming.endedAtEpochMs
+      ? Math.max(current.endedAtEpochMs, incoming.endedAtEpochMs)
+      : current.endedAtEpochMs || incoming.endedAtEpochMs;
+  const normalized = normalizeLocalLiuAgentRuntimeTiming({
+    startedAt,
+    endedAt,
+    latestAt,
+    running: !endedAt,
+  });
+  if (normalized.startedAtEpochMs) {
+    row.agentRuntimeStartedAtEpochMs = normalized.startedAtEpochMs;
+  }
+  if (normalized.latestEventAtEpochMs) {
+    row.agentRuntimeLatestEventAtEpochMs = normalized.latestEventAtEpochMs;
+  }
+  if (normalized.endedAtEpochMs) {
+    row.agentRuntimeEndedAtEpochMs = normalized.endedAtEpochMs;
+  }
+  row.agentRuntimeDurationMs = normalized.durationMs;
+  row.agentRuntimeDurationLabel = normalized.durationMs
+    ? formatDurationMs(normalized.durationMs)
+    : "";
+  applyMessageExecutionTiming(row, {
+    startedAt: normalized.startedAtEpochMs,
+    endedAt: normalized.endedAtEpochMs,
+  });
+  return normalized;
+}
+
+function updateLocalLiuAgentRuntimeTimingFromEvent(row, event = {}, options = {}) {
+  const eventAt = localLiuAgentRuntimeEventCreatedAt(event);
+  return applyLocalLiuAgentRuntimeTiming(row, {
+    startedAt: options.startedAt || eventAt,
+    latestAt: eventAt,
+    endedAt:
+      options.endedAt ||
+      (localLiuAgentRuntimeEventIsTerminal(event) ? eventAt : 0),
+    running: !localLiuAgentRuntimeEventIsTerminal(event),
+  });
+}
+
+function updateLocalLiuAgentRuntimeTimingFromResult(row, result = {}, options = {}) {
+  const events = localLiuAgentRuntimeEventsFromResult(result);
+  let firstEventAt = 0;
+  let latestEventAt = 0;
+  let terminalEventAt = 0;
+  for (const event of events) {
+    const eventAt = localLiuAgentRuntimeEventCreatedAt(event);
+    if (!eventAt) continue;
+    firstEventAt = firstEventAt ? Math.min(firstEventAt, eventAt) : eventAt;
+    latestEventAt = Math.max(latestEventAt, eventAt);
+    if (localLiuAgentRuntimeEventIsTerminal(event)) {
+      terminalEventAt = Math.max(terminalEventAt, eventAt);
+    }
+  }
+  const waitingPermission = Boolean(localLiuAgentPermissionRequestFromChatResult(result));
+  const hasFinalResult = result?.ok !== undefined && result?.ok !== null;
+  const endedAt =
+    normalizeLocalLiuAgentRuntimeEpochMs(options.endedAt) ||
+    terminalEventAt ||
+    (!waitingPermission && hasFinalResult ? latestEventAt || Date.now() : 0);
+  return applyLocalLiuAgentRuntimeTiming(row, {
+    startedAt: options.startedAt || firstEventAt,
+    latestAt: latestEventAt || endedAt,
+    endedAt,
+    running: waitingPermission || !endedAt,
+  });
+}
+
+function messageAgentRuntimeDurationLabel(row = {}) {
+  const durationMs =
+    Number(row?.messageExecutionDurationMs || row?.agentRuntimeDurationMs || 0) || 0;
+  if (durationMs > 0) return `耗时 ${formatDurationMs(durationMs)}`;
+  const startedAt = normalizeLocalLiuAgentRuntimeEpochMs(
+    row?.messageExecutionStartedAtEpochMs || row?.agentRuntimeStartedAtEpochMs,
+  );
+  if (
+    !startedAt ||
+    row?.messageExecutionEndedAtEpochMs ||
+    row?.agentRuntimeEndedAtEpochMs
+  ) {
+    return "";
+  }
+  const elapsedMs = Date.now() - startedAt;
+  return elapsedMs > 0 ? `已运行 ${formatDurationMs(elapsedMs)}` : "";
+}
+
+function localLiuAgentRuntimeTimingSourceContext(row = {}) {
+  const startedAt = normalizeLocalLiuAgentRuntimeEpochMs(
+    row?.agentRuntimeStartedAtEpochMs,
+  );
+  const endedAt = normalizeLocalLiuAgentRuntimeEpochMs(
+    row?.agentRuntimeEndedAtEpochMs,
+  );
+  const durationMs = Number(row?.agentRuntimeDurationMs || 0) || 0;
+  return {
+    runtime_started_at_epoch_ms: startedAt || null,
+    runtime_ended_at_epoch_ms: endedAt || null,
+    runtime_duration_ms: durationMs || null,
+    runtime_duration_label: durationMs ? formatDurationMs(durationMs) : "",
+  };
+}
+
+function applyMessageExecutionTiming(row, timing = {}) {
+  if (!row) return null;
+  const currentStartedAt = normalizeLocalLiuAgentRuntimeEpochMs(
+    row.messageExecutionStartedAtEpochMs || row.agentRuntimeStartedAtEpochMs,
+  );
+  const currentEndedAt = normalizeLocalLiuAgentRuntimeEpochMs(
+    row.messageExecutionEndedAtEpochMs || row.agentRuntimeEndedAtEpochMs,
+  );
+  const incomingStartedAt = normalizeLocalLiuAgentRuntimeEpochMs(timing.startedAt);
+  const incomingEndedAt = normalizeLocalLiuAgentRuntimeEpochMs(timing.endedAt);
+  const startedAt =
+    currentStartedAt && incomingStartedAt
+      ? Math.min(currentStartedAt, incomingStartedAt)
+      : currentStartedAt || incomingStartedAt;
+  const endedAt =
+    currentEndedAt && incomingEndedAt
+      ? Math.max(currentEndedAt, incomingEndedAt)
+      : currentEndedAt || incomingEndedAt;
+  const durationMs =
+    startedAt && endedAt && endedAt >= startedAt ? endedAt - startedAt : 0;
+  if (startedAt) {
+    row.messageExecutionStartedAtEpochMs = startedAt;
+  }
+  if (endedAt) {
+    row.messageExecutionEndedAtEpochMs = endedAt;
+  }
+  row.messageExecutionDurationMs = durationMs;
+  row.messageExecutionDurationLabel = durationMs ? formatDurationMs(durationMs) : "";
+  return {
+    startedAtEpochMs: startedAt,
+    endedAtEpochMs: endedAt,
+    durationMs,
+  };
+}
+
+function finishMessageExecutionTiming(row, endedAt = Date.now()) {
+  return applyMessageExecutionTiming(row, {
+    endedAt,
+  });
+}
+
 function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
   if (!row) return;
+  const startedAt = normalizeLocalLiuAgentRuntimeEpochMs(context?.startedAt);
   for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
     if (!markLocalLiuAgentRuntimeEventSeen(event)) continue;
     const payload = localLiuAgentRuntimeEventPayload(event);
@@ -8235,6 +8726,7 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
     ) {
       continue;
     }
+    updateLocalLiuAgentRuntimeTimingFromEvent(row, event, { startedAt });
     applyLocalLiuAgentReasoningContent(row, event);
     applyLocalLiuAgentModelStepFailure(row, event, context);
     const operation = localLiuAgentRuntimeEventOperation(event, {
@@ -8248,6 +8740,8 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
       ...localLiuAgentRuntimeEventProcessLogEntry(event, operation),
     });
   }
+  updateLocalLiuAgentRuntimeTimingFromResult(row, result, { startedAt });
+  applyLocalLiuAgentConversationLifecycle(row, result);
 }
 
 function localLiuAgentResultModelRuntime(result = {}) {
@@ -8463,6 +8957,9 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
   if (!markLocalLiuAgentRuntimeEventSeen(event)) return;
   const row = localLiuAgentActiveRunRow(run);
   if (!row) return;
+  updateLocalLiuAgentRuntimeTimingFromEvent(row, event, {
+    startedAt: run.startedAt,
+  });
   const payload = localLiuAgentRuntimeEventPayload(event);
   if (
     String(event?.type || "").trim() === "tool_result" &&
@@ -8669,6 +9166,123 @@ function findLocalLiuAgentRuntimeMessage(rows = [], result = {}) {
   return null;
 }
 
+function localLiuAgentBackgroundJobsFromRecovery(result = {}) {
+  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  const jobs = Array.isArray(state?.background_jobs) ? state.background_jobs : [];
+  return jobs.filter((job) => job && typeof job === "object");
+}
+
+function localLiuAgentResumeJudgementFromRecovery(result = {}) {
+  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  return state?.resume_judgement && typeof state.resume_judgement === "object"
+    ? state.resume_judgement
+    : null;
+}
+
+function localLiuAgentBackgroundJobStatusLabel(status) {
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "running") return "仍在执行";
+  if (normalized === "succeeded") return "已完成，等待 AI 验证";
+  if (normalized === "failed") return "执行失败，等待 AI 判断";
+  if (normalized === "cancelled") return "已取消";
+  return "状态未知";
+}
+
+function localLiuAgentResumeJudgementLabel(decision) {
+  const normalized = String(decision || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "continue_waiting") return "任务还在进行中，可以继续等待或刷新状态";
+  if (normalized === "ask_ai_to_verify_completion") return "命令已结束，需要让 AI 根据产物和日志确认是否完成目标";
+  if (normalized === "ask_ai_to_inspect_failure") return "命令失败，需要让 AI 读取日志判断失败原因";
+  if (normalized === "ask_ai_to_judge") return "当前没有足够信号，需要 AI 检查上下文再判断下一步";
+  return "";
+}
+
+function localLiuAgentBackgroundJobDetail(job = {}, judgement = null) {
+  const lines = [];
+  const cmd = String(job?.cmd || "").trim();
+  const cwd = String(job?.cwd || "").trim();
+  const pid = String(job?.pid || "").trim();
+  const exitCode =
+    job?.exit_code !== undefined && job?.exit_code !== null
+      ? String(job.exit_code).trim()
+      : "";
+  if (cmd) lines.push(`命令：${cmd}`);
+  if (cwd) lines.push(`目录：${cwd}`);
+  if (pid) lines.push(`PID：${pid}`);
+  if (exitCode) lines.push(`退出码：${exitCode}`);
+  const decisionText = localLiuAgentResumeJudgementLabel(judgement?.decision);
+  if (decisionText) lines.push(`判断：${decisionText}`);
+  const stdoutPath = String(job?.stdout_log_path || "").trim();
+  const stderrPath = String(job?.stderr_log_path || "").trim();
+  if (stdoutPath) lines.push(`stdout：${stdoutPath}`);
+  if (stderrPath) lines.push(`stderr：${stderrPath}`);
+  return lines.join("\n");
+}
+
+function upsertLocalLiuAgentBackgroundJobOperation(row, job = {}, options = {}) {
+  if (!row || !job || typeof job !== "object") return false;
+  const statePath = String(job?.state_path || "").trim();
+  const jobId = String(job?.job_id || statePath || "").trim();
+  if (!jobId || !statePath) return false;
+  const status = String(job?.status || "unknown")
+    .trim()
+    .toLowerCase();
+  const judgement =
+    options?.judgement && typeof options.judgement === "object"
+      ? options.judgement
+      : null;
+  const phase =
+    status === "running"
+      ? "running"
+      : status === "succeeded"
+        ? "blocked"
+        : status === "failed"
+          ? "blocked"
+          : status === "cancelled"
+            ? "blocked"
+            : "blocked";
+  upsertMessageOperation(row, {
+    operationId: `local-agent-background-job:${jobId}`,
+    kind: "tool",
+    title: "后台任务状态",
+    summary: localLiuAgentBackgroundJobStatusLabel(status),
+    detail: localLiuAgentBackgroundJobDetail(job, judgement),
+    phase,
+    actionType: "none",
+    meta: {
+      local_liuagent_background_job: "true",
+      job,
+      state_path: statePath,
+      job_id: jobId,
+      status,
+      judgement,
+      chat_session_id: String(options?.chatSessionId || currentChatSessionId.value || "").trim(),
+      cwd: String(options?.workspacePath || localLiuAgentWorkspacePath() || "").trim(),
+    },
+  });
+  row.processExpanded = true;
+  return true;
+}
+
+function applyLocalLiuAgentBackgroundJobs(row, result = {}, options = {}) {
+  const jobs = localLiuAgentBackgroundJobsFromRecovery(result);
+  if (!row || !jobs.length) return false;
+  const judgement = localLiuAgentResumeJudgementFromRecovery(result);
+  let changed = false;
+  jobs.forEach((job) => {
+    changed =
+      upsertLocalLiuAgentBackgroundJobOperation(row, job, {
+        ...options,
+        judgement,
+      }) || changed;
+  });
+  return changed;
+}
+
 async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows = []) {
   const activeProjectId = String(selectedProjectId.value || "").trim();
   const activeChatSessionId = String(currentChatSessionId.value || "").trim();
@@ -8702,10 +9316,26 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
   const runState =
     state?.run_state && typeof state.run_state === "object" ? state.run_state : {};
   const status = String(runState?.status || "").trim();
-  if (!["waiting_approval", "failed"].includes(status)) return;
+  const backgroundJobs = localLiuAgentBackgroundJobsFromRecovery(result);
+  const resumeJudgement = localLiuAgentResumeJudgementFromRecovery(result);
+  const resumeDecision = String(resumeJudgement?.decision || "")
+    .trim()
+    .toLowerCase();
+  if (
+    !["waiting_approval", "failed"].includes(status) &&
+    !backgroundJobs.length &&
+    !["continue_waiting", "ask_ai_to_verify_completion", "ask_ai_to_inspect_failure", "ask_ai_to_judge"].includes(
+      resumeDecision,
+    )
+  )
+    return;
   const row = findLocalLiuAgentRuntimeMessage(rows, result);
   if (!row) return;
   applyLocalLiuAgentRuntimeEvents(row, result, {
+    chatSessionId: activeChatSessionId,
+    workspacePath,
+  });
+  applyLocalLiuAgentBackgroundJobs(row, result, {
     chatSessionId: activeChatSessionId,
     workspacePath,
   });
@@ -8742,6 +9372,8 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
       systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
       temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
       modelRuntime,
+      aiEntryFile: String(projectAiEntryFile.value || "").trim(),
+      mcpConfig: systemMcpConfig.value,
     };
     const normalizedPermissionRequest = {
       ...permissionRequest,
@@ -8768,24 +9400,48 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
       level: "warning",
     });
   } else if (status === "failed") {
+    const hasNoSignal =
+      resumeDecision === "continue_waiting" ||
+      resumeDecision === "ask_ai_to_judge" ||
+      backgroundJobs.some(
+        (job) =>
+          String(job?.status || "")
+            .trim()
+            .toLowerCase() === "running",
+      );
     upsertMessageOperation(row, {
       operationId: `local-agent:${row.id}`,
       kind: "request",
       title: "桌面本地 Agent Runtime",
-      summary: "已恢复上次失败的本地会话",
-      detail: String(result?.summary || result?.error || "").trim(),
-      phase: "failed",
+      summary: hasNoSignal
+        ? "已恢复上次暂无信号的本地会话"
+        : "已恢复上次失败的本地会话",
+      detail:
+        localLiuAgentResumeJudgementLabel(resumeDecision) ||
+        String(result?.summary || result?.error || "").trim(),
+      phase: hasNoSignal ? "blocked" : "failed",
       actionType: "none",
       meta: {
         local_liuagent_operation: "true",
         source: "tauri_liuagent_local_chat",
         chat_session_id: activeChatSessionId,
         cwd: workspacePath,
+        resume_judgement: resumeJudgement,
       },
     });
     row.content =
       String(row.content || "").trim() ||
-      "已恢复上次失败的本地 liuAgent 会话，请检查执行过程后重新发送。";
+      (hasNoSignal
+        ? "已恢复上次暂无信号的本地 liuAgent 会话。当前不能直接判断失败，请刷新后台任务状态或让 AI 继续检查。"
+        : "已恢复上次失败的本地 liuAgent 会话，请检查执行过程后重新发送。");
+  } else if (backgroundJobs.length) {
+    const label = localLiuAgentResumeJudgementLabel(resumeDecision);
+    if (label) {
+      appendMessageProcessLog(row, {
+        text: label,
+        level: resumeDecision === "continue_waiting" ? "info" : "warning",
+      });
+    }
   }
   rememberChatSessionMessages(activeProjectId, activeChatSessionId, messages.value);
   schedulePersistChatRuntime();
@@ -9822,14 +10478,54 @@ function buildAssistSlashCommand(actionId) {
 const composerSlashCommands = computed(() => {
   const commands = [
     {
-      id: "stats_report",
-      kind: "stats_report",
-      command: PROJECT_STATS_COMMAND,
-      aliases: PROJECT_STATS_COMMAND_ALIASES,
-      label: "项目统计报表",
-      description:
-        "把当前项目统计 AI 报表注入聊天，让模型继续分析优化方向和升级重点。",
+      id: "system_mcp",
+      kind: "system_mcp",
+      command: SYSTEM_MCP_COMMAND,
+      aliases: SYSTEM_MCP_COMMAND_ALIASES,
+      label: "系统 MCP",
+      description: "读取当前项目上下文、配置、提示词、规则、任务树和需求记录。",
       assistActionId: "",
+      seedText: `${SYSTEM_MCP_COMMAND}`,
+    },
+    {
+      id: "skill",
+      kind: "skill",
+      command: SKILL_COMMAND,
+      aliases: SKILL_COMMAND_ALIASES,
+      label: "技能",
+      description: "查看当前项目绑定的技能和技能工具。",
+      assistActionId: "",
+      seedText: `${SKILL_COMMAND}`,
+    },
+    {
+      id: "agent",
+      kind: "agent",
+      command: AGENT_COMMAND,
+      aliases: AGENT_COMMAND_ALIASES,
+      label: "智能体",
+      description: "查看当前项目绑定的员工和桌面智能体信息。",
+      assistActionId: "",
+      seedText: `${AGENT_COMMAND}`,
+    },
+    {
+      id: "rule",
+      kind: "rule",
+      command: RULE_COMMAND,
+      aliases: RULE_COMMAND_ALIASES,
+      label: "规则",
+      description: "查看当前项目绑定的规则服务和规则模块。",
+      assistActionId: "",
+      seedText: `${RULE_COMMAND}`,
+    },
+    {
+      id: "file_context",
+      kind: "file_context",
+      command: FILE_COMMAND,
+      aliases: FILE_COMMAND_ALIASES,
+      label: "文件",
+      description: "引用工作区文件路径或已上传附件，让 AI 围绕文件处理。",
+      assistActionId: "",
+      seedText: `${FILE_COMMAND} 请处理这些文件或附件：`,
     },
     {
       id: "host_run",
@@ -9839,6 +10535,16 @@ const composerSlashCommands = computed(() => {
       label: "本机命令",
       description:
         "让 AI 直接在当前电脑执行命令并返回实际结果，例如 /run lark-cli auth status。",
+      assistActionId: "",
+    },
+    {
+      id: "stats_report",
+      kind: "stats_report",
+      command: PROJECT_STATS_COMMAND,
+      aliases: PROJECT_STATS_COMMAND_ALIASES,
+      label: "项目统计报表",
+      description:
+        "把当前项目统计 AI 报表注入聊天，让模型继续分析优化方向和升级重点。",
       assistActionId: "",
     },
     {
@@ -12498,6 +13204,7 @@ function messageProcessEntryChildren(entry = {}) {
 }
 
 function messageProcessEntrySpanKey(entry = {}) {
+  if (messageProcessEntryEventType(entry) === "conversation_lifecycle") return "";
   const toolCallId = String(
     entry?.toolCallId ||
       entry?.tool_call_id ||
@@ -12726,6 +13433,9 @@ function messageProcessEntryTitle(entry = {}) {
   const toolName = messageProcessEntryToolName(entry);
   const path = messageProcessEntryPath(entry);
   const firstLine = messageProcessEntryFirstLine(entry);
+  if (eventType === "conversation_lifecycle") {
+    return localLiuAgentLifecycleNodeTitle(payload);
+  }
   if (kind === "progress_update") return "推进当前任务";
   if (kind === "model_call") {
     const index = Number(payload?.index || 0) || 0;
@@ -12779,11 +13489,35 @@ function messageProcessEntryStatus(entry = {}) {
   }
   const payload = messageProcessEntryPayload(entry);
   const eventType = messageProcessEntryEventType(entry);
+  if (eventType === "conversation_lifecycle") {
+    const status = String(payload?.status || "").trim();
+    if (status === "ended") return "结束";
+    if (status === "completed") return "完成";
+    if (status === "failed") return "失败";
+    if (status === "no_signal") return "暂无信号";
+    if (status === "stalled") return "可能卡住";
+    if (status === "waiting") return "等待";
+    if (status === "running") return "运行中";
+  }
   if (eventType === "tool_call_started" || eventType === "command_started") return "运行中";
   if (eventType === "command_finished") {
-    return payload?.ok === false ? "失败" : "完成";
+    const status = String(payload?.status || "").trim();
+    if (status === "no_signal") return "暂无信号";
+    if (status === "stalled") return "可能卡住";
+    if (status === "waiting") return "等待";
+    if (status === "failed") return "失败";
+    return payload?.ok === false ? "需要判断" : "完成";
   }
-  if (eventType === "tool_result") return payload?.ok === false ? "失败" : "完成";
+  if (eventType === "tool_result") {
+    const status = String(
+      payload?.status || payload?.content?.status || payload?.result?.status || "",
+    ).trim();
+    if (status === "no_signal") return "暂无信号";
+    if (status === "stalled") return "可能卡住";
+    if (status === "waiting") return "等待";
+    if (status === "failed") return "失败";
+    return payload?.ok === false ? "需要判断" : "完成";
+  }
   if (eventType === "approval_required") return "等待";
   return "";
 }
@@ -12796,6 +13530,19 @@ function messageProcessEntryMeta(entry = {}) {
   const meta = [];
   const toolName = messageProcessEntryToolName(entry);
   const path = messageProcessEntryPath(entry);
+  const eventType = messageProcessEntryEventType(entry);
+  if (eventType === "conversation_lifecycle") {
+    const type = String(payload?.type || "").trim();
+    const index = Number(payload?.index ?? -1);
+    if (Number.isFinite(index) && index >= 0) meta.push(`#${index + 1}`);
+    if (type === "execute_task") {
+      const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+      if (toolName) meta.push(toolName);
+    }
+    const status = String(payload?.status || "").trim();
+    if (status) meta.push(status);
+    return meta;
+  }
   if (path && !["file_read", "file_search", "file_edit"].includes(kind)) {
     meta.push(path);
   }
@@ -12949,15 +13696,72 @@ function messageProcessEntryCode(entry = {}) {
   if (kind === "command_output") {
     return clipMultilineProcessText(payload?.text || "", 120, 8000);
   }
+  if (messageProcessEntryEventType(entry) === "conversation_lifecycle") {
+    const contextText = messageProcessEntryContextText(entry);
+    if (contextText) return contextText;
+  }
   return "";
 }
 
 function messageProcessEntryCodeLabel(entry = {}) {
   const kind = messageProcessEntryKind(entry);
+  if (messageProcessEntryEventType(entry) === "conversation_lifecycle") return "查看上下文";
   if (kind === "file_read") return "查看读取片段";
   if (kind === "file_search") return "查看命中列表";
   if (kind === "command_output") return "查看输出内容";
   return "查看详情";
+}
+
+function messageProcessEntryContextText(entry = {}) {
+  const payload = messageProcessEntryPayload(entry);
+  const contextRef =
+    payload?.context_ref && typeof payload.context_ref === "object"
+      ? payload.context_ref
+      : payload?.contextRef && typeof payload.contextRef === "object"
+        ? payload.contextRef
+        : {};
+  const context =
+    payload?.conversation_context && typeof payload.conversation_context === "object"
+      ? payload.conversation_context
+      : payload?.conversationContext && typeof payload.conversationContext === "object"
+        ? payload.conversationContext
+        : {};
+  const messages = Array.isArray(context?.messages) ? context.messages : [];
+  if (!messages.length) return "";
+  const start = Math.max(0, Number(contextRef?.start_index ?? contextRef?.startIndex ?? 0) || 0);
+  const endRaw = Number(contextRef?.end_index ?? contextRef?.endIndex ?? messages.length);
+  const end = Math.min(messages.length, Number.isFinite(endRaw) ? endRaw : messages.length);
+  const selected = messages.slice(start, end);
+  if (!selected.length) return "";
+  const header = [
+    `context messages ${start}-${Math.max(start, end - 1)}/${messages.length}`,
+    contextRef?.model_step_index || contextRef?.modelStepIndex
+      ? `model_step=${contextRef.model_step_index || contextRef.modelStepIndex}`
+      : "",
+    contextRef?.tool_call_id || contextRef?.toolCallId
+      ? `tool_call=${contextRef.tool_call_id || contextRef.toolCallId}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const body = selected
+    .map((message) => {
+      const index = message?.index ?? "";
+      const role = String(message?.role || "user").trim();
+      const preview = String(message?.content_preview || message?.contentPreview || "").trim();
+      const toolCallId = String(message?.tool_call_id || message?.toolCallId || "").trim();
+      const toolCount = Number(message?.tool_call_count || message?.toolCallCount || 0) || 0;
+      return [
+        `#${index} ${role}`,
+        toolCallId ? `tool_call_id=${toolCallId}` : "",
+        toolCount ? `tool_calls=${toolCount}` : "",
+        preview,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+  return clipMultilineProcessText([header, body].filter(Boolean).join("\n\n"), 240, 16000);
 }
 
 function messageProcessEntryDiffText(entry = {}) {
@@ -16805,6 +17609,7 @@ async function continueChatWithInteractionPayload(payloadText) {
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
   const assistantIndex = messages.value.length - 1;
+  applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
   chatLoading.value = true;
   scrollToBottom();
   try {
@@ -16829,6 +17634,7 @@ async function continueChatWithInteractionPayload(payloadText) {
   } catch (err) {
     messages.value[assistantIndex].content =
       `请求失败：${err?.message || "未知错误"}`;
+    finishMessageExecutionTiming(messages.value[assistantIndex]);
     ElMessage.error(err?.message || "交互提交失败");
     return false;
   } finally {
@@ -16874,6 +17680,8 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
   };
   messages.value.push(assistantMessage);
   const assistantIndex = messages.value.length - 1;
+  const requestStartedAt = Date.now();
+  applyMessageExecutionTiming(assistantMessage, { startedAt: requestStartedAt });
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const client = await ensureWsClient(projectId);
   const donePromise = new Promise((resolve, reject) => {
@@ -16891,6 +17699,7 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
       handoffTriggered: false,
       projectHostTerminalHandoffTriggered: false,
       lastToolName: "",
+      startedAt: requestStartedAt,
     });
   });
   chatLoading.value = true;
@@ -16967,6 +17776,7 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
   } catch (err) {
     rejectPendingRequest(requestId, pendingRequests.get(requestId), err);
     assistantMessage.content = `请求失败：${err?.message || "WebSocket 发送失败"}`;
+    finishMessageExecutionTiming(assistantMessage);
     syncChatLoadingWithCurrentSession();
     throw err;
   }
@@ -16975,6 +17785,7 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
     return true;
   } catch (err) {
     assistantMessage.content = `请求失败：${err?.message || "未知错误"}`;
+    finishMessageExecutionTiming(assistantMessage);
     ElMessage.error(err?.message || "交互提交失败");
     return false;
   } finally {
@@ -17035,6 +17846,20 @@ function operationActionButtons(operation) {
   const actionType = normalizeOperationActionType(operation?.actionType);
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  if (String(meta.local_liuagent_background_job || "").trim() === "true") {
+    const status = String(meta.status || meta.job?.status || "")
+      .trim()
+      .toLowerCase();
+    const buttons = [{ key: "local_liuagent_refresh_job", label: "刷新状态" }];
+    if (status === "running") {
+      buttons.push({
+        key: "local_liuagent_cancel_job",
+        label: "取消任务",
+        type: "danger",
+      });
+    }
+    return buttons;
+  }
   if (actionType === "open_url" && extractOperationUrl(operation)) {
     return [{ key: "open_url", label: "打开链接" }];
   }
@@ -17094,6 +17919,13 @@ async function handleOperationAction(operation, actionKey) {
     normalizedActionKey === "local_liuagent_deny"
   ) {
     await submitLocalLiuAgentPermissionAction(operation, normalizedActionKey);
+    return;
+  }
+  if (
+    normalizedActionKey === "local_liuagent_refresh_job" ||
+    normalizedActionKey === "local_liuagent_cancel_job"
+  ) {
+    await submitLocalLiuAgentBackgroundJobAction(operation, normalizedActionKey);
     return;
   }
   if (normalizedActionKey === "open_url" && actionType === "open_url") {
@@ -17220,6 +18052,70 @@ async function submitCurrentLocalLiuAgentPermissionAction(actionKey) {
     await submitLocalLiuAgentPermissionAction(operation, actionKey);
   } finally {
     localLiuAgentPermissionSubmitting.value = false;
+  }
+}
+
+async function submitLocalLiuAgentBackgroundJobAction(operation, actionKey) {
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  const statePath = String(meta.state_path || meta.job?.state_path || "").trim();
+  const workspacePath = String(meta.cwd || localLiuAgentWorkspacePath() || "").trim();
+  const row = findMessageRowByOperationId(operation?.id);
+  if (!statePath || !workspacePath) {
+    ElMessage.warning("缺少后台任务状态路径，无法操作");
+    return;
+  }
+  upsertMessageOperation(row, {
+    ...operation,
+    summary:
+      actionKey === "local_liuagent_cancel_job"
+        ? "正在取消后台任务"
+        : "正在刷新后台任务状态",
+    phase: "running",
+  });
+  try {
+    const result =
+      actionKey === "local_liuagent_cancel_job"
+        ? await cancelNativeLiuAgentRuntimeJob({
+            workspacePath,
+            statePath,
+          })
+        : await refreshNativeLiuAgentRuntimeJob({
+            workspacePath,
+            statePath,
+          });
+    if (!result?.ok) {
+      throw new Error(String(result?.error || result?.summary || "后台任务操作失败"));
+    }
+    const job = result?.job && typeof result.job === "object" ? result.job : {};
+    upsertLocalLiuAgentBackgroundJobOperation(row, job, {
+      chatSessionId: String(meta.chat_session_id || currentChatSessionId.value || "").trim(),
+      workspacePath,
+      judgement:
+        meta.judgement && typeof meta.judgement === "object" ? meta.judgement : null,
+    });
+    const status = String(job?.status || "")
+      .trim()
+      .toLowerCase();
+    if (status === "running") {
+      ElMessage.info("后台任务仍在执行");
+    } else if (status === "succeeded") {
+      ElMessage.success("后台任务已完成，请让 AI 根据结果继续判断");
+    } else if (status === "failed") {
+      ElMessage.warning("后台任务失败，请让 AI 读取日志判断原因");
+    } else if (status === "cancelled") {
+      ElMessage.warning("后台任务已取消");
+    } else {
+      ElMessage.info("后台任务状态已刷新");
+    }
+  } catch (err) {
+    upsertMessageOperation(row, {
+      ...operation,
+      summary: "后台任务操作失败",
+      detail: String(err?.message || err || "后台任务操作失败").trim(),
+      phase: "blocked",
+    });
+    ElMessage.error(err?.message || "后台任务操作失败");
   }
 }
 
@@ -17431,6 +18327,10 @@ async function continueLocalLiuAgentChatPermission(
     resumedFromPermission: true,
     permissionRequestId: requestId,
   };
+  applyLocalLiuAgentRuntimeTiming(row, {
+    startedAt: activeRun.startedAt,
+    running: true,
+  });
   if (activeChatSessionId) {
     setLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
   }
@@ -17483,6 +18383,7 @@ async function continueLocalLiuAgentChatPermission(
   applyLocalLiuAgentRuntimeEvents(row, result, {
     chatSessionId: pending.activeChatSessionId,
     workspacePath: localChatPayload?.workspacePath,
+    startedAt: activeRun.startedAt,
   });
   appendLocalLiuAgentStructuredStateOperations(row, result, {
     chatSessionId: pending.activeChatSessionId,
@@ -17525,6 +18426,7 @@ async function continueLocalLiuAgentChatPermission(
         runtime: "tauri",
         workspace_path: String(localChatPayload?.workspacePath || "").trim(),
         permission_request_id: nextRequestId,
+        ...localLiuAgentRuntimeTimingSourceContext(row),
       },
     });
     await syncLocalLiuAgentRuntimeOutbox({
@@ -17591,6 +18493,7 @@ async function continueLocalLiuAgentChatPermission(
       requirement_record_path: String(
         result?.requirementRecordPath || result?.requirement_record_path || "",
       ).trim(),
+      ...localLiuAgentRuntimeTimingSourceContext(row),
     },
   });
   await syncLocalLiuAgentRuntimeOutbox({
@@ -18056,8 +18959,8 @@ function appendToolStartLogs(row, eventData) {
   appendMessageProcessLog(row, {
     level: "info",
     text: argumentsPreview
-      ? `调用 ${label}：${argumentsPreview}`
-      : `调用 ${label}`,
+      ? `调用 ${label}\n参数：${argumentsPreview}`
+      : `调用 ${label}\n参数：{}`
   });
   upsertMessageOperation(row, {
     operationId,
@@ -18316,6 +19219,60 @@ function messageRoleName(item) {
     return `机器人 · ${externalAgentDisplayLabel.value}`;
   }
   return "机器人";
+}
+
+function canViewAiRequestContext(item) {
+  return (
+    canUseAiRequestContextViewer.value &&
+    String(item?.role || "").trim() === "assistant" &&
+    Boolean(item?.hasAiRequestContext) &&
+    Boolean(String(item?.id || "").trim()) &&
+    Boolean(String(selectedProjectId.value || "").trim()) &&
+    Boolean(String(currentChatSessionId.value || "").trim())
+  );
+}
+
+async function openAiRequestContextDialog(item) {
+  if (!canViewAiRequestContext(item)) return;
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  const messageId = String(item?.id || "").trim();
+  aiContextDialogVisible.value = true;
+  aiContextDialogLoading.value = true;
+  aiContextDialogError.value = "";
+  aiContextDialogMessageId.value = messageId;
+  aiContextDialogPayload.value = null;
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(projectId)}/chat/history/messages/${encodeURIComponent(messageId)}/ai-context`,
+      {
+        params: { chat_session_id: chatSessionId },
+      },
+    );
+    aiContextDialogPayload.value =
+      data?.ai_context && typeof data.ai_context === "object"
+        ? data.ai_context
+        : null;
+    if (!aiContextDialogPayload.value) {
+      aiContextDialogError.value = "这条消息没有可查看的 AI 请求上下文";
+    }
+  } catch (err) {
+    aiContextDialogError.value =
+      err?.detail || err?.message || "读取 AI 请求上下文失败";
+  } finally {
+    aiContextDialogLoading.value = false;
+  }
+}
+
+async function copyAiRequestContext() {
+  const content = formattedAiContextDialogPayload.value;
+  if (!content) return;
+  try {
+    await navigator.clipboard.writeText(content);
+    ElMessage.success("上下文 JSON 已复制");
+  } catch (_error) {
+    ElMessage.warning("复制失败，请手动选中内容复制");
+  }
 }
 
 function avatarLabel(item) {
@@ -19644,12 +20601,7 @@ async function syncLocalLiuAgentRuntimeOutbox({
     const status = String(trajectory?.status || entry?.latest_status || "").trim();
     const result = await upsertProjectChatRequirementRecord({
       chatSessionId: entryChatSessionId,
-      status:
-        status === "completed"
-          ? "done"
-          : status === "waiting_approval"
-            ? "waiting_approval"
-            : status || "in_progress",
+      status: normalizeLocalLiuAgentRequirementStatus(status),
       rootGoal: String(entry?.root_goal || entry?.rootGoal || rootGoal || "").trim(),
       messageId,
       assistantMessageId,
@@ -19700,6 +20652,40 @@ async function syncLocalLiuAgentRuntimeOutbox({
     : Math.max(entries.length - synced, 0);
   pendingLocalOutboxCount.value = pending;
   return { synced, pending };
+}
+
+function normalizeLocalLiuAgentRequirementStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase().replace(/-/g, "_");
+  if (["completed", "complete", "done", "success", "succeeded", "ok"].includes(normalized)) {
+    return "done";
+  }
+  if (["failed", "failure", "error", "blocked"].includes(normalized)) {
+    return "blocked";
+  }
+  if (
+    [
+      "waiting_approval",
+      "approval_required",
+      "awaiting_approval",
+      "waiting_user",
+      "waiting_user_action",
+      "awaiting_user",
+      "running",
+      "started",
+      "processing",
+      "working",
+      "retry",
+      "retrying",
+    ].includes(normalized)
+  ) {
+    return "in_progress";
+  }
+  if (["checking", "verified", "validating", "validation"].includes(normalized)) {
+    return "verifying";
+  }
+  return ["pending", "in_progress", "verifying"].includes(normalized)
+    ? normalized
+    : "in_progress";
 }
 
 function resolveSlashCommand(text) {
@@ -19778,8 +20764,11 @@ function appendAgenticOperationInstruction(prompt, sourcePrompt) {
 
 function applySlashCommandSelection(item) {
   if (!item?.command) return;
-  draftText.value = `${item.command} `;
+  draftText.value =
+    String(item.seedText || "").trim() || `${String(item.command).trim()} `;
   slashCommandHighlightIndex.value = 0;
+  rememberCurrentChatSessionComposerState();
+  void focusChatComposerTextarea();
 }
 
 async function fetchProjectStatsAiReport(projectId) {
@@ -19862,6 +20851,349 @@ function buildPackageDeployCommandPrompt(commandPrompt) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function buildProjectChatEntryCommandPrompt({
+  kind,
+  commandPrompt,
+  projectLabel,
+  attachmentNames,
+  docsText,
+}) {
+  const normalizedKind = String(kind || "").trim();
+  const normalizedPrompt = String(commandPrompt || "").trim();
+  const normalizedProjectLabel =
+    String(projectLabel || "当前项目").trim() || "当前项目";
+  const normalizedAttachmentNames = normalizeStringList(attachmentNames, 20);
+  const attachmentHint = normalizedAttachmentNames.length
+    ? `本轮已附带文件：${normalizedAttachmentNames.join("、")}。`
+    : "";
+  const materialHint = docsText ? `附件/补充材料：\n${docsText}` : "";
+  const promptOrDefault = (fallback) => normalizedPrompt || fallback;
+  const baseBoundary = [
+    `当前入口：项目聊天输入框斜杠命令。`,
+    `当前项目：${normalizedProjectLabel}。`,
+    "文件上下文入口用于读取或分析当前项目工作区文件。",
+  ];
+
+  if (normalizedKind === "file_context") {
+    return [
+      ...baseBoundary,
+      "",
+      "用户通过 /file 发起文件上下文请求。",
+      "任务要求：",
+      promptOrDefault(
+        "请围绕用户给出的工作区路径或已上传附件读取、分析或处理文件；涉及修改时先说明改动范围和验证方式。",
+      ),
+      attachmentHint,
+      materialHint,
+      "",
+      "输出要求：说明处理了哪些文件、得到什么结论、是否需要后续修改或验证。",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return normalizedPrompt;
+}
+
+function isSystemMcpToolListPrompt(prompt) {
+  const normalized = String(prompt || "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return true;
+  return /^(可用工具|工具|工具列表|有哪些工具|有什么工具|tools?|list\s+tools?)$/.test(
+    normalized,
+  );
+}
+
+function formatSystemMcpToolItem(item = {}, index = 0) {
+  const toolName = String(item?.tool_name || "").trim();
+  const name = String(item?.name || item?.remote_tool_name || toolName).trim();
+  const moduleName = String(item?.module_name || "").trim();
+  const remoteToolName = String(item?.remote_tool_name || "").trim();
+  const employeeName = String(item?.employee_name || "").trim();
+  const skillId = String(item?.skill_id || "").trim();
+  const moduleType = String(item?.module_type || "").trim();
+  const description = String(item?.description || "").trim();
+  const meta = [
+    toolName ? `tool=${toolName}` : "",
+    remoteToolName && remoteToolName !== toolName ? `remote=${remoteToolName}` : "",
+    moduleName ? `module=${moduleName}` : "",
+    employeeName ? `employee=${employeeName}` : "",
+    skillId ? `skill=${skillId}` : "",
+    moduleType ? `type=${moduleType}` : "",
+  ].filter(Boolean);
+  return [
+    `${index + 1}. ${name || toolName || "未命名工具"}`,
+    meta.length ? `   ${meta.join(" · ")}` : "",
+    description ? `   ${description}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildSystemMcpToolListContent() {
+  const projectTools = projectToolModules.value || [];
+  const externalTools = runtimeExternalTools.value || [];
+  const enabledToolNames = normalizeStringList(selectedProjectToolNames.value || [], 200);
+  const lines = [
+    `结论：当前项目可用工具共 ${projectTools.length + externalTools.length} 个，其中项目工具 ${projectTools.length} 个，外部 MCP 工具 ${externalTools.length} 个。`,
+  ];
+  if (enabledToolNames.length) {
+    lines.push(`当前已勾选启用：${enabledToolNames.join("、")}`);
+  }
+  lines.push("");
+  lines.push("项目工具：");
+  if (projectTools.length) {
+    lines.push(...projectTools.map(formatSystemMcpToolItem));
+  } else {
+    lines.push("- 暂无项目工具。");
+  }
+  lines.push("");
+  lines.push("外部 MCP 工具：");
+  if (externalTools.length) {
+    lines.push(...externalTools.map(formatSystemMcpToolItem));
+  } else {
+    lines.push("- 暂无外部 MCP 工具。");
+  }
+  lines.push("");
+  lines.push("说明：以上内容来自项目配置 API 已加载的系统 MCP/项目工具数据，没有经过本地 MCP adapter，也没有调用大模型。");
+  return lines.join("\n");
+}
+
+function formatBoundModuleItem(item = {}, index = 0) {
+  const name = String(
+    item?.name ||
+      item?.module_name ||
+      item?.remote_tool_name ||
+      item?.tool_name ||
+      item?.id ||
+      "",
+  ).trim();
+  const moduleType = String(item?.module_type || "").trim();
+  const description = String(item?.description || "").trim();
+  const meta = moduleMetaText(item);
+  return [
+    `${index + 1}. ${name || "未命名模块"}`,
+    moduleType ? `   类型：${moduleTypeLabel(moduleType)}` : "",
+    meta ? `   ${meta}` : "",
+    description ? `   ${description}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatProjectEmployeeItem(item = {}, index = 0) {
+  const name = String(item?.name || item?.employee_name || item?.id || "").trim();
+  const role = String(item?.project_role || item?.role || "").trim();
+  const employeeId = String(item?.id || item?.employee_id || "").trim();
+  const skills = normalizeStringList(
+    item?.skill_names || item?.skills || item?.skill_ids || [],
+    12,
+  );
+  const domains = normalizeStringList(item?.rule_domains || item?.domains || [], 8);
+  return [
+    `${index + 1}. ${name || "未命名员工"}`,
+    [employeeId ? `ID=${employeeId}` : "", role ? `角色=${role}` : ""]
+      .filter(Boolean)
+      .join(" · "),
+    skills.length ? `   技能：${skills.join("、")}` : "",
+    domains.length ? `   规则领域：${domains.join("、")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildBoundSkillContent() {
+  const skillModules = [
+    ...systemProjectRelatedModules.value,
+    ...systemGlobalModules.value,
+  ].filter((item) => {
+    const type = String(item?.module_type || "").trim();
+    return type === "project_skill_tool" || type === "skill_mcp_service";
+  });
+  const skillExternalTools = runtimeExternalTools.value;
+  const lines = [
+    `当前项目绑定技能相关能力 ${skillModules.length} 个，外部 MCP 工具 ${skillExternalTools.length} 个。`,
+    "",
+    "项目技能能力：",
+  ];
+  lines.push(
+    ...(skillModules.length
+      ? skillModules.map(formatBoundModuleItem)
+      : ["- 暂无项目技能能力。"]),
+  );
+  lines.push("");
+  lines.push("外部 MCP 工具：");
+  lines.push(
+    ...(skillExternalTools.length
+      ? skillExternalTools.map(formatSystemMcpToolItem)
+      : ["- 暂无外部 MCP 工具。"]),
+  );
+  return lines.join("\n");
+}
+
+function buildBoundAgentContent() {
+  const employees = Array.isArray(projectEmployees.value) ? projectEmployees.value : [];
+  const agentTypes = Array.isArray(externalAgentInfo.value?.agent_types)
+    ? externalAgentInfo.value.agent_types
+    : [];
+  const lines = [`当前项目绑定员工 ${employees.length} 个。`, "", "项目员工："];
+  lines.push(
+    ...(employees.length
+      ? employees.map(formatProjectEmployeeItem)
+      : ["- 暂无项目员工。"]),
+  );
+  lines.push("");
+  lines.push("桌面智能体：");
+  lines.push(
+    `- 当前类型：${externalAgentDisplayLabel.value || externalAgentInfo.value?.agent_type || "未配置"}`,
+  );
+  lines.push(
+    `- 工作区：${localLiuAgentWorkspacePath() || externalAgentInfo.value?.workspace_path || "未配置"}`,
+  );
+  if (agentTypes.length) {
+    lines.push("- 可选类型：");
+    lines.push(
+      ...agentTypes.map((item, index) => {
+        const label = String(item?.label || item?.agent_type || "").trim();
+        const status = item?.available ? "可用" : "不可用";
+        const reason = String(item?.reason || "").trim();
+        return `${index + 1}. ${label || "未命名"} · ${status}${reason ? ` · ${reason}` : ""}`;
+      }),
+    );
+  }
+  return lines.join("\n");
+}
+
+function buildBoundRuleContent() {
+  const ruleModules = [
+    ...systemProjectRelatedModules.value,
+    ...systemGlobalModules.value,
+  ].filter((item) => {
+    const type = String(item?.module_type || "").trim();
+    return type === "rule_mcp_service";
+  });
+  const lines = [`当前项目绑定规则模块 ${ruleModules.length} 个。`, "", "规则模块："];
+  lines.push(
+    ...(ruleModules.length
+      ? ruleModules.map(formatBoundModuleItem)
+      : ["- 暂无规则模块。"]),
+  );
+  return lines.join("\n");
+}
+
+function buildDirectProjectBindingContent(kind) {
+  const normalizedKind = String(kind || "").trim();
+  if (normalizedKind === "system_mcp") return buildSystemMcpToolListContent();
+  if (normalizedKind === "skill") return buildBoundSkillContent();
+  if (normalizedKind === "agent") return buildBoundAgentContent();
+  if (normalizedKind === "rule") return buildBoundRuleContent();
+  return "";
+}
+
+async function persistDirectProjectChatMessage({
+  chatSessionId,
+  message,
+  role,
+  sourceContext,
+}) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!projectId || !normalizedChatSessionId || !message?.content) return null;
+  try {
+    const data = await api.post(
+      `/projects/${encodeURIComponent(projectId)}/chat/history/messages`,
+      {
+        chat_session_id: normalizedChatSessionId,
+        message_id: String(message.id || "").trim(),
+        role,
+        content: String(message.content || ""),
+        display_mode: String(message.displayMode || "").trim(),
+        source_context:
+          sourceContext && typeof sourceContext === "object" ? sourceContext : {},
+        attachments: Array.isArray(message.attachments) ? message.attachments : [],
+        images: Array.isArray(message.images) ? message.images : [],
+        videos: Array.isArray(message.videos) ? message.videos : [],
+      },
+    );
+    return data?.message || null;
+  } catch (err) {
+    console.warn("persist direct project chat message failed", err);
+    return null;
+  }
+}
+
+async function handleDirectProjectBindingSlashCommand(
+  slashCommand,
+  activeChatSessionId,
+  displayText,
+) {
+  const kind = String(slashCommand?.entry?.kind || "").trim();
+  if (!["system_mcp", "skill", "agent", "rule"].includes(kind)) return false;
+  if (!projectToolModules.value.length && !runtimeExternalTools.value.length) {
+    await fetchProvidersByProject(selectedProjectId.value);
+  }
+  const userMessage = {
+    id: createLocalMessageId(),
+    role: "user",
+    content:
+      String(displayText || "").trim() ||
+      `${slashCommand.entry.command} ${slashCommand.prompt || "可用工具"}`.trim(),
+    images: [],
+    videos: [],
+    attachments: [],
+    time: nowText(),
+  };
+  const assistantMessage = {
+    id: createLocalMessageId(),
+    role: "assistant",
+    content: buildDirectProjectBindingContent(kind),
+    images: [],
+    videos: [],
+    attachments: [],
+    displayMode: "",
+    effectiveTools: [],
+    effectiveToolTotal: 0,
+    terminalLog: [],
+    processExpanded: false,
+    audit: null,
+    taskTreeAudit: null,
+    statusNotes: [],
+    operations: [],
+    time: nowText(),
+  };
+  messages.value.push(userMessage);
+  messages.value.push(assistantMessage);
+  const sourceContext = {
+    chat_mode: "system",
+    surface: chatSurface.value,
+    slash_command: kind,
+    direct_response: true,
+    direct_response_kind: "project_binding_lookup",
+  };
+  void persistDirectProjectChatMessage({
+    chatSessionId: activeChatSessionId,
+    message: userMessage,
+    role: "user",
+    sourceContext,
+  });
+  void persistDirectProjectChatMessage({
+    chatSessionId: activeChatSessionId,
+    message: assistantMessage,
+    role: "assistant",
+    sourceContext,
+  });
+  resetDraft();
+  rememberChatSessionMessages(
+    selectedProjectId.value,
+    activeChatSessionId,
+    messages.value,
+  );
+  chatHistoryLoadedCount.value = messages.value.length;
+  scrollToBottom();
+  return true;
 }
 
 function resolveLarkCliSkillDirectory() {
@@ -21137,6 +22469,7 @@ async function sendMergedFollowupRequest(
   });
   assistantMessage.content = "";
   assistantMessage.processExpanded = true;
+  applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
 
   const filePayload = await buildFollowupFilePayload(queueItems);
   const activeSessionSourceContext = normalizeChatSourceContext(
@@ -21185,6 +22518,7 @@ async function sendMergedFollowupRequest(
     if (requestCancelled) return;
   } catch (err) {
     assistantMessage.content = `请求失败：${err?.message || "未知错误"}`;
+    finishMessageExecutionTiming(assistantMessage);
     ElMessage.error(err?.message || "追加需求处理失败");
   } finally {
     syncChatLoadingWithCurrentSession();
@@ -21552,6 +22886,10 @@ async function fetchSystemConfig() {
     desktopAgentGlobalPrompt.value = String(
       data?.config?.desktop_agent_global_prompt || "",
     );
+    systemMcpConfig.value =
+      data?.config?.mcp_config && typeof data.config.mcp_config === "object"
+        ? data.config.mcp_config
+        : null;
     botPlatformConnectors.value = Array.isArray(
       data?.config?.bot_platform_connectors,
     )
@@ -21592,6 +22930,7 @@ async function fetchSystemConfig() {
     employeeDraftAutoRuleGenerationMaxCount.value = 3;
     botPlatformConnectors.value = [];
     desktopAgentGlobalPrompt.value = "";
+    systemMcpConfig.value = null;
   }
 }
 
@@ -23528,6 +24867,13 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "start") {
     terminalPanelStatus.value = "running";
+    applyMessageExecutionTiming(row, {
+      startedAt:
+        pending?.startedAt ||
+        eventData?.created_at_epoch_ms ||
+        eventData?.createdAtEpochMs ||
+        Date.now(),
+    });
     const taskTreePayload = eventData
       ? resolveTaskTreeEventPayload(eventData)
       : null;
@@ -24116,6 +25462,14 @@ async function handleSocketMessage(eventData) {
         return;
       }
       const doneState = normalizeDoneEventExecutionState(eventData);
+      if (!doneState.keepExecutionOpen) {
+        finishMessageExecutionTiming(
+          row,
+          eventData?.created_at_epoch_ms ||
+            eventData?.createdAtEpochMs ||
+            Date.now(),
+        );
+      }
       const doneContent = String(eventData?.content || "").trim();
       const hasFinalAnswer = Boolean(
         doneContent || String(row.content || "").trim(),
@@ -24284,6 +25638,10 @@ async function handleSocketMessage(eventData) {
   if (eventType === "error") {
     terminalPanelStatus.value = "error";
     const message = String(eventData?.message || "未知错误");
+    finishMessageExecutionTiming(
+      row,
+      eventData?.created_at_epoch_ms || eventData?.createdAtEpochMs || Date.now(),
+    );
     appendMessageProcessLog(row, {
       level: "error",
       text: `执行失败：${message}`,
@@ -24306,6 +25664,7 @@ async function handleSocketMessage(eventData) {
 
 function resolvePendingRequest(requestId, pending, content = "") {
   if (!pending || !requestId) return;
+  finishMessageExecutionTiming(resolvePendingRequestRow(pending));
   const { chatSessionId } = cleanupRequest(requestId, pending);
   if (!hasPendingRequestForChatSession(chatSessionId)) {
     clearWorkingStatusStartForChatSession(chatSessionId);
@@ -24320,6 +25679,7 @@ function resolvePendingRequest(requestId, pending, content = "") {
 
 function rejectPendingRequest(requestId, pending, error) {
   if (!pending || !requestId) return;
+  finishMessageExecutionTiming(resolvePendingRequestRow(pending));
   const { chatSessionId } = rejectAndCleanupRequest(requestId, pending, error);
   if (!hasPendingRequestForChatSession(chatSessionId)) {
     clearWorkingStatusStartForChatSession(chatSessionId);
@@ -24336,9 +25696,12 @@ function rejectPendingRequests(reason) {
   const items = rejectAndCleanupAllRequests(reason);
   for (const { requestId, pending } of items) {
     const row = resolvePendingRequestRow(pending);
-    if (row && !String(row.content || "").trim()) {
-      row.content = `请求失败：${message}`;
-      collapseMessageProcessAfterFinalAnswer(row);
+    if (row) {
+      finishMessageExecutionTiming(row);
+      if (!String(row.content || "").trim()) {
+        row.content = `请求失败：${message}`;
+        collapseMessageProcessAfterFinalAnswer(row);
+      }
     }
     if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
       clearWorkingStatusStartForChatSession(pending.chatSessionId);
@@ -24716,6 +26079,10 @@ async function sendProjectChatRequest({
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const client = await ensureWsClient(projectId);
   const requestChatMode = "system";
+  const requestStartedAt = Date.now();
+  applyMessageExecutionTiming(assistantMessage, {
+    startedAt: requestStartedAt,
+  });
   let pendingState = null;
   const donePromise = new Promise((resolve, reject) => {
     pendingState = {
@@ -24733,6 +26100,7 @@ async function sendProjectChatRequest({
       projectHostTerminalHandoffTriggered: false,
       lastToolName: "",
       cancelled: false,
+      startedAt: requestStartedAt,
     };
     createPendingRequest(requestId, pendingState);
   });
@@ -24813,6 +26181,7 @@ async function sendProjectChatRequest({
     if (assistantMessage) {
       assistantMessage.content = `请求失败：${err?.message || "WebSocket 发送失败"}`;
       assistantMessage.time = nowText();
+      finishMessageExecutionTiming(assistantMessage);
     }
     throw err;
   }
@@ -24936,6 +26305,8 @@ async function sendLocalLiuAgentChatRequest({
     systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
     temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
     modelRuntime,
+    aiEntryFile: String(projectAiEntryFile.value || "").trim(),
+    mcpConfig: systemMcpConfig.value,
     attachments,
     permissionDecision: localLiuAgentFullAccessEnabled()
       ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
@@ -24961,6 +26332,10 @@ async function sendLocalLiuAgentChatRequest({
     cancelled: false,
     startedAt: Date.now(),
   };
+  applyLocalLiuAgentRuntimeTiming(assistantMessage, {
+    startedAt: activeRun.startedAt,
+    running: true,
+  });
   setLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
   upsertMessageOperation(assistantMessage, {
     operationId: `local-agent-running:${assistantMessage.id}`,
@@ -25002,6 +26377,7 @@ async function sendLocalLiuAgentChatRequest({
   applyLocalLiuAgentRuntimeEvents(assistantMessage, result, {
     chatSessionId: activeChatSessionId,
     workspacePath,
+    startedAt: activeRun.startedAt,
   });
   appendLocalLiuAgentStructuredStateOperations(assistantMessage, result, {
     chatSessionId: activeChatSessionId,
@@ -25041,6 +26417,7 @@ async function sendLocalLiuAgentChatRequest({
         runtime: "tauri",
         workspace_path: workspacePath,
         permission_request_id: requestId,
+        ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
       },
     });
     await syncLocalLiuAgentRuntimeOutbox({
@@ -25098,6 +26475,10 @@ async function sendLocalLiuAgentChatRequest({
     );
   }
   assistantMessage.time = nowText();
+  updateLocalLiuAgentRuntimeTimingFromResult(assistantMessage, result, {
+    startedAt: activeRun.startedAt,
+    endedAt: Date.now(),
+  });
   const operations = Array.isArray(result?.operations) ? result.operations : [];
   for (const operation of operations) {
     upsertMessageOperation(
@@ -25151,6 +26532,7 @@ async function sendLocalLiuAgentChatRequest({
       requirement_record_path: String(
         result?.requirementRecordPath || result?.requirement_record_path || "",
       ).trim(),
+      ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
     },
   });
   await syncLocalLiuAgentRuntimeOutbox({
@@ -25234,6 +26616,7 @@ async function buildLocalLiuAgentModelRuntime() {
 
 function resolvePendingRequestFast(requestId, pending, content = "") {
   if (!pending || !requestId) return;
+  finishMessageExecutionTiming(resolvePendingRequestRow(pending));
   const { chatSessionId } = cleanupRequest(requestId, pending);
   if (!hasPendingRequestForChatSession(chatSessionId)) {
     clearWorkingStatusStartForChatSession(chatSessionId);
@@ -25257,6 +26640,7 @@ function cancelPendingChatRequestFast(requestId, pending) {
     row.displayMode = "";
     row.content = String(row.content || "").trim() || message;
     row.time = nowText();
+    finishMessageExecutionTiming(row);
     completeFinishedMessageOperations(row, message);
     closeOpenAgentRuntimeOperationsForCompletedTurn(row, message);
     upsertMessageOperation(row, {
@@ -25350,6 +26734,10 @@ function cancelActiveLocalLiuAgentRun() {
     row.displayMode = "";
     row.content = String(row.content || "").trim() || message;
     row.time = nowText();
+    applyLocalLiuAgentRuntimeTiming(row, {
+      startedAt: run.startedAt,
+      endedAt: Date.now(),
+    });
     completeFinishedMessageOperations(row, message);
     closeOpenAgentRuntimeOperationsForCompletedTurn(row, message);
     upsertMessageOperation(row, {
@@ -25473,6 +26861,7 @@ async function generateEmployeeDraftWithoutProject() {
 
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
+  applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
   void upsertProjectChatRequirementRecord({
     chatSessionId: activeChatSessionId,
     status: "in_progress",
@@ -25527,6 +26916,7 @@ async function generateEmployeeDraftWithoutProject() {
       `请求失败：${err?.message || "未知错误"}`;
     ElMessage.error(err?.detail || err?.message || "生成员工草稿失败");
   } finally {
+    finishMessageExecutionTiming(messages.value[assistantIndex]);
     chatLoading.value = false;
     scrollToBottom();
   }
@@ -25578,6 +26968,7 @@ async function sendGlobalChatWithoutProject() {
 
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
+  applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
 
   const assistantIndex = messages.value.length - 1;
   chatLoading.value = true;
@@ -25618,6 +27009,7 @@ async function sendGlobalChatWithoutProject() {
       `请求失败：${err?.message || "未知错误"}`;
     ElMessage.error(err?.detail || err?.message || "通用对话失败");
   } finally {
+    finishMessageExecutionTiming(messages.value[assistantIndex]);
     chatLoading.value = false;
     scrollToBottom();
   }
@@ -25726,6 +27118,16 @@ async function doSend(options = {}) {
       return;
     }
   }
+  const slashCommand = resolveSlashCommand(text);
+  if (
+    await handleDirectProjectBindingSlashCommand(
+      slashCommand,
+      activeChatSessionId,
+      text,
+    )
+  ) {
+    return;
+  }
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   const files = uploadFiles.value.map((item) => item.raw).filter(Boolean);
   const historyRows = toHistoryRows(messages.value, historyLimit.value);
@@ -25742,7 +27144,6 @@ async function doSend(options = {}) {
 
   let docsText = "";
 
-  const slashCommand = resolveSlashCommand(text);
   const slashAssistAction =
     slashCommand?.entry?.kind === "assist"
       ? composerAssistActions.value.find(
@@ -25784,6 +27185,14 @@ async function doSend(options = {}) {
       return;
     }
     userPrompt = buildPackageDeployCommandPrompt(slashCommand.prompt);
+  } else if (slashCommand?.entry?.kind === "file_context") {
+    userPrompt = buildProjectChatEntryCommandPrompt({
+      kind: slashCommand.entry.kind,
+      commandPrompt: slashCommand.prompt,
+      projectLabel: currentProjectLabel.value,
+      attachmentNames,
+      docsText,
+    });
   } else if (slashCommand?.entry?.kind === "lark_cli") {
     if (!slashCommand.prompt) {
       ElMessage.warning(
@@ -25932,6 +27341,7 @@ async function doSend(options = {}) {
   };
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
+  applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
 
   chatLoading.value = true;
   startWorkingStatusTimer(assistantMessage.id, activeChatSessionId);
@@ -25997,6 +27407,7 @@ async function doSend(options = {}) {
       level: "error",
       autoExpand: true,
     });
+    finishMessageExecutionTiming(assistantMessage);
     void upsertProjectChatRequirementRecord({
       chatSessionId: activeChatSessionId,
       status: "blocked",
@@ -26757,5 +28168,50 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.message-runtime-duration {
+  color: var(--el-text-color-secondary, #909399);
+  font-size: 12px;
+}
+
+:deep(.ai-context-dialog .el-dialog__body) {
+  padding-top: 8px;
+}
+
+.ai-context-dialog__body {
+  min-height: 220px;
+}
+
+.ai-context-dialog__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.ai-context-dialog__summary span {
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 6px;
+  background: rgba(248, 250, 252, 0.86);
+}
+
+.ai-context-dialog__pre {
+  max-height: min(64vh, 680px);
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

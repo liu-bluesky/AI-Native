@@ -145,7 +145,11 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "cmd": {"type": "string"},
                     "cwd": {"type": "string", "default": "."},
-                    "timeout_ms": {"type": "number", "default": 30000},
+                    "timeout_ms": {
+                        "type": "number",
+                        "default": 30000,
+                        "description": "命令超时时间。普通命令默认 30 秒；构建、测试、打包、部署类命令可设置到小时级，最大 21600000ms。"
+                    },
                     "max_output_chars": {"type": "number", "default": 20000}
                 },
                 "required": ["cmd"]
@@ -206,7 +210,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "list_mcp_tools",
-            description: "列出本地可用 MCP 工具",
+            description: "列出本机外部 MCP adapter 工具。仅当用户已显式配置本地 stdio MCP adapter 时使用；这不是桌面端系统 MCP 或项目上下文入口。",
             action: "mcp.list",
             risk: "low",
             requires_approval: false,
@@ -220,7 +224,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "read_mcp_resource",
-            description: "读取 MCP 资源",
+            description: "读取本机外部 MCP adapter 资源。仅当用户已显式配置本地 stdio MCP adapter 时使用；不要用它读取桌面端系统 MCP、项目配置、提示词或任务树。",
             action: "mcp.read",
             risk: "low",
             requires_approval: false,
@@ -236,7 +240,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "call_mcp_tool",
-            description: "调用 MCP 工具",
+            description: "调用本机外部 MCP adapter 工具。仅当用户已显式配置本地 stdio MCP adapter 时使用；不要用它调用桌面端系统 MCP 或项目内置工具。",
             action: "mcp.call",
             risk: "medium",
             requires_approval: true,

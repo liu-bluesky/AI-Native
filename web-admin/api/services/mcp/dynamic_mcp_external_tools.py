@@ -170,7 +170,11 @@ def _rpc_notify(
     )
 
 
-def _initialize_endpoint(endpoint: str, timeout_sec: int = 15) -> tuple[dict[str, Any], dict[str, str]]:
+def _initialize_endpoint(
+    endpoint: str,
+    timeout_sec: int = 15,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
     payload, meta = _rpc_request(
         endpoint,
         "initialize",
@@ -183,12 +187,14 @@ def _initialize_endpoint(endpoint: str, timeout_sec: int = 15) -> tuple[dict[str
             },
         },
         timeout_sec=timeout_sec,
+        extra_headers=extra_headers,
     )
     headers: dict[str, str] = {}
     if meta.get("session_id"):
         headers["mcp-session-id"] = str(meta["session_id"])
     try:
-        _rpc_notify(endpoint, "notifications/initialized", timeout_sec=timeout_sec, extra_headers=headers)
+        notify_headers = {**(extra_headers or {}), **headers}
+        _rpc_notify(endpoint, "notifications/initialized", timeout_sec=timeout_sec, extra_headers=notify_headers)
     except Exception:
         pass
     result = payload.get("result")
@@ -274,16 +280,29 @@ def _external_mcp_signature(module: object) -> tuple:
             json.dumps(config, ensure_ascii=False, sort_keys=True),
         )
     return (
+        str(getattr(module, "transport_type", "") or ""),
         str(getattr(module, "updated_at", "") or ""),
         str(getattr(module, "endpoint_http", "") or ""),
         str(getattr(module, "endpoint_sse", "") or ""),
+        str(getattr(module, "command", "") or ""),
+        json.dumps(getattr(module, "headers", {}) or {}, ensure_ascii=False, sort_keys=True),
         str(getattr(module, "project_id", "") or ""),
         bool(getattr(module, "enabled", True)),
     )
 
 
+def _external_mcp_headers(module: object) -> dict[str, str]:
+    raw_headers = module.get("headers") if isinstance(module, dict) else getattr(module, "headers", {}) or {}
+    if not isinstance(raw_headers, dict):
+        return {}
+    return {str(key).strip(): str(value) for key, value in raw_headers.items() if str(key).strip()}
+
+
 def _external_mcp_candidate_endpoints(module: object) -> list[tuple[str, str]]:
     endpoints: list[tuple[str, str]] = []
+    transport_type = str(module.get("transport_type") if isinstance(module, dict) else getattr(module, "transport_type", "") or "").strip().lower()
+    if transport_type == "stdio":
+        return endpoints
     endpoint_http = str(module.get("endpoint_http") if isinstance(module, dict) else getattr(module, "endpoint_http", "") or "").strip()
     endpoint_sse = str(module.get("endpoint_sse") if isinstance(module, dict) else getattr(module, "endpoint_sse", "") or "").strip()
     if endpoint_http:
@@ -311,11 +330,17 @@ def _extract_external_mcp_tools_payload(module: object, timeout_sec: int = 15) -
     source_type = str(module.get("source_type") if isinstance(module, dict) else "external_store" or "external_store")
     for transport, endpoint in _external_mcp_candidate_endpoints(module):
         try:
-            capabilities, headers = _initialize_endpoint(endpoint, timeout_sec=timeout_sec)
+            configured_headers = _external_mcp_headers(module)
+            capabilities, headers = _initialize_endpoint(
+                endpoint,
+                timeout_sec=timeout_sec,
+                extra_headers=configured_headers,
+            )
             tools_supported = _supports_capability(capabilities, "tools")
             if tools_supported is False:
                 return []
-            payload, _meta = _rpc_request(endpoint, "tools/list", {}, timeout_sec=timeout_sec, extra_headers=headers)
+            request_headers = {**configured_headers, **headers}
+            payload, _meta = _rpc_request(endpoint, "tools/list", {}, timeout_sec=timeout_sec, extra_headers=request_headers)
             result = payload.get("result")
             tools = result.get("tools") if isinstance(result, dict) else None
             if not isinstance(tools, list):
@@ -433,7 +458,13 @@ def invoke_external_mcp_tool_runtime(
     errors: list[str] = []
     for _transport, endpoint in _external_mcp_candidate_endpoints(module):
         try:
-            _capabilities, headers = _initialize_endpoint(endpoint, timeout_sec=timeout_value)
+            configured_headers = _external_mcp_headers(module)
+            _capabilities, headers = _initialize_endpoint(
+                endpoint,
+                timeout_sec=timeout_value,
+                extra_headers=configured_headers,
+            )
+            request_headers = {**configured_headers, **headers}
             rpc_payload, _meta = _rpc_request(
                 endpoint,
                 "tools/call",
@@ -442,7 +473,7 @@ def invoke_external_mcp_tool_runtime(
                     "arguments": payload,
                 },
                 timeout_sec=timeout_value,
-                extra_headers=headers,
+                extra_headers=request_headers,
             )
             result = rpc_payload.get("result")
             if isinstance(result, dict) and bool(result.get("isError")):

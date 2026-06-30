@@ -1334,7 +1334,7 @@ const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MC
 8. 仅在缺少明确的 \`project_id\` / \`employee_id\` / \`rule_id\`，或需要跨项目检索时，再调用 \`search_ids(keyword="<用户原始问题>")\`；已明确当前项目且在项目内执行时可直接读取上下文或进入本地实现。
 9. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 \`bind_project_context(...)\`。
 10. 当前任务先在项目本地推进：先在工作区完成分析、改动、验证和本地记录，再通过 MCP 回写任务树、工作事实、交付结论或记忆到服务端。
-11. 每个需求必须维护 1 个本地 requirement 对象；项目工作区可解析时，写入 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`。对象内至少保留 \`workflow_skill\`、\`record_path\`、\`storage_scope\`、\`task_tree\`、\`current_task_node\`、\`task_branches\`、\`history\` 等字段，避免只在服务端推进看不到本地状态。
+11. 每个需求必须维护 1 个本地 requirement 对象；项目工作区可解析时，写入 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`。对象只记录需求内容和必要定位字段，不记录 \`workflow_skill\`、\`task_tree\`、\`current_task_node\`、\`task_branches\`、\`history\`、执行轨迹或项目智能体上下文。
 12. 当前全局清晰度确认阈值为 {{clarity_threshold}}/5；先按 1-5 分估计用户需求清晰度。
 13. 若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {{clarity_threshold}}，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。
 14. 若清晰度分数 < {{clarity_threshold}}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认或用户已明确要求执行后不要重复确认；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。
@@ -1379,7 +1379,7 @@ const DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = `# Unified Query MCP
 4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 \`.ai-employee/query-mcp/\`，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。
 4.2 query-mcp 本地持久化必须使用唯一文件规范：每进程/窗口会话文件为 \`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json\`（每个 CLI 进程或窗口写自己的独立文件，避免多进程和多窗口冲突）；历史索引文件为 \`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json\`；需求记录文件为 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`。不要写入其他分叉会话状态文件。
 4.3 每个需求还必须单独维护 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`；一条需求一个对象，不要把多个需求混写到同一聚合文件。
-4.4 requirement 对象应至少记录 \`workflow_skill\`、\`record_path\`、\`storage_scope\`、\`task_tree\`、\`current_task_node\`、\`task_branches\`、\`history\`，保证本地推进和服务端任务树都能追溯到同一条需求。
+4.4 requirement 对象只记录需求内容和必要定位字段；不要把 \`workflow_skill\`、\`task_tree\`、\`current_task_node\`、\`task_branches\`、\`history\`、项目智能体上下文等过程结构写入需求记录。
 5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。
 6. 仅在缺少明确的 project_id / employee_id / rule_id，或需要跨项目检索时，再调用 search_ids(keyword="<用户原始问题>")；已明确当前项目且在项目内执行时，可直接 get_manual_content、start_project_workflow 或进入本地实现。
 7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。

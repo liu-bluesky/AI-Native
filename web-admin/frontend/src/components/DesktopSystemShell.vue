@@ -45,7 +45,10 @@
             >
               清理当前缓存
             </button>
-            <span>关闭窗口、清理桌面运行缓存，保留登录态、当前壁纸和已添加的 Dock 应用。</span>
+            <span
+              >关闭窗口、清理桌面运行缓存，保留登录态、当前壁纸和已添加的 Dock
+              应用。</span
+            >
           </div>
 
           <p class="desktop-system__launcher-note">
@@ -72,7 +75,8 @@
                 <span
                   class="desktop-system__launcher-icon"
                   :style="desktopIconStyle(item)"
-                >{{ item.icon?.label || item.shortLabel }}</span>
+                  >{{ item.icon?.label || item.shortLabel }}</span
+                >
                 <strong>{{ item.label }}</strong>
                 <small>{{ item.summary }}</small>
               </button>
@@ -227,7 +231,8 @@
             :data-dock-app-id="item.id"
             :class="{
               'is-dock-dragging': draggingDockAppId === item.id,
-              'is-dock-drop-target': dockDropTargetId === item.id && draggingDockAppId !== item.id,
+              'is-dock-drop-target':
+                dockDropTargetId === item.id && draggingDockAppId !== item.id,
             }"
             @pointerenter="showDockTooltip(item.label, $event)"
             @pointerleave="clearDockTooltip"
@@ -246,9 +251,11 @@
               @blur="clearDockTooltip"
               @click="handleDockItemClick(item)"
             >
-              <span class="desktop-system__dock-icon" :style="desktopIconStyle(item)">{{
-                item.icon?.label || item.shortLabel
-              }}</span>
+              <span
+                class="desktop-system__dock-icon"
+                :style="desktopIconStyle(item)"
+                >{{ item.icon?.label || item.shortLabel }}</span
+              >
               <span class="desktop-system__dock-label">{{ item.label }}</span>
             </button>
             <button
@@ -268,7 +275,14 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 
 const props = defineProps({
   dockItems: {
@@ -399,17 +413,35 @@ const dockStyleVars = computed(() => ({
   "--dock-ambient-shadow": "rgba(15, 23, 42, 0.08)",
   "--dock-inner-highlight": "rgba(255, 255, 255, 0.28)",
   "--dock-edge-shade": "rgba(15, 23, 42, 0.08)",
-  "--dock-item-top": String(dockTone.value?.itemTop || "rgba(255, 255, 255, 0.14)"),
-  "--dock-item-bottom": String(dockTone.value?.itemBottom || "rgba(255, 255, 255, 0.05)"),
-  "--dock-item-hover-top": String(dockTone.value?.itemHoverTop || "rgba(255, 255, 255, 0.34)"),
-  "--dock-item-hover-bottom": String(dockTone.value?.itemHoverBottom || "rgba(255, 255, 255, 0.16)"),
-  "--dock-item-border": String(dockTone.value?.itemBorder || "rgba(255, 255, 255, 0.24)"),
+  "--dock-item-top": String(
+    dockTone.value?.itemTop || "rgba(255, 255, 255, 0.14)",
+  ),
+  "--dock-item-bottom": String(
+    dockTone.value?.itemBottom || "rgba(255, 255, 255, 0.05)",
+  ),
+  "--dock-item-hover-top": String(
+    dockTone.value?.itemHoverTop || "rgba(255, 255, 255, 0.34)",
+  ),
+  "--dock-item-hover-bottom": String(
+    dockTone.value?.itemHoverBottom || "rgba(255, 255, 255, 0.16)",
+  ),
+  "--dock-item-border": String(
+    dockTone.value?.itemBorder || "rgba(255, 255, 255, 0.24)",
+  ),
   "--dock-label-color": "#334155",
-  "--dock-icon-border": String(dockTone.value?.iconBorder || "rgba(255, 255, 255, 0.26)"),
-  "--dock-icon-top": String(dockTone.value?.iconTop || "rgba(250, 252, 255, 0.96)"),
-  "--dock-icon-bottom": String(dockTone.value?.iconBottom || "rgba(232, 238, 246, 0.74)"),
+  "--dock-icon-border": String(
+    dockTone.value?.iconBorder || "rgba(255, 255, 255, 0.26)",
+  ),
+  "--dock-icon-top": String(
+    dockTone.value?.iconTop || "rgba(250, 252, 255, 0.96)",
+  ),
+  "--dock-icon-bottom": String(
+    dockTone.value?.iconBottom || "rgba(232, 238, 246, 0.74)",
+  ),
   "--dock-icon-text": String(dockTone.value?.iconText || "#0f172a"),
-  "--dock-indicator": String(dockTone.value?.indicator || "rgba(15, 23, 42, 0.58)"),
+  "--dock-indicator": String(
+    dockTone.value?.indicator || "rgba(15, 23, 42, 0.58)",
+  ),
 }));
 const shouldAutoHideDock = computed(
   () => !dockRevealed.value && !props.showLauncher,
@@ -541,11 +573,17 @@ function getViewportBounds() {
 function clampWindowBounds(bounds) {
   const { viewportWidth, viewportHeight } = getViewportBounds();
   const width = Math.min(
-    Math.max(Number(bounds?.width || DESKTOP_WINDOW_MIN_WIDTH), DESKTOP_WINDOW_MIN_WIDTH),
+    Math.max(
+      Number(bounds?.width || DESKTOP_WINDOW_MIN_WIDTH),
+      DESKTOP_WINDOW_MIN_WIDTH,
+    ),
     Math.max(DESKTOP_WINDOW_MIN_WIDTH, viewportWidth),
   );
   const height = Math.min(
-    Math.max(Number(bounds?.height || DESKTOP_WINDOW_MIN_HEIGHT), DESKTOP_WINDOW_MIN_HEIGHT),
+    Math.max(
+      Number(bounds?.height || DESKTOP_WINDOW_MIN_HEIGHT),
+      DESKTOP_WINDOW_MIN_HEIGHT,
+    ),
     Math.max(DESKTOP_WINDOW_MIN_HEIGHT, viewportHeight),
   );
   const x = Math.min(
@@ -567,8 +605,14 @@ function clampWindowBounds(bounds) {
 function applyWindowPreviewBounds(windowId, bounds) {
   const element = windowElements.get(windowId);
   if (!element || !bounds) return;
-  element.style.setProperty("--desktop-window-x", `${Math.round(Number(bounds.x || 0))}px`);
-  element.style.setProperty("--desktop-window-y", `${Math.round(Number(bounds.y || 0))}px`);
+  element.style.setProperty(
+    "--desktop-window-x",
+    `${Math.round(Number(bounds.x || 0))}px`,
+  );
+  element.style.setProperty(
+    "--desktop-window-y",
+    `${Math.round(Number(bounds.y || 0))}px`,
+  );
   element.style.setProperty(
     "--desktop-window-width",
     `${Math.round(Number(bounds.width || DESKTOP_WINDOW_MIN_WIDTH))}px`,
@@ -609,7 +653,9 @@ function scheduleWindowDragPreview(bounds) {
 function scheduleWindowResizePreview(bounds) {
   resizeState.nextBounds = bounds;
   if (resizeState.frameId != null) return;
-  resizeState.frameId = globalThis.requestAnimationFrame(flushWindowResizePreview);
+  resizeState.frameId = globalThis.requestAnimationFrame(
+    flushWindowResizePreview,
+  );
 }
 
 function cancelWindowDragPreview() {
@@ -638,7 +684,8 @@ function desktopIconStyle(item) {
   const top = String(item?.icon?.top || "").trim();
   const bottom = String(item?.icon?.bottom || "").trim();
   const text = String(item?.icon?.text || "").trim() || "#ffffff";
-  const glow = String(item?.icon?.glow || "").trim() || "rgba(15, 23, 42, 0.12)";
+  const glow =
+    String(item?.icon?.glow || "").trim() || "rgba(15, 23, 42, 0.12)";
   return {
     "--desktop-app-icon-top": top,
     "--desktop-app-icon-bottom": bottom,
@@ -660,7 +707,9 @@ function measureDockLayout() {
   const positions = new Map();
   const dockElement = dockRef.value;
   if (!dockElement) return positions;
-  const shells = dockElement.querySelectorAll(".desktop-system__dock-item-shell");
+  const shells = dockElement.querySelectorAll(
+    ".desktop-system__dock-item-shell",
+  );
   for (const shell of shells) {
     const appId = String(shell?.dataset?.dockAppId || "").trim();
     if (!appId) continue;
@@ -724,10 +773,13 @@ function cancelDockFlipAnimations() {
 function updateDockTooltipPosition(event) {
   const dockRect = dockRef.value?.getBoundingClientRect?.();
   const currentTargetRect = event?.currentTarget?.getBoundingClientRect?.();
-  const fallbackRect = event?.target?.closest?.(".desktop-system__dock-item, .desktop-system__dock-item-shell")?.getBoundingClientRect?.();
+  const fallbackRect = event?.target
+    ?.closest?.(".desktop-system__dock-item, .desktop-system__dock-item-shell")
+    ?.getBoundingClientRect?.();
   const targetRect = currentTargetRect || fallbackRect;
   if (!dockRect || !targetRect) return;
-  dockTooltipLeft.value = targetRect.left - dockRect.left + targetRect.width / 2;
+  dockTooltipLeft.value =
+    targetRect.left - dockRect.left + targetRect.width / 2;
 }
 
 function showDockTooltip(label, event) {
@@ -938,7 +990,8 @@ function reorderDockItems(appId, targetAppId) {
   const orderedIds = props.dockItems.map((item) => item.id);
   const sourceIndex = orderedIds.indexOf(sourceId);
   const targetIndex = orderedIds.indexOf(targetId);
-  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) return;
+  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex)
+    return;
   const nextOrder = [...orderedIds];
   nextOrder.splice(sourceIndex, 1);
   nextOrder.splice(targetIndex, 0, sourceId);
@@ -957,8 +1010,12 @@ function startDockDrag(event, item) {
   dockDragState.startY = Number(event.clientY || 0);
   dockDragState.shellElement = event.currentTarget || null;
   const shellRect = dockDragState.shellElement?.getBoundingClientRect?.();
-  dockDragAnchorX.value = shellRect ? Number(event.clientX || 0) - shellRect.left : 0;
-  dockDragAnchorY.value = shellRect ? Number(event.clientY || 0) - shellRect.top : 0;
+  dockDragAnchorX.value = shellRect
+    ? Number(event.clientX || 0) - shellRect.left
+    : 0;
+  dockDragAnchorY.value = shellRect
+    ? Number(event.clientY || 0) - shellRect.top
+    : 0;
   dockDragState.active = false;
   dockDragState.moved = false;
   dockDragPreparing.value = true;
@@ -1035,7 +1092,10 @@ function stopDockDrag(event) {
   dockDragAnchorX.value = 0;
   dockDragAnchorY.value = 0;
   clearDockTooltip();
-  if (dockDragState.shellElement?.releasePointerCapture && dockDragState.pointerId != null) {
+  if (
+    dockDragState.shellElement?.releasePointerCapture &&
+    dockDragState.pointerId != null
+  ) {
     try {
       dockDragState.shellElement.releasePointerCapture(dockDragState.pointerId);
     } catch {}
@@ -1082,12 +1142,13 @@ function hideDock() {
     return;
   }
   clearDockTooltip();
-  dockAutoHideTimer = globalThis.window?.setTimeout(() => {
-    dockAutoHideTimer = null;
-    if (props.showLauncher || isDockSorting.value) return;
-    dockRevealed.value = false;
-    clearDockTooltip();
-  }, DOCK_AUTO_HIDE_DELAY_MS) ?? null;
+  dockAutoHideTimer =
+    globalThis.window?.setTimeout(() => {
+      dockAutoHideTimer = null;
+      if (props.showLauncher || isDockSorting.value) return;
+      dockRevealed.value = false;
+      clearDockTooltip();
+    }, DOCK_AUTO_HIDE_DELAY_MS) ?? null;
 }
 
 watch(
@@ -1863,12 +1924,11 @@ onBeforeUnmount(() => {
 .desktop-system__dock-item:hover,
 .desktop-system__dock-item.is-active {
   border-color: var(--dock-item-border);
-  background:
-    linear-gradient(
-      180deg,
-      var(--dock-item-hover-top),
-      var(--dock-item-hover-bottom)
-    );
+  background: linear-gradient(
+    180deg,
+    var(--dock-item-hover-top),
+    var(--dock-item-hover-bottom)
+  );
   box-shadow:
     0 12px 28px var(--dock-surface-shadow),
     inset 0 1px 0 var(--dock-inner-highlight);
@@ -1896,7 +1956,8 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid color-mix(in srgb, var(--desktop-app-icon-bottom, #475569) 28%, white);
+  border: 1px solid
+    color-mix(in srgb, var(--desktop-app-icon-bottom, #475569) 28%, white);
   background: linear-gradient(
     180deg,
     var(--desktop-app-icon-top, var(--dock-icon-top)),
@@ -1904,7 +1965,11 @@ onBeforeUnmount(() => {
   );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 10px 20px var(--desktop-app-icon-glow, color-mix(in srgb, var(--dock-ambient-shadow) 70%, transparent));
+    0 10px 20px
+      var(
+        --desktop-app-icon-glow,
+        color-mix(in srgb, var(--dock-ambient-shadow) 70%, transparent)
+      );
   font-size: 11px;
   font-weight: 800;
   color: var(--desktop-app-icon-text, var(--dock-icon-text));

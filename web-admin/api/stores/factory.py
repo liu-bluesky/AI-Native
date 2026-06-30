@@ -243,6 +243,23 @@ def _create_project_material_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_project_requirement_record_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import ProjectRequirementRecordStore
+
+        return ProjectRequirementRecordStore(_data_dir())
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.project_requirement_record_store import (
+                ProjectRequirementRecordStorePostgres,
+            )
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return ProjectRequirementRecordStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_project_experience_summary_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -433,6 +450,7 @@ project_chat_runtime_store = _StoreProxy(_create_project_chat_runtime_store)
 project_chat_task_store = _StoreProxy(_create_project_chat_task_store)
 project_deploy_store = _StoreProxy(_create_project_deploy_store)
 project_material_store = _StoreProxy(_create_project_material_store)
+project_requirement_record_store = _StoreProxy(_create_project_requirement_record_store)
 project_experience_summary_store = _StoreProxy(_create_project_experience_summary_store)
 project_studio_export_store = _StoreProxy(_create_project_studio_export_store)
 system_config_store = _StoreProxy(_create_system_config_store)
@@ -460,6 +478,7 @@ __all__ = [
     "project_chat_task_store",
     "project_deploy_store",
     "project_material_store",
+    "project_requirement_record_store",
     "project_studio_export_store",
     "system_config_store",
     "bot_connector_store",

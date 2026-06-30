@@ -278,6 +278,20 @@ fn liuagent_recover_runtime_state(
 }
 
 #[tauri::command]
+fn liuagent_refresh_runtime_job(
+    request: liuagent_core::LocalRuntimeJobRequest,
+) -> liuagent_core::LocalRuntimeJobResult {
+    liuagent_core::refresh_local_runtime_job(request)
+}
+
+#[tauri::command]
+fn liuagent_cancel_runtime_job(
+    request: liuagent_core::LocalRuntimeJobRequest,
+) -> liuagent_core::LocalRuntimeJobResult {
+    liuagent_core::cancel_local_runtime_job(request)
+}
+
+#[tauri::command]
 fn liuagent_list_runtime_events(
     request: liuagent_core::LocalRuntimeEventsRequest,
 ) -> liuagent_core::LocalRuntimeEventsResult {
@@ -1247,6 +1261,8 @@ fn main() {
             liuagent_start_local_chat,
             liuagent_prepare_agent_invocation,
             liuagent_recover_runtime_state,
+            liuagent_refresh_runtime_job,
+            liuagent_cancel_runtime_job,
             liuagent_list_runtime_events,
             liuagent_list_runtime_outbox,
             liuagent_ack_runtime_outbox,

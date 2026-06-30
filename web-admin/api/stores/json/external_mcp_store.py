@@ -7,7 +7,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 def _now_iso() -> str:
@@ -19,8 +19,14 @@ class ExternalMcpModule:
     id: str
     name: str
     description: str = ""
+    transport_type: str = ""
     endpoint_http: str = ""
     endpoint_sse: str = ""
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
     auth_type: str = "none"
     project_id: str = ""
     enabled: bool = True
@@ -63,4 +69,3 @@ class ExternalMcpStore:
 
     def new_id(self) -> str:
         return f"xmcp-{uuid.uuid4().hex[:8]}"
-

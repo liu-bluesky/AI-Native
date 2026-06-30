@@ -27,6 +27,37 @@ def _ensure_endpoint_valid(endpoint_http: str, endpoint_sse: str) -> None:
     raise HTTPException(400, "endpoint_http or endpoint_sse is required")
 
 
+def _normalize_transport_type(value: str | None) -> str:
+    normalized = _normalize_text(value).lower()
+    if normalized in {"stdio", "sse", "http"}:
+        return normalized
+    return ""
+
+
+def _normalize_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _normalize_string_dict(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key).strip(): str(item) for key, item in value.items() if str(key).strip()}
+
+
+def _normalize_config(value: object) -> dict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _ensure_module_config_valid(transport_type: str, endpoint_http: str, endpoint_sse: str, command: str) -> None:
+    if transport_type == "stdio":
+        if not _normalize_text(command):
+            raise HTTPException(400, "command is required for stdio MCP config")
+        return
+    _ensure_endpoint_valid(endpoint_http, endpoint_sse)
+
+
 def _ensure_url_http_scheme(url: str, field_name: str) -> str:
     normalized = _normalize_text(url)
     if not normalized:
@@ -49,11 +80,13 @@ def _clamp_timeout_sec(timeout_sec: object) -> int:
     return max(3, min(value, 20))
 
 
-def _probe_http_endpoint(url: str, timeout_sec: int) -> dict:
+def _probe_http_endpoint(url: str, timeout_sec: int, extra_headers: dict[str, str] | None = None) -> dict:
     headers = {
         "Accept": "application/json, text/event-stream;q=0.9, */*;q=0.8",
         "Content-Type": "application/json",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     payload = {
         "jsonrpc": "2.0",
         "id": "probe",
@@ -87,11 +120,13 @@ def _probe_http_endpoint(url: str, timeout_sec: int) -> dict:
     }
 
 
-def _probe_sse_endpoint(url: str, timeout_sec: int) -> dict:
+def _probe_sse_endpoint(url: str, timeout_sec: int, extra_headers: dict[str, str] | None = None) -> dict:
     headers = {
         "Accept": "text/event-stream, */*;q=0.8",
         "Cache-Control": "no-cache",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     try:
         response = requests.get(url, headers=headers, timeout=(3, timeout_sec), stream=True)
     except requests.RequestException as exc:
@@ -128,6 +163,7 @@ def run_external_mcp_connection_test(
     endpoint_http: str | None,
     endpoint_sse: str | None,
     timeout_sec: object = 8,
+    headers: dict[str, str] | None = None,
 ) -> dict:
     normalized_http = _ensure_url_http_scheme(endpoint_http, "endpoint_http")
     normalized_sse = _ensure_url_http_scheme(endpoint_sse, "endpoint_sse")
@@ -136,10 +172,11 @@ def run_external_mcp_connection_test(
     clamped_timeout_sec = _clamp_timeout_sec(timeout_sec)
 
     results = []
+    normalized_headers = _normalize_string_dict(headers)
     if normalized_http:
-        results.append(_probe_http_endpoint(normalized_http, clamped_timeout_sec))
+        results.append(_probe_http_endpoint(normalized_http, clamped_timeout_sec, normalized_headers))
     if normalized_sse:
-        results.append(_probe_sse_endpoint(normalized_sse, clamped_timeout_sec))
+        results.append(_probe_sse_endpoint(normalized_sse, clamped_timeout_sec, normalized_headers))
 
     ok = any(bool(item.get("ok")) for item in results)
     success_count = sum(1 for item in results if bool(item.get("ok")))
@@ -179,17 +216,25 @@ async def create_external_mcp_module(req: ExternalMcpModuleCreateReq):
     name = _normalize_text(req.name)
     if not name:
         raise HTTPException(400, "name is required")
+    transport_type = _normalize_transport_type(req.transport_type)
     endpoint_http = _normalize_text(req.endpoint_http)
     endpoint_sse = _normalize_text(req.endpoint_sse)
-    _ensure_endpoint_valid(endpoint_http, endpoint_sse)
+    command = _normalize_text(req.command)
+    _ensure_module_config_valid(transport_type, endpoint_http, endpoint_sse, command)
 
     now = _now_iso()
     module = ExternalMcpModule(
         id=external_mcp_store.new_id(),
         name=name,
         description=_normalize_text(req.description),
+        transport_type=transport_type,
         endpoint_http=endpoint_http,
         endpoint_sse=endpoint_sse,
+        command=command,
+        args=_normalize_string_list(req.args),
+        env=_normalize_string_dict(req.env),
+        headers=_normalize_string_dict(req.headers),
+        config=_normalize_config(req.config),
         auth_type=_normalize_text(req.auth_type) or "none",
         project_id=_normalize_text(req.project_id),
         enabled=bool(req.enabled),
@@ -206,6 +251,7 @@ async def test_external_mcp_module(req: ExternalMcpModuleTestReq):
         req.endpoint_http,
         req.endpoint_sse,
         req.timeout_sec,
+        req.headers,
     )
 
 
@@ -220,14 +266,27 @@ async def patch_external_mcp_module(module_id: str, req: ExternalMcpModuleUpdate
 
     payload = asdict(module)
     for key, value in updates.items():
-        if key in {"name", "description", "endpoint_http", "endpoint_sse", "auth_type", "project_id"}:
+        if key in {"name", "description", "endpoint_http", "endpoint_sse", "command", "auth_type", "project_id"}:
             payload[key] = _normalize_text(value)
+        elif key == "transport_type":
+            payload[key] = _normalize_transport_type(value)
+        elif key == "args":
+            payload[key] = _normalize_string_list(value)
+        elif key in {"env", "headers"}:
+            payload[key] = _normalize_string_dict(value)
+        elif key == "config":
+            payload[key] = _normalize_config(value)
         elif key == "enabled":
             payload[key] = bool(value)
 
     if not _normalize_text(payload.get("name")):
         raise HTTPException(400, "name cannot be empty")
-    _ensure_endpoint_valid(_normalize_text(payload.get("endpoint_http")), _normalize_text(payload.get("endpoint_sse")))
+    _ensure_module_config_valid(
+        _normalize_transport_type(payload.get("transport_type")),
+        _normalize_text(payload.get("endpoint_http")),
+        _normalize_text(payload.get("endpoint_sse")),
+        _normalize_text(payload.get("command")),
+    )
     payload["updated_at"] = _now_iso()
     updated = ExternalMcpModule(**payload)
     external_mcp_store.save(updated)

@@ -27,6 +27,8 @@ const TAURI_COMMAND_NAMES = {
   liuagentStartLocalChat: "liuagent_start_local_chat",
   liuagentPrepareAgentInvocation: "liuagent_prepare_agent_invocation",
   liuagentRecoverRuntimeState: "liuagent_recover_runtime_state",
+  liuagentRefreshRuntimeJob: "liuagent_refresh_runtime_job",
+  liuagentCancelRuntimeJob: "liuagent_cancel_runtime_job",
   liuagentListRuntimeEvents: "liuagent_list_runtime_events",
   liuagentListRuntimeOutbox: "liuagent_list_runtime_outbox",
   liuagentAckRuntimeOutbox: "liuagent_ack_runtime_outbox",
@@ -320,6 +322,13 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
           : request?.model_runtime && typeof request.model_runtime === "object"
             ? request.model_runtime
             : null,
+      aiEntryFile: String(request?.aiEntryFile || request?.ai_entry_file || "").trim(),
+      mcpConfig:
+        request?.mcpConfig && typeof request.mcpConfig === "object"
+          ? request.mcpConfig
+          : request?.mcp_config && typeof request.mcp_config === "object"
+            ? request.mcp_config
+            : null,
       attachments: Array.isArray(request?.attachments)
         ? request.attachments
         : Array.isArray(request?.localAttachments)
@@ -467,6 +476,52 @@ export async function recoverNativeLiuAgentRuntimeState(request = {}) {
         ok: false,
         errorCode: "native_bridge.unavailable",
         error: "native liuAgent runtime recovery is unavailable",
+      };
+}
+
+function normalizeNativeLiuAgentRuntimeJobRequest(request = {}) {
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  const statePath = String(request?.statePath || request?.state_path || "").trim();
+  if (!workspacePath || !statePath) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error: "workspacePath and statePath are required",
+    };
+  }
+  return {
+    request: {
+      workspacePath,
+      statePath,
+    },
+  };
+}
+
+export async function refreshNativeLiuAgentRuntimeJob(request = {}) {
+  const payload = normalizeNativeLiuAgentRuntimeJobRequest(request);
+  if (payload?.ok === false) return payload;
+  const result = await invokeNativeDesktopBridge("liuagentRefreshRuntimeJob", payload);
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent runtime job refresh is unavailable",
+      };
+}
+
+export async function cancelNativeLiuAgentRuntimeJob(request = {}) {
+  const payload = normalizeNativeLiuAgentRuntimeJobRequest(request);
+  if (payload?.ok === false) return payload;
+  const result = await invokeNativeDesktopBridge("liuagentCancelRuntimeJob", payload);
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native liuAgent runtime job cancel is unavailable",
       };
 }
 

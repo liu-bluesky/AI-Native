@@ -1707,7 +1707,7 @@ def test_project_chat_task_tree_audit_auto_completes_lookup_query(
     )
 
 
-def test_project_chat_requirement_record_keeps_runtime_waiting_status_flat(
+def test_project_chat_requirement_record_stores_content_only(
     tmp_path,
     monkeypatch,
 ):
@@ -1728,22 +1728,20 @@ def test_project_chat_requirement_record_keeps_runtime_waiting_status_flat(
             "assistant_message_id": "assistant-approval",
             "root_goal": "删除 reademe.md",
             "title": "删除 reademe.md",
-            "status": "in_progress",
-            "result_summary": "桌面本地智能体等待用户授权删除文件。",
-            "source": "desktop_local_agent_runtime",
         },
     )
 
     assert response.status_code == 200
-    tree = response.json()["requirement_record"]
-    assert tree["status"] == "in_progress"
-    assert tree["progress_percent"] < 100
-    assert tree["current_node"]["status"] == "in_progress"
-    assert tree["metadata"] == {}
-    assert tree["current_node"]["metadata"] == {}
+    record = response.json()["requirement_record"]
+    assert record["rootGoal"] == "删除 reademe.md"
+    assert record["summaryText"] == "删除 reademe.md"
+    assert record["detailRound"]["taskTree"] is None
+    assert "current_node" not in record
+    assert "nodes" not in record
+    assert "metadata" not in record
 
 
-def test_project_chat_requirement_record_done_stays_flat_done(
+def test_project_chat_requirement_record_ignores_completion_trace_fields(
     tmp_path,
     monkeypatch,
 ):
@@ -1772,10 +1770,55 @@ def test_project_chat_requirement_record_done_stays_flat_done(
     )
 
     assert response.status_code == 200
-    tree = response.json()["requirement_record"]
-    assert tree["status"] == "done"
-    assert tree["current_node"]["status"] == "done"
-    assert tree["metadata"] == {}
+    record = response.json()["requirement_record"]
+    assert record["rootGoal"] == "修复授权后 UI 反馈"
+    assert record["summaryText"] == "修复授权后 UI 反馈"
+    assert record["detailRound"]["taskTree"] is None
+    assert "current_node" not in record
+    assert "metadata" not in record
+
+
+def test_project_chat_requirement_record_repeated_upsert_stays_content_only(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    base_payload = {
+        "chat_session_id": "chat-requirement-done-late-outbox",
+        "message_id": "msg-done-late-outbox",
+        "assistant_message_id": "assistant-done-late-outbox",
+        "root_goal": "修复桌面智能体需求进度",
+        "title": "修复桌面智能体需求进度",
+    }
+    done_response = client.post(
+        "/api/projects/proj-1/chat/requirement-record",
+        json=base_payload,
+    )
+    assert done_response.status_code == 200
+    first_record = done_response.json()["requirement_record"]
+    assert first_record["rootGoal"] == "修复桌面智能体需求进度"
+    assert first_record["detailRound"]["taskTree"] is None
+
+    late_response = client.post(
+        "/api/projects/proj-1/chat/requirement-record",
+        json=base_payload,
+    )
+
+    assert late_response.status_code == 200
+    late_record = late_response.json()["requirement_record"]
+    assert late_record["id"] == first_record["id"]
+    assert late_record["rootGoal"] == "修复桌面智能体需求进度"
+    assert late_record["summaryText"] == "修复桌面智能体需求进度"
+    assert late_record["detailRound"]["taskTree"] is None
+    assert "current_node" not in late_record
 
 
 def test_project_chat_requirement_record_does_not_own_repeated_failure_loop(
@@ -1797,17 +1840,14 @@ def test_project_chat_requirement_record_does_not_own_repeated_failure_loop(
         "assistant_message_id": "assistant-repeat-failure",
         "root_goal": "修复任务结束判断",
         "title": "修复任务结束判断",
-        "status": "blocked",
-        "result_summary": "pytest 仍然失败。",
-        "verification_result": "pytest tests/test_agent_loop.py::test_done_requires_verification 失败",
-        "source": "project_chat",
     }
     first_response = client.post(
         "/api/projects/proj-1/chat/requirement-record",
         json={**base_payload, "message_id": "msg-repeat-failure-1"},
     )
     assert first_response.status_code == 200
-    assert first_response.json()["requirement_record"]["metadata"] == {}
+    assert first_response.json()["requirement_record"]["rootGoal"] == "修复任务结束判断"
+    assert "metadata" not in first_response.json()["requirement_record"]
 
     second_response = client.post(
         "/api/projects/proj-1/chat/requirement-record",
@@ -1815,9 +1855,9 @@ def test_project_chat_requirement_record_does_not_own_repeated_failure_loop(
     )
 
     assert second_response.status_code == 200
-    tree = second_response.json()["requirement_record"]
-    assert tree["status"] == "blocked"
-    assert tree["metadata"] == {}
+    record = second_response.json()["requirement_record"]
+    assert record["summaryText"] == "修复任务结束判断"
+    assert "metadata" not in record
 
 
 def test_project_chat_task_tree_audit_auto_completes_colloquial_lookup_query(

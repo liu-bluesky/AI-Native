@@ -678,19 +678,6 @@ class ProjectChatRequirementRecordUpsertReq(BaseModel):
     assistant_message_id: str = ""
     root_goal: str = ""
     title: str = ""
-    status: Literal[
-        "pending",
-        "in_progress",
-        "verifying",
-        "blocked",
-        "done",
-    ] = "in_progress"
-    result_summary: str = ""
-    verification_result: str = ""
-    runner_session_id: str = ""
-    runner_agent_type: str = ""
-    source: str = "project_chat"
-    source_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectChatRuntimeSnapshotUpdateReq(BaseModel):
@@ -777,8 +764,14 @@ class DictionaryCreateReq(DictionaryUpdateReq):
 class ExternalMcpModuleCreateReq(BaseModel):
     name: str
     description: str = ""
+    transport_type: str = ""
     endpoint_http: str = ""
     endpoint_sse: str = ""
+    command: str = ""
+    args: list[str] = []
+    env: dict[str, str] = {}
+    headers: dict[str, str] = {}
+    config: dict = {}
     auth_type: str = "none"
     project_id: str = ""
     enabled: bool = True
@@ -787,8 +780,14 @@ class ExternalMcpModuleCreateReq(BaseModel):
 class ExternalMcpModuleUpdateReq(BaseModel):
     name: str | None = None
     description: str | None = None
+    transport_type: str | None = None
     endpoint_http: str | None = None
     endpoint_sse: str | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    headers: dict[str, str] | None = None
+    config: dict | None = None
     auth_type: str | None = None
     project_id: str | None = None
     enabled: bool | None = None
@@ -797,6 +796,7 @@ class ExternalMcpModuleUpdateReq(BaseModel):
 class ExternalMcpModuleTestReq(BaseModel):
     endpoint_http: str = ""
     endpoint_sse: str = ""
+    headers: dict[str, str] = {}
     timeout_sec: int = 8
 
 

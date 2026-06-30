@@ -39,7 +39,6 @@ _STATE_FIELD_LIMITS = {
     "updated_at": 80,
 }
 _TERMINAL_STATUSES = {"done", "completed", "archived", "closed"}
-_REQUIREMENT_HISTORY_LIMIT = 50
 _QUERY_MCP_WORKFLOW_SKILL_ID = "query-mcp-workflow"
 _QUERY_MCP_WORKFLOW_SKILL_VERSION = "1.1.0"
 _QUERY_MCP_WORKFLOW_MANIFEST = {
@@ -457,71 +456,6 @@ def _summarize_text(value: object, limit: int = 240) -> str:
     return normalized[:limit]
 
 
-def _summarize_requirement_event(entry: dict[str, Any] | None) -> str:
-    if not isinstance(entry, dict):
-        return ""
-    trajectory = entry.get("trajectory") if isinstance(entry.get("trajectory"), dict) else {}
-    facts = trajectory.get("facts") if isinstance(trajectory.get("facts"), list) else []
-    if facts:
-        return _summarize_text(facts[0], 240)
-    content = _normalize_text(entry.get("content"), 4000)
-    if content:
-        return _summarize_text(content, 240)
-    step = _normalize_text(trajectory.get("step"), 200)
-    phase = _normalize_text(trajectory.get("phase"), 80)
-    return _summarize_text(f"{phase} {step}".strip(), 240)
-
-
-def _normalize_requirement_history_entry(entry: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(entry, dict):
-        return {}
-    trajectory = entry.get("trajectory") if isinstance(entry.get("trajectory"), dict) else {}
-    normalized = {
-        "event_id": _normalize_text(entry.get("event_id"), 80),
-        "created_at": _normalize_text(entry.get("created_at"), 80),
-        "updated_at": _normalize_text(entry.get("updated_at"), 80),
-        "source_kind": _normalize_text(entry.get("source_kind"), 80)
-        or _normalize_text(entry.get("memory_type"), 80),
-        "event_type": _normalize_text(trajectory.get("event_type"), 80),
-        "status": _normalize_text(trajectory.get("status"), 80),
-        "phase": _normalize_text(trajectory.get("phase"), 80),
-        "step": _normalize_text(trajectory.get("step"), 200),
-        "summary": _summarize_requirement_event(entry),
-    }
-    return {key: value for key, value in normalized.items() if value not in ("", None)}
-
-
-def _merge_requirement_history(
-    existing: list[dict[str, Any]] | None,
-    new_entry: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for item in existing or []:
-        if not isinstance(item, dict):
-            continue
-        normalized = _normalize_requirement_history_entry(item)
-        event_id = _normalize_text(normalized.get("event_id"), 80)
-        if event_id and event_id in seen_ids:
-            continue
-        if event_id:
-            seen_ids.add(event_id)
-        if normalized:
-            items.append(normalized)
-    normalized_new_entry = _normalize_requirement_history_entry(new_entry)
-    new_event_id = _normalize_text(normalized_new_entry.get("event_id"), 80)
-    if normalized_new_entry and (not new_event_id or new_event_id not in seen_ids):
-        items.append(normalized_new_entry)
-    items.sort(
-        key=lambda item: (
-            _normalize_text(item.get("created_at"), 80),
-            _normalize_text(item.get("event_id"), 80),
-        ),
-        reverse=True,
-    )
-    return items[:_REQUIREMENT_HISTORY_LIMIT]
-
-
 def _read_requirement_record(path: Path | None) -> dict[str, Any]:
     payload = _read_json(path)
     return payload if isinstance(payload, dict) else {}
@@ -678,98 +612,6 @@ def ensure_claude_code_hooks(
     }
 
 
-def _coerce_int(value: object, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _normalize_task_tree_branches(
-    task_tree_payload: dict[str, Any] | None,
-) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
-    if not isinstance(task_tree_payload, dict) or not task_tree_payload:
-        return {}, {}, []
-    current_node_payload = (
-        task_tree_payload.get("current_node") if isinstance(task_tree_payload.get("current_node"), dict) else {}
-    )
-    current_node_id = _normalize_text(
-        current_node_payload.get("id") or task_tree_payload.get("current_node_id"),
-        80,
-    )
-    normalized_branches: list[dict[str, Any]] = []
-    child_map: dict[str, list[str]] = {}
-    for raw_node in task_tree_payload.get("nodes") or []:
-        if not isinstance(raw_node, dict):
-            continue
-        node_id = _normalize_text(raw_node.get("id"), 80)
-        if not node_id:
-            continue
-        parent_id = _normalize_text(raw_node.get("parent_id"), 80)
-        if parent_id:
-            child_map.setdefault(parent_id, []).append(node_id)
-        branch_payload = {
-            "id": node_id,
-            "parent_id": parent_id,
-            "title": _normalize_text(raw_node.get("title"), 200),
-            "status": _normalize_text(raw_node.get("status"), 80),
-            "node_kind": _normalize_text(raw_node.get("node_kind"), 80),
-            "stage_key": _normalize_text(raw_node.get("stage_key"), 80),
-            "level": _coerce_int(raw_node.get("level"), 0),
-            "sort_order": _coerce_int(raw_node.get("sort_order"), 0),
-            "is_current": node_id == current_node_id,
-            "summary": _summarize_text(
-                raw_node.get("summary_for_model")
-                or raw_node.get("latest_outcome")
-                or raw_node.get("description"),
-                240,
-            ),
-            "verification_result": _normalize_text(raw_node.get("verification_result"), 500),
-        }
-        normalized_branches.append(
-            {key: value for key, value in branch_payload.items() if value not in ("", None)}
-        )
-    for branch_payload in normalized_branches:
-        branch_children = child_map.get(branch_payload.get("id", ""), [])
-        if branch_children:
-            branch_payload["children_ids"] = branch_children
-    current_branch = next(
-        (branch for branch in normalized_branches if branch.get("id") == current_node_id),
-        {},
-    )
-    task_tree_summary = {
-        "id": _normalize_text(task_tree_payload.get("id"), 80),
-        "chat_session_id": _normalize_text(task_tree_payload.get("chat_session_id"), 200),
-        "source_chat_session_id": _normalize_text(task_tree_payload.get("source_chat_session_id"), 200),
-        "title": _normalize_text(task_tree_payload.get("title"), 200),
-        "root_goal": _normalize_text(task_tree_payload.get("root_goal"), 2000),
-        "status": _normalize_text(task_tree_payload.get("status"), 80),
-        "lifecycle_status": _normalize_text(task_tree_payload.get("lifecycle_status"), 80),
-        "progress_percent": _coerce_int(task_tree_payload.get("progress_percent"), 0),
-        "round_index": _coerce_int(task_tree_payload.get("round_index"), 0),
-        "current_node_id": current_node_id,
-        "current_node_title": _normalize_text(current_branch.get("title"), 200),
-        "task_branch_count": len(normalized_branches),
-        "updated_at": _normalize_text(task_tree_payload.get("updated_at"), 80),
-    }
-    health_payload = (
-        task_tree_payload.get("task_tree_health")
-        if isinstance(task_tree_payload.get("task_tree_health"), dict)
-        else {}
-    )
-    if health_payload:
-        task_tree_summary["health"] = {
-            "health_score": _coerce_int(health_payload.get("health_score"), 0),
-            "issue_count": _coerce_int(health_payload.get("issue_count"), 0),
-            "safe_to_display": bool(health_payload.get("safe_to_display")),
-        }
-    return (
-        {key: value for key, value in task_tree_summary.items() if value not in ("", None)},
-        current_branch,
-        normalized_branches,
-    )
-
-
 def upsert_query_mcp_requirement_record(
     *,
     project_id: str,
@@ -796,10 +638,6 @@ def upsert_query_mcp_requirement_record(
     existing = _read_requirement_record(path)
     now_iso = _now_iso()
     workspace_root, storage_scope = _resolve_local_workspace_context(project_id_value, workspace_path)
-    skill_payload = ensure_query_mcp_workflow_skill(
-        project_id=project_id_value,
-        workspace_path=workspace_path,
-    )
     outbox_entries = _read_jsonl(_outbox_path(project_id_value, chat_session_id_value, workspace_path))
     normalized_sync_status = _normalize_text(sync_status, 40).lower()
     if not normalized_sync_status:
@@ -807,18 +645,11 @@ def upsert_query_mcp_requirement_record(
             normalized_sync_status = "pending"
         else:
             normalized_sync_status = _normalize_text(existing.get("sync_status"), 40).lower() or "idle"
-    history_items = _merge_requirement_history(existing.get("history"), event_entry)
-    existing_task_tree = existing.get("task_tree") if isinstance(existing.get("task_tree"), dict) else {}
-    existing_current_task_node = (
-        existing.get("current_task_node") if isinstance(existing.get("current_task_node"), dict) else {}
-    )
-    existing_task_branches = existing.get("task_branches") if isinstance(existing.get("task_branches"), list) else []
-    normalized_task_tree, normalized_current_task_node, normalized_task_branches = _normalize_task_tree_branches(
-        task_tree_payload
-    )
+    requirement_text = _normalize_text(root_goal, 2000) or _normalize_text(existing.get("requirement"), 2000)
+    title = _summarize_text(requirement_text or existing.get("title"), 200)
     payload = {
         "record_type": "query-mcp-requirement",
-        "version": 2,
+        "version": 3,
         "project_id": project_id_value,
         "project_name": _normalize_text(project_name, 200)
         or _normalize_text(existing.get("project_name"), 200),
@@ -826,9 +657,9 @@ def upsert_query_mcp_requirement_record(
         "chat_session_id": chat_session_id_value,
         "session_id": _normalize_text(session_id, 200)
         or _normalize_text(existing.get("session_id"), 200),
-        "title": _summarize_text(root_goal or existing.get("title") or existing.get("root_goal"), 200),
-        "root_goal": _normalize_text(root_goal, 2000)
-        or _normalize_text(existing.get("root_goal"), 2000),
+        "title": title,
+        "requirement": requirement_text,
+        "root_goal": requirement_text,
         "latest_status": _normalize_text(latest_status, 80)
         or _normalize_text(existing.get("latest_status"), 80),
         "phase": _normalize_text(phase, 80) or _normalize_text(existing.get("phase"), 80),
@@ -839,20 +670,6 @@ def upsert_query_mcp_requirement_record(
         "record_path": str(path),
         "sync_status": normalized_sync_status,
         "pending_outbox_count": len(outbox_entries),
-        "history_count": len(history_items),
-        "history": history_items,
-        "workflow_skill": {
-            "id": _QUERY_MCP_WORKFLOW_SKILL_ID,
-            "version": _QUERY_MCP_WORKFLOW_SKILL_VERSION,
-            "path": _normalize_text(skill_payload.get("path"), 1000),
-            "manifest_path": _normalize_text(skill_payload.get("manifest_path"), 1000),
-            "skill_md_path": _normalize_text(skill_payload.get("skill_md_path"), 1000),
-            "created": bool(skill_payload.get("created")),
-        },
-        "task_tree": normalized_task_tree or existing_task_tree,
-        "current_task_node": normalized_current_task_node or existing_current_task_node,
-        "task_branches": normalized_task_branches or existing_task_branches,
-        "task_branch_count": len(normalized_task_branches or existing_task_branches),
         "created_at": _normalize_text(existing.get("created_at"), 80) or now_iso,
         "updated_at": now_iso,
     }

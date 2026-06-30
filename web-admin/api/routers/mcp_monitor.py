@@ -27,17 +27,23 @@ def _ensure_super_admin(auth_payload: dict) -> None:
 
 def _serialize_monitor_module(module) -> dict:
     data = asdict(module)
+    transport_type = _normalize_text(data.get("transport_type", ""), 40)
     endpoint_http = _normalize_text(data.get("endpoint_http", ""))
     endpoint_sse = _normalize_text(data.get("endpoint_sse", ""))
+    command = _normalize_text(data.get("command", ""), 400)
     project_id = _normalize_text(data.get("project_id", ""), 120)
     endpoints = []
     if endpoint_http:
         endpoints.append({"transport": "http", "url": endpoint_http})
     if endpoint_sse:
         endpoints.append({"transport": "sse", "url": endpoint_sse})
+    if command:
+        endpoints.append({"transport": "stdio", "command": command})
     data["scope"] = "project" if project_id else "global"
-    data["primary_endpoint"] = endpoints[0]["url"] if endpoints else ""
+    data["primary_endpoint"] = endpoints[0].get("url") or endpoints[0].get("command") if endpoints else ""
     data["transport_types"] = [item["transport"] for item in endpoints]
+    if transport_type and transport_type not in data["transport_types"]:
+        data["transport_types"].insert(0, transport_type)
     data["endpoints"] = endpoints
     return data
 
@@ -109,6 +115,7 @@ async def test_monitored_mcp_module(
         getattr(module, "endpoint_http", ""),
         getattr(module, "endpoint_sse", ""),
         timeout_sec,
+        getattr(module, "headers", {}) or {},
     )
     result["module"] = _serialize_monitor_module(module)
     return result

@@ -7437,6 +7437,90 @@ def test_save_project_chat_memory_snapshot_in_progress_stores_requirement_record
     assert "[完成条件] 只有所有计划项完成并写入验证结果后，当前需求才算结束。" in saved_memory.content
 
 
+def test_save_project_chat_memory_snapshot_confirmation_prompt_is_not_final_summary(monkeypatch):
+    from routers import projects as projects_router
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id == "emp-1" else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+                "recent": staticmethod(lambda employee_id, limit: []),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="设计官网首页",
+        answer=(
+            "收到，官网风格按“科技蓝 / 企业级 / 人力资源服务”方向设计。\n\n"
+            "请再明确确认一句：“确认开始执行”。\n"
+            "收到后我会开始检查项目结构并实现官网页面，过程中不会删除或覆盖登录注册功能。"
+        ),
+        chat_session_id="chat-confirm",
+        task_tree_payload={
+            "id": "task-tree-confirm",
+            "chat_session_id": "chat-confirm",
+            "source_chat_session_id": "chat-confirm",
+            "root_goal": "设计官网首页",
+            "status": "in_progress",
+            "progress_percent": 34,
+            "current_node": {
+                "id": "node-confirm",
+                "title": "等待确认开始执行",
+                "status": "in_progress",
+            },
+            "nodes": [
+                {"id": "root", "level": 0, "title": "设计官网首页", "status": "in_progress"},
+                {"id": "node-confirm", "level": 1, "title": "等待确认开始执行", "status": "in_progress", "verification_result": ""},
+            ],
+        },
+        selected_employee_ids=["emp-1"],
+        source="project-chat-test",
+    )
+
+    assert len(saved_memories) == 1
+    saved_memory = saved_memories[0]
+    assert "workflow:requirement-record" in saved_memory.purpose_tags
+    assert "workflow:final-summary" not in saved_memory.purpose_tags
+    assert "[完成条件] 只有所有计划项完成并写入验证结果后，当前需求才算结束。" in saved_memory.content
+    assert "[最终结论]" not in saved_memory.content
+
+
 def test_save_project_chat_memory_snapshot_in_progress_can_skip_requirement_record(monkeypatch):
     from routers import projects as projects_router
 
@@ -16329,13 +16413,14 @@ def test_query_mcp_bootstrap_local_workspace_creates_skill_and_requirement_files
     assert requirement["chat_session_id"] == "chat-bootstrap-1"
     assert requirement["session_id"] == "ws-proj-1-1"
     assert requirement["root_goal"] == "创建本地技能和独立需求文件"
+    assert requirement["requirement"] == "创建本地技能和独立需求文件"
     assert requirement["sync_status"] == "idle"
-    assert requirement["workflow_skill"]["id"] == "query-mcp-workflow"
     assert requirement["pending_outbox_count"] == 0
-    assert requirement["task_tree"]["id"] == "tts-local-1"
-    assert requirement["current_task_node"]["id"] == "ttn-2"
-    assert requirement["task_branch_count"] == 2
-    assert requirement["task_branches"][1]["is_current"] is True
+    assert "workflow_skill" not in requirement
+    assert "task_tree" not in requirement
+    assert "current_task_node" not in requirement
+    assert "task_branches" not in requirement
+    assert "history" not in requirement
 
 
 def test_query_mcp_bootstrap_falls_back_to_current_cli_workspace(tmp_path, monkeypatch):
@@ -19672,8 +19757,9 @@ def test_query_mcp_start_work_session_bootstraps_local_requirement_and_skill(tmp
     assert manifest["name"] == "项目本地 Query MCP 工作流"
     assert "## 初始化要求" in skill_text
     assert "修改 query-mcp 提示词、运行时返回、前端预览、技能包说明或工作流代码时" in skill_text
-    assert requirement["task_tree"]["id"]
-    assert requirement["task_branch_count"] >= 1
+    assert requirement["requirement"] == "初始化时写入本地技能和独立需求文件"
+    assert "task_tree" not in requirement
+    assert "task_branch_count" not in requirement
 
 
 def test_query_mcp_start_work_session_accepts_explicit_workspace_path(tmp_path, monkeypatch):
@@ -19788,7 +19874,8 @@ def test_query_mcp_work_session_tools_queue_locally_then_flush_on_terminal_statu
     assert pending_entries[0]["source_kind"] == "work-facts"
     assert pending_requirement["sync_status"] == "pending"
     assert pending_requirement["pending_outbox_count"] == 1
-    assert pending_requirement["history_count"] >= 1
+    assert pending_requirement["requirement"] == "实现本地优先 query-mcp 任务轨迹"
+    assert "history_count" not in pending_requirement
     assert len(saved_memories) == 0
     assert len(saved_work_session_events) == 2
 
@@ -19820,7 +19907,7 @@ def test_query_mcp_work_session_tools_queue_locally_then_flush_on_terminal_statu
     assert flushed_entries == []
     assert synced_requirement["sync_status"] == "synced"
     assert synced_requirement["pending_outbox_count"] == 0
-    assert synced_requirement["history_count"] >= 2
+    assert "history_count" not in synced_requirement
     assert len(saved_memories) == 2
     assert len(saved_work_session_events) == 3
     assert saved_work_session_events[1].source_kind == "work-facts"
@@ -20263,7 +20350,7 @@ def test_query_mcp_progress_tools_do_not_recreate_task_tree_when_requirement_exi
     monkeypatch.setattr(
         task_tree_svc,
         "ensure_task_tree",
-        lambda **kwargs: ensure_calls.append(kwargs) or kwargs,
+        lambda **kwargs: ensure_calls.append(kwargs) or None,
     )
     monkeypatch.setattr(task_tree_svc, "get_task_tree_for_chat_session", lambda *args, **kwargs: None)
 
@@ -20298,9 +20385,9 @@ def test_query_mcp_progress_tools_do_not_recreate_task_tree_when_requirement_exi
         chat_session_id="chat-archived-1",
     )
 
-    assert ensure_calls == []
-    assert requirement["task_tree"]["id"] == "tts-archived-1"
-    assert requirement["task_tree"]["lifecycle_status"] == "archived"
+    assert len(ensure_calls) == 2
+    assert requirement["requirement"] == "修复归档后重复建树"
+    assert "task_tree" not in requirement
 
 
 def test_query_mcp_list_recent_project_requirements_supports_recent_and_date_filters(monkeypatch):

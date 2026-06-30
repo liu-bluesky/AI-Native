@@ -219,6 +219,147 @@ def test_project_chat_runtime_snapshot_routes_and_history_cleanup(tmp_path, monk
     assert after_clear_response.json()["snapshot"] is None
 
 
+def test_project_chat_history_masks_ai_request_context_and_admin_can_fetch_full_context(
+    tmp_path, monkeypatch
+):
+    from stores.json.project_chat_store import ProjectChatMessage
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    session = store_factory.project_chat_store.create_session("proj-1", "tester", "新对话")
+    store_factory.project_chat_store.append_message(
+        ProjectChatMessage(
+            id="assistant-ai-context-1",
+            project_id="proj-1",
+            username="tester",
+            role="assistant",
+            content="已处理",
+            chat_session_id=session.id,
+            source_context={
+                "ai_request_context": {
+                    "provider_id": "provider-1",
+                    "model_name": "model-1",
+                    "messages": [{"role": "user", "content": "hello"}],
+                }
+            },
+        )
+    )
+
+    history_response = client.get(
+        "/api/projects/proj-1/chat/history",
+        params={"chat_session_id": session.id},
+    )
+    assert history_response.status_code == 200
+    source_context = history_response.json()["messages"][0]["source_context"]
+    assert source_context["ai_request_context"] == {"available": True}
+    assert "messages" not in source_context["ai_request_context"]
+
+    context_response = client.get(
+        "/api/projects/proj-1/chat/history/messages/assistant-ai-context-1/ai-context",
+        params={"chat_session_id": session.id},
+    )
+    assert context_response.status_code == 200
+    ai_context = context_response.json()["ai_context"]
+    assert ai_context["provider_id"] == "provider-1"
+    assert ai_context["model_name"] == "model-1"
+    assert ai_context["messages"] == [{"role": "user", "content": "hello"}]
+
+
+def test_project_chat_ai_request_context_requires_admin_even_with_chat_permission(
+    tmp_path, monkeypatch
+):
+    from stores.json.project_chat_store import ProjectChatMessage
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+    from stores.json.role_store import RoleConfig
+
+    client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "chat-reader", "roles": ["chat-reader"]},
+    )
+    store_factory.role_store.save(
+        RoleConfig(
+            id="chat-reader",
+            name="Chat Reader",
+            permissions=["menu.ai.chat"],
+        )
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.project_store.upsert_user_member(
+        ProjectUserMember(project_id="proj-1", username="tester", role="member")
+    )
+    session = store_factory.project_chat_store.create_session("proj-1", "tester", "新对话")
+    store_factory.project_chat_store.append_message(
+        ProjectChatMessage(
+            id="assistant-ai-context-1",
+            project_id="proj-1",
+            username="tester",
+            role="assistant",
+            content="已处理",
+            chat_session_id=session.id,
+            source_context={
+                "ai_request_context": {
+                    "provider_id": "provider-1",
+                    "messages": [{"role": "user", "content": "hello"}],
+                }
+            },
+        )
+    )
+
+    response = client.get(
+        "/api/projects/proj-1/chat/history/messages/assistant-ai-context-1/ai-context",
+        params={"chat_session_id": session.id},
+    )
+
+    assert response.status_code == 403
+
+
+def test_build_project_chat_ai_request_context_payload_redacts_sensitive_keys():
+    from types import SimpleNamespace
+
+    from routers import projects as projects_router
+
+    payload = projects_router._build_project_chat_ai_request_context_payload(
+        runtime_context=SimpleNamespace(
+            provider_id="provider-1",
+            model_name="model-1",
+            project_id="proj-1",
+            username="tester",
+            chat_session_id="chat-session-1",
+            resolved_messages=[
+                {
+                    "role": "user",
+                    "content": "hello",
+                    "metadata": {"api_key": "secret-value"},
+                }
+            ],
+            resolved_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "tool-1",
+                        "authorization": "Bearer secret-token",
+                    },
+                }
+            ],
+            chat_settings={"password": "secret-password"},
+            metadata={"session_id": "secret-session"},
+        ),
+        temperature=0.3,
+        request_id="req-1",
+    )
+
+    assert payload["messages"][0]["metadata"]["api_key"] == "[REDACTED]"
+    assert payload["tools"][0]["function"]["authorization"] == "[REDACTED]"
+    assert payload["chat_settings"]["password"] == "[REDACTED]"
+    assert payload["metadata"]["session_id"] == "[REDACTED]"
+
+
 def test_agent_runtime_resume_persists_same_assistant_message_id(tmp_path, monkeypatch):
     from routers import projects as projects_router
     from stores.json.project_chat_store import ProjectChatMessage

@@ -22,6 +22,7 @@ from stores.factory import (
     project_deploy_store,
     project_experience_summary_store,
     project_material_store,
+    project_requirement_record_store,
     project_studio_export_store,
     project_store,
     role_store,

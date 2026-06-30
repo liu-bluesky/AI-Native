@@ -336,7 +336,15 @@ export function mapHistoryMessage(item) {
   const attachments = Array.isArray(item?.attachments) ? item.attachments : [];
   const images = Array.isArray(item?.images) ? item.images : [];
   const videos = Array.isArray(item?.videos) ? item.videos : [];
+  const rawSourceContext =
+    item?.source_context && typeof item.source_context === "object"
+      ? item.source_context
+      : {};
   const sourceContext = normalizeChatSourceContextValue(item || {});
+  const hasAiRequestContext = Boolean(
+    rawSourceContext.ai_request_context &&
+      typeof rawSourceContext.ai_request_context === "object",
+  );
   const runtimeTrace =
     sourceContext.agent_runtime_trace &&
     typeof sourceContext.agent_runtime_trace === "object"
@@ -372,6 +380,7 @@ export function mapHistoryMessage(item) {
     videos,
     attachments,
     source_context: sourceContext,
+    hasAiRequestContext,
     time: String(item?.created_at || ""),
   };
 }

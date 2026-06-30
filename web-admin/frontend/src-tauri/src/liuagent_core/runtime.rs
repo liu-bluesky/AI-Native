@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
 use std::fs;
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,14 +42,14 @@ use super::types::{
     AgentRunHistoryMessageSummary, AgentRunProjectContext, AgentRunRuntimeContext,
     AgentRunUserRequest, ClarityAssessment, LocalChatAttachment, LocalChatMessage,
     LocalChatRequest, LocalChatResult, LocalModelRuntimeConfig, LocalRuntimeEventsRequest,
-    LocalRuntimeEventsResult, LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest,
-    LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult,
-    MemoryWritePlan, MemoryWritePlanItem, ModelCompatibilityProfile, Observation,
-    OfflineCacheCleanupRequest, OfflineCacheLoadRequest, OfflineCacheResult,
-    OfflineCacheSaveRequest, PlanNode, PlanState, PromptStack, PromptStackItem,
+    LocalRuntimeEventsResult, LocalRuntimeJobRequest, LocalRuntimeJobResult,
+    LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult,
+    LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult, MemoryWritePlan, MemoryWritePlanItem,
+    ModelCompatibilityProfile, Observation, OfflineCacheCleanupRequest, OfflineCacheLoadRequest,
+    OfflineCacheResult, OfflineCacheSaveRequest, PlanNode, PlanState, PromptStack, PromptStackItem,
     ProviderFileUploadRequest, ProviderFileUploadResult, RetryDecision, RunState,
-    RuntimeSchedulerState, ToolBatchState, ToolError, ToolExecutionRequest, VerificationCheck,
-    VerificationReport,
+    RuntimeSchedulerState, TaskGoal, ToolBatchState, ToolError, ToolExecutionRequest,
+    VerificationCheck, VerificationReport,
 };
 use super::workspace::resolve_workspace_root;
 use super::workspace::{resolve_workspace_child, workspace_relative_path};
@@ -57,11 +59,13 @@ use super::{
 };
 
 const REQUIREMENT_SCHEMA_VERSION: u32 = 1;
-const DEFAULT_MODEL_TIMEOUT_MS: u64 = 45_000;
+const DEFAULT_MODEL_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_MAX_VERIFICATION_REPROMPTS: usize = 1;
-const MAX_EXPLORATION_ONLY_TOOL_ROUNDS: usize = 3;
-const MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS: usize = 5;
+const MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS: usize = 2;
 const PERMISSION_CACHE_VERSION: u32 = 1;
+const TOOL_OBSERVATION_TEXT_PREVIEW_CHARS: usize = 6_000;
+const TOOL_OBSERVATION_MATCH_PREVIEW_CHARS: usize = 500;
+const TOOL_OBSERVATION_MAX_ARRAY_ITEMS: usize = 80;
 
 #[cfg(test)]
 pub fn start_local_chat(request: LocalChatRequest) -> LocalChatResult {
@@ -92,6 +96,28 @@ pub fn recover_local_runtime_state(
     match recover_local_runtime_state_inner(&request) {
         Ok(result) => result,
         Err(error) => LocalRuntimeRecoveryResult::failed(request, error),
+    }
+}
+
+pub fn refresh_local_runtime_job(request: LocalRuntimeJobRequest) -> LocalRuntimeJobResult {
+    match refresh_local_runtime_job_inner(&request) {
+        Ok(job) => LocalRuntimeJobResult::ok(
+            request.workspace_path.clone(),
+            job,
+            "refreshed local runtime background job".to_string(),
+        ),
+        Err(error) => LocalRuntimeJobResult::failed(request, error),
+    }
+}
+
+pub fn cancel_local_runtime_job(request: LocalRuntimeJobRequest) -> LocalRuntimeJobResult {
+    match cancel_local_runtime_job_inner(&request) {
+        Ok(job) => LocalRuntimeJobResult::ok(
+            request.workspace_path.clone(),
+            job,
+            "cancelled local runtime background job".to_string(),
+        ),
+        Err(error) => LocalRuntimeJobResult::failed(request, error),
     }
 }
 
@@ -163,8 +189,14 @@ fn recover_local_runtime_state_inner(
     let project_id = required_non_empty(&request.project_id, "projectId")?;
     let chat_session_id = required_non_empty(&request.chat_session_id, "chatSessionId")?;
     let workspace_root = resolve_workspace_root(&request.workspace_path)?;
-    let (state, runtime_events) =
+    let (mut state, runtime_events) =
         recover_runtime_session(&workspace_root, &project_id, &chat_session_id)?;
+    let background_jobs = collect_runtime_background_jobs(&state);
+    let resume_judgement = build_resume_judgement(&state, &background_jobs);
+    if let Some(object) = state.as_object_mut() {
+        object.insert("background_jobs".to_string(), background_jobs.clone());
+        object.insert("resume_judgement".to_string(), resume_judgement);
+    }
     let status = state["run_state"]["status"]
         .as_str()
         .unwrap_or("unknown")
@@ -179,6 +211,256 @@ fn recover_local_runtime_state_inner(
         summary: format!("recovered local runtime state: {status}"),
         error_code: String::new(),
         error: String::new(),
+    })
+}
+
+fn collect_runtime_background_jobs(state: &Value) -> Value {
+    let mut jobs = Vec::new();
+    let tool_results = state
+        .get("tool_results")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for result in tool_results {
+        let Some(job) = result
+            .get("content")
+            .and_then(|content| content.get("background_job"))
+        else {
+            continue;
+        };
+        let state_path = job
+            .get("state_path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let mut refreshed = job.clone();
+        if !state_path.is_empty() {
+            if let Ok(raw) = fs::read_to_string(state_path) {
+                if let Ok(value) = serde_json::from_str::<Value>(&raw) {
+                    refreshed = value;
+                }
+            }
+        }
+        jobs.push(refreshed);
+    }
+    Value::Array(jobs)
+}
+
+fn refresh_local_runtime_job_inner(request: &LocalRuntimeJobRequest) -> Result<Value, ToolError> {
+    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    read_command_job_state_for_workspace(&workspace_root, &request.state_path)
+}
+
+fn cancel_local_runtime_job_inner(request: &LocalRuntimeJobRequest) -> Result<Value, ToolError> {
+    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let state_path = resolve_command_job_state_path(&workspace_root, &request.state_path)?;
+    let mut job = read_command_job_state_path(&state_path)?;
+    let status = job
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if ["succeeded", "failed", "cancelled"].contains(&status.as_str()) {
+        return Ok(job);
+    }
+    let pid = job.get("pid").and_then(Value::as_u64).unwrap_or(0);
+    if pid == 0 || pid > i32::MAX as u64 {
+        return Err(ToolError::new(
+            "runtime_job.invalid_pid",
+            "background job does not contain a valid pid",
+        ));
+    }
+    cancel_process(pid as i32)?;
+    if let Some(object) = job.as_object_mut() {
+        object.insert("status".to_string(), json!("cancelled"));
+        object.insert("cancelled_at_epoch_ms".to_string(), json!(epoch_millis()));
+        object.insert("updated_at_epoch_ms".to_string(), json!(epoch_millis()));
+    }
+    fs::write(
+        &state_path,
+        serde_json::to_vec_pretty(&job).map_err(|err| {
+            ToolError::new(
+                "runtime_job.serialize_failed",
+                format!("serialize background job state failed: {err}"),
+            )
+        })?,
+    )
+    .map_err(|err| {
+        ToolError::new(
+            "runtime_job.write_failed",
+            format!("write background job state failed: {err}"),
+        )
+    })?;
+    Ok(job)
+}
+
+fn read_command_job_state_for_workspace(
+    workspace_root: &Path,
+    state_path: &str,
+) -> Result<Value, ToolError> {
+    let state_path = resolve_command_job_state_path(workspace_root, state_path)?;
+    read_command_job_state_path(&state_path)
+}
+
+fn read_command_job_state_path(state_path: &Path) -> Result<Value, ToolError> {
+    let raw = fs::read_to_string(state_path).map_err(|err| {
+        ToolError::new(
+            "runtime_job.read_failed",
+            format!("read background job state failed: {err}"),
+        )
+    })?;
+    serde_json::from_str::<Value>(&raw).map_err(|err| {
+        ToolError::new(
+            "runtime_job.parse_failed",
+            format!("parse background job state failed: {err}"),
+        )
+    })
+}
+
+fn resolve_command_job_state_path(
+    workspace_root: &Path,
+    raw_state_path: &str,
+) -> Result<PathBuf, ToolError> {
+    let raw_state_path = raw_state_path.trim();
+    if raw_state_path.is_empty() {
+        return Err(ToolError::new(
+            "runtime_job.state_path_required",
+            "background job state_path is required",
+        ));
+    }
+    let path = PathBuf::from(raw_state_path);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        workspace_root.join(path)
+    };
+    let canonical_workspace = workspace_root.canonicalize().map_err(|err| {
+        ToolError::new(
+            "workspace.invalid",
+            format!("canonicalize workspace failed: {err}"),
+        )
+    })?;
+    let parent = absolute.parent().ok_or_else(|| {
+        ToolError::new(
+            "runtime_job.invalid_state_path",
+            "background job state_path has no parent directory",
+        )
+    })?;
+    let canonical_parent = parent.canonicalize().map_err(|err| {
+        ToolError::new(
+            "runtime_job.invalid_state_path",
+            format!("canonicalize background job path failed: {err}"),
+        )
+    })?;
+    let allowed_root = canonical_workspace
+        .join(".ai-employee")
+        .join("liuagent-command-jobs");
+    if !canonical_parent.starts_with(&allowed_root) {
+        return Err(ToolError::new(
+            "runtime_job.out_of_scope",
+            "background job state_path is outside the workspace job directory",
+        ));
+    }
+    Ok(absolute)
+}
+
+#[cfg(unix)]
+fn cancel_process(pid: i32) -> Result<(), ToolError> {
+    let group_status = Command::new("kill")
+        .arg("-TERM")
+        .arg("--")
+        .arg(format!("-{pid}"))
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| {
+            ToolError::new(
+                "runtime_job.cancel_failed",
+                format!("send terminate signal failed: {err}"),
+            )
+        })?;
+    if group_status.success() {
+        Ok(())
+    } else {
+        let pid_status = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|err| {
+                ToolError::new(
+                    "runtime_job.cancel_failed",
+                    format!("send terminate signal failed: {err}"),
+                )
+            })?;
+        if pid_status.success() {
+            Ok(())
+        } else {
+            Err(ToolError::new(
+                "runtime_job.cancel_failed",
+                format!("kill exited with status {group_status}; fallback exited with status {pid_status}"),
+            ))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn cancel_process(_pid: i32) -> Result<(), ToolError> {
+    Err(ToolError::new(
+        "runtime_job.cancel_unsupported",
+        "background job cancel is not supported on this platform",
+    ))
+}
+
+fn build_resume_judgement(state: &Value, background_jobs: &Value) -> Value {
+    let jobs = background_jobs.as_array().cloned().unwrap_or_default();
+    let has_running = jobs.iter().any(|job| {
+        job.get("status")
+            .and_then(Value::as_str)
+            .map(|status| status == "running")
+            .unwrap_or(false)
+    });
+    let has_succeeded = jobs.iter().any(|job| {
+        job.get("status")
+            .and_then(Value::as_str)
+            .map(|status| status == "succeeded")
+            .unwrap_or(false)
+    });
+    let has_failed = jobs.iter().any(|job| {
+        job.get("status")
+            .and_then(Value::as_str)
+            .map(|status| status == "failed")
+            .unwrap_or(false)
+    });
+    let status = state["current_state"]["verification_report"]["overall_status"]
+        .as_str()
+        .or_else(|| state["current_state"]["verification_report"]["status"].as_str())
+        .unwrap_or("");
+    let decision = if has_running {
+        "continue_waiting"
+    } else if has_succeeded {
+        "ask_ai_to_verify_completion"
+    } else if has_failed {
+        "ask_ai_to_inspect_failure"
+    } else if status == "no_signal" {
+        "ask_ai_to_judge"
+    } else {
+        "none"
+    };
+    json!({
+        "version": "resume-judgement/v1",
+        "decision": decision,
+        "background_job_count": jobs.len(),
+        "has_running_job": has_running,
+        "has_succeeded_job": has_succeeded,
+        "has_failed_job": has_failed,
+        "next_actions": match decision {
+            "continue_waiting" => vec!["refresh_job_status", "continue_waiting", "cancel_job"],
+            "ask_ai_to_verify_completion" => vec!["read_job_logs", "verify_goal", "continue_agent_loop"],
+            "ask_ai_to_inspect_failure" => vec!["read_job_logs", "diagnose_failure", "propose_retry_or_fix"],
+            "ask_ai_to_judge" => vec!["inspect_runtime_state", "read_latest_events", "decide_next_step"],
+            _ => Vec::<&str>::new(),
+        }
     })
 }
 
@@ -320,6 +602,10 @@ fn start_local_chat_inner(
     let assistant_message_id =
         normalized_id(request.assistant_message_id.as_deref(), "local_assistant");
     let mut model_request = build_model_request(&request, &user_message);
+    let task_goal = build_task_goal(&session_id, &user_message, &model_request);
+    let initial_task_tree = planning::TaskTree::for_goal(&session_id, &task_goal);
+    model_request.task_goal = Some(task_goal.clone());
+    model_request.task_tree = Some(initial_task_tree);
     let prompt_stack = resolve_prompt_stack(&request, &model_request);
     let clarity_assessment = assess_clarity(&user_message, &request, &model_request);
     let plan_created_at = epoch_millis();
@@ -443,6 +729,7 @@ fn start_local_chat_inner(
         &agent_loop,
         &planned_tools,
         &tool_results,
+        &task_goal,
     );
     let scheduler_state = build_runtime_scheduler_state(
         run_status,
@@ -451,14 +738,21 @@ fn start_local_chat_inner(
         &planned_tools,
         &tool_results,
     );
+    let dynamic_task_tree = planning::TaskTree::finalize_for_goal(
+        &session_id,
+        &task_goal,
+        agent_loop.stopped_reason.as_str(),
+        awaiting_permission,
+        run_ok,
+    );
     let plan_state = create_plan_state(
         &session_id,
-        &user_message,
+        &task_goal,
         &clarity_assessment,
         run_status,
-        "node-execute",
         plan_created_at,
         Some(&agent_loop),
+        &dynamic_task_tree,
     );
     let observations = build_observations(
         &session_id,
@@ -469,6 +763,19 @@ fn start_local_chat_inner(
         agent_loop.stopped_reason.as_str(),
         agent_loop.summary().as_str(),
         agent_loop.error_code().as_str(),
+    );
+    let conversation_lifecycle = build_conversation_lifecycle(
+        &session_id,
+        &chat_session_id,
+        &user_message_id,
+        &assistant_message_id,
+        &user_message,
+        run_status,
+        waiting_for,
+        &model_request,
+        &agent_loop,
+        &tool_results,
+        &assistant_content,
     );
     let retry_decision = route_failure(
         &session_id,
@@ -503,6 +810,7 @@ fn start_local_chat_inner(
         scheduler_state: serde_json::to_value(&scheduler_state).unwrap_or_else(|_| json!({})),
         verification_report: serde_json::to_value(&verification_report)
             .unwrap_or_else(|_| json!({})),
+        task_goal: serde_json::to_value(&task_goal).unwrap_or_else(|_| json!({})),
         clarity_assessment: serde_json::to_value(&clarity_assessment).unwrap_or_else(|_| json!({})),
         plan_state: serde_json::to_value(&plan_state).unwrap_or_else(|_| json!({})),
         retry_decision: serde_json::to_value(&retry_decision).unwrap_or_else(|_| json!({})),
@@ -537,6 +845,7 @@ fn start_local_chat_inner(
         &observations,
         &scheduler_state,
         &verification_report,
+        &task_goal,
         &clarity_assessment,
         &plan_state,
         &retry_decision,
@@ -544,8 +853,10 @@ fn start_local_chat_inner(
         operations.clone(),
         &gateway_result,
         runtime_artifacts.clone(),
+        &dynamic_task_tree,
         &audit_logs,
         &assistant_content,
+        conversation_lifecycle.clone(),
     );
     write_requirement_record(&requirement_path, requirement_record)?;
 
@@ -610,6 +921,7 @@ fn start_local_chat_inner(
         tool_results,
         operations,
         runtime_events,
+        conversation_lifecycle,
         summary: result_summary,
         user_visible_error_summary: response_format.user_visible_error_summary,
         diagnostic: response_format.diagnostic,
@@ -658,7 +970,7 @@ fn build_local_chat_requirement_record(
     run_status: &str,
     waiting_for: Option<&str>,
     awaiting_permission: bool,
-    run_ok: bool,
+    _run_ok: bool,
     model_request: &ModelStepRequest,
     model_result: &ModelStepResult,
     agent_loop: &AgentLoopResult,
@@ -668,6 +980,7 @@ fn build_local_chat_requirement_record(
     observations: &[Observation],
     scheduler_state: &RuntimeSchedulerState,
     verification_report: &VerificationReport,
+    task_goal: &TaskGoal,
     clarity_assessment: &ClarityAssessment,
     plan_state: &PlanState,
     retry_decision: &RetryDecision,
@@ -675,8 +988,10 @@ fn build_local_chat_requirement_record(
     operations: Value,
     gateway_result: &AgentInvocationResult,
     runtime_artifacts: RuntimeArtifactPaths,
+    dynamic_task_tree: &planning::TaskTree,
     audit_logs: &[Value],
     assistant_content: &str,
+    conversation_lifecycle: Value,
 ) -> Value {
     let intent_analysis = build_requirement_intent_analysis(user_message, &model_request.messages);
     let related_context = build_requirement_related_context(
@@ -699,6 +1014,7 @@ fn build_local_chat_requirement_record(
         user_message,
         &intent_analysis,
         &related_context,
+        task_goal,
     )];
     model_input_snapshots.extend(agent_loop.model_input_snapshots.clone());
     let actions_taken =
@@ -713,11 +1029,13 @@ fn build_local_chat_requirement_record(
         observations,
         scheduler_state,
         verification_report,
+        task_goal,
         clarity_assessment,
         plan_state,
         retry_decision,
         memory_write_plan,
         &runtime_artifacts,
+        dynamic_task_tree,
     );
     let current_state = build_requirement_current_state(
         user_message,
@@ -762,6 +1080,7 @@ fn build_local_chat_requirement_record(
     );
     record.insert("title".to_string(), json!(user_message));
     record.insert("root_goal".to_string(), json!(user_message));
+    record.insert("task_goal".to_string(), json!(task_goal));
     record.insert("original_request".to_string(), json!(user_message));
     record.insert("intent_analysis".to_string(), intent_analysis.clone());
     record.insert("related_context".to_string(), related_context.clone());
@@ -820,16 +1139,7 @@ fn build_local_chat_requirement_record(
             "verification": &agent_loop.verification
         }),
     );
-    record.insert(
-        "task_tree".to_string(),
-        json!(planning::TaskTree::finalize(
-            session_id,
-            user_message,
-            agent_loop.stopped_reason.as_str(),
-            awaiting_permission,
-            run_ok,
-        )),
-    );
+    record.insert("task_tree".to_string(), json!(dynamic_task_tree));
     record.insert(
         "blockers".to_string(),
         build_runtime_blockers(
@@ -841,21 +1151,11 @@ fn build_local_chat_requirement_record(
     );
     record.insert(
         "current_task_node".to_string(),
-        json!({
-            "id": format!("node-execute-{session_id}"),
-            "title": "桌面端本地对话与工具执行",
-            "status": run_status,
-            "stage_key": "local_chat"
-        }),
+        json!(current_task_node_value(dynamic_task_tree)),
     );
     record.insert(
         "task_branches".to_string(),
-        json!([{
-            "id": "local-node-run",
-            "title": "在桌面端本机执行模型选择的本地工具",
-            "status": run_status,
-            "stage_key": "execution"
-        }]),
+        json!(task_branch_values(dynamic_task_tree)),
     );
     record.insert(
         "history".to_string(),
@@ -909,6 +1209,7 @@ fn build_local_chat_requirement_record(
     record.insert("model_runtime".to_string(), agent_loop.audit_value());
     record.insert("tool_results".to_string(), json!(tool_results));
     record.insert("operations".to_string(), operations);
+    record.insert("conversation_lifecycle".to_string(), conversation_lifecycle);
     record.insert("audit_logs".to_string(), json!(audit_logs));
     record.insert("sync_status".to_string(), json!("local_only"));
     record.insert("updated_at_epoch_ms".to_string(), json!(epoch_millis()));
@@ -1024,9 +1325,11 @@ fn build_requirement_understanding_snapshot(
     user_message: &str,
     intent_analysis: &Value,
     related_context: &Value,
+    task_goal: &TaskGoal,
 ) -> Value {
     let prompt = json!({
         "user_message": user_message,
+        "task_goal": task_goal,
         "intent_analysis": intent_analysis,
         "related_context": related_context
     });
@@ -1039,6 +1342,7 @@ fn build_requirement_understanding_snapshot(
         "model_name": "local-deterministic-requirement-parser",
         "input_summary": "基于用户当前原文生成需求理解和上下文检索方向。",
         "context_package": {
+            "task_goal": task_goal,
             "current_request_summary": intent_analysis["current_request_summary"].clone(),
             "related_work_summary": [],
             "current_state_used": "local requirement/current_state candidates",
@@ -1074,6 +1378,13 @@ fn build_task_processing_snapshot(
         "prompt_stack": prompt_stack,
         "input_summary": format!("任务处理循环第 {model_step_index} 次模型请求。"),
         "context_package": {
+            "task_goal": request.task_goal.as_ref(),
+            "task_tree": request.task_tree.as_ref(),
+            "current_task_node": request
+                .task_tree
+                .as_ref()
+                .map(current_task_node_value)
+                .unwrap_or_else(|| json!({})),
             "current_request_summary": request
                 .messages
                 .iter()
@@ -1098,6 +1409,260 @@ fn build_task_processing_snapshot(
             "content_preview": truncate_inline(&message.content, 700)
         })).collect::<Vec<_>>(),
         "created_at_epoch_ms": epoch_millis()
+    })
+}
+
+fn lifecycle_node_status_for_run(run_status: &str, waiting_for: Option<&str>) -> &'static str {
+    if waiting_for.is_some() {
+        return "waiting";
+    }
+    match run_status {
+        "completed" => "completed",
+        "failed" => "failed",
+        "waiting_approval" => "waiting",
+        _ => "running",
+    }
+}
+
+fn model_result_lifecycle_status(model_result: &ModelStepResult) -> &'static str {
+    if model_result.ok {
+        return "completed";
+    }
+    if model_result.error_code == "model.connection_timeout" {
+        return "no_signal";
+    }
+    "failed"
+}
+
+fn lifecycle_final_status_for_run(run_status: &str, waiting_for: Option<&str>) -> &'static str {
+    if waiting_for.is_some() {
+        return "waiting";
+    }
+    match run_status {
+        "completed" => "ended",
+        "failed" => "failed",
+        "waiting_approval" => "waiting",
+        _ => "running",
+    }
+}
+
+fn tool_lifecycle_node_kind(tool_name: &str) -> &'static str {
+    match tool_name.trim() {
+        "read_file" => "file_read",
+        "list_files" | "search_text" => "file_search",
+        "write_file" | "apply_patch" | "delete_file" => "file_edit",
+        "run_command" | "check_command_risk" => "command",
+        "call_mcp_tool" | "list_mcp_tools" | "read_mcp_resource" => "mcp_call",
+        _ => "tool",
+    }
+}
+
+fn tool_result_status(result: &super::types::ToolExecutionResult) -> String {
+    if result.ok {
+        return "completed".to_string();
+    }
+    if result.error_code == "permission.required" {
+        return "waiting".to_string();
+    }
+    result
+        .content
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("failed")
+        .to_string()
+}
+
+fn conversation_context_messages(model_request: &ModelStepRequest) -> Vec<Value> {
+    model_request
+        .messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            json!({
+                "index": index,
+                "role": message.role,
+                "tool_call_id": message.tool_call_id,
+                "tool_call_count": message.tool_calls.len(),
+                "content_preview": truncate_inline(&message.content, 1200),
+            })
+        })
+        .collect()
+}
+
+fn build_conversation_lifecycle(
+    session_id: &str,
+    chat_session_id: &str,
+    user_message_id: &str,
+    assistant_message_id: &str,
+    user_message: &str,
+    run_status: &str,
+    waiting_for: Option<&str>,
+    model_request: &ModelStepRequest,
+    agent_loop: &AgentLoopResult,
+    tool_results: &[super::types::ToolExecutionResult],
+    assistant_content: &str,
+) -> Value {
+    let started_at = epoch_millis();
+    let total_context_messages = model_request.messages.len();
+    let mut nodes = Vec::<Value>::new();
+    nodes.push(json!({
+        "id": format!("{session_id}:start"),
+        "type": "start",
+        "title": "开始",
+        "status": "completed",
+        "message_id": user_message_id,
+        "message_role": "user",
+        "summary": truncate_inline(user_message, 220),
+        "context_ref": {
+            "source": "conversation_context.messages",
+            "start_index": 0,
+            "end_index": total_context_messages,
+            "model_step_index": 0
+        },
+        "index": 0,
+        "created_at_epoch_ms": started_at,
+    }));
+
+    let understanding_summary = agent_loop
+        .model_steps
+        .first()
+        .map(|step| truncate_inline(&step.summary, 260))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "已创建本地模型请求并进入需求理解。".to_string());
+    nodes.push(json!({
+        "id": format!("{session_id}:understand_requirement"),
+        "type": "understand_requirement",
+        "title": "理解需求",
+        "status": if agent_loop.model_steps.is_empty() && run_status == "failed" { "failed" } else { "completed" },
+        "summary": understanding_summary,
+        "model_message_count": model_request.messages.len(),
+        "model_step_count": agent_loop.model_steps.len(),
+        "context_ref": {
+            "source": "conversation_context.messages",
+            "start_index": 0,
+            "end_index": total_context_messages,
+            "model_step_index": 1
+        },
+        "index": 1,
+        "created_at_epoch_ms": started_at,
+    }));
+
+    for (index, result) in tool_results.iter().enumerate() {
+        let tool_name = result.name.trim();
+        let content = result.content.as_object().cloned().unwrap_or_default();
+        let path = content
+            .get("path")
+            .or_else(|| content.get("cwd"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        nodes.push(json!({
+            "id": format!("{session_id}:execute_task:{}", result.tool_call_id),
+            "type": "execute_task",
+            "kind": tool_lifecycle_node_kind(tool_name),
+            "title": if tool_name.is_empty() { "执行任务".to_string() } else { format!("执行任务：{tool_name}") },
+            "status": tool_result_status(result),
+            "terminal": result.content.get("terminal").and_then(Value::as_bool).unwrap_or(result.ok || result.error_code != "tool.timeout"),
+            "requires_judgement": result.content.get("requires_judgement").and_then(Value::as_bool).unwrap_or(false),
+            "summary": result.summary.as_str(),
+            "tool_call_id": result.tool_call_id.as_str(),
+            "tool_result_id": result.tool_result_id.as_str(),
+            "tool_name": tool_name,
+            "path": path,
+            "error_code": result.error_code.as_str(),
+            "error": result.error.as_str(),
+            "context_ref": {
+                "source": "conversation_context.messages",
+                "start_index": 0,
+                "end_index": total_context_messages,
+                "tool_call_id": result.tool_call_id.as_str()
+            },
+            "index": index + 2,
+            "created_at_epoch_ms": started_at,
+        }));
+    }
+
+    if tool_results.is_empty() {
+        nodes.push(json!({
+            "id": format!("{session_id}:execute_task:none"),
+            "type": "execute_task",
+            "kind": "model",
+            "title": "执行任务",
+            "status": lifecycle_node_status_for_run(run_status, waiting_for),
+            "summary": if agent_loop.model_steps.is_empty() {
+                "尚未完成模型执行。".to_string()
+            } else {
+                "模型未请求本地工具，直接整理结果。".to_string()
+            },
+            "model_step_count": agent_loop.model_steps.len(),
+            "context_ref": {
+                "source": "conversation_context.messages",
+                "start_index": 0,
+                "end_index": total_context_messages,
+                "model_step_index": agent_loop.model_steps.len()
+            },
+            "index": 2,
+            "created_at_epoch_ms": started_at,
+        }));
+    }
+
+    let final_summary = if waiting_for == Some("plan_confirmation") {
+        "等待用户确认执行计划。".to_string()
+    } else if waiting_for == Some("approval") {
+        "等待用户授权后继续执行。".to_string()
+    } else if agent_loop.stopped_reason == "tool_no_signal" {
+        "当前步骤暂无完成或失败证据，任务已保留现场等待恢复判断。".to_string()
+    } else if agent_loop.final_model_result().error_code == "model.connection_timeout" {
+        "模型请求暂无返回信号，不能据此判断任务失败；已保留上下文等待恢复判断。".to_string()
+    } else if run_status == "completed" {
+        truncate_inline(assistant_content, 320)
+    } else {
+        agent_loop.error()
+    };
+    nodes.push(json!({
+        "id": format!("{session_id}:final_solution"),
+        "type": "final_solution",
+        "title": "最终方案",
+        "status": if agent_loop.stopped_reason == "tool_no_signal" {
+            "no_signal"
+        } else if agent_loop.final_model_result().error_code == "model.connection_timeout" {
+            model_result_lifecycle_status(&agent_loop.final_model_result())
+        } else {
+            lifecycle_final_status_for_run(run_status, waiting_for)
+        },
+        "message_id": assistant_message_id,
+        "message_role": "assistant",
+        "summary": final_summary,
+        "context_ref": {
+            "source": "conversation_context.messages",
+            "start_index": 0,
+            "end_index": total_context_messages,
+            "model_step_index": agent_loop.model_steps.len()
+        },
+        "index": nodes.len(),
+        "created_at_epoch_ms": started_at,
+    }));
+
+    json!({
+        "version": "desktop-conversation-lifecycle/v1",
+        "session_id": session_id,
+        "chat_session_id": chat_session_id,
+        "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
+        "status": lifecycle_final_status_for_run(run_status, waiting_for),
+        "run_status": run_status,
+        "waiting_for": waiting_for.unwrap_or(""),
+        "model_step_count": agent_loop.model_steps.len(),
+        "tool_call_count": tool_results.len(),
+        "conversation_context": {
+            "version": "desktop-conversation-context/v1",
+            "storage": "single_snapshot_with_index_ranges",
+            "messages": conversation_context_messages(model_request)
+        },
+        "nodes": nodes,
     })
 }
 
@@ -1687,6 +2252,7 @@ fn prompt_stack_from_model_request(model_request: &ModelStepRequest) -> PromptSt
         system_prompt_parts: Vec::new(),
         temperature: None,
         model_runtime: None,
+        ai_entry_file: None,
         attachments: Vec::new(),
         permission_decision: None,
     };
@@ -1929,26 +2495,30 @@ fn build_plan_confirmation_agent_loop(
 
 fn create_plan_state(
     session_id: &str,
-    user_message: &str,
+    task_goal: &TaskGoal,
     clarity: &ClarityAssessment,
     run_status: &str,
-    current_node_prefix: &str,
     created_at_epoch_ms: u128,
     agent_loop: Option<&AgentLoopResult>,
+    task_tree: &planning::TaskTree,
 ) -> PlanState {
-    let current_node_id = format!("{current_node_prefix}-{session_id}");
-    let mut nodes = vec![PlanNode {
-        node_id: current_node_id.clone(),
-        title: if clarity.task_type == "query" || clarity.task_type == "explanation" {
-            "回答当前请求".to_string()
-        } else {
-            "执行桌面端本地智能体任务".to_string()
-        },
-        status: run_status.to_string(),
-        verification_result: agent_loop
-            .map(|loop_result| loop_result.verification.summary.clone())
-            .unwrap_or_default(),
-    }];
+    let verification_summary = agent_loop
+        .map(|loop_result| loop_result.verification.summary.clone())
+        .unwrap_or_default();
+    let mut nodes = task_tree
+        .nodes
+        .iter()
+        .filter(|node| node.node_type != "goal")
+        .map(|node| PlanNode {
+            node_id: node.node_id.clone(),
+            title: node.title.clone(),
+            status: node.status.clone(),
+            verification_result: node
+                .verification_result
+                .clone()
+                .unwrap_or_else(|| verification_summary.clone()),
+        })
+        .collect::<Vec<_>>();
     if clarity.requires_confirmation {
         nodes.insert(
             0,
@@ -1975,11 +2545,11 @@ fn create_plan_state(
             _ => "running",
         }
         .to_string(),
-        root_goal: truncate_inline(user_message, 260),
+        root_goal: truncate_inline(&task_goal.user_request, 260),
         nodes,
-        current_node_id,
+        current_node_id: task_tree.current_node_id.clone(),
         destructive_steps: if clarity.task_type == "destructive" {
-            vec![truncate_inline(user_message, 160)]
+            vec![truncate_inline(&task_goal.user_request, 160)]
         } else {
             Vec::new()
         },
@@ -2068,6 +2638,14 @@ fn route_tool_failure(
             "权限门阻止了副作用工具执行。",
             false,
             "等待用户授权或拒绝。",
+        )
+    } else if code.contains("drift_detected") {
+        (
+            "plan",
+            "goal_drift_detected",
+            "副作用工具目标偏离本轮 TaskGoal，需要回到当前目标范围重新规划。",
+            repeated_attempts < 2,
+            "工具目标回到 TaskGoal 范围内并验证通过，重复偏离后 blocked。",
         )
     } else if code.contains("not_found") || result.summary.contains("不存在") {
         (
@@ -2193,11 +2771,13 @@ fn build_requirement_current_state_delta(
     observations: &[Observation],
     scheduler_state: &RuntimeSchedulerState,
     verification_report: &VerificationReport,
+    task_goal: &TaskGoal,
     clarity_assessment: &ClarityAssessment,
     plan_state: &PlanState,
     retry_decision: &RetryDecision,
     memory_write_plan: &MemoryWritePlan,
     runtime_artifacts: &RuntimeArtifactPaths,
+    dynamic_task_tree: &planning::TaskTree,
 ) -> Value {
     json!({
         "latest_status": run_status,
@@ -2209,6 +2789,10 @@ fn build_requirement_current_state_delta(
         "agent_run_context": agent_run_context,
         "observations": observations,
         "scheduler_state": scheduler_state,
+        "task_goal": task_goal,
+        "task_tree": dynamic_task_tree,
+        "current_task_node": current_task_node_value(dynamic_task_tree),
+        "task_branches": task_branch_values(dynamic_task_tree),
         "clarity_assessment": clarity_assessment,
         "plan_state": plan_state,
         "retry_decision": retry_decision,
@@ -2227,6 +2811,7 @@ fn build_verification_report(
     agent_loop: &AgentLoopResult,
     planned_tools: &[PlannedLocalTool],
     tool_results: &[super::types::ToolExecutionResult],
+    task_goal: &TaskGoal,
 ) -> VerificationReport {
     let tool_failures = tool_results
         .iter()
@@ -2291,7 +2876,17 @@ fn build_verification_report(
         VerificationCheck {
             check_type: "goal".to_string(),
             status: agent_loop.verification.status.clone(),
-            summary: agent_loop.verification.summary.clone(),
+            summary: if agent_loop.verification.summary.trim().is_empty() {
+                format!(
+                    "当前目标 {} 已进入运行状态，目标对象：{}。",
+                    task_goal.goal_id, task_goal.target_object
+                )
+            } else {
+                format!(
+                    "{} 目标：{}。",
+                    agent_loop.verification.summary, task_goal.title
+                )
+            },
         },
     ];
     checks.push(VerificationCheck {
@@ -2337,11 +2932,13 @@ fn build_verification_report(
     if !targets.is_empty() {
         evidence.push(format!("local_targets={}", targets.join(",")));
     }
+    evidence.push(format!("task_goal_id={}", task_goal.goal_id));
+    evidence.push(format!("task_goal_intent={}", task_goal.intent));
 
     VerificationReport {
         version: "verification-report/v1".to_string(),
         verification_id: format!("verify_{}", epoch_millis()),
-        target_node_id: "local_chat".to_string(),
+        target_node_id: task_goal.goal_id.clone(),
         overall_status: if run_status == "completed" {
             "passed"
         } else if waiting_for.is_some() {
@@ -2397,6 +2994,50 @@ fn build_requirement_current_state(
     })
 }
 
+fn current_task_node_value(task_tree: &planning::TaskTree) -> Value {
+    task_tree
+        .nodes
+        .iter()
+        .find(|node| node.node_id == task_tree.current_node_id)
+        .map(|node| task_node_value(task_tree, node, true))
+        .unwrap_or_else(|| json!({}))
+}
+
+fn task_branch_values(task_tree: &planning::TaskTree) -> Vec<Value> {
+    task_tree
+        .nodes
+        .iter()
+        .map(|node| task_node_value(task_tree, node, node.node_id == task_tree.current_node_id))
+        .collect()
+}
+
+fn task_node_value(
+    task_tree: &planning::TaskTree,
+    node: &planning::TaskNode,
+    is_current: bool,
+) -> Value {
+    let children_ids = task_tree
+        .nodes
+        .iter()
+        .filter(|candidate| candidate.parent_id.as_deref() == Some(node.node_id.as_str()))
+        .map(|candidate| candidate.node_id.clone())
+        .collect::<Vec<_>>();
+    json!({
+        "id": node.node_id,
+        "node_id": node.node_id,
+        "parent_id": node.parent_id,
+        "title": node.title,
+        "status": node.status,
+        "node_kind": node.node_type,
+        "type": node.node_type,
+        "is_current": is_current,
+        "is_destructive": node.is_destructive,
+        "verification_result": node.verification_result,
+        "children_ids": children_ids,
+        "summary": node.title,
+    })
+}
+
 fn changed_or_inspected_targets(planned_tools: &[PlannedLocalTool]) -> Vec<String> {
     planned_tools
         .iter()
@@ -2406,6 +3047,45 @@ fn changed_or_inspected_targets(planned_tools: &[PlannedLocalTool]) -> Vec<Strin
                 .or_else(|| argument_string(&tool.arguments, "file"))
         })
         .collect()
+}
+
+fn build_task_goal(
+    session_id: &str,
+    user_message: &str,
+    model_request: &ModelStepRequest,
+) -> TaskGoal {
+    let targets = extract_file_path_candidates(user_message);
+    let target_object = targets
+        .last()
+        .cloned()
+        .or_else(|| infer_recent_target_path(&model_request.messages))
+        .unwrap_or_else(|| "current user request".to_string());
+    let intent = infer_requirement_task_type(user_message).to_string();
+    let title = truncate_inline(user_message, 120);
+    let mut success_criteria = vec![
+        "围绕本轮用户目标推进，不以关键词命中强制副作用工具。".to_string(),
+        "模型工具调用结果能回传到同一任务目标下继续判断。".to_string(),
+        "最终状态必须有验证报告或明确阻塞原因。".to_string(),
+    ];
+    if intent == "modification" {
+        success_criteria.push("修改类任务需要说明涉及目标、执行结果和验证证据。".to_string());
+    } else if intent == "question" {
+        success_criteria.push("查询类任务不要求写入文件，直接回答用户问题。".to_string());
+    }
+    let mut constraints = infer_requirement_constraints(user_message);
+    constraints.push("高风险或副作用动作必须经过本地权限策略。".to_string());
+
+    TaskGoal {
+        version: "task-goal/v1".to_string(),
+        goal_id: format!("goal_{session_id}"),
+        title,
+        user_request: user_message.to_string(),
+        intent,
+        target_object,
+        success_criteria,
+        constraints,
+        created_at_epoch_ms: epoch_millis(),
+    }
 }
 
 fn requirement_keywords(user_message: &str) -> Vec<String> {
@@ -2481,10 +3161,40 @@ fn infer_requirement_focus(user_message: &str) -> String {
 }
 
 fn infer_requirement_task_type(user_message: &str) -> &'static str {
-    if user_message.contains("最近") || user_message.contains("历史") {
+    if user_message.contains("删除")
+        || user_message.contains("清空")
+        || user_message.contains("移除")
+        || user_message.contains("覆盖")
+    {
+        "destructive"
+    } else if user_message.contains("部署")
+        || user_message.contains("发布")
+        || user_message.contains("上线")
+    {
+        "deployment"
+    } else if user_message.contains("文档")
+        || user_message.contains(".md")
+        || user_message.contains("说明")
+        || user_message.contains("计划")
+    {
+        "documentation"
+    } else if user_message.contains("工作流")
+        || user_message.contains("任务树")
+        || user_message.contains("执行流")
+        || user_message.contains("恢复续跑")
+        || user_message.contains("MCP")
+    {
+        "governance"
+    } else if user_message.contains("最近") || user_message.contains("历史") {
         "history_recall"
     } else if user_message.contains("修复") || user_message.contains("解决") {
-        "modification"
+        "bugfix"
+    } else if user_message.contains("分析")
+        || user_message.contains("看看")
+        || user_message.contains("确认")
+        || user_message.contains("为什么")
+    {
+        "analysis"
     } else if user_message.contains("修改") || user_message.contains("改造") {
         "modification"
     } else if user_message.contains("吗")
@@ -2578,15 +3288,24 @@ fn format_local_chat_response(
         vec!["本地智能体等待授权，任务尚未完成。".to_string()]
     } else if model_step_failed && model_result.error_code == "model.connection_timeout" {
         if tool_results.is_empty() {
-            vec!["模型连接超时，本轮未执行任何本机工具，也未修改文件。".to_string()]
+            vec![
+                "模型请求暂无返回信号，本轮未拿到完成或失败证据；已保留上下文等待恢复判断。"
+                    .to_string(),
+            ]
         } else {
-            vec!["模型连接超时，已执行的本机工具见下方摘要；本轮尚未完成最终修改。".to_string()]
+            vec![
+                "模型请求暂无返回信号，已执行的本机工具见下方摘要；不能据此判断任务失败。"
+                    .to_string(),
+            ]
         }
     } else if model_result.error_code == "model.connection_timeout" {
         if tool_results.is_empty() {
-            vec!["模型连接超时，本轮未执行任何本机工具，也未修改文件。".to_string()]
+            vec!["模型请求暂无返回信号，本轮未执行任何本机工具，也未修改文件。".to_string()]
         } else {
-            vec!["模型连接超时，已执行的本机工具见下方摘要；本轮尚未完成最终修改。".to_string()]
+            vec![
+                "模型请求暂无返回信号，已执行的本机工具见下方摘要；任务状态需要恢复判断。"
+                    .to_string(),
+            ]
         }
     } else if model_step_failed {
         if tool_results.is_empty() {
@@ -2596,11 +3315,14 @@ fn format_local_chat_response(
         }
     } else if loop_failed {
         match stopped_reason {
+            "tool_no_signal" => {
+                vec![
+                    "本地智能体已暂停：当前步骤暂无完成或失败证据，可能仍在执行或需要恢复判断。"
+                        .to_string(),
+                ]
+            }
             "verification_failed" => {
                 vec!["本地智能体未完成任务：验证没有通过。".to_string()]
-            }
-            "exploration_budget_exceeded" => {
-                vec!["本地智能体未完成任务：实现型任务持续读取/搜索，没有进入写入或执行，已暂停自动循环。".to_string()]
             }
             "repeated_failure" => {
                 vec!["本地智能体未完成任务：相同失败重复出现，已暂停自动循环。".to_string()]
@@ -2935,7 +3657,15 @@ fn replay_pending_permission_tool_if_available(
     } else {
         format!("{}；继续已授权的本地工具调用", tool.summary.trim())
     };
-    emit_tool_call_started_event(event_sink, runtime_session_id, chat_session_id, &tool, 1, 1);
+    emit_tool_call_started_event(
+        event_sink,
+        runtime_session_id,
+        chat_session_id,
+        &tool,
+        1,
+        1,
+        None,
+    );
     emit_command_started_for_tool(
         event_sink,
         runtime_session_id,
@@ -2980,7 +3710,13 @@ fn replay_pending_permission_tool_if_available(
         &tool,
         &result,
     );
-    emit_tool_result_event(event_sink, runtime_session_id, chat_session_id, &result);
+    emit_tool_result_event(
+        event_sink,
+        runtime_session_id,
+        chat_session_id,
+        &tool,
+        &result,
+    );
     Some(ReplayedPermissionTool {
         tool,
         result,
@@ -3109,9 +3845,7 @@ impl AgentLoopResult {
             return false;
         }
         match self.stopped_reason.as_str() {
-            "exploration_budget_exceeded" | "repeated_failure" | "verification_failed" => {
-                return false
-            }
+            "repeated_failure" | "verification_failed" | "tool_no_signal" => return false,
             _ => {}
         }
         let final_result = self.final_model_result();
@@ -3120,24 +3854,23 @@ impl AgentLoopResult {
 
     fn error_code(&self) -> String {
         match self.stopped_reason.as_str() {
-            "exploration_budget_exceeded" => "agent_loop.exploration_budget_exceeded".to_string(),
             "repeated_failure" => "agent_loop.repeated_failure".to_string(),
             "verification_failed" => "agent_loop.verification_failed".to_string(),
+            "tool_no_signal" => "agent_loop.no_signal".to_string(),
             _ => String::new(),
         }
     }
 
     fn error(&self) -> String {
         match self.stopped_reason.as_str() {
-            "exploration_budget_exceeded" => {
-                "agent loop kept exploring without producing implementation side effects"
-                    .to_string()
-            }
             "repeated_failure" => {
                 "agent loop repeated the same failed strategy and failure signature".to_string()
             }
             "verification_failed" => {
                 "agent loop could not verify the user goal after failed attempts".to_string()
+            }
+            "tool_no_signal" => {
+                "tool stopped without completion evidence; task state is no_signal".to_string()
             }
             _ => String::new(),
         }
@@ -3145,10 +3878,6 @@ impl AgentLoopResult {
 
     fn summary(&self) -> String {
         match self.stopped_reason.as_str() {
-            "exploration_budget_exceeded" => {
-                "Agent Loop 检测到实现型任务持续读取/搜索但没有进入写入或执行，已暂停自动循环。"
-                    .to_string()
-            }
             "repeated_failure" => {
                 "Agent Loop 检测到相同方案和相同失败签名重复出现，已暂停自动循环。".to_string()
             }
@@ -3267,9 +3996,6 @@ fn run_agent_loop_with(
     let mut candidate_solutions = Vec::new();
     let mut attempts = Vec::new();
     let mut verification_reprompts = 0usize;
-    let implementation_task = messages_indicate_implementation_task(&messages);
-    let mut exploration_only_rounds = 0usize;
-    let mut exploration_control_message_sent = false;
     let mut permission_cache = load_session_permission_cache(workspace_root, run_key);
     let stopped_reason: String;
     let mut awaiting_permission = false;
@@ -3294,7 +4020,14 @@ fn run_agent_loop_with(
         let current_planned_tools = rank_local_tool_candidates(
             plan_local_tools(run_key, &model_result)
                 .into_iter()
-                .map(|tool| repair_planned_tool_arguments(tool, &messages, workspace_root))
+                .map(|tool| {
+                    repair_planned_tool_arguments(
+                        tool,
+                        &messages,
+                        Some(&model_result),
+                        workspace_root,
+                    )
+                })
                 .collect(),
             &attempts,
         );
@@ -3307,6 +4040,7 @@ fn run_agent_loop_with(
             model_steps.len(),
             &model_result,
             &current_planned_tools,
+            &request,
         );
         emit_model_step_event(
             event_sink,
@@ -3314,6 +4048,7 @@ fn run_agent_loop_with(
             run_key,
             model_steps.len(),
             &model_result,
+            &request,
         );
 
         if !model_result.ok {
@@ -3321,24 +4056,7 @@ fn run_agent_loop_with(
             break;
         }
         if current_planned_tools.is_empty() {
-            if implementation_task
-                && !tool_results.is_empty()
-                && !tool_results
-                    .iter()
-                    .any(|result| is_side_effect_tool(&result.name))
-            {
-                if !exploration_control_message_sent {
-                    exploration_control_message_sent = true;
-                    messages.push(RuntimeModelMessage::simple(
-                        "user",
-                        implementation_exploration_budget_message(exploration_only_rounds.max(1)),
-                    ));
-                    continue;
-                }
-                stopped_reason = "exploration_budget_exceeded".to_string();
-                break;
-            }
-            if has_unresolved_failed_attempt(&attempts) {
+            if has_unresolved_failed_attempt(&attempts, &model_result.content) {
                 if verification_reprompts < DEFAULT_MAX_VERIFICATION_REPROMPTS {
                     verification_reprompts += 1;
                     messages.push(RuntimeModelMessage::simple(
@@ -3360,12 +4078,6 @@ fn run_agent_loop_with(
         ));
 
         let planned_tool_count = current_planned_tools.len();
-        let exploration_only_round = current_planned_tools
-            .iter()
-            .all(|tool| is_exploration_tool(&tool.name));
-        let has_side_effect_tool = current_planned_tools
-            .iter()
-            .any(|tool| is_side_effect_tool(&tool.name));
         for (tool_index, tool) in current_planned_tools.into_iter().enumerate() {
             let mut candidate =
                 build_agent_loop_candidate(&tool, candidate_solutions.len() + 1, &attempts);
@@ -3383,6 +4095,7 @@ fn run_agent_loop_with(
                 &tool,
                 tool_index + 1,
                 planned_tool_count,
+                Some(&request),
             );
             emit_command_started_for_tool(
                 event_sink,
@@ -3412,17 +4125,19 @@ fn run_agent_loop_with(
             let tool_request = ToolExecutionRequest {
                 tool_call_id: Some(tool.tool_call_id.clone()),
                 name: tool.name.clone(),
-                arguments: tool.arguments.clone(),
+                arguments: tool_arguments_with_file_access_policy(&tool, &request),
                 workspace_path: workspace_root.to_string_lossy().to_string(),
                 permission_decision: effective_permission_decision.clone(),
             };
-            let result = if tool.name.trim() == "run_command" {
+            let result = if let Some(drift_result) = drift_check_tool_result(&tool, &request) {
+                drift_result
+            } else if tool.name.trim() == "run_command" {
                 execute_tool_with_command_output_sink(tool_request, Some(&command_stream_sink))
             } else {
                 tool_runner(tool_request)
             };
             emit_command_result_events(event_sink, runtime_session_id, run_key, &tool, &result);
-            emit_tool_result_event(event_sink, runtime_session_id, run_key, &result);
+            emit_tool_result_event(event_sink, runtime_session_id, run_key, &tool, &result);
             let permission_denied = is_permission_denied_decision(permission_decision.as_ref())
                 && result.error_code == "permission.required";
             if result.error_code == "permission.required" && !permission_denied {
@@ -3454,6 +4169,7 @@ fn run_agent_loop_with(
             }
 
             let attempt = build_agent_loop_attempt(&tool, &result, attempts.len() + 1);
+            let no_signal = tool_result_status(&result) == "no_signal";
             let repeated_failure = !attempt.failure_signature.is_empty()
                 && attempts.iter().any(|item: &AgentLoopAttempt| {
                     item.status == "failed"
@@ -3466,12 +4182,14 @@ fn run_agent_loop_with(
                 result.tool_call_id.clone(),
                 observation_content,
             ));
+            let continue_after_recoverable_failure =
+                should_continue_after_recoverable_failure(&result, &attempts);
             attempts.push(attempt);
             candidate.status = if result.ok { "passed" } else { "abandoned" }.to_string();
             candidate_solutions.push(candidate);
             tool_results.push(result);
-            if repeated_failure {
-                stopped_reason = "repeated_failure".to_string();
+            if no_signal {
+                stopped_reason = "tool_no_signal".to_string();
                 return finalize_agent_loop_result(
                     model_steps,
                     model_input_snapshots,
@@ -3483,39 +4201,18 @@ fn run_agent_loop_with(
                     awaiting_permission,
                 );
             }
-        }
-        if implementation_task {
-            if has_side_effect_tool {
-                exploration_only_rounds = 0;
-                exploration_control_message_sent = false;
-            } else if exploration_only_round {
-                exploration_only_rounds += 1;
-                if exploration_only_rounds > MAX_EXPLORATION_ONLY_TOOL_ROUNDS
-                    && exploration_control_message_sent
-                {
-                    stopped_reason = "exploration_budget_exceeded".to_string();
-                    return finalize_agent_loop_result(
-                        model_steps,
-                        model_input_snapshots,
-                        planned_tools,
-                        tool_results,
-                        candidate_solutions,
-                        attempts,
-                        stopped_reason,
-                        awaiting_permission,
-                    );
-                }
-                if exploration_only_rounds >= MAX_EXPLORATION_ONLY_TOOL_ROUNDS
-                    && !exploration_control_message_sent
-                {
-                    exploration_control_message_sent = true;
-                    messages.push(RuntimeModelMessage::simple(
-                        "user",
-                        implementation_exploration_budget_message(exploration_only_rounds),
-                    ));
-                }
-            } else {
-                exploration_only_rounds = 0;
+            if repeated_failure && !continue_after_recoverable_failure {
+                stopped_reason = "repeated_failure".to_string();
+                return finalize_agent_loop_result(
+                    model_steps,
+                    model_input_snapshots,
+                    planned_tools,
+                    tool_results,
+                    candidate_solutions,
+                    attempts,
+                    stopped_reason,
+                    awaiting_permission,
+                );
             }
         }
     }
@@ -3538,6 +4235,7 @@ fn emit_model_step_event(
     chat_session_id: &str,
     index: usize,
     result: &ModelStepResult,
+    request: &ModelStepRequest,
 ) {
     if let Some(sink) = event_sink {
         sink(model_step_event(
@@ -3557,6 +4255,12 @@ fn emit_model_step_event(
                 "error_code": result.error_code,
                 "error": result.error,
                 "tool_call_count": result.tool_calls.len(),
+                "task_goal": request.task_goal.as_ref(),
+                "current_task_node": request
+                    .task_tree
+                    .as_ref()
+                    .map(current_task_node_value)
+                    .unwrap_or_else(|| json!({})),
                 "created_at_epoch_ms": epoch_millis(),
             }),
             epoch_millis(),
@@ -3571,6 +4275,7 @@ fn emit_progress_update_event(
     index: usize,
     result: &ModelStepResult,
     planned_tools: &[PlannedLocalTool],
+    request: &ModelStepRequest,
 ) {
     let planned_tool_count = planned_tools.len();
     if planned_tool_count == 0 {
@@ -3582,6 +4287,20 @@ fn emit_progress_update_event(
     }
     let current_focus = progress_update_focus(result, planned_tools);
     let next_action = progress_update_next_action(planned_tools);
+    let planned_tool_previews = progress_update_tool_previews(planned_tools);
+    let arguments_preview = planned_tool_previews
+        .iter()
+        .take(3)
+        .map(|item| {
+            let name = item.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let preview = item
+                .get("arguments_preview")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            format!("{name} {preview}")
+        })
+        .collect::<Vec<_>>()
+        .join("；");
     if let Some(sink) = event_sink {
         sink(progress_update_event(
             format!("evt_{runtime_session_id}_progress_{index}"),
@@ -3592,8 +4311,17 @@ fn emit_progress_update_event(
                 "status": "running",
                 "summary": summary,
                 "current_focus": current_focus,
+                "work_direction": current_focus,
                 "next_action": next_action,
                 "tool_call_count": planned_tool_count,
+                "planned_tools": planned_tool_previews,
+                "arguments_preview": truncate_inline(&arguments_preview, 2_000),
+                "task_goal": request.task_goal.as_ref(),
+                "current_task_node": request
+                    .task_tree
+                    .as_ref()
+                    .map(current_task_node_value)
+                    .unwrap_or_else(|| json!({})),
                 "provider_id": result.provider_id.as_str(),
                 "model_name": result.model_name.as_str(),
                 "created_at_epoch_ms": epoch_millis(),
@@ -3637,9 +4365,12 @@ fn progress_update_focus(result: &ModelStepResult, planned_tools: &[PlannedLocal
     if has_write {
         return "进入代码修改阶段".to_string();
     }
-    let has_read = planned_tools
-        .iter()
-        .any(|tool| is_exploration_tool(&tool.name));
+    let has_read = planned_tools.iter().any(|tool| {
+        matches!(
+            tool.name.trim(),
+            "list_files" | "read_file" | "search_files" | "search_text" | "get_file_info"
+        )
+    });
     if has_read {
         return "收集实现所需的文件结构和现有页面风格".to_string();
     }
@@ -3669,12 +4400,79 @@ fn progress_update_next_action(planned_tools: &[PlannedLocalTool]) -> String {
     truncate_inline(&text, 360)
 }
 
+fn progress_update_tool_previews(planned_tools: &[PlannedLocalTool]) -> Vec<Value> {
+    planned_tools
+        .iter()
+        .map(|tool| {
+            let arguments_preview = format_tool_arguments_preview(&tool.arguments, 2_000);
+            json!({
+                "tool_call_id": tool.tool_call_id.as_str(),
+                "name": tool.name.as_str(),
+                "summary": tool.summary.as_str(),
+                "arguments": summarize_tool_arguments(&tool.arguments),
+                "arguments_preview": arguments_preview,
+            })
+        })
+        .collect()
+}
+
+fn format_tool_arguments_preview(arguments: &Value, limit: usize) -> String {
+    let preview = summarize_tool_arguments(arguments);
+    serde_json::to_string(&preview)
+        .map(|value| truncate_inline(&value, limit))
+        .unwrap_or_default()
+}
+
+fn summarize_tool_arguments(arguments: &Value) -> Value {
+    match arguments {
+        Value::Object(map) => {
+            let mut summarized = serde_json::Map::new();
+            for (key, value) in map {
+                summarized.insert(key.clone(), summarize_tool_argument_value(key, value));
+            }
+            Value::Object(summarized)
+        }
+        other => other.clone(),
+    }
+}
+
+fn summarize_tool_argument_value(key: &str, value: &Value) -> Value {
+    let Some(text) = value.as_str() else {
+        return value.clone();
+    };
+    if !matches!(key, "content" | "patch") {
+        return value.clone();
+    }
+    let char_count = text.chars().count();
+    if char_count <= 800 {
+        return json!({
+            "chars": char_count,
+            "value": text,
+        });
+    }
+    let head = text.chars().take(500).collect::<String>();
+    let tail = text
+        .chars()
+        .rev()
+        .take(200)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    json!({
+        "chars": char_count,
+        "head": head,
+        "tail": tail,
+        "truncated_for_preview": true,
+    })
+}
+
 fn describe_planned_tool_intent(tool: &PlannedLocalTool) -> String {
     match tool.name.trim() {
         "list_files" => {
             let path = argument_string(&tool.arguments, "path").unwrap_or_else(|| ".".to_string());
             if path.trim() == "." {
-                "查看工作区目录，确认可复用页面和入口文件".to_string()
+                "查看工作区目录，确认可复用页面和实现入口".to_string()
             } else {
                 format!("查看 {} 目录，确认已有文件结构", path.trim())
             }
@@ -3737,6 +4535,55 @@ fn describe_planned_tool_intent(tool: &PlannedLocalTool) -> String {
     }
 }
 
+fn tool_arguments_with_file_access_policy(
+    tool: &PlannedLocalTool,
+    request: &ModelStepRequest,
+) -> Value {
+    if !matches!(tool.name.trim(), "read_file" | "search_text") {
+        return tool.arguments.clone();
+    }
+    let mut arguments = tool.arguments.clone();
+    let Some(object) = arguments.as_object_mut() else {
+        return arguments;
+    };
+    object.insert(
+        "file_access_policy".to_string(),
+        build_file_access_policy_for_request(request),
+    );
+    arguments
+}
+
+fn build_file_access_policy_for_request(request: &ModelStepRequest) -> Value {
+    const CLI_ENTRY_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", "HERMES.md"];
+    let ai_entry_file = normalize_policy_path(&request.ai_entry_file);
+    let user_message_lower = request.user_message.to_lowercase();
+    let explicit_cli_entry_files = CLI_ENTRY_FILES
+        .iter()
+        .filter_map(|name| {
+            let normalized = normalize_policy_path(name);
+            if !normalized.is_empty() && user_message_lower.contains(&normalized.to_lowercase()) {
+                Some(normalized)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "surface": "desktop_project_chat",
+        "ai_entry_file": ai_entry_file,
+        "cli_entry_files": CLI_ENTRY_FILES.map(normalize_policy_path),
+        "explicit_cli_entry_files": explicit_cli_entry_files,
+    })
+}
+
+fn normalize_policy_path(value: &str) -> String {
+    value
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
+}
+
 fn planned_tool_line_range(arguments: &Value) -> String {
     let Some(start) = arguments.get("start_line").and_then(Value::as_i64) else {
         return String::new();
@@ -3767,6 +4614,12 @@ fn emit_model_call_started_event(
                 "provider_id": request.provider_id.as_str(),
                 "model_name": request.model_name.as_str(),
                 "message_count": request.messages.len(),
+                "task_goal": request.task_goal.as_ref(),
+                "current_task_node": request
+                    .task_tree
+                    .as_ref()
+                    .map(current_task_node_value)
+                    .unwrap_or_else(|| json!({})),
                 "created_at_epoch_ms": epoch_millis(),
             }),
             epoch_millis(),
@@ -3781,11 +4634,10 @@ fn emit_tool_call_started_event(
     tool: &PlannedLocalTool,
     tool_index: usize,
     tool_count: usize,
+    request: Option<&ModelStepRequest>,
 ) {
     if let Some(sink) = event_sink {
-        let arguments_preview = serde_json::to_string(&tool.arguments)
-            .map(|value| truncate_inline(&value, 500))
-            .unwrap_or_default();
+        let arguments_preview = format_tool_arguments_preview(&tool.arguments, 500);
         sink(tool_call_started_event(
             format!(
                 "evt_{}_tool_{}_started",
@@ -3802,6 +4654,11 @@ fn emit_tool_call_started_event(
                 "tool_count": tool_count,
                 "arguments": &tool.arguments,
                 "arguments_preview": arguments_preview,
+                "task_goal": request.and_then(|item| item.task_goal.as_ref()),
+                "current_task_node": request
+                    .and_then(|item| item.task_tree.as_ref())
+                    .map(current_task_node_value)
+                    .unwrap_or_else(|| json!({})),
                 "created_at_epoch_ms": epoch_millis(),
             }),
             epoch_millis(),
@@ -3935,7 +4792,9 @@ fn emit_command_result_events(
             "cmd": cmd,
             "cwd": cwd,
             "ok": result.ok,
-            "status": if result.ok { "completed" } else { "failed" },
+            "status": tool_result_status(result),
+            "terminal": result.content.get("terminal").and_then(Value::as_bool).unwrap_or(result.ok || result.error_code != "tool.timeout"),
+            "requires_judgement": result.content.get("requires_judgement").and_then(Value::as_bool).unwrap_or(false),
             "exit_code": result.content.get("exit_code").and_then(Value::as_i64),
             "duration_ms": result.content.get("duration_ms").and_then(Value::as_u64),
             "summary": result.summary.as_str(),
@@ -4025,10 +4884,11 @@ fn emit_tool_result_event(
     event_sink: Option<&dyn Fn(Value)>,
     runtime_session_id: &str,
     chat_session_id: &str,
+    tool: &PlannedLocalTool,
     result: &super::types::ToolExecutionResult,
 ) {
     if let Some(sink) = event_sink {
-        sink(tool_result_event(
+        let mut event = tool_result_event(
             format!(
                 "evt_{}_{}",
                 runtime_session_id,
@@ -4038,7 +4898,15 @@ fn emit_tool_result_event(
             chat_session_id,
             result,
             epoch_millis(),
-        ));
+        );
+        if let Some(payload) = event.get_mut("payload").and_then(Value::as_object_mut) {
+            payload.insert("arguments".to_string(), tool.arguments.clone());
+            payload.insert(
+                "arguments_preview".to_string(),
+                json!(format_tool_arguments_preview(&tool.arguments, 2_000)),
+            );
+        }
+        sink(event);
     }
 }
 
@@ -4129,19 +4997,23 @@ fn build_agent_loop_verification(
                 format!("attempts={}", attempts.len()),
             ],
         },
+        "tool_no_signal" => AgentLoopVerification {
+            status: "no_signal".to_string(),
+            summary: "工具步骤没有完成或失败证据，任务保持可恢复的暂无信号状态。".to_string(),
+            evidence: attempts
+                .last()
+                .map(|attempt| {
+                    vec![
+                        format!("strategy={}", attempt.strategy_signature),
+                        format!("failure={}", attempt.failure_signature),
+                    ]
+                })
+                .unwrap_or_else(|| vec!["tool_no_signal".to_string()]),
+        },
         "verification_failed" => AgentLoopVerification {
             status: "failed".to_string(),
             summary: "存在失败方案未被后续成功方案覆盖，不能把当前需求判定为完成。".to_string(),
             evidence: unresolved_failure_evidence(attempts),
-        },
-        "exploration_budget_exceeded" => AgentLoopVerification {
-            status: "paused".to_string(),
-            summary: "实现型任务连续读取/搜索但没有执行写入、补丁或命令，已暂停自动循环。"
-                .to_string(),
-            evidence: vec![
-                format!("exploration_only_round_limit={MAX_EXPLORATION_ONLY_TOOL_ROUNDS}"),
-                format!("attempts={}", attempts.len()),
-            ],
         },
         "repeated_failure" => AgentLoopVerification {
             status: "paused".to_string(),
@@ -4189,91 +5061,6 @@ fn build_agent_loop_attempt(
         summary: result.summary.clone(),
         error_code: result.error_code.clone(),
     }
-}
-
-fn is_exploration_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name.trim(),
-        "list_files" | "read_file" | "search_files" | "search_text" | "get_file_info"
-    )
-}
-
-fn messages_indicate_implementation_task(messages: &[RuntimeModelMessage]) -> bool {
-    let task_text = messages
-        .iter()
-        .filter(|message| message.role.trim() == "user")
-        .map(|message| message.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n")
-        .to_lowercase();
-    text_indicates_implementation_task(&task_text)
-}
-
-fn text_indicates_implementation_task(text: &str) -> bool {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    let action_markers = [
-        "修复",
-        "解决",
-        "修改",
-        "改造",
-        "优化",
-        "重构",
-        "开发",
-        "实现",
-        "创建",
-        "新建",
-        "新增",
-        "生成",
-        "做一个",
-        "做个",
-        "写一个",
-        "补充",
-        "接入",
-        "落地",
-        "start",
-        "build",
-        "create",
-        "implement",
-        "write",
-        "modify",
-        "fix",
-        "add",
-        "update",
-        "generate",
-    ];
-    if action_markers.iter().any(|marker| trimmed.contains(marker)) {
-        return true;
-    }
-    let artifact_markers = [
-        "登录页",
-        "注册页",
-        "页面",
-        "组件",
-        "表单",
-        "接口",
-        "测试",
-        "样式",
-        "button",
-        "page",
-        "component",
-        "form",
-    ];
-    let question_markers = ["为什么", "原因", "是什么", "吗", "?", "？"];
-    artifact_markers
-        .iter()
-        .any(|marker| trimmed.contains(marker))
-        && !question_markers
-            .iter()
-            .any(|marker| trimmed.contains(marker))
-}
-
-fn implementation_exploration_budget_message(rounds: usize) -> String {
-    format!(
-        "当前用户请求是实现型任务，已经连续 {rounds} 轮只执行读取、搜索或列目录工具。下一轮必须调用 write_file、apply_patch 或必要的 run_command 产生实现结果；如果无法写入，必须直接说明阻塞原因，不要继续只调用 read_file、search_text、search_files 或 list_files。"
-    )
 }
 
 fn build_agent_loop_candidate(
@@ -4381,13 +5168,16 @@ fn tool_verification_plan(tool_name: &str) -> Vec<String> {
 fn repair_planned_tool_arguments(
     mut tool: PlannedLocalTool,
     messages: &[RuntimeModelMessage],
+    model_result: Option<&ModelStepResult>,
     workspace_root: &PathBuf,
 ) -> PlannedLocalTool {
     if tool.name.trim() == "write_file"
         && argument_string(&tool.arguments, "path").is_none()
         && argument_string(&tool.arguments, "content").is_some()
     {
-        if let Some(path) = infer_recent_target_path(messages) {
+        if let Some(path) = infer_target_path_from_model_result(model_result)
+            .or_else(|| infer_recent_target_path(messages))
+        {
             if let Some(object) = tool.arguments.as_object_mut() {
                 object.insert("path".to_string(), json!(path.clone()));
                 tool.summary = if tool.summary.trim().is_empty() {
@@ -4443,6 +5233,75 @@ fn repair_search_text_file_path(tool: &mut PlannedLocalTool, workspace_root: &Pa
     };
 }
 
+fn drift_check_tool_result(
+    tool: &PlannedLocalTool,
+    request: &ModelStepRequest,
+) -> Option<super::types::ToolExecutionResult> {
+    if !is_side_effect_tool(&tool.name) || tool.name.trim() == "run_command" {
+        return None;
+    }
+    let task_goal = request.task_goal.as_ref()?;
+    let requested_targets = extract_file_path_candidates(&task_goal.user_request);
+    if requested_targets.is_empty() {
+        return None;
+    }
+    let tool_target = tool_target_path(tool)?;
+    let normalized_tool_target = normalize_scope_path(&tool_target);
+    let in_scope = requested_targets
+        .iter()
+        .map(|target| normalize_scope_path(target))
+        .any(|target| paths_share_scope(&target, &normalized_tool_target));
+    if in_scope {
+        return None;
+    }
+    let expected = requested_targets.join(", ");
+    let summary = format!(
+        "DriftCheck 阻止了偏离目标的副作用工具：本轮目标路径为 {expected}，但工具试图修改 {tool_target}。"
+    );
+    Some(super::types::ToolExecutionResult {
+        tool_result_id: format!("result_{}", tool.tool_call_id),
+        tool_call_id: tool.tool_call_id.clone(),
+        name: tool.name.clone(),
+        ok: false,
+        content: json!({
+            "driftCheck": {
+                "status": "blocked",
+                "expectedTargets": requested_targets,
+                "actualTarget": tool_target,
+                "taskGoal": task_goal,
+            }
+        }),
+        summary: summary.clone(),
+        error_code: "agent_loop.drift_detected".to_string(),
+        error: summary,
+    })
+}
+
+fn tool_target_path(tool: &PlannedLocalTool) -> Option<String> {
+    argument_string(&tool.arguments, "path")
+        .or_else(|| argument_string(&tool.arguments, "target"))
+        .or_else(|| argument_string(&tool.arguments, "file"))
+}
+
+fn normalize_scope_path(path: &str) -> String {
+    path.trim()
+        .trim_start_matches("./")
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn paths_share_scope(expected: &str, actual: &str) -> bool {
+    if expected.is_empty() || actual.is_empty() {
+        return false;
+    }
+    expected == actual
+        || actual.starts_with(&format!("{expected}/"))
+        || expected.starts_with(&format!("{actual}/"))
+}
+
 fn argument_string(arguments: &Value, key: &str) -> Option<String> {
     arguments
         .get(key)
@@ -4465,11 +5324,32 @@ fn infer_recent_target_path(messages: &[RuntimeModelMessage]) -> Option<String> 
     None
 }
 
+fn infer_target_path_from_model_result(model_result: Option<&ModelStepResult>) -> Option<String> {
+    let model_result = model_result?;
+    let mut texts = Vec::new();
+    if !model_result.summary.trim().is_empty() {
+        texts.push(model_result.summary.as_str());
+    }
+    if !model_result.content.trim().is_empty() {
+        texts.push(model_result.content.as_str());
+    }
+    if !model_result.reasoning_content.trim().is_empty() {
+        texts.push(model_result.reasoning_content.as_str());
+    }
+    for text in texts {
+        if let Some(candidate) = infer_target_path_from_text(text) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn infer_target_path_from_text(text: &str) -> Option<String> {
+    let candidates = extract_file_path_candidates(text);
+    candidates.last().cloned()
+}
+
 fn extract_file_path_candidates(text: &str) -> Vec<String> {
-    let allowed_extensions = [
-        "html", "htm", "css", "js", "ts", "tsx", "jsx", "vue", "json", "md", "txt", "py", "rs",
-        "toml", "yaml", "yml", "xml", "svg",
-    ];
     let mut candidates = Vec::new();
     let mut current = String::new();
     for ch in text.chars() {
@@ -4477,29 +5357,53 @@ fn extract_file_path_candidates(text: &str) -> Vec<String> {
             current.push(ch);
             continue;
         }
-        push_file_path_candidate(&mut candidates, &current, &allowed_extensions);
+        push_file_path_candidate(&mut candidates, &current, ch == ':');
         current.clear();
     }
-    push_file_path_candidate(&mut candidates, &current, &allowed_extensions);
+    push_file_path_candidate(&mut candidates, &current, false);
     candidates
 }
 
-fn push_file_path_candidate(output: &mut Vec<String>, raw: &str, allowed_extensions: &[&str]) {
-    let candidate = raw.trim_matches(|ch: char| matches!(ch, '.' | '/' | '-' | '_'));
+fn push_file_path_candidate(output: &mut Vec<String>, raw: &str, preceded_by_url_scheme: bool) {
+    if preceded_by_url_scheme || raw.starts_with("//") {
+        return;
+    }
+    let candidate = raw
+        .trim_matches(|ch: char| matches!(ch, '/' | '-' | '_'))
+        .trim_end_matches('.');
     if candidate.is_empty() || candidate.contains("..") {
         return;
     }
-    let extension = candidate
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if allowed_extensions.iter().any(|item| *item == extension) {
+    if looks_like_file_path(candidate) {
         output.push(candidate.to_string());
     }
 }
 
-fn has_unresolved_failed_attempt(attempts: &[AgentLoopAttempt]) -> bool {
+fn looks_like_file_path(candidate: &str) -> bool {
+    if candidate.contains("://") || candidate.contains("//") {
+        return false;
+    }
+    let Some(file_name) = candidate.rsplit('/').next() else {
+        return false;
+    };
+    if file_name.is_empty() || file_name == "." {
+        return false;
+    }
+    if file_name.starts_with('.') && file_name.len() > 1 {
+        return true;
+    }
+    if file_name.contains('.') {
+        return true;
+    }
+    candidate.contains('/')
+        || file_name
+            .chars()
+            .next()
+            .map(char::is_uppercase)
+            .unwrap_or(false)
+}
+
+fn has_unresolved_failed_attempt(attempts: &[AgentLoopAttempt], final_content: &str) -> bool {
     let last_failed = attempts
         .iter()
         .rposition(|attempt| attempt.status == "failed");
@@ -4509,7 +5413,33 @@ fn has_unresolved_failed_attempt(attempts: &[AgentLoopAttempt]) -> bool {
     let last_passed = attempts
         .iter()
         .rposition(|attempt| attempt.status == "passed");
-    last_passed.map(|index| index < last_failed).unwrap_or(true)
+    if last_passed
+        .map(|index| index > last_failed)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if attempts[last_failed..]
+        .iter()
+        .all(is_degradable_bootstrap_failure)
+        && final_content_acknowledges_degraded_tool_path(final_content)
+    {
+        return false;
+    }
+    true
+}
+
+fn is_degradable_bootstrap_failure(attempt: &AgentLoopAttempt) -> bool {
+    matches!(attempt.error_code.as_str(), "mcp.adapter_missing")
+}
+
+fn final_content_acknowledges_degraded_tool_path(content: &str) -> bool {
+    let content = content.trim();
+    !content.is_empty()
+        && (content.contains("降级")
+            || content.contains("adapter")
+            || content.contains("MCP")
+            || content.contains("mcp"))
 }
 
 fn unresolved_failure_evidence(attempts: &[AgentLoopAttempt]) -> Vec<String> {
@@ -4829,26 +5759,211 @@ fn tool_observation_content(
         })
         .unwrap_or_else(|| json!({}));
     let recovery_instruction = tool_recovery_instruction(result, permission_denied);
+    let recoverable = is_recoverable_tool_failure(result, permission_denied);
     json!({
         "tool_call_id": result.tool_call_id,
         "tool_name": result.name,
         "status": status,
         "ok": result.ok,
+        "recoverable": recoverable,
         "summary": result.summary,
         "error_code": if permission_denied { "permission.denied" } else { result.error_code.as_str() },
         "error": if permission_denied { "user denied permission request" } else { result.error.as_str() },
-        "content": result.content,
+        "content": compact_tool_observation_content(&result.name, &result.content),
+        "content_compacted_for_model": true,
         "attempt": attempt_payload,
         "recovery_instruction": recovery_instruction,
         "retry_instruction": if result.ok || permission_denied {
             ""
         } else if !recovery_instruction.is_empty() {
             recovery_instruction.as_str()
+        } else if recoverable {
+            "这是可恢复工具错误。请修正工具参数、改用不依赖该工具的方案，或在当前目标不硬依赖该工具时降级继续；不要把单个可恢复工具失败当成本轮任务失败。"
         } else {
             "当前方案验证失败。下一轮必须换一个不同 strategy_signature 的方案；不要原样重复同一个工具、参数和验证路径。"
         },
     })
     .to_string()
+}
+
+fn compact_tool_observation_content(tool_name: &str, content: &Value) -> Value {
+    match tool_name.trim() {
+        "read_file" => compact_read_file_observation(content),
+        "search_text" | "search_files" => compact_search_observation(content),
+        "list_files" => {
+            compact_array_field_observation(content, "entries", TOOL_OBSERVATION_MAX_ARRAY_ITEMS)
+        }
+        "run_command" => compact_command_observation(content),
+        _ => compact_generic_observation(content),
+    }
+}
+
+fn compact_read_file_observation(content: &Value) -> Value {
+    let Some(object) = content.as_object() else {
+        return compact_generic_observation(content);
+    };
+    let mut compacted = object.clone();
+    if let Some(text) = object.get("content").and_then(Value::as_str) {
+        let (preview, truncated_for_model) =
+            truncate_chars_with_flag(text, TOOL_OBSERVATION_TEXT_PREVIEW_CHARS);
+        compacted.insert("content".to_string(), json!(preview));
+        compacted.insert(
+            "content_truncated_for_model".to_string(),
+            json!(truncated_for_model),
+        );
+        compacted.insert("content_chars".to_string(), json!(text.chars().count()));
+    }
+    Value::Object(compacted)
+}
+
+fn compact_search_observation(content: &Value) -> Value {
+    let Some(object) = content.as_object() else {
+        return compact_generic_observation(content);
+    };
+    let mut compacted = object.clone();
+    if let Some(matches) = object.get("matches").and_then(Value::as_array) {
+        let total = matches.len();
+        let compact_matches = matches
+            .iter()
+            .take(TOOL_OBSERVATION_MAX_ARRAY_ITEMS)
+            .map(|item| {
+                let Some(item_object) = item.as_object() else {
+                    return compact_generic_observation(item);
+                };
+                let mut compact_item = item_object.clone();
+                if let Some(text) = item_object.get("content").and_then(Value::as_str) {
+                    let (preview, truncated_for_model) =
+                        truncate_chars_with_flag(text, TOOL_OBSERVATION_MATCH_PREVIEW_CHARS);
+                    compact_item.insert("content".to_string(), json!(preview));
+                    compact_item.insert(
+                        "content_truncated_for_model".to_string(),
+                        json!(truncated_for_model),
+                    );
+                }
+                Value::Object(compact_item)
+            })
+            .collect::<Vec<_>>();
+        compacted.insert("matches".to_string(), json!(compact_matches));
+        compacted.insert("matches_total".to_string(), json!(total));
+        compacted.insert(
+            "matches_truncated_for_model".to_string(),
+            json!(total > TOOL_OBSERVATION_MAX_ARRAY_ITEMS),
+        );
+    }
+    Value::Object(compacted)
+}
+
+fn compact_array_field_observation(content: &Value, field: &str, max_items: usize) -> Value {
+    let Some(object) = content.as_object() else {
+        return compact_generic_observation(content);
+    };
+    let mut compacted = object.clone();
+    if let Some(items) = object.get(field).and_then(Value::as_array) {
+        let total = items.len();
+        compacted.insert(
+            field.to_string(),
+            Value::Array(items.iter().take(max_items).cloned().collect()),
+        );
+        compacted.insert(format!("{field}_total"), json!(total));
+        compacted.insert(
+            format!("{field}_truncated_for_model"),
+            json!(total > max_items),
+        );
+    }
+    Value::Object(compacted)
+}
+
+fn compact_command_observation(content: &Value) -> Value {
+    let Some(object) = content.as_object() else {
+        return compact_generic_observation(content);
+    };
+    let mut compacted = object.clone();
+    for field in ["stdout", "stderr"] {
+        if let Some(text) = object.get(field).and_then(Value::as_str) {
+            let (preview, truncated_for_model) =
+                truncate_chars_with_flag(text, TOOL_OBSERVATION_TEXT_PREVIEW_CHARS);
+            compacted.insert(field.to_string(), json!(preview));
+            compacted.insert(format!("{field}_chars"), json!(text.chars().count()));
+            compacted.insert(
+                format!("{field}_truncated_for_model"),
+                json!(truncated_for_model),
+            );
+        }
+    }
+    Value::Object(compacted)
+}
+
+fn compact_generic_observation(content: &Value) -> Value {
+    let raw = serde_json::to_string(content).unwrap_or_else(|_| content.to_string());
+    if raw.chars().count() <= TOOL_OBSERVATION_TEXT_PREVIEW_CHARS {
+        return content.clone();
+    }
+    let (preview, _) = truncate_chars_with_flag(&raw, TOOL_OBSERVATION_TEXT_PREVIEW_CHARS);
+    json!({
+        "preview": preview,
+        "serialized_chars": raw.chars().count(),
+        "truncated_for_model": true,
+    })
+}
+
+fn truncate_chars_with_flag(value: &str, max_chars: usize) -> (String, bool) {
+    let mut chars = value.chars();
+    let output = chars.by_ref().take(max_chars).collect::<String>();
+    let truncated = chars.next().is_some();
+    (output, truncated)
+}
+
+fn is_recoverable_tool_failure(
+    result: &super::types::ToolExecutionResult,
+    permission_denied: bool,
+) -> bool {
+    if result.ok || permission_denied {
+        return false;
+    }
+    if result
+        .content
+        .get("recoverable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    matches!(
+        result.error_code.as_str(),
+        "tool.schema_invalid"
+            | "tool.not_found"
+            | "mcp.adapter_missing"
+            | "mcp.server_not_found"
+            | "mcp.config_invalid"
+            | "mcp.failed"
+    )
+}
+
+fn should_continue_after_recoverable_failure(
+    result: &super::types::ToolExecutionResult,
+    previous_attempts: &[AgentLoopAttempt],
+) -> bool {
+    if !is_recoverable_tool_failure(result, false) {
+        return false;
+    }
+    let repeated_same_failure_count = previous_attempts
+        .iter()
+        .filter(|attempt| {
+            attempt.status == "failed"
+                && attempt.tool_name == result.name
+                && attempt.error_code == result.error_code
+                && attempt.summary == result.summary
+        })
+        .count();
+    repeated_same_failure_count < max_recoverable_failure_repeats(result)
+}
+
+fn max_recoverable_failure_repeats(result: &super::types::ToolExecutionResult) -> usize {
+    match result.error_code.as_str() {
+        "mcp.adapter_missing" => 2,
+        "tool.schema_invalid" => 1,
+        _ => 1,
+    }
 }
 
 fn tool_recovery_instruction(
@@ -4874,6 +5989,18 @@ fn tool_recovery_instruction(
         return format!(
             "{} 参数不符合工具契约：{}。下一轮必须修正参数字段后再调用，不要重复同一组参数。",
             result.name, result.error
+        );
+    }
+    if result.error_code == "mcp.adapter_missing" {
+        return "本地 MCP adapter 配置缺失，无法读取或调用该 MCP。若当前任务不硬依赖该 MCP，请继续完成本地可执行部分，并在最终结果说明 MCP 闭环未完成；若硬依赖该 MCP，请明确缺失的 adapter 配置。".to_string();
+    }
+    if matches!(
+        result.error_code.as_str(),
+        "mcp.server_not_found" | "mcp.config_invalid" | "mcp.failed"
+    ) {
+        return format!(
+            "MCP 工具调用失败：{}。请判断该 MCP 是否是当前任务硬依赖；不是硬依赖时降级继续，硬依赖时明确配置或服务阻塞。",
+            result.error
         );
     }
     String::new()
@@ -5066,7 +6193,11 @@ struct ModelStepRequest {
     gateway_url: String,
     temperature: f64,
     timeout_ms: u64,
+    user_message: String,
+    ai_entry_file: String,
     messages: Vec<RuntimeModelMessage>,
+    task_goal: Option<TaskGoal>,
+    task_tree: Option<planning::TaskTree>,
 }
 
 impl ModelStepRequest {
@@ -5080,7 +6211,11 @@ impl ModelStepRequest {
             gateway_url: self.gateway_url.clone(),
             temperature: self.temperature,
             timeout_ms: self.timeout_ms,
+            user_message: self.user_message.clone(),
+            ai_entry_file: self.ai_entry_file.clone(),
             messages,
+            task_goal: self.task_goal.clone(),
+            task_tree: self.task_tree.clone(),
         }
     }
 }
@@ -5249,6 +6384,9 @@ fn model_gateway_body_diagnostic(body: &Value) -> Value {
         .and_then(Value::as_array)
         .map(|items| items.len())
         .unwrap_or(0);
+    let body_bytes = serde_json::to_vec(body)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0);
     let message_roles = body
         .get("messages")
         .and_then(Value::as_array)
@@ -5260,14 +6398,154 @@ fn model_gateway_body_diagnostic(body: &Value) -> Value {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let message_diagnostics = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let role = item.get("role").and_then(Value::as_str).unwrap_or("");
+                    let content_chars = message_content_chars(item.get("content"));
+                    let serialized_bytes =
+                        serde_json::to_vec(item).map(|bytes| bytes.len()).unwrap_or(0);
+                    json!({
+                        "index": index,
+                        "role": role,
+                        "tool_call_id": item.get("tool_call_id").and_then(Value::as_str).unwrap_or(""),
+                        "tool_call_count": item.get("tool_calls").and_then(Value::as_array).map(|values| values.len()).unwrap_or(0),
+                        "content_chars": content_chars,
+                        "serialized_bytes": serialized_bytes,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let largest_messages = {
+        let mut items = message_diagnostics.clone();
+        items.sort_by(|left, right| {
+            right
+                .get("serialized_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                .cmp(
+                    &left
+                        .get("serialized_bytes")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                )
+        });
+        items.into_iter().take(5).collect::<Vec<_>>()
+    };
     json!({
         "model": body.get("model").cloned().unwrap_or_else(|| json!("")),
         "temperature": body.get("temperature").cloned().unwrap_or(Value::Null),
         "stream": body.get("stream").cloned().unwrap_or(Value::Null),
         "tool_choice": body.get("tool_choice").cloned().unwrap_or(Value::Null),
+        "body_bytes": body_bytes,
         "messages_count": messages_count,
         "message_roles": message_roles,
+        "message_diagnostics": message_diagnostics,
+        "largest_messages": largest_messages,
+        "tool_call_integrity": validate_tool_call_message_integrity(
+            body.get("messages").and_then(Value::as_array),
+        ),
         "tools_count": body.get("tools").and_then(Value::as_array).map(|items| items.len()).unwrap_or(0),
+    })
+}
+
+fn message_content_chars(content: Option<&Value>) -> usize {
+    match content {
+        Some(Value::String(value)) => value.chars().count(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.get("text")
+                    .and_then(Value::as_str)
+                    .map(str::chars)
+                    .map(Iterator::count)
+                    .unwrap_or_else(|| item.to_string().chars().count())
+            })
+            .sum(),
+        Some(value) => value.to_string().chars().count(),
+        None => 0,
+    }
+}
+
+fn validate_tool_call_message_integrity(messages: Option<&Vec<Value>>) -> Value {
+    let Some(messages) = messages else {
+        return json!({
+            "status": "unknown",
+            "issue_count": 0,
+            "issues": []
+        });
+    };
+    let mut pending_tool_call_ids: Vec<String> = Vec::new();
+    let mut issues = Vec::<Value>::new();
+    for (index, message) in messages.iter().enumerate() {
+        let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+        if role == "assistant" {
+            pending_tool_call_ids.clear();
+            if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+                pending_tool_call_ids.extend(tool_calls.iter().filter_map(|tool_call| {
+                    tool_call
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                }));
+            }
+            continue;
+        }
+        if role != "tool" {
+            if !pending_tool_call_ids.is_empty() {
+                issues.push(json!({
+                    "index": index,
+                    "code": "non_tool_before_all_tool_results",
+                    "pending_tool_call_ids": pending_tool_call_ids,
+                    "role": role,
+                }));
+                pending_tool_call_ids.clear();
+            }
+            continue;
+        }
+        let tool_call_id = message
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if tool_call_id.is_empty() {
+            issues.push(json!({
+                "index": index,
+                "code": "tool_message_missing_tool_call_id",
+            }));
+            continue;
+        }
+        if let Some(position) = pending_tool_call_ids
+            .iter()
+            .position(|pending| pending == tool_call_id)
+        {
+            pending_tool_call_ids.remove(position);
+        } else {
+            issues.push(json!({
+                "index": index,
+                "code": "orphan_tool_message",
+                "tool_call_id": tool_call_id,
+            }));
+        }
+    }
+    if !pending_tool_call_ids.is_empty() {
+        issues.push(json!({
+            "code": "missing_tool_messages",
+            "pending_tool_call_ids": pending_tool_call_ids,
+        }));
+    }
+    json!({
+        "status": if issues.is_empty() { "ok" } else { "invalid" },
+        "issue_count": issues.len(),
+        "issues": issues,
     })
 }
 
@@ -5358,6 +6636,7 @@ struct OpenAiCompatibleResponse {
 #[derive(Debug, Deserialize)]
 struct OpenAiCompatibleChoice {
     message: Option<OpenAiCompatibleMessage>,
+    delta: Option<OpenAiCompatibleMessage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -5369,6 +6648,8 @@ struct OpenAiCompatibleMessage {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiCompatibleToolCall {
+    id: Option<String>,
+    index: Option<usize>,
     function: Option<OpenAiCompatibleFunctionCall>,
 }
 
@@ -5471,7 +6752,16 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
             .timeout_ms
             .unwrap_or(DEFAULT_MODEL_TIMEOUT_MS)
             .clamp(1_000, 120_000),
+        user_message: user_message.to_string(),
+        ai_entry_file: request
+            .ai_entry_file
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string(),
         messages,
+        task_goal: None,
+        task_tree: None,
     }
 }
 
@@ -5724,18 +7014,11 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
         headers.insert(AUTHORIZATION, auth_value);
     }
 
-    let mut request_body = json!({
-        "model": normalized_model_name,
-        "temperature": request.temperature,
-        "stream": false,
-        "messages": request.messages.iter().map(openai_compatible_message_payload).collect::<Vec<_>>()
-    });
-    if !is_ollama_compatible {
-        request_body["tools"] = json!(openai_compatible_tool_schemas());
-        request_body["tool_choice"] = json!("auto");
-    }
+    let request_body =
+        build_openai_compatible_request_body(request, normalized_model_name, is_ollama_compatible);
 
     let client = match Client::builder()
+        .connect_timeout(Duration::from_millis(15_000))
         .timeout(Duration::from_millis(request.timeout_ms))
         .user_agent("liuAgent-desktop-local-runtime/0.1")
         .build()
@@ -5787,31 +7070,23 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
             model_gateway_http_error_message(status, &headers, &response_body, &request_diagnostic),
         );
     }
-    let payload = match response.json::<OpenAiCompatibleResponse>() {
-        Ok(value) => value,
-        Err(err) => {
-            return ModelStepResult::failed(
-                request,
-                "model.response_invalid",
-                format!("model response parse failed: {err}"),
-            )
+    let is_streaming_response = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_ascii_lowercase().contains("text/event-stream"))
+        .unwrap_or(false);
+    let (content, reasoning_content, tool_calls) = if is_streaming_response {
+        match parse_openai_compatible_streaming_response(response, &request.provider_id) {
+            Ok(value) => value,
+            Err(err) => return ModelStepResult::failed(request, "model.response_invalid", err),
+        }
+    } else {
+        match parse_openai_compatible_json_response(response, &request.provider_id) {
+            Ok(value) => value,
+            Err(err) => return ModelStepResult::failed(request, "model.response_invalid", err),
         }
     };
-    let message = payload
-        .choices
-        .and_then(|choices| choices.into_iter().next())
-        .and_then(|choice| choice.message);
-    let content = message
-        .as_ref()
-        .and_then(|message| stringify_model_content(message.content.clone()))
-        .unwrap_or_default();
-    let reasoning_content = message
-        .as_ref()
-        .and_then(|message| stringify_model_content(message.reasoning_content.clone()))
-        .unwrap_or_default();
-    let tool_calls = message
-        .and_then(|message| collect_openai_tool_calls(&request.provider_id, message.tool_calls))
-        .unwrap_or_default();
     if content.trim().is_empty() && tool_calls.is_empty() {
         return ModelStepResult::failed(
             request,
@@ -5857,6 +7132,147 @@ fn openai_compatible_tool_schemas() -> Vec<Value> {
             })
         })
         .collect()
+}
+
+fn build_openai_compatible_request_body(
+    request: &ModelStepRequest,
+    normalized_model_name: &str,
+    is_ollama_compatible: bool,
+) -> Value {
+    let mut request_body = json!({
+        "model": normalized_model_name,
+        "temperature": request.temperature,
+        "stream": true,
+        "messages": request.messages.iter().map(openai_compatible_message_payload).collect::<Vec<_>>()
+    });
+    if !is_ollama_compatible {
+        request_body["tools"] = json!(openai_compatible_tool_schemas());
+        request_body["tool_choice"] = json!("auto");
+    }
+    request_body
+}
+
+fn parse_openai_compatible_json_response(
+    response: Response,
+    run_key: &str,
+) -> Result<(String, String, Vec<PlannedLocalTool>), String> {
+    let payload = response
+        .json::<OpenAiCompatibleResponse>()
+        .map_err(|err| format!("model response parse failed: {err}"))?;
+    let message = payload
+        .choices
+        .and_then(|choices| choices.into_iter().next())
+        .and_then(|choice| choice.message.or(choice.delta));
+    let content = message
+        .as_ref()
+        .and_then(|message| stringify_model_content(message.content.clone()))
+        .unwrap_or_default();
+    let reasoning_content = message
+        .as_ref()
+        .and_then(|message| stringify_model_content(message.reasoning_content.clone()))
+        .unwrap_or_default();
+    let tool_calls = message
+        .and_then(|message| collect_openai_tool_calls(run_key, message.tool_calls))
+        .unwrap_or_default();
+    Ok((content, reasoning_content, tool_calls))
+}
+
+fn parse_openai_compatible_streaming_response(
+    response: Response,
+    run_key: &str,
+) -> Result<(String, String, Vec<PlannedLocalTool>), String> {
+    let reader = BufReader::new(response);
+    parse_openai_compatible_streaming_reader(reader, run_key)
+}
+
+fn parse_openai_compatible_streaming_reader<R: BufRead>(
+    reader: R,
+    run_key: &str,
+) -> Result<(String, String, Vec<PlannedLocalTool>), String> {
+    let mut content = String::new();
+    let mut reasoning_content = String::new();
+    let mut tool_chunks: Vec<OpenAiCompatibleToolCall> = Vec::new();
+    for line in reader.lines() {
+        let line = line.map_err(|err| format!("model stream read failed: {err}"))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with(':') {
+            continue;
+        }
+        let Some(data) = trimmed.strip_prefix("data:").map(str::trim) else {
+            continue;
+        };
+        if data == "[DONE]" {
+            break;
+        }
+        let payload = serde_json::from_str::<OpenAiCompatibleResponse>(data)
+            .map_err(|err| format!("model stream chunk parse failed: {err}; chunk={data}"))?;
+        for choice in payload.choices.unwrap_or_default() {
+            let message = choice.delta.or(choice.message);
+            let Some(message) = message else {
+                continue;
+            };
+            if let Some(value) = stringify_model_content(message.content) {
+                content.push_str(&value);
+            }
+            if let Some(value) = stringify_model_content(message.reasoning_content) {
+                reasoning_content.push_str(&value);
+            }
+            if let Some(calls) = message.tool_calls {
+                merge_openai_tool_call_chunks(&mut tool_chunks, calls);
+            }
+        }
+    }
+    let tool_calls = collect_openai_tool_calls(run_key, Some(tool_chunks)).unwrap_or_default();
+    Ok((content, reasoning_content, tool_calls))
+}
+
+fn merge_openai_tool_call_chunks(
+    target: &mut Vec<OpenAiCompatibleToolCall>,
+    chunks: Vec<OpenAiCompatibleToolCall>,
+) {
+    for chunk in chunks {
+        let index = chunk.index.unwrap_or(target.len());
+        while target.len() <= index {
+            target.push(OpenAiCompatibleToolCall {
+                id: None,
+                index: Some(target.len()),
+                function: None,
+            });
+        }
+        let current = &mut target[index];
+        if current.id.is_none() {
+            current.id = chunk.id.clone();
+        }
+        current.index = Some(index);
+        if let Some(function) = chunk.function {
+            let current_function =
+                current
+                    .function
+                    .get_or_insert_with(|| OpenAiCompatibleFunctionCall {
+                        name: None,
+                        arguments: None,
+                    });
+            if let Some(name) = function.name {
+                let existing = current_function.name.get_or_insert_with(String::new);
+                existing.push_str(&name);
+            }
+            if let Some(arguments) = function.arguments {
+                let piece = stringify_model_content(Some(arguments)).unwrap_or_default();
+                let existing = current_function
+                    .arguments
+                    .get_or_insert_with(|| Value::String(String::new()));
+                match existing {
+                    Value::String(value) => value.push_str(&piece),
+                    other => {
+                        let mut combined =
+                            stringify_model_content(Some(other.clone())).unwrap_or_default();
+                        combined.push_str(&piece);
+                        *other = Value::String(combined);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn openai_compatible_message_payload(message: &RuntimeModelMessage) -> Value {
@@ -5935,10 +7351,17 @@ fn collect_openai_tool_calls(
                 .filter(|value| !value.is_empty())?
                 .to_string();
             let arguments = parse_openai_tool_arguments(function.arguments);
+            let tool_call_id = tool_call
+                .id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    stable_tool_call_id_for_arguments(run_key, &name, &arguments, index)
+                });
             Some(PlannedLocalTool {
-                tool_call_id: normalized_tool_call_id(Some(stable_tool_call_id_for_arguments(
-                    run_key, &name, &arguments, index,
-                ))),
+                tool_call_id: normalized_tool_call_id(Some(tool_call_id)),
                 summary: format!("标准模型工具调用：{name}"),
                 name,
                 arguments,
@@ -6349,6 +7772,19 @@ mod tests {
     use std::thread;
 
     #[test]
+    fn extracts_file_paths_without_fixed_extension_allowlist() {
+        let candidates = extract_file_path_candidates(
+            "更新 Dockerfile、scripts/deploy.sh、db/schema.sql 和 .env.local；参考 https://example.com/docs。",
+        );
+
+        assert!(candidates.contains(&"Dockerfile".to_string()));
+        assert!(candidates.contains(&"scripts/deploy.sh".to_string()));
+        assert!(candidates.contains(&"db/schema.sql".to_string()));
+        assert!(candidates.contains(&".env.local".to_string()));
+        assert!(!candidates.iter().any(|item| item.contains("example.com")));
+    }
+
+    #[test]
     fn repairs_write_file_path_from_latest_user_message() {
         let workspace_root = std::env::temp_dir();
         let messages = vec![RuntimeModelMessage::simple(
@@ -6363,10 +7799,45 @@ mod tests {
                 summary: "标准模型工具调用：write_file".to_string(),
             },
             &messages,
+            None,
             &workspace_root,
         );
         assert_eq!(repaired.arguments["path"], "register.html");
         assert!(repaired.summary.contains("自动补全 path=register.html"));
+    }
+
+    #[test]
+    fn repairs_write_file_path_from_current_model_output() {
+        let workspace_root = std::env::temp_dir();
+        let messages = vec![RuntimeModelMessage::simple("user", "确认开始执行")];
+        let model_result = ModelStepResult {
+            ok: true,
+            mode: "mock".to_string(),
+            provider_id: "test".to_string(),
+            model_name: "test-model".to_string(),
+            status: "completed".to_string(),
+            content: "将新增 index.html 作为官网首页，并链接到现有登录和注册页面。".to_string(),
+            reasoning_content: String::new(),
+            tool_calls: Vec::new(),
+            allow_compat_text_tool_call: false,
+            compat_text_tool_call_detected: false,
+            summary: "写入新文件，产出实现结果".to_string(),
+            error_code: String::new(),
+            error: String::new(),
+        };
+        let repaired = repair_planned_tool_arguments(
+            PlannedLocalTool {
+                tool_call_id: "call_write_index".to_string(),
+                name: "write_file".to_string(),
+                arguments: json!({"content": "<!doctype html><html></html>"}),
+                summary: "标准模型工具调用：write_file".to_string(),
+            },
+            &messages,
+            Some(&model_result),
+            &workspace_root,
+        );
+        assert_eq!(repaired.arguments["path"], "index.html");
+        assert!(repaired.summary.contains("自动补全 path=index.html"));
     }
 
     #[test]
@@ -6383,6 +7854,7 @@ mod tests {
                 summary: "标准模型工具调用：search_text".to_string(),
             },
             &[],
+            None,
             &workspace_root,
         );
 
@@ -6417,8 +7889,17 @@ mod tests {
             arguments: json!({"path": "login.html"}),
             summary: "标准模型工具调用：read_file".to_string(),
         }];
+        let request = test_model_request("读取 login.html");
 
-        emit_progress_update_event(Some(&sink), "runtime-test", "chat-test", 1, &result, &[]);
+        emit_progress_update_event(
+            Some(&sink),
+            "runtime-test",
+            "chat-test",
+            1,
+            &result,
+            &[],
+            &request,
+        );
         assert!(events.borrow().is_empty());
 
         emit_progress_update_event(
@@ -6428,6 +7909,7 @@ mod tests {
             1,
             &result,
             &planned_tools,
+            &request,
         );
         let events = events.borrow();
         assert_eq!(events.len(), 1);
@@ -6437,6 +7919,15 @@ mod tests {
             .unwrap()
             .contains("register.html"));
         assert_eq!(events[0]["payload"]["tool_call_count"], 1);
+        assert!(events[0]["payload"]["current_task_node"].is_object());
+        assert_eq!(
+            events[0]["payload"]["planned_tools"][0]["arguments"]["path"],
+            "login.html"
+        );
+        assert!(events[0]["payload"]["arguments_preview"]
+            .as_str()
+            .unwrap()
+            .contains("\"path\":\"login.html\""));
     }
 
     #[test]
@@ -6464,6 +7955,7 @@ mod tests {
             arguments: json!({"path": ".", "query": "progress_update"}),
             summary: "标准模型工具调用：search_text".to_string(),
         }];
+        let request = test_model_request("搜索 progress_update");
 
         emit_progress_update_event(
             Some(&sink),
@@ -6472,6 +7964,7 @@ mod tests {
             1,
             &result,
             &planned_tools,
+            &request,
         );
 
         let events = events.borrow();
@@ -6490,6 +7983,193 @@ mod tests {
             .unwrap()
             .contains("搜索"));
         assert_eq!(events[0]["payload"]["tool_call_count"], 1);
+        assert!(events[0]["payload"]["arguments_preview"]
+            .as_str()
+            .unwrap()
+            .contains("progress_update"));
+    }
+
+    #[test]
+    fn progress_update_shows_write_file_arguments_with_content_preview() {
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+        let result = ModelStepResult {
+            ok: true,
+            mode: "mock".to_string(),
+            provider_id: "test".to_string(),
+            model_name: "test-model".to_string(),
+            status: "completed".to_string(),
+            content: String::new(),
+            reasoning_content: String::new(),
+            tool_calls: Vec::new(),
+            allow_compat_text_tool_call: false,
+            compat_text_tool_call_detected: false,
+            summary: String::new(),
+            error_code: String::new(),
+            error: String::new(),
+        };
+        let planned_tools = vec![PlannedLocalTool {
+            tool_call_id: "call_write_index".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({
+                "path": "index.html",
+                "content": "x".repeat(240),
+                "overwrite": false
+            }),
+            summary: "标准模型工具调用：write_file".to_string(),
+        }];
+        let request = test_model_request("确认开始执行");
+
+        emit_progress_update_event(
+            Some(&sink),
+            "runtime-test",
+            "chat-test",
+            1,
+            &result,
+            &planned_tools,
+            &request,
+        );
+
+        let events = events.borrow();
+        let preview = events[0]["payload"]["arguments_preview"].as_str().unwrap();
+        assert!(preview.contains("write_file"));
+        assert!(preview.contains("\"path\":\"index.html\""));
+        assert!(preview.contains("\"content\""));
+        assert!(preview.contains("\"chars\":240"));
+        assert!(preview.contains("\"value\""));
+        assert!(preview.contains(&"x".repeat(200)));
+        assert_eq!(
+            events[0]["payload"]["planned_tools"][0]["arguments"]["path"],
+            "index.html"
+        );
+        assert!(
+            events[0]["payload"]["planned_tools"][0]["arguments"]["content"]["value"]
+                .as_str()
+                .unwrap()
+                .contains(&"x".repeat(240))
+        );
+    }
+
+    #[test]
+    fn tool_result_event_includes_arguments_preview_on_schema_failure() {
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_write_missing_path".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({
+                "content": "<!doctype html><title>Index</title>",
+                "overwrite": false
+            }),
+            summary: "标准模型工具调用：write_file".to_string(),
+        };
+        let result = super::super::types::ToolExecutionResult::failed(
+            tool.tool_call_id.clone(),
+            tool.name.clone(),
+            ToolError::new("tool.schema_invalid", "missing required argument: path"),
+        );
+
+        emit_tool_result_event(Some(&sink), "runtime-test", "chat-test", &tool, &result);
+
+        let events = events.borrow();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "tool_result");
+        assert_eq!(events[0]["payload"]["arguments"]["overwrite"], false);
+        let preview = events[0]["payload"]["arguments_preview"].as_str().unwrap();
+        assert!(preview.contains("\"content\""));
+        assert!(preview.contains("\"overwrite\":false"));
+        assert!(!preview.contains("\"path\""));
+        assert!(events[0]["payload"]["error_code"]
+            .as_str()
+            .unwrap()
+            .contains("tool.schema_invalid"));
+    }
+
+    #[test]
+    fn progress_update_shows_apply_patch_arguments_with_full_patch() {
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+        let result = ModelStepResult {
+            ok: true,
+            mode: "mock".to_string(),
+            provider_id: "test".to_string(),
+            model_name: "test-model".to_string(),
+            status: "completed".to_string(),
+            content: String::new(),
+            reasoning_content: String::new(),
+            tool_calls: Vec::new(),
+            allow_compat_text_tool_call: false,
+            compat_text_tool_call_detected: false,
+            summary: String::new(),
+            error_code: String::new(),
+            error: String::new(),
+        };
+        let patch = "*** Begin Patch\n*** Update File: index.html\n@@\n-old\n+new\n*** End Patch";
+        let planned_tools = vec![PlannedLocalTool {
+            tool_call_id: "call_patch_index".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({
+                "patch": patch,
+                "summary": "update index"
+            }),
+            summary: "标准模型工具调用：apply_patch".to_string(),
+        }];
+        let request = test_model_request("修改 index.html");
+
+        emit_progress_update_event(
+            Some(&sink),
+            "runtime-test",
+            "chat-test",
+            1,
+            &result,
+            &planned_tools,
+            &request,
+        );
+
+        let events = events.borrow();
+        let preview = events[0]["payload"]["arguments_preview"].as_str().unwrap();
+        assert!(preview.contains("apply_patch"));
+        assert!(preview.contains("*** Begin Patch"));
+        assert!(preview.contains("+new"));
+        assert_eq!(
+            events[0]["payload"]["planned_tools"][0]["arguments"]["patch"]["value"],
+            patch
+        );
+    }
+
+    #[test]
+    fn drift_check_blocks_side_effect_outside_explicit_target() {
+        let mut request = test_model_request("修改 src/main.rs 并验证");
+        let task_goal = build_task_goal("drift-test", "修改 src/main.rs 并验证", &request);
+        request.task_goal = Some(task_goal.clone());
+        request.task_tree = Some(planning::TaskTree::for_goal("drift-test", &task_goal));
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_write_other".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": "src/other.rs", "content": "changed"}),
+            summary: "write other".to_string(),
+        };
+
+        let result = drift_check_tool_result(&tool, &request).expect("drift result");
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "agent_loop.drift_detected");
+        assert_eq!(result.content["driftCheck"]["actualTarget"], "src/other.rs");
+    }
+
+    #[test]
+    fn drift_check_allows_side_effect_within_explicit_target() {
+        let mut request = test_model_request("修改 src/main.rs 并验证");
+        let task_goal = build_task_goal("drift-test", "修改 src/main.rs 并验证", &request);
+        request.task_goal = Some(task_goal);
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_write_target".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": "src/main.rs", "content": "changed"}),
+            summary: "write target".to_string(),
+        };
+
+        assert!(drift_check_tool_result(&tool, &request).is_none());
     }
 
     #[test]
@@ -6512,6 +8192,7 @@ mod tests {
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: None,
         });
@@ -6530,6 +8211,25 @@ mod tests {
             requirement["intent_analysis"]["current_request_summary"],
             "检查工作区"
         );
+        assert_eq!(requirement["task_goal"]["version"], "task-goal/v1");
+        assert_eq!(requirement["task_goal"]["userRequest"], "检查工作区");
+        assert_eq!(
+            requirement["current_state_delta"]["task_goal"]["goalId"],
+            requirement["task_goal"]["goalId"]
+        );
+        assert_eq!(
+            requirement["task_tree"]["currentNodeId"],
+            requirement["current_task_node"]["node_id"]
+        );
+        assert_eq!(
+            requirement["current_state_delta"]["current_task_node"]["node_id"],
+            requirement["current_task_node"]["node_id"]
+        );
+        assert!(requirement["task_branches"]
+            .as_array()
+            .expect("task branches")
+            .iter()
+            .any(|node| node["is_current"] == true));
         assert!(requirement["related_context"]["items"]
             .as_array()
             .expect("related context items")
@@ -6553,6 +8253,16 @@ mod tests {
             .find(|item| item["loop"] == "task_processing")
             .expect("task processing snapshot");
         assert_eq!(task_snapshot["prompt_stack"]["version"], "prompt-stack/v1");
+        assert_eq!(
+            task_snapshot["context_package"]["task_goal"]["goalId"],
+            requirement["task_goal"]["goalId"]
+        );
+        assert!(
+            task_snapshot["context_package"]["current_task_node"]["node_id"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("node-analyze")
+        );
         assert!(requirement["actions_taken"]["model_steps"].is_array());
         assert_eq!(
             requirement["current_state_delta"]["latest_status"],
@@ -6565,6 +8275,10 @@ mod tests {
         assert_eq!(
             requirement["current_state_delta"]["verification_report"]["version"],
             "verification-report/v1"
+        );
+        assert_eq!(
+            requirement["current_state_delta"]["verification_report"]["targetNodeId"],
+            requirement["task_goal"]["goalId"]
         );
         let verification_check_types = requirement["current_state_delta"]["verification_report"]
             ["checks"]
@@ -6614,6 +8328,10 @@ mod tests {
             .runtime_events
             .iter()
             .any(|event| event["type"] == "model_call_started"));
+        assert!(result.runtime_events.iter().any(|event| {
+            event["type"] == "model_call_started"
+                && event["payload"]["current_task_node"].is_object()
+        }));
         assert!(result
             .runtime_events
             .iter()
@@ -6934,6 +8652,125 @@ mod tests {
     }
 
     #[test]
+    fn agent_loop_allows_recoverable_mcp_adapter_error_before_pausing() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_loop_recoverable_mcp_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("读取 MCP 说明后继续本地任务");
+        let model_call_count = Cell::new(0);
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index > 0 {
+                assert!(
+                    request
+                        .messages
+                        .iter()
+                        .any(|message| message.role == "tool"),
+                    "model call after MCP failure must receive a tool observation"
+                );
+            }
+            if index < 2 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: format!("call_mcp_{index}"),
+                        name: "read_mcp_resource".to_string(),
+                        arguments: json!({
+                            "server": "query",
+                            "uri": "query://usage-guide"
+                        }),
+                        summary: "标准模型工具调用：read_mcp_resource".to_string(),
+                    }],
+                );
+            }
+            test_model_result("MCP adapter 缺失，已降级继续本地任务。", Vec::new())
+        };
+        let tool_runner = |request: ToolExecutionRequest| {
+            crate::liuagent_core::types::ToolExecutionResult::failed(
+                request
+                    .tool_call_id
+                    .unwrap_or_else(|| "call_mcp".to_string()),
+                request.name,
+                ToolError::new(
+                    "mcp.adapter_missing",
+                    "read MCP adapter config failed: No such file or directory",
+                ),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-recoverable-mcp-test",
+            "runtime-chat-loop-recoverable-mcp-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok(), "{}", result.error());
+        assert_eq!(result.stopped_reason, "no_tool_calls");
+        assert_eq!(model_call_count.get(), 3);
+        assert_eq!(result.tool_results.len(), 2);
+        assert_eq!(result.tool_results[0].content["recoverable"], true);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn list_files_progress_intent_does_not_suggest_entry_file_hunting() {
+        let intent = describe_planned_tool_intent(&PlannedLocalTool {
+            tool_call_id: "call_list".to_string(),
+            name: "list_files".to_string(),
+            arguments: json!({"path": "."}),
+            summary: "标准模型工具调用：list_files".to_string(),
+        });
+
+        assert!(intent.contains("实现入口"));
+        assert!(!intent.contains("入口文件"));
+    }
+
+    #[test]
+    fn agent_loop_blocks_cli_entry_file_read_when_not_configured_entry() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_loop_cli_entry_block_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("AGENTS.md"), "cli-only instructions").unwrap();
+        let mut request = test_model_request("实现官网页面");
+        request.ai_entry_file = "AIENTRY.md".to_string();
+        let model_runner = |_request: &ModelStepRequest| {
+            test_model_result(
+                "",
+                vec![PlannedLocalTool {
+                    tool_call_id: "call_read_agents".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: json!({"path": "AGENTS.md"}),
+                    summary: "标准模型工具调用：read_file".to_string(),
+                }],
+            )
+        };
+        let tool_runner = |request: ToolExecutionRequest| execute_tool(request);
+
+        let result = run_agent_loop_with(
+            "chat-loop-cli-entry-block-test",
+            "runtime-cli-entry-block-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(!result.ok());
+        assert_eq!(result.tool_results[0].error_code, "entry_file.not_allowed");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn agent_loop_ranks_low_risk_verifiable_candidates_first() {
         let dir = std::env::temp_dir().join(format!("liuagent_loop_ranked_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
@@ -7200,6 +9037,7 @@ mod tests {
             observations: json!([]),
             scheduler_state: json!({"version": "runtime-scheduler-state/test"}),
             verification_report: json!({"overall_status": "blocked"}),
+            task_goal: json!({"version": "task-goal/test", "goalId": "goal-replay"}),
             clarity_assessment: json!({"version": "clarity-assessment/test"}),
             plan_state: json!({"version": "plan-state/test"}),
             retry_decision: json!({"version": "retry-decision/test"}),
@@ -7230,6 +9068,7 @@ mod tests {
                 system_prompt_parts: Vec::new(),
                 temperature: None,
                 model_runtime: None,
+                ai_entry_file: None,
                 attachments: Vec::new(),
                 permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                     request_id: Some("perm_call_write_replay_file_write".to_string()),
@@ -7381,6 +9220,112 @@ mod tests {
             .map(|event| event["event_id"].as_str().unwrap_or(""))
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(event_ids.len(), chunks.len());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_loop_marks_tool_timeout_as_no_signal_not_failed() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_loop_tool_no_signal_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("运行一个很慢的构建");
+        let model_runner = |_request: &ModelStepRequest| {
+            test_model_result(
+                "",
+                vec![PlannedLocalTool {
+                    tool_call_id: "call_slow_read".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: json!({"path": "large.log"}),
+                    summary: "标准模型工具调用：read_file".to_string(),
+                }],
+            )
+        };
+        let tool_runner = |_request: ToolExecutionRequest| {
+            crate::liuagent_core::types::ToolExecutionResult::failed(
+                "call_slow_read".to_string(),
+                "read_file".to_string(),
+                ToolError::new("tool.timeout", "tool timed out after 1000ms"),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-tool-no-signal-test",
+            "runtime-tool-no-signal-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(!result.ok());
+        assert_eq!(result.stopped_reason, "tool_no_signal");
+        assert_eq!(result.error_code(), "agent_loop.no_signal");
+        assert_eq!(result.verification.status, "no_signal");
+        assert_eq!(result.tool_results[0].content["status"], "no_signal");
+        assert_eq!(result.tool_results[0].content["requires_judgement"], true);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn refresh_runtime_job_rejects_state_path_outside_workspace() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_runtime_job_scope_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let outside = std::env::temp_dir().join(format!(
+            "liuagent_runtime_job_outside_{}.json",
+            epoch_millis()
+        ));
+        fs::write(&outside, "{}").unwrap();
+
+        let result = refresh_local_runtime_job(LocalRuntimeJobRequest {
+            workspace_path: dir.to_string_lossy().to_string(),
+            state_path: outside.to_string_lossy().to_string(),
+        });
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "runtime_job.out_of_scope");
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_file(outside);
+    }
+
+    #[test]
+    fn cancel_runtime_job_marks_running_state_cancelled() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_runtime_job_cancel_{}", epoch_millis()));
+        let job_dir = dir
+            .join(".ai-employee")
+            .join("liuagent-command-jobs")
+            .join("cmd_test");
+        fs::create_dir_all(&job_dir).unwrap();
+        let state_path = job_dir.join("state.json");
+        let mut child = Command::new("sleep").arg("5").spawn().unwrap();
+        fs::write(
+            &state_path,
+            serde_json::to_vec_pretty(&json!({
+                "record_type": "liuagent-command-job",
+                "version": 1,
+                "job_id": "cmd_test",
+                "status": "running",
+                "pid": child.id(),
+                "state_path": state_path.to_string_lossy(),
+                "stdout_log_path": job_dir.join("stdout.log").to_string_lossy(),
+                "stderr_log_path": job_dir.join("stderr.log").to_string_lossy(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = cancel_local_runtime_job(LocalRuntimeJobRequest {
+            workspace_path: dir.to_string_lossy().to_string(),
+            state_path: state_path.to_string_lossy().to_string(),
+        });
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.job["status"], "cancelled");
+        let _ = child.wait();
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -7660,9 +9605,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_stops_implementation_task_when_model_keeps_exploring() {
+    fn agent_loop_does_not_force_side_effects_for_implementation_evidence() {
         let dir = std::env::temp_dir().join(format!(
-            "liuagent_loop_exploration_budget_{}",
+            "liuagent_loop_no_forced_side_effect_{}",
             epoch_millis()
         ));
         fs::create_dir_all(&dir).unwrap();
@@ -7674,9 +9619,14 @@ mod tests {
             let index = model_call_count.get();
             model_call_count.set(index + 1);
             if request.messages.iter().any(|message| {
-                message.role == "user" && message.content.contains("下一轮必须调用 write_file")
+                message.role == "user"
+                    && message.content.contains("force_side_effect")
+                    && message.content.contains("write_file")
             }) {
                 saw_control_message.set(true);
+            }
+            if index >= 4 {
+                return test_model_result("已完成现状分析，当前还没有进入写入。", Vec::new());
             }
             test_model_result(
                 "",
@@ -7695,8 +9645,8 @@ mod tests {
         };
 
         let result = run_agent_loop_with(
-            "chat-loop-exploration-budget-test",
-            "runtime-chat-loop-exploration-budget-test",
+            "chat-loop-no-forced-side-effect-test",
+            "runtime-chat-loop-no-forced-side-effect-test",
             &request,
             &prompt_stack_from_model_request(&request),
             &dir,
@@ -7706,23 +9656,19 @@ mod tests {
             &tool_runner,
         );
 
-        assert!(!result.ok());
-        assert_eq!(result.stopped_reason, "exploration_budget_exceeded");
-        assert_eq!(
-            result.error_code(),
-            "agent_loop.exploration_budget_exceeded"
-        );
-        assert!(saw_control_message.get());
-        assert_eq!(model_call_count.get(), MAX_EXPLORATION_ONLY_TOOL_ROUNDS + 1);
-        assert_eq!(tool_call_count.get(), MAX_EXPLORATION_ONLY_TOOL_ROUNDS + 1);
-        assert_eq!(result.verification.status, "paused");
+        assert!(result.ok(), "{}", result.error());
+        assert_eq!(result.stopped_reason, "no_tool_calls");
+        assert!(!saw_control_message.get());
+        assert_eq!(model_call_count.get(), 5);
+        assert_eq!(tool_call_count.get(), 4);
+        assert_eq!(result.verification.status, "passed");
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn agent_loop_does_not_accept_implementation_finish_after_only_exploration() {
+    fn agent_loop_allows_model_to_finish_after_exploration_without_forced_write() {
         let dir = std::env::temp_dir().join(format!(
-            "liuagent_loop_exploration_fake_finish_{}",
+            "liuagent_loop_finish_after_exploration_{}",
             epoch_millis()
         ));
         fs::create_dir_all(&dir).unwrap();
@@ -7734,7 +9680,9 @@ mod tests {
             let index = model_call_count.get();
             model_call_count.set(index + 1);
             if request.messages.iter().any(|message| {
-                message.role == "user" && message.content.contains("下一轮必须调用 write_file")
+                message.role == "user"
+                    && message.content.contains("force_side_effect")
+                    && message.content.contains("write_file")
             }) {
                 saw_control_message.set(true);
             }
@@ -7769,10 +9717,10 @@ mod tests {
             &tool_runner,
         );
 
-        assert!(!result.ok());
-        assert_eq!(result.stopped_reason, "exploration_budget_exceeded");
-        assert!(saw_control_message.get());
-        assert_eq!(model_call_count.get(), 3);
+        assert!(result.ok(), "{}", result.error());
+        assert_eq!(result.stopped_reason, "no_tool_calls");
+        assert!(!saw_control_message.get());
+        assert_eq!(model_call_count.get(), 2);
         assert_eq!(tool_call_count.get(), 1);
         let _ = fs::remove_dir_all(dir);
     }
@@ -7893,6 +9841,7 @@ mod tests {
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: None,
         });
@@ -7936,6 +9885,7 @@ mod tests {
                 temperature: None,
                 timeout_ms: None,
             }),
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: None,
         };
@@ -8019,6 +9969,71 @@ mod tests {
     }
 
     #[test]
+    fn direct_model_runtime_streams_openai_compatible_response() {
+        let model_request = test_model_request("读取 register.html");
+        let request_body =
+            build_openai_compatible_request_body(&model_request, "test-model", false);
+        assert_eq!(request_body["stream"], true);
+        assert!(request_body["tools"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
+
+        let chunks = [
+            json!({
+                "choices": [{
+                    "delta": {
+                        "reasoning_content": "先读",
+                        "content": "准备",
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_read_register",
+                            "type": "function",
+                            "function": {
+                                "name": "read_",
+                                "arguments": "{\"path\":\"register"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "delta": {
+                        "reasoning_content": "文件",
+                        "content": "读取",
+                        "tool_calls": [{
+                            "index": 0,
+                            "function": {
+                                "name": "file",
+                                "arguments": ".html\",\"start_line\":1}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+        ];
+        let mut stream_body = String::new();
+        for chunk in chunks {
+            stream_body.push_str("data: ");
+            stream_body.push_str(&chunk.to_string());
+            stream_body.push_str("\n\n");
+        }
+        stream_body.push_str("data: [DONE]\n\n");
+
+        let (content, reasoning_content, tool_calls) =
+            parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
+                .unwrap();
+
+        assert_eq!(content, "准备读取");
+        assert_eq!(reasoning_content, "先读文件");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].tool_call_id, "call_read_register");
+        assert_eq!(tool_calls[0].name, "read_file");
+        assert_eq!(tool_calls[0].arguments["path"], "register.html");
+        assert_eq!(tool_calls[0].arguments["start_line"], 1);
+    }
+
+    #[test]
     fn local_chat_attachments_build_text_and_image_parts() {
         let request = LocalChatRequest {
             project_id: "proj-test".to_string(),
@@ -8034,6 +10049,7 @@ mod tests {
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
+            ai_entry_file: None,
             attachments: vec![
                 LocalChatAttachment {
                     attachment_id: Some("att_doc".to_string()),
@@ -8096,6 +10112,7 @@ mod tests {
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
+            ai_entry_file: None,
             attachments: vec![LocalChatAttachment {
                 attachment_id: Some("att_img".to_string()),
                 name: "截图.png".to_string(),
@@ -8161,6 +10178,83 @@ mod tests {
         assert_eq!(error.attempts, 1);
         assert_eq!(error.code, "model.request_failed");
         assert!(error.message.contains("HTTP 429"));
+    }
+
+    #[test]
+    fn tool_observation_compacts_large_read_file_content_for_model() {
+        let large_content = "x".repeat(TOOL_OBSERVATION_TEXT_PREVIEW_CHARS + 200);
+        let result = super::super::types::ToolExecutionResult::ok(
+            "call_read_large".to_string(),
+            "read_file".to_string(),
+            json!({
+                "path": "large.html",
+                "content": large_content,
+                "start_line": 1,
+                "end_line": 500,
+                "total_lines": 500,
+                "truncated": false
+            }),
+            "读取 large.html 行 1-500/500".to_string(),
+        );
+
+        let observation = tool_observation_content(&result, false, None);
+        let value = serde_json::from_str::<Value>(&observation).unwrap();
+
+        assert_eq!(value["content_compacted_for_model"], true);
+        assert_eq!(
+            value["content"]["content"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            TOOL_OBSERVATION_TEXT_PREVIEW_CHARS
+        );
+        assert_eq!(value["content"]["content_truncated_for_model"], true);
+        assert_eq!(
+            value["content"]["content_chars"],
+            TOOL_OBSERVATION_TEXT_PREVIEW_CHARS + 200
+        );
+    }
+
+    #[test]
+    fn model_gateway_diagnostic_reports_payload_size_and_tool_integrity() {
+        let body = json!({
+            "model": "test-model",
+            "temperature": 0.1,
+            "stream": true,
+            "tool_choice": "auto",
+            "tools": [{"type": "function"}],
+            "messages": [
+                {"role": "user", "content": "读取文件"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_read",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": "{\"path\":\"README.md\"}"
+                            }
+                        }
+                    ]
+                },
+                {"role": "tool", "tool_call_id": "call_read", "content": "ok"}
+            ]
+        });
+
+        let diagnostic = model_gateway_body_diagnostic(&body);
+
+        assert!(diagnostic["body_bytes"].as_u64().unwrap_or(0) > 0);
+        assert_eq!(diagnostic["messages_count"], 3);
+        assert_eq!(diagnostic["tool_call_integrity"]["status"], "ok");
+        assert!(diagnostic["message_diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["role"] == "assistant" && item["tool_call_count"] == 1));
+        assert!(diagnostic["largest_messages"].as_array().unwrap().len() <= 5);
     }
 
     #[test]
@@ -8429,15 +10523,7 @@ mod tests {
         assert_eq!(result.content, "我会读取 README。");
         assert_eq!(result.reasoning_content, "先确认需要读取的文件路径。");
         assert_eq!(result.tool_calls.len(), 1);
-        assert_eq!(
-            result.tool_calls[0].tool_call_id,
-            stable_tool_call_id_for_arguments(
-                "test-provider",
-                "read_file",
-                &json!({"path": "README.md"}),
-                0
-            )
-        );
+        assert_eq!(result.tool_calls[0].tool_call_id, "call_readme");
         assert_eq!(result.tool_calls[0].name, "read_file");
         assert_eq!(result.tool_calls[0].arguments["path"], "README.md");
     }
@@ -8593,6 +10679,7 @@ mod tests {
                 temperature: Some(0.1),
                 timeout_ms: Some(5_000),
             }),
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(plan_confirmation_request_id(
@@ -8718,6 +10805,7 @@ mod tests {
                 temperature: Some(0.1),
                 timeout_ms: Some(5_000),
             }),
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(permission_request_id),
@@ -8775,10 +10863,14 @@ mod tests {
             gateway_url: String::new(),
             temperature: 0.2,
             timeout_ms: 1_000,
+            user_message: user_message.to_string(),
+            ai_entry_file: String::new(),
             messages: vec![RuntimeModelMessage::simple(
                 "user",
                 user_message.to_string(),
             )],
+            task_goal: None,
+            task_tree: None,
         }
     }
 
@@ -9126,15 +11218,17 @@ mod tests {
         }))
         .unwrap();
         let model_request = build_model_request(&request, "修改 src/main.rs 并验证");
+        let task_goal = build_task_goal("local-plan", &request.message, &model_request);
+        let task_tree = planning::TaskTree::for_goal("local-plan", &task_goal);
         let clarity = assess_clarity(&request.message, &request, &model_request);
         let plan = create_plan_state(
             "local-plan",
-            &request.message,
+            &task_goal,
             &clarity,
             "completed",
-            "node-execute",
             123,
             None,
+            &task_tree,
         );
 
         assert_eq!(clarity.task_type, "implementation");
@@ -9360,6 +11454,17 @@ mod tests {
             &agent_loop,
             &[planned_tool],
             &[tool_result],
+            &TaskGoal {
+                version: "task-goal/test".to_string(),
+                goal_id: "goal-test".to_string(),
+                title: "write protected file".to_string(),
+                user_request: "write protected file".to_string(),
+                intent: "modification".to_string(),
+                target_object: "protected.txt".to_string(),
+                success_criteria: vec!["permission is respected".to_string()],
+                constraints: vec!["requires approval".to_string()],
+                created_at_epoch_ms: epoch_millis(),
+            },
         );
 
         assert_eq!(report.overall_status, "blocked");
@@ -9406,6 +11511,7 @@ mod tests {
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: None,
         });
@@ -9460,6 +11566,7 @@ mod tests {
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(plan_confirmation_request_id(
@@ -9501,6 +11608,7 @@ mod tests {
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(plan_confirmation_request_id(
@@ -9540,6 +11648,7 @@ mod tests {
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: None,
@@ -9578,6 +11687,7 @@ mod tests {
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some("perm_call_write_file.write".to_string()),
@@ -9617,6 +11727,7 @@ mod tests {
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
+            ai_entry_file: None,
             attachments: Vec::new(),
             permission_decision: None,
         });

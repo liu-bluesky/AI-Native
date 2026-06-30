@@ -851,35 +851,19 @@
 
                 <div
                   class="requirement-records"
-                  v-loading="taskSessionsLoading || taskTreeDetailsLoading"
+                  v-loading="taskSessionsLoading"
                 >
                   <RequirementRecordCard
                     v-for="record in pagedRequirementRecords"
                     :key="record.id"
                     :id="`requirement-record-${record.id}`"
                     :record="record"
-                    :expanded="isRequirementRecordExpanded(record)"
                     :selected="isRequirementRecordSelected(record)"
                     :can-manage-project="canManageProject"
                     :deleting="requirementRecordDeleting"
-                    :tree-loading="
-                      isRequirementRoundTaskTreeLoading(record.detailRound)
-                    "
-                    :round-kind-label="
-                      record.detailRound
-                        ? getRequirementRecordKindLabel(
-                            record.detailRound.recordKind,
-                          )
-                        : ''
-                    "
-                    @toggle-expand="toggleRequirementRecordExpansion(record)"
-                    @open-detail="openRequirementRecordDetail(record)"
                     @delete="handleDeleteRequirementRecord(record)"
                     @toggle-select="
                       toggleRequirementRecordSelection(record.id, $event)
-                    "
-                    @open-node-detail="
-                      openRequirementNodeDetail($event, record.detailRound)
                     "
                   />
 
@@ -1690,216 +1674,6 @@
       </el-dialog>
 
       <el-dialog
-        v-model="showRequirementNodeDetailDialog"
-        class="memory-detail-dialog"
-        width="920px"
-        top="8vh"
-      >
-        <template #header>
-          <div class="memory-detail-dialog__header">
-            <div>
-              <div class="memory-detail-dialog__eyebrow">
-                {{
-                  selectedRequirementNodeIsRoot
-                    ? "Requirement Chain"
-                    : "Task Node Detail"
-                }}
-              </div>
-              <h3>{{ selectedRequirementNodeDetailTitle }}</h3>
-            </div>
-            <div class="memory-detail-dialog__header-tags">
-              <el-tag
-                v-if="selectedRequirementNode"
-                effect="plain"
-                :type="
-                  getTaskSessionStatusTagType(selectedRequirementNode.status)
-                "
-              >
-                {{ getTaskSessionStatusLabel(selectedRequirementNode.status) }}
-              </el-tag>
-              <el-tag
-                v-if="selectedRequirementNodeRound"
-                effect="plain"
-                :type="
-                  getRequirementRecordKindTagType(
-                    selectedRequirementNodeRound.recordKind,
-                  )
-                "
-              >
-                {{
-                  getRequirementRecordKindLabel(
-                    selectedRequirementNodeRound.recordKind,
-                  )
-                }}
-              </el-tag>
-            </div>
-          </div>
-        </template>
-        <div v-loading="requirementNodeDetailLoading">
-          <template v-if="selectedRequirementNode">
-            <div class="memory-detail-shell">
-              <section class="memory-detail-hero">
-                <div class="memory-detail-hero__content">
-                  <div class="memory-detail-hero__eyebrow">
-                    {{
-                      selectedRequirementNodeIsRoot
-                        ? "Requirement Chain"
-                        : "Task Node"
-                    }}
-                  </div>
-                  <h4>{{ selectedRequirementNode.title || "-" }}</h4>
-                  <p>{{ selectedRequirementNodeDescriptionText }}</p>
-                </div>
-                <div class="memory-detail-hero__status">
-                  <div class="memory-detail-status-card">
-                    <span>所属轮次</span>
-                    <strong>{{ selectedRequirementNodeRoundLabel }}</strong>
-                  </div>
-                  <div class="memory-detail-status-card">
-                    <span>工作细节</span>
-                    <strong
-                      >{{ selectedRequirementNodeEvents.length }} 条</strong
-                    >
-                  </div>
-                  <div class="memory-detail-status-card">
-                    <span>测试结果</span>
-                    <strong
-                      >{{
-                        selectedRequirementNodeVerificationItems.length
-                      }}
-                      条</strong
-                    >
-                  </div>
-                </div>
-              </section>
-
-              <section class="memory-detail-meta-grid">
-                <div class="memory-detail-meta-card">
-                  <span class="memory-detail-meta-card__label">完成条件</span>
-                  <strong>{{
-                    selectedRequirementNode.completion_criteria || "-"
-                  }}</strong>
-                </div>
-                <div class="memory-detail-meta-card">
-                  <span class="memory-detail-meta-card__label">验证方式</span>
-                  <strong>{{
-                    selectedRequirementNodeVerificationMethodText || "-"
-                  }}</strong>
-                </div>
-                <div class="memory-detail-meta-card">
-                  <span class="memory-detail-meta-card__label">当前结果</span>
-                  <strong>{{ selectedRequirementNodeOutcomeText }}</strong>
-                </div>
-                <div class="memory-detail-meta-card">
-                  <span class="memory-detail-meta-card__label">验证结果</span>
-                  <strong>{{
-                    selectedRequirementNodeVerificationResultText
-                  }}</strong>
-                </div>
-              </section>
-
-              <section class="memory-detail-section">
-                <div class="memory-detail-section__header">
-                  <div>
-                    <div class="memory-detail-section__eyebrow">
-                      Execution Detail
-                    </div>
-                    <h4>工作细节</h4>
-                  </div>
-                </div>
-                <div
-                  v-if="selectedRequirementNodeEvents.length"
-                  class="memory-detail-task-events"
-                >
-                  <div
-                    v-for="event in selectedRequirementNodeEvents"
-                    :key="event.id || `${event.session_id}-${event.created_at}`"
-                    class="memory-detail-plan__event"
-                  >
-                    <div class="memory-detail-plan__event-row">
-                      <div class="memory-detail-plan__event-title">
-                        {{ event.phase || event.event_type || "工作轨迹" }}
-                        <template v-if="event.step">
-                          / {{ event.step }}</template
-                        >
-                      </div>
-                      <el-tag
-                        size="small"
-                        effect="plain"
-                        :type="getWorkSessionStatusTagType(event.status)"
-                      >
-                        {{ event.status || event.event_type || "-" }}
-                      </el-tag>
-                    </div>
-                    <p>{{ summarizeProjectWorkEvent(event) }}</p>
-                    <div
-                      v-if="event.changed_files?.length"
-                      class="memory-detail-plan__event-meta"
-                    >
-                      文件：{{ event.changed_files.join(" / ") }}
-                    </div>
-                    <div class="memory-detail-plan__event-meta">
-                      {{ event.session_id || "-" }} ·
-                      {{ event.employee_name || "-" }} ·
-                      {{ formatDateTime(event.created_at) }}
-                    </div>
-                  </div>
-                </div>
-                <el-empty
-                  v-else
-                  :description="
-                    selectedRequirementNodeIsRoot
-                      ? '当前总目标还没有汇总出整轮工作细节'
-                      : '当前节点还没有写入工作细节'
-                  "
-                  :image-size="56"
-                />
-              </section>
-
-              <section class="memory-detail-section">
-                <div class="memory-detail-section__header">
-                  <div>
-                    <div class="memory-detail-section__eyebrow">
-                      Verification
-                    </div>
-                    <h4>测试结果</h4>
-                  </div>
-                </div>
-                <div
-                  v-if="selectedRequirementNodeVerificationItems.length"
-                  class="memory-detail-tags"
-                >
-                  <el-tag
-                    v-for="(
-                      item, index
-                    ) in selectedRequirementNodeVerificationItems"
-                    :key="`${selectedRequirementNode?.id || 'node'}-${index}`"
-                    effect="plain"
-                    type="success"
-                  >
-                    {{ item }}
-                  </el-tag>
-                </div>
-                <div v-else class="memory-detail-block">
-                  {{
-                    selectedRequirementNodeIsRoot
-                      ? "当前总目标还没有汇总出测试结果。"
-                      : "当前节点还没有测试结果。"
-                  }}
-                </div>
-              </section>
-            </div>
-          </template>
-          <el-empty v-else description="未加载到节点详情" :image-size="56" />
-        </div>
-        <template #footer>
-          <el-button @click="showRequirementNodeDetailDialog = false"
-            >关闭</el-button
-          >
-        </template>
-      </el-dialog>
-
-      <el-dialog
         v-model="showMemoryDetailDialog"
         class="memory-detail-dialog"
         width="960px"
@@ -1950,7 +1724,7 @@
                     selectedMemorySolutionText ||
                     selectedMemoryConclusionText ||
                     selectedMemoryProcessSummary ||
-                    "这条需求记录保留了本轮会话的核心内容和任务映射。"
+                    "这条需求记录只保留需求内容。"
                   }}
                 </p>
                 <div class="memory-detail-hero__meta">
@@ -2568,19 +2342,12 @@ const projectTaskTreeDetails = ref({});
 const selectedMemoryDetail = ref(null);
 const selectedWorkSession = ref(null);
 const selectedWorkSessionEvents = ref([]);
-const selectedRequirementNode = ref(null);
-const selectedRequirementNodeRound = ref(null);
-const selectedRequirementNodeEvents = ref([]);
 const selectedRequirementRecordIds = ref([]);
-const expandedRequirementRecordId = ref("");
 const memoryDetailWorkEvents = ref([]);
 const taskTreeStorageBackend = ref("");
 const memoryDetailTaskTree = ref(null);
 const memoryDetailTaskTreeLoading = ref(false);
 const memoryDetailWorkEventsLoading = ref(false);
-const taskTreeDetailsLoading = ref(false);
-const requirementNodeDetailLoading = ref(false);
-const requirementRoundTaskTreeLoadingMap = ref({});
 const workSessionDetailLoading = ref(false);
 const requirementRecordDeleting = ref(false);
 const requirementRecordsLoaded = ref(false);
@@ -2593,7 +2360,6 @@ const requirementRecordsPage = ref(1);
 const requirementRecordsPageSize = ref(10);
 const showMemoryDetailDialog = ref(false);
 const showWorkSessionDetailDialog = ref(false);
-const showRequirementNodeDetailDialog = ref(false);
 const canManageProjectUsers = ref(false);
 const tabDataLoaded = ref({
   overview: false,
@@ -2700,8 +2466,6 @@ function resetProjectScopedState() {
   projectTaskSessions.value = [];
   projectTaskTreeDetails.value = {};
   selectedRequirementRecordIds.value = [];
-  expandedRequirementRecordId.value = "";
-  requirementRoundTaskTreeLoadingMap.value = {};
   requirementRecordsLoaded.value = false;
   editingRepositoryId.value = "";
   showRepositoryDialog.value = false;
@@ -3654,14 +3418,6 @@ watch(
     if (requirementRecordsPage.value > totalPages) {
       requirementRecordsPage.value = totalPages;
     }
-    if (!expandedRequirementRecordId.value) return;
-    const stillExists = (records || []).some(
-      (item) =>
-        String(item?.id || "").trim() === expandedRequirementRecordId.value,
-    );
-    if (!stillExists) {
-      expandedRequirementRecordId.value = "";
-    }
   },
   { immediate: true },
 );
@@ -3672,110 +3428,6 @@ watch(
     requirementRecordsPage.value = 1;
   },
 );
-
-const selectedRequirementNodeRoundLabel = computed(() => {
-  const round = selectedRequirementNodeRound.value;
-  if (!round) return "-";
-  return `第 ${Math.max(1, Number(round.roundIndex || 1))} 轮 · ${getRequirementRecordKindLabel(round.recordKind)}`;
-});
-
-const selectedRequirementNodeIsRoot = computed(() =>
-  isTaskTreeRootNode(
-    selectedRequirementNode.value,
-    selectedRequirementNodeRound.value,
-  ),
-);
-
-const selectedRequirementNodeDetailTitle = computed(() => {
-  if (!selectedRequirementNode.value) return "节点详情";
-  if (selectedRequirementNodeIsRoot.value) {
-    return (
-      selectedRequirementNode.value?.title ||
-      selectedRequirementNodeRound.value?.rootGoal ||
-      "需求总览"
-    );
-  }
-  return selectedRequirementNode.value?.title || "节点详情";
-});
-
-const selectedRequirementNodeDescriptionText = computed(() => {
-  const node = selectedRequirementNode.value;
-  const round = selectedRequirementNodeRound.value;
-  if (!node) return "该节点暂无目标描述。";
-  const directText = String(node.objective || node.description || "").trim();
-  if (directText) return directText;
-  if (selectedRequirementNodeIsRoot.value) {
-    return String(
-      round?.summaryText ||
-        round?.rootGoal ||
-        round?.currentNodeTitle ||
-        "当前总目标暂无描述，后续会随着子任务推进逐步沉淀整轮结果。",
-    ).trim();
-  }
-  return "该节点暂无目标描述。";
-});
-
-const selectedRequirementNodeVerificationMethodText = computed(() => {
-  const node = selectedRequirementNode.value;
-  if (Array.isArray(node?.verification_method)) {
-    return node.verification_method
-      .map((item) => String(item || "").trim())
-      .filter(Boolean)
-      .join(" / ");
-  }
-  return String(node?.verification_method || "").trim();
-});
-
-const selectedRequirementNodeVerificationItems = computed(() => {
-  const items = [];
-  const seen = new Set();
-  const pushItem = (value) => {
-    const text = String(value || "").trim();
-    if (!text || seen.has(text)) return;
-    seen.add(text);
-    items.push(text);
-  };
-  pushItem(selectedRequirementNode.value?.verification_result);
-  for (const event of selectedRequirementNodeEvents.value || []) {
-    for (const entry of Array.isArray(event?.verification)
-      ? event.verification
-      : []) {
-      pushItem(entry);
-    }
-  }
-  return items;
-});
-
-const selectedRequirementNodeOutcomeText = computed(() => {
-  const node = selectedRequirementNode.value;
-  const round = selectedRequirementNodeRound.value;
-  const text = String(
-    node?.latest_outcome || node?.summary_for_model || "",
-  ).trim();
-  if (text) return text;
-  if (selectedRequirementNodeIsRoot.value) {
-    return (
-      String(
-        round?.summaryText || round?.currentNodeTitle || round?.rootGoal || "-",
-      ).trim() || "-"
-    );
-  }
-  return "-";
-});
-
-const selectedRequirementNodeVerificationResultText = computed(() => {
-  const text = String(
-    selectedRequirementNode.value?.verification_result || "",
-  ).trim();
-  if (text) return text;
-  if (
-    selectedRequirementNodeIsRoot.value &&
-    selectedRequirementNodeVerificationItems.value.length
-  ) {
-    return `已汇总 ${selectedRequirementNodeVerificationItems.value.length} 条验证结果`;
-  }
-  return "-";
-});
 
 const selectedMemorySections = computed(() =>
   parseMemorySections(selectedMemoryDetail.value?.content || ""),
@@ -5528,64 +5180,6 @@ function openRequirementRoundDetail(round) {
   void openMemoryDetail(syntheticMemory);
 }
 
-function openRequirementRecordDetail(record) {
-  const targetRound =
-    record?.detailRound || record?.currentRound || record?.latestRound || null;
-  if (!targetRound) return;
-  openRequirementRoundDetail(targetRound);
-}
-
-function isRequirementRoundTaskTreeLoading(round) {
-  const sessionId = String(round?.sessionId || round?.id || "").trim();
-  return (
-    Boolean(sessionId) &&
-    Boolean(requirementRoundTaskTreeLoadingMap.value?.[sessionId])
-  );
-}
-
-async function ensureRequirementRoundTaskTree(round, options = {}) {
-  const sessionId = String(round?.sessionId || round?.id || "").trim();
-  const force = Boolean(options?.force);
-  if (!sessionId) {
-    return null;
-  }
-  if (!force && projectTaskTreeDetails.value?.[sessionId]) {
-    return projectTaskTreeDetails.value[sessionId];
-  }
-  if (isRequirementRoundTaskTreeLoading(round)) {
-    return null;
-  }
-  requirementRoundTaskTreeLoadingMap.value = {
-    ...requirementRoundTaskTreeLoadingMap.value,
-    [sessionId]: true,
-  };
-  try {
-    const data = await api.get(`/projects/${projectId.value}/chat/task-tree`, {
-      params: { session_id: sessionId },
-    });
-    const payload = normalizeTaskTreePayload(
-      resolveTaskTreeResponsePayload(data),
-    );
-    if (payload) {
-      projectTaskTreeDetails.value = {
-        ...(projectTaskTreeDetails.value || {}),
-        [sessionId]: payload,
-      };
-      return payload;
-    }
-    return null;
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "加载任务树详情失败");
-    return null;
-  } finally {
-    const nextLoadingMap = {
-      ...(requirementRoundTaskTreeLoadingMap.value || {}),
-    };
-    delete nextLoadingMap[sessionId];
-    requirementRoundTaskTreeLoadingMap.value = nextLoadingMap;
-  }
-}
-
 function isRequirementRecordSelected(record) {
   const recordId = String(record?.id || "").trim();
   return (
@@ -5616,61 +5210,6 @@ function toggleSelectAllRequirementRecords() {
   }
   selectedRequirementRecordIds.value =
     visibleRequirementRecordIds.value.slice();
-}
-
-function isRequirementRecordExpanded(record) {
-  const recordId = String(record?.id || "").trim();
-  return Boolean(recordId) && recordId === expandedRequirementRecordId.value;
-}
-
-function toggleRequirementRecordExpansion(record) {
-  const recordId = String(record?.id || "").trim();
-  if (!recordId) return;
-  const shouldExpand = expandedRequirementRecordId.value !== recordId;
-  expandedRequirementRecordId.value = shouldExpand ? recordId : "";
-  if (!shouldExpand) {
-    return;
-  }
-  const targetRound =
-    record?.detailRound || record?.currentRound || record?.latestRound || null;
-  void ensureRequirementRoundTaskTree(targetRound);
-}
-
-async function openRequirementNodeDetail(node, round) {
-  const taskTreeSessionId = String(round?.sessionId || round?.id || "").trim();
-  const taskNodeId = String(node?.id || "").trim();
-  if (!taskTreeSessionId || !taskNodeId) return;
-  const shouldLoadWholeRound = isTaskTreeRootNode(node, round);
-  selectedRequirementNode.value =
-    node && typeof node === "object" ? { ...node } : null;
-  selectedRequirementNodeRound.value =
-    round && typeof round === "object" ? { ...round } : null;
-  selectedRequirementNodeEvents.value = [];
-  showRequirementNodeDetailDialog.value = true;
-  requirementNodeDetailLoading.value = true;
-  try {
-    const params = {
-      task_tree_session_id: taskTreeSessionId,
-      limit: 200,
-    };
-    if (!shouldLoadWholeRound) {
-      params.task_node_id = taskNodeId;
-    }
-    const data = await api.get(
-      `/projects/${projectId.value}/work-session-events`,
-      {
-        params,
-      },
-    );
-    selectedRequirementNodeEvents.value = Array.isArray(data?.items)
-      ? data.items.map((item) => normalizeProjectWorkEvent(item))
-      : [];
-  } catch (err) {
-    selectedRequirementNodeEvents.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载节点工作细节失败");
-  } finally {
-    requirementNodeDetailLoading.value = false;
-  }
 }
 
 function openMemoryLinkedWorkSession() {
@@ -6632,12 +6171,6 @@ async function deleteRequirementRecords(recordIds, successLabel = "需求记录"
     selectedRequirementRecordIds.value = (
       selectedRequirementRecordIds.value || []
     ).filter((item) => !deletedIds.includes(item));
-    if (
-      expandedRequirementRecordId.value &&
-      deletedIds.includes(expandedRequirementRecordId.value)
-    ) {
-      expandedRequirementRecordId.value = "";
-    }
     const deletedCount = Number(data?.deleted_count || 0);
     if (deletedCount > 0) {
       ElMessage.success(`已删除 ${deletedCount} 条${successLabel}`);
@@ -6681,7 +6214,7 @@ async function handleBatchDeleteRequirementRecords() {
   }
   try {
     await ElMessageBox.confirm(
-      `确定删除已选中的 ${selectedIds.length} 条需求记录吗？这会同时清理关联的任务树、工作轨迹与记忆。`,
+      `确定删除已选中的 ${selectedIds.length} 条需求记录吗？这只会删除需求记录本身。`,
       "批量删除",
       {
         type: "warning",
@@ -6702,7 +6235,7 @@ async function handleDeleteAllRequirementRecords() {
   }
   try {
     await ElMessageBox.confirm(
-      `确定删除当前筛选结果中的 ${currentIds.length} 条需求记录吗？这只会删除当前列表结果，并同步清理关联的任务树、工作轨迹与记忆。`,
+      `确定删除当前筛选结果中的 ${currentIds.length} 条需求记录吗？这只会删除需求记录本身。`,
       "删除当前结果",
       {
         type: "warning",

@@ -1,11 +1,8 @@
 <template>
-  <article
-    class="requirement-record"
-    :class="{ 'requirement-record--expanded': expanded }"
-  >
+  <article class="requirement-record">
     <div class="requirement-record__hero">
       <div class="requirement-record__hero-copy">
-        <div class="requirement-record__eyebrow">Requirement Chain</div>
+        <div class="requirement-record__eyebrow">Requirement</div>
         <h5>{{ record.rootGoal || "未命名需求" }}</h5>
         <p>{{ record.summaryText || record.currentFocus || record.completionGate }}</p>
       </div>
@@ -21,10 +18,6 @@
         <el-tag :type="record.statusTagType">
           {{ record.statusLabel }}
         </el-tag>
-        <el-button plain size="small" @click="$emit('toggle-expand')">
-          {{ expanded ? "收起详情" : "展开详情" }}
-        </el-button>
-        <el-button text @click="$emit('open-detail')">查看整轮</el-button>
         <el-button
           v-if="canManageProject"
           type="danger"
@@ -39,9 +32,6 @@
     </div>
 
     <div class="requirement-record__supporting">
-      <el-tag effect="plain" type="success">
-        {{ Number(record.progressPercent || 0) }}%
-      </el-tag>
       <el-tag
         v-if="record.repairRoundCount"
         effect="plain"
@@ -56,8 +46,7 @@
       >
         {{ record.activeRoundCount }} 轮进行中
       </el-tag>
-      <span>{{ record.actorLabel }}</span>
-      <span>{{ record.roundDigest }}</span>
+      <span>{{ record.actorLabel || "需求记录" }}</span>
       <span>{{ formatDateTime(record.updatedAt || record.createdAt) }}</span>
     </div>
 
@@ -68,79 +57,27 @@
         <small>{{ record.summaryText || record.completionGate }}</small>
       </section>
       <section class="requirement-record__lineage-item">
-        <span>当前轮次</span>
-        <strong>
-          {{
-            record.detailRound
-              ? `第 ${record.detailRound.roundIndex} 轮`
-              : "等待建立轮次"
-          }}
-        </strong>
-        <small>
-          {{
-            record.detailRound
-              ? roundKindLabel
-              : "主需求轮次"
-          }}
-        </small>
+        <span>记录时间</span>
+        <strong>{{ formatDateTime(record.createdAt) }}</strong>
+        <small>只保存需求内容</small>
       </section>
       <section class="requirement-record__lineage-item">
-        <span>当前焦点</span>
+        <span>需求内容</span>
         <strong>{{ record.currentFocus }}</strong>
-        <small>
-          {{
-            `${record.progressDigest} · ${
-              record.detailWorkSessionCount
-                ? `${record.detailWorkSessionCount} 条轨迹`
-                : "暂无轨迹"
-            }`
-          }}
-        </small>
+        <small>{{ record.rootGoal }}</small>
       </section>
     </div>
 
-    <el-collapse-transition>
-      <div v-show="expanded" class="requirement-record__detail-shell">
-        <div class="requirement-record__tree-board" v-loading="treeLoading">
-          <div class="requirement-record__detail-head">
-            <div>
-              <div class="requirement-record__detail-eyebrow">On Demand</div>
-              <h6>任务树与执行细节</h6>
-            </div>
-            <p>点击节点再看工作细节和测试结果。</p>
-          </div>
-          <div class="requirement-record__tree-hint">
-            当前只保留主链结构，详细过程统一收进节点弹窗，避免列表里堆太多文字。
-          </div>
-          <RequirementTreeNode
-            v-if="record.detailRound?.rootNode"
-            :node="record.detailRound.rootNode"
-            :current-node-id="record.detailRound.currentNodeId"
-            @select="$emit('open-node-detail', $event)"
-          />
-          <el-empty
-            v-else
-            description="当前需求还没有可展示的任务树"
-            :image-size="56"
-          />
-        </div>
-      </div>
-    </el-collapse-transition>
   </article>
 </template>
 
 <script setup>
-import RequirementTreeNode from "@/components/RequirementTreeNode.vue";
 import { formatDateTime } from "@/utils/date.js";
 
 defineProps({
   record: {
     type: Object,
     required: true,
-  },
-  expanded: {
-    type: Boolean,
-    default: false,
   },
   selected: {
     type: Boolean,
@@ -154,22 +91,11 @@ defineProps({
     type: Boolean,
     default: false,
   },
-  treeLoading: {
-    type: Boolean,
-    default: false,
-  },
-  roundKindLabel: {
-    type: String,
-    default: "",
-  },
 });
 
 defineEmits([
-  "toggle-expand",
-  "open-detail",
   "delete",
   "toggle-select",
-  "open-node-detail",
 ]);
 </script>
 
@@ -187,11 +113,6 @@ defineEmits([
     transform 180ms ease;
   min-width: 0;
   overflow: hidden;
-}
-
-.requirement-record--expanded {
-  border-color: rgba(14, 116, 144, 0.24);
-  box-shadow: 0 20px 38px rgba(14, 116, 144, 0.1);
 }
 
 .requirement-record__hero {
@@ -307,65 +228,6 @@ defineEmits([
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-}
-
-.requirement-record__detail-shell {
-  margin-top: 16px;
-}
-
-.requirement-record__tree-board {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 16px;
-  padding: 20px 18px 16px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at top left, rgba(103, 232, 249, 0.1), transparent 32%),
-    linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.94));
-  overflow: visible;
-}
-
-.requirement-record__detail-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.requirement-record__detail-eyebrow {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: #0f766e;
-}
-
-.requirement-record__detail-head h6 {
-  margin: 8px 0 0;
-  color: #0f172a;
-  font-size: 18px;
-  line-height: 1.3;
-}
-
-.requirement-record__detail-head p {
-  margin: 0;
-  max-width: 26ch;
-  color: #64748b;
-  line-height: 1.6;
-  text-align: right;
-}
-
-.requirement-record__tree-hint {
-  width: 100%;
-  max-width: 720px;
-  padding: 12px 14px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.76);
-  color: #475569;
-  line-height: 1.6;
-  text-align: left;
 }
 
 @media (max-width: 900px) {

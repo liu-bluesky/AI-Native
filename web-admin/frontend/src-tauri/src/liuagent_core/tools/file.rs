@@ -56,6 +56,7 @@ pub fn list_files(workspace_path: &str, arguments: &Value) -> Result<(Value, Str
 pub fn read_file(workspace_path: &str, arguments: &Value) -> Result<(Value, String), ToolError> {
     let root = resolve_workspace_root(workspace_path)?;
     let path = required_string_arg(arguments, "path")?;
+    enforce_cli_entry_file_read_policy(arguments, &path)?;
     let start_line = number_arg(arguments, "start_line", 1, 1, 1_000_000) as usize;
     let line_count = number_arg(arguments, "line_count", 200, 1, 5_000) as usize;
     let target = resolve_workspace_child(&root, &path, true)?;
@@ -102,6 +103,7 @@ pub fn search_text(workspace_path: &str, arguments: &Value) -> Result<(Value, St
     let query = required_string_arg(arguments, "query")?;
     let path = string_arg(arguments, "path", ".");
     let glob = string_arg(arguments, "glob", "");
+    enforce_cli_entry_file_search_policy(arguments, &path, &glob)?;
     let max_results = number_arg(arguments, "max_results", 50, 1, 200) as usize;
     let target = resolve_workspace_child(&root, &path, true)?;
     if !target.is_dir() {
@@ -118,6 +120,7 @@ pub fn search_text(workspace_path: &str, arguments: &Value) -> Result<(Value, St
         &target,
         &query,
         &glob,
+        arguments,
         max_results,
         &mut matches,
         &mut truncated,
@@ -657,6 +660,120 @@ fn split_diff_lines(value: &str) -> Vec<&str> {
     }
 }
 
+fn enforce_cli_entry_file_read_policy(arguments: &Value, path: &str) -> Result<(), ToolError> {
+    if is_cli_entry_file_access_blocked(arguments, path) {
+        return Err(cli_entry_file_blocked_error(path));
+    }
+    Ok(())
+}
+
+fn enforce_cli_entry_file_search_policy(
+    arguments: &Value,
+    path: &str,
+    glob: &str,
+) -> Result<(), ToolError> {
+    for candidate in [path, glob] {
+        if candidate.trim().is_empty() {
+            continue;
+        }
+        if is_cli_entry_file_access_blocked(arguments, candidate) {
+            return Err(cli_entry_file_blocked_error(candidate));
+        }
+    }
+    Ok(())
+}
+
+fn is_cli_entry_file_access_blocked(arguments: &Value, path: &str) -> bool {
+    let normalized_path = normalize_policy_path(path);
+    let Some(file_name) = normalized_path.rsplit('/').next() else {
+        return false;
+    };
+    if !cli_entry_file_names(arguments)
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(file_name))
+    {
+        return false;
+    }
+    let allowed = allowed_cli_entry_file_names(arguments);
+    !allowed
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(file_name))
+}
+
+fn cli_entry_file_blocked_error(path: &str) -> ToolError {
+    ToolError::new(
+        "entry_file.not_allowed",
+        format!(
+            "{path} 是 CLI 入口文件；桌面端本地智能体默认只读取项目配置的 AI 入口文件。只有用户明确要求读取该文件，或项目 AI 入口文件配置为该文件时才允许读取。"
+        ),
+    )
+}
+
+fn cli_entry_file_names(arguments: &Value) -> Vec<String> {
+    policy_string_list(
+        arguments,
+        "cli_entry_files",
+        &["AGENTS.md", "CLAUDE.md", "HERMES.md"],
+    )
+}
+
+fn allowed_cli_entry_file_names(arguments: &Value) -> Vec<String> {
+    let mut allowed = Vec::new();
+    let ai_entry_file = policy_string(arguments, "ai_entry_file");
+    if !ai_entry_file.is_empty() {
+        if let Some(name) = normalize_policy_path(&ai_entry_file).rsplit('/').next() {
+            allowed.push(name.to_string());
+        }
+    }
+    allowed.extend(policy_string_list(
+        arguments,
+        "explicit_cli_entry_files",
+        &[],
+    ));
+    allowed
+}
+
+fn policy_string(arguments: &Value, key: &str) -> String {
+    arguments
+        .get("file_access_policy")
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_str)
+        .map(normalize_policy_path)
+        .unwrap_or_default()
+}
+
+fn policy_string_list(arguments: &Value, key: &str, fallback: &[&str]) -> Vec<String> {
+    let values = arguments
+        .get("file_access_policy")
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(normalize_policy_path)
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if values.is_empty() {
+        fallback
+            .iter()
+            .map(|value| normalize_policy_path(value))
+            .collect()
+    } else {
+        values
+    }
+}
+
+fn normalize_policy_path(value: &str) -> String {
+    value
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
+}
+
 fn collect_file_entries(
     root: &Path,
     directory: &Path,
@@ -716,6 +833,7 @@ fn search_text_recursive(
     directory: &Path,
     query: &str,
     glob: &str,
+    arguments: &Value,
     max_results: usize,
     matches: &mut Vec<Value>,
     truncated: &mut bool,
@@ -739,8 +857,21 @@ fn search_text_recursive(
             Err(_) => continue,
         };
         if metadata.is_dir() {
-            search_text_recursive(root, &path, query, glob, max_results, matches, truncated)?;
+            search_text_recursive(
+                root,
+                &path,
+                query,
+                glob,
+                arguments,
+                max_results,
+                matches,
+                truncated,
+            )?;
         } else if metadata.is_file() && glob_matches(&name, glob) && metadata.len() <= 1024 * 1024 {
+            let relative_path = workspace_relative_path(root, &path);
+            if is_cli_entry_file_access_blocked(arguments, &relative_path) {
+                continue;
+            }
             if let Ok(raw) = fs::read_to_string(&path) {
                 for (index, line) in raw.lines().enumerate() {
                     if line.to_lowercase().contains(&query_lower) {

@@ -34,6 +34,8 @@ pub struct LocalChatRequest {
     pub system_prompt_parts: Vec<LocalChatPromptPart>,
     pub temperature: Option<f64>,
     pub model_runtime: Option<LocalModelRuntimeConfig>,
+    #[serde(default, alias = "ai_entry_file")]
+    pub ai_entry_file: Option<String>,
     #[serde(default)]
     pub attachments: Vec<LocalChatAttachment>,
     pub permission_decision: Option<PermissionDecisionInput>,
@@ -53,6 +55,13 @@ pub struct LocalRuntimeRecoveryRequest {
     pub project_id: String,
     pub chat_session_id: String,
     pub workspace_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalRuntimeJobRequest {
+    pub workspace_path: String,
+    pub state_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -354,6 +363,20 @@ pub struct ClarityAssessment {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct TaskGoal {
+    pub version: String,
+    pub goal_id: String,
+    pub title: String,
+    pub user_request: String,
+    pub intent: String,
+    pub target_object: String,
+    pub success_criteria: Vec<String>,
+    pub constraints: Vec<String>,
+    pub created_at_epoch_ms: u128,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct PlanState {
     pub version: String,
     pub plan_id: String,
@@ -504,6 +527,7 @@ pub struct LocalChatResult {
     pub tool_results: Vec<ToolExecutionResult>,
     pub operations: Value,
     pub runtime_events: Vec<Value>,
+    pub conversation_lifecycle: Value,
     pub summary: String,
     pub user_visible_error_summary: String,
     pub diagnostic: Value,
@@ -528,6 +552,11 @@ impl LocalChatResult {
             tool_results: Vec::new(),
             operations: json!([]),
             runtime_events: Vec::new(),
+            conversation_lifecycle: json!({
+                "version": "desktop-conversation-lifecycle/v1",
+                "status": "failed",
+                "nodes": []
+            }),
             summary: error_message.clone(),
             user_visible_error_summary: error_message.clone(),
             diagnostic: json!({
@@ -551,6 +580,17 @@ pub struct LocalRuntimeRecoveryResult {
     pub workspace_path: String,
     pub state: Value,
     pub runtime_events: Vec<Value>,
+    pub summary: String,
+    pub error_code: String,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalRuntimeJobResult {
+    pub ok: bool,
+    pub workspace_path: String,
+    pub job: Value,
     pub summary: String,
     pub error_code: String,
     pub error: String,
@@ -628,6 +668,30 @@ impl LocalRuntimeRecoveryResult {
             workspace_path: request.workspace_path,
             state: json!({}),
             runtime_events: Vec::new(),
+            summary: error.message.clone(),
+            error_code: error.code,
+            error: error.message,
+        }
+    }
+}
+
+impl LocalRuntimeJobResult {
+    pub fn ok(workspace_path: String, job: Value, summary: String) -> Self {
+        Self {
+            ok: true,
+            workspace_path,
+            job,
+            summary,
+            error_code: String::new(),
+            error: String::new(),
+        }
+    }
+
+    pub fn failed(request: LocalRuntimeJobRequest, error: ToolError) -> Self {
+        Self {
+            ok: false,
+            workspace_path: request.workspace_path,
+            job: json!({}),
             summary: error.message.clone(),
             error_code: error.code,
             error: error.message,
@@ -854,12 +918,30 @@ impl ToolExecutionResult {
     }
 
     pub fn failed(tool_call_id: String, name: String, error: ToolError) -> Self {
+        let status = tool_error_status(&error.code);
         let content = if error.code == "permission.required" {
             serde_json::from_str::<Value>(&error.message)
                 .map(|request| json!({"permissionRequest": request}))
                 .unwrap_or_else(|_| json!({}))
+        } else if status == "no_signal" {
+            json!({
+                "status": status,
+                "status_reason": "timeout_without_completion_evidence",
+                "terminal": false,
+                "requires_judgement": true
+            })
+        } else if is_recoverable_tool_error(&error.code) {
+            json!({
+                "status": status,
+                "terminal": false,
+                "recoverable": true,
+                "recovery_scope": "model_can_retry_or_degrade"
+            })
         } else {
-            json!({})
+            json!({
+                "status": status,
+                "terminal": status == "failed"
+            })
         };
         Self {
             tool_result_id: format!("result_{tool_call_id}"),
@@ -872,6 +954,26 @@ impl ToolExecutionResult {
             error: error.message,
         }
     }
+}
+
+fn tool_error_status(error_code: &str) -> &'static str {
+    match error_code {
+        "tool.timeout" => "no_signal",
+        "permission.required" => "waiting",
+        _ => "failed",
+    }
+}
+
+fn is_recoverable_tool_error(error_code: &str) -> bool {
+    matches!(
+        error_code,
+        "tool.schema_invalid"
+            | "tool.not_found"
+            | "mcp.adapter_missing"
+            | "mcp.server_not_found"
+            | "mcp.config_invalid"
+            | "mcp.failed"
+    )
 }
 
 #[derive(Debug, Serialize)]

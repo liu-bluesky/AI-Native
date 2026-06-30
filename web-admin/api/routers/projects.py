@@ -46,7 +46,7 @@ from core.config import get_api_data_dir, get_project_root, get_settings
 from core.data_scope import can_view_username_data, filter_records_by_data_scope
 from core.ownership import can_view_record
 from core.redis_client import get_redis_client
-from core.deps import employee_store, ensure_any_permission, ensure_permission, external_mcp_store, ftp_credential_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_deploy_store, project_experience_summary_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_log_template_store, work_session_store
+from core.deps import employee_store, ensure_any_permission, ensure_permission, external_mcp_store, ftp_credential_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_deploy_store, project_experience_summary_store, project_material_store, project_requirement_record_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_log_template_store, work_session_store
 from stores.json.work_log_template_store import WorkLogTemplate
 from services.feedback_service import get_feedback_service
 from services.assistant.global_assistant_service import (
@@ -227,6 +227,7 @@ from models.requests import (
 from stores.json.system_config_store import normalize_query_mcp_bootstrap_prompt_template
 from stores.json.project_chat_store import ProjectChatMessage
 from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChatTaskSession
+from stores.json.project_requirement_record_store import ProjectRequirementRecord
 from stores.json.project_experience_summary_store import ProjectExperienceSummaryJob
 from stores.json.project_material_store import ProjectMaterialAsset
 from stores.json.project_studio_export_store import ProjectStudioExportJob
@@ -310,6 +311,11 @@ _EXPERIENCE_QUERY_STOPWORDS = {
     "当前",
     "功能",
 }
+_PROJECT_CHAT_AI_CONTEXT_KEY = "ai_request_context"
+_PROJECT_CHAT_AI_CONTEXT_SENSITIVE_KEY_RE = re.compile(
+    r"(authorization|token|password|secret|cookie|set-cookie|api[-_]?key|session)",
+    re.IGNORECASE,
+)
 
 
 class ProjectDesktopAuditEventReq(BaseModel):
@@ -7732,8 +7738,14 @@ def _build_chat_mcp_modules(project_id: str) -> dict[str, Any]:
                 "scope": "external",
                 "module_type": "external_mcp_service",
                 "description": str(getattr(module, "description", "") or ""),
+                "transport_type": str(getattr(module, "transport_type", "") or ""),
                 "endpoint_http": str(getattr(module, "endpoint_http", "") or ""),
                 "endpoint_sse": str(getattr(module, "endpoint_sse", "") or ""),
+                "command": str(getattr(module, "command", "") or ""),
+                "args": list(getattr(module, "args", []) or []),
+                "env": dict(getattr(module, "env", {}) or {}),
+                "headers": dict(getattr(module, "headers", {}) or {}),
+                "config": dict(getattr(module, "config", {}) or {}),
                 "auth_type": str(getattr(module, "auth_type", "") or ""),
                 "project_id": module_project_id,
                 "enabled": bool(getattr(module, "enabled", True)),
@@ -8636,11 +8648,9 @@ def _build_project_chat_messages(
         selected_employee_prompt,
         workflow_skill_prompt,
         collaboration_prompt,
-        str(task_tree_prompt or "").strip(),
         order_hint,
         style_hint,
         _build_skill_resource_prompt_block(skill_resource_directory),
-        build_assistant_workflow_prompt(assistant_workflow_state),
         build_capability_routing_prompt(tools),
         _build_url_fetch_prompt(user_message, tools),
         _build_host_command_execution_prompt(user_message, tools),
@@ -11262,6 +11272,73 @@ def _get_project_task_session_status_label(value: Any) -> str:
     return _normalize_project_record_token(value, limit=80) or "待开始"
 
 
+def _serialize_project_requirement_record(item: ProjectRequirementRecord) -> dict[str, Any]:
+    title = _normalize_project_record_token(getattr(item, "title", ""), limit=200)
+    root_goal = _normalize_project_record_token(getattr(item, "root_goal", ""), limit=2000)
+    status = "in_progress"
+    updated_at = _normalize_project_record_token(getattr(item, "updated_at", ""), limit=40)
+    created_at = _normalize_project_record_token(getattr(item, "created_at", ""), limit=40)
+    round_payload = {
+        "id": _normalize_project_record_token(getattr(item, "id", ""), limit=80),
+        "sessionId": _normalize_project_record_token(getattr(item, "id", ""), limit=80),
+        "sourceSessionId": "",
+        "chatSessionId": _normalize_project_record_token(
+            getattr(item, "source_chat_session_id", "") or getattr(item, "chat_session_id", ""),
+            limit=120,
+        ),
+        "taskTree": None,
+        "rootNode": None,
+        "rootGoal": root_goal,
+        "title": title,
+        "recordKind": "requirement",
+        "roundIndex": 1,
+        "status": status,
+        "displayStatus": status,
+        "progressPercent": 0,
+        "currentNodeId": "",
+        "currentNodeTitle": "",
+        "leafTotal": 0,
+        "doneLeafTotal": 0,
+        "nodeTotal": 0,
+        "isArchived": False,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "primaryMemory": None,
+        "workSessions": [],
+        "primaryWorkSession": None,
+        "isFinalized": False,
+        "summaryText": root_goal,
+    }
+    return {
+        "id": _normalize_project_record_token(getattr(item, "id", ""), limit=80),
+        "rootGoal": root_goal,
+        "title": title,
+        "actorNames": [],
+        "actorLabel": "需求记录",
+        "latestRound": round_payload,
+        "currentRound": round_payload,
+        "detailRound": round_payload,
+        "rounds": [round_payload],
+        "repairRoundCount": 0,
+        "activeRoundCount": 1,
+        "memoryTypes": [],
+        "status": status,
+        "statusLabel": _get_project_task_session_status_label(status),
+        "statusTagType": _get_project_task_session_status_tag_type(status),
+        "progressPercent": round_payload["progressPercent"],
+        "currentFocus": root_goal,
+        "completionGate": "",
+        "summaryText": round_payload["summaryText"],
+        "roundDigest": "单轮需求",
+        "progressDigest": "",
+        "detailWorkSessionCount": 0,
+        "created_by": _normalize_project_record_token(getattr(item, "username", ""), limit=80),
+        "username": _normalize_project_record_token(getattr(item, "username", ""), limit=80),
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+    }
+
+
 def _is_project_task_tree_finalized(task_tree: dict[str, Any] | None) -> bool:
     if not isinstance(task_tree, dict):
         return False
@@ -11363,6 +11440,33 @@ def _build_project_requirement_records(
     normalized_employee_id = _normalize_project_record_token(employee_id, limit=80)
     query_text = _normalize_project_record_token(query, limit=200).lower()
     normalized_memory_type = _normalize_project_record_token(memory_type, limit=80)
+
+    lightweight_records = [
+        _serialize_project_requirement_record(item)
+        for item in project_requirement_record_store.list_by_project(project.id, safe_limit)
+    ]
+    if normalized_employee_id:
+        lightweight_records = [
+            item
+            for item in lightweight_records
+            if _normalize_project_record_token(item.get("created_by"), limit=80) == normalized_employee_id
+        ]
+    if query_text:
+        lightweight_records = [
+            item
+            for item in lightweight_records
+            if any(
+                query_text in _normalize_project_record_token(value, limit=4000).lower()
+                for value in (
+                    item.get("rootGoal"),
+                    item.get("title"),
+                    item.get("summaryText"),
+                    item.get("currentFocus"),
+                )
+            )
+        ]
+    if normalized_memory_type:
+        lightweight_records = []
 
     task_sessions = list_project_task_tree_summaries(project.id, safe_limit)
     employee_names = _project_employee_name_map(project.id)
@@ -11687,6 +11791,7 @@ def _build_project_requirement_records(
                 continue
         records.append(record_payload)
 
+    records.extend(lightweight_records)
     records.sort(
         key=lambda item: (
             _normalize_project_record_token(item.get("updatedAt") or item.get("createdAt"), limit=40),
@@ -12410,6 +12515,86 @@ def _append_chat_record(
         return None
 
 
+def _redact_project_chat_ai_context_value(value: Any, depth: int = 0) -> Any:
+    if depth > 8:
+        return "[MaxDepth]"
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key or "")
+            if _PROJECT_CHAT_AI_CONTEXT_SENSITIVE_KEY_RE.search(key_text):
+                redacted[key_text] = "[REDACTED]"
+                continue
+            redacted[key_text] = _redact_project_chat_ai_context_value(item, depth + 1)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_project_chat_ai_context_value(item, depth + 1) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_project_chat_ai_context_value(item, depth + 1) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _build_project_chat_ai_request_context_payload(
+    *,
+    runtime_context: Any,
+    temperature: float,
+    request_id: str = "",
+) -> dict[str, Any]:
+    messages = [dict(item) for item in getattr(runtime_context, "resolved_messages", ()) or ()]
+    tools = [dict(item) for item in getattr(runtime_context, "resolved_tools", ()) or ()]
+    chat_settings = dict(getattr(runtime_context, "chat_settings", {}) or {})
+    metadata = dict(getattr(runtime_context, "metadata", {}) or {})
+    payload = {
+        "debug_payload_version": 1,
+        "request_id": str(request_id or "").strip(),
+        "provider_id": str(getattr(runtime_context, "provider_id", "") or "").strip(),
+        "model_name": str(getattr(runtime_context, "model_name", "") or "").strip(),
+        "temperature": float(temperature),
+        "project_id": str(getattr(runtime_context, "project_id", "") or "").strip(),
+        "username": str(getattr(runtime_context, "username", "") or "").strip(),
+        "chat_session_id": str(getattr(runtime_context, "chat_session_id", "") or "").strip(),
+        "employee_id": str(getattr(runtime_context, "employee_id", "") or "").strip(),
+        "selected_employee_ids": list(getattr(runtime_context, "selected_employee_ids", ()) or ()),
+        "chat_surface": str(getattr(runtime_context, "chat_surface", "") or "").strip(),
+        "workspace_path": str(getattr(runtime_context, "workspace_path", "") or "").strip(),
+        "host_workspace_path": str(getattr(runtime_context, "host_workspace_path", "") or "").strip(),
+        "messages": messages,
+        "tools": tools,
+        "tool_count": len(tools),
+        "chat_settings": chat_settings,
+        "task_tree_payload": getattr(runtime_context, "task_tree_payload", None),
+        "task_tree_prompt": str(getattr(runtime_context, "task_tree_prompt", "") or ""),
+        "capability_routing": dict(getattr(runtime_context, "capability_routing", {}) or {}),
+        "metadata": metadata,
+    }
+    return _redact_project_chat_ai_context_value(payload)
+
+
+def _with_project_chat_ai_request_context(
+    source_context: dict[str, Any] | None,
+    ai_request_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    context = dict(source_context or {}) if isinstance(source_context, dict) else {}
+    if isinstance(ai_request_context, dict) and ai_request_context:
+        context[_PROJECT_CHAT_AI_CONTEXT_KEY] = ai_request_context
+    return context
+
+
+def _serialize_project_chat_message_for_client(message: ProjectChatMessage | dict[str, Any]) -> dict[str, Any]:
+    payload = asdict(message) if hasattr(message, "__dataclass_fields__") else dict(message)
+    source_context = (
+        dict(payload.get("source_context") or {})
+        if isinstance(payload.get("source_context"), dict)
+        else {}
+    )
+    if isinstance(source_context.get(_PROJECT_CHAT_AI_CONTEXT_KEY), dict):
+        source_context[_PROJECT_CHAT_AI_CONTEXT_KEY] = {"available": True}
+        payload["source_context"] = source_context
+    return payload
+
+
 def _resolve_project_memory_target_employee_ids(
     project_id: str,
     selected_employee_ids: list[str] | None = None,
@@ -12518,6 +12703,16 @@ _PROJECT_CHAT_VERIFICATION_NEGATION_TERMS = (
     "待验证",
     "需要验证",
 )
+_PROJECT_CHAT_WAITING_CONFIRMATION_TERMS = (
+    "确认开始执行",
+    "确认继续",
+    "确认开始",
+    "继续执行",
+    "收到后我会开始",
+    "收到后我会继续",
+    "收到后会开始",
+    "请再明确确认",
+)
 
 
 def _project_chat_answer_has_term(text: str, terms: tuple[str, ...]) -> bool:
@@ -12531,6 +12726,8 @@ def _project_chat_answer_implies_completed_summary(
 ) -> bool:
     normalized_answer = str(answer or "").strip().lower()
     if not normalized_answer:
+        return False
+    if _project_chat_answer_has_term(normalized_answer, _PROJECT_CHAT_WAITING_CONFIRMATION_TERMS):
         return False
     if _project_chat_answer_has_term(normalized_answer, _PROJECT_CHAT_COMPLETION_NEGATION_TERMS):
         return False
@@ -13533,7 +13730,7 @@ def _build_query_mcp_cli_prompt(
         "8. 仅在缺少明确的 `project_id` / `employee_id` / `rule_id`，或需要跨项目检索时，再调用 `search_ids(keyword=\"<用户原始问题>\")`；已明确当前项目且在项目内执行时可直接读取上下文或进入本地实现。",
         "9. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 `bind_project_context(...)`。",
         "10. 当前任务先在项目本地推进：先在工作区完成分析、改动、验证和本地记录，再通过 MCP 回写任务树、工作事实、交付结论或记忆到服务端。",
-        "11. 每个需求必须维护 1 个本地 requirement 对象；项目工作区可解析时，写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。对象内至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history` 等字段，避免只在服务端推进看不到本地状态。",
+        "11. 每个需求必须维护 1 个本地 requirement 对象；项目工作区可解析时，写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。对象只记录需求内容和必要定位字段，不记录 `workflow_skill`、`task_tree`、`current_task_node`、`task_branches`、`history`、执行轨迹或项目智能体上下文。",
         f"12. 当前全局清晰度确认阈值为 {normalized_clarity_threshold}/5；先按 1-5 分估计用户需求清晰度。",
         f"13. 若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {normalized_clarity_threshold}，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。",
         f"14. 若清晰度分数 < {normalized_clarity_threshold}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认或用户已明确要求执行后不要重复确认；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。",
@@ -19080,7 +19277,7 @@ async def publish_project_chat_record_realtime(
         return
     from services.chat.project_chat_realtime_service import publish_project_chat_realtime_event
 
-    message_payload = asdict(message) if hasattr(message, "__dataclass_fields__") else dict(message)
+    message_payload = _serialize_project_chat_message_for_client(message)
     normalized_session_id = str(
         chat_session_id or message_payload.get("chat_session_id") or ""
     ).strip()
@@ -19111,7 +19308,7 @@ async def publish_project_chat_record_update_realtime(
         return
     from services.chat.project_chat_realtime_service import publish_project_chat_realtime_event
 
-    message_payload = asdict(message) if hasattr(message, "__dataclass_fields__") else dict(message)
+    message_payload = _serialize_project_chat_message_for_client(message)
     normalized_session_id = str(
         chat_session_id or message_payload.get("chat_session_id") or ""
     ).strip()
@@ -20083,12 +20280,21 @@ async def batch_delete_project_requirement_records(
     deleted_record_ids: list[str] = []
     missing_ids: list[str] = []
     skipped_ids: list[str] = []
+    deleted_requirement_record_count = 0
     deleted_task_tree_count = 0
     deleted_memory_count = 0
     deleted_work_session_count = 0
     deleted_work_event_count = 0
 
     for record_id in normalized_ids:
+        requirement_record_removed = int(
+            project_requirement_record_store.delete_by_id(project.id, record_id) or 0
+        )
+        if requirement_record_removed:
+            deleted_requirement_record_count += requirement_record_removed
+            deleted_record_ids.append(record_id)
+            continue
+
         entry = chain_index.get(record_id)
         if entry is None:
             missing_ids.append(record_id)
@@ -20139,6 +20345,7 @@ async def batch_delete_project_requirement_records(
         "requested_count": len(normalized_ids),
         "deleted_count": len(deleted_record_ids),
         "deleted_record_ids": deleted_record_ids,
+        "deleted_requirement_record_count": deleted_requirement_record_count,
         "deleted_task_tree_count": deleted_task_tree_count,
         "deleted_memory_count": deleted_memory_count,
         "deleted_work_session_count": deleted_work_session_count,
@@ -22478,7 +22685,48 @@ async def list_project_chat_history(
         offset=offset,
         chat_session_id=str(chat_session_id or "").strip(),
     )
-    return {"messages": [asdict(item) for item in records]}
+    return {"messages": [_serialize_project_chat_message_for_client(item) for item in records]}
+
+
+@router.get("/{project_id}/chat/history/messages/{message_id}/ai-context")
+async def get_project_chat_message_ai_context(
+    project_id: str,
+    message_id: str,
+    chat_session_id: str = "",
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    if not is_admin_like(auth_payload):
+        raise HTTPException(403, "Only administrators can view AI request context")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    normalized_message_id = str(message_id or "").strip()
+    if not normalized_message_id:
+        raise HTTPException(400, "message_id is required")
+    records = project_chat_store.list_messages(
+        project_id,
+        username,
+        limit=0,
+        chat_session_id=str(chat_session_id or "").strip(),
+    )
+    record = next(
+        (item for item in records if str(getattr(item, "id", "") or "").strip() == normalized_message_id),
+        None,
+    )
+    if record is None:
+        raise HTTPException(404, "message not found")
+    if str(record.role or "").strip().lower() != "assistant":
+        raise HTTPException(400, "AI request context is only available for assistant messages")
+    source_context = dict(record.source_context or {}) if isinstance(record.source_context, dict) else {}
+    ai_context = source_context.get(_PROJECT_CHAT_AI_CONTEXT_KEY)
+    if not isinstance(ai_context, dict) or not ai_context:
+        raise HTTPException(404, "AI request context not found")
+    return {
+        "message_id": normalized_message_id,
+        "chat_session_id": str(record.chat_session_id or "").strip(),
+        "created_at": str(record.created_at or ""),
+        "ai_context": ai_context,
+    }
 
 
 @router.post("/{project_id}/chat/history/messages")
@@ -22514,162 +22762,35 @@ async def append_project_chat_history_message(
             videos=list(req.videos or []),
         )
     )
-    return {"message": asdict(message)}
+    return {"message": _serialize_project_chat_message_for_client(message)}
 
 
-_PROJECT_CHAT_REQUIREMENT_STATUS_VALUES = {
-    "pending",
-    "in_progress",
-    "verifying",
-    "blocked",
-    "done",
-}
-
-
-def _normalize_project_chat_requirement_status(value: Any) -> str:
-    normalized = str(value or "").strip().lower().replace("-", "_")
-    if normalized in {"completed", "complete", "success", "resolved"}:
-        return "done"
-    if normalized in {
-        "running",
-        "started",
-        "processing",
-        "working",
-        "waiting_approval",
-        "approval_required",
-        "awaiting_approval",
-        "waiting_user",
-        "waiting_user_action",
-        "awaiting_user",
-        "validating",
-        "validation",
-        "retry",
-        "retrying",
-    }:
-        return "in_progress"
-    if normalized in {"checking", "verified"}:
-        return "verifying"
-    if normalized in {"failed", "error", "blocked"}:
-        return "blocked"
-    return normalized if normalized in _PROJECT_CHAT_REQUIREMENT_STATUS_VALUES else "in_progress"
-
-
-def _build_project_chat_requirement_session(
+def _build_project_chat_requirement_record(
     *,
     project_id: str,
     username: str,
     record_chat_session_id: str,
     source_chat_session_id: str,
-    existing: ProjectChatTaskSession | None,
+    existing: ProjectRequirementRecord | None,
     req: ProjectChatRequirementRecordUpsertReq,
-) -> ProjectChatTaskSession:
+) -> ProjectRequirementRecord:
     root_goal = str(req.root_goal or "").strip()
     if not root_goal:
         raise HTTPException(400, "root_goal is required")
     title = str(req.title or "").strip() or root_goal[:120] or "AI 对话需求"
     now = _now_iso()
-    session_id = getattr(existing, "id", "") or project_chat_task_store.new_session_id()
-    source_context = dict(req.source_context or {}) if isinstance(req.source_context, dict) else {}
-    runner_session_id = str(req.runner_session_id or "").strip()
-    runner_agent_type = str(req.runner_agent_type or "").strip()
-    source = str(req.source or "project_chat").strip() or "project_chat"
-    status = _normalize_project_chat_requirement_status(req.status)
-    result_summary = str(req.result_summary or "").strip()
-    verification_result = str(req.verification_result or "").strip()
-    if status == "blocked" and not verification_result:
-        verification_result = result_summary
-    if status == "done" and not verification_result:
-        verification_result = result_summary or "来源已标记完成"
-    if status not in _PROJECT_CHAT_REQUIREMENT_STATUS_VALUES:
-        status = "in_progress"
-
-    root_node_id = ""
-    run_node_id = ""
-    if existing and existing.nodes:
-        root_node = next((node for node in existing.nodes if not str(node.parent_id or "").strip()), None)
-        root_node_id = getattr(root_node, "id", "") if root_node else ""
-        run_node = next((node for node in existing.nodes if str(node.parent_id or "").strip()), None)
-        run_node_id = getattr(run_node, "id", "") if run_node else ""
-    root_node_id = root_node_id or project_chat_task_store.new_node_id()
-    run_node_id = run_node_id or project_chat_task_store.new_node_id()
-
-    child_status = status
-    root_status = status
-    source_bits = [
-        f"source={source}",
-        f"message={str(req.message_id or '').strip()}",
-        f"assistant={str(req.assistant_message_id or '').strip()}",
-        f"runner={runner_session_id}",
-        f"agent={runner_agent_type}",
-    ]
-    if source_context:
-        source_bits.append(f"context={json.dumps(source_context, ensure_ascii=False)[:500]}")
-    root_node = ProjectChatTaskNode(
-        id=root_node_id,
-        session_id=session_id,
-        parent_id="",
-        node_kind="goal",
-        stage_key="goal",
-        title=title[:160],
-        description=root_goal,
-        objective=root_goal,
-        level=0,
-        sort_order=0,
-        status=root_status,
-        done_definition="AI 对话需求有明确结果并写入验证结论。",
-        completion_criteria="AI 对话需求有明确结果并写入验证结论。",
-        verification_items=["对话需求已记录", "最终回答已回写"],
-        verification_method=["检查聊天历史和需求记录"],
-        verification_result=verification_result if status == "done" else "",
-        summary_for_model=root_goal,
-        latest_outcome=result_summary or root_goal,
-        metadata={},
-        created_at=getattr(existing, "created_at", "") or now,
-        updated_at=now,
-    )
-    run_node = ProjectChatTaskNode(
-        id=run_node_id,
-        session_id=session_id,
-        parent_id=root_node_id,
-        node_kind="plan_step",
-        stage_key="desktop_runner" if source == "tauri_external_agent_runner" else "ai_chat",
-        title="桌面端 Runner 执行" if source == "tauri_external_agent_runner" else "AI 对话处理",
-        description="\n".join([root_goal, *[bit for bit in source_bits if bit]]),
-        objective="通过 AI 对话或桌面端 Runner 处理用户需求。",
-        level=1,
-        sort_order=1,
-        status=child_status,
-        done_definition="最终回答已产生并写入聊天历史。",
-        completion_criteria="最终回答已产生并写入聊天历史。",
-        verification_items=["最终回答已写入当前聊天会话"],
-        verification_method=["检查聊天历史和 source_context"],
-        verification_result=verification_result if status == "done" else "",
-        summary_for_model=result_summary or root_goal,
-        latest_outcome=result_summary or root_goal,
-        metadata={},
-        created_at=getattr(existing, "created_at", "") or now,
-        updated_at=now,
-    )
-    session = ProjectChatTaskSession(
-        id=session_id,
+    record = ProjectRequirementRecord(
+        id=getattr(existing, "id", "") or record_chat_session_id,
         project_id=project_id,
         username=username,
         chat_session_id=record_chat_session_id,
         source_chat_session_id=source_chat_session_id,
-        record_kind="requirement",
-        source_session_id=(getattr(existing, "source_session_id", "") if existing else ""),
-        round_index=int(getattr(existing, "round_index", 1) or 1) if existing else 1,
         title=title[:200],
         root_goal=root_goal,
-        status=status,
-        lifecycle_status="active",
-        current_node_id=run_node_id,
-        nodes=[root_node, run_node],
-        metadata={},
         created_at=getattr(existing, "created_at", "") or now,
         updated_at=now,
     )
-    return session
+    return record
 
 
 @router.post("/{project_id}/chat/requirement-record")
@@ -22693,8 +22814,8 @@ async def upsert_project_chat_requirement_record(
         record_chat_session_id = f"{chat_prefix or 'chat'}__msg__{message_digest}"
     else:
         record_chat_session_id = chat_session_id
-    existing = project_chat_task_store.get(project_id, username, record_chat_session_id)
-    session = _build_project_chat_requirement_session(
+    existing = project_requirement_record_store.get(project_id, username, record_chat_session_id)
+    record = _build_project_chat_requirement_record(
         project_id=project_id,
         username=username,
         record_chat_session_id=record_chat_session_id,
@@ -22702,10 +22823,10 @@ async def upsert_project_chat_requirement_record(
         existing=existing,
         req=req,
     )
-    saved = project_chat_task_store.save(session)
+    saved = project_requirement_record_store.save(record)
     await _invalidate_project_requirement_records_cache(project_id)
     return {
-        "requirement_record": serialize_task_tree(saved),
+        "requirement_record": _serialize_project_requirement_record(saved),
         "project_id": project_id,
         "chat_session_id": record_chat_session_id,
         "source_chat_session_id": chat_session_id,
@@ -24514,6 +24635,11 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     "continuation_token": str(payload.get("continuation_token") or "").strip(),
                 },
             )
+            ai_request_context_payload = _build_project_chat_ai_request_context_payload(
+                runtime_context=runtime_context,
+                temperature=temperature,
+                request_id=request_id,
+            )
 
         except Exception as exc:
             await _send_project_chat_event({"type": "error", "request_id": request_id, "message": str(exc)})
@@ -24719,14 +24845,20 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         username,
                         assistant_message_id,
                         content=failed_answer,
-                        source_context=with_assistant_workflow_state(source_context, assistant_workflow_state),
+                        source_context=_with_project_chat_ai_request_context(
+                            with_assistant_workflow_state(source_context, assistant_workflow_state),
+                            ai_request_context_payload,
+                        ),
                     )
                 else:
                     _append_chat_record(
                         project_id=project_id, username=username, role="assistant", content=failed_answer,
                         message_id=assistant_message_id,
                         chat_session_id=chat_session_id,
-                        source_context=with_assistant_workflow_state(source_context, assistant_workflow_state),
+                        source_context=_with_project_chat_ai_request_context(
+                            with_assistant_workflow_state(source_context, assistant_workflow_state),
+                            ai_request_context_payload,
+                        ),
                     )
             else:
                 assistant_images = _collect_chat_artifact_urls(assistant_artifacts, asset_type="image")
@@ -24769,6 +24901,10 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 assistant_source_context = _with_project_chat_pending_interaction(
                     assistant_source_context,
                     _build_project_chat_pending_interaction(last_done_payload or {}),
+                )
+                assistant_source_context = _with_project_chat_ai_request_context(
+                    assistant_source_context,
+                    ai_request_context_payload,
                 )
                 if is_followup_replan and assistant_message_id:
                     project_chat_store.update_message(
@@ -24820,7 +24956,10 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     message_id=assistant_message_id,
                     chat_session_id=chat_session_id or raw_chat_session_id,
                     source_context=with_assistant_workflow_state(
-                        source_context,
+                        _with_project_chat_ai_request_context(
+                            source_context,
+                            ai_request_context_payload,
+                        ),
                         evolve_assistant_workflow_state(
                             assistant_workflow_state,
                             reply_content="[已停止]",
@@ -24850,7 +24989,10 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 message_id=assistant_message_id,
                 chat_session_id=chat_session_id,
                 source_context=with_assistant_workflow_state(
-                    source_context,
+                    _with_project_chat_ai_request_context(
+                        source_context,
+                        ai_request_context_payload,
+                    ),
                     evolve_assistant_workflow_state(
                         assistant_workflow_state,
                         reply_content=persisted_failure,
@@ -25740,6 +25882,11 @@ async def stream_project_chat(
             "continuation_token": str(req.continuation_token or "").strip(),
         },
     )
+    ai_request_context_payload = _build_project_chat_ai_request_context_payload(
+        runtime_context=runtime_context,
+        temperature=temperature,
+        request_id=sse_request_id,
+    )
 
     async def event_stream() -> AsyncIterator[str]:
         yield _sse_payload(
@@ -25892,7 +26039,10 @@ async def stream_project_chat(
                         username,
                         assistant_message_id,
                         content=failed_answer,
-                        source_context=with_assistant_workflow_state(source_context, assistant_workflow_state_local),
+                        source_context=_with_project_chat_ai_request_context(
+                            with_assistant_workflow_state(source_context, assistant_workflow_state_local),
+                            ai_request_context_payload,
+                        ),
                     )
                 else:
                     _append_chat_record(
@@ -25902,7 +26052,10 @@ async def stream_project_chat(
                         content=failed_answer,
                         message_id=assistant_message_id,
                         chat_session_id=chat_session_id,
-                        source_context=with_assistant_workflow_state(source_context, assistant_workflow_state_local),
+                        source_context=_with_project_chat_ai_request_context(
+                            with_assistant_workflow_state(source_context, assistant_workflow_state_local),
+                            ai_request_context_payload,
+                        ),
                     )
             else:
                 assistant_images = _collect_chat_artifact_urls(assistant_artifacts, asset_type="image")
@@ -25941,6 +26094,10 @@ async def stream_project_chat(
                 assistant_source_context = _with_project_chat_pending_interaction(
                     assistant_source_context,
                     _build_project_chat_pending_interaction(last_done_payload or {}),
+                )
+                assistant_source_context = _with_project_chat_ai_request_context(
+                    assistant_source_context,
+                    ai_request_context_payload,
                 )
                 if is_followup_replan and assistant_message_id:
                     project_chat_store.update_message(
@@ -25990,7 +26147,10 @@ async def stream_project_chat(
                 message_id=assistant_message_id,
                 chat_session_id=chat_session_id,
                 source_context=with_assistant_workflow_state(
-                    source_context,
+                    _with_project_chat_ai_request_context(
+                        source_context,
+                        ai_request_context_payload,
+                    ),
                     evolve_assistant_workflow_state(
                         assistant_workflow_state,
                         reply_content=persisted_failure,
