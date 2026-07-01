@@ -60,6 +60,7 @@ class ProjectChatStorePostgres:
                     username TEXT NOT NULL,
                     title TEXT NOT NULL DEFAULT '新对话',
                     preview TEXT NOT NULL DEFAULT '',
+                    latest_requirement TEXT NOT NULL DEFAULT '',
                     message_count INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -73,6 +74,7 @@ class ProjectChatStorePostgres:
                 ON project_chat_sessions (project_id, username, updated_at DESC);
 
                 ALTER TABLE project_chat_sessions
+                    ADD COLUMN IF NOT EXISTS latest_requirement TEXT NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS connector_id TEXT NOT NULL DEFAULT '',
@@ -110,11 +112,11 @@ class ProjectChatStorePostgres:
             cur.execute(
                 """
                 INSERT INTO project_chat_sessions (
-                    id, project_id, username, title, preview, message_count,
+                    id, project_id, username, title, preview, latest_requirement, message_count,
                     source_type, platform, connector_id, resolve_identity, external_chat_id, external_chat_name, thread_key,
                     created_at, updated_at, last_message_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     project_id = EXCLUDED.project_id,
                     username = EXCLUDED.username,
@@ -134,6 +136,7 @@ class ProjectChatStorePostgres:
                     normalized.username,
                     normalized.title,
                     normalized.preview,
+                    normalized.latest_requirement,
                     normalized.message_count,
                     normalized.source_type,
                     normalized.platform,
@@ -211,6 +214,7 @@ class ProjectChatStorePostgres:
         if not messages:
             return None
         first_user = next((item for item in messages if item.role == "user"), messages[0])
+        latest_user = next((item for item in reversed(messages) if item.role == "user"), None)
         last_item = messages[-1]
         return ProjectChatSession(
             id="legacy",
@@ -218,6 +222,7 @@ class ProjectChatStorePostgres:
             username=username,
             title=_session_title_from_content(first_user.content) or "历史会话",
             preview=str(last_item.content or "")[:80],
+            latest_requirement=str(latest_user.content if latest_user is not None else "")[:500],
             message_count=len(messages),
             source_type=str(getattr(last_item, "source_type", "") or ""),
             platform=str(getattr(last_item, "platform", "") or ""),
@@ -236,7 +241,7 @@ class ProjectChatStorePostgres:
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, project_id, username, title, preview, message_count,
+                SELECT id, project_id, username, title, preview, latest_requirement, message_count,
                        source_type, platform, connector_id, resolve_identity, external_chat_id, external_chat_name, thread_key,
                        created_at, updated_at, last_message_at
                 FROM project_chat_sessions
@@ -254,6 +259,7 @@ class ProjectChatStorePostgres:
                 username=str(row["username"] or username),
                 title=str(row["title"] or "新对话"),
                 preview=str(row["preview"] or ""),
+                latest_requirement=str(row.get("latest_requirement") or ""),
                 message_count=max(0, int(row["message_count"] or 0)),
                 source_type=str(row.get("source_type") or ""),
                 platform=str(row.get("platform") or ""),
@@ -282,7 +288,7 @@ class ProjectChatStorePostgres:
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, project_id, username, title, preview, message_count,
+                SELECT id, project_id, username, title, preview, latest_requirement, message_count,
                        source_type, platform, connector_id, resolve_identity, external_chat_id, external_chat_name, thread_key,
                        created_at, updated_at, last_message_at
                 FROM project_chat_sessions
@@ -299,6 +305,7 @@ class ProjectChatStorePostgres:
             username=str(row["username"] or username),
             title=str(row["title"] or "新对话"),
             preview=str(row["preview"] or ""),
+            latest_requirement=str(row.get("latest_requirement") or ""),
             message_count=max(0, int(row["message_count"] or 0)),
             source_type=str(row.get("source_type") or ""),
             platform=str(row.get("platform") or ""),
@@ -482,16 +489,26 @@ class ProjectChatStorePostgres:
                     if normalized.role == "user"
                     else "新对话"
                 )
+                latest_requirement = (
+                    str(normalized.content or "")[:500]
+                    if normalized.role == "user"
+                    else ""
+                )
                 cur.execute(
                     """
                     INSERT INTO project_chat_sessions (
-                        id, project_id, username, title, preview, message_count,
+                        id, project_id, username, title, preview, latest_requirement, message_count,
                         source_type, platform, connector_id, resolve_identity, external_chat_id, external_chat_name, thread_key,
                         created_at, updated_at, last_message_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
                     ON CONFLICT (id) DO UPDATE
                     SET preview = EXCLUDED.preview,
+                        latest_requirement = CASE
+                            WHEN %s = 'user'
+                                THEN EXCLUDED.latest_requirement
+                            ELSE project_chat_sessions.latest_requirement
+                        END,
                         updated_at = NOW(),
                         last_message_at = NOW(),
                         message_count = project_chat_sessions.message_count + 1,
@@ -514,6 +531,7 @@ class ProjectChatStorePostgres:
                         normalized.username,
                         title,
                         str(normalized.content or "")[:80],
+                        latest_requirement,
                         normalized.source_type,
                         normalized.platform,
                         normalized.connector_id,
@@ -521,6 +539,7 @@ class ProjectChatStorePostgres:
                         normalized.external_chat_id,
                         normalized.external_chat_name,
                         normalized.thread_key,
+                        normalized.role,
                         normalized.role,
                         _session_title_from_content(normalized.content),
                     ),
@@ -691,10 +710,12 @@ class ProjectChatStorePostgres:
                     )
                 else:
                     last_item = remaining[-1]
+                    latest_user = next((item for item in reversed(remaining) if item.role == "user"), None)
                     cur.execute(
                         """
                         UPDATE project_chat_sessions
                         SET preview = %s,
+                            latest_requirement = %s,
                             message_count = %s,
                             updated_at = NOW(),
                             last_message_at = %s::timestamptz
@@ -702,6 +723,7 @@ class ProjectChatStorePostgres:
                         """,
                         (
                             str(last_item.content or "")[:80],
+                            str(latest_user.content if latest_user is not None else "")[:500],
                             len(remaining),
                             str(last_item.created_at or _now_iso()),
                             project_id,

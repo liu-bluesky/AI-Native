@@ -75,6 +75,17 @@ export function normalizeChatSession(item) {
     id: String(item?.id || "").trim(),
     title: String(item?.title || "新对话").trim() || "新对话",
     preview: String(item?.preview || "").trim(),
+    latest_requirement: String(
+      item?.latest_requirement ||
+        item?.latestRequirement ||
+        item?.root_goal ||
+        item?.rootGoal ||
+        item?.requirement ||
+        "",
+    ).trim(),
+    last_message: String(
+      item?.last_message || item?.lastMessage || item?.last_message_content || "",
+    ).trim(),
     message_count: Number(item?.message_count || 0),
     source_type: sourceContext.source_type,
     platform: sourceContext.platform,

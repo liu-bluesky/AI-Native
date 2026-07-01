@@ -17,6 +17,7 @@ function normalizeWsUrl(pathname, token) {
 function createChatWsClient({
   path,
   token,
+  label = '实时连接',
   onMessage,
   onOpen,
   onClose,
@@ -34,10 +35,17 @@ function createChatWsClient({
   let lastPongAt = Date.now()
   let resolveReady
   let rejectReady
+  const channelLabel = String(label || '实时连接').trim() || '实时连接'
   const ready = new Promise((resolve, reject) => {
     resolveReady = resolve
     rejectReady = reject
   })
+
+  function channelError(message) {
+    const err = new Error(`${channelLabel}：${message}`)
+    err.channelLabel = channelLabel
+    return err
+  }
 
   function clearHeartbeat() {
     if (heartbeatTimer !== null) {
@@ -76,9 +84,9 @@ function createChatWsClient({
     }, intervalMs)
     staleTimer = window.setInterval(() => {
       if (Date.now() - lastPongAt <= timeoutMs) return
-      onStale?.(`WebSocket 心跳超时（${Math.round((Date.now() - lastPongAt) / 1000)}s 未收到 pong）`)
+      onStale?.(`${channelLabel}心跳超时（${Math.round((Date.now() - lastPongAt) / 1000)}s 未收到响应）`)
       try {
-        socket.close(4000, 'heartbeat timeout')
+        socket.close(4000, `${channelLabel} heartbeat timeout`)
       } catch {
         // ignore close race
       }
@@ -105,7 +113,7 @@ function createChatWsClient({
   }
   socket.onerror = () => {
     if (!openResolved) {
-      rejectReady?.(new Error('WebSocket 连接失败'))
+      rejectReady?.(channelError('连接失败'))
     }
     onError?.()
   }
@@ -114,7 +122,7 @@ function createChatWsClient({
     closed = true
     clearHeartbeat()
     if (!openResolved) {
-      rejectReady?.(new Error(`WebSocket 已关闭（${event?.code || 1000}）`))
+      rejectReady?.(channelError(`连接已关闭（${event?.code || 1000}）`))
     }
     onClose?.(event)
   }
@@ -126,7 +134,7 @@ function createChatWsClient({
     },
     send(payload) {
       if (!safeSend(payload)) {
-        throw new Error('WebSocket 未连接')
+        throw channelError('未连接')
       }
       return true
     },
@@ -158,6 +166,7 @@ export function createProjectChatWsClient({
 }) {
   return createChatWsClient({
     path: `/api/projects/${encodeURIComponent(projectId)}/chat/ws`,
+    label: '项目聊天实时连接',
     token,
     onMessage,
     onOpen,
@@ -172,6 +181,7 @@ export function createProjectChatWsClient({
 export function createGlobalAssistantWsClient({ token, onMessage, onOpen, onClose, onError }) {
   return createChatWsClient({
     path: '/api/projects/chat/global/ws',
+    label: '全局 AI 助手实时连接',
     token,
     onMessage,
     onOpen,
@@ -183,6 +193,7 @@ export function createGlobalAssistantWsClient({ token, onMessage, onOpen, onClos
 export function createMarketCliPluginWsClient({ token, onMessage, onOpen, onClose, onError }) {
   return createChatWsClient({
     path: '/api/market/cli-plugins/install-tasks/ws',
+    label: '插件安装任务实时连接',
     token,
     onMessage,
     onOpen,
@@ -194,6 +205,7 @@ export function createMarketCliPluginWsClient({ token, onMessage, onOpen, onClos
 export function createMarketCliPluginLoginTaskWsClient({ token, onMessage, onOpen, onClose, onError }) {
   return createChatWsClient({
     path: '/api/market/cli-plugins/login-tasks/ws',
+    label: '插件登录任务实时连接',
     token,
     onMessage,
     onOpen,

@@ -69,6 +69,70 @@ def _create_feishu_project_chat_session(
     return projects_router._serialize_chat_session(session)
 
 
+def test_project_deploy_options_route_returns_sanitized_summary(tmp_path, monkeypatch):
+    client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+    from stores.json.project_store import ProjectConfig
+
+    store_factory.project_store.save(
+        ProjectConfig(
+            id="proj-deploy-options",
+            name="部署配置项目",
+            deploy_settings={
+                "enabled": True,
+                "default_profile": "test",
+                "profiles": [
+                    {
+                        "id": "test",
+                        "name": "测试环境",
+                        "environment": "test",
+                        "components": [
+                            {
+                                "id": "web",
+                                "artifact_kind": "source-bundle",
+                                "notify": {"enabled": True},
+                                "targets": [
+                                    {
+                                        "id": "web-1",
+                                        "name": "测试服务器",
+                                        "remote_path": "/srv/www/app",
+                                        "deploy_command": "npm run deploy",
+                                        "ftp_credential_id": "cred-secret",
+                                        "transport": {"password": "secret-password"},
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
+
+    response = client.get("/api/projects/proj-deploy-options/deploy-options")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["project_id"] == "proj-deploy-options"
+    assert payload["project_name"] == "部署配置项目"
+    assert payload["configured"] is True
+    assert payload["default_profile"] == "test"
+    component = payload["profiles"][0]["components"][0]
+    assert component["artifact_kind"] == "source-bundle"
+    assert component["notify_enabled"] is True
+    target = component["targets"][0]
+    assert target["remote_path"] == "/srv/www/app"
+    assert target["has_deploy_command"] is True
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "cred-secret" not in serialized
+    assert "secret-password" not in serialized
+    assert "ftp_credential_id" not in serialized
+    assert "password" not in serialized
+
+
 def test_feishu_project_chat_session_id_isolates_group_and_private_messages():
     from services.feishu.feishu_bot_service import _resolve_feishu_project_chat_session_id
 

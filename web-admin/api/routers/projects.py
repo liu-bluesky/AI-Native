@@ -2642,6 +2642,53 @@ def _project_deploy_upload_prepared_file_to_ftp(
     }
 
 
+def _project_deploy_direct_upload_to_ftp(
+    *,
+    artifact: ProjectDeployArtifact,
+    target: dict[str, Any],
+) -> dict[str, Any]:
+    credential_id = _normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120)
+    credential = _resolve_visible_ftp_credential(credential_id, None)
+    if credential is None:
+        raise RuntimeError("缺少可用 FTP 连接")
+    remote_path = _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
+    if not remote_path:
+        raise RuntimeError("缺少远端目录 remote_path")
+    source_path = Path(artifact.storage_path).expanduser().resolve()
+    if not source_path.exists() or not (source_path.is_file() or source_path.is_dir()):
+        raise RuntimeError("桌面端上传的部署源文件不存在")
+    ftp = project_deploy_ftp_client_factory(timeout=30)
+    host = _normalize_project_deploy_text(getattr(credential, "host", ""), limit=300)
+    port = int(str(getattr(credential, "port", "") or "21").strip() or "21")
+    try:
+        ftp.connect(host=host, port=port, timeout=30)
+        ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
+        if source_path.is_dir():
+            return _project_deploy_upload_prepared_directory_to_ftp(
+                ftp=ftp,
+                artifact=artifact,
+                target=target,
+                remote_path=remote_path,
+                prepared_path=source_path,
+                prepared_entries=artifact.file_tree if isinstance(artifact.file_tree, list) else [],
+                execution_plan={"source": "desktop_agent_direct_deploy", "archive_upload_policy": "none"},
+            )
+        return _project_deploy_upload_prepared_file_to_ftp(
+            ftp=ftp,
+            artifact=artifact,
+            target=target,
+            remote_path=remote_path,
+            prepared_path=source_path,
+            action="upload_file",
+        )
+    finally:
+        try:
+            ftp.quit()
+        except Exception:
+            with contextlib.suppress(Exception):
+                ftp.close()
+
+
 def _upload_project_deploy_artifact_to_ftp(
     *,
     artifact: ProjectDeployArtifact,
@@ -16437,6 +16484,20 @@ async def validate_project_deploy_settings(
     }
 
 
+@router.get("/{project_id}/deploy-options")
+async def get_project_deploy_options(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_access(project_id, auth_payload)
+    return {
+        "project_id": project.id,
+        "project_name": str(getattr(project, "name", "") or ""),
+        **project_deploy_options_summary(getattr(project, "deploy_settings", {}) or {}),
+    }
+
+
 @router.post("/{project_id}/deploy-command/generate")
 async def generate_project_deploy_command(
     project_id: str,
@@ -16738,6 +16799,237 @@ def _parse_project_deploy_upload_manifest(
     if version_value:
         manifest["version"] = version_value
     return manifest
+
+
+def _project_deploy_direct_upload_source_to_temp(
+    *,
+    upload_files: list[UploadFile],
+    manifest: dict[str, Any],
+    artifact_name: str,
+) -> tuple[TemporaryDirectory[str], Path, str, list[dict[str, Any]], int, str]:
+    temp_dir = TemporaryDirectory(prefix="project-deploy-direct-")
+    root = Path(temp_dir.name)
+    source_type = _normalize_project_deploy_text(manifest.get("source_type"), limit=40).lower()
+    file_entries_meta = manifest.get("file_entries") if isinstance(manifest.get("file_entries"), list) else []
+    entries: list[dict[str, Any]] = []
+    total_size = 0
+    digest = hashlib.sha256()
+    try:
+        if len(upload_files) == 1 and source_type != "directory":
+            upload = upload_files[0]
+            content = getattr(upload, "_direct_deploy_content", b"")
+            if not isinstance(content, bytes) or not content:
+                raise HTTPException(400, "deploy source file is empty")
+            safe_name = Path(_safe_project_deploy_relative_path(artifact_name or upload.filename)).name or "deploy-file"
+            target = root / safe_name
+            target.write_bytes(content)
+            total_size = len(content)
+            digest.update(safe_name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(content)
+            entries.append({"path": safe_name, "name": safe_name, "size": len(content)})
+            return temp_dir, target, "file", entries, total_size, f"sha256:{digest.hexdigest()}"
+        source_root = root / "source"
+        source_root.mkdir(parents=True, exist_ok=True)
+        for index, upload in enumerate(upload_files):
+            content = getattr(upload, "_direct_deploy_content", b"")
+            if not isinstance(content, bytes) or not content:
+                raise HTTPException(400, "deploy source file is empty")
+            meta = file_entries_meta[index] if index < len(file_entries_meta) and isinstance(file_entries_meta[index], dict) else {}
+            relative_path = _safe_project_deploy_relative_path(meta.get("path") or upload.filename)
+            target = source_root / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            total_size += len(content)
+            digest.update(relative_path.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(content)
+            digest.update(b"\0")
+            entries.append(
+                {
+                    "path": relative_path,
+                    "name": Path(relative_path).name,
+                    "size": len(content),
+                }
+            )
+        if not entries:
+            raise HTTPException(400, "deploy source is empty")
+        return temp_dir, source_root, "directory", entries, total_size, f"sha256:{digest.hexdigest()}"
+    except Exception:
+        temp_dir.cleanup()
+        raise
+
+
+def _execute_project_desktop_direct_deploy(
+    *,
+    project: ProjectConfig,
+    profile_id: str,
+    component_id: str,
+    target_ids: list[str],
+    artifact_name: str,
+    artifact_kind: str,
+    manifest: dict[str, Any],
+    source_path: Path,
+    storage_kind: str,
+    file_entries: list[dict[str, Any]],
+    total_size: int,
+    checksum: str,
+    requested_by: str,
+    chat_session_id: str,
+    task_tree_node_id: str,
+    requirement: str,
+    plan: str,
+    run_deploy_command: bool,
+) -> dict[str, Any]:
+    profile_id = _normalize_project_deploy_text(profile_id, limit=80) or "prod"
+    component_id = _normalize_project_deploy_text(component_id, limit=80)
+    profile = _find_project_deploy_profile(project, profile_id)
+    if profile is None:
+        raise HTTPException(400, f"deploy profile not found: {profile_id}")
+    if not bool(profile.get("enabled", True)):
+        raise HTTPException(400, f"deploy profile disabled: {profile_id}")
+    component = _find_project_deploy_component(profile, component_id)
+    if component is None:
+        raise HTTPException(400, f"deploy component not found: {component_id or 'default'}")
+    if not bool(component.get("enabled", True)):
+        raise HTTPException(400, f"deploy component disabled: {component_id or component.get('id') or 'default'}")
+    targets = _select_project_deploy_targets(component, target_ids)
+    if not targets:
+        raise HTTPException(400, "deploy target is required")
+    deployable_targets = [target for target in targets if not _project_deploy_target_missing_fields(target, None)]
+    if len(deployable_targets) != len(targets):
+        missing = _build_project_deploy_missing_target_report(targets=targets, auth_payload=None)
+        return {
+            "status": "blocked",
+            "deployment_confirmed_success": False,
+            "stage": "blocked_missing_target_config",
+            "project_id": project.id,
+            "profile": profile_id,
+            "component": _normalize_project_deploy_text(component.get("id") or component_id, limit=80),
+            "missing_targets": missing,
+            "message": "部署目标缺少 FTP 连接或远端目录，未执行上传",
+        }
+    artifact = ProjectDeployArtifact(
+        id=f"direct-{uuid.uuid4().hex[:12]}",
+        project_id=project.id,
+        profile=profile_id,
+        component=_normalize_project_deploy_text(component.get("id") or component_id, limit=80),
+        artifact_name=_normalize_project_deploy_text(artifact_name, limit=240) or source_path.name,
+        artifact_kind=_normalize_project_deploy_text(artifact_kind, limit=120)
+        or _normalize_project_deploy_text(component.get("artifact_kind"), limit=120)
+        or "source-bundle",
+        version=_normalize_project_deploy_text(manifest.get("version"), limit=120),
+        checksum=checksum,
+        size=total_size,
+        storage_path=source_path.as_posix(),
+        status="direct_deploying",
+        manifest={
+            **manifest,
+            "source": "desktop_agent_direct_deploy",
+            "source_type": storage_kind,
+            "file_count": len(file_entries),
+            "file_entries": file_entries[:1000],
+        },
+        storage_kind=storage_kind,
+        file_tree=_build_project_deploy_file_tree(file_entries),
+        uploaded_by=requested_by,
+        ready_at=_now_iso(),
+    )
+    run_id = f"direct-run-{uuid.uuid4().hex[:12]}"
+    upload_results: list[dict[str, Any]] = []
+    command_results: list[dict[str, Any]] = []
+    status = "success"
+    stage = "ftp_upload_completed"
+    log_excerpt = "desktop direct deploy uploaded original files by FTP"
+    for target in deployable_targets:
+        try:
+            upload_results.append(_project_deploy_direct_upload_to_ftp(artifact=artifact, target=target))
+        except Exception as exc:
+            status = "failed"
+            stage = "upload_failed"
+            log_excerpt = f"direct deploy upload failed: {exc}"
+            break
+    if status == "success":
+        command_targets = [
+            target
+            for target in deployable_targets
+            if _project_deploy_target_deploy_command(target)
+        ]
+        if command_targets and not run_deploy_command:
+            status = "blocked"
+            stage = "blocked_deploy_command_not_requested"
+            log_excerpt = "uploaded original files, but target has deploy_command and direct tool was not allowed to run it"
+        else:
+            for target in command_targets:
+                if not _project_deploy_target_supports_remote_command(target):
+                    status = "blocked"
+                    stage = "blocked_missing_remote_executor"
+                    log_excerpt = "uploaded original files, but target deploy_command has no supported remote executor"
+                    break
+                try:
+                    command_result = _project_deploy_agent_run_configured_remote_command(
+                        project=project,
+                        target=target,
+                        args={},
+                        requested_by=requested_by,
+                    )
+                except Exception as exc:
+                    command_result = {
+                        "ok": False,
+                        "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
+                        "error": str(exc),
+                    }
+                command_results.append(command_result)
+                if not bool(command_result.get("ok")):
+                    status = "failed" if not command_result.get("blocked") else "blocked"
+                    stage = "deploy_command_failed" if status == "failed" else "blocked_deploy_command"
+                    log_excerpt = "configured deploy_command did not complete successfully"
+                    break
+            if status == "success" and command_targets:
+                stage = "deploy_command_completed"
+                log_excerpt = "desktop direct deploy uploaded original files and configured deploy_command completed"
+    notify_result = _build_project_deploy_notification_preview(
+        project,
+        artifact,
+        status=status,
+        run_id=run_id,
+        stage=stage,
+        log_excerpt=log_excerpt,
+        deploy_time=_now_iso(),
+        idempotency_scope=f"desktop-direct-{run_id}-{requested_by}",
+    )
+    return {
+        "status": status,
+        "deployment_confirmed_success": status == "success",
+        "stage": stage,
+        "project_id": project.id,
+        "profile": profile_id,
+        "component": artifact.component,
+        "target_ids": [
+            _normalize_project_deploy_text(target.get("id"), limit=80)
+            for target in deployable_targets
+        ],
+        "run_id": run_id,
+        "artifact": {
+            "id": artifact.id,
+            "name": artifact.artifact_name,
+            "kind": artifact.artifact_kind,
+            "storage_kind": storage_kind,
+            "size": total_size,
+            "checksum": checksum,
+            "file_count": len(file_entries),
+            "file_tree": artifact.file_tree,
+            "persisted_to_deploy_artifacts": False,
+        },
+        "upload_results": upload_results,
+        "command_results": command_results,
+        "notify_result": notify_result,
+        "requirement": _normalize_project_deploy_text(requirement, limit=2000),
+        "plan": _normalize_project_deploy_text(plan, limit=4000),
+        "chat_session_id": _normalize_project_deploy_text(chat_session_id, limit=120),
+        "task_tree_node_id": _normalize_project_deploy_text(task_tree_node_id, limit=120),
+        "log_excerpt": log_excerpt,
+    }
 
 
 def _push_project_deploy_artifact_content(
@@ -17227,6 +17519,20 @@ async def upload_project_deploy_artifact(
     chat_session_id = _project_deploy_form_text(form, "chat_session_id", "")
     task_tree_node_id = _project_deploy_form_text(form, "task_tree_node_id", "")
     target_ids_json = _project_deploy_form_text(form, "target_ids_json", "")
+    auto_deploy = _project_deploy_form_text(form, "auto_deploy", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    ai_deploy = _project_deploy_form_text(form, "ai_deploy", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    requirement = _project_deploy_form_text(form, "requirement", "")
+    plan = _project_deploy_form_text(form, "plan", "")
     manifest = _parse_project_deploy_upload_manifest(
         manifest_json=manifest_json,
         checksum=checksum,
@@ -17250,10 +17556,13 @@ async def upload_project_deploy_artifact(
         or _normalize_project_deploy_text(upload_files[0].filename, limit=240),
         artifact_kind=artifact_kind,
         manifest=manifest,
-        auto_deploy=False,
+        auto_deploy=auto_deploy,
+        ai_deploy=ai_deploy,
         chat_session_id=chat_session_id,
         task_tree_node_id=task_tree_node_id,
         target_ids=target_ids,
+        requirement=requirement,
+        plan=plan,
     )
     file_entries_meta = manifest.get("file_entries") if isinstance(manifest.get("file_entries"), list) else []
     if source_type == "directory-tar":
@@ -17296,6 +17605,99 @@ async def upload_project_deploy_artifact(
         uploaded_by=_current_username(auth_payload) or "unknown",
         content=content,
     )
+
+
+@router.post("/{project_id}/deploy/direct-upload")
+async def direct_upload_project_deploy(
+    project_id: str,
+    request: Request,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    try:
+        form = await request.form(
+            max_files=_PROJECT_DEPLOY_ARTIFACT_MAX_FILES,
+            max_fields=_PROJECT_DEPLOY_ARTIFACT_MAX_FILES + 100,
+            max_part_size=_PROJECT_DEPLOY_ARTIFACT_MANIFEST_MAX_CHARS,
+        )
+    except Exception as exc:
+        detail = str(exc)
+        if "Too many files" in detail:
+            raise HTTPException(
+                413,
+                f"too many deploy source files; maximum is {_PROJECT_DEPLOY_ARTIFACT_MAX_FILES}",
+            ) from exc
+        raise HTTPException(400, f"invalid direct deploy upload form: {detail}") from exc
+    profile = _project_deploy_form_text(form, "profile", "prod")
+    component = _project_deploy_form_text(form, "component", "")
+    artifact_name = _project_deploy_form_text(form, "artifact_name", "")
+    artifact_kind = _project_deploy_form_text(form, "artifact_kind", "source-bundle")
+    manifest = _parse_project_deploy_upload_manifest(
+        manifest_json=_project_deploy_form_text(form, "manifest_json", ""),
+        checksum=_project_deploy_form_text(form, "checksum", ""),
+        size=_project_deploy_form_int(form, "size", 0),
+        version=_project_deploy_form_text(form, "version", ""),
+    )
+    target_ids = _normalize_project_deploy_target_ids(
+        _project_deploy_form_text(form, "target_ids_json", "")
+    ) or _normalize_project_deploy_target_ids(manifest.get("target_ids"))
+    run_deploy_command = _project_deploy_form_text(form, "run_deploy_command", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    chat_session_id = _project_deploy_form_text(form, "chat_session_id", "")
+    task_tree_node_id = _project_deploy_form_text(form, "task_tree_node_id", "")
+    requirement = _project_deploy_form_text(form, "requirement", "")
+    plan = _project_deploy_form_text(form, "plan", "")
+    upload_files = [item for item in form.getlist("files") if _is_project_deploy_upload_file(item)]
+    single_file = form.get("file")
+    if _is_project_deploy_upload_file(single_file):
+        upload_files = [single_file, *upload_files] if not upload_files else upload_files
+    if not upload_files:
+        raise HTTPException(400, "deploy source file is required")
+    total_size = 0
+    for upload in upload_files:
+        content = await _read_project_deploy_upload_content(upload)
+        setattr(upload, "_direct_deploy_content", content)
+        total_size += len(content)
+    if total_size > _PROJECT_DEPLOY_ARTIFACT_MAX_BYTES:
+        raise HTTPException(413, "deploy source is larger than 200MB")
+    temp_dir, source_path, storage_kind, file_entries, actual_size, checksum = _project_deploy_direct_upload_source_to_temp(
+        upload_files=upload_files,
+        manifest=manifest,
+        artifact_name=_normalize_project_deploy_text(artifact_name, limit=240)
+        or _normalize_project_deploy_text(upload_files[0].filename, limit=240)
+        or "deploy-source",
+    )
+    try:
+        return await run_in_threadpool(
+            _execute_project_desktop_direct_deploy,
+            project=project,
+            profile_id=profile,
+            component_id=component,
+            target_ids=target_ids,
+            artifact_name=_normalize_project_deploy_text(artifact_name, limit=240)
+            or _normalize_project_deploy_text(upload_files[0].filename, limit=240)
+            or "deploy-source",
+            artifact_kind=artifact_kind,
+            manifest=manifest,
+            source_path=source_path,
+            storage_kind=storage_kind,
+            file_entries=file_entries,
+            total_size=actual_size,
+            checksum=checksum,
+            requested_by=_current_username(auth_payload) or "unknown",
+            chat_session_id=chat_session_id,
+            task_tree_node_id=task_tree_node_id,
+            requirement=requirement,
+            plan=plan,
+            run_deploy_command=run_deploy_command,
+        )
+    finally:
+        temp_dir.cleanup()
 
 
 @router.post("/{project_id}/deploy-artifacts/{artifact_id}/deploy")
@@ -19236,6 +19638,7 @@ def _serialize_chat_session(item: Any) -> dict[str, Any]:
         "username": str(getattr(item, "username", "") or "").strip(),
         "title": str(getattr(item, "title", "新对话") or "新对话"),
         "preview": str(getattr(item, "preview", "") or ""),
+        "latest_requirement": str(getattr(item, "latest_requirement", "") or ""),
         "message_count": int(getattr(item, "message_count", 0) or 0),
         "source_type": str(getattr(item, "source_type", "") or ""),
         "platform": str(getattr(item, "platform", "") or ""),

@@ -38,7 +38,15 @@ pub struct LocalChatRequest {
     pub ai_entry_file: Option<String>,
     #[serde(default)]
     pub attachments: Vec<LocalChatAttachment>,
+    pub backend_context: Option<LocalBackendContext>,
     pub permission_decision: Option<PermissionDecisionInput>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalBackendContext {
+    pub api_base_url: String,
+    pub token: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

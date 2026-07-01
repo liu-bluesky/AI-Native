@@ -79,6 +79,23 @@ function compactRuntimeMessageForLocalStorage(row, contentLimit) {
     displayMode: String(row.displayMode || ""),
     effectiveToolTotal: Number(row.effectiveToolTotal || 0),
     processExpanded: Boolean(row.processExpanded),
+    messageExecutionStartedAtEpochMs:
+      Number(row.messageExecutionStartedAtEpochMs || 0) || 0,
+    messageExecutionEndedAtEpochMs:
+      Number(row.messageExecutionEndedAtEpochMs || 0) || 0,
+    messageExecutionDurationMs:
+      Number(row.messageExecutionDurationMs || 0) || 0,
+    messageExecutionDurationLabel: String(
+      row.messageExecutionDurationLabel || "",
+    ),
+    agentRuntimeStartedAtEpochMs:
+      Number(row.agentRuntimeStartedAtEpochMs || 0) || 0,
+    agentRuntimeLatestEventAtEpochMs:
+      Number(row.agentRuntimeLatestEventAtEpochMs || 0) || 0,
+    agentRuntimeEndedAtEpochMs:
+      Number(row.agentRuntimeEndedAtEpochMs || 0) || 0,
+    agentRuntimeDurationMs: Number(row.agentRuntimeDurationMs || 0) || 0,
+    agentRuntimeDurationLabel: String(row.agentRuntimeDurationLabel || ""),
     terminalLog: compactRuntimeStorageRecords(
       row.terminalLog,
       CHAT_RUNTIME_LOCAL_COMPACT_LOG_LIMIT,

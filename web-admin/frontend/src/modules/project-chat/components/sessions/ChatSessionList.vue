@@ -22,7 +22,7 @@
           >
             <div class="chat-session-chip__row">
               <span class="chat-session-chip__title">
-                {{ session.title }}
+                {{ sessionDisplayTitle(session) }}
               </span>
               <el-button
                 text
@@ -91,6 +91,20 @@ function formatChatSessionMeta(session) {
   );
   return `${count} 条 · ${time}`;
 }
+
+function sessionDisplayTitle(session) {
+  return (
+    String(
+      session?.latest_requirement ||
+        session?.root_goal ||
+        session?.rootGoal ||
+        session?.preview ||
+        session?.last_message ||
+        session?.title ||
+        "",
+    ).trim() || "新对话"
+  );
+}
 </script>
 
 <style scoped>
@@ -125,34 +139,27 @@ function formatChatSessionMeta(session) {
 .chat-session-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
 }
 
 .chat-session-chip {
-  padding: 12px 14px;
-  border: 1px solid rgba(15, 23, 42, 0.04);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.68);
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
   text-align: left;
   cursor: pointer;
   transition:
-    transform 0.18s ease,
-    border-color 0.18s ease,
-    background-color 0.18s ease,
-    box-shadow 0.18s ease;
+    background-color 0.16s ease,
+    color 0.16s ease;
 }
 
 .chat-session-chip:hover {
-  transform: translateY(-1px);
-  border-color: rgba(56, 189, 248, 0.18);
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+  background: rgba(15, 23, 42, 0.05);
 }
 
 .chat-session-chip.is-active {
-  border-color: rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+  background: rgba(15, 23, 42, 0.08);
 }
 
 .chat-session-chip__row {
@@ -171,7 +178,7 @@ function formatChatSessionMeta(session) {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #111827;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -208,7 +215,7 @@ function formatChatSessionMeta(session) {
   display: block;
   margin-top: 4px;
   color: #64748b;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.4;
 }
 

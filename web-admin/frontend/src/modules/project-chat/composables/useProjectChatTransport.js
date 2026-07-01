@@ -39,7 +39,9 @@ export function useProjectChatTransport({
       reconnectTimer = null;
       void ensureWsClient(normalizedProjectId, { reconnect: true }).catch((err) => {
         if (attempt >= 5) {
-          onUnexpectedClose?.(err?.message || reason || "WebSocket 重连失败");
+          onUnexpectedClose?.(
+            err?.message || reason || "项目聊天实时连接重连失败",
+          );
           return;
         }
         scheduleReconnect(normalizedProjectId, err?.message || reason);
@@ -130,7 +132,9 @@ export function useProjectChatTransport({
         }
         const code = Number(event?.code || 1000);
         if (manualClose || code === 1000) return;
-        const reason = String(event?.reason || "").trim() || `连接关闭(${code})`;
+        const reason =
+          String(event?.reason || "").trim() ||
+          `项目聊天实时连接关闭(${code})`;
         onUnexpectedClose?.(reason);
         scheduleReconnect(normalizedProjectId, reason);
       },

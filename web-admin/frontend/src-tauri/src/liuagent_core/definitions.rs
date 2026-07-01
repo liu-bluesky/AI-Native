@@ -209,6 +209,107 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "get_project_deploy_options",
+            description: "读取当前项目后端部署配置摘要（脱敏），包含可选 profile、component、target、remote_path、artifact_kind、是否存在 deploy_command、notify_enabled。部署/发布/上线类任务必须先调用该工具，再让用户选择环境和目标；该工具只读，不上传、不部署、不返回服务器凭据。",
+            action: "deploy.options.read",
+            risk: "low",
+            requires_approval: false,
+            scope: "project",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "timeout_ms": {"type": "number", "default": 30000}
+                },
+                "required": ["project_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "upload_deploy_artifact",
+            description: "仅当用户明确要求“上传到部署产物模块/只上传部署产物”时使用：把本地 workspace 内已生成的部署产物直连上传到后端项目部署产物模块。上传规则是“原文件是什么就上传什么”：artifact_path 指向单个文件时原样上传该文件；artifact_path 指向目录或 artifact_paths 传多个文件时，用 multipart 逐个上传原文件并保存为目录型产物，不会压缩成 zip/tar。静态页面/多 HTML/CSS/JS/图片文件必须上传目录或 artifact_paths，禁止为了搬运多文件自行创建压缩包。该工具不代表远端已部署成功；桌面智能体部署主流程应优先使用 deploy_workspace_files_to_target。",
+            action: "deploy.artifact.upload",
+            risk: "high",
+            requires_approval: true,
+            scope: "network",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "artifact_path": {"type": "string", "description": "workspace 内部署产物路径；可指向单个文件或目录。目录会按目录型产物上传并保留相对路径。"},
+                    "artifact_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "workspace 内多个部署文件路径清单。适合直接上传若干 HTML/CSS/JS/图片等静态文件；后端会保存为目录型产物。传该字段时优先于 artifact_path。"
+                    },
+                    "artifact_root": {
+                        "type": "string",
+                        "description": "artifact_paths 的相对路径根目录；例如传 . 时保留 login/index.html，传 dist 时保留 dist 内部路径。"
+                    },
+                    "profile": {"type": "string", "default": "prod"},
+                    "component": {"type": "string", "default": ""},
+                    "target_ids": {"type": "array", "items": {"type": "string"}},
+                    "artifact_name": {"type": "string"},
+                    "artifact_kind": {"type": "string", "default": "source-bundle"},
+                    "version": {"type": "string"},
+                    "manifest": {"type": "object"},
+                    "auto_deploy": {"type": "boolean", "default": true},
+                    "ai_deploy": {"type": "boolean", "default": true},
+                    "chat_session_id": {"type": "string"},
+                    "task_tree_node_id": {"type": "string"},
+                    "requirement": {"type": "string"},
+                    "plan": {"type": "string"},
+                    "timeout_ms": {"type": "number", "default": 120000}
+                },
+                "required": ["project_id"],
+                "anyOf": [
+                    {"required": ["artifact_path"]},
+                    {"required": ["artifact_paths"]}
+                ]
+            }),
+        },
+        ToolDefinition {
+            name: "deploy_workspace_files_to_target",
+            description: "桌面智能体直连部署主工具。由桌面 AI 先调用 get_project_deploy_options 读取配置并让用户选择 profile/component/target 后，再把 workspace 内的原文件、目录或文件清单直接上传到项目部署配置里的目标服务器；后端只使用已保存的部署配置和凭据执行 FTP 上传、已配置 deploy_command 和配置通知，不创建部署产物记录，不调用部署产物 AI，不接受自定义服务器凭据或自定义远端命令。上传规则是“原文件是什么就部署什么”：目录和 artifact_paths 会逐个 multipart 上传原文件并保留相对路径，禁止为了多文件部署自行创建 zip/tar；只有用户指定的原始产物本身就是 zip/tar 时，才按单个原文件部署。只有本工具返回 deployment_confirmed_success=true/status=success 时，才允许回复部署成功。",
+            action: "deploy.direct.upload",
+            risk: "high",
+            requires_approval: true,
+            scope: "network",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "artifact_path": {"type": "string", "description": "workspace 内要部署的源路径；可指向单个文件或目录。目录会递归上传原文件并保留相对路径。"},
+                    "artifact_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "workspace 内多个部署文件路径清单。适合直接部署若干 HTML/CSS/JS/图片等静态文件。"
+                    },
+                    "artifact_root": {
+                        "type": "string",
+                        "description": "artifact_paths 的相对路径根目录；例如传 . 时保留 login/index.html，传 dist 时保留 dist 内部路径。"
+                    },
+                    "profile": {"type": "string", "default": "prod"},
+                    "component": {"type": "string", "default": ""},
+                    "target_ids": {"type": "array", "items": {"type": "string"}},
+                    "artifact_name": {"type": "string"},
+                    "artifact_kind": {"type": "string", "default": "source-bundle"},
+                    "version": {"type": "string"},
+                    "manifest": {"type": "object"},
+                    "run_deploy_command": {"type": "boolean", "default": true, "description": "是否触发目标中已配置的 deploy_command；不能传自定义命令。"},
+                    "chat_session_id": {"type": "string"},
+                    "task_tree_node_id": {"type": "string"},
+                    "requirement": {"type": "string"},
+                    "plan": {"type": "string"},
+                    "timeout_ms": {"type": "number", "default": 600000}
+                },
+                "required": ["project_id"],
+                "anyOf": [
+                    {"required": ["artifact_path"]},
+                    {"required": ["artifact_paths"]}
+                ]
+            }),
+        },
+        ToolDefinition {
             name: "list_mcp_tools",
             description: "列出本机外部 MCP adapter 工具。仅当用户已显式配置本地 stdio MCP adapter 时使用；这不是桌面端系统 MCP 或项目上下文入口。",
             action: "mcp.list",

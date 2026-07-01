@@ -25,11 +25,15 @@
           :current-session-id="currentChatSessionId"
           :sessions-loading="chatSessionsLoading"
           :session-groups="groupedChatSessions"
+          :project-session-groups-map="projectSessionGroupsMap"
+          :project-session-loading-map="projectSessionLoadingMap"
+          :project-session-counts="projectSessionCounts"
           :deleting-session-id="deletingChatSessionId"
           :username-initial="currentUsernameInitial"
           :username="currentUsername"
           @open-settings="openSettingsCenter"
           @project-change="handleProjectCommand"
+          @toggle-project="loadProjectSessionsForSidebar"
           @create-conversation="handleCreateNewConversation"
           @clear-current="clearMessages"
           @select-session="selectChatSession"
@@ -2523,6 +2527,7 @@ import {
 } from "@element-plus/icons-vue";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
+import { buildApiBaseUrl, resolveServerOrigin } from "@/utils/server-profile.js";
 import { formatRelativeDateTime } from "@/utils/date.js";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -2553,6 +2558,7 @@ import {
   pickWorkspaceFile,
 } from "@/utils/workspace-picker.js";
 import {
+  ackNativeLiuAgentRuntimeOutbox,
   classifyNativeRunnerCommand,
   cancelNativeExternalAgentSession,
   cleanupNativeLiuAgentOfflineCache,
@@ -2969,6 +2975,8 @@ const messages = ref([]);
 const formJsonArtifactCache = new Map();
 const chatSessions = ref([]);
 const chatSessionsLoading = ref(false);
+const projectChatSessionsById = ref({});
+const projectChatSessionsLoadingById = ref({});
 const groupChatLiveStatuses = ref({});
 const employeeDraftCatalog = ref({
   skills: [],
@@ -3066,6 +3074,16 @@ function buildLocalLiuAgentSystemPrompt() {
   return buildLocalLiuAgentSystemPromptParts()
     .map((part) => part.content)
     .join("\n\n");
+}
+
+function buildLocalLiuAgentBackendApiBaseUrl() {
+  const baseUrl = String(buildApiBaseUrl() || "").trim();
+  if (/^https?:\/\//i.test(baseUrl)) return baseUrl;
+  const origin = String(resolveServerOrigin() || "").trim();
+  if (/^https?:\/\//i.test(origin)) {
+    return `${origin.replace(/\/+$/, "")}/${baseUrl.replace(/^\/+/, "")}`;
+  }
+  return baseUrl;
 }
 const activeMcpSource = ref("system");
 const activeSettingsPanel = ref("chat");
@@ -3269,7 +3287,7 @@ const {
   },
   onUnexpectedClose: (reason) => {
     rejectPendingRequests(reason);
-    ElMessage.warning(`WebSocket 断开：${reason}`);
+    ElMessage.warning(`项目聊天实时连接断开：${reason}`);
   },
 });
 const chatSessionMessageCache = new Map();
@@ -7666,6 +7684,52 @@ const groupedChatSessions = computed(() => {
     items,
   }));
 });
+const projectSessionGroupsMap = computed(() => {
+  const result = {};
+  const selectedId = String(selectedProjectId.value || "").trim();
+  const groupedSessions = (sessions) => {
+    const groups = new Map();
+    for (const session of sessions || []) {
+      const label = resolveChatSessionGroupLabel(session);
+      if (!groups.has(label)) {
+        groups.set(label, []);
+      }
+      groups.get(label).push(session);
+    }
+    return Array.from(groups.entries()).map(([label, items]) => ({
+      label,
+      items,
+    }));
+  };
+  for (const [projectId, sessions] of Object.entries(
+    projectChatSessionsById.value || {},
+  )) {
+    result[projectId] = groupedSessions(sessions);
+  }
+  if (selectedId) {
+    result[selectedId] = groupedChatSessions.value;
+  }
+  return result;
+});
+const projectSessionLoadingMap = computed(() => ({
+  ...(projectChatSessionsLoadingById.value || {}),
+  [String(selectedProjectId.value || "").trim()]: chatSessionsLoading.value,
+}));
+const projectSessionCounts = computed(() => {
+  const result = {};
+  for (const [projectId, sessions] of Object.entries(
+    projectChatSessionsById.value || {},
+  )) {
+    result[projectId] = Array.isArray(sessions) ? sessions.length : 0;
+  }
+  const selectedId = String(selectedProjectId.value || "").trim();
+  if (selectedId) {
+    result[selectedId] = Array.isArray(chatSessions.value)
+      ? chatSessions.value.length
+      : 0;
+  }
+  return result;
+});
 const starterPrompts = computed(() => [
   "检查当前工作区状态并给出下一步",
   "帮我执行一个需要本机环境的任务",
@@ -11114,6 +11178,23 @@ function normalizeRuntimeMessageSnapshot(row) {
     processLog: Array.isArray(row.processLog) ? row.processLog.slice() : [],
     statusNotes: Array.isArray(row.statusNotes) ? row.statusNotes.slice() : [],
     operations: Array.isArray(row.operations) ? row.operations.slice() : [],
+    messageExecutionStartedAtEpochMs:
+      Number(row.messageExecutionStartedAtEpochMs || 0) || 0,
+    messageExecutionEndedAtEpochMs:
+      Number(row.messageExecutionEndedAtEpochMs || 0) || 0,
+    messageExecutionDurationMs:
+      Number(row.messageExecutionDurationMs || 0) || 0,
+    messageExecutionDurationLabel: String(
+      row.messageExecutionDurationLabel || "",
+    ),
+    agentRuntimeStartedAtEpochMs:
+      Number(row.agentRuntimeStartedAtEpochMs || 0) || 0,
+    agentRuntimeLatestEventAtEpochMs:
+      Number(row.agentRuntimeLatestEventAtEpochMs || 0) || 0,
+    agentRuntimeEndedAtEpochMs:
+      Number(row.agentRuntimeEndedAtEpochMs || 0) || 0,
+    agentRuntimeDurationMs: Number(row.agentRuntimeDurationMs || 0) || 0,
+    agentRuntimeDurationLabel: String(row.agentRuntimeDurationLabel || ""),
     source_context:
       row.source_context && typeof row.source_context === "object"
         ? row.source_context
@@ -11233,6 +11314,31 @@ function shouldKeepRuntimeOnlyMessage(row) {
   return String(row.displayMode || "").trim() === "terminal";
 }
 
+function mergeHistoryRowWithRuntimeSnapshot(historyRow, runtimeRow) {
+  if (!runtimeRow) return historyRow;
+  const historyContent = String(historyRow?.content || "");
+  const runtimeContent = String(runtimeRow?.content || "");
+  const historyTime = String(historyRow?.time || "").trim();
+  const runtimeTime = String(runtimeRow?.time || "").trim();
+  return {
+    ...historyRow,
+    ...runtimeRow,
+    content: historyContent.trim() ? historyContent : runtimeContent,
+    time: historyTime || runtimeTime,
+    role: String(historyRow?.role || runtimeRow?.role || "assistant"),
+    images: Array.isArray(historyRow?.images) && historyRow.images.length
+      ? historyRow.images
+      : runtimeRow.images,
+    videos: Array.isArray(historyRow?.videos) && historyRow.videos.length
+      ? historyRow.videos
+      : runtimeRow.videos,
+    attachments:
+      Array.isArray(historyRow?.attachments) && historyRow.attachments.length
+        ? historyRow.attachments
+        : runtimeRow.attachments,
+  };
+}
+
 function applyPersistedChatRuntimeRows(historyRows, runtimePayload) {
   const rows = Array.isArray(historyRows) ? historyRows : [];
   const runtimeRows = Array.isArray(runtimePayload?.messages)
@@ -11245,7 +11351,7 @@ function applyPersistedChatRuntimeRows(historyRows, runtimePayload) {
   const historyIds = new Set(rows.map((row) => String(row?.id || "").trim()));
   const mergedRows = rows.map((row) => {
     const runtimeRow = runtimeById.get(String(row?.id || "").trim());
-    return runtimeRow ? { ...row, ...runtimeRow } : row;
+    return runtimeRow ? mergeHistoryRowWithRuntimeSnapshot(row, runtimeRow) : row;
   });
   const keepRuntimeOnlyIds = new Set();
   runtimeRows.forEach((row, index) => {
@@ -11703,7 +11809,7 @@ async function sendApprovalDecision(requestId, approvalId, approved) {
   if (!wsClient.value || !wsClient.value.isOpen()) {
     const projectId = String(selectedProjectId.value || "").trim();
     if (!projectId) {
-      throw new Error("WebSocket 未连接");
+      throw new Error("项目聊天实时连接未连接");
     }
     await ensureWsClient(projectId);
   }
@@ -11719,7 +11825,7 @@ async function sendFileReviewDecision(requestId, reviewId, approved) {
   if (!wsClient.value || !wsClient.value.isOpen()) {
     const projectId = String(selectedProjectId.value || "").trim();
     if (!projectId) {
-      throw new Error("WebSocket 未连接");
+      throw new Error("项目聊天实时连接未连接");
     }
     await ensureWsClient(projectId);
   }
@@ -15209,7 +15315,7 @@ const currentChatSessionLocalLiuAgentWaitingPermission = computed(
   () => currentLocalLiuAgentPendingPermissions.value.length > 0,
 );
 
-function clearLocalLiuAgentPendingPermissionsForChatSession(
+async function clearLocalLiuAgentPendingPermissionsForChatSession(
   chatSessionId = currentChatSessionId.value,
   reason = "已停止本地智能体执行，已取消待授权操作",
 ) {
@@ -15228,6 +15334,25 @@ function clearLocalLiuAgentPendingPermissionsForChatSession(
         autoExpand: true,
       });
       row.processExpanded = true;
+      row.content = String(row.content || "").trim() || reason;
+      row.time = nowText();
+      await persistLocalLiuAgentAssistantState({
+        projectId: selectedProjectId.value,
+        chatSessionId,
+        assistantMessage: row,
+        fallbackContent: reason,
+        workspacePath: String(
+          pending?.localChatPayload?.workspacePath || localLiuAgentWorkspacePath(),
+        ).trim(),
+        sourceContext: {
+          ...(pending?.sourceContext || {}),
+          runtime: "tauri",
+          workspace_path: String(
+            pending?.localChatPayload?.workspacePath || localLiuAgentWorkspacePath(),
+          ).trim(),
+          cancelled: true,
+        },
+      });
     }
   }
   localLiuAgentPendingPermissionVersion.value += 1;
@@ -15657,7 +15782,7 @@ async function maybeExecuteDesktopClientToolTask(row, eventData = {}, requestId 
     });
     const client = wsClient.value;
     if (!client || !client.isOpen()) {
-      throw new Error("WebSocket 未连接，无法回传桌面工具结果");
+      throw new Error("项目聊天实时连接未连接，无法回传桌面工具结果");
     }
     client.send({
       type: "desktop_tool_result",
@@ -17569,11 +17694,7 @@ async function continueChatWithInteractionPayload(payloadText) {
   if (!projectId) return false;
   let activeChatSessionId = String(currentChatSessionId.value || "").trim();
   if (!activeChatSessionId) {
-    const created = await createChatSession({ switchTo: true });
-    activeChatSessionId = String(created?.id || "").trim();
-    if (!activeChatSessionId) {
-      return false;
-    }
+    return false;
   }
   const activeSessionSourceContext = normalizeChatSourceContext(
     currentChatSession.value || {},
@@ -17648,11 +17769,7 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
   if (!projectId) return false;
   let activeChatSessionId = String(currentChatSessionId.value || "").trim();
   if (!activeChatSessionId) {
-    const created = await createChatSession({ switchTo: true });
-    activeChatSessionId = String(created?.id || "").trim();
-    if (!activeChatSessionId) {
-      return false;
-    }
+    return false;
   }
   const interactionId = operationInteractionId(operation);
   const sourceRow = findMessageRowByOperationId(interactionId);
@@ -18278,7 +18395,7 @@ async function continueLocalLiuAgentDesktopToolPermission(
   });
   const client = wsClient.value;
   if (!client || !client.isOpen()) {
-    throw new Error("WebSocket 未连接，无法回传桌面工具结果");
+    throw new Error("项目聊天实时连接未连接，无法回传桌面工具结果");
   }
   client.send({
     type: "desktop_tool_result",
@@ -18411,6 +18528,20 @@ async function continueLocalLiuAgentChatPermission(
       text: "本机工具执行再次暂停，等待你在输入框上方处理下一项授权",
       level: "warning",
       autoExpand: true,
+    });
+    await persistLocalLiuAgentAssistantState({
+      projectId: selectedProjectId.value,
+      chatSessionId: pending.activeChatSessionId,
+      assistantMessage: row,
+      fallbackContent: "本机工具执行再次暂停，等待你在输入框上方处理下一项授权。",
+      workspacePath: String(localChatPayload?.workspacePath || "").trim(),
+      sourceContext: {
+        ...(pending.sourceContext || {}),
+        runtime: "tauri",
+        workspace_path: String(localChatPayload?.workspacePath || "").trim(),
+        permission_request_id: nextRequestId,
+        ...localLiuAgentRuntimeTimingSourceContext(row),
+      },
     });
     await upsertProjectChatRequirementRecord({
       chatSessionId: pending.activeChatSessionId,
@@ -20298,6 +20429,13 @@ function replaceRouteWithChatSession(chatSessionId) {
   void router.replace({ query: nextQuery }).catch(() => {});
 }
 
+function clearRouteCreateChatSessionFlag() {
+  if (!String(route.query[CREATE_CHAT_SESSION_QUERY_KEY] || "").trim()) return;
+  const nextQuery = { ...route.query };
+  delete nextQuery[CREATE_CHAT_SESSION_QUERY_KEY];
+  void router.replace({ query: nextQuery }).catch(() => {});
+}
+
 async function focusChatComposerTextarea() {
   await nextTick();
   const textarea = chatComposerRef.value?.querySelector?.("textarea");
@@ -20626,19 +20764,14 @@ async function syncLocalLiuAgentRuntimeOutbox({
   }
   for (const [entryChatSessionId, eventIds] of ackByChatSession.entries()) {
     try {
-      await cleanupNativeLiuAgentOfflineCache({
+      await ackNativeLiuAgentRuntimeOutbox({
         projectId: normalizedProjectId,
         chatSessionId: entryChatSessionId,
         workspacePath: normalizedWorkspacePath,
         eventIds,
-        serverRefs: {
-          source: "project_chat_requirement_record",
-          synced_count: eventIds.length,
-          synced_at: new Date().toISOString(),
-        },
       });
     } catch (err) {
-      console.warn("cleanup local liuAgent offline cache failed", err);
+      console.warn("ack local liuAgent runtime outbox failed", err);
     }
   }
   const remainingOutbox = await listNativeLiuAgentRuntimeOutbox({
@@ -20832,20 +20965,47 @@ function buildProjectStatsCommandPrompt({
 
 function buildPackageDeployCommandPrompt(commandPrompt) {
   const normalizedPrompt = String(commandPrompt || "").trim();
+  const projectId = String(selectedProjectId.value || "").trim();
+  const projectLabel = String(currentProjectLabel.value || "").trim();
   return [
     "用户通过 /打包部署 发起项目打包/部署任务。",
+    `当前项目：${projectLabel || projectId || "未选择项目"}。`,
+    `当前 project_id：${projectId || "未选择项目"}。`,
+    projectId
+      ? `本轮部署、上传或读取部署配置默认使用 project_id=${projectId}；除非用户明确指定其他项目，不要再向用户索要 project_id。`
+      : "当前没有选中项目；缺少 project_id 时先提示用户选择项目。",
     "",
     "用户补充要求：",
     normalizedPrompt || "未填写；如果目标环境、打包命令或部署命令不明确，先向用户确认，不要直接执行。",
     "",
+    "部署配置读取：",
+    "- 第一步必须调用 get_project_deploy_options 读取当前项目的后端部署配置；不要让用户自己去查询项目部署配置。",
+    projectId
+      ? `- 调用 get_project_deploy_options 时使用 project_id=${projectId}。`
+      : "- 调用 get_project_deploy_options 必须携带当前选中项目的 project_id。",
+    "- 读取后必须把可选 profile、target、component 以及每个 target 的 remote_path、artifact_kind、是否存在 deploy_command、notify_enabled 摘要列给用户选择。",
+    "- 用户未明确指定 profile / target / component 时，先基于已读取的配置提示用户选择；不要默认部署到生产环境。",
+    "- get_project_deploy_options configured=false、没有可选 profile/target，或当前桌面工具集中没有读取部署配置/直连部署能力时，直接报告 blocked / missing，并说明需要在项目部署配置里补齐什么。",
+    "",
     "执行边界：",
-    "- 优先按用户提供的上下文判断任务类型：已有部署产物时，走服务端部署产物能力；需要本机打包时，才通过桌面端 Runner 执行本机命令。",
-    "- 已有 artifact_id / 部署产物上下文时，不要要求用户重新上传或重新解释压缩包/目录；按服务端部署规则处理备份、解压和上传。",
-    "- 不读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据。",
-    "- 需要执行本机命令时，必须先明确命令内容、工作目录、目标环境、影响范围和可恢复性。",
+    "- 部署方式必须由已读取的项目部署配置决定；不要扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据。",
+    "- 桌面智能体部署主流程使用 deploy_workspace_files_to_target：桌面 AI 负责判断是否需要本机打包、选择要部署的原文件/目录/文件清单，并调用后端原子能力上传到配置目标、执行已配置 deploy_command、按配置通知。",
+    "- deploy_workspace_files_to_target 不创建部署产物记录，不调用部署产物 AI，不走 /deploy-artifacts/{artifact_id}/deploy/ai-execute；后端只使用项目部署配置里的凭据、远端目录、deploy_command 和通知配置。",
+    "- 只有用户明确说“只上传到部署产物/部署产物模块/保存 artifact”时，才使用 upload_deploy_artifact；普通“部署/上传部署/新代码部署”不要走部署产物模块。",
+    "- 上传/部署规则是“原文件是什么就是什么”：单个 HTML/CSS/JS/图片等文件就原样部署该文件；目录就按目录内原文件逐个部署；多个文件就用 artifact_paths 逐个部署原文件。",
+    "- 禁止为了部署多个静态文件而自行创建 zip/tar；静态站点、多 HTML/CSS/JS/图片文件或用户要求“直接上传这些文件”时，必须把目录传给 deploy_workspace_files_to_target 的 artifact_path，或把文件清单传给 artifact_paths，并设置 artifact_root 保留正确相对路径。",
+    "- 只有用户明确指定的原始部署源本身就是 zip/tar 时，才把该压缩包作为单个原文件部署；不能把压缩包内容描述成已逐个部署的远端文件。",
+    "- deploy_workspace_files_to_target 返回 deployment_confirmed_success=true 且 status=success 时，才允许回复“部署成功/部署完成”。",
+    "- 如果 deployment_confirmed_success=false，或 status 为空、blocked、failed、queued 或非 success，只能回复“已执行到对应阶段，但未确认部署成功/未完成部署”，并说明真实状态。",
+    "- 已有 artifact_id / 部署产物上下文时，除非用户明确要求部署已有服务端产物，否则不要复用历史 artifact；桌面智能体部署应基于本轮选择的 workspace 原文件执行。",
+    "- 不得读取、索要或输出 FTP/SSH/Token 等服务器凭据；凭据只由后端项目部署配置使用。",
+    "- 需要执行本机打包命令时，必须先明确命令内容、工作目录、目标环境、影响范围、产物路径和可恢复性。",
     "- 涉及部署、发布、覆盖远端目录、执行远端命令等外部系统写入时，必须先取得用户明确授权。",
+    "- 用户说“直接部署 / 新代码部署 / 上传部署”且没有限定“只上传”时，调用 deploy_workspace_files_to_target 完成直连部署；不要只上传不部署。",
     "",
     "结果要求：",
+    "- 先说明已读取到的部署配置摘要和本轮选择的 profile / target / component，再说明是否需要本机打包。",
+    "- 最终结果必须区分“已上传文件/已执行命令/已通知”和“部署成功”；没有 deploy_workspace_files_to_target 返回 deployment_confirmed_success=true/status=success 的证据时，禁止使用“部署完成”“部署成功”“上线成功”等表述。",
     "- 汇总实际执行的命令、退出状态、关键输出、生成的产物路径和剩余风险。",
     "- 如果缺少桌面端 Runner、工作区、命令、登录态、部署配置、artifact_id 或部署工具能力，直接说明 blocked / missing，不要编造执行结果。",
   ]
@@ -21123,6 +21283,120 @@ async function persistDirectProjectChatMessage({
     console.warn("persist direct project chat message failed", err);
     return null;
   }
+}
+
+async function persistLocalLiuAgentChatMessage({
+  projectId,
+  chatSessionId,
+  message,
+  role,
+  workspacePath = "",
+  sourceContext = {},
+}) {
+  const normalizedProjectId = String(
+    projectId || selectedProjectId.value || "",
+  ).trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId || !normalizedChatSessionId || !message?.content) {
+    return null;
+  }
+  try {
+    const data = await api.post(
+      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/history/messages`,
+      {
+        chat_session_id: normalizedChatSessionId,
+        message_id: String(message.id || "").trim(),
+        role,
+        content: String(message.content || ""),
+        display_mode: String(message.displayMode || "").trim(),
+        source_context: {
+          ...(sourceContext && typeof sourceContext === "object"
+            ? sourceContext
+            : {}),
+          source: "desktop_local_agent",
+          runtime: "tauri",
+          workspace_path: String(workspacePath || "").trim(),
+          agent_runtime_trace:
+            role === "assistant"
+              ? {
+                  operations: Array.isArray(message.operations)
+                    ? message.operations
+                    : [],
+                  process_log: Array.isArray(message.processLog)
+                    ? message.processLog
+                    : [],
+                  ...localLiuAgentRuntimeTimingSourceContext(message),
+                }
+              : undefined,
+        },
+        attachments: Array.isArray(message.attachments) ? message.attachments : [],
+        images: Array.isArray(message.images) ? message.images : [],
+        videos: Array.isArray(message.videos) ? message.videos : [],
+      },
+    );
+    return data?.message || null;
+  } catch (err) {
+    console.warn("persist local liuAgent chat message failed", err);
+    return null;
+  }
+}
+
+async function persistLocalLiuAgentFinalMessages({
+  projectId,
+  chatSessionId,
+  userMessage,
+  assistantMessage,
+  workspacePath = "",
+  sourceContext = {},
+  persistUser = true,
+}) {
+  const normalizedProjectId = String(
+    projectId || selectedProjectId.value || "",
+  ).trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId || !normalizedChatSessionId) return;
+  if (persistUser && userMessage?.role === "user") {
+    await persistLocalLiuAgentChatMessage({
+      projectId: normalizedProjectId,
+      chatSessionId: normalizedChatSessionId,
+      message: userMessage,
+      role: "user",
+      workspacePath,
+      sourceContext,
+    });
+  }
+  await persistLocalLiuAgentChatMessage({
+    projectId: normalizedProjectId,
+    chatSessionId: normalizedChatSessionId,
+    message: assistantMessage,
+    role: "assistant",
+    workspacePath,
+    sourceContext,
+  });
+}
+
+async function persistLocalLiuAgentAssistantState({
+  projectId,
+  chatSessionId,
+  assistantMessage,
+  fallbackContent,
+  workspacePath = "",
+  sourceContext = {},
+}) {
+  const row = assistantMessage;
+  if (!row) return null;
+  const content = String(row.content || "").trim() || String(fallbackContent || "").trim();
+  if (!content) return null;
+  row.content = content;
+  row.time = String(row.time || "").trim() || nowText();
+  return persistLocalLiuAgentChatMessage({
+    projectId,
+    chatSessionId,
+    message: row,
+    role: "assistant",
+    workspacePath,
+    sourceContext,
+  });
 }
 
 async function handleDirectProjectBindingSlashCommand(
@@ -22813,12 +23087,14 @@ function handleSettingsTourFinish() {
   markGuideTourSeen("settings", currentUsername.value, currentRoleId.value);
 }
 
-function handleProjectCommand(projectId) {
+function handleProjectCommand(projectId, options = {}) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
   const nextQuery = { ...route.query, project_id: normalizedProjectId };
-  delete nextQuery.chat_session_id;
-  delete nextQuery.message_id;
+  if (options.preserveChatSessionId !== true) {
+    delete nextQuery.chat_session_id;
+    delete nextQuery.message_id;
+  }
   void router.replace({ query: nextQuery }).catch(() => {});
   selectedProjectId.value = normalizedProjectId;
 }
@@ -23587,11 +23863,104 @@ async function saveProjectChatSettings(silent = false) {
 function upsertChatSessionFromRealtime(sessionPayload) {
   const session = normalizeChatSession(sessionPayload || {});
   if (!session.id) return null;
+  if (isEmptyManualChatSession(session)) {
+    return null;
+  }
   chatSessions.value = [
     session,
     ...chatSessions.value.filter((item) => item.id !== session.id),
   ];
+  setProjectChatSessionsCache(
+    String(selectedProjectId.value || "").trim(),
+    chatSessions.value,
+  );
   return session;
+}
+
+function isEmptyManualChatSession(session) {
+  const sessionId = String(session?.id || "").trim();
+  if (!sessionId) return true;
+  if (sessionId === String(currentChatSessionId.value || "").trim()) {
+    return false;
+  }
+  const source = normalizeChatSourceContext(session || {});
+  if (source.platform || source.external_chat_id || source.external_chat_name) {
+    return false;
+  }
+  const count = Number(session?.message_count || 0) || 0;
+  if (count > 0) return false;
+  return !String(
+    session?.latest_requirement ||
+      session?.root_goal ||
+      session?.rootGoal ||
+      session?.preview ||
+      session?.last_message ||
+      "",
+  ).trim();
+}
+
+function normalizeVisibleChatSessions(rawSessions) {
+  return (Array.isArray(rawSessions) ? rawSessions : [])
+    .map(normalizeChatSession)
+    .filter((session) => !isEmptyManualChatSession(session));
+}
+
+function setProjectChatSessionsCache(projectId, sessions) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return;
+  projectChatSessionsById.value = {
+    ...(projectChatSessionsById.value || {}),
+    [normalizedProjectId]: Array.isArray(sessions) ? [...sessions] : [],
+  };
+}
+
+function removeProjectChatSessionCacheItem(projectId, chatSessionId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId || !normalizedSessionId) return;
+  const current = projectChatSessionsById.value?.[normalizedProjectId] || [];
+  setProjectChatSessionsCache(
+    normalizedProjectId,
+    current.filter((item) => String(item?.id || "").trim() !== normalizedSessionId),
+  );
+}
+
+async function loadProjectSessionsForSidebar(projectId, options = {}) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return [];
+  if (normalizedProjectId === String(selectedProjectId.value || "").trim()) {
+    setProjectChatSessionsCache(normalizedProjectId, chatSessions.value);
+    return chatSessions.value;
+  }
+  if (
+    options.force !== true &&
+    Array.isArray(projectChatSessionsById.value?.[normalizedProjectId])
+  ) {
+    return projectChatSessionsById.value[normalizedProjectId];
+  }
+  projectChatSessionsLoadingById.value = {
+    ...(projectChatSessionsLoadingById.value || {}),
+    [normalizedProjectId]: true,
+  };
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/sessions`,
+      {
+        params: { limit: 50 },
+      },
+    );
+    const sessions = normalizeVisibleChatSessions(data.sessions || []);
+    setProjectChatSessionsCache(normalizedProjectId, sessions);
+    return sessions;
+  } catch (err) {
+    console.warn("load project sidebar sessions failed", err);
+    return [];
+  } finally {
+    projectChatSessionsLoadingById.value = {
+      ...(projectChatSessionsLoadingById.value || {}),
+      [normalizedProjectId]: false,
+    };
+  }
 }
 
 function setGroupChatLiveStatus(eventData) {
@@ -23614,6 +23983,20 @@ function appendRealtimeChatMessage(eventData) {
   if (applyRealtimeChatMessagePayload(eventData)) {
     scrollToBottom();
   }
+}
+
+function resolveExistingChatSessionId(excludedSessionIds = []) {
+  const excluded = new Set(
+    (Array.isArray(excludedSessionIds) ? excludedSessionIds : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean),
+  );
+  return String(
+    (chatSessions.value || []).find((item) => {
+      const sessionId = String(item?.id || "").trim();
+      return sessionId && !excluded.has(sessionId);
+    })?.id || "",
+  ).trim();
 }
 
 async function fetchChatSessions(
@@ -23639,7 +24022,8 @@ async function fetchChatSessions(
         params: { limit: 50 },
       },
     );
-    chatSessions.value = (data.sessions || []).map(normalizeChatSession);
+    chatSessions.value = normalizeVisibleChatSessions(data.sessions || []);
+    setProjectChatSessionsCache(projectId, chatSessions.value);
     const remembered =
       options.useRemembered === false ? "" : restoreChatSession(projectId);
     const preferred = String(preferredSessionId || "").trim() || remembered;
@@ -23674,6 +24058,7 @@ async function fetchChatSessions(
     return resolved;
   } catch (err) {
     chatSessions.value = [];
+    setProjectChatSessionsCache(projectId, []);
     currentChatSessionId.value = "";
     draftText.value = "";
     uploadFiles.value = [];
@@ -23700,8 +24085,9 @@ async function refreshChatSessionListMetadata(projectId) {
     ) {
       return;
     }
-    const nextSessions = (data.sessions || []).map(normalizeChatSession);
+    const nextSessions = normalizeVisibleChatSessions(data.sessions || []);
     chatSessions.value = nextSessions;
+    setProjectChatSessionsCache(normalizedProjectId, nextSessions);
     const currentId = String(currentChatSessionId.value || "").trim();
     if (
       currentId &&
@@ -23916,13 +24302,18 @@ async function createChatSession(options = {}) {
   }
   creatingChatSession.value = true;
   try {
-    const body =
+    const title = String(options.title || "").trim();
+    const sourceContext =
       options.sourceContext && typeof options.sourceContext === "object"
-        ? {
-            source_context: options.sourceContext,
-            title: String(options.title || "").trim(),
-          }
+        ? options.sourceContext
         : {};
+    const body = {};
+    if (title) {
+      body.title = title;
+    }
+    if (Object.keys(sourceContext).length) {
+      body.source_context = sourceContext;
+    }
     const data = await api.post(
       `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
       body,
@@ -23935,6 +24326,7 @@ async function createChatSession(options = {}) {
       session,
       ...chatSessions.value.filter((item) => item.id !== session.id),
     ];
+    setProjectChatSessionsCache(projectId, chatSessions.value);
     if (options.switchTo !== false) {
       rememberCurrentChatSessionMessages();
       rememberCurrentChatSessionComposerState();
@@ -23985,6 +24377,7 @@ async function updateChatSession(chatSessionId, options = {}) {
       session,
       ...chatSessions.value.filter((item) => item.id !== session.id),
     ];
+    setProjectChatSessionsCache(projectId, chatSessions.value);
     if (currentChatSessionId.value === session.id) {
       rememberChatSession(projectId, session.id);
     }
@@ -24117,23 +24510,65 @@ async function handleCreateNewConversation() {
     scrollToBottom();
     return;
   }
-  const session = await createChatSession({ switchTo: true });
-  if (!session) return;
+  const projectId = String(selectedProjectId.value || "").trim();
+  rememberCurrentChatSessionMessages();
+  rememberCurrentChatSessionComposerState();
+  currentChatSessionId.value = "";
+  rememberChatSession(projectId, "");
+  clearTaskTreeSessionMemory(projectId);
+  clearWorkSessionMemory(projectId);
+  currentWorkSessionId.value = "";
+  clearOngoingTaskRestoreNotice();
+  messages.value = [];
+  chatHistoryLoadedCount.value = 0;
+  chatHistoryReachedEnd.value = false;
+  activeComposerAssist.value = "";
   resetDraft();
+  applyTaskTreePayload(null);
+  resetTerminalPanel();
+  scrollToBottom();
+  await focusChatComposerTextarea();
 }
 
-async function selectChatSession(sessionId) {
-  const projectId = String(selectedProjectId.value || "").trim();
-  const normalizedSessionId = String(sessionId || "").trim();
+async function selectChatSession(payload) {
+  const payloadProjectId =
+    payload && typeof payload === "object" ? payload.projectId : "";
+  const rawSessionId =
+    payload && typeof payload === "object" ? payload.sessionId : payload;
+  const projectId =
+    String(payloadProjectId || "").trim() ||
+    String(selectedProjectId.value || "").trim();
+  const normalizedSessionId = String(rawSessionId || "").trim();
   if (!projectId || !normalizedSessionId) return;
+  if (projectId !== String(selectedProjectId.value || "").trim()) {
+    handleProjectCommand(projectId, { preserveChatSessionId: true });
+    await fetchChatSessions(projectId, normalizedSessionId, {
+      allowFallback: false,
+      useRemembered: false,
+    });
+  }
   await fetchChatHistory(projectId, normalizedSessionId);
 }
 
-async function deleteChatSession(session) {
-  const projectId = String(selectedProjectId.value || "").trim();
+async function deleteChatSession(payload) {
+  const session =
+    payload && typeof payload === "object" && "session" in payload
+      ? payload.session
+      : payload;
+  const projectId =
+    String(
+      payload && typeof payload === "object" && "projectId" in payload
+        ? payload.projectId
+        : "",
+    ).trim() || String(selectedProjectId.value || "").trim();
   const chatSessionId = String(session?.id || "").trim();
   if (!projectId || !chatSessionId) return;
-  if (chatLoading.value && currentChatSessionId.value === chatSessionId) {
+  const isSelectedProject = projectId === String(selectedProjectId.value || "").trim();
+  if (
+    isSelectedProject &&
+    chatLoading.value &&
+    currentChatSessionId.value === chatSessionId
+  ) {
     ElMessage.warning("当前回答进行中，暂时不能删除这个会话");
     return;
   }
@@ -24158,12 +24593,17 @@ async function deleteChatSession(session) {
         params: { chat_session_id: chatSessionId },
       },
     );
-    chatSessions.value = chatSessions.value.filter(
-      (item) => item.id !== chatSessionId,
-    );
+    if (isSelectedProject) {
+      chatSessions.value = chatSessions.value.filter(
+        (item) => item.id !== chatSessionId,
+      );
+      setProjectChatSessionsCache(projectId, chatSessions.value);
+    } else {
+      removeProjectChatSessionCacheItem(projectId, chatSessionId);
+    }
     clearPersistedChatRuntime(projectId, chatSessionId);
     forgetChatSessionMessages(projectId, chatSessionId);
-    const isCurrentSession = currentChatSessionId.value === chatSessionId;
+    const isCurrentSession = isSelectedProject && currentChatSessionId.value === chatSessionId;
     if (isCurrentSession) {
       clearChatSessionMemory(projectId);
       clearTaskTreeSessionMemory(projectId);
@@ -26285,6 +26725,17 @@ async function sendLocalLiuAgentChatRequest({
       workspace_path: workspacePath,
     },
   });
+  const persistedUserMessage = await persistLocalLiuAgentChatMessage({
+    projectId,
+    chatSessionId: activeChatSessionId,
+    message: userMessage,
+    role: "user",
+    workspacePath,
+    sourceContext,
+  });
+  if (persistedUserMessage) {
+    userMessage.historyPersisted = true;
+  }
   const modelRuntime = await buildLocalLiuAgentModelRuntime();
   await saveLocalLiuAgentRuntimeConfigOfflineCache({
     workspacePath,
@@ -26308,6 +26759,10 @@ async function sendLocalLiuAgentChatRequest({
     aiEntryFile: String(projectAiEntryFile.value || "").trim(),
     mcpConfig: systemMcpConfig.value,
     attachments,
+    backendContext: {
+      apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
+      token: getStoredToken(),
+    },
     permissionDecision: localLiuAgentFullAccessEnabled()
       ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
       : null,
@@ -26403,6 +26858,20 @@ async function sendLocalLiuAgentChatRequest({
       text: "本机工具执行已暂停，等待你在输入框上方授权",
       level: "warning",
     });
+    await persistLocalLiuAgentAssistantState({
+      projectId,
+      chatSessionId: activeChatSessionId,
+      assistantMessage,
+      fallbackContent: "本机工具执行已暂停，等待你在输入框上方授权。",
+      workspacePath,
+      sourceContext: {
+        ...sourceContext,
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        permission_request_id: requestId,
+        ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
+      },
+    });
     await upsertProjectChatRequirementRecord({
       chatSessionId: activeChatSessionId,
       status: "waiting_approval",
@@ -26454,6 +26923,9 @@ async function sendLocalLiuAgentChatRequest({
   assistantMessage.content = String(
     result?.assistantContent || result?.assistant_content || result?.summary || "",
   ).trim();
+  if (!assistantMessage.content && ok) {
+    assistantMessage.content = "本地智能体未返回最终回答，请检查本轮执行过程。";
+  }
   if (!assistantMessage.content && !ok) {
     assistantMessage.content = `执行失败：${String(result?.error || "桌面端本地对话失败").trim()}`;
   }
@@ -26514,6 +26986,15 @@ async function sendLocalLiuAgentChatRequest({
     autoExpand: !ok,
   });
   collapseMessageProcessAfterFinalAnswer(assistantMessage);
+  await persistLocalLiuAgentFinalMessages({
+    projectId,
+    chatSessionId: activeChatSessionId,
+    userMessage,
+    assistantMessage,
+    workspacePath,
+    sourceContext,
+    persistUser: false,
+  });
   await upsertProjectChatRequirementRecord({
     chatSessionId: activeChatSessionId,
     status: ok ? "done" : "blocked",
@@ -26721,13 +27202,13 @@ function sendCancelRequestInBackground(requestId) {
   }, 0);
 }
 
-function cancelActiveLocalLiuAgentRun() {
+async function cancelActiveLocalLiuAgentRun() {
   const chatSessionId = String(currentChatSessionId.value || "").trim();
   const run = localLiuAgentActiveRunForChatSession(chatSessionId);
   if (!run || run.cancelled) return false;
   run.cancelled = true;
   deleteLocalLiuAgentActiveRun(chatSessionId);
-  clearLocalLiuAgentPendingPermissionsForChatSession(chatSessionId);
+  await clearLocalLiuAgentPendingPermissionsForChatSession(chatSessionId);
   const row = localLiuAgentActiveRunRow(run);
   const message = "已停止本地智能体执行。";
   if (row) {
@@ -26762,6 +27243,37 @@ function cancelActiveLocalLiuAgentRun() {
       autoExpand: true,
     });
     row.processExpanded = true;
+    await persistLocalLiuAgentAssistantState({
+      projectId: run.projectId || selectedProjectId.value,
+      chatSessionId,
+      assistantMessage: row,
+      fallbackContent: message,
+      workspacePath: String(run.workspacePath || "").trim(),
+      sourceContext: {
+        chat_mode: "system",
+        surface: chatSurface.value,
+        runtime: "tauri",
+        workspace_path: String(run.workspacePath || "").trim(),
+        cancelled: true,
+        ...localLiuAgentRuntimeTimingSourceContext(row),
+      },
+    });
+    void upsertProjectChatRequirementRecord({
+      chatSessionId,
+      status: "blocked",
+      rootGoal: message,
+      messageId: String(run.userMessageId || "").trim(),
+      assistantMessageId: row.id,
+      resultSummary: row.content,
+      verificationResult: message,
+      source: "desktop_local_agent",
+      sourceContext: {
+        runtime: "tauri",
+        workspace_path: String(run.workspacePath || "").trim(),
+        cancelled: true,
+        ...localLiuAgentRuntimeTimingSourceContext(row),
+      },
+    });
   }
   queuedFollowupMessages.value = [];
   activeFollowupAssistantMessageId = "";
@@ -26782,12 +27294,12 @@ function closeIdleChatWsAfterFastCancel() {
   wsProjectId.value = "";
 }
 
-function stopGeneration() {
-  if (cancelActiveLocalLiuAgentRun()) {
+async function stopGeneration() {
+  if (await cancelActiveLocalLiuAgentRun()) {
     ElMessage.info("已停止本地智能体执行");
     return;
   }
-  if (clearLocalLiuAgentPendingPermissionsForChatSession()) {
+  if (await clearLocalLiuAgentPendingPermissionsForChatSession()) {
     ElMessage.info("已取消待授权操作");
     return;
   }
@@ -26862,25 +27374,10 @@ async function generateEmployeeDraftWithoutProject() {
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
   applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
-  void upsertProjectChatRequirementRecord({
-    chatSessionId: activeChatSessionId,
-    status: "in_progress",
-    rootGoal: displayUserMessageContent,
-    messageId: userMessage.id,
-    assistantMessageId: assistantMessage.id,
-    source: "project_chat",
-    sourceContext: {
-      chat_mode: "system",
-      surface: chatSurface.value,
-      slash_command: slashCommand?.entry?.kind || "",
-      attachment_names: attachmentNames,
-      employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
-    },
-  });
 
   const assistantIndex = messages.value.length - 1;
   chatLoading.value = true;
-  startWorkingStatusTimer(assistantMessage.id, activeChatSessionId);
+  startWorkingStatusTimer(assistantMessage.id);
   resetDraft();
   scrollToBottom();
 
@@ -27111,23 +27608,7 @@ async function doSend(options = {}) {
 
   const text = String(draftText.value || "").trim();
   let activeChatSessionId = String(currentChatSessionId.value || "").trim();
-  if (!activeChatSessionId) {
-    const created = await createChatSession({ switchTo: true });
-    activeChatSessionId = String(created?.id || "").trim();
-    if (!activeChatSessionId) {
-      return;
-    }
-  }
   const slashCommand = resolveSlashCommand(text);
-  if (
-    await handleDirectProjectBindingSlashCommand(
-      slashCommand,
-      activeChatSessionId,
-      text,
-    )
-  ) {
-    return;
-  }
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   const files = uploadFiles.value.map((item) => item.raw).filter(Boolean);
   const historyRows = toHistoryRows(messages.value, historyLimit.value);
@@ -27312,6 +27793,29 @@ async function doSend(options = {}) {
       ? `${slashCommand.entry.command} ${slashCommand.prompt}`
       : `${slashCommand.entry.command} ${slashCommand.entry.label}`
     : text || "（发送了附件）";
+  if (!String(displayUserMessageContent || "").trim()) {
+    ElMessage.warning("请输入内容或添加附件");
+    return;
+  }
+  if (!activeChatSessionId) {
+    const created = await createChatSession({
+      switchTo: true,
+      title: displayUserMessageContent,
+    });
+    activeChatSessionId = String(created?.id || "").trim();
+    if (!activeChatSessionId) {
+      return;
+    }
+  }
+  if (
+    await handleDirectProjectBindingSlashCommand(
+      slashCommand,
+      activeChatSessionId,
+      text,
+    )
+  ) {
+    return;
+  }
   const userMessage = {
     id: createLocalMessageId(),
     role: "user",
@@ -27408,6 +27912,21 @@ async function doSend(options = {}) {
       autoExpand: true,
     });
     finishMessageExecutionTiming(assistantMessage);
+    void persistLocalLiuAgentFinalMessages({
+      projectId: selectedProjectId.value,
+      chatSessionId: activeChatSessionId,
+      userMessage,
+      assistantMessage,
+      workspacePath: localLiuAgentWorkspacePath(),
+      persistUser: userMessage.historyPersisted !== true,
+      sourceContext: {
+        chat_mode: "system",
+        surface: chatSurface.value,
+        runtime: "tauri",
+        workspace_path: localLiuAgentWorkspacePath(),
+        error: err?.detail || errorMessage,
+      },
+    });
     void upsertProjectChatRequirementRecord({
       chatSessionId: activeChatSessionId,
       status: "blocked",
@@ -27669,6 +28188,21 @@ function resolveAvailableProjectId(preferredId = "") {
 async function loadSelectedProjectConversation(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
+  const resetEmptyConversationState = async () => {
+    currentChatSessionId.value = "";
+    rememberChatSession(normalizedProjectId, "");
+    clearTaskTreeSessionMemory(normalizedProjectId);
+    clearWorkSessionMemory(normalizedProjectId);
+    currentWorkSessionId.value = "";
+    clearOngoingTaskRestoreNotice();
+    messages.value = [];
+    chatHistoryLoadedCount.value = 0;
+    chatHistoryReachedEnd.value = false;
+    applyChatSessionComposerState(normalizedProjectId, "");
+    applyTaskTreePayload(null);
+    resetTerminalPanel();
+    await focusChatComposerTextarea();
+  };
   const {
     chatSessionId: routeChatSessionId,
     createNewSession: routeCreateNewSession,
@@ -27741,75 +28275,24 @@ async function loadSelectedProjectConversation(projectId) {
       const restoredChatSessionId = String(
         restoredTask.chatSessionId || "",
       ).trim();
-      if (
-        restoredChatSessionId &&
-        !chatSessions.value.some((item) => item.id === restoredChatSessionId)
-      ) {
-        chatSessions.value = [
-          {
-            id: restoredChatSessionId,
-            title:
-              String(
-                restoredTask.taskTree?.title ||
-                  restoredTask.taskTree?.root_goal ||
-                  "进行中的任务",
-              ).trim() || "进行中的任务",
-            preview: String(
-              restoredTask.taskTree?.current_node?.title ||
-                restoredTask.taskTree?.root_goal ||
-                "",
-            ).trim(),
-            message_count: 0,
-            created_at: String(restoredTask.taskTree?.created_at || "").trim(),
-            updated_at: String(restoredTask.taskTree?.updated_at || "").trim(),
-            last_message_at: String(
-              restoredTask.taskTree?.updated_at ||
-                restoredTask.taskTree?.created_at ||
-                "",
-            ).trim(),
-          },
-          ...chatSessions.value.filter(
-            (item) => item.id !== restoredChatSessionId,
-          ),
-        ];
+      if (restoredChatSessionId) {
+        setProjectChatSessionsCache(normalizedProjectId, chatSessions.value);
       }
     }
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
     if (shouldCreateWindowSession) {
-      const created = await createChatSession({
-        switchTo: true,
-        sourceContext: {
-          project_id: normalizedProjectId,
-          opened_from: "project-detail-window",
-          window_scoped: true,
-        },
-      });
-      chatSessionId = String(created?.id || "").trim();
+      clearRouteCreateChatSessionFlag();
       if (chatSessionId) {
         replaceRouteWithChatSession(chatSessionId);
-      }
-    } else if (!chatSessionId) {
-      const existingSessionId = String(chatSessions.value[0]?.id || "").trim();
-      if (existingSessionId) {
-        chatSessionId = existingSessionId;
-        currentChatSessionId.value = existingSessionId;
-        rememberChatSession(normalizedProjectId, existingSessionId);
       } else {
-        currentChatSessionId.value = "";
-        clearChatSessionMemory(normalizedProjectId);
-        clearTaskTreeSessionMemory(normalizedProjectId);
-        clearWorkSessionMemory(normalizedProjectId);
-        currentWorkSessionId.value = "";
-        clearOngoingTaskRestoreNotice();
-        messages.value = [];
-        chatHistoryLoadedCount.value = 0;
-        chatHistoryReachedEnd.value = false;
-        applyChatSessionComposerState(normalizedProjectId, "");
-        applyTaskTreePayload(null);
-        resetTerminalPanel();
+        await resetEmptyConversationState();
         return;
       }
+    } else if (!chatSessionId) {
+      clearChatSessionMemory(normalizedProjectId);
+      await resetEmptyConversationState();
+      return;
     }
     if (
       !chatSessionId ||

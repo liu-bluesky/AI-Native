@@ -40,13 +40,14 @@ use super::types::{
     AgentInvocationRequest, AgentInvocationResult, AgentRunAttachmentRoute,
     AgentRunAttachmentSummary, AgentRunContext, AgentRunHistoryContext,
     AgentRunHistoryMessageSummary, AgentRunProjectContext, AgentRunRuntimeContext,
-    AgentRunUserRequest, ClarityAssessment, LocalChatAttachment, LocalChatMessage,
-    LocalChatRequest, LocalChatResult, LocalModelRuntimeConfig, LocalRuntimeEventsRequest,
-    LocalRuntimeEventsResult, LocalRuntimeJobRequest, LocalRuntimeJobResult,
-    LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult,
-    LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult, MemoryWritePlan, MemoryWritePlanItem,
-    ModelCompatibilityProfile, Observation, OfflineCacheCleanupRequest, OfflineCacheLoadRequest,
-    OfflineCacheResult, OfflineCacheSaveRequest, PlanNode, PlanState, PromptStack, PromptStackItem,
+    AgentRunUserRequest, ClarityAssessment, LocalBackendContext, LocalChatAttachment,
+    LocalChatMessage, LocalChatRequest, LocalChatResult, LocalModelRuntimeConfig,
+    LocalRuntimeEventsRequest, LocalRuntimeEventsResult, LocalRuntimeJobRequest,
+    LocalRuntimeJobResult, LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest,
+    LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult,
+    MemoryWritePlan, MemoryWritePlanItem, ModelCompatibilityProfile, Observation,
+    OfflineCacheCleanupRequest, OfflineCacheLoadRequest, OfflineCacheResult,
+    OfflineCacheSaveRequest, PlanNode, PlanState, PromptStack, PromptStackItem,
     ProviderFileUploadRequest, ProviderFileUploadResult, RetryDecision, RunState,
     RuntimeSchedulerState, TaskGoal, ToolBatchState, ToolError, ToolExecutionRequest,
     VerificationCheck, VerificationReport,
@@ -61,7 +62,7 @@ use super::{
 const REQUIREMENT_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_MODEL_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_MAX_VERIFICATION_REPROMPTS: usize = 1;
-const MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS: usize = 2;
+const MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS: usize = 5;
 const PERMISSION_CACHE_VERSION: u32 = 1;
 const TOOL_OBSERVATION_TEXT_PREVIEW_CHARS: usize = 6_000;
 const TOOL_OBSERVATION_MATCH_PREVIEW_CHARS: usize = 500;
@@ -2254,6 +2255,7 @@ fn prompt_stack_from_model_request(model_request: &ModelStepRequest) -> PromptSt
         model_runtime: None,
         ai_entry_file: None,
         attachments: Vec::new(),
+        backend_context: None,
         permission_decision: None,
     };
     resolve_prompt_stack(&request, model_request)
@@ -3262,13 +3264,16 @@ fn format_local_chat_response(
         && !model_result.compat_text_tool_call_detected
         && !model_result.content.trim().is_empty()
     {
+        let assistant_content =
+            deployment_claim_safe_assistant_content(model_result.content.trim(), tool_results);
         return ResponseFormattingResult {
-            assistant_content: model_result.content.trim().to_string(),
+            assistant_content,
             user_visible_error_summary: String::new(),
             diagnostic: json!({
                 "version": "response-format/v1",
                 "visibility": "model_content",
-                "diagnostic_separated": false
+                "diagnostic_separated": false,
+                "deployment_claim_adjusted": deployment_claim_needs_adjustment(model_result.content.trim(), tool_results)
             }),
         };
     }
@@ -3466,6 +3471,111 @@ fn format_local_chat_response(
             "tool_failure_count": tool_results.iter().filter(|item| !item.ok).count()
         }),
     }
+}
+
+fn deployment_claim_safe_assistant_content(
+    content: &str,
+    tool_results: &[super::types::ToolExecutionResult],
+) -> String {
+    if !deployment_claim_needs_adjustment(content, tool_results) {
+        return content.trim().to_string();
+    }
+    let mut lines = vec![
+        "部署操作尚未确认成功。".to_string(),
+        "后端没有返回 deployment.status=success，因此不能判定为“部署完成”。".to_string(),
+    ];
+    if let Some(summary) = latest_deploy_upload_summary(tool_results) {
+        lines.push(format!("工具结果：{summary}"));
+    }
+    lines.push("下面是模型原始总结，已按实际状态降级为参考：".to_string());
+    lines.push(strip_deployment_success_claims(content));
+    lines.join("\n")
+}
+
+fn deployment_claim_needs_adjustment(
+    content: &str,
+    tool_results: &[super::types::ToolExecutionResult],
+) -> bool {
+    content_claims_deployment_success(content)
+        && has_deploy_upload_without_confirmed_success(tool_results)
+}
+
+fn content_claims_deployment_success(content: &str) -> bool {
+    let normalized = content.trim();
+    if normalized.is_empty() {
+        return false;
+    }
+    [
+        "部署完成",
+        "部署成功",
+        "已部署",
+        "已经部署",
+        "上线完成",
+        "上线成功",
+        "发布完成",
+        "发布成功",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn has_deploy_upload_without_confirmed_success(
+    tool_results: &[super::types::ToolExecutionResult],
+) -> bool {
+    tool_results.iter().any(|result| {
+        result.ok
+            && matches!(
+                result.name.trim(),
+                "upload_deploy_artifact" | "deploy_workspace_files_to_target"
+            )
+            && !deploy_upload_confirmed_success(result)
+    })
+}
+
+fn deploy_upload_confirmed_success(result: &super::types::ToolExecutionResult) -> bool {
+    result
+        .content
+        .get("deployment_confirmed_success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || result
+            .content
+            .get("response")
+            .and_then(|value| value.get("deployment"))
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            == Some("success")
+}
+
+fn latest_deploy_upload_summary(
+    tool_results: &[super::types::ToolExecutionResult],
+) -> Option<String> {
+    tool_results
+        .iter()
+        .rev()
+        .find(|result| {
+            result.ok
+                && matches!(
+                    result.name.trim(),
+                    "upload_deploy_artifact" | "deploy_workspace_files_to_target"
+                )
+        })
+        .map(|result| result.summary.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn strip_deployment_success_claims(content: &str) -> String {
+    content
+        .replace("## ✅ 部署完成", "## 产物上传结果")
+        .replace("### ✅ 部署完成", "### 产物上传结果")
+        .replace("✅ 部署完成", "产物已上传")
+        .replace("部署完成", "产物上传完成")
+        .replace("部署成功", "产物上传成功")
+        .replace("上线完成", "产物上传完成")
+        .replace("上线成功", "产物上传成功")
+        .replace("发布完成", "产物上传完成")
+        .replace("发布成功", "产物上传成功")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3694,7 +3804,12 @@ fn replay_pending_permission_tool_if_available(
     let tool_request = ToolExecutionRequest {
         tool_call_id: Some(tool.tool_call_id.clone()),
         name: tool.name.clone(),
-        arguments: tool.arguments.clone(),
+        arguments: tool_arguments_with_backend_context(
+            &tool,
+            &request.project_id,
+            request.backend_context.as_ref(),
+            tool.arguments.clone(),
+        ),
         workspace_path: workspace_root.to_string_lossy().to_string(),
         permission_decision: Some(decision.clone()),
     };
@@ -4125,7 +4240,12 @@ fn run_agent_loop_with(
             let tool_request = ToolExecutionRequest {
                 tool_call_id: Some(tool.tool_call_id.clone()),
                 name: tool.name.clone(),
-                arguments: tool_arguments_with_file_access_policy(&tool, &request),
+                arguments: tool_arguments_with_backend_context(
+                    &tool,
+                    &request.project_id,
+                    request.backend_context.as_ref(),
+                    tool_arguments_with_file_access_policy(&tool, &request),
+                ),
                 workspace_path: workspace_root.to_string_lossy().to_string(),
                 permission_decision: effective_permission_decision.clone(),
             };
@@ -4550,6 +4670,46 @@ fn tool_arguments_with_file_access_policy(
         "file_access_policy".to_string(),
         build_file_access_policy_for_request(request),
     );
+    arguments
+}
+
+fn tool_arguments_with_backend_context(
+    tool: &PlannedLocalTool,
+    project_id: &str,
+    backend_context: Option<&LocalBackendContext>,
+    mut arguments: Value,
+) -> Value {
+    if !matches!(
+        tool.name.trim(),
+        "get_project_deploy_options"
+            | "upload_deploy_artifact"
+            | "deploy_workspace_files_to_target"
+    ) {
+        return arguments;
+    }
+    let Some(context) = backend_context else {
+        return arguments;
+    };
+    let Some(object) = arguments.as_object_mut() else {
+        return arguments;
+    };
+    if object
+        .get("project_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        let normalized_project_id = project_id.trim();
+        if !normalized_project_id.is_empty() {
+            object.insert("project_id".to_string(), json!(normalized_project_id));
+        }
+    }
+    object.insert(
+        "_backend_api_base_url".to_string(),
+        json!(context.api_base_url.trim()),
+    );
+    object.insert("_backend_token".to_string(), json!(context.token.trim()));
     arguments
 }
 
@@ -5678,6 +5838,8 @@ fn permission_action_for_tool(tool_name: &str) -> Option<&'static str> {
         "run_command" => Some("command.run"),
         "http_post" => Some("network.write"),
         "download_file" => Some("network.read"),
+        "upload_deploy_artifact" => Some("deploy.artifact.upload"),
+        "deploy_workspace_files_to_target" => Some("deploy.direct.upload"),
         "call_mcp_tool" => Some("mcp.call"),
         _ => None,
     }
@@ -6185,6 +6347,7 @@ fn build_operations(session_id: &str, agent_loop: &AgentLoopResult) -> Value {
 
 #[derive(Debug, Clone)]
 struct ModelStepRequest {
+    project_id: String,
     mode: String,
     provider_id: String,
     model_name: String,
@@ -6195,6 +6358,7 @@ struct ModelStepRequest {
     timeout_ms: u64,
     user_message: String,
     ai_entry_file: String,
+    backend_context: Option<LocalBackendContext>,
     messages: Vec<RuntimeModelMessage>,
     task_goal: Option<TaskGoal>,
     task_tree: Option<planning::TaskTree>,
@@ -6203,6 +6367,7 @@ struct ModelStepRequest {
 impl ModelStepRequest {
     fn with_messages(&self, messages: Vec<RuntimeModelMessage>) -> Self {
         Self {
+            project_id: self.project_id.clone(),
             mode: self.mode.clone(),
             provider_id: self.provider_id.clone(),
             model_name: self.model_name.clone(),
@@ -6213,6 +6378,7 @@ impl ModelStepRequest {
             timeout_ms: self.timeout_ms,
             user_message: self.user_message.clone(),
             ai_entry_file: self.ai_entry_file.clone(),
+            backend_context: self.backend_context.clone(),
             messages,
             task_goal: self.task_goal.clone(),
             task_tree: self.task_tree.clone(),
@@ -6737,6 +6903,7 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
     ));
 
     ModelStepRequest {
+        project_id: request.project_id.trim().to_string(),
         mode,
         provider_id,
         model_name,
@@ -6759,6 +6926,7 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
             .map(str::trim)
             .unwrap_or("")
             .to_string(),
+        backend_context: request.backend_context.clone(),
         messages,
         task_goal: None,
         task_tree: None,
@@ -8194,6 +8362,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: None,
         });
 
@@ -9070,6 +9239,7 @@ mod tests {
                 model_runtime: None,
                 ai_entry_file: None,
                 attachments: Vec::new(),
+                backend_context: None,
                 permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                     request_id: Some("perm_call_write_replay_file_write".to_string()),
                     decision: "approve_once".to_string(),
@@ -9843,6 +10013,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: None,
         });
 
@@ -9887,6 +10058,7 @@ mod tests {
             }),
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: None,
         };
         let model_request = build_model_request(&request, "你好");
@@ -10078,6 +10250,7 @@ mod tests {
                     error: None,
                 },
             ],
+            backend_context: None,
             permission_decision: None,
         };
         let model_request = build_model_request(&request, "请分析附件");
@@ -10113,6 +10286,7 @@ mod tests {
             temperature: None,
             model_runtime: None,
             ai_entry_file: None,
+            backend_context: None,
             attachments: vec![LocalChatAttachment {
                 attachment_id: Some("att_img".to_string()),
                 name: "截图.png".to_string(),
@@ -10141,11 +10315,31 @@ mod tests {
     }
 
     #[test]
+    fn local_model_transport_failure_is_not_reported_as_connection_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let mut model_request = test_model_request("测试本地模型传输错误");
+        model_request.base_url = format!("http://{address}/v1");
+        model_request.model_name = "gpt-test".to_string();
+        model_request.api_key = "test-key".to_string();
+        model_request.timeout_ms = 5_000;
+
+        let result = run_openai_compatible_model_step(&model_request);
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "model.request_failed");
+        assert!(!result.error.contains(&["模型连接", "超时"].concat()));
+        assert!(!result.error.contains("已尝试"));
+    }
+
+    #[test]
     fn model_timeout_retries_five_attempts_then_fails() {
         let attempts = Cell::new(0usize);
 
         let result: Result<(), ModelRequestRetryFailure> =
-            send_model_request_with_timeout_retry(5, || {
+            send_model_request_with_timeout_retry(MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS, || {
                 attempts.set(attempts.get() + 1);
                 Err(ModelRequestError {
                     kind: ModelRequestErrorKind::Timeout,
@@ -10165,7 +10359,7 @@ mod tests {
         let attempts = Cell::new(0usize);
 
         let result: Result<(), ModelRequestRetryFailure> =
-            send_model_request_with_timeout_retry(5, || {
+            send_model_request_with_timeout_retry(MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS, || {
                 attempts.set(attempts.get() + 1);
                 Err(ModelRequestError {
                     kind: ModelRequestErrorKind::Request,
@@ -10178,6 +10372,94 @@ mod tests {
         assert_eq!(error.attempts, 1);
         assert_eq!(error.code, "model.request_failed");
         assert!(error.message.contains("HTTP 429"));
+    }
+
+    #[test]
+    fn deploy_backend_context_is_injected_only_for_execution() {
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_upload_artifact".to_string(),
+            name: "upload_deploy_artifact".to_string(),
+            arguments: json!({
+                "project_id": "proj-test",
+                "artifact_path": "dist/app.zip"
+            }),
+            summary: "upload artifact".to_string(),
+        };
+        let backend_context = LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "secret-token".to_string(),
+        };
+
+        assert!(tool.arguments.get("_backend_token").is_none());
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            "proj-fallback",
+            Some(&backend_context),
+            tool.arguments.clone(),
+        );
+
+        assert_eq!(
+            execution_args["_backend_api_base_url"],
+            "http://127.0.0.1:8000/api"
+        );
+        assert_eq!(execution_args["_backend_token"], "secret-token");
+        assert!(tool.arguments.get("_backend_token").is_none());
+    }
+
+    #[test]
+    fn deploy_options_backend_context_is_injected_only_for_execution() {
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_deploy_options".to_string(),
+            name: "get_project_deploy_options".to_string(),
+            arguments: json!({
+                "project_id": "proj-test"
+            }),
+            summary: "read deploy options".to_string(),
+        };
+        let backend_context = LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "secret-token".to_string(),
+        };
+
+        assert!(tool.arguments.get("_backend_token").is_none());
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            "proj-fallback",
+            Some(&backend_context),
+            tool.arguments.clone(),
+        );
+
+        assert_eq!(
+            execution_args["_backend_api_base_url"],
+            "http://127.0.0.1:8000/api"
+        );
+        assert_eq!(execution_args["_backend_token"], "secret-token");
+        assert_eq!(execution_args["project_id"], "proj-test");
+        assert!(tool.arguments.get("_backend_token").is_none());
+    }
+
+    #[test]
+    fn deploy_tool_project_id_defaults_to_current_request_project() {
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_deploy_options".to_string(),
+            name: "get_project_deploy_options".to_string(),
+            arguments: json!({}),
+            summary: "read deploy options".to_string(),
+        };
+        let backend_context = LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "secret-token".to_string(),
+        };
+
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            "proj-current",
+            Some(&backend_context),
+            tool.arguments.clone(),
+        );
+
+        assert_eq!(execution_args["project_id"], "proj-current");
+        assert_eq!(execution_args["_backend_token"], "secret-token");
     }
 
     #[test]
@@ -10400,6 +10682,148 @@ mod tests {
         assert!(content.contains("已执行的本机工具见下方摘要"));
         assert!(content.contains("本机工具执行摘要：共 1 个，成功 1 个，失败 0 个。"));
         assert!(!content.contains("本轮未执行任何本机工具"));
+    }
+
+    #[test]
+    fn deploy_upload_ready_does_not_allow_success_claim() {
+        let request = test_model_request("部署登录注册页");
+        let model_result =
+            test_success_model_result(&request, "## ✅ 部署完成\n登录注册页已经部署成功。");
+        let tool_results = vec![crate::liuagent_core::types::ToolExecutionResult::ok(
+            "call_upload".to_string(),
+            "upload_deploy_artifact".to_string(),
+            json!({
+                "artifact_status": "ready",
+                "deployment_status": "",
+                "deployment_confirmed_success": false,
+                "response": {
+                    "status": "ready",
+                    "artifact": {"id": "artifact-1"},
+                    "deployment": null
+                }
+            }),
+            "部署产物 artifact-1 已上传，但没有返回部署执行记录：artifact 状态=ready；当前只能视为产物就绪，不能宣称部署完成".to_string(),
+        )];
+
+        let content = build_assistant_content(
+            "proj-test",
+            &PathBuf::from("/tmp/test"),
+            "部署登录注册页",
+            &[],
+            &model_result,
+            &tool_results,
+            &[],
+            true,
+            false,
+            "",
+            "",
+            "",
+        );
+
+        assert!(content.starts_with("部署操作尚未确认成功。"));
+        assert!(content.contains("没有返回 deployment.status=success"));
+        assert!(content.contains("不能宣称部署完成"));
+        assert!(!content.starts_with("## ✅ 部署完成"));
+    }
+
+    #[test]
+    fn deploy_success_claim_allowed_when_deployment_succeeded() {
+        let request = test_model_request("部署登录注册页");
+        let model_result =
+            test_success_model_result(&request, "## ✅ 部署完成\n登录注册页已经部署成功。");
+        let tool_results = vec![crate::liuagent_core::types::ToolExecutionResult::ok(
+            "call_upload".to_string(),
+            "upload_deploy_artifact".to_string(),
+            json!({
+                "artifact_status": "deployed",
+                "deployment_status": "success",
+                "deployment_confirmed_success": true,
+                "response": {
+                    "status": "deployed",
+                    "artifact": {"id": "artifact-1"},
+                    "deployment": {"id": "deploy-1", "status": "success"}
+                }
+            }),
+            "部署产物 artifact-1 已上传并部署成功，deployment deploy-1 状态：success".to_string(),
+        )];
+
+        let content = build_assistant_content(
+            "proj-test",
+            &PathBuf::from("/tmp/test"),
+            "部署登录注册页",
+            &[],
+            &model_result,
+            &tool_results,
+            &[],
+            true,
+            false,
+            "",
+            "",
+            "",
+        );
+
+        assert!(content.starts_with("## ✅ 部署完成"));
+        assert!(content.contains("部署成功"));
+        assert!(!content.starts_with("部署操作尚未确认成功。"));
+    }
+
+    #[test]
+    fn direct_deploy_blocked_does_not_allow_success_claim() {
+        let request = test_model_request("直接部署登录注册页");
+        let model_result =
+            test_success_model_result(&request, "## ✅ 部署完成\n登录注册页已经部署成功。");
+        let tool_results = vec![crate::liuagent_core::types::ToolExecutionResult::ok(
+            "call_direct_deploy".to_string(),
+            "deploy_workspace_files_to_target".to_string(),
+            json!({
+                "deployment_status": "blocked",
+                "deployment_confirmed_success": false,
+                "response": {
+                    "status": "blocked",
+                    "deployment_confirmed_success": false,
+                    "stage": "blocked_missing_remote_executor"
+                }
+            }),
+            "部署源 selected files 已由桌面智能体发起直连部署，但未确认成功：deployment 状态=blocked；不能宣称部署完成".to_string(),
+        )];
+
+        let content = build_assistant_content(
+            "proj-test",
+            &PathBuf::from("/tmp/test"),
+            "直接部署登录注册页",
+            &[],
+            &model_result,
+            &tool_results,
+            &[],
+            true,
+            false,
+            "",
+            "",
+            "",
+        );
+
+        assert!(content.starts_with("部署操作尚未确认成功。"));
+        assert!(content.contains("deployment.status=success"));
+        assert!(content.contains("deployment 状态=blocked"));
+        assert!(!content.starts_with("## ✅ 部署完成"));
+    }
+
+    fn test_success_model_result(request: &ModelStepRequest, content: &str) -> ModelStepResult {
+        ModelStepResult {
+            ok: true,
+            mode: request.mode.clone(),
+            provider_id: request.provider_id.clone(),
+            model_name: request.model_name.clone(),
+            status: "completed".to_string(),
+            content: content.to_string(),
+            reasoning_content: String::new(),
+            tool_calls: Vec::new(),
+            allow_compat_text_tool_call: false,
+            compat_text_tool_call_detected: false,
+            summary: String::new(),
+            error_code: String::new(),
+            error: String::new(),
+        }
     }
 
     #[test]
@@ -10681,6 +11105,7 @@ mod tests {
             }),
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(plan_confirmation_request_id(
                     "chat-resume-reasoning",
@@ -10807,6 +11232,7 @@ mod tests {
             }),
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(permission_request_id),
                 decision: "approve_once".to_string(),
@@ -10855,6 +11281,7 @@ mod tests {
 
     fn test_model_request(user_message: &str) -> ModelStepRequest {
         ModelStepRequest {
+            project_id: "proj-test".to_string(),
             mode: "direct-openai-compatible".to_string(),
             provider_id: "test-provider".to_string(),
             model_name: "test-model".to_string(),
@@ -10865,6 +11292,7 @@ mod tests {
             timeout_ms: 1_000,
             user_message: user_message.to_string(),
             ai_entry_file: String::new(),
+            backend_context: None,
             messages: vec![RuntimeModelMessage::simple(
                 "user",
                 user_message.to_string(),
@@ -11513,6 +11941,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: None,
         });
 
@@ -11568,6 +11997,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(plan_confirmation_request_id(
                     "chat-plan-confirmed-test",
@@ -11610,6 +12040,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(plan_confirmation_request_id(
                     "chat-plan-session-confirmed-test",
@@ -11650,6 +12081,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: None,
                 decision: "approve_session".to_string(),
@@ -11689,6 +12121,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some("perm_call_write_file.write".to_string()),
                 decision: "approve_once".to_string(),
@@ -11729,6 +12162,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            backend_context: None,
             permission_decision: None,
         });
 

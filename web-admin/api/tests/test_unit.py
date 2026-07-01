@@ -10740,6 +10740,113 @@ def test_project_deploy_artifact_push_creates_ready_artifact_and_queued_run(tmp_
     assert FakeFtp.uploaded == [("STOR release.tar.gz", content)]
 
 
+def test_project_desktop_direct_deploy_uploads_original_directory_without_artifact_record(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployStore
+    from stores.json.project_store import ProjectConfig
+
+    deploy_store = ProjectDeployStore(tmp_path)
+    monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+
+    class FakeFtp:
+        uploaded = []
+
+        def __init__(self, timeout=30):
+            self.timeout = timeout
+            self.cwd_path = ""
+
+        def connect(self, host, port, timeout=30):
+            return None
+
+        def login(self, user, passwd):
+            return None
+
+        def cwd(self, path):
+            if str(path).startswith("/"):
+                self.cwd_path = str(path).rstrip("/") or "/"
+            elif self.cwd_path in {"", "/"}:
+                self.cwd_path = "/" + str(path).strip("/")
+            else:
+                self.cwd_path = self.cwd_path.rstrip("/") + "/" + str(path).strip("/")
+            return None
+
+        def mkd(self, path):
+            return None
+
+        def rename(self, source, target):
+            raise RuntimeError("550 remote target not found")
+
+        def storbinary(self, command, handle):
+            self.uploaded.append((self.cwd_path, command, handle.read()))
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(projects_router, "project_deploy_ftp_client_factory", FakeFtp)
+    source = tmp_path / "source"
+    (source / "login").mkdir(parents=True)
+    (source / "index.html").write_bytes(b"<h1>home</h1>")
+    (source / "login" / "index.html").write_bytes(b"login")
+    project = ProjectConfig(
+        id="proj-direct",
+        name="直连部署项目",
+        deploy_settings={
+            "enabled": True,
+            "default_profile": "prod",
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "artifact_kind": "static-site",
+                            "targets": [
+                                {
+                                    "id": "web-1",
+                                    "ftp_credential_id": "ftp-1",
+                                    "remote_path": "/www/site",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    result = projects_router._execute_project_desktop_direct_deploy(
+        project=project,
+        profile_id="prod",
+        component_id="web",
+        target_ids=["web-1"],
+        artifact_name="site",
+        artifact_kind="static-site",
+        manifest={"source_type": "directory"},
+        source_path=source,
+        storage_kind="directory",
+        file_entries=[
+            {"path": "index.html", "name": "index.html", "size": 13},
+            {"path": "login/index.html", "name": "index.html", "size": 5},
+        ],
+        total_size=18,
+        checksum="sha256:test",
+        requested_by="tester",
+        chat_session_id="chat-direct",
+        task_tree_node_id="",
+        requirement="直接部署原文件",
+        plan="上传目录原文件",
+        run_deploy_command=True,
+    )
+
+    assert result["status"] == "success"
+    assert result["deployment_confirmed_success"] is True
+    assert result["artifact"]["persisted_to_deploy_artifacts"] is False
+    assert deploy_store.list_artifacts("proj-direct") == []
+    assert ("/www/site", "STOR index.html", b"<h1>home</h1>") in FakeFtp.uploaded
+    assert ("/www/site/login", "STOR index.html", b"login") in FakeFtp.uploaded
+
+
 def test_project_deploy_notification_sends_feishu_message(monkeypatch):
     from routers import projects as projects_router
     from stores.json.project_deploy_store import ProjectDeployArtifact
@@ -21067,6 +21174,10 @@ def test_project_chat_store_truncate_messages_updates_session_snapshot(tmp_path)
         )
     )
 
+    before_truncate_sessions = store.list_sessions("proj-test", "tester")
+    assert before_truncate_sessions[0].latest_requirement == "第二条问题"
+    assert before_truncate_sessions[0].preview == "第二条回答"
+
     removed = store.truncate_messages(
         "proj-test",
         "tester",
@@ -21082,6 +21193,7 @@ def test_project_chat_store_truncate_messages_updates_session_snapshot(tmp_path)
     assert len(sessions) == 1
     assert sessions[0].id == session.id
     assert sessions[0].preview == "第一条回答"
+    assert sessions[0].latest_requirement == "第一条问题"
     assert sessions[0].message_count == 2
 
 

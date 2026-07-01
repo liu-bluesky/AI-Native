@@ -85,6 +85,7 @@ class ProjectChatSession:
     username: str
     title: str = "新对话"
     preview: str = ""
+    latest_requirement: str = ""
     message_count: int = 0
     source_type: str = ""
     platform: str = ""
@@ -187,6 +188,7 @@ class ProjectChatStore:
                     username=str(raw.get("username") or username),
                     title=str(raw.get("title") or "新对话"),
                     preview=str(raw.get("preview") or ""),
+                    latest_requirement=str(raw.get("latest_requirement") or ""),
                     message_count=max(0, int(raw.get("message_count") or 0)),
                     source_type=_normalize_chat_source_type(raw.get("source_type")),
                     platform=_normalize_chat_context_text(raw.get("platform"), 40).lower(),
@@ -243,6 +245,7 @@ class ProjectChatStore:
             self._write_sessions(project_id, username, sessions)
             return
         first_user = next((item for item in remaining if item.role == "user"), remaining[0])
+        latest_user = next((item for item in reversed(remaining) if item.role == "user"), None)
         last_item = remaining[-1]
         existing = next(
             (item for item in self._read_sessions(project_id, username) if item.id == normalized_session_id),
@@ -254,6 +257,7 @@ class ProjectChatStore:
             username=username,
             title=str(getattr(existing, "title", "") or "").strip() or _session_title_from_content(first_user.content),
             preview=str(last_item.content or "")[:80],
+            latest_requirement=str(latest_user.content if latest_user is not None else "")[:500],
             message_count=len(remaining),
             source_type=str(getattr(existing, "source_type", "") or first_user.source_type or "").strip(),
             platform=str(getattr(existing, "platform", "") or first_user.platform or "").strip(),
@@ -338,6 +342,7 @@ class ProjectChatStore:
         if not legacy_messages:
             return None
         first_user = next((item for item in legacy_messages if item.role == "user"), legacy_messages[0])
+        latest_user = next((item for item in reversed(legacy_messages) if item.role == "user"), None)
         last_item = legacy_messages[-1]
         return ProjectChatSession(
             id="legacy",
@@ -345,6 +350,7 @@ class ProjectChatStore:
             username=username,
             title=_session_title_from_content(first_user.content) or "历史会话",
             preview=str(last_item.content or "")[:80],
+            latest_requirement=str(latest_user.content if latest_user is not None else "")[:500],
             message_count=len(legacy_messages),
             source_type=str(getattr(last_item, "source_type", "") or ""),
             platform=str(getattr(last_item, "platform", "") or ""),
@@ -467,6 +473,9 @@ class ProjectChatStore:
                     if normalized.role == "user"
                     else "新对话",
                     preview=str(normalized.content or "")[:80],
+                    latest_requirement=str(normalized.content or "")[:500]
+                    if normalized.role == "user"
+                    else "",
                     message_count=1,
                     source_type=normalized.source_type,
                     platform=normalized.platform,
@@ -482,6 +491,8 @@ class ProjectChatStore:
                 sessions.insert(0, existing)
             else:
                 existing.preview = str(normalized.content or "")[:80]
+                if normalized.role == "user":
+                    existing.latest_requirement = str(normalized.content or "")[:500]
                 existing.message_count = max(0, int(existing.message_count or 0)) + 1
                 existing.source_type = str(existing.source_type or normalized.source_type or "").strip()
                 existing.platform = str(existing.platform or normalized.platform or "").strip()

@@ -36,6 +36,9 @@ pub use types::{
 };
 
 use tools::command::{check_command_risk, run_command, run_command_with_output_sink};
+use tools::deploy::{
+    deploy_workspace_files_to_target, get_project_deploy_options, upload_deploy_artifact,
+};
 use tools::file::{apply_patch, delete_file, list_files, read_file, search_text, write_file};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
 use tools::network::{download_file, http_get, http_post};
@@ -98,6 +101,19 @@ pub(crate) fn execute_tool_with_command_output_sink(
             &request.arguments,
             request.permission_decision.as_ref(),
         ),
+        "get_project_deploy_options" => get_project_deploy_options(&request.arguments),
+        "upload_deploy_artifact" => upload_deploy_artifact(
+            &tool_call_id,
+            &request.workspace_path,
+            &request.arguments,
+            request.permission_decision.as_ref(),
+        ),
+        "deploy_workspace_files_to_target" => deploy_workspace_files_to_target(
+            &tool_call_id,
+            &request.workspace_path,
+            &request.arguments,
+            request.permission_decision.as_ref(),
+        ),
         "list_mcp_tools" => list_mcp_tools(&request.workspace_path, &request.arguments),
         "read_mcp_resource" => read_mcp_resource(&request.workspace_path, &request.arguments),
         "call_mcp_tool" => call_mcp_tool(
@@ -138,10 +154,19 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 17);
         assert!(tools.iter().any(|item| item.name == "read_file"));
         assert!(tools.iter().any(|item| item.name == "delete_file"));
         assert!(tools.iter().any(|item| item.name == "run_command"));
+        assert!(tools
+            .iter()
+            .any(|item| item.name == "get_project_deploy_options"));
+        assert!(tools
+            .iter()
+            .any(|item| item.name == "upload_deploy_artifact"));
+        assert!(tools
+            .iter()
+            .any(|item| item.name == "deploy_workspace_files_to_target"));
         assert!(tools.iter().any(|item| item.name == "call_mcp_tool"));
     }
 

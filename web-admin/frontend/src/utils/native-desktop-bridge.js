@@ -334,6 +334,12 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
         : Array.isArray(request?.localAttachments)
           ? request.localAttachments
           : [],
+      backendContext:
+        request?.backendContext && typeof request.backendContext === "object"
+          ? request.backendContext
+          : request?.backend_context && typeof request.backend_context === "object"
+            ? request.backend_context
+            : null,
       permissionDecision:
         request?.permissionDecision && typeof request.permissionDecision === "object"
           ? request.permissionDecision
