@@ -22,7 +22,6 @@ from core.deps import (
 from models.requests import SystemConfigUpdateReq
 from services.connectors.bot_connector_service import list_bot_connectors, replace_bot_connectors
 from services.providers.llm_provider_service import get_llm_provider_service
-from services.mcp.system_mcp_discovery import list_system_mcp_skills
 from stores.json.system_config_store import (
     normalize_global_assistant_guide_modules,
     normalize_voice_allowed_role_ids,
@@ -39,7 +38,6 @@ from stores.json.system_config_store import (
     normalize_query_mcp_clarity_confirm_threshold,
     normalize_dictionaries,
     normalize_skill_registry_sources,
-    normalize_system_mcp_config,
 )
 
 
@@ -381,15 +379,6 @@ async def get_public_changelog():
     return {"content": normalize_public_changelog(getattr(cfg, "public_changelog", ""))}
 
 
-@router.get("/mcp-skills")
-async def get_system_mcp_skills(
-    _: None = Depends(_require_system_config_permission),
-):
-    cfg = system_config_store.get_global()
-    servers = list_system_mcp_skills(getattr(cfg, "mcp_config", {}))
-    return {"servers": servers, "total": len(servers)}
-
-
 @router.get("/voice-input/options")
 async def get_system_voice_input_options(
     auth_payload: dict = Depends(require_auth),
@@ -572,10 +561,10 @@ async def patch_system_config(
         "query_mcp_bootstrap_prompt_template",
         "query_mcp_usage_guide_template",
         "query_mcp_client_profile_template",
+        "query_mcp_desktop_agent_profile_template",
         "chat_style_hints",
         "skill_registry_sources",
         "dictionaries",
-        "mcp_config",
     }
     invalid = [key for key in updates.keys() if key not in allowed]
     if invalid:
@@ -905,6 +894,11 @@ async def patch_system_config(
             str(updates["query_mcp_client_profile_template"] or "").strip()[:12000]
         )
 
+    if "query_mcp_desktop_agent_profile_template" in updates:
+        updates["query_mcp_desktop_agent_profile_template"] = (
+            str(updates["query_mcp_desktop_agent_profile_template"] or "").strip()[:12000]
+        )
+
     if "chat_style_hints" in updates:
         if not isinstance(updates["chat_style_hints"], dict):
             raise HTTPException(400, "chat_style_hints must be a JSON object")
@@ -919,11 +913,6 @@ async def patch_system_config(
         if not isinstance(updates["dictionaries"], dict):
             raise HTTPException(400, "dictionaries must be a JSON object")
         updates["dictionaries"] = normalize_dictionaries(updates["dictionaries"])
-
-    if "mcp_config" in updates:
-        if not isinstance(updates["mcp_config"], dict):
-            raise HTTPException(400, "mcp_config must be a JSON object")
-        updates["mcp_config"] = normalize_system_mcp_config(updates["mcp_config"])
 
     greeting_related_keys = {
         "voice_output_enabled",

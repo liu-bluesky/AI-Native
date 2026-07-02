@@ -13,7 +13,13 @@ import uuid
 
 from mcp.server.fastmcp import FastMCP
 
-from core.deps import employee_store, project_store, system_config_store, work_session_store
+from core.deps import (
+    employee_store,
+    project_requirement_record_store,
+    project_store,
+    system_config_store,
+    work_session_store,
+)
 from services.mcp.query_mcp_project_state import (
     append_query_mcp_progress_outbox,
     bootstrap_query_mcp_local_workspace,
@@ -52,7 +58,9 @@ from stores.mcp_bridge import (
     skill_store,
 )
 from stores.json.work_session_store import WorkSessionEvent
+from stores.json.project_requirement_record_store import ProjectRequirementRecord, _now_iso
 from stores.json.system_config_store import (
+    normalize_query_mcp_desktop_agent_profile_template,
     normalize_query_mcp_client_profile_template,
     normalize_query_mcp_usage_guide_template,
 )
@@ -153,6 +161,7 @@ _SYSTEM_PATH_PREFIXES = (
 _QUERY_TOOL_NAMES = {
     "start_project_workflow",
     "bind_project_context",
+    "record_requirement",
     "get_current_task_tree",
     "update_task_node_status",
     "complete_task_node_with_verification",
@@ -173,13 +182,6 @@ _QUERY_TOOL_NAMES = {
     "check_workspace_scope",
     "resolve_execution_mode",
     "check_operation_policy",
-    "start_work_session",
-    "save_work_facts",
-    "append_session_event",
-    "resume_work_session",
-    "summarize_checkpoint",
-    "list_recent_project_requirements",
-    "get_requirement_history",
 }
 _TASK_TREE_NODE_ID_PATTERN = re.compile(r"^ttn-[A-Za-z0-9_-]+$")
 
@@ -1126,7 +1128,7 @@ def _query_mcp_clarity_instruction_lines() -> tuple[str, str, str, str, str]:
         f"若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {threshold}，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。",
         f"若清晰度分数 < {threshold}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行。",
         "同一轮中用户已确认当前理解和计划或已明确要求执行后，后续不要重复确认，除非用户目标、范围或约束发生变化；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。",
-        "一旦用户已确认计划或已明确要求执行，后续按已生成计划连续推进到完成；阶段之间只更新任务树、工作事实、验证结果和必要进度，不再停下来请求“是否继续”。只有遇到破坏性/不可逆操作、权限或环境阻塞、需求范围变化、验证无法推进，或必须由用户做业务决策时，才暂停并明确说明阻塞点。",
+        "一旦用户已确认计划或已明确要求执行，后续按已生成计划连续推进到完成；阶段之间只更新任务树、验证结果和必要进度，本地执行轨迹由本地 runtime 保存，不再停下来请求“是否继续”。只有遇到破坏性/不可逆操作、权限或环境阻塞、需求范围变化、验证无法推进，或必须由用户做业务决策时，才暂停并明确说明阻塞点。",
     )
 
 
@@ -1905,7 +1907,7 @@ def _render_structured_work_facts(
     fact_items: list[str],
     trajectory: dict,
 ) -> str:
-    lines = ["[工作事实]"]
+    lines = ["[本地执行轨迹]"]
     lines.extend(f"- {item}" for item in fact_items)
     if trajectory:
         lines.append("")
@@ -1935,7 +1937,7 @@ def _render_structured_session_event(
     content: str,
     trajectory: dict,
 ) -> str:
-    lines = [f"[会话事件] session_id={session_id} event_type={event_type}", content]
+    lines = [f"[本地运行事件] session_id={session_id} event_type={event_type}", content]
     if trajectory:
         lines.append("")
         lines.append("[执行轨迹]")
@@ -1974,7 +1976,7 @@ def _extract_structured_trajectory(content: str) -> dict:
         if isinstance(decoded, dict):
             return decoded
 
-    if content_value.startswith("[工作事实]"):
+    if content_value.startswith("[本地执行轨迹]"):
         facts = _parse_fact_lines(content=content_value)
         if facts:
             return {
@@ -1983,7 +1985,7 @@ def _extract_structured_trajectory(content: str) -> dict:
             }
 
     first_line, _, remainder = content_value.partition("\n")
-    match = re.match(r"^\[会话事件\]\s+session_id=([^\s]+)\s+event_type=([^\s]+)$", first_line.strip())
+    match = re.match(r"^\[本地运行事件\]\s+session_id=([^\s]+)\s+event_type=([^\s]+)$", first_line.strip())
     if match:
         payload = {
             "kind": "session-event",
@@ -2175,7 +2177,7 @@ def _checkpoint_summary_text(project_id: str, project_name: str, session_id: str
         lines.append("下一步：")
         lines.extend(f"- {item}" for item in checkpoint["next_steps"][:4])
     if not memories:
-        lines.append("暂无可恢复的工作轨迹。")
+        lines.append("暂无可恢复的本地运行轨迹。")
         return "\n".join(lines)
     lines.append("最近轨迹：")
     for item in checkpoint["timeline"][:6]:
@@ -2202,7 +2204,7 @@ def _is_isolated_user_question_memory(item: dict) -> bool:
     content_value = _normalize_text(item.get("content"), 4000)
     if "[用户提问]" not in content_value:
         return False
-    if any(marker in content_value for marker in ("[执行轨迹JSON]", "[工作事实]", "[会话事件]")):
+    if any(marker in content_value for marker in ("[执行轨迹JSON]", "[本地执行轨迹]", "[本地运行事件]")):
         return False
     significant_lines = []
     for raw_line in content_value.splitlines():
@@ -2914,10 +2916,15 @@ def _legacy_fact_or_event_counts(memories: list[dict]) -> tuple[int, int]:
 
 def build_query_client_profile_text(client_name: str) -> str:
     config = system_config_store.get_global()
-    template = normalize_query_mcp_client_profile_template(
-        getattr(config, "query_mcp_client_profile_template", "") or ""
-    )
     normalized = _normalize_text_lower(client_name)
+    if normalized == "desktop-agent":
+        template = normalize_query_mcp_desktop_agent_profile_template(
+            getattr(config, "query_mcp_desktop_agent_profile_template", "") or ""
+        )
+    else:
+        template = normalize_query_mcp_client_profile_template(
+            getattr(config, "query_mcp_client_profile_template", "") or ""
+        )
     title = client_name
     (
         clarity_threshold_line,
@@ -2934,7 +2941,7 @@ def build_query_client_profile_text(client_name: str) -> str:
         title = "Claude Code"
         focus = [
             "- 定位: 适合需要较强代码修改、命令执行和长任务续跑的开发型 CLI。",
-            "- 推荐链路: query://usage-guide -> query://client-profile/claude-code -> start_project_workflow -> check_operation_policy -> save_work_facts/append_session_event。",
+            "- 推荐链路: query://usage-guide -> query://client-profile/claude-code -> start_project_workflow -> check_operation_policy -> 本地验证与交付报告。",
             "- 资源约束: `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/claude-code`，不要反复列资源。",
             "- 简单查询: 用户问项目有几个/哪些员工、工具、规则或需求历史，且 `project_id` 已明确时，直接调用对应业务工具，例如 `list_project_members(project_id=...)`；不要为了 bootstrap 机械调用 `list_mcp_resources`。",
             "- 固定入口: 实现/修复/治理/文档型需求优先调用 `start_project_workflow(...)` 作为固定入口，不要手动拼接 search_ids / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan 这一整串前置步骤。",
@@ -2964,20 +2971,20 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 任务树约束: 任务树节点必须描述面向用户目标的真实工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 或候选代理工具名直接写成节点。",
             "- 任务树约束: 实现型、修复型、治理型、文档型任务禁止固定生成“分析 / 实现 / 验证”三步；必须先识别真实对象和任务类型，再生成差异化节点。节点标题不能把“当前需求”当作主要对象。",
             "- 任务树约束: `bind_project_context(...)` 后如果宿主支持任务树，立刻调用 `get_current_task_tree` 核对 `root_goal/title/current_node` 是否属于当前用户原始问题；若明显挂到了旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。",
-            "- 工作流约束: 用户提需求后先规划，再执行；执行中只更新任务树、工作事实和会话事件，不要提前输出最终结论。",
+            "- 工作流约束: 用户提需求后先规划，再执行；执行中只更新任务树、本地执行轨迹和本地运行事件，不要提前输出最终结论。",
             "- 工作流约束: 开始执行某个任务节点前，先调用 `update_task_node_status(status=in_progress|verifying)`；完成节点时必须调用 `complete_task_node_with_verification` 写入验证结果，不要只在自然语言里声称“已完成”。只有整棵任务树完成并写入验证结果后，当前需求才算结束。",
             "- 工作流约束: 如果当前宿主拿不到 `get_current_task_tree`、`update_task_node_status` 或 `complete_task_node_with_verification`，只能明确给出“任务树执行闭环未完成”的结论，不能把缺失能力包装成已闭环。",
-            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起通过统一状态服务持久化到 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。若当前拿不到项目工作区，再退回 CLI 自己的本地存储。每完成一个子阶段调用 save_work_facts 或 append_session_event。",
-            "- 长任务建议: 中断恢复顺序应固定为“恢复本地 `chat_session_id/session_id` -> bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...) -> 按当前任务树继续执行”；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。",
+            "- 长任务建议: 新会话优先调用 `record_requirement` 记录服务端需求本体，并与 `chat_session_id` 一起持久化到 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json` 和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；详细执行轨迹由 CLI/桌面端本地 runtime 保存。",
+            "- 长任务建议: 中断恢复先从本地恢复 `chat_session_id/session_id`，再调用 `bind_project_context(...)` 并读取当前任务树继续执行；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储。",
             "- 宿主扩展: 如宿主需要展示任务树演化摘要，可按需读取 `/api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...`。",
-            "- 适合自动化的能力: 任务分析、相关上下文聚合、执行步骤骨架、风险分类、工作轨迹恢复。",
+            "- 适合自动化的能力: 任务分析、相关上下文聚合、执行步骤骨架、风险分类、本地运行轨迹恢复。",
             "- 需要谨慎的能力: 高风险命令、工作区外路径、破坏性命令，优先先调用 check_operation_policy。",
         ]
     elif normalized == "codex":
         title = "Codex"
         focus = [
             "- 定位: 适合以代码任务拆解、补丁实现和结构化交付为主的开发型 CLI。",
-            "- 推荐链路: query://usage-guide -> query://client-profile/codex -> start_project_workflow -> check_operation_policy -> save_work_facts/append_session_event -> build_delivery_report。",
+            "- 推荐链路: query://usage-guide -> query://client-profile/codex -> start_project_workflow -> check_operation_policy -> 本地验证 -> build_delivery_report。",
             "- 资源约束: `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/codex`，禁止反复列资源。",
             "- 简单查询: 用户问项目有几个/哪些员工、工具、规则或需求历史，且 `project_id` 已明确时，直接调用对应业务工具，例如 `list_project_members(project_id=...)`；不要为了 bootstrap 机械调用 `list_mcp_resources`。",
             "- 固定入口: 优先调用 `start_project_workflow`，不要手动拼接 search_ids / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan 这一整串前置步骤。",
@@ -3008,7 +3015,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall_project_memory / recall_employee_memory。",
             "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
-            "- 工作流约束: 本地优先推进分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树、工作事实与交付结论。",
+            "- 工作流约束: 本地优先推进分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树与交付结论；详细执行轨迹留在本地 runtime。",
             "- 任务树约束: 查询型问题保持单检索节点；实现型任务节点才写成分析、实现、验证这类面向目标的步骤。不要把内部检索工具、规则查询工具、候选代理工具或 `Auto inferred proxy entry from scripts/...` 这类描述直接当成节点。",
             "- 任务树约束: 实现型、修复型、治理型、文档型任务不能固定套“分析 / 实现 / 验证”三步；必须按真实对象生成差异化计划。若标题里用“当前需求”代替路径、功能名、状态枚举、MCP 对象或文档目录，应重建任务树。",
             "- 任务树约束: `bind_project_context(...)` 后如果宿主支持任务树，立刻调用 `get_current_task_tree` 核对 `root_goal/title/current_node` 是否属于当前用户原始问题；若明显挂到了旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。",
@@ -3017,23 +3024,43 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 工作流约束: 开始执行某个任务节点前，先调用 `update_task_node_status(status=in_progress|verifying)`；完成节点时必须调用 `complete_task_node_with_verification`，不要只在自然语言里声称“已完成”。",
             "- 工作流约束: 如果当前宿主拿不到 `get_current_task_tree`、`update_task_node_status` 或 `complete_task_node_with_verification`，只能给出“未完成闭环”的结论，不能把任务树执行闭环描述成已经完成。",
             "- 收尾要求: 若宿主未启用自动记忆，或本轮需要额外沉淀稳定结论/关键决策，再调用一次 save_project_memory(project_id, content, ...)；不要在同一需求的每个中间步骤重复补记。",
-            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起通过统一状态服务持久化到 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。若当前拿不到项目工作区，再退回 Codex 自己的本地存储。关键决策写入 save_work_facts，关键执行节点写入 append_session_event，并始终复用同一个 `chat_session_id` / `session_id`。",
-            "- 长任务建议: 中断后恢复时，先从本地恢复 `chat_session_id + session_id`，再按 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)` 的顺序拉起上下文，随后紧接着继续当前任务；如果项目工作区不可解析，则恢复来源应是 Codex 自己的本地存储，而不是共享仓库根目录。",
+            "- 长任务建议: 新会话优先调用 `record_requirement` 记录服务端需求本体，并与 `chat_session_id` 一起持久化到 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json` 和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；详细执行轨迹由 Codex 本地 runtime 保存，并始终复用同一个 `chat_session_id/session_id`。",
+            "- 长任务建议: 中断后先从本地恢复 `chat_session_id/session_id`，再调用 `bind_project_context(...)` 并读取当前任务树继续执行；如果项目工作区不可解析，则恢复来源应是 Codex 自己的本地存储。",
             "- 宿主扩展: 如宿主需要展示任务树演化摘要，可按需读取 `/api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...`。",
             "- 适合自动化的能力: 结构化任务分析、项目规则聚合、交付报告、更新日志条目生成。",
             "- 需要谨慎的能力: 任何真实执行前先补 classify_command_risk / check_operation_policy。",
+        ]
+    elif normalized == "desktop-agent":
+        title = "桌面智能体"
+        focus = [
+            "- 身份: 桌面智能体，运行在用户本机桌面端，使用桌面端运行时提供的文件、命令、Runner、项目页面上下文和 MCP 能力。",
+            "- 上下文: 当前项目、聊天会话、工作区、任务树和本地运行轨迹来自桌面端运行时与项目页面上下文。",
+            "- MCP 入口: 统一查询资源使用 query://usage-guide 和 query://client-profile/desktop-agent；项目、成员、规则、部署、记忆和任务树使用运行时实际暴露的项目工具。",
+            "- MCP 类型: 项目 MCP、系统 MCP 和本机 MCP 都属于统一 registry；stdio、http、sse 是 transport 类型。",
+            "- 工具选择: 查询员工、工具、规则、部署配置和任务树时，使用项目业务工具；需要本机 MCP 能力时使用当前会话暴露的 MCP 工具。",
+            "- 本地状态: 每个桌面窗口或进程复用一个 chat_session_id，并维护 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json` 和 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。",
+            "- 需求记录: requirement 文件记录用户需求内容和必要定位字段；任务树、执行步骤、文件变更、验证结果和运行事件保留在对应运行轨迹中。",
+            "- 工作流程: 明确项目和会话后进入 start_project_workflow；执行前读取相关项目规则和上下文；执行中更新任务树、本地 runtime 和验证结果。",
+            "- 本地执行: 文件读写和命令执行按风险使用 classify_command_risk、check_operation_policy 和 check_workspace_scope；高风险操作先说明对象、影响范围、可恢复性和所需授权。",
+            "- 部署流程: 部署请求先读取 get_project_deploy_options(project_id)，展示可选 profile、target、remote_path 和 deploy_command 摘要；用户选定后再处理打包、上传部署产物和服务端部署。",
+            "- 部署产物: 本地 zip、新代码、重新打包或上传部署产物先生成本轮 artifact；已有服务端 artifact_id 才进入已有产物部署。",
+            "- 异常处理: 工具缺失、配置缺失、路径不一致、状态不一致或接口不匹配时，报告真实缺失项和可继续完成的本地部分。",
+            "- 项目能力: 项目绑定员工、规则、技能和经验卡片作为主要上下文；项目能力不足时补充本地分析和验证。",
+            "- 任务树: 节点标题面向用户目标和真实对象，展示可理解的工作步骤。",
+            "- 长任务: 新会话记录需求本体，恢复时先读取桌面端本地 runtime 状态，再绑定项目上下文继续执行。",
+            "- 交付: 完成本地分析、改动、验证和必要记录后，输出面向用户的结论、验证结果、变更范围和后续风险。",
         ]
     elif normalized == "hermes":
         title = "Hermes"
         focus = [
             "- 定位: 适合 Hermes 客户端接入统一查询 MCP，侧重多工具编排、项目任务推进和长任务续跑。",
-            "- 目标: 让 Hermes 明确会用 MCP，而不是只读自然语言说明；项目、任务树、工作事实和部署产物操作都优先通过 MCP 工具完成。",
+            "- 目标: 让 Hermes 明确会用 MCP，而不是只读自然语言说明；项目、任务树、本地执行轨迹和部署产物操作都优先通过 MCP 工具完成。",
             "- 推荐链路: query://usage-guide -> query://client-profile/hermes -> start_project_workflow；若宿主不适合固定入口，再走 search_ids/get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan。",
             "- 资源约束: `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/hermes`。",
-            "- 工具优先: 能调用 MCP 工具时不要只口头总结；查询走对应业务工具，实现/修复走 start_project_workflow，长任务走 start_work_session + save_work_facts/append_session_event。",
+            "- 工具优先: 能调用 MCP 工具时不要只口头总结；查询走对应业务工具，实现/修复走 start_project_workflow，长任务先用 record_requirement 记录需求本体。",
             "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
             "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Hermes 自己的本地存储，这样中断后才能稳定续跑。",
-            "- 接入约束: 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，requirement 对象只记录需求内容和必要定位字段；任务树、工作事实、项目智能体上下文各自走独立链路，不混写进需求记录。",
+            "- 接入约束: 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，requirement 对象只记录需求内容和必要定位字段；任务树、本地执行轨迹、项目智能体上下文各自走独立链路，不混写进需求记录。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
             f"- 交互约束: {clarity_threshold_line}",
@@ -3049,19 +3076,19 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 工作流约束: 先计划、再执行、逐项验证；未完成前只保留需求记录和过程状态，不要提前输出最终结论。",
             "- 最小可用目标: 先跑通查询、分析、规划，再逐步接入策略判断和恢复能力。",
             "- 建议优先工具: analyze_task、resolve_relevant_context、generate_execution_plan、check_operation_policy。",
-            "- 长任务建议: 新会话优先调用 start_work_session；恢复时按 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)` 顺序拉起上下文，再继续执行。",
+            "- 长任务建议: 新会话优先调用 record_requirement 记录需求本体；恢复时先读取本地 runtime 状态，再调用 `bind_project_context(...)` 拉起上下文并继续执行。",
         ]
     else:
         title = "Generic CLI"
         focus = [
             "- 定位: 适合通用 MCP 宿主、非 Codex/Claude 的 CLI 客户端，或尚未针对当前系统定制的外部 CLI 客户端。",
-            "- 目标: 让通用 AI 明确会用 MCP，而不是只读自然语言说明；所有项目、任务树、工作事实和部署产物操作都优先通过 MCP 工具完成。",
+            "- 目标: 让通用 AI 明确会用 MCP，而不是只读自然语言说明；所有项目、任务树、本地执行轨迹和部署产物操作都优先通过 MCP 工具完成。",
             "- 推荐链路: query://usage-guide -> query://client-profile/generic-cli -> start_project_workflow；若宿主不适合固定入口，再走 search_ids/get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan。",
             "- 资源约束: `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/generic-cli`。",
-            "- 工具优先: 能调用 MCP 工具时不要只口头总结；查询走对应业务工具，实现/修复走 start_project_workflow，长任务走 start_work_session + save_work_facts/append_session_event。",
+            "- 工具优先: 能调用 MCP 工具时不要只口头总结；查询走对应业务工具，实现/修复走 start_project_workflow，长任务先用 record_requirement 记录需求本体。",
             "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
             "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 CLI 自己的本地存储，这样中断后才能稳定续跑。",
-            "- 接入约束: 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，requirement 对象只记录需求内容和必要定位字段；任务树、工作事实、项目智能体上下文各自走独立链路，不混写进需求记录。",
+            "- 接入约束: 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，requirement 对象只记录需求内容和必要定位字段；任务树、本地执行轨迹、项目智能体上下文各自走独立链路，不混写进需求记录。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
             f"- 交互约束: {clarity_threshold_line}",
@@ -3077,7 +3104,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 工作流约束: 先计划、再执行、逐项验证；未完成前只保留需求记录和过程状态，不要提前输出最终结论。",
             "- 最小可用目标: 先跑通查询、分析、规划，再逐步接入策略判断和恢复能力。",
             "- 建议优先工具: analyze_task、resolve_relevant_context、generate_execution_plan、check_operation_policy。",
-            "- 长任务建议: 新会话优先调用 start_work_session；恢复时按 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)` 顺序拉起上下文，再继续执行。",
+            "- 长任务建议: 新会话优先调用 record_requirement 记录需求本体；恢复时先读取本地 runtime 状态，再调用 `bind_project_context(...)` 拉起上下文并继续执行。",
         ]
     if template:
         return _render_query_prompt_template(
@@ -3116,13 +3143,13 @@ def build_query_usage_guide_text() -> str:
     return (
         "# Unified Query MCP\n\n"
         "- 统一入口路径: /mcp/query\n"
-        "- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹、需求历史查询和交付报告能力。\n"
-        "- 推荐工具: start_project_workflow / bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory\n"
+        "- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、本地运行轨迹、需求记录查询和交付报告能力。\n"
+        "- 推荐工具: start_project_workflow / bind_project_context / record_requirement / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / build_delivery_report / generate_release_note_entry / save_project_memory\n"
         "\n"
         "## 最少执行规则\n"
         "1. 先读取 query://usage-guide；再按当前客户端读取对应 client profile：Codex 读 query://client-profile/codex，Hermes 读 query://client-profile/hermes，Claude Code 读 query://client-profile/claude-code，其他 CLI 或不确定时读 query://client-profile/generic-cli。\n"
         "1.0.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 read_mcp_resource 读取 query://usage-guide 和对应 client profile，禁止反复调用 list_mcp_resources。\n"
-        "1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些员工、工具、规则或需求历史，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree / list_recent_project_requirements 等对应工具，不要为了 bootstrap 机械列资源目录。\n"
+        "1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些员工、工具或规则，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree 等对应工具，不要为了 bootstrap 机械列资源目录。\n"
         "1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。\n"
         "1.2 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；若不存在，再从系统技能库同步或创建到本地；已存在则直接复用，禁止重复创建。\n"
         "1.3 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。\n"
@@ -3145,14 +3172,14 @@ def build_query_usage_guide_text() -> str:
         "7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。\n"
         "7.0 项目型问题优先使用项目绑定员工、规则和技能；先判断项目内现成能力能否闭环，只有项目能力不足时才自行补足。\n"
         "7.0.1 每次新请求进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文；不要只看规则标题，也不要把无关规则机械带入当前问题。\n"
-        "7.0.2 实现型任务先在项目本地推进：先完成本地分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树、工作事实、交付结论与记忆。\n"
+        "7.0.2 实现型任务先在项目本地推进：先完成本地分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树、交付结论与记忆；详细执行轨迹留在本地 runtime。\n"
         f"7.0.3 {clarity_threshold_line}\n"
         f"7.0.4 {clarity_direct_line}\n"
         f"7.0.5 {clarity_confirm_line}\n"
         f"7.0.6 {clarity_repeat_line}\n"
         f"7.0.7 {continuous_execution_line}\n"
         "7.1 记忆检索不是每轮固定步骤；仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，再调用 recall_project_memory 或 recall_employee_memory。\n"
-        "7.2 同一任务轮若已生成任务树并进入执行，后续默认依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。\n"
+        "7.2 同一任务轮若已生成任务树并进入执行，后续默认依赖当前会话、任务树和本地运行轨迹，不要重复检索同一批项目记忆。\n"
         "8. 实现型需求必须遵守任务树闭环：先 analyze_task -> resolve_relevant_context -> generate_execution_plan，再 get_current_task_tree 确认节点；执行中用 update_task_node_status 回写状态，完成时必须 complete_task_node_with_verification 填写验证结果。\n"
         "9. 只有所有计划节点完成且验证结果齐全后，当前需求才算结束；执行中不得提前写“最终结论”。\n"
         "10. 查询型问题（谁 / 哪些 / 多少 / 从哪里）保持单检索节点，不要误拆成实现步骤；检索完成后应让任务树归档。\n"
@@ -3161,8 +3188,8 @@ def build_query_usage_guide_text() -> str:
         "12. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。\n"
         "\n"
         "## 任务树与绑定约束\n"
-        "- 任务树与记忆必须使用同一条聊天会话线索；记录项目记忆、工作事实或会话事件时，应复用当前 chat_session_id / session_id，不得把任务树和记忆拆成两条无关轨迹。\n"
-        "- 同一条用户提问在统一查询 MCP 下只允许沉淀 1 条项目级问题记忆，并绑定 1 棵任务树；start_work_session / save_work_facts / append_session_event 等续跑工具不得再生成新的“用户问题”记忆或新的任务树。\n"
+        "- 任务树与记忆必须使用同一条聊天会话线索；记录项目记忆、本地执行轨迹或本地运行事件时，应复用当前 chat_session_id / session_id，不得把任务树和记忆拆成两条无关轨迹。\n"
+        "- 同一条用户提问在统一查询 MCP 下只允许沉淀 1 条项目级问题记忆，并绑定 1 棵任务树；record_requirement 等续跑工具不得再生成新的“用户问题”记忆或新的任务树。\n"
         "- 需要沉淀对话结论时，除最终答案外，还应保证后续可从记忆详情回看该轮规划、执行节点和验证结果。\n"
         "- 任务树节点必须直接描述面向用户目标的工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 等内部检索/规划工具直接当成节点标题。\n"
         "- 候选代理工具、脚本路径和类似“Auto inferred proxy entry from scripts/... ”的描述，只能作为内部工具信息，不得直接展示为任务树节点。\n"
@@ -3185,20 +3212,18 @@ def build_query_usage_guide_text() -> str:
         "- execute_project_collaboration: 统一编排入口（项目协作），但是否单人主责、是否需要多人协作以及如何拆分，仍由 AI 结合项目手册、员工手册、规则和工具自主判断，不预设固定行业分工模板。\n"
         "- 若需要手动编排项目执行，再继续调用 list_project_members / get_project_runtime_context / resolve_project_experience_rules / list_project_proxy_tools / invoke_project_skill_tool。\n"
         "\n"
-        "## 工作轨迹与恢复\n"
-        "- 多轮任务先 start_work_session；后续复用同一个 chat_session_id / session_id，并用 save_work_facts、append_session_event、resume_work_session、summarize_checkpoint 维护轨迹。\n"
-        "- start_work_session 可返回服务端生成的 session_id；save_work_facts 和 append_session_event 支持附带 session_id、phase、step、changed_files、verification、risks、next_steps 等结构化轨迹字段；resume_work_session / summarize_checkpoint 会聚合这些字段，直接输出阶段、步骤、文件、验证、风险和下一步。\n"
-        "- 每个新聊天窗口的首轮有效对话，如用户未显式提供 session_id，应优先调用 start_work_session 获取服务端 session_id，再在本窗口后续所有 save_work_facts / append_session_event / resume_work_session / summarize_checkpoint 中复用同一个值；如果未先调用，save_work_facts 也会自动补生成一个。\n"
-        "- 建议把客户端自生成的 chat_session_id 和 start_work_session 返回的 session_id 一起持久化；如能解析项目工作区，优先通过统一状态服务写入 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态）、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`，并同步维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，否则再退回 CLI 自己的本地存储。这样 CLI 中断后可以直接恢复同一条任务树和工作轨迹。\n"
-        "- start_work_session 会立即写入一条 started 事件建立正式工作轨迹；首次拿到 session_id 后，仍建议尽快调用一次 save_work_facts 补充任务摘要、阶段和文件信息。若既不调用 start_work_session，也不写 save_work_facts / append_session_event，而只写 save_project_memory，会出现“有项目记忆但无正式工作轨迹”的情况。\n"
+        "## 需求记录与本地运行轨迹\n"
+        "- 多轮任务先调用 record_requirement；服务端只保存用户需求内容和必要定位字段。\n"
+        "- 后续复用同一个 chat_session_id / session_id；详细执行轨迹、阶段、步骤、文件、验证、风险和下一步由 CLI/桌面端本地 runtime 保存。\n"
+        "- 每个新聊天窗口的首轮有效对话，如用户未显式提供 session_id，应优先调用 record_requirement，并把 chat_session_id / session_id 写入本地 canonical 状态。\n"
+        "- 建议把客户端自生成的 chat_session_id 和 record_requirement 返回的 session_id 一起持久化；如能解析项目工作区，优先通过统一状态服务写入 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`，并同步维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，否则再退回 CLI 自己的本地存储。\n"
         "- 缺少活跃 MCP session 的 CLI / bridge 场景下，也必须显式传入并持续复用同一个 chat_session_id；否则容易出现“轨迹已写入，但当前主视图没有挂到任务树”的错觉。\n"
-        "- 推荐的中断恢复顺序是：先从本地恢复 chat_session_id 和 session_id，再调用 bind_project_context(...)，然后依次调用 resume_work_session(...)、summarize_checkpoint(...)，最后按当前任务树继续执行；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。\n"
-        "- 如需回答“最近做了哪些需求”“某个需求什么时候改过”“按日期查需求变更”，可调用 list_recent_project_requirements / get_requirement_history；它们会优先读取 work_session_store，命中不足时回退项目记忆。\n"
+        "- 推荐的中断恢复顺序是：先从本地恢复 chat_session_id 和 session_id，再调用 bind_project_context(...) 并读取当前任务树继续执行；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。\n"
         "- 如宿主需要展示任务树演化摘要，可按需读取 /api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...。\n"
         "\n"
         "## 记忆与交付\n"
         "- recall_project_memory / recall_employee_memory 只在新需求开始、续跑恢复、修复旧问题或明显需要历史经验时使用；不要把记忆检索当成每个计划节点的固定前置动作。\n"
-        "- 同一任务轮若已生成任务树并进入执行，后续优先依赖当前会话、任务树和工作轨迹；除非用户明确要求沿用历史方案或当前上下文明显不足，否则不要重复 recall。\n"
+        "- 同一任务轮若已生成任务树并进入执行，后续优先依赖当前会话、任务树和本地运行轨迹；除非用户明确要求沿用历史方案或当前上下文明显不足，否则不要重复 recall。\n"
         "- save_project_memory 只在补充稳定结论或关键决策时使用；不要在同一需求的每个中间步骤重复补记。如宿主已启用自动记忆快照，仅在入口未覆盖自动记忆或需要补一条稳定结论时再额外保存。\n"
         "- build_delivery_report 用于结构化汇总本轮交付；generate_release_note_entry 用于生成更新日志条目。\n"
         "- 可读取 query://client-profile/codex、query://client-profile/hermes、query://client-profile/claude-code 或 query://client-profile/generic-cli 作为客户端接入画像。\n"
@@ -4304,19 +4329,20 @@ def create_query_mcp(
             and chat_session_id_value
             and clarity_value >= threshold
         ):
-            session_result = start_work_session(
+            session_result = record_requirement(
                 project_id=project_id_value,
-                employee_id=employee_id_value,
-                goal=raw_request_value,
+                username=employee_id_value,
+                requirement=raw_request_value,
                 title=raw_request_value[:120],
                 chat_session_id=chat_session_id_value,
-                workspace_path=workspace_path_value,
-                phase="analysis",
-                step="start_project_workflow",
-                status="started",
             )
             if not session_result.get("error"):
-                resolved_session_id = _normalize_text(session_result.get("session_id"), 160)
+                requirement_record = (
+                    session_result.get("requirement_record")
+                    if isinstance(session_result.get("requirement_record"), dict)
+                    else {}
+                )
+                resolved_session_id = _normalize_text(requirement_record.get("id"), 160)
 
         task_tree_available = isinstance(task_tree_payload, dict)
         guard, backend_checks = _build_query_workflow_guard(
@@ -4474,6 +4500,10 @@ def create_query_mcp(
     @mcp.resource("query://client-profile/hermes")
     def query_client_profile_hermes() -> str:
         return build_query_client_profile_text("hermes")
+
+    @mcp.resource("query://client-profile/desktop-agent")
+    def query_client_profile_desktop_agent() -> str:
+        return build_query_client_profile_text("desktop-agent")
 
     @mcp.resource("query://client-profile/generic-cli")
     def query_client_profile_generic_cli() -> str:
@@ -4664,6 +4694,80 @@ def create_query_mcp(
         if local_state_payload:
             payload["local_state"] = local_state_payload
         return payload
+
+    @mcp.tool()
+    def record_requirement(
+        project_id: str,
+        requirement: str,
+        chat_session_id: str = "",
+        message_id: str = "",
+        assistant_message_id: str = "",
+        title: str = "",
+        username: str = "",
+    ) -> dict:
+        """统一记录用户需求本身；服务端只保存需求内容和必要定位字段。"""
+
+        project_id_value = _resolve_query_project_id(project_id)
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        project = project_store.get(project_id_value)
+        if project is None:
+            return {"error": f"Project {project_id_value} not found"}
+
+        requirement_value = _normalize_text(requirement, 2000)
+        if not requirement_value:
+            return {"error": "requirement is required"}
+
+        resolved_username, fallback_chat_session_id = _resolve_task_tree_context()
+        username_value = _normalize_text(username, 80) or resolved_username or "mcp-user"
+        source_chat_session_id = _resolve_query_chat_session_id(chat_session_id) or fallback_chat_session_id
+        if not source_chat_session_id:
+            source_chat_session_id = f"query-mcp-{uuid.uuid4().hex[:12]}"
+
+        message_key = _normalize_text(message_id, 200) or _normalize_text(assistant_message_id, 200)
+        if message_key:
+            message_digest = hashlib.sha1(message_key.encode("utf-8")).hexdigest()[:16]
+            chat_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_chat_session_id).strip("._-")[:48]
+            record_chat_session_id = f"{chat_prefix or 'chat'}__msg__{message_digest}"
+        else:
+            goal_digest = hashlib.sha1(requirement_value.encode("utf-8")).hexdigest()[:16]
+            chat_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_chat_session_id).strip("._-")[:48]
+            record_chat_session_id = f"{chat_prefix or 'chat'}__req__{goal_digest}"
+
+        existing = project_requirement_record_store.get(
+            project_id_value,
+            username_value,
+            record_chat_session_id,
+        )
+        now = _now_iso()
+        record = ProjectRequirementRecord(
+            id=getattr(existing, "id", "") or record_chat_session_id,
+            project_id=project_id_value,
+            username=username_value,
+            chat_session_id=record_chat_session_id,
+            source_chat_session_id=source_chat_session_id,
+            title=_normalize_text(title, 200) or requirement_value[:120] or "用户需求",
+            root_goal=requirement_value,
+            created_at=getattr(existing, "created_at", "") or now,
+            updated_at=now,
+        )
+        saved = project_requirement_record_store.save(record)
+        return {
+            "status": "recorded",
+            "project_id": project_id_value,
+            "project_name": str(getattr(project, "name", "") or ""),
+            "requirement_record": {
+                "id": saved.id,
+                "project_id": saved.project_id,
+                "username": saved.username,
+                "chat_session_id": saved.chat_session_id,
+                "source_chat_session_id": saved.source_chat_session_id,
+                "title": saved.title,
+                "root_goal": saved.root_goal,
+                "created_at": saved.created_at,
+                "updated_at": saved.updated_at,
+            },
+        }
 
     @mcp.tool()
     def get_content(
@@ -5089,7 +5193,6 @@ def create_query_mcp(
             sandbox_mode=sandbox_mode,
         )
 
-    @mcp.tool()
     def start_work_session(
         project_id: str,
         employee_id: str = "",
@@ -5135,7 +5238,7 @@ def create_query_mcp(
             latest_status=_normalize_text(status) or "started",
             phase=phase,
             step=step,
-            source="start_work_session",
+            source="record_requirement",
             sync_status="idle",
             task_tree_payload=task_tree_payload,
         )
@@ -5150,7 +5253,7 @@ def create_query_mcp(
             latest_status=_normalize_text(status) or "started",
             phase=phase,
             step=step,
-            source="start_work_session",
+            source="record_requirement",
             task_tree_payload=task_tree_payload,
         )
         task_tree_binding = _resolve_query_task_tree_binding(
@@ -5198,8 +5301,8 @@ def create_query_mcp(
             "initial_status": _normalize_text(status) or "started",
             "trajectory": trajectory,
             "work_session_event": work_session_event,
-            "recommended_next_tool": "save_work_facts",
-            "message": "Use this session_id for subsequent save_work_facts, append_session_event, resume_work_session and summarize_checkpoint calls.",
+            "recommended_next_step": "persist_local_runtime_trace",
+            "message": "Use this session_id for local runtime trace and recovery files.",
         }
         if local_bootstrap_payload:
             result["local_bootstrap"] = local_bootstrap_payload
@@ -5209,7 +5312,6 @@ def create_query_mcp(
             result["task_tree"] = task_tree_payload
         return result
 
-    @mcp.tool()
     def save_work_facts(
         project_id: str,
         facts: list[str] | str | None = None,
@@ -5228,7 +5330,7 @@ def create_query_mcp(
         risks: list[str] | str | None = None,
         next_steps: list[str] | str | None = None,
     ) -> dict:
-        """保存工作事实，供后续恢复、检查点摘要和长期任务续跑使用。"""
+        """保存本地执行轨迹，供后续恢复、检查点摘要和长期任务续跑使用。"""
 
         fact_items = _parse_fact_lines(content=content, facts=facts)
         if not fact_items:
@@ -5398,7 +5500,7 @@ def create_query_mcp(
                     latest_status=status,
                     phase=phase,
                     step=step,
-                    source="save_work_facts",
+                    source="local_runtime_trace",
                     sync_status=_normalize_text(result.get("sync_status"), 40),
                     task_tree_payload=result.get("task_tree"),
                 )
@@ -5441,7 +5543,6 @@ def create_query_mcp(
                 result["task_tree"] = task_tree_payload
         return result
 
-    @mcp.tool()
     def append_session_event(
         project_id: str,
         session_id: str,
@@ -5460,7 +5561,7 @@ def create_query_mcp(
         risks: list[str] | str | None = None,
         next_steps: list[str] | str | None = None,
     ) -> dict:
-        """向项目范围追加一条会话事件，用于恢复最近执行轨迹。"""
+        """向项目范围追加一条本地运行事件，用于恢复最近执行轨迹。"""
 
         session_id_value = _normalize_text(session_id)
         event_type_value = _normalize_text(event_type)
@@ -5634,7 +5735,7 @@ def create_query_mcp(
                     latest_status=status,
                     phase=phase,
                     step=step,
-                    source="append_session_event",
+                    source="local_runtime_event",
                     sync_status=_normalize_text(result.get("sync_status"), 40),
                     task_tree_payload=result.get("task_tree"),
                 )
@@ -5676,7 +5777,6 @@ def create_query_mcp(
                 result["task_tree"] = task_tree_payload
         return result
 
-    @mcp.tool()
     def resume_work_session(
         project_id: str,
         session_id: str = "",
@@ -5685,7 +5785,7 @@ def create_query_mcp(
         limit: int = 10,
         project_name: str = "",
     ) -> dict:
-        """恢复项目近期工作轨迹，支持按 session_id 或关键词缩小范围。"""
+        """恢复项目近期本地运行轨迹，支持按 session_id 或关键词缩小范围。"""
 
         project_id_value = _normalize_text(project_id)
         if not project_id_value:
@@ -5749,7 +5849,6 @@ def create_query_mcp(
             ),
         }
 
-    @mcp.tool()
     def summarize_checkpoint(
         project_id: str,
         session_id: str = "",
@@ -5757,7 +5856,7 @@ def create_query_mcp(
         limit: int = 12,
         project_name: str = "",
     ) -> dict:
-        """根据已保存的工作事实和会话事件输出检查点摘要。"""
+        """根据已保存的本地执行轨迹和本地运行事件输出检查点摘要。"""
 
         project_id_value = _normalize_text(project_id)
         if not project_id_value:
@@ -5825,8 +5924,7 @@ def create_query_mcp(
             ),
         }
 
-    @mcp.tool()
-    def list_recent_project_requirements(
+    def list_project_requirement_records_internal(
         project_id: str,
         employee_id: str = "",
         keyword: str = "",
@@ -5865,8 +5963,7 @@ def create_query_mcp(
             "total": len(requirements),
         }
 
-    @mcp.tool()
-    def get_requirement_history(
+    def 项目详情需求记录详情(
         project_id: str,
         keyword: str,
         employee_id: str = "",

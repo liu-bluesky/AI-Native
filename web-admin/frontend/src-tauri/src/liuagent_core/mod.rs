@@ -171,12 +171,11 @@ mod tests {
     }
 
     #[test]
-    fn mcp_builtin_tools_are_described_as_external_adapter_only() {
+    fn mcp_builtin_tools_are_described_as_unified_registry_tools() {
         let tools = builtin_tool_definitions();
         for name in ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"] {
             let tool = tools.iter().find(|item| item.name == name).unwrap();
-            assert!(tool.description.contains("外部 MCP adapter"));
-            assert!(tool.description.contains("桌面端系统 MCP"));
+            assert!(tool.description.contains("统一 MCP registry"));
         }
     }
 
@@ -407,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tools_report_missing_adapter_config() {
+    fn mcp_tools_report_missing_registry_config() {
         let dir = test_workspace("mcp_pending");
         let result = execute_tool(ToolExecutionRequest {
             tool_call_id: Some("call_mcp".to_string()),
@@ -418,19 +417,20 @@ mod tests {
         });
 
         assert!(!result.ok);
-        assert_eq!(result.error_code, "mcp.adapter_missing");
+        assert_eq!(result.error_code, "mcp.config_missing");
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn mcp_adapter_lists_tools_and_reads_resources() {
-        let dir = test_workspace("mcp_adapter_read");
-        write_fake_mcp_adapter(&dir);
+    fn mcp_registry_lists_tools_and_reads_resources() {
+        let dir = test_workspace("mcp_registry_read");
+        write_fake_mcp_server(&dir);
+        let mcp_config = fake_mcp_registry_config();
 
         let tools = execute_tool(ToolExecutionRequest {
             tool_call_id: Some("call_mcp_list".to_string()),
             name: "list_mcp_tools".to_string(),
-            arguments: json!({"server": "fake"}),
+            arguments: json!({"server": "fake", "_mcp_config": mcp_config}),
             workspace_path: dir.to_string_lossy().to_string(),
             permission_decision: None,
         });
@@ -440,7 +440,11 @@ mod tests {
         let resource = execute_tool(ToolExecutionRequest {
             tool_call_id: Some("call_mcp_read".to_string()),
             name: "read_mcp_resource".to_string(),
-            arguments: json!({"server": "fake", "uri": "fixture://hello"}),
+            arguments: json!({
+                "server": "fake",
+                "uri": "fixture://hello",
+                "_mcp_config": mcp_config
+            }),
             workspace_path: dir.to_string_lossy().to_string(),
             permission_decision: None,
         });
@@ -451,8 +455,9 @@ mod tests {
 
     #[test]
     fn mcp_tool_call_requires_permission_and_executes_after_approval() {
-        let dir = test_workspace("mcp_adapter_call");
-        write_fake_mcp_adapter(&dir);
+        let dir = test_workspace("mcp_registry_call");
+        write_fake_mcp_server(&dir);
+        let mcp_config = fake_mcp_registry_config();
 
         let pending = execute_tool(ToolExecutionRequest {
             tool_call_id: Some("call_mcp_tool".to_string()),
@@ -460,7 +465,8 @@ mod tests {
             arguments: json!({
                 "server": "fake",
                 "tool": "echo",
-                "arguments": {"text": "hello"}
+                "arguments": {"text": "hello"},
+                "_mcp_config": mcp_config
             }),
             workspace_path: dir.to_string_lossy().to_string(),
             permission_decision: None,
@@ -478,7 +484,8 @@ mod tests {
             arguments: json!({
                 "server": "fake",
                 "tool": "echo",
-                "arguments": {"text": "hello"}
+                "arguments": {"text": "hello"},
+                "_mcp_config": mcp_config
             }),
             workspace_path: dir.to_string_lossy().to_string(),
             permission_decision: Some(types::PermissionDecisionInput {
@@ -987,25 +994,25 @@ mod tests {
         "diff --git a/hello.txt b/hello.txt\n--- a/hello.txt\n+++ b/hello.txt\n@@ -1,2 +1,2 @@\n hello\n-old\n+new\n"
     }
 
-    fn write_fake_mcp_adapter(dir: &PathBuf) {
-        let adapter_dir = dir.join(".ai-employee").join("mcp-adapter");
-        std::fs::create_dir_all(&adapter_dir).expect("create mcp adapter dir");
-        std::fs::write(
-            adapter_dir.join("servers.json"),
-            json!({
-                "servers": {
-                    "fake": {
-                        "command": "/bin/sh",
-                        "args": ["fake-mcp.sh"],
-                        "cwd": ".ai-employee/mcp-adapter"
-                    }
+    fn fake_mcp_registry_config() -> serde_json::Value {
+        json!({
+            "mcpServers": {
+                "fake": {
+                    "type": "stdio",
+                    "command": "/bin/sh",
+                    "args": ["fake-mcp.sh"],
+                    "cwd": ".ai-employee/mcp-test",
+                    "framing": "line-json"
                 }
-            })
-            .to_string(),
-        )
-        .expect("write mcp config");
+            }
+        })
+    }
+
+    fn write_fake_mcp_server(dir: &PathBuf) {
+        let server_dir = dir.join(".ai-employee").join("mcp-test");
+        std::fs::create_dir_all(&server_dir).expect("create fake mcp server dir");
         std::fs::write(
-            adapter_dir.join("fake-mcp.sh"),
+            server_dir.join("fake-mcp.sh"),
             r#"while IFS= read -r line; do
 case "$line" in
   *'"method":"tools/list"'*) echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo test tool","inputSchema":{"type":"object"}}]}}' ;;

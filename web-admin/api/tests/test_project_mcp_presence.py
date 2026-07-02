@@ -168,12 +168,14 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert runtime["bootstrap_resources"] == [
         "query://usage-guide",
         "query://client-profile/codex",
+        "query://client-profile/hermes",
         "query://client-profile/claude-code",
         "query://client-profile/generic-cli",
+        "query://client-profile/desktop-agent",
     ]
     assert runtime["bootstrap_checklist"] == [
         "read query://usage-guide",
-        "read the matching client profile: query://client-profile/codex, query://client-profile/claude-code, or query://client-profile/generic-cli",
+        "read the matching client profile: query://client-profile/codex, query://client-profile/hermes, query://client-profile/claude-code, query://client-profile/generic-cli, or query://client-profile/desktop-agent",
         "do not loop on list_mcp_resources; it is resource discovery only and may be called at most once per turn",
         "for simple project queries with a known project_id, call the matching business tool directly instead of listing resources",
         "initialize local .ai-employee state in the current CLI workspace and ensure query-mcp-workflow is available there",
@@ -186,15 +188,17 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
         "get_manual_content before rule-specific execution",
         "score request clarity from 1-5; treat explicit execute/fix/start/continue/modify wording as confirmation for clear scoped change tasks, and always require separate explicit confirmation before destructive, deployment, external-write, credential, or irreversible operations",
         "analyze_task -> resolve_relevant_context -> generate_execution_plan",
-        "finish analysis, edits, verification, and local requirement/session recording before syncing task-tree or work-facts back to the server",
+        "finish analysis, edits, verification, and local requirement/session recording before syncing task-tree or delivery results back to the server",
         "fix root causes instead of hiding issues with fallback, compatibility, silent degradation, or duplicate state writes",
         "update_task_node_status on node start and complete_task_node_with_verification on node finish",
-        "start_work_session and persist session_id for long tasks",
+        "record_requirement and persist session_id for long tasks",
     ]
     assert "query://usage-guide" in runtime["cli_prompt"]
     assert "query://client-profile/codex" in runtime["cli_prompt"]
     # 默认 cli_prompt 聚焦 codex，不应再混入其他客户端画像
+    assert "query://client-profile/hermes" not in runtime["cli_prompt"]
     assert "query://client-profile/claude-code" not in runtime["cli_prompt"]
+    assert "query://client-profile/desktop-agent" not in runtime["cli_prompt"]
     assert "query://client-profile/generic-cli" not in runtime["cli_prompt"]
     assert "当前客户端是 Codex CLI" in runtime["cli_prompt"]
     assert "`list_mcp_resources` 只用于发现资源目录" in runtime["cli_prompt"]
@@ -204,7 +208,7 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert "默认项目: `proj-1`" in runtime["cli_prompt"]
     assert "部署、上传或推送部署产物时，如果用户未另给 `project_id`，必须直接使用当前默认项目 `proj-1`" in runtime["cli_prompt"]
     assert "chat_session_id=chat-session-1" in runtime["cli_prompt"]
-    assert "start_work_session" in runtime["cli_prompt"]
+    assert "record_requirement" in runtime["cli_prompt"]
     assert "当前全局清晰度确认阈值为 3/5" in runtime["cli_prompt"]
     assert "清晰度分数 >= 3" in runtime["cli_prompt"]
     assert "“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认" in runtime["cli_prompt"]
@@ -235,13 +239,19 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
 
     # 分类提示词：每类只含自己的画像资源，互不污染，且都带需求记录与项目上下文
     cli_prompts = runtime["cli_prompts"]
-    assert [item["key"] for item in cli_prompts] == ["codex", "claude-code", "generic-cli"]
+    assert [item["key"] for item in cli_prompts] == [
+        "codex",
+        "hermes",
+        "claude-code",
+        "desktop-agent",
+    ]
     by_key = {item["key"]: item for item in cli_prompts}
     assert by_key["codex"]["prompt"] == runtime["cli_prompt"]
     resource_by_key = {
         "codex": "query://client-profile/codex",
+        "hermes": "query://client-profile/hermes",
         "claude-code": "query://client-profile/claude-code",
-        "generic-cli": "query://client-profile/generic-cli",
+        "desktop-agent": "query://client-profile/desktop-agent",
     }
     for key, item in by_key.items():
         prompt = item["prompt"]
@@ -252,6 +262,12 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
                 assert other_resource not in prompt
         assert ".ai-employee/requirements/<project_id>/<chat_session_id>.json" in prompt
         assert "默认项目: `proj-1`" in prompt
+    desktop_prompt = by_key["desktop-agent"]["prompt"]
+    assert "桌面智能体" in desktop_prompt
+    assert "Codex" not in desktop_prompt
+    assert "不要" not in desktop_prompt
+    assert "禁止" not in desktop_prompt
+    assert "通过" not in desktop_prompt
 
 
 def test_query_mcp_runtime_uses_system_clarity_threshold(tmp_path, monkeypatch):
@@ -519,7 +535,8 @@ def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():
 def test_query_mcp_sync_rule_file_exists_in_rules_directory():
     agents_content = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     rule_content = (REPO_ROOT / "rules/query-mcp-prompt-sync.md").read_text(encoding="utf-8")
-    assert "需求一开始就要在当前 CLI 工作区完成本地初始化、创建 requirement 与 canonical session 状态" in agents_content
+    assert "初始化不是只检查技能；先以当前 CLI 工作区为准" in agents_content
+    assert "requirement 本地对象与 query-mcp canonical 状态要同时维护" in agents_content
     assert "必须同步更新相关提示词入口、技能说明与回归测试" in rule_content
     assert "不得停下来请求“是否继续”" in rule_content
     assert ".ai-employee/skills/query-mcp-workflow/" in rule_content

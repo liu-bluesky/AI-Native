@@ -1723,7 +1723,7 @@ fn build_agent_run_context(
                 &request.attachments,
                 model_request,
             ),
-            available_tools: builtin_tool_definitions()
+            available_tools: tool_definitions_for_request(model_request)
                 .into_iter()
                 .map(|definition| definition.name.to_string())
                 .collect(),
@@ -2255,6 +2255,7 @@ fn prompt_stack_from_model_request(model_request: &ModelStepRequest) -> PromptSt
         model_runtime: None,
         ai_entry_file: None,
         attachments: Vec::new(),
+        mcp_config: json!({}),
         backend_context: None,
         permission_decision: None,
     };
@@ -3808,6 +3809,7 @@ fn replay_pending_permission_tool_if_available(
             &tool,
             &request.project_id,
             request.backend_context.as_ref(),
+            &request.mcp_config,
             tool.arguments.clone(),
         ),
         workspace_path: workspace_root.to_string_lossy().to_string(),
@@ -4244,6 +4246,7 @@ fn run_agent_loop_with(
                     &tool,
                     &request.project_id,
                     request.backend_context.as_ref(),
+                    &request.mcp_config,
                     tool_arguments_with_file_access_policy(&tool, &request),
                 ),
                 workspace_path: workspace_root.to_string_lossy().to_string(),
@@ -4677,13 +4680,27 @@ fn tool_arguments_with_backend_context(
     tool: &PlannedLocalTool,
     project_id: &str,
     backend_context: Option<&LocalBackendContext>,
+    mcp_config: &Value,
     mut arguments: Value,
 ) -> Value {
+    let tool_name = tool.name.trim();
+    if matches!(tool_name, "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool") {
+        if let Some(object) = arguments.as_object_mut() {
+            if !mcp_config.is_null() {
+                object.insert("_mcp_config".to_string(), mcp_config.clone());
+            }
+            if let Some(context) = backend_context {
+                object.insert(
+                    "_backend_api_base_url".to_string(),
+                    json!(context.api_base_url.trim()),
+                );
+            }
+        }
+        return arguments;
+    }
     if !matches!(
-        tool.name.trim(),
-        "get_project_deploy_options"
-            | "upload_deploy_artifact"
-            | "deploy_workspace_files_to_target"
+        tool_name,
+        "get_project_deploy_options" | "upload_deploy_artifact" | "deploy_workspace_files_to_target"
     ) {
         return arguments;
     }
@@ -5289,7 +5306,9 @@ fn tool_candidate_score(tool_name: &str, failed_count: i32) -> i32 {
         "run_command" => 68,
         "write_file" | "apply_patch" => 62,
         "download_file" => 58,
+        "list_mcp_tools" => 56,
         "call_mcp_tool" => 54,
+        "read_mcp_resource" => 54,
         "http_post" => 42,
         "delete_file" => 35,
         _ => 50,
@@ -5590,14 +5609,14 @@ fn has_unresolved_failed_attempt(attempts: &[AgentLoopAttempt], final_content: &
 }
 
 fn is_degradable_bootstrap_failure(attempt: &AgentLoopAttempt) -> bool {
-    matches!(attempt.error_code.as_str(), "mcp.adapter_missing")
+    matches!(attempt.error_code.as_str(), "mcp.config_missing")
 }
 
 fn final_content_acknowledges_degraded_tool_path(content: &str) -> bool {
     let content = content.trim();
     !content.is_empty()
         && (content.contains("降级")
-            || content.contains("adapter")
+            || content.contains("registry")
             || content.contains("MCP")
             || content.contains("mcp"))
 }
@@ -6094,7 +6113,7 @@ fn is_recoverable_tool_failure(
         result.error_code.as_str(),
         "tool.schema_invalid"
             | "tool.not_found"
-            | "mcp.adapter_missing"
+            | "mcp.config_missing"
             | "mcp.server_not_found"
             | "mcp.config_invalid"
             | "mcp.failed"
@@ -6122,7 +6141,7 @@ fn should_continue_after_recoverable_failure(
 
 fn max_recoverable_failure_repeats(result: &super::types::ToolExecutionResult) -> usize {
     match result.error_code.as_str() {
-        "mcp.adapter_missing" => 2,
+        "mcp.config_missing" => 2,
         "tool.schema_invalid" => 1,
         _ => 1,
     }
@@ -6153,8 +6172,8 @@ fn tool_recovery_instruction(
             result.name, result.error
         );
     }
-    if result.error_code == "mcp.adapter_missing" {
-        return "本地 MCP adapter 配置缺失，无法读取或调用该 MCP。若当前任务不硬依赖该 MCP，请继续完成本地可执行部分，并在最终结果说明 MCP 闭环未完成；若硬依赖该 MCP，请明确缺失的 adapter 配置。".to_string();
+    if result.error_code == "mcp.config_missing" {
+        return "当前会话没有可用的 MCP registry 配置，无法读取或调用 MCP。若当前任务不硬依赖 MCP，请继续完成本地可执行部分，并在最终结果说明 MCP 闭环未完成；若硬依赖 MCP，请明确缺失的统一 MCP 配置。".to_string();
     }
     if matches!(
         result.error_code.as_str(),
@@ -6348,6 +6367,7 @@ fn build_operations(session_id: &str, agent_loop: &AgentLoopResult) -> Value {
 #[derive(Debug, Clone)]
 struct ModelStepRequest {
     project_id: String,
+    workspace_path: String,
     mode: String,
     provider_id: String,
     model_name: String,
@@ -6358,6 +6378,7 @@ struct ModelStepRequest {
     timeout_ms: u64,
     user_message: String,
     ai_entry_file: String,
+    mcp_config: Value,
     backend_context: Option<LocalBackendContext>,
     messages: Vec<RuntimeModelMessage>,
     task_goal: Option<TaskGoal>,
@@ -6368,6 +6389,7 @@ impl ModelStepRequest {
     fn with_messages(&self, messages: Vec<RuntimeModelMessage>) -> Self {
         Self {
             project_id: self.project_id.clone(),
+            workspace_path: self.workspace_path.clone(),
             mode: self.mode.clone(),
             provider_id: self.provider_id.clone(),
             model_name: self.model_name.clone(),
@@ -6378,6 +6400,7 @@ impl ModelStepRequest {
             timeout_ms: self.timeout_ms,
             user_message: self.user_message.clone(),
             ai_entry_file: self.ai_entry_file.clone(),
+            mcp_config: self.mcp_config.clone(),
             backend_context: self.backend_context.clone(),
             messages,
             task_goal: self.task_goal.clone(),
@@ -6902,9 +6925,10 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
         &request.attachments,
     ));
 
-    ModelStepRequest {
-        project_id: request.project_id.trim().to_string(),
-        mode,
+        ModelStepRequest {
+            project_id: request.project_id.trim().to_string(),
+            workspace_path: request.workspace_path.trim().to_string(),
+            mode,
         provider_id,
         model_name,
         base_url: runtime.base_url.unwrap_or_default().trim().to_string(),
@@ -6926,6 +6950,7 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
             .map(str::trim)
             .unwrap_or("")
             .to_string(),
+        mcp_config: request.mcp_config.clone(),
         backend_context: request.backend_context.clone(),
         messages,
         task_goal: None,
@@ -7286,8 +7311,39 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
     }
 }
 
-fn openai_compatible_tool_schemas() -> Vec<Value> {
+fn tool_available_for_request(definition: &super::types::ToolDefinition, request: &ModelStepRequest) -> bool {
+    if matches!(
+        definition.name,
+        "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool"
+    ) {
+        return mcp_registry_configured(&request.workspace_path, &request.mcp_config);
+    }
+    true
+}
+
+fn mcp_registry_configured(workspace_path: &str, mcp_config: &Value) -> bool {
+    let _ = workspace_path;
+    if mcp_config
+        .get("mcpServers")
+        .or_else(|| mcp_config.get("servers"))
+        .and_then(Value::as_object)
+        .map(|servers| !servers.is_empty())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    false
+}
+
+fn tool_definitions_for_request(request: &ModelStepRequest) -> Vec<super::types::ToolDefinition> {
     builtin_tool_definitions()
+        .into_iter()
+        .filter(|definition| tool_available_for_request(definition, request))
+        .collect()
+}
+
+fn openai_compatible_tool_schemas(request: &ModelStepRequest) -> Vec<Value> {
+    tool_definitions_for_request(request)
         .into_iter()
         .map(|definition| {
             json!({
@@ -7314,7 +7370,7 @@ fn build_openai_compatible_request_body(
         "messages": request.messages.iter().map(openai_compatible_message_payload).collect::<Vec<_>>()
     });
     if !is_ollama_compatible {
-        request_body["tools"] = json!(openai_compatible_tool_schemas());
+        request_body["tools"] = json!(openai_compatible_tool_schemas(request));
         request_body["tool_choice"] = json!("auto");
     }
     request_body
@@ -8363,6 +8419,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: None,
         });
 
@@ -8821,7 +8878,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_allows_recoverable_mcp_adapter_error_before_pausing() {
+    fn agent_loop_allows_recoverable_mcp_config_error_before_pausing() {
         let dir =
             std::env::temp_dir().join(format!("liuagent_loop_recoverable_mcp_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
@@ -8853,7 +8910,7 @@ mod tests {
                     }],
                 );
             }
-            test_model_result("MCP adapter 缺失，已降级继续本地任务。", Vec::new())
+            test_model_result("MCP registry 缺失，已降级继续本地任务。", Vec::new())
         };
         let tool_runner = |request: ToolExecutionRequest| {
             crate::liuagent_core::types::ToolExecutionResult::failed(
@@ -8862,8 +8919,8 @@ mod tests {
                     .unwrap_or_else(|| "call_mcp".to_string()),
                 request.name,
                 ToolError::new(
-                    "mcp.adapter_missing",
-                    "read MCP adapter config failed: No such file or directory",
+                    "mcp.config_missing",
+                    "read MCP registry config failed: No such file or directory",
                 ),
             )
         };
@@ -9240,6 +9297,7 @@ mod tests {
                 ai_entry_file: None,
                 attachments: Vec::new(),
                 backend_context: None,
+                mcp_config: json!({}),
                 permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                     request_id: Some("perm_call_write_replay_file_write".to_string()),
                     decision: "approve_once".to_string(),
@@ -10014,6 +10072,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: None,
         });
 
@@ -10059,6 +10118,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: None,
         };
         let model_request = build_model_request(&request, "你好");
@@ -10251,6 +10311,7 @@ mod tests {
                 },
             ],
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: None,
         };
         let model_request = build_model_request(&request, "请分析附件");
@@ -10300,6 +10361,7 @@ mod tests {
                 provider_file_id: None,
                 error: None,
             }],
+            mcp_config: json!({}),
             permission_decision: None,
         };
         let model_request = build_model_request(&request, "请分析附件");
@@ -10395,6 +10457,7 @@ mod tests {
             &tool,
             "proj-fallback",
             Some(&backend_context),
+            &json!({}),
             tool.arguments.clone(),
         );
 
@@ -10426,6 +10489,7 @@ mod tests {
             &tool,
             "proj-fallback",
             Some(&backend_context),
+            &json!({}),
             tool.arguments.clone(),
         );
 
@@ -10455,6 +10519,7 @@ mod tests {
             &tool,
             "proj-current",
             Some(&backend_context),
+            &json!({}),
             tool.arguments.clone(),
         );
 
@@ -11106,6 +11171,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(plan_confirmation_request_id(
                     "chat-resume-reasoning",
@@ -11233,6 +11299,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(permission_request_id),
                 decision: "approve_once".to_string(),
@@ -11282,6 +11349,7 @@ mod tests {
     fn test_model_request(user_message: &str) -> ModelStepRequest {
         ModelStepRequest {
             project_id: "proj-test".to_string(),
+            workspace_path: ".".to_string(),
             mode: "direct-openai-compatible".to_string(),
             provider_id: "test-provider".to_string(),
             model_name: "test-model".to_string(),
@@ -11292,6 +11360,7 @@ mod tests {
             timeout_ms: 1_000,
             user_message: user_message.to_string(),
             ai_entry_file: String::new(),
+            mcp_config: json!({}),
             backend_context: None,
             messages: vec![RuntimeModelMessage::simple(
                 "user",
@@ -11942,6 +12011,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: None,
         });
 
@@ -11998,6 +12068,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(plan_confirmation_request_id(
                     "chat-plan-confirmed-test",
@@ -12041,6 +12112,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some(plan_confirmation_request_id(
                     "chat-plan-session-confirmed-test",
@@ -12082,6 +12154,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: None,
                 decision: "approve_session".to_string(),
@@ -12122,6 +12195,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
                 request_id: Some("perm_call_write_file.write".to_string()),
                 decision: "approve_once".to_string(),
@@ -12163,6 +12237,7 @@ mod tests {
             ai_entry_file: None,
             attachments: Vec::new(),
             backend_context: None,
+            mcp_config: json!({}),
             permission_decision: None,
         });
 

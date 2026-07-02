@@ -269,7 +269,6 @@ class EmployeeDraftCreateReq(BaseModel):
     description: str = ""
     goal: str = ""
     skills: list[str] = []
-    selected_system_mcp_servers: list[str] = []
     rule_ids: list[str] = []
     rule_titles: list[str] = []
     rule_domains: list[str] = []
@@ -926,10 +925,10 @@ class SystemConfigUpdateReq(BaseModel):
     query_mcp_bootstrap_prompt_template: str | None = None
     query_mcp_usage_guide_template: str | None = None
     query_mcp_client_profile_template: str | None = None
+    query_mcp_desktop_agent_profile_template: str | None = None
     chat_style_hints: dict[str, Any] | None = None
     skill_registry_sources: dict[str, Any] | None = None
     dictionaries: dict[str, Any] | None = None
-    mcp_config: dict[str, Any] | None = None
 
 
 class BotConnectorCollectionReq(BaseModel):

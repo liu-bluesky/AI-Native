@@ -17,6 +17,10 @@ const TAURI_COMMAND_NAMES = {
   readWorkspaceFile: "read_workspace_file",
   previewWorkspaceDiff: "preview_workspace_diff",
   prepareWorkspaceFileWrite: "prepare_workspace_file_write",
+  readGlobalMcpConfigFile: "read_global_mcp_config_file",
+  writeGlobalMcpConfigFile: "write_global_mcp_config_file",
+  readProjectMcpConfigFile: "read_project_mcp_config_file",
+  writeProjectMcpConfigFile: "write_project_mcp_config_file",
   classifyRunnerCommand: "classify_runner_command",
   runRunnerCommand: "run_runner_command",
   recordRunnerPermissionDecision: "record_runner_permission_decision",
@@ -214,6 +218,47 @@ export async function getNativeRuntimeInfo() {
       result.defaultWorkspacePath || result.default_workspace_path || "",
     ).trim(),
   };
+}
+
+function normalizeMcpConfigFileResult(result) {
+  if (!result || typeof result !== "object") return null;
+  return {
+    scope: String(result.scope || "").trim(),
+    path: String(result.path || "").trim(),
+    exists: Boolean(result.exists),
+    content: String(result.content || ""),
+  };
+}
+
+export async function readNativeGlobalMcpConfigFile() {
+  const result = await invokeNativeDesktopBridge("readGlobalMcpConfigFile");
+  return normalizeMcpConfigFileResult(result);
+}
+
+export async function writeNativeGlobalMcpConfigFile(content = "") {
+  const result = await invokeNativeDesktopBridge("writeGlobalMcpConfigFile", {
+    content: String(content || ""),
+  });
+  return normalizeMcpConfigFileResult(result);
+}
+
+export async function readNativeProjectMcpConfigFile(workspacePath = "") {
+  const normalizedWorkspacePath = String(workspacePath || "").trim();
+  if (!normalizedWorkspacePath) return null;
+  const result = await invokeNativeDesktopBridge("readProjectMcpConfigFile", {
+    workspacePath: normalizedWorkspacePath,
+  });
+  return normalizeMcpConfigFileResult(result);
+}
+
+export async function writeNativeProjectMcpConfigFile(workspacePath = "", content = "") {
+  const normalizedWorkspacePath = String(workspacePath || "").trim();
+  if (!normalizedWorkspacePath) return null;
+  const result = await invokeNativeDesktopBridge("writeProjectMcpConfigFile", {
+    workspacePath: normalizedWorkspacePath,
+    content: String(content || ""),
+  });
+  return normalizeMcpConfigFileResult(result);
 }
 
 export async function listNativeLiuAgentBuiltinTools() {

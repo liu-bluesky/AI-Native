@@ -1,9 +1,11 @@
-//! 本地 MCP adapter 委托。
+//! 统一 MCP registry 调用。
 //!
-//! 桌面端不直接连接服务端 MCP，也不把本机 workspace 暴露给 Docker。这里读取
-//! workspace 内 `.ai-employee/mcp-adapter/servers.json` 中声明的本地 adapter 命令，
-//! 通过简化的 line-delimited JSON-RPC stdio 协议调用 MCP 方法。
+//! 桌面端从会话/项目设置传入的 MCP registry 读取 server 配置，并按 server transport
+//! 通过 MCP JSON-RPC 调用 tools/list、resources/read 和 tools/call。
 
+use reqwest::blocking::Client;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::Url;
 use serde_json::{json, Value};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -17,8 +19,7 @@ use crate::liuagent_core::permission::require_approval;
 use crate::liuagent_core::types::{PermissionDecisionInput, ToolError};
 use crate::liuagent_core::workspace::{resolve_workspace_child, resolve_workspace_root};
 
-const MCP_ADAPTER_CONFIG: &str = ".ai-employee/mcp-adapter/servers.json";
-const MCP_ADAPTER_TIMEOUT_MS: u64 = 10_000;
+const MCP_TIMEOUT_MS: u64 = 10_000;
 const MAX_MCP_OUTPUT_CHARS: usize = 120_000;
 
 pub fn list_mcp_tools(
@@ -26,18 +27,51 @@ pub fn list_mcp_tools(
     arguments: &Value,
 ) -> Result<(Value, String), ToolError> {
     let server = string_arg(arguments, "server", "");
+    if server.trim().is_empty() {
+        let root = resolve_workspace_root(workspace_path)?;
+        let config = read_registry_config(&root, arguments)?;
+        let servers = server_entries(&config)?;
+        let mut results = Vec::new();
+        let mut total = 0usize;
+        for (name, _) in servers {
+            let response = invoke_mcp_method(
+                workspace_path,
+                arguments,
+                &name,
+                "tools/list",
+                json!({}),
+                MCP_TIMEOUT_MS,
+            )?;
+            let tools = response.get("tools").cloned().unwrap_or_else(|| json!([]));
+            total += tools.as_array().map(|items| items.len()).unwrap_or(0);
+            results.push(json!({
+                "server": name,
+                "tools": tools,
+                "raw_result": response
+            }));
+        }
+        return Ok((
+            json!({
+                "servers": results,
+                "tools": flatten_tools_by_server(&json!(results)),
+            }),
+            format!("发现 {total} 个 MCP 工具"),
+        ));
+    }
+
     let response = invoke_mcp_method(
         workspace_path,
+        arguments,
         &server,
         "tools/list",
         json!({}),
-        MCP_ADAPTER_TIMEOUT_MS,
+        MCP_TIMEOUT_MS,
     )?;
     let tools = response.get("tools").cloned().unwrap_or_else(|| json!([]));
     let count = tools.as_array().map(|items| items.len()).unwrap_or(0);
     Ok((
         json!({
-            "server": resolved_server_name(&server),
+            "server": server.trim(),
             "tools": tools,
             "raw_result": response
         }),
@@ -53,10 +87,11 @@ pub fn read_mcp_resource(
     let uri = required_string_arg(arguments, "uri")?;
     let response = invoke_mcp_method(
         workspace_path,
+        arguments,
         &server,
         "resources/read",
         json!({"uri": uri}),
-        MCP_ADAPTER_TIMEOUT_MS,
+        MCP_TIMEOUT_MS,
     )?;
     let contents = response
         .get("contents")
@@ -112,7 +147,7 @@ pub fn call_mcp_tool(
         "mcp.call",
         "medium",
         "project",
-        &format!("调用本地 MCP 工具：{server}/{tool}"),
+        &format!("调用 MCP 工具：{server}/{tool}"),
         json!({
             "server": server,
             "tool": tool,
@@ -122,13 +157,14 @@ pub fn call_mcp_tool(
     )?;
     let response = invoke_mcp_method(
         workspace_path,
+        arguments,
         &server,
         "tools/call",
         json!({
             "name": tool,
             "arguments": tool_arguments
         }),
-        MCP_ADAPTER_TIMEOUT_MS,
+        MCP_TIMEOUT_MS,
     )?;
     let is_error = response
         .get("isError")
@@ -138,10 +174,7 @@ pub fn call_mcp_tool(
     if is_error {
         return Err(ToolError::new(
             "mcp.failed",
-            format!(
-                "MCP tool returned error: {}",
-                summarize_json_value(&response)
-            ),
+            format!("MCP tool returned error: {}", summarize_json_value(&response)),
         ));
     }
     Ok((
@@ -156,74 +189,136 @@ pub fn call_mcp_tool(
 
 fn invoke_mcp_method(
     workspace_path: &str,
+    arguments: &Value,
     server: &str,
     method: &str,
     params: Value,
     timeout_ms: u64,
 ) -> Result<Value, ToolError> {
     let root = resolve_workspace_root(workspace_path)?;
-    let config = read_adapter_config(&root)?;
-    let server_config = resolve_server_config(&config, server)?;
-    let output = run_adapter_command(&root, &server_config, method, params, timeout_ms)?;
-    parse_json_rpc_result(&output, 2)
+    let config = read_registry_config(&root, arguments)?;
+    let server_config = resolve_server_config(&config, server, arguments)?;
+    match server_config.transport {
+        McpTransport::Stdio => {
+            let output = run_stdio_command(&root, &server_config, method, params, timeout_ms)?;
+            parse_json_rpc_result(&output, 2)
+        }
+        McpTransport::Http | McpTransport::Sse => {
+            run_http_json_rpc(&server_config, method, params, timeout_ms)
+        }
+    }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpTransport {
+    Stdio,
+    Http,
+    Sse,
+}
+
+#[derive(Debug, Clone)]
 struct ServerConfig {
     name: String,
+    transport: McpTransport,
     command: String,
     args: Vec<String>,
     cwd: String,
     framing: String,
+    url: String,
+    headers: Vec<(String, String)>,
 }
 
-fn read_adapter_config(root: &Path) -> Result<Value, ToolError> {
-    let path = root.join(MCP_ADAPTER_CONFIG);
-    let raw = fs::read_to_string(&path).map_err(|err| {
-        ToolError::new(
-            "mcp.adapter_missing",
-            format!("read MCP adapter config failed: {err}"),
-        )
-    })?;
-    serde_json::from_str::<Value>(&raw).map_err(|err| {
-        ToolError::new(
-            "mcp.config_invalid",
-            format!("parse MCP adapter config failed: {err}"),
-        )
-    })
+fn read_registry_config(root: &Path, arguments: &Value) -> Result<Value, ToolError> {
+    if let Some(config) = arguments.get("_mcp_config").filter(|value| value.is_object()) {
+        return Ok(config.clone());
+    }
+
+    let _ = root;
+    Err(ToolError::new(
+        "mcp.config_missing",
+        "MCP registry config is missing from the current desktop session",
+    ))
 }
 
-fn resolve_server_config(config: &Value, server: &str) -> Result<ServerConfig, ToolError> {
+fn server_entries(config: &Value) -> Result<Vec<(String, Value)>, ToolError> {
     let servers = config
-        .get("servers")
-        .or_else(|| config.get("mcpServers"))
-        .ok_or_else(|| ToolError::new("mcp.config_invalid", "missing servers map"))?;
+        .get("mcpServers")
+        .or_else(|| config.get("servers"))
+        .ok_or_else(|| ToolError::new("mcp.config_invalid", "missing mcpServers map"))?;
+    let object = servers
+        .as_object()
+        .ok_or_else(|| ToolError::new("mcp.config_invalid", "mcpServers must be an object"))?;
+    let mut entries = Vec::new();
+    for (name, value) in object {
+        if value
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .map(|enabled| !enabled)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        entries.push((name.to_string(), value.clone()));
+    }
+    if entries.is_empty() {
+        return Err(ToolError::new("mcp.config_invalid", "mcpServers map is empty"));
+    }
+    Ok(entries)
+}
+
+fn resolve_server_config(
+    config: &Value,
+    server: &str,
+    arguments: &Value,
+) -> Result<ServerConfig, ToolError> {
+    let entries = server_entries(config)?;
     let (name, value) = if server.trim().is_empty() {
-        let object = servers
-            .as_object()
-            .ok_or_else(|| ToolError::new("mcp.config_invalid", "servers must be an object"))?;
-        object
-            .iter()
+        entries
+            .into_iter()
             .next()
-            .map(|(name, value)| (name.to_string(), value))
-            .ok_or_else(|| ToolError::new("mcp.config_invalid", "servers map is empty"))?
+            .ok_or_else(|| ToolError::new("mcp.config_invalid", "mcpServers map is empty"))?
     } else {
-        (
-            server.trim().to_string(),
-            servers.get(server.trim()).ok_or_else(|| {
+        let server_name = server.trim();
+        entries
+            .into_iter()
+            .find(|(name, _)| name == server_name)
+            .ok_or_else(|| {
                 ToolError::new(
                     "mcp.server_not_found",
-                    format!("MCP server not configured: {}", server.trim()),
+                    format!("MCP server not configured: {server_name}"),
                 )
-            })?,
-        )
+            })?
     };
+
+    let raw_transport = value
+        .get("transport")
+        .or_else(|| value.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let url = resolve_server_url(&value, arguments)?;
     let command = value
         .get("command")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .ok_or_else(|| ToolError::new("mcp.config_invalid", "server.command is required"))?
+        .unwrap_or("")
         .to_string();
+    let transport = if !command.is_empty()
+        && !matches!(raw_transport.as_str(), "http" | "streamable-http" | "sse")
+    {
+        McpTransport::Stdio
+    } else if raw_transport == "sse" {
+        McpTransport::Sse
+    } else if !url.is_empty() {
+        McpTransport::Http
+    } else {
+        return Err(ToolError::new(
+            "mcp.config_invalid",
+            "server must configure url or command",
+        ));
+    };
+
     let args = value
         .get("args")
         .and_then(Value::as_array)
@@ -243,21 +338,290 @@ fn resolve_server_config(config: &Value, server: &str) -> Result<ServerConfig, T
         .to_string();
     let framing = value
         .get("framing")
-        .or_else(|| value.get("transport"))
+        .or_else(|| value.get("protocol"))
         .and_then(Value::as_str)
         .unwrap_or("line-json")
         .trim()
         .to_ascii_lowercase();
     Ok(ServerConfig {
         name,
+        transport,
         command,
         args,
         cwd,
         framing,
+        url,
+        headers: parse_config_headers(&value)?,
     })
 }
 
-fn run_adapter_command(
+fn resolve_server_url(value: &Value, arguments: &Value) -> Result<String, ToolError> {
+    let raw = value
+        .get("url")
+        .or_else(|| value.get("endpoint"))
+        .or_else(|| value.get("endpoint_http"))
+        .or_else(|| value.get("endpoint_sse"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    if raw.is_empty() {
+        return Ok(String::new());
+    }
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        return Ok(raw.to_string());
+    }
+    let base = arguments
+        .get("_backend_api_base_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    if base.is_empty() {
+        return Err(ToolError::new(
+            "mcp.config_invalid",
+            "relative MCP url requires backend api base url",
+        ));
+    }
+    let mut parsed_base = Url::parse(base).map_err(|err| {
+        ToolError::new(
+            "mcp.config_invalid",
+            format!("invalid backend api base url: {err}"),
+        )
+    })?;
+    parsed_base.set_path("");
+    parsed_base.set_query(None);
+    parsed_base
+        .join(raw.trim_start_matches('/'))
+        .map(|url| url.to_string())
+        .map_err(|err| ToolError::new("mcp.config_invalid", format!("invalid MCP url: {err}")))
+}
+
+fn parse_config_headers(value: &Value) -> Result<Vec<(String, String)>, ToolError> {
+    let Some(headers) = value.get("headers").and_then(Value::as_object) else {
+        return Ok(Vec::new());
+    };
+    let mut output = Vec::new();
+    for (key, value) in headers {
+        let Some(raw_value) = value.as_str() else {
+            return Err(ToolError::new(
+                "mcp.config_invalid",
+                format!("MCP header value must be string: {key}"),
+            ));
+        };
+        output.push((key.to_string(), raw_value.to_string()));
+    }
+    Ok(output)
+}
+
+fn run_http_json_rpc(
+    server: &ServerConfig,
+    method: &str,
+    params: Value,
+    timeout_ms: u64,
+) -> Result<Value, ToolError> {
+    let client = Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .user_agent("liuAgent-desktop-mcp/0.1")
+        .build()
+        .map_err(|err| ToolError::new("mcp.failed", format!("create MCP HTTP client failed: {err}")))?;
+    let mut session_headers = HeaderMap::new();
+    let init = http_rpc_request(
+        &client,
+        server,
+        "initialize",
+        json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "liuagent-core",
+                "version": "0.1.0"
+            }
+        }),
+        1,
+        &session_headers,
+    )?;
+    if let Some(session_id) = init
+        .get("_meta")
+        .and_then(|meta| meta.get("mcp_session_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        session_headers.insert(
+            HeaderName::from_static("mcp-session-id"),
+            HeaderValue::from_str(session_id).map_err(|err| {
+                ToolError::new("mcp.failed", format!("invalid MCP session id header: {err}"))
+            })?,
+        );
+    }
+    let _ = http_rpc_notify(
+        &client,
+        server,
+        "notifications/initialized",
+        json!({}),
+        &session_headers,
+    );
+    http_rpc_request(&client, server, method, params, 2, &session_headers)
+}
+
+fn http_rpc_request(
+    client: &Client,
+    server: &ServerConfig,
+    method: &str,
+    params: Value,
+    id: i64,
+    session_headers: &HeaderMap,
+) -> Result<Value, ToolError> {
+    let url = parse_http_url(&server.url)?;
+    let response = client
+        .post(url)
+        .headers(build_http_headers(server, session_headers)?)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params
+        }))
+        .send()
+        .map_err(|err| ToolError::new("mcp.failed", format!("MCP HTTP request failed: {err}")))?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let session_id = response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let text = response
+        .text()
+        .map_err(|err| ToolError::new("mcp.failed", format!("read MCP HTTP response failed: {err}")))?;
+    if status >= 400 {
+        return Err(ToolError::new(
+            "mcp.failed",
+            format!("MCP HTTP {status}: {}", truncate_chars(&text, 600).0),
+        ));
+    }
+    let mut payload = parse_http_rpc_body(&text, &content_type)?;
+    if let Some(error) = payload.get("error") {
+        return Err(ToolError::new(
+            "mcp.failed",
+            format!("MCP returned error: {}", summarize_json_value(error)),
+        ));
+    }
+    let mut result = payload.get("result").cloned().unwrap_or_else(|| json!({}));
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "_meta".to_string(),
+            json!({
+                "status": status,
+                "content_type": content_type,
+                "mcp_session_id": session_id
+            }),
+        );
+    } else {
+        payload["_meta"] = json!({
+            "status": status,
+            "content_type": content_type,
+            "mcp_session_id": session_id
+        });
+        result = payload;
+    }
+    Ok(result)
+}
+
+fn http_rpc_notify(
+    client: &Client,
+    server: &ServerConfig,
+    method: &str,
+    params: Value,
+    session_headers: &HeaderMap,
+) -> Result<(), ToolError> {
+    let url = parse_http_url(&server.url)?;
+    client
+        .post(url)
+        .headers(build_http_headers(server, session_headers)?)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params
+        }))
+        .send()
+        .map_err(|err| ToolError::new("mcp.failed", format!("MCP HTTP notify failed: {err}")))?;
+    Ok(())
+}
+
+fn build_http_headers(
+    server: &ServerConfig,
+    session_headers: &HeaderMap,
+) -> Result<HeaderMap, ToolError> {
+    let mut headers = HeaderMap::new();
+    headers.insert("accept", HeaderValue::from_static("application/json, text/event-stream;q=0.9, */*;q=0.8"));
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    for (key, value) in &server.headers {
+        let name = HeaderName::from_bytes(key.as_bytes()).map_err(|err| {
+            ToolError::new("mcp.config_invalid", format!("invalid MCP header name: {err}"))
+        })?;
+        let header_value = HeaderValue::from_str(value).map_err(|err| {
+            ToolError::new("mcp.config_invalid", format!("invalid MCP header value: {err}"))
+        })?;
+        headers.insert(name, header_value);
+    }
+    for (key, value) in session_headers {
+        headers.insert(key, value.clone());
+    }
+    Ok(headers)
+}
+
+fn parse_http_url(raw: &str) -> Result<Url, ToolError> {
+    let url = Url::parse(raw.trim())
+        .map_err(|err| ToolError::new("mcp.config_invalid", format!("invalid MCP url: {err}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(ToolError::new(
+            "mcp.config_invalid",
+            "MCP url must use http or https",
+        ));
+    }
+    Ok(url)
+}
+
+fn parse_http_rpc_body(body: &str, content_type: &str) -> Result<Value, ToolError> {
+    if content_type.to_ascii_lowercase().contains("text/event-stream") {
+        return parse_sse_json_payload(body);
+    }
+    serde_json::from_str::<Value>(body.trim()).map_err(|err| {
+        ToolError::new(
+            "mcp.failed",
+            format!("parse MCP JSON response failed: {err}"),
+        )
+    })
+}
+
+fn parse_sse_json_payload(body: &str) -> Result<Value, ToolError> {
+    for block in body.split("\n\n").map(str::trim).filter(|item| !item.is_empty()) {
+        let payload = block
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_prefix("data:").map(str::trim))
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if payload.is_empty() {
+            continue;
+        }
+        return serde_json::from_str::<Value>(&payload).map_err(|err| {
+            ToolError::new("mcp.failed", format!("parse MCP SSE payload failed: {err}"))
+        });
+    }
+    Err(ToolError::new(
+        "mcp.failed",
+        "MCP event-stream did not contain JSON data",
+    ))
+}
+
+fn run_stdio_command(
     root: &Path,
     server: &ServerConfig,
     method: &str,
@@ -275,16 +639,10 @@ fn run_adapter_command(
     let stdout_path = temp_base.with_extension("stdout");
     let stderr_path = temp_base.with_extension("stderr");
     let stdout_file = File::create(&stdout_path).map_err(|err| {
-        ToolError::new(
-            "tool.execution_failed",
-            format!("create MCP stdout failed: {err}"),
-        )
+        ToolError::new("tool.execution_failed", format!("create MCP stdout failed: {err}"))
     })?;
     let stderr_file = File::create(&stderr_path).map_err(|err| {
-        ToolError::new(
-            "tool.execution_failed",
-            format!("create MCP stderr failed: {err}"),
-        )
+        ToolError::new("tool.execution_failed", format!("create MCP stderr failed: {err}"))
     })?;
     let mut child = Command::new(&server.command)
         .args(&server.args)
@@ -295,8 +653,8 @@ fn run_adapter_command(
         .spawn()
         .map_err(|err| {
             ToolError::new(
-                "mcp.adapter_failed",
-                format!("spawn MCP adapter {} failed: {err}", server.name),
+                "mcp.failed",
+                format!("spawn MCP server {} failed: {err}", server.name),
             )
         })?;
     if let Some(stdin) = child.stdin.as_mut() {
@@ -346,8 +704,8 @@ fn run_adapter_command(
             Err(err) => {
                 cleanup_temp_outputs(&stdout_path, &stderr_path);
                 return Err(ToolError::new(
-                    "mcp.adapter_failed",
-                    format!("wait MCP adapter failed: {err}"),
+                    "mcp.failed",
+                    format!("wait MCP server failed: {err}"),
                 ));
             }
         }
@@ -357,14 +715,14 @@ fn run_adapter_command(
     cleanup_temp_outputs(&stdout_path, &stderr_path);
     if timed_out {
         return Err(ToolError::new(
-            "mcp.adapter_timeout",
-            format!("MCP adapter timed out after {timeout_ms}ms"),
+            "mcp.failed",
+            format!("MCP server timed out after {timeout_ms}ms"),
         ));
     }
     if exit_code != 0 && stdout.trim().is_empty() {
         return Err(ToolError::new(
-            "mcp.adapter_failed",
-            format!("MCP adapter exited with {exit_code}: {stderr}"),
+            "mcp.failed",
+            format!("MCP server exited with {exit_code}: {stderr}"),
         ));
     }
     Ok(stdout)
@@ -378,17 +736,14 @@ fn parse_json_rpc_result(output: &str, expected_id: i64) -> Result<Value, ToolEr
         if let Some(error) = value.get("error") {
             return Err(ToolError::new(
                 "mcp.failed",
-                format!(
-                    "MCP adapter returned error: {}",
-                    summarize_json_value(error)
-                ),
+                format!("MCP returned error: {}", summarize_json_value(error)),
             ));
         }
         return Ok(value.get("result").cloned().unwrap_or_else(|| json!({})));
     }
     Err(ToolError::new(
         "mcp.failed",
-        "MCP adapter did not return a matching JSON-RPC response",
+        "MCP server did not return a matching JSON-RPC response",
     ))
 }
 
@@ -400,22 +755,17 @@ fn write_mcp_request(
     let raw = serde_json::to_string(message).map_err(|err| {
         ToolError::new("mcp.failed", format!("serialize MCP request failed: {err}"))
     })?;
-    if matches!(framing, "content-length" | "mcp" | "standard") {
+    if matches!(framing, "line-json" | "jsonl" | "newline") {
+        writeln!(stdin, "{raw}")
+    } else {
         write!(
             stdin,
             "Content-Length: {}\r\n\r\n{}",
             raw.as_bytes().len(),
             raw
         )
-    } else {
-        writeln!(stdin, "{raw}")
     }
-    .map_err(|err| {
-        ToolError::new(
-            "mcp.adapter_failed",
-            format!("write MCP stdin failed: {err}"),
-        )
-    })
+    .map_err(|err| ToolError::new("mcp.failed", format!("write MCP stdin failed: {err}")))
 }
 
 fn parse_json_rpc_messages(output: &str) -> Result<Vec<Value>, ToolError> {
@@ -486,6 +836,21 @@ fn parse_content_length_messages(output: &str) -> Result<Vec<Value>, ToolError> 
     }
 }
 
+fn flatten_tools_by_server(servers: &Value) -> Value {
+    let mut output = Vec::new();
+    for server in servers.as_array().into_iter().flatten() {
+        let server_name = server.get("server").and_then(Value::as_str).unwrap_or("");
+        for tool in server.get("tools").and_then(Value::as_array).into_iter().flatten() {
+            let mut item = tool.clone();
+            if let Some(object) = item.as_object_mut() {
+                object.insert("server".to_string(), json!(server_name));
+            }
+            output.push(item);
+        }
+    }
+    json!(output)
+}
+
 fn adapter_temp_base() -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -517,14 +882,6 @@ fn summarize_json_value(value: &Value) -> String {
     truncate_chars(&raw, 600).0
 }
 
-fn resolved_server_name(server: &str) -> String {
-    if server.trim().is_empty() {
-        "default".to_string()
-    } else {
-        server.trim().to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_content_length_json_rpc_request() {
+    fn writes_content_length_json_rpc_request_by_default() {
         let mut output = Vec::new();
         write_mcp_request(
             &mut output,
@@ -550,5 +907,22 @@ mod tests {
         assert!(raw.starts_with("Content-Length: "));
         assert!(raw.contains("\r\n\r\n"));
         assert!(raw.ends_with(r#""method":"tools/list"}"#));
+    }
+
+    #[test]
+    fn resolves_http_server_from_unified_config() {
+        let config = json!({
+            "mcpServers": {
+                "query": {
+                    "type": "sse",
+                    "url": "http://127.0.0.1:8000/mcp/query/sse",
+                    "enabled": true
+                }
+            }
+        });
+        let server =
+            resolve_server_config(&config, "query", &json!({})).expect("resolve http server");
+        assert_eq!(server.transport, McpTransport::Sse);
+        assert_eq!(server.url, "http://127.0.0.1:8000/mcp/query/sse");
     }
 }

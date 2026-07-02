@@ -311,7 +311,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "list_mcp_tools",
-            description: "列出本机外部 MCP adapter 工具。仅当用户已显式配置本地 stdio MCP adapter 时使用；这不是桌面端系统 MCP 或项目上下文入口。",
+            description: "列出当前会话统一 MCP registry 中的工具。MCP 服务来源于对话/项目设置；stdio/http/sse 都是 MCP transport。",
             action: "mcp.list",
             risk: "low",
             requires_approval: false,
@@ -325,7 +325,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "read_mcp_resource",
-            description: "读取本机外部 MCP adapter 资源。仅当用户已显式配置本地 stdio MCP adapter 时使用；不要用它读取桌面端系统 MCP、项目配置、提示词或任务树。",
+            description: "读取当前会话统一 MCP registry 中的资源，例如 query://usage-guide 或 client-profile 资源。",
             action: "mcp.read",
             risk: "low",
             requires_approval: false,
@@ -341,7 +341,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "call_mcp_tool",
-            description: "调用本机外部 MCP adapter 工具。仅当用户已显式配置本地 stdio MCP adapter 时使用；不要用它调用桌面端系统 MCP 或项目内置工具。",
+            description: "调用当前会话统一 MCP registry 中的工具。先用 list_mcp_tools 获取 server/tool 与参数 schema。",
             action: "mcp.call",
             risk: "medium",
             requires_approval: true,

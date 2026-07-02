@@ -28,7 +28,7 @@
           :name="getCliTabName(item.key)"
         >
           <div class="unified-mcp-access__prompt-card">
-            适合放进当前客户端入口文件。每个客户端只展示自己的接入画像；详细规则通过 `query://...` 资源按需读取。
+            {{ resolvePromptCardText(item) }}
           </div>
           <details class="unified-mcp-access__details" open>
             <summary>展开引导提示词预览</summary>
@@ -126,6 +126,12 @@ const fallbackCliProfiles = [
     resource: 'query://client-profile/claude-code',
     clientDesc: 'Claude Code',
   },
+  {
+    key: 'desktop-agent',
+    label: '桌面智能体',
+    resource: 'query://client-profile/desktop-agent',
+    clientDesc: '桌面智能体',
+  },
 ]
 const runtimeQueryString = computed(() => {
   const params = new URLSearchParams({ key: 'YOUR_API_KEY' })
@@ -138,11 +144,18 @@ const fallbackHttpRuntimeUrl = computed(() => buildRuntimeUrl(`/mcp/query/mcp?${
 const sseRuntimeUrl = computed(() => runtimeAccess.value.sseUrl || fallbackSseRuntimeUrl.value)
 const httpRuntimeUrl = computed(() => runtimeAccess.value.httpUrl || fallbackHttpRuntimeUrl.value)
 const queryCenterDescription = computed(() => {
-  return `统一查询 MCP 入口（server 名：${QUERY_CENTER_SERVER_NAME}），提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹和交付报告能力。注意：description 只是接入说明；真正绑定靠 URL 参数提供的默认上下文，以及 MCP 方法 bind_project_context 写入当前会话绑定。`
+  return `统一查询 MCP 入口（server 名：${QUERY_CENTER_SERVER_NAME}），提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、本地运行轨迹和交付报告能力。注意：description 只是接入说明；真正绑定靠 URL 参数提供的默认上下文，以及 MCP 方法 bind_project_context 写入当前会话绑定。`
 })
 
 function getFallbackCliProfile(profileKey = 'codex') {
   return fallbackCliProfiles.find((item) => item.key === profileKey) || fallbackCliProfiles[0]
+}
+
+function resolvePromptCardText(item) {
+  if (item?.key === 'desktop-agent') {
+    return '桌面智能体运行时入口预览。AIENTRY.md 是项目入口文档，Client Profile 是接入画像；这里展示的是可直接读取的最终结果。'
+  }
+  return '适合放进当前客户端入口文件。每个客户端只展示自己的接入画像；详细规则通过 `query://...` 资源按需读取。'
 }
 
 function buildFallbackCliPrompt(profileKey = 'codex') {
@@ -165,12 +178,12 @@ function buildFallbackCliPrompt(profileKey = 'codex') {
     '6. 实现型需求优先调用 `start_project_workflow(...)` 作为固定入口；若暂不适合走固定入口，至少补齐 `search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan`。',
     '7. 仅在缺少明确的 `project_id` / `employee_id` / `rule_id`，或需要跨项目检索时，再调用 `search_ids(keyword="<用户原始问题>")`；已明确当前项目且在项目内执行时可直接读取上下文或进入本地实现。',
     '8. 不要依赖 description、项目说明或“当前项目”文字做绑定；需要项目绑定或续接任务树时，显式调用 `bind_project_context(...)`。',
-    '9. 当前任务先在项目本地推进：先完成分析、改动、验证和本地记录，再通过 MCP 回写任务树、工作事实和交付结果。',
+    '9. 当前任务先在项目本地推进：先完成分析、改动、验证和本地记录，再通过 MCP 回写任务树和交付结果；详细执行轨迹留在本地 runtime。',
     '10. 每个需求都要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；对象只记录需求内容和必要定位字段，不记录任务树、任务节点、执行历史或项目智能体上下文。',
     '11. 若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。',
     '12. 若目标、对象、范围或预期结果不清晰，仍需先输出需求理解、计划摘要和可能误解点并请求确认；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认。',
-    '13. 一旦用户已确认计划或已明确要求执行，后续按已生成计划连续推进到完成；阶段之间只更新任务树、工作事实、验证结果和必要进度，不再停下来请求“是否继续”。只有遇到破坏性/不可逆操作、权限或环境阻塞、需求范围变化、验证无法推进，或必须由用户做业务决策时，才暂停并明确说明阻塞点。',
-    '14. 长任务先调用 `start_work_session` 获取 `session_id`，后续复用同一个 `chat_session_id/session_id`，并用 `save_work_facts`、`append_session_event` 维护轨迹。',
+    '13. 一旦用户已确认计划或已明确要求执行，后续按已生成计划连续推进到完成；阶段之间只更新任务树、验证结果和必要进度，本地执行轨迹由本地 runtime 保存，不再停下来请求“是否继续”。只有遇到破坏性/不可逆操作、权限或环境阻塞、需求范围变化、验证无法推进，或必须由用户做业务决策时，才暂停并明确说明阻塞点。',
+    '14. 长任务先调用 `record_requirement` 记录服务端需求本体；后续复用同一个 `chat_session_id/session_id`，详细执行轨迹由本地 runtime 保存。',
     '15. 如宿主支持任务树，执行前先读取 `get_current_task_tree`；开始节点用 `update_task_node_status`，完成节点时必须用 `complete_task_node_with_verification` 补验证结果后再结束。',
     '16. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。',
     '',
@@ -194,8 +207,8 @@ function buildFallbackCliPrompt(profileKey = 'codex') {
     '- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。',
     '- requirement 本地对象与 query-mcp canonical 状态要同时维护；不要只写 session 文件而缺失 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。',
     '- 如果自动 bootstrap 把状态写到了别的服务子目录，不能把它当成当前仓库根目录已初始化；入口提示词必须以当前 CLI 工作区为准重新核对。',
-    `- 若当前还没有 \`session_id\`，调用 \`start_work_session\` 后也要立刻持久化；工作轨迹 \`session_id\` 建议按 \`${sessionIdFormatHint.value}\` 规则生成并全程复用。`,
-    '- 中断恢复顺序固定为 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`；若项目工作区不可解析，再退回当前 CLI 自己的本地存储。',
+    `- 若当前还没有 \`session_id\`，调用 \`record_requirement\` 后也要立刻持久化；本地运行轨迹 \`session_id\` 建议按 \`${sessionIdFormatHint.value}\` 规则生成并全程复用。`,
+    '- 中断恢复先读取本地 runtime 状态，再调用 `bind_project_context(...)` 并读取当前任务树；若项目工作区不可解析，再退回当前 CLI 自己的本地存储。',
     '- 不要在项目工作区写入分叉会话状态文件。',
     '',
     '回答要求：',

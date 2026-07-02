@@ -8,8 +8,7 @@ from typing import Any
 
 import requests
 
-from core.deps import external_mcp_store, system_config_store
-from stores.json.system_config_store import normalize_system_mcp_config
+from core.deps import external_mcp_store
 
 _external_mcp_tool_cache: dict[str, list[dict]] = {}
 _external_mcp_tool_signatures: dict[str, tuple] = {}
@@ -213,32 +212,6 @@ def _supports_capability(capabilities: object, key: str) -> bool | None:
     return bool(value)
 
 
-def _system_mcp_modules() -> list[dict[str, Any]]:
-    cfg = system_config_store.get_global()
-    normalized = normalize_system_mcp_config(getattr(cfg, "mcp_config", {}))
-    servers = normalized.get("mcpServers")
-    if not isinstance(servers, dict):
-        return []
-    modules: list[dict[str, Any]] = []
-    for server_name, raw_server in sorted(servers.items(), key=lambda item: str(item[0])):
-        if not isinstance(raw_server, dict):
-            continue
-        modules.append(
-            {
-                "id": f"sysmcp::{server_name}",
-                "name": str(server_name),
-                "source_type": "system_config",
-                "enabled": bool(raw_server.get("enabled", True)),
-                "endpoint_http": str(raw_server.get("url") or "").strip(),
-                "endpoint_sse": "",
-                "project_id": "",
-                "updated_at": str(getattr(cfg, "updated_at", "") or ""),
-                "config": dict(raw_server),
-            }
-        )
-    return modules
-
-
 def _list_visible_external_mcp_modules(project_id: str) -> list[object]:
     visible: list[object] = []
     project_id_value = str(project_id or "").strip()
@@ -247,10 +220,6 @@ def _list_visible_external_mcp_modules(project_id: str) -> list[object]:
             continue
         module_project_id = str(getattr(module, "project_id", "") or "").strip()
         if module_project_id and module_project_id != project_id_value:
-            continue
-        visible.append(module)
-    for module in _system_mcp_modules():
-        if not bool(module.get("enabled", True)):
             continue
         visible.append(module)
     return visible

@@ -1,5 +1,12 @@
 import { getStoredAuthProfile } from "@/utils/auth-storage.js";
 import {
+  hasNativeDesktopBridge,
+  readNativeGlobalMcpConfigFile,
+  readNativeProjectMcpConfigFile,
+  writeNativeGlobalMcpConfigFile,
+  writeNativeProjectMcpConfigFile,
+} from "@/utils/native-desktop-bridge.js";
+import {
   PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX,
   PROJECT_DEPLOY_DRAFT_STORAGE_PREFIX,
   STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX,
@@ -8,6 +15,15 @@ import {
 const LOCAL_CONNECTOR_STORAGE_PREFIX = "project_chat.local_connector";
 const GUIDE_TOUR_STORAGE_PREFIX = "project_chat.guide_tour";
 const PROJECT_SELECTION_STORAGE_KEY = "project_id";
+export const DEFAULT_LOCAL_MCP_CONFIG = {
+  mcpServers: {
+    "prompts.chat": {
+      type: "http",
+      url: "https://prompts.chat/api/mcp",
+      enabled: true,
+    },
+  },
+};
 
 function chatSessionStorageKey(projectId) {
   const normalized = String(projectId || "").trim();
@@ -298,4 +314,283 @@ export function writePreferredSkillResourceDirectory(projectId, directoryPath) {
     return;
   }
   localStorage.removeItem(key);
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeMcpServerName(value, fallback = "mcp-server") {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_.]+|[-_.]+$/g, "")
+    .slice(0, 80);
+  return normalized || fallback;
+}
+
+function inferMcpServerName(config, index = 0) {
+  const explicitName = config?.name || config?.id || config?.server || config?.server_name;
+  if (explicitName) {
+    return normalizeMcpServerName(explicitName, `mcp-server-${index + 1}`);
+  }
+  const url = String(config?.url || config?.endpoint || config?.baseUrl || config?.base_url || "").trim();
+  if (url) {
+    try {
+      const parsed = new URL(url);
+      return normalizeMcpServerName(parsed.hostname.split(".")[0], `mcp-server-${index + 1}`);
+    } catch {
+      return normalizeMcpServerName(url.split("/").filter(Boolean).pop(), `mcp-server-${index + 1}`);
+    }
+  }
+  const command = String(config?.command || "").trim();
+  if (command) {
+    const args = Array.isArray(config?.args) ? config.args.map((item) => String(item || "")) : [];
+    const packageName = args.find((item) => item && !item.startsWith("-") && !item.startsWith("http"));
+    return normalizeMcpServerName(packageName || command, `mcp-server-${index + 1}`);
+  }
+  return `mcp-server-${index + 1}`;
+}
+
+function normalizeMcpServerConfig(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const config = { ...source };
+  const type = String(
+    config.type ||
+      config.transport ||
+      (config.command ? "stdio" : config.url || config.endpoint || config.baseUrl || config.base_url ? "http" : ""),
+  ).trim();
+  if (type) config.type = type;
+  delete config.transport;
+  delete config.name;
+  delete config.id;
+  delete config.server;
+  delete config.server_name;
+  if (!config.url) {
+    const url = config.endpoint || config.baseUrl || config.base_url;
+    if (url) config.url = String(url || "").trim();
+  }
+  delete config.endpoint;
+  delete config.baseUrl;
+  delete config.base_url;
+  if (Array.isArray(config.args)) {
+    config.args = config.args.map((item) => String(item));
+  }
+  if (config.env && (typeof config.env !== "object" || Array.isArray(config.env))) {
+    delete config.env;
+  }
+  if (config.headers && (typeof config.headers !== "object" || Array.isArray(config.headers))) {
+    delete config.headers;
+  }
+  if (Object.prototype.hasOwnProperty.call(config, "enabled")) {
+    config.enabled = Boolean(config.enabled);
+  }
+  return config;
+}
+
+function normalizeMcpServersFromArray(items) {
+  const servers = {};
+  for (const [index, item] of items.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const config = normalizeMcpServerConfig(item);
+    const baseName = inferMcpServerName(item, index);
+    let name = baseName;
+    let suffix = 2;
+    while (servers[name]) {
+      name = `${baseName}-${suffix}`;
+      suffix += 1;
+    }
+    servers[name] = config;
+  }
+  return servers;
+}
+
+function normalizeMcpServersFromObject(rawServers) {
+  const servers = {};
+  for (const [rawName, rawConfig] of Object.entries(rawServers || {})) {
+    const name = normalizeMcpServerName(rawName);
+    if (!name || !rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) {
+      continue;
+    }
+    servers[name] = normalizeMcpServerConfig(rawConfig);
+  }
+  return servers;
+}
+
+export function normalizeMcpConfig(value, fallback = {}) {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value) ? value : fallback;
+  const normalized = {
+    ...(source && typeof source === "object" && !Array.isArray(source)
+      ? source
+      : {}),
+  };
+  let servers = {};
+  let singleServerConfig = false;
+  if (
+    normalized.mcpServers &&
+    typeof normalized.mcpServers === "object" &&
+    !Array.isArray(normalized.mcpServers)
+  ) {
+    servers = normalizeMcpServersFromObject(normalized.mcpServers);
+  } else if (
+    normalized.servers &&
+    typeof normalized.servers === "object" &&
+    !Array.isArray(normalized.servers)
+  ) {
+    servers = normalizeMcpServersFromObject(normalized.servers);
+  } else if (Array.isArray(normalized.mcpServers)) {
+    servers = normalizeMcpServersFromArray(normalized.mcpServers);
+  } else if (Array.isArray(normalized.servers)) {
+    servers = normalizeMcpServersFromArray(normalized.servers);
+  } else if (normalized.command || normalized.url || normalized.endpoint || normalized.baseUrl || normalized.base_url) {
+    const config = normalizeMcpServerConfig(normalized);
+    servers[inferMcpServerName(normalized, 0)] = config;
+    singleServerConfig = true;
+  }
+  if (singleServerConfig) {
+    return { mcpServers: servers };
+  }
+  const { servers: _legacyServers, ...rest } = normalized;
+  return {
+    ...rest,
+    mcpServers: servers,
+  };
+}
+
+export function formatMcpConfig(value) {
+  return JSON.stringify(normalizeMcpConfig(value), null, 2);
+}
+
+export function parseMcpConfigText(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(text || "").trim() || "{}");
+  } catch (err) {
+    throw new Error(`MCP 配置 JSON 解析失败：${err?.message || "格式错误"}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("MCP 配置必须是 JSON 对象");
+  }
+  return normalizeMcpConfig(parsed);
+}
+
+export function globalMcpConfigPathLabel() {
+  return "~/.ai-employee/mcp.json";
+}
+
+export function projectMcpConfigPathLabel() {
+  return ".ai-employee/mcp.json";
+}
+
+export async function readGlobalMcpConfigFile() {
+  if (!hasNativeDesktopBridge()) {
+    return {
+      scope: "global",
+      path: globalMcpConfigPathLabel(),
+      exists: false,
+      content: formatMcpConfig(DEFAULT_LOCAL_MCP_CONFIG),
+      config: cloneJson(DEFAULT_LOCAL_MCP_CONFIG),
+      native: false,
+    };
+  }
+  const result = await readNativeGlobalMcpConfigFile();
+  const content = String(result?.content || formatMcpConfig(DEFAULT_LOCAL_MCP_CONFIG));
+  return {
+    scope: "global",
+    path: String(result?.path || globalMcpConfigPathLabel()).trim(),
+    exists: Boolean(result?.exists),
+    content,
+    config: parseMcpConfigText(content),
+    native: true,
+  };
+}
+
+export async function writeGlobalMcpConfigFile(config) {
+  const content = formatMcpConfig(config);
+  if (!hasNativeDesktopBridge()) {
+    throw new Error("当前不是桌面端，无法写入全局 MCP 配置文件");
+  }
+  const result = await writeNativeGlobalMcpConfigFile(content);
+  const normalizedContent = String(result?.content || content);
+  return {
+    scope: "global",
+    path: String(result?.path || globalMcpConfigPathLabel()).trim(),
+    exists: Boolean(result?.exists ?? true),
+    content: normalizedContent,
+    config: parseMcpConfigText(normalizedContent),
+    native: true,
+  };
+}
+
+export async function readProjectMcpConfigFile(workspacePath) {
+  const normalizedWorkspacePath = String(workspacePath || "").trim();
+  if (!normalizedWorkspacePath || !hasNativeDesktopBridge()) {
+    return {
+      scope: "project",
+      path: projectMcpConfigPathLabel(),
+      exists: false,
+      content: formatMcpConfig({ mcpServers: {} }),
+      config: { mcpServers: {} },
+      native: false,
+    };
+  }
+  const result = await readNativeProjectMcpConfigFile(normalizedWorkspacePath);
+  const content = String(result?.content || formatMcpConfig({ mcpServers: {} }));
+  return {
+    scope: "project",
+    path: String(result?.path || projectMcpConfigPathLabel()).trim(),
+    exists: Boolean(result?.exists),
+    content,
+    config: parseMcpConfigText(content),
+    native: true,
+  };
+}
+
+export async function writeProjectMcpConfigFile(workspacePath, config) {
+  const normalizedWorkspacePath = String(workspacePath || "").trim();
+  if (!normalizedWorkspacePath) {
+    throw new Error("缺少项目工作区路径，无法写入项目 MCP 配置文件");
+  }
+  if (!hasNativeDesktopBridge()) {
+    throw new Error("当前不是桌面端，无法写入项目 MCP 配置文件");
+  }
+  const content = formatMcpConfig(config);
+  const result = await writeNativeProjectMcpConfigFile(normalizedWorkspacePath, content);
+  const normalizedContent = String(result?.content || content);
+  return {
+    scope: "project",
+    path: String(result?.path || projectMcpConfigPathLabel()).trim(),
+    exists: Boolean(result?.exists ?? true),
+    content: normalizedContent,
+    config: parseMcpConfigText(normalizedContent),
+    native: true,
+  };
+}
+
+export function mergeMcpConfigs(globalConfig, projectConfig) {
+  const globalNormalized = normalizeMcpConfig(globalConfig);
+  const projectNormalized = normalizeMcpConfig(projectConfig);
+  return {
+    ...globalNormalized,
+    ...projectNormalized,
+    mcpServers: {
+      ...(globalNormalized.mcpServers || {}),
+      ...(projectNormalized.mcpServers || {}),
+    },
+  };
+}
+
+export async function readEffectiveMcpConfigFile(workspacePath) {
+  const [globalFile, projectFile] = await Promise.all([
+    readGlobalMcpConfigFile(),
+    readProjectMcpConfigFile(workspacePath),
+  ]);
+  return {
+    global: globalFile,
+    project: projectFile,
+    config: mergeMcpConfigs(globalFile.config, projectFile.config),
+  };
 }

@@ -56,11 +56,7 @@ _CHAT_SESSION_FIELD_KEYS = {
 
 _AUTO_CAPTURE_SKIP_TOOL_NAMES = {
     "bind_project_context",
-    "start_work_session",
-    "save_work_facts",
-    "append_session_event",
-    "resume_work_session",
-    "summarize_checkpoint",
+    "record_requirement",
     "build_delivery_report",
     "generate_release_note_entry",
     "save_project_memory",

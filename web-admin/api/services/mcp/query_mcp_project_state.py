@@ -65,7 +65,7 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 ## 初始化要求
 
 1. 执行前先读取 `query://usage-guide`。
-2. 再按当前客户端读取对应画像：Codex 读 `query://client-profile/codex`，Claude Code 读 `query://client-profile/claude-code`，其他 CLI 或不确定时读 `query://client-profile/generic-cli`。
+2. 再按当前客户端读取对应画像：Codex 读 `query://client-profile/codex`，Hermes 读 `query://client-profile/hermes`，Claude Code 读 `query://client-profile/claude-code`，其他 CLI 或不确定时读 `query://client-profile/generic-cli`。
 3. 先以当前 CLI 工作区为准，检查并补齐本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用。
 4. 项目本地工作流技能默认位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。
 5. 只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。
@@ -85,8 +85,8 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 4. 显式调用 `bind_project_context(...)` 绑定当前任务；真正执行前再用 `get_current_task_tree(...)` 确认当前节点。
 5. 整个任务固定复用同一个 `chat_session_id` 和同一个 `session_id`；不要在项目工作区写入分叉会话状态文件。
 6. 本地 requirement 记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；本地 query-mcp 状态写入 `.ai-employee/query-mcp/` 下的 canonical 文件。
-7. 工作流必须本地优先：先完成分析、改动、验证和本地记录，再把任务树状态、工作事实和交付结果同步回服务端。
-8. 中断恢复顺序固定为：`bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`。
+7. 工作流必须本地优先：先完成分析、改动、验证和本地记录，再把任务树状态和交付结果同步回服务端。
+8. 中断恢复先读取本地 runtime 状态，再调用 `bind_project_context(...)` 并读取当前任务树。
 9. 开始节点前先调用 `update_task_node_status(...)`；完成节点时必须调用 `complete_task_node_with_verification(...)`。
 10. 如果宿主拿不到任务树读取或推进工具，只能明确说明“任务树闭环未完成”，不能把自然语言进度当成已完成。
 

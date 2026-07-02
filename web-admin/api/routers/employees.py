@@ -34,17 +34,13 @@ from services.external.rule_service import suggest_external_rules as build_exter
 from services.external.skill_service import suggest_external_skills as build_external_skill_suggestions
 from services.skills.employee_template_import_service import import_agent_templates
 from stores.json.employee_store import EmployeeConfig, _now_iso
-from services.mcp.system_mcp_discovery import list_system_mcp_skills
 from stores.mcp_bridge import (
-    ResourceDef,
     RiskDomain,
     Rule,
     Severity,
     Skill,
-    ToolDef,
     rule_store,
     skill_store,
-    skills_now_iso,
 )
 from models.requests import EmployeeAgentTemplateImportReq, EmployeeCreateReq, EmployeeDraftCreateReq, EmployeeDraftGenerateReq, EmployeeExternalRuleSuggestReq, EmployeeExternalSkillSuggestReq, EmployeeUpdateReq
 
@@ -94,9 +90,6 @@ router = APIRouter(
 
 
 _TOOL_SUFFIXES = {".py", ".js"}
-_SYSTEM_MCP_SKILL_TAG = "system-mcp-import"
-
-
 def _normalize_domain(value: str) -> str:
     return str(value or "").strip().lower()
 
@@ -506,7 +499,7 @@ def _is_reusable_employee_skill(skill: Skill) -> bool:
         for tag in (getattr(skill, "tags", None) or ())
         if _normalize_match_key(tag)
     }
-    return not bool(tags & {"employee-draft", "system-mcp", _SYSTEM_MCP_SKILL_TAG})
+    return not bool(tags & {"employee-draft", "system-mcp", "system-mcp-import"})
 
 
 def _match_skill_ids_from_hints(skill_hints: list[str] | None) -> tuple[list[str], list[str]]:
@@ -729,332 +722,6 @@ def _create_generated_skill(
     skill_store.save(skill)
     return skill
 
-
-def _allocate_system_mcp_skill_id(server_name: str) -> str:
-    base = _slugify_token(server_name)
-    if not base:
-        return skill_store.new_id()
-    candidate = f"system-mcp-{base}"
-    suffix = 2
-    while skill_store.get(candidate) is not None:
-        candidate = f"system-mcp-{base}-{suffix}"
-        suffix += 1
-    return candidate
-
-
-def _system_mcp_skill_description(server: dict[str, Any]) -> str:
-    name = _normalize_text_value(server.get("name"), limit=120) or "system-mcp"
-    tools = len(server.get("tools") or [])
-    prompts = len(server.get("prompts") or [])
-    resources = len(server.get("resources") or [])
-    summary = _normalize_text_value(server.get("summary"), limit=180)
-    base = f"导入自系统 MCP 服务 {name}，包含 tools {tools} / prompts {prompts} / resources {resources}。"
-    return f"{base} {summary}".strip()[:400]
-
-
-def _build_system_mcp_skill_artifacts(server: dict[str, Any]) -> tuple[tuple[ToolDef, ...], tuple[ResourceDef, ...]]:
-    tools: list[ToolDef] = []
-    resources: list[ResourceDef] = []
-    seen_tool_names: set[str] = set()
-    seen_resource_names: set[str] = set()
-
-    for item in server.get("tools") or []:
-        if not isinstance(item, dict):
-            continue
-        name = _normalize_text_value(item.get("name"), limit=160)
-        if not name or name in seen_tool_names:
-            continue
-        seen_tool_names.add(name)
-        tools.append(
-            ToolDef(
-                name=name,
-                description=_normalize_text_value(item.get("description"), limit=240) or "Imported MCP tool",
-            )
-        )
-
-    for item in server.get("prompts") or []:
-        if not isinstance(item, dict):
-            continue
-        raw_name = _normalize_text_value(item.get("name"), limit=160)
-        if not raw_name:
-            continue
-        name = f"prompt:{raw_name}"
-        if name in seen_tool_names:
-            continue
-        seen_tool_names.add(name)
-        tools.append(
-            ToolDef(
-                name=name,
-                description=_normalize_text_value(item.get("description"), limit=240) or "Imported MCP prompt",
-            )
-        )
-
-    for item in server.get("resources") or []:
-        if not isinstance(item, dict):
-            continue
-        name = _normalize_text_value(item.get("name"), limit=160)
-        if not name or name in seen_resource_names:
-            continue
-        seen_resource_names.add(name)
-        resources.append(
-            ResourceDef(
-                name=name,
-                description=_normalize_text_value(item.get("description"), limit=240) or "Imported MCP resource",
-            )
-        )
-    return tuple(tools), tuple(resources)
-
-
-def _write_system_mcp_skill_package(*, skill_id: str, server: dict[str, Any]) -> str:
-    package_path = skill_store.package_path(skill_id)
-    package_path.mkdir(parents=True, exist_ok=True)
-    server_name = _normalize_text_value(server.get("name"), limit=120) or skill_id
-    summary = _normalize_text_value(server.get("summary"), limit=240) or "系统 MCP 服务"
-    description = _system_mcp_skill_description(server)
-    manifest = {
-        "name": f"系统MCP · {server_name}",
-        "description": description,
-        "version": "1.0.0",
-        "tags": [_SYSTEM_MCP_SKILL_TAG, "employee-draft", "system-mcp"],
-        "mcp_service": server_name,
-    }
-    (package_path / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    sections = [
-        "---",
-        f"name: 系统MCP · {server_name}",
-        f"description: {description or server_name}",
-        "---",
-        "",
-        f"# 系统MCP · {server_name}",
-        "",
-        "## Summary",
-        summary,
-        "",
-        "## Source",
-        f"- name: {server_name}",
-        f"- url: {_normalize_text_value(server.get('url'), limit=400) or '-'}",
-        f"- source: {_normalize_text_value(server.get('source'), limit=80) or '-'}",
-    ]
-    notice = _normalize_text_value(server.get("notice"), limit=400)
-    if notice:
-        sections.extend(["", "## Notice", notice])
-
-    for heading, key in (("Tools", "tools"), ("Prompts", "prompts"), ("Resources", "resources")):
-        entries = []
-        for item in server.get(key) or []:
-            if not isinstance(item, dict):
-                continue
-            name = _normalize_text_value(item.get("name"), limit=160)
-            if not name:
-                continue
-            desc = _normalize_text_value(item.get("description"), limit=240)
-            entries.append(f"- {name}" + (f": {desc}" if desc else ""))
-        sections.extend(["", f"## {heading}", *(entries or ["- none"])])
-
-    (package_path / "SKILL.md").write_text("\n".join(sections).strip() + "\n", encoding="utf-8")
-    project_root = get_project_root()
-    try:
-        return str(package_path.relative_to(project_root))
-    except ValueError:
-        return str(package_path)
-
-
-def _upsert_system_mcp_skill(*, server: dict[str, Any], created_by: str) -> Skill:
-    server_name = _normalize_text_value(server.get("name"), limit=120)
-    if not server_name:
-        raise HTTPException(400, "system MCP server name is required")
-
-    tools, resources = _build_system_mcp_skill_artifacts(server)
-    description = _system_mcp_skill_description(server)
-    existing = next(
-        (
-            item
-            for item in skill_store.list_all()
-            if item.mcp_service == server_name and _SYSTEM_MCP_SKILL_TAG in (item.tags or ())
-        ),
-        None,
-    )
-
-    skill_id = existing.id if existing else _allocate_system_mcp_skill_id(server_name)
-    package_dir = _write_system_mcp_skill_package(skill_id=skill_id, server=server)
-    skill_name = f"系统MCP · {server_name}"
-    if existing is None:
-        skill = Skill(
-            id=skill_id,
-            name=skill_name,
-            version="1.0.0",
-            description=description,
-            mcp_service=server_name,
-            created_by=created_by,
-            package_dir=package_dir,
-            tools=tools,
-            resources=resources,
-            tags=(_SYSTEM_MCP_SKILL_TAG, "employee-draft", "system-mcp"),
-            mcp_enabled=True,
-        )
-    else:
-        skill = Skill(
-            id=existing.id,
-            name=skill_name,
-            version=existing.version or "1.0.0",
-            description=description,
-            mcp_service=server_name,
-            created_by=existing.created_by or created_by,
-            package_dir=package_dir,
-            tools=tools,
-            resources=resources,
-            dependencies=existing.dependencies,
-            tags=tuple(dict.fromkeys([*(existing.tags or ()), _SYSTEM_MCP_SKILL_TAG, "employee-draft", "system-mcp"])),
-            mcp_enabled=True,
-            created_at=existing.created_at,
-            updated_at=skills_now_iso(),
-        )
-    skill_store.save(skill)
-    return skill
-
-
-def _import_selected_system_mcp_skills(server_names: list[str] | None, *, created_by: str) -> list[Skill]:
-    requested_names = _normalize_text_list(server_names, limit=12, item_limit=160)
-    if not requested_names:
-        return []
-    cfg = system_config_store.get_global()
-    discovered = list_system_mcp_skills(getattr(cfg, "mcp_config", {}), timeout_sec=4)
-    by_name = {
-        _normalize_match_key(item.get("name")): item
-        for item in discovered
-        if _normalize_text_value(item.get("name"), limit=160)
-    }
-    imported: list[Skill] = []
-    for server_name in requested_names:
-        server = by_name.get(_normalize_match_key(server_name))
-        if server is None:
-            continue
-        imported.append(_upsert_system_mcp_skill(server=server, created_by=created_by))
-    return imported
-
-
-def _build_employee_draft_mcp_tokens(
-    *,
-    name: str,
-    description: str,
-    goal: str,
-    skills: list[str] | None,
-    rule_titles: list[str] | None,
-    rule_domains: list[str] | None,
-    style_hints: list[str] | None,
-    default_workflow: list[str] | None,
-    tool_usage_policy: str,
-) -> list[str]:
-    raw_values = _normalize_text_list(
-        [
-            name,
-            description,
-            goal,
-            *list(skills or []),
-            *list(rule_titles or []),
-            *list(rule_domains or []),
-            *list(style_hints or []),
-            *list(default_workflow or []),
-            tool_usage_policy,
-        ],
-        limit=80,
-        item_limit=240,
-    )
-    seen: set[str] = set()
-    tokens: list[str] = []
-    for value in raw_values:
-        for piece in [value, *re.split(r"[\s,，。；;、/|]+", value)]:
-            token = _normalize_match_key(piece)
-            if not token or len(token) < 2 or token in seen:
-                continue
-            seen.add(token)
-            tokens.append(token)
-    return tokens
-
-
-def _build_system_mcp_search_text(server: dict[str, Any]) -> str:
-    values: list[str] = [
-        _normalize_text_value(server.get("name"), limit=240),
-        _normalize_text_value(server.get("summary"), limit=240),
-        _normalize_text_value(server.get("notice"), limit=240),
-    ]
-    for item in server.get("skills") or []:
-        if not isinstance(item, dict):
-            continue
-        values.extend(
-            [
-                _normalize_text_value(item.get("name"), limit=240),
-                _normalize_text_value(item.get("description"), limit=240),
-            ]
-        )
-    return " ".join(_normalize_text_list(values, limit=200, item_limit=240)).lower()
-
-
-def _recommend_system_mcp_server_names(
-    *,
-    requested_names: list[str] | None,
-    name: str,
-    description: str,
-    goal: str,
-    skills: list[str] | None,
-    rule_titles: list[str] | None,
-    rule_domains: list[str] | None,
-    style_hints: list[str] | None,
-    default_workflow: list[str] | None,
-    tool_usage_policy: str,
-) -> list[str]:
-    normalized_requested = _normalize_text_list(requested_names, limit=12, item_limit=160)
-    if normalized_requested:
-        return normalized_requested
-
-    cfg = system_config_store.get_global()
-    discovered = list_system_mcp_skills(getattr(cfg, "mcp_config", {}), timeout_sec=4)
-    if not discovered:
-        return []
-
-    tokens = _build_employee_draft_mcp_tokens(
-        name=name,
-        description=description,
-        goal=goal,
-        skills=skills,
-        rule_titles=rule_titles,
-        rule_domains=rule_domains,
-        style_hints=style_hints,
-        default_workflow=default_workflow,
-        tool_usage_policy=tool_usage_policy,
-    )
-    if not tokens:
-        return []
-
-    scored: list[tuple[int, int, str]] = []
-    for server in discovered:
-        if not isinstance(server, dict) or not bool(server.get("enabled", True)):
-            continue
-        server_name = _normalize_text_value(server.get("name"), limit=160)
-        if not server_name:
-            continue
-        search_text = _build_system_mcp_search_text(server)
-        if not search_text:
-            continue
-        score = 0
-        normalized_name = _normalize_match_key(server_name)
-        for token in tokens:
-            if token not in search_text:
-                continue
-            score += 2 if len(token) >= 4 else 1
-            if token == normalized_name:
-                score += 2
-        if score <= 0:
-            continue
-        skill_count = len(server.get("skills") or [])
-        scored.append((score, skill_count, server_name))
-
-    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
-    return [server_name for _, _, server_name in scored[:3]]
 
 def _build_generated_rule_content(
     *,
@@ -1452,25 +1119,6 @@ async def create_employee_from_draft(req: EmployeeDraftCreateReq, auth_payload: 
     created_by = current_username(auth_payload)
     created_skills: list[Skill] = []
     created_rules: list[Rule] = []
-    selected_system_mcp_servers = _recommend_system_mcp_server_names(
-        requested_names=req.selected_system_mcp_servers,
-        name=name,
-        description=req.description,
-        goal=req.goal,
-        skills=req.skills,
-        rule_titles=req.rule_titles,
-        rule_domains=req.rule_domains,
-        style_hints=req.style_hints,
-        default_workflow=req.default_workflow,
-        tool_usage_policy=req.tool_usage_policy,
-    )
-    imported_system_mcp_skills = _import_selected_system_mcp_skills(
-        selected_system_mcp_servers,
-        created_by=created_by,
-    )
-    for skill in imported_system_mcp_skills:
-        if skill.id not in matched_skill_ids:
-            matched_skill_ids.append(skill.id)
 
     if req.auto_create_missing_skills:
         for hint in missing_skill_hints:
@@ -1495,10 +1143,6 @@ async def create_employee_from_draft(req: EmployeeDraftCreateReq, auth_payload: 
                     goal=req.goal,
                     skills=[
                         *_normalize_text_list(req.skills, limit=30, item_limit=160),
-                        *[
-                            str(getattr(skill, "name", "") or "").strip()
-                            for skill in imported_system_mcp_skills
-                        ],
                         *[
                             str(getattr(skill, "name", "") or "").strip()
                             for skill in created_skills
@@ -1604,10 +1248,6 @@ async def create_employee_from_draft(req: EmployeeDraftCreateReq, auth_payload: 
         "created_skills": [
             {"id": skill.id, "name": skill.name}
             for skill in created_skills
-        ],
-        "imported_system_mcp_skills": [
-            {"id": skill.id, "name": skill.name, "mcp_service": skill.mcp_service}
-            for skill in imported_system_mcp_skills
         ],
         "created_rules": [
             {"id": rule.id, "title": rule.title, "domain": rule.domain}

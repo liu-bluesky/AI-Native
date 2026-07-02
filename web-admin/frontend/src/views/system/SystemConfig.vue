@@ -5,7 +5,7 @@
         <p class="hero-eyebrow">System Control</p>
         <h2>系统配置与 MCP</h2>
         <p class="hero-desc">
-          在这里维护系统级开关、默认 MCP 配置，以及当前远程 MCP 服务暴露出的能力状态。
+          在这里维护系统级开关、本机全局 MCP registry 和高级提示词模板；项目页可设置项目级 MCP registry。
         </p>
         <div class="hero-highlights">
           <span class="hero-highlight">系统默认项</span>
@@ -27,7 +27,7 @@
       <article class="metric-card">
         <span class="metric-label">MCP 服务数</span>
         <strong class="metric-value">{{ mcpServers.length }}</strong>
-        <span class="metric-foot">读取自系统级 `mcpServers`</span>
+        <span class="metric-foot">读取自本机全局 registry</span>
       </article>
       <article class="metric-card">
         <span class="metric-label">已发现能力</span>
@@ -78,8 +78,16 @@
         <el-tab-pane name="mcp-config">
           <template #label>
             <span class="system-config-tab-label">
-              <span class="system-config-tab-label__title">MCP 配置</span>
-              <span class="system-config-tab-label__meta">地址、开关与 JSON</span>
+              <span class="system-config-tab-label__title">本机 MCP</span>
+              <span class="system-config-tab-label__meta">全局、项目与 transport</span>
+            </span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="mcp-desktop-agent">
+          <template #label>
+            <span class="system-config-tab-label">
+              <span class="system-config-tab-label__title">桌面智能体入口</span>
+              <span class="system-config-tab-label__meta">AIENTRY 与客户端画像</span>
             </span>
           </template>
         </el-tab-pane>
@@ -96,9 +104,15 @@
 
     <div
       v-show="activeTab !== 'mcp-discovery'"
-      :class="['content-grid', { 'content-grid--single': activeTab === 'mcp-config' }]"
+      :class="[
+        'content-grid',
+        { 'content-grid--single': ['mcp-config', 'mcp-desktop-agent'].includes(activeTab) },
+      ]"
     >
-      <div v-show="activeTab !== 'mcp-config'" class="content-main">
+      <div
+        v-show="!['mcp-config', 'mcp-desktop-agent'].includes(activeTab)"
+        class="content-main"
+      >
         <section v-show="activeTab === 'defaults'" class="panel">
           <div class="panel-head">
             <div>
@@ -116,7 +130,11 @@
             class="inline-alert"
           />
 
-          <el-form label-position="top" class="switch-form">
+          <el-form
+            v-show="activeTab === 'mcp-config'"
+            label-position="top"
+            class="switch-form"
+          >
             <div class="switch-list">
               <div class="switch-card">
                 <div>
@@ -900,15 +918,27 @@
 
       </div>
 
-      <aside v-show="activeTab === 'mcp-config'" class="content-aside">
+      <aside
+        v-show="['mcp-config', 'mcp-desktop-agent'].includes(activeTab)"
+        class="content-aside"
+      >
         <section class="panel panel--accent panel--sticky">
           <div class="panel-head">
             <div>
               <p class="panel-kicker">MCP Workspace</p>
-              <h3>系统 MCP 配置</h3>
-              <p>把服务开关、对外地址和 JSON 编辑器集中到一个独立工作区。</p>
+              <h3>{{ activeTab === "mcp-desktop-agent" ? "桌面智能体入口" : "本机全局 MCP" }}</h3>
+              <p>
+                {{
+                  activeTab === "mcp-desktop-agent"
+                    ? "说明桌面智能体运行时读取的入口材料，以及它和 Client Profile 的关系。"
+                    : "维护本机全局 MCP registry；项目页可用项目 registry 覆盖同名 server。"
+                }}
+              </p>
             </div>
-            <div class="panel-actions">
+            <div v-show="activeTab === 'mcp-config'" class="panel-actions">
+              <el-button type="primary" @click="openMcpServerDialog">
+                添加 Server
+              </el-button>
               <el-button @click="formatMcpConfigText">格式化 JSON</el-button>
               <el-button @click="resetMcpConfig">恢复默认</el-button>
             </div>
@@ -929,7 +959,7 @@
             </article>
           </div>
 
-          <div class="server-switch-list">
+          <div v-show="activeTab === 'mcp-config'" class="server-switch-list">
             <div
               v-for="server in editableMcpServers"
               :key="`edit-${server.name}`"
@@ -937,7 +967,9 @@
             >
               <div class="server-switch-meta">
                 <div class="server-switch-name">{{ server.name }}</div>
-                <div class="server-switch-url">{{ server.url || "未配置 URL" }}</div>
+                <div class="server-switch-url">
+                  {{ server.type }} · {{ server.endpoint || "未配置入口" }}
+                </div>
               </div>
               <div class="server-switch-actions">
                 <el-tag size="small" :type="server.enabled ? 'success' : 'info'">
@@ -947,8 +979,22 @@
                   :model-value="server.enabled"
                   @change="(value) => toggleMcpServer(server.name, value)"
                 />
+                <el-button size="small" :loading="mcpServerTestingName === server.name" @click="testMcpServer(server)">
+                  测试
+                </el-button>
+                <el-button size="small" @click="editMcpServer(server)">
+                  编辑
+                </el-button>
+                <el-button size="small" type="danger" plain @click="removeMcpServer(server)">
+                  删除
+                </el-button>
               </div>
             </div>
+            <el-empty
+              v-if="!editableMcpServers.length && !configParseError"
+              description="暂无全局 MCP server"
+              :image-size="52"
+            />
           </div>
 
           <el-alert
@@ -960,19 +1006,31 @@
             :title="configParseError"
           />
 
-          <el-form label-position="top" class="switch-form">
+          <el-form
+            v-show="activeTab === 'mcp-config'"
+            label-position="top"
+            class="switch-form"
+          >
+            <el-alert
+              class="inline-alert"
+              type="info"
+              :closable="false"
+              show-icon
+              title="普通用户通常只需要项目页的“统一 MCP 接入”结果；这里主要给系统管理员配置外部客户端地址、事件通道和调试参数。"
+            />
+
             <div class="employee-skill-site-card voice-config-card">
               <div class="voice-config-section__head">
                 <div>
-                  <div class="employee-skill-site-card__title">飞书长连接 worker</div>
+                  <div class="employee-skill-site-card__title">飞书事件接收 Worker（高级）</div>
                   <div class="switch-desc">
-                    开启后，后端会托管已配置为长连接且允许托管的飞书机器人 worker；保存配置会立即尝试启动或停止。
+                    只控制后端是否托管飞书长连接事件监听，不是飞书机器人模块总开关。
                   </div>
                 </div>
                 <el-switch v-model="form.feishu_bot_long_connection_worker_enabled" />
               </div>
               <div class="field-desc field-desc-block">
-                这个开关替代原来的 FEISHU_BOT_LONG_CONNECTION_WORKER_ENABLED 环境变量；仍需要在机器人接入页选择“长连接”并打开对应连接器的 worker 托管开关。
+                机器人身份、权限和消息发送能力仍在机器人接入页配置；这里仅影响“收消息 / 收事件”的长连接后台通道。仍需要在机器人接入页选择“长连接”并打开对应连接器的 worker 托管开关。
               </div>
             </div>
 
@@ -998,85 +1056,158 @@
               </div>
             </el-form-item>
 
-            <el-form-item label="CLI Bootstrap 提示词模板">
-              <el-input
-                v-model="form.query_mcp_bootstrap_prompt_template"
-                type="textarea"
-                :rows="10"
-                resize="vertical"
-                placeholder="用于生成对外 CLI 的引导提示词模板。支持 {{clarity_threshold}} / {{project_context_block}} / {{chat_session_block}}。"
-              />
-              <div class="field-desc">
-                用于 `/query-mcp/runtime` 返回的 `cli_prompt`。建议保留 `{{clarity_threshold}}`、`{{project_context_block}}`、`{{chat_session_block}}` 三个变量。
-              </div>
-            </el-form-item>
+            <details class="advanced-config-details">
+              <summary>
+                <span>高级提示词模板</span>
+                <small>仅在要改所有外部客户端最终提示词生成逻辑时编辑</small>
+              </summary>
+              <div class="advanced-config-details__body">
+                <el-alert
+                  class="inline-alert"
+                  type="warning"
+                  :closable="false"
+                  show-icon
+                  title="这里是“统一 MCP 接入”结果页的上游材料，不是普通用户需要复制的最终提示词。"
+                />
 
-            <el-form-item label="Usage Guide 模板">
-              <el-input
-                v-model="form.query_mcp_usage_guide_template"
-                type="textarea"
-                :rows="10"
-                resize="vertical"
-                placeholder="用于生成 query://usage-guide 的模板。支持清晰度相关占位符。"
-              />
-              <div class="field-desc">
-                用于生成 `query://usage-guide`。建议保留 `{{clarity_threshold_line}}`、`{{clarity_direct_line}}`、`{{clarity_confirm_line}}`、`{{clarity_repeat_line}}`。
-              </div>
-            </el-form-item>
+                <el-form-item label="CLI Bootstrap 提示词模板">
+                  <el-input
+                    v-model="form.query_mcp_bootstrap_prompt_template"
+                    type="textarea"
+                    :rows="10"
+                    resize="vertical"
+                    placeholder="用于生成对外 CLI 的引导提示词模板。支持 {{clarity_threshold}} / {{project_context_block}} / {{chat_session_block}}。"
+                  />
+                  <div class="field-desc">
+                    生成 Codex CLI / Hermes / Claude Code / 桌面智能体等最终入口提示词；普通用户在“统一 MCP 接入”里复制渲染结果即可。
+                  </div>
+                </el-form-item>
 
-            <el-form-item label="Client Profile 模板">
-              <el-input
-                v-model="form.query_mcp_client_profile_template"
-                type="textarea"
-                :rows="6"
-                resize="vertical"
-                placeholder="用于生成 query://client-profile/* 的模板。支持 {{client_title}} / {{focus_lines}}。"
-              />
-              <div class="field-desc">
-                当前各客户端的差异化内容仍由后端组装，模板只负责最终外层结构。建议保留 `{{client_title}}` 和 `{{focus_lines}}`。
-              </div>
-            </el-form-item>
+                <el-form-item label="Usage Guide 模板">
+                  <el-input
+                    v-model="form.query_mcp_usage_guide_template"
+                    type="textarea"
+                    :rows="10"
+                    resize="vertical"
+                    placeholder="用于生成 query://usage-guide 的模板。支持清晰度相关占位符。"
+                  />
+                  <div class="field-desc">
+                    生成 `query://usage-guide`，是外部客户端读取的通用 MCP 使用说明；不是项目对话里的最终提示词。
+                  </div>
+                </el-form-item>
 
-            <div class="employee-skill-site-card voice-config-card">
-              <div class="voice-config-section__head">
-                <div class="employee-skill-site-card__title">回答风格提示</div>
-                <div class="switch-desc">
-                  控制运行时 `concise / balanced / detailed` 三档回答风格的提示文案。
+                <el-form-item label="Client Profile 模板">
+                  <el-input
+                    v-model="form.query_mcp_client_profile_template"
+                    type="textarea"
+                    :rows="6"
+                    resize="vertical"
+                    placeholder="用于生成 query://client-profile/* 的模板。支持 {{client_title}} / {{focus_lines}}。"
+                  />
+                  <div class="field-desc">
+                    生成各外部客户端画像的外层结构；具体 Codex / Hermes / Claude Code 差异仍由后端组装。
+                  </div>
+                </el-form-item>
+
+                <div class="employee-skill-site-card voice-config-card">
+                  <div class="voice-config-section__head">
+                    <div class="employee-skill-site-card__title">AI 回复风格提示</div>
+                    <div class="switch-desc">
+                      控制运行时 `concise / balanced / detailed` 三档回答风格文案。
+                    </div>
+                  </div>
+
+                  <div
+                    v-for="styleKey in ['concise', 'balanced', 'detailed']"
+                    :key="styleKey"
+                    class="employee-skill-site-card"
+                  >
+                    <div class="employee-skill-site-card__title">{{ styleKey }}</div>
+                    <div class="employee-skill-site-card__grid">
+                      <el-form-item label="风格提示">
+                        <el-input
+                          v-model="form.chat_style_hints[styleKey].style_hint"
+                          type="textarea"
+                          :rows="2"
+                          resize="vertical"
+                        />
+                      </el-form-item>
+                      <el-form-item label="结论优先顺序提示">
+                        <el-input
+                          v-model="form.chat_style_hints[styleKey].order_hint"
+                          type="textarea"
+                          :rows="2"
+                          resize="vertical"
+                        />
+                      </el-form-item>
+                    </div>
+                  </div>
                 </div>
               </div>
-
-              <div
-                v-for="styleKey in ['concise', 'balanced', 'detailed']"
-                :key="styleKey"
-                class="employee-skill-site-card"
-              >
-                <div class="employee-skill-site-card__title">{{ styleKey }}</div>
-                <div class="employee-skill-site-card__grid">
-                  <el-form-item label="风格提示">
-                    <el-input
-                      v-model="form.chat_style_hints[styleKey].style_hint"
-                      type="textarea"
-                      :rows="2"
-                      resize="vertical"
-                    />
-                  </el-form-item>
-                  <el-form-item label="结论优先顺序提示">
-                    <el-input
-                      v-model="form.chat_style_hints[styleKey].order_hint"
-                      type="textarea"
-                      :rows="2"
-                      resize="vertical"
-                    />
-                  </el-form-item>
-                </div>
-              </div>
-            </div>
+            </details>
           </el-form>
 
-          <div class="editor-shell">
+          <el-form
+            v-show="activeTab === 'mcp-desktop-agent'"
+            label-position="top"
+            class="switch-form"
+          >
+            <el-alert
+              class="inline-alert"
+              type="info"
+              :closable="false"
+              show-icon
+              title="AIENTRY.md 是桌面项目入口文档；Client Profile 是桌面智能体接入 MCP 的画像片段。二者会参与最终桌面入口提示词，但不是同一份内容。"
+            />
+            <div class="mcp-relationship-grid">
+              <article class="mcp-relationship-card">
+                <span>项目入口文档</span>
+                <strong>AIENTRY.md 初始化内容</strong>
+                <p>用于初始化项目里的 AIENTRY.md，说明桌面应用、项目聊天和项目 MCP 如何处理当前项目需求。</p>
+              </article>
+              <article class="mcp-relationship-card">
+                <span>客户端画像</span>
+                <strong>桌面智能体 Client Profile</strong>
+                <p>生成 `query://client-profile/desktop-agent`，描述桌面智能体相对 Codex / Hermes / Claude Code 的能力边界。</p>
+              </article>
+              <article class="mcp-relationship-card">
+                <span>最终结果</span>
+                <strong>统一 MCP 接入 - 桌面智能体</strong>
+                <p>给桌面智能体运行时读取的最终入口提示词，应在项目页统一 MCP 接入弹窗中查看。</p>
+              </article>
+            </div>
+
+            <details class="advanced-config-details" open>
+              <summary>
+                <span>桌面智能体 Client Profile 模板</span>
+                <small>只影响桌面智能体画像，不会改其他客户端</small>
+              </summary>
+              <div class="advanced-config-details__body">
+                <el-form-item label="模板内容">
+                  <el-input
+                    v-model="form.query_mcp_desktop_agent_profile_template"
+                    type="textarea"
+                    :rows="12"
+                    resize="vertical"
+                    placeholder="用于生成 query://client-profile/desktop-agent 的模板。支持 {{client_title}} / {{focus_lines}}。"
+                  />
+                  <div class="field-desc">
+                    建议保留 `{{client_title}}` 和 `{{focus_lines}}`；这里是上游模板，不是 AIENTRY.md 文件内容。
+                  </div>
+                </el-form-item>
+              </div>
+            </details>
+          </el-form>
+
+          <div v-show="activeTab === 'mcp-config'" class="editor-shell">
             <div class="editor-toolbar">
-              <span>mcpServers.json</span>
+              <span>{{ globalMcpConfigPath }}</span>
               <span class="editor-meta">{{ configLineCount }} 行</span>
+            </div>
+            <div class="mcp-import-helper">
+              <strong>完整 JSON 配置</strong>
+              <span>可直接粘贴 ccswitch / Claude / 自定义 MCP JSON，格式化后会自动转换成 mcpServers。</span>
+              <el-button size="small" @click="formatMcpConfigText">导入并格式化</el-button>
             </div>
             <el-input
               v-model="form.mcp_config_text"
@@ -1087,9 +1218,8 @@
               class="mcp-config-input"
             />
           </div>
-          <p class="field-desc field-desc-block">
-            当前页面会基于这里的 `url` 自动调用
-            `tools/list`、`prompts/list`、`resources/list` 进行探测。
+          <p v-show="activeTab === 'mcp-config'" class="field-desc field-desc-block">
+            全局 MCP registry 保存到本机配置文件，项目页的 `.ai-employee/mcp.json` 会覆盖同名 server。
           </p>
         </section>
       </aside>
@@ -1100,7 +1230,7 @@
         <div>
           <h3>当前 MCP 技能</h3>
           <p>
-            下方展示每个系统级 MCP 服务返回的能力列表，以及每次探测的技术结果。
+            下方展示本机全局 MCP registry 的能力列表，以及每次探测的技术结果。
           </p>
         </div>
       </div>
@@ -1238,24 +1368,103 @@
         </article>
       </div>
     </section>
+
+    <el-dialog
+      v-model="mcpServerDialogVisible"
+      :title="mcpServerDialogTitle"
+      width="min(720px, 92vw)"
+      append-to-body
+    >
+      <el-form label-position="top" class="mcp-server-form">
+        <el-form-item label="作用域">
+          <el-tag type="info">全局</el-tag>
+          <div class="mcp-form-hint">
+            不确定时直接粘贴完整 JSON，系统会自动识别 stdio / HTTP / SSE。
+          </div>
+        </el-form-item>
+        <el-form-item label="Server 名称">
+          <el-input
+            v-model="mcpServerDraft.name"
+            placeholder="query-center"
+            :disabled="mcpServerDialogMode === 'edit'"
+          />
+        </el-form-item>
+        <el-form-item label="传输类型">
+          <el-segmented v-model="mcpServerDraft.type" :options="mcpTransportOptions" />
+        </el-form-item>
+        <el-form-item v-if="mcpServerDraft.type === 'stdio'" label="命令">
+          <el-input v-model="mcpServerDraft.command" placeholder="/usr/local/bin/my-mcp" />
+        </el-form-item>
+        <el-form-item v-if="mcpServerDraft.type === 'stdio'" label="参数">
+          <el-input v-model="mcpServerDraft.argsText" placeholder='["--stdio"]' />
+        </el-form-item>
+        <el-form-item v-if="mcpServerDraft.type === 'stdio'" label="工作目录">
+          <el-input v-model="mcpServerDraft.cwd" placeholder=". 或 /path/to/server" />
+        </el-form-item>
+        <el-form-item v-if="mcpServerDraft.type !== 'stdio'" label="URL">
+          <el-input v-model="mcpServerDraft.url" placeholder="http://127.0.0.1:8000/mcp/query/sse" />
+        </el-form-item>
+        <el-form-item label="请求头 JSON">
+          <el-input
+            v-model="mcpServerDraft.headersText"
+            type="textarea"
+            :rows="3"
+            placeholder='{"Authorization":"Bearer ..."}'
+          />
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="mcpServerDraft.enabled">启用</el-checkbox>
+        </el-form-item>
+        <el-form-item label="完整 JSON 配置">
+          <el-input
+            v-model="mcpServerDraft.rawJsonText"
+            type="textarea"
+            :rows="8"
+            resize="vertical"
+            spellcheck="false"
+            placeholder='{"command":"npx","args":["ace-tool","--base-url","https://...","--token","..."]}'
+          />
+          <div class="mcp-form-hint">
+            测试和保存会优先使用这里的完整 JSON；无需先点击导入。
+          </div>
+          <div class="mcp-local-editor__actions">
+            <el-button size="small" @click="applyMcpServerRawJson">
+              导入 JSON
+            </el-button>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="mcpServerDialogVisible = false">取消</el-button>
+        <el-button :loading="mcpServerTestingName === mcpServerDraft.name" @click="testMcpServerDraft">
+          测试
+        </el-button>
+        <el-button type="primary" @click="saveMcpServerDraft">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 import api from "@/utils/api.js";
+import {
+  executeNativeLiuAgentTool,
+  getNativeRuntimeInfo,
+} from "@/utils/native-desktop-bridge.js";
 import { resolveSettingsAwarePath } from "@/utils/chat-settings-route.js";
-
-const DEFAULT_MCP_CONFIG = {
-  mcpServers: {
-    "prompts.chat": {
-      url: "https://prompts.chat/api/mcp",
-      enabled: true,
-    },
-  },
-};
+import {
+  DEFAULT_LOCAL_MCP_CONFIG,
+  formatMcpConfig,
+  parseMcpConfigText as parseLocalMcpConfigText,
+  readGlobalMcpConfigFile,
+  mergeMcpConfigs,
+  writeGlobalMcpConfigFile,
+} from "@/modules/project-chat/services/projectChatStorage.js";
 const DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT =
   "你好，我是系统状态助手。我会默认保持实时通话，随时帮你观察当前页面、系统状态和功能是否可用。";
 const DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT = `你是系统状态助手。
@@ -1333,13 +1542,13 @@ const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MC
 7. 实现型需求优先调用 \`start_project_workflow(...)\` 作为固定入口；若宿主暂不适合走固定入口，至少按 \`search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan\` 的顺序补齐前置步骤。
 8. 仅在缺少明确的 \`project_id\` / \`employee_id\` / \`rule_id\`，或需要跨项目检索时，再调用 \`search_ids(keyword="<用户原始问题>")\`；已明确当前项目且在项目内执行时可直接读取上下文或进入本地实现。
 9. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 \`bind_project_context(...)\`。
-10. 当前任务先在项目本地推进：先在工作区完成分析、改动、验证和本地记录，再通过 MCP 回写任务树、工作事实、交付结论或记忆到服务端。
+10. 当前任务先在项目本地推进：先在工作区完成分析、改动、验证和本地记录，再通过 MCP 回写任务树、交付结论或记忆到服务端；详细执行轨迹留在本地 runtime。
 11. 每个需求必须维护 1 个本地 requirement 对象；项目工作区可解析时，写入 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`。对象只记录需求内容和必要定位字段，不记录 \`workflow_skill\`、\`task_tree\`、\`current_task_node\`、\`task_branches\`、\`history\`、执行轨迹或项目智能体上下文。
 12. 当前全局清晰度确认阈值为 {{clarity_threshold}}/5；先按 1-5 分估计用户需求清晰度。
 13. 若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {{clarity_threshold}}，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。
 14. 若清晰度分数 < {{clarity_threshold}}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认或用户已明确要求执行后不要重复确认；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。
-15. 一旦用户已确认计划或已明确要求执行，后续按已生成计划连续推进到完成；阶段之间只更新任务树、工作事实、验证结果和必要进度，不再停下来请求“是否继续”。只有遇到破坏性/不可逆操作、权限或环境阻塞、需求范围变化、验证无法推进，或必须由用户做业务决策时，才暂停并明确说明阻塞点。
-16. 长任务先调用 \`start_work_session\` 获取 \`session_id\`，后续复用同一个 \`chat_session_id/session_id\`，并用 \`save_work_facts\`、\`append_session_event\` 维护轨迹。
+15. 一旦用户已确认计划或已明确要求执行，后续按已生成计划连续推进到完成；阶段之间只更新任务树、验证结果和必要进度，本地执行轨迹由本地 runtime 保存，不再停下来请求“是否继续”。只有遇到破坏性/不可逆操作、权限或环境阻塞、需求范围变化、验证无法推进，或必须由用户做业务决策时，才暂停并明确说明阻塞点。
+16. 长任务先调用 \`record_requirement\` 记录服务端需求本体；后续复用同一个 \`chat_session_id/session_id\`，详细执行轨迹由本地 runtime 保存。
 17. 如宿主支持任务树，\`bind_project_context(...)\` 后立刻读取 \`get_current_task_tree\`，核对 \`root_goal/title/current_node\` 是否属于当前问题；若明显属于旧任务树，停止复用当前 \`chat_session_id\`，改为新建并持久化新的 \`chat_session_id\` 后重新绑定。
 18. 真正进入执行前，再读取一次 \`get_current_task_tree\` 确认当前节点；开始节点用 \`update_task_node_status\`，完成节点必须用 \`complete_task_node_with_verification\` 补验证结果后再结束。
 19. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。
@@ -1351,7 +1560,7 @@ const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MC
 - \`chat_session_id\` 生成后要立即持久化；优先写项目目录 \`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json\`，并同步维护 \`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json\`。
 - requirement 本地对象与 query-mcp canonical 状态要同时维护；不要只写 session 文件而缺失 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`。
 - 如果自动 bootstrap 把状态写到了别的服务子目录，不能把它当成当前仓库根目录已初始化；入口提示词必须以当前 CLI 工作区为准重新核对。
-- 若当前还没有 \`session_id\`，调用 \`start_work_session\` 后也要立刻持久化；中断恢复顺序固定为 \`bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)\`。
+- 若当前还没有 \`session_id\`，调用 \`record_requirement\` 后也要立刻持久化；中断恢复先读取本地 runtime 状态，再调用 \`bind_project_context(...)\` 并读取当前任务树。
 - 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要在项目工作区写入分叉会话状态文件。
 
 回答要求：
@@ -1362,13 +1571,13 @@ const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MC
 const DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = `# Unified Query MCP
 
 - 统一入口路径: /mcp/query
-- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹、需求历史查询和交付报告能力。
-- 推荐工具: start_project_workflow / bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory
+- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、本地运行轨迹、需求记录查询和交付报告能力。
+- 推荐工具: start_project_workflow / bind_project_context / record_requirement / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / build_delivery_report / generate_release_note_entry / save_project_memory
 
 ## 最少执行规则
 1. 先读取 query://usage-guide；再按当前客户端读取对应 client profile：Codex 读 query://client-profile/codex，Hermes 读 query://client-profile/hermes，Claude Code 读 query://client-profile/claude-code。
 1.0.1 \`list_mcp_resources\` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 read_mcp_resource 读取 query://usage-guide 和对应 client profile，禁止反复调用 list_mcp_resources。
-1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些员工、工具、规则或需求历史，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree / list_recent_project_requirements 等对应工具，不要为了 bootstrap 机械列资源目录。
+1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些员工、工具或规则，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree 等对应工具，不要为了 bootstrap 机械列资源目录。
 1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。
 1.2 统一查询工作流默认先检查项目本地 \`.ai-employee/skills/query-mcp-workflow/\`；若不存在，再从系统技能库同步或创建到本地；已存在则直接复用，禁止重复创建。
 1.3 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 \`.ai-employee/skills/query-mcp-workflow/\`；优先读取本地副本中的 \`SKILL.md\` 与 \`manifest.json\`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 \`mcp-skills/knowledge/skills/query-mcp-workflow.json\` 与 \`mcp-skills/knowledge/skill-packages/query-mcp-workflow/\` 作为回源比对位置。
@@ -1385,15 +1594,18 @@ const DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = `# Unified Query MCP
 7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。
 7.0 项目型问题优先使用项目绑定员工、规则和技能；先判断项目内现成能力能否闭环，只有项目能力不足时才自行补足。
 7.0.1 每次新请求进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文；不要只看规则标题，也不要把无关规则机械带入当前问题。
-7.0.2 实现型任务先在项目本地推进：先完成本地分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树、工作事实、交付结论与记忆。
+7.0.2 实现型任务先在项目本地推进：先完成本地分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树、交付结论与记忆；详细执行轨迹留在本地 runtime。
 7.0.3 {{clarity_threshold_line}}
 7.0.4 {{clarity_direct_line}}
 7.0.5 {{clarity_confirm_line}}
 7.0.6 {{clarity_repeat_line}}
 7.1 记忆检索不是每轮固定步骤；仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，再调用 recall_project_memory 或 recall_employee_memory。
-7.2 同一任务轮若已生成任务树并进入执行，后续默认依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。
+7.2 同一任务轮若已生成任务树并进入执行，后续默认依赖当前会话、任务树和本地运行轨迹，不要重复检索同一批项目记忆。
 7.3 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。`;
 const DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE = `# {{client_title}} Client Profile
+
+{{focus_lines}}`;
+const DEFAULT_QUERY_MCP_DESKTOP_AGENT_PROFILE_TEMPLATE = `# {{client_title}} Client Profile
 
 {{focus_lines}}`;
 const DEFAULT_CHAT_STYLE_HINTS = {
@@ -1415,6 +1627,7 @@ const SYSTEM_CONFIG_TAB_NAMES = [
   "assistant",
   "ecosystem",
   "mcp-config",
+  "mcp-desktop-agent",
   "mcp-discovery",
 ];
 const EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS = [
@@ -1487,10 +1700,37 @@ const form = ref({
   query_mcp_usage_guide_template: DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE,
   query_mcp_client_profile_template:
     DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE,
+  query_mcp_desktop_agent_profile_template:
+    DEFAULT_QUERY_MCP_DESKTOP_AGENT_PROFILE_TEMPLATE,
   chat_style_hints: cloneConfig(DEFAULT_CHAT_STYLE_HINTS),
   skill_registry_sources: cloneConfig(DEFAULT_SKILL_REGISTRY_SOURCES),
-  mcp_config_text: JSON.stringify(DEFAULT_MCP_CONFIG, null, 2),
+  mcp_config_text: formatMcpConfig(DEFAULT_LOCAL_MCP_CONFIG),
 });
+const globalMcpConfigPath = ref("~/.ai-employee/mcp.json");
+const defaultWorkspacePath = ref("");
+const mcpServerDialogVisible = ref(false);
+const mcpServerDialogMode = ref("create");
+const mcpServerTestingName = ref("");
+const mcpServerDraft = ref({
+  name: "",
+  type: "stdio",
+  command: "",
+  argsText: "[]",
+  cwd: "",
+  url: "",
+  headersText: "{}",
+  rawJsonText: "",
+  enabled: true,
+});
+const mcpServerDraftSyncing = ref(false);
+const mcpTransportOptions = [
+  { label: "stdio", value: "stdio" },
+  { label: "HTTP", value: "http" },
+  { label: "SSE", value: "sse" },
+];
+const mcpServerDialogTitle = computed(() =>
+  `${mcpServerDialogMode.value === "edit" ? "编辑" : "添加"}全局 MCP Server`,
+);
 
 const totalSkillCount = computed(() =>
   mcpServers.value.reduce(
@@ -1528,16 +1768,28 @@ const editableMcpServers = computed(() => {
       return [];
     }
     return Object.entries(servers)
-      .map(([name, value]) => ({
-        name: String(name || "").trim(),
-        url:
+      .map(([name, value]) => {
+        const config =
           value && typeof value === "object" && !Array.isArray(value)
-            ? String(value.url || "").trim()
-            : "",
-        enabled:
-          !(value && typeof value === "object" && !Array.isArray(value)) ||
-          Boolean(value.enabled ?? true),
-      }))
+            ? value
+            : {};
+        const type = String(
+          config.type || config.transport || (config.command ? "stdio" : "http"),
+        ).trim() || "stdio";
+        return {
+          name: String(name || "").trim(),
+          type,
+          endpoint:
+            type === "stdio"
+              ? [config.command, ...(Array.isArray(config.args) ? config.args : [])]
+                  .filter(Boolean)
+                  .join(" ")
+              : String(config.url || "").trim(),
+          url: String(config.url || "").trim(),
+          enabled: Boolean(config.enabled ?? true),
+          config,
+        };
+      })
       .filter((item) => item.name);
   } catch {
     return [];
@@ -1998,7 +2250,6 @@ function applyConfigToForm(config, options = {}) {
   const payload =
     config && typeof config === "object" && !Array.isArray(config) ? config : {};
   const preservePrompt = Boolean(options.preservePrompt);
-  const preserveMcpConfig = Boolean(options.preserveMcpConfig);
   const hasPrompt = Object.prototype.hasOwnProperty.call(
     payload,
     "default_chat_system_prompt",
@@ -2011,7 +2262,6 @@ function applyConfigToForm(config, options = {}) {
     payload,
     "desktop_agent_global_prompt",
   );
-  const hasMcpConfig = Object.prototype.hasOwnProperty.call(payload, "mcp_config");
 
   form.value = {
     ...form.value,
@@ -2133,38 +2383,24 @@ function applyConfigToForm(config, options = {}) {
       payload.query_mcp_client_profile_template ||
         DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE,
     ),
+    query_mcp_desktop_agent_profile_template: String(
+      payload.query_mcp_desktop_agent_profile_template ||
+        DEFAULT_QUERY_MCP_DESKTOP_AGENT_PROFILE_TEMPLATE,
+    ),
     chat_style_hints: normalizeChatStyleHints(payload.chat_style_hints),
     skill_registry_sources: normalizeSkillRegistrySources(
       payload.skill_registry_sources,
     ),
-    mcp_config_text:
-      hasMcpConfig || !preserveMcpConfig
-        ? formatMcpConfig(payload.mcp_config)
-        : String(form.value.mcp_config_text || formatMcpConfig(DEFAULT_MCP_CONFIG)),
+    mcp_config_text: String(
+      form.value.mcp_config_text || formatMcpConfig(DEFAULT_LOCAL_MCP_CONFIG),
+    ),
   };
   ensureVoiceModelSelection();
   ensureVoiceOutputModelSelection();
 }
 
-function formatMcpConfig(value) {
-  const config =
-    value && typeof value === "object" ? value : DEFAULT_MCP_CONFIG;
-  return JSON.stringify(config, null, 2);
-}
-
 function parseMcpConfigText() {
-  let parsed;
-  try {
-    parsed = JSON.parse(
-      String(form.value.mcp_config_text || "").trim() || "{}",
-    );
-  } catch (err) {
-    throw new Error(`MCP 配置 JSON 解析失败：${err?.message || "格式错误"}`);
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("MCP 配置必须是 JSON 对象");
-  }
-  return parsed;
+  return parseLocalMcpConfigText(form.value.mcp_config_text);
 }
 
 function updateMcpConfig(mutator) {
@@ -2183,7 +2419,377 @@ function formatMcpConfigText() {
 }
 
 function resetMcpConfig() {
-  form.value.mcp_config_text = formatMcpConfig(DEFAULT_MCP_CONFIG);
+  form.value.mcp_config_text = formatMcpConfig(DEFAULT_LOCAL_MCP_CONFIG);
+}
+
+function resetMcpServerDraft() {
+  mcpServerDraftSyncing.value = true;
+  mcpServerDraft.value = {
+    name: "",
+    type: "stdio",
+    command: "",
+    argsText: "[]",
+    cwd: "",
+    url: "",
+    headersText: "{}",
+    rawJsonText: "",
+    enabled: true,
+  };
+  mcpServerDraftSyncing.value = false;
+}
+
+function openMcpServerDialog(options = {}) {
+  mcpServerDialogMode.value = "create";
+  resetMcpServerDraft();
+  mcpServerDialogVisible.value = true;
+}
+
+function editMcpServer(server) {
+  const config =
+    server?.config && typeof server.config === "object" && !Array.isArray(server.config)
+      ? server.config
+      : {};
+  mcpServerDraftSyncing.value = true;
+  mcpServerDialogMode.value = "edit";
+  mcpServerDraft.value = {
+    name: String(server?.name || "").trim(),
+    type: String(config.type || config.transport || server?.type || "stdio").trim() || "stdio",
+    command: String(config.command || "").trim(),
+    argsText: JSON.stringify(Array.isArray(config.args) ? config.args : [], null, 2),
+    cwd: String(config.cwd || "").trim(),
+    url: String(config.url || "").trim(),
+    headersText: JSON.stringify(
+      config.headers && typeof config.headers === "object" && !Array.isArray(config.headers)
+        ? config.headers
+        : {},
+      null,
+      2,
+    ),
+    enabled: Boolean(config.enabled ?? true),
+    rawJsonText: formatMcpConfig({ mcpServers: { [String(server?.name || "").trim()]: config } }),
+  };
+  mcpServerDraftSyncing.value = false;
+  mcpServerDialogVisible.value = true;
+}
+
+function syncMcpServerDraftFromConfig(name, config) {
+  mcpServerDraftSyncing.value = true;
+  mcpServerDraft.value = {
+    name: String(name || "").trim(),
+    type: String(config.type || config.transport || (config.command ? "stdio" : "http")).trim() || "stdio",
+    command: String(config.command || "").trim(),
+    argsText: JSON.stringify(Array.isArray(config.args) ? config.args : [], null, 2),
+    cwd: String(config.cwd || "").trim(),
+    url: String(config.url || "").trim(),
+    headersText: JSON.stringify(
+      config.headers && typeof config.headers === "object" && !Array.isArray(config.headers)
+        ? config.headers
+        : {},
+      null,
+      2,
+    ),
+    rawJsonText: formatMcpConfig({ mcpServers: { [String(name || "").trim()]: config } }),
+    enabled: Boolean(config.enabled ?? true),
+  };
+  mcpServerDraftSyncing.value = false;
+}
+
+function buildMcpServerConfigFromFields() {
+  const draft = mcpServerDraft.value;
+  const name = String(draft.name || "").trim();
+  if (!name) return null;
+  const type = String(draft.type || "stdio").trim() || "stdio";
+  let args = [];
+  let headers = {};
+  try {
+    args = JSON.parse(String(draft.argsText || "[]").trim() || "[]");
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(args)) return null;
+  try {
+    headers = JSON.parse(String(draft.headersText || "{}").trim() || "{}");
+  } catch {
+    return null;
+  }
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return null;
+  const config = { type, enabled: Boolean(draft.enabled) };
+  if (type === "stdio") {
+    const command = String(draft.command || "").trim();
+    if (!command) return null;
+    config.command = command;
+    if (args.length) config.args = args.map((item) => String(item));
+    const cwd = String(draft.cwd || "").trim();
+    if (cwd) config.cwd = cwd;
+  } else {
+    const url = String(draft.url || "").trim();
+    if (!url) return null;
+    config.url = url;
+  }
+  if (Object.keys(headers).length) config.headers = headers;
+  return { name, config, configRoot: { mcpServers: { [name]: config } }, entries: [[name, config]] };
+}
+
+function syncMcpServerRawJsonFromFields() {
+  if (mcpServerDraftSyncing.value || !mcpServerDialogVisible.value) return;
+  const payload = buildMcpServerConfigFromFields();
+  if (!payload) return;
+  mcpServerDraftSyncing.value = true;
+  mcpServerDraft.value.rawJsonText = formatMcpConfig(payload.configRoot);
+  mcpServerDraftSyncing.value = false;
+}
+
+function syncMcpServerFieldsFromRawJson() {
+  if (mcpServerDraftSyncing.value || !mcpServerDialogVisible.value) return;
+  let payload;
+  try {
+    payload = resolveMcpServerPayloadFromRawJson();
+  } catch {
+    return;
+  }
+  if (!payload) return;
+  syncMcpServerDraftFromConfig(payload.name, payload.config);
+}
+
+function resolveMcpServerPayloadFromRawJson() {
+  const draft = mcpServerDraft.value;
+  const rawText = String(draft.rawJsonText || "").trim();
+  if (!rawText) return null;
+  let rawInput;
+  try {
+    rawInput = JSON.parse(rawText);
+  } catch (err) {
+    throw new Error(`MCP 配置 JSON 解析失败：${err?.message || "格式错误"}`);
+  }
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
+    throw new Error("MCP 配置必须是 JSON 对象");
+  }
+  const isSingleServerConfig =
+    !rawInput.mcpServers &&
+    !rawInput.servers &&
+    (rawInput.command || rawInput.url || rawInput.endpoint || rawInput.baseUrl || rawInput.base_url);
+  if (isSingleServerConfig) {
+    const explicitName = String(
+      draft.name ||
+        rawInput.name ||
+        rawInput.id ||
+        rawInput.server ||
+        rawInput.server_name ||
+        "",
+    ).trim();
+    if (!explicitName) {
+      throw new Error("单个 MCP Server JSON 必须填写 Server 名称");
+    }
+    const parsedSingle = parseLocalMcpConfigText(
+      JSON.stringify({ mcpServers: { [explicitName]: rawInput } }),
+    );
+    const entries = Object.entries(parsedSingle.mcpServers || {});
+    if (!entries.length) {
+      throw new Error("JSON 里没有识别到 MCP Server");
+    }
+    const [name, config] = entries[0];
+    return { name, config, configRoot: parsedSingle, entries };
+  }
+  let parsed;
+  try {
+    parsed = parseLocalMcpConfigText(rawText);
+  } catch (err) {
+    throw new Error(err?.message || "MCP JSON 配置格式错误");
+  }
+  const entries = Object.entries(parsed.mcpServers || {});
+  if (!entries.length) {
+    throw new Error("JSON 里没有识别到 MCP Server");
+  }
+  const draftName = String(draft.name || "").trim();
+  const selectedEntry = entries.find(([name]) => name === draftName) || entries[0];
+  const [name, config] = selectedEntry;
+  return { name, config, configRoot: parsed, entries };
+}
+
+function applyMcpServerRawJson() {
+  let payload;
+  try {
+    payload = resolveMcpServerPayloadFromRawJson();
+  } catch (err) {
+    ElMessage.error(err?.message || "MCP JSON 配置格式错误");
+    return;
+  }
+  if (!payload) {
+    ElMessage.warning("请先粘贴完整 JSON 配置");
+    return;
+  }
+  const rawText = String(mcpServerDraft.value.rawJsonText || "");
+  syncMcpServerDraftFromConfig(payload.name, payload.config);
+  mcpServerDraft.value.rawJsonText = rawText;
+  const entries = payload.entries || [];
+  ElMessage.success(entries.length > 1 ? `已导入 ${payload.name}，测试/保存会使用完整 JSON` : "已导入 MCP Server");
+}
+
+function buildMcpServerConfigFromDraft() {
+  const draft = mcpServerDraft.value;
+  const rawPayload = resolveMcpServerPayloadFromRawJson();
+  if (rawPayload) return rawPayload;
+  const name = String(draft.name || "").trim();
+  if (!name) throw new Error("Server 名称不能为空");
+  const type = String(draft.type || "stdio").trim() || "stdio";
+  let args = [];
+  let headers = {};
+  try {
+    args = JSON.parse(String(draft.argsText || "[]").trim() || "[]");
+  } catch (err) {
+    throw new Error(`参数 JSON 解析失败：${err?.message || "格式错误"}`);
+  }
+  if (!Array.isArray(args)) throw new Error("参数必须是 JSON 数组");
+  try {
+    headers = JSON.parse(String(draft.headersText || "{}").trim() || "{}");
+  } catch (err) {
+    throw new Error(`请求头 JSON 解析失败：${err?.message || "格式错误"}`);
+  }
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+    throw new Error("请求头必须是 JSON 对象");
+  }
+  const config = { type, enabled: Boolean(draft.enabled) };
+  if (type === "stdio") {
+    config.command = String(draft.command || "").trim();
+    if (!config.command) throw new Error("stdio server 必须配置命令");
+    if (args.length) config.args = args.map((item) => String(item));
+    const cwd = String(draft.cwd || "").trim();
+    if (cwd) config.cwd = cwd;
+  } else {
+    config.url = String(draft.url || "").trim();
+    if (!config.url) throw new Error(`${type} server 必须配置 URL`);
+  }
+  if (Object.keys(headers).length) config.headers = headers;
+  return { name, config, configRoot: { mcpServers: { [name]: config } }, entries: [[name, config]] };
+}
+
+watch(
+  () => [
+    mcpServerDraft.value.name,
+    mcpServerDraft.value.type,
+    mcpServerDraft.value.command,
+    mcpServerDraft.value.argsText,
+    mcpServerDraft.value.cwd,
+    mcpServerDraft.value.url,
+    mcpServerDraft.value.headersText,
+    mcpServerDraft.value.enabled,
+  ],
+  syncMcpServerRawJsonFromFields,
+);
+
+watch(
+  () => mcpServerDraft.value.rawJsonText,
+  syncMcpServerFieldsFromRawJson,
+);
+
+function saveMcpServerDraft() {
+  try {
+    const payload = buildMcpServerConfigFromDraft();
+    updateMcpConfig((config) => {
+      config.mcpServers =
+        config.mcpServers && typeof config.mcpServers === "object"
+          ? config.mcpServers
+          : {};
+      Object.assign(config.mcpServers, payload.configRoot?.mcpServers || { [payload.name]: payload.config });
+    });
+    mcpServerDialogVisible.value = false;
+    ElMessage.success("全局 MCP Server 已保存到当前草稿");
+  } catch (err) {
+    ElMessage.error(err?.message || "保存 MCP Server 失败");
+  }
+}
+
+async function removeMcpServer(server) {
+  const name = String(server?.name || "").trim();
+  if (!name) return;
+  try {
+    await ElMessageBox.confirm(`删除全局 MCP Server：${name}？`, "删除 MCP Server", {
+      type: "warning",
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+    });
+    updateMcpConfig((config) => {
+      if (config.mcpServers && typeof config.mcpServers === "object") {
+        delete config.mcpServers[name];
+      }
+    });
+  } catch (err) {
+    if (err !== "cancel") {
+      ElMessage.error(err?.message || "删除 MCP Server 失败");
+    }
+  }
+}
+
+async function resolveMcpTestWorkspacePath() {
+  if (defaultWorkspacePath.value) return defaultWorkspacePath.value;
+  try {
+    const runtimeInfo = await getNativeRuntimeInfo();
+    defaultWorkspacePath.value = String(runtimeInfo?.defaultWorkspacePath || "").trim();
+  } catch {
+    defaultWorkspacePath.value = "";
+  }
+  return defaultWorkspacePath.value;
+}
+
+async function testMcpServer(server, configOverride = null) {
+  const name = String(server?.name || "").trim();
+  const workspacePath = await resolveMcpTestWorkspacePath();
+  if (!workspacePath || !name) {
+    ElMessage.warning("缺少桌面端默认工作区或 Server 名称，无法测试");
+    return;
+  }
+  mcpServerTestingName.value = name;
+  try {
+    const result = await executeNativeLiuAgentTool({
+      toolCallId: `global_mcp_test_${Date.now()}`,
+      name: "list_mcp_tools",
+      arguments: {
+        server: name,
+        _mcp_config:
+          configOverride && typeof configOverride === "object"
+            ? configOverride
+            : parseMcpConfigText(),
+      },
+      workspacePath,
+    });
+    if (!result?.ok) {
+      throw new Error(result?.error || result?.errorCode || "MCP 测试失败");
+    }
+    const count = Array.isArray(result?.content?.tools) ? result.content.tools.length : 0;
+    ElMessage.success(`MCP Server 测试通过，发现 ${count} 个工具`);
+  } catch (err) {
+    ElMessage.error(err?.message || "MCP Server 测试失败");
+  } finally {
+    mcpServerTestingName.value = "";
+  }
+}
+
+async function testMcpServerDraft() {
+  let payload;
+  try {
+    payload = buildMcpServerConfigFromDraft();
+  } catch (err) {
+    ElMessage.error(err?.message || "MCP Server 配置格式错误");
+    return;
+  }
+  const candidate = mergeMcpConfigs(
+    {
+      ...parseMcpConfigText(),
+      mcpServers: {
+        ...(parseMcpConfigText().mcpServers || {}),
+        ...(payload.configRoot?.mcpServers || { [payload.name]: payload.config }),
+      },
+    },
+    { mcpServers: {} },
+  );
+  await testMcpServer(
+    {
+      name: payload.name,
+      config: payload.config,
+      type: payload.config.type,
+    },
+    candidate,
+  );
 }
 
 function toggleMcpServer(serverName, enabled) {
@@ -2210,11 +2816,23 @@ function toggleMcpServer(serverName, enabled) {
 async function refreshMcpSkills() {
   skillsLoading.value = true;
   try {
-    const data = await api.get("/system-config/mcp-skills");
-    mcpServers.value = Array.isArray(data?.servers) ? data.servers : [];
+    const parsed = parseMcpConfigText();
+    const servers = parsed?.mcpServers;
+    mcpServers.value =
+      servers && typeof servers === "object" && !Array.isArray(servers)
+        ? Object.entries(servers).map(([name, config]) => ({
+            name,
+            enabled: Boolean(config?.enabled ?? true),
+            tools: [],
+            prompts: [],
+            resources: [],
+            errors: [],
+            config,
+          }))
+        : [];
   } catch (err) {
     mcpServers.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载 MCP 技能失败");
+    ElMessage.error(err?.detail || err?.message || "解析本机 MCP 配置失败");
   } finally {
     skillsLoading.value = false;
   }
@@ -2346,6 +2964,13 @@ async function saveConfig() {
 
   saving.value = true;
   try {
+    const savedMcpConfig = await writeGlobalMcpConfigFile(mcpConfig);
+    form.value.mcp_config_text = String(
+      savedMcpConfig?.content || formatMcpConfig(mcpConfig),
+    );
+    globalMcpConfigPath.value = String(
+      savedMcpConfig?.path || "~/.ai-employee/mcp.json",
+    ).trim();
     const data = await api.patch("/system-config", {
       enable_project_manual_generation:
         !!form.value.enable_project_manual_generation,
@@ -2458,22 +3083,25 @@ async function saveConfig() {
         form.value.query_mcp_client_profile_template ||
           DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE,
       ),
+      query_mcp_desktop_agent_profile_template: String(
+        form.value.query_mcp_desktop_agent_profile_template ||
+          DEFAULT_QUERY_MCP_DESKTOP_AGENT_PROFILE_TEMPLATE,
+      ),
       chat_style_hints: normalizeChatStyleHints(form.value.chat_style_hints),
       skill_registry_sources: normalizeSkillRegistrySources(
         form.value.skill_registry_sources,
       ),
-      mcp_config: mcpConfig,
     });
     applyConfigToForm(data?.config, {
       preservePrompt: true,
-      preserveMcpConfig: true,
     });
     if (typeof window !== "undefined") {
       window.dispatchEvent(
         new CustomEvent("system-config-updated", {
-          detail: { config: data?.config || {} },
+          detail: { config: data?.config || {}, localMcpConfigChanged: true },
         }),
       );
+      window.dispatchEvent(new CustomEvent("local-mcp-config-updated"));
     }
     await Promise.all([
       refreshMcpSkills(),
@@ -2491,7 +3119,25 @@ async function saveConfig() {
 
 onMounted(() => {
   syncActiveTabFromRoute();
-  fetchConfig();
+  getNativeRuntimeInfo()
+    .then((result) => {
+      defaultWorkspacePath.value = String(result?.defaultWorkspacePath || "").trim();
+    })
+    .catch(() => {});
+  readGlobalMcpConfigFile()
+    .then((result) => {
+      form.value.mcp_config_text = String(
+        result?.content || formatMcpConfig(DEFAULT_LOCAL_MCP_CONFIG),
+      );
+      globalMcpConfigPath.value = String(
+        result?.path || "~/.ai-employee/mcp.json",
+      ).trim();
+      return fetchConfig();
+    })
+    .catch((err) => {
+      ElMessage.error(err?.message || "读取全局 MCP 配置文件失败");
+      return fetchConfig();
+    });
   fetchProjectOptions();
 });
 
@@ -3000,6 +3646,78 @@ watch(activeTab, (value) => {
   line-height: 1;
 }
 
+.advanced-config-details {
+  overflow: hidden;
+  border: 1px solid rgba(112, 128, 144, 0.16);
+  border-radius: 18px;
+  background: rgba(248, 251, 254, 0.96);
+}
+
+.advanced-config-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px 18px;
+  cursor: pointer;
+  color: var(--text-main);
+  font-size: 14px;
+  font-weight: 700;
+  list-style: none;
+}
+
+.advanced-config-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-config-details summary small {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: right;
+}
+
+.advanced-config-details__body {
+  display: grid;
+  gap: 16px;
+  padding: 0 18px 18px;
+}
+
+.mcp-relationship-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mcp-relationship-card {
+  display: grid;
+  gap: 8px;
+  min-height: 150px;
+  padding: 16px;
+  border: 1px solid rgba(112, 128, 144, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.mcp-relationship-card span {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mcp-relationship-card strong {
+  color: var(--text-main);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.mcp-relationship-card p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
 :deep(.mcp-config-input .el-textarea__inner) {
   min-height: 380px !important;
   padding: 18px;
@@ -3227,7 +3945,8 @@ watch(activeTab, (value) => {
   .skill-section-grid,
   .check-list,
   .overview-grid,
-  .mcp-summary-grid {
+  .mcp-summary-grid,
+  .mcp-relationship-grid {
     grid-template-columns: 1fr;
   }
 

@@ -108,11 +108,7 @@ _QUERY_RESULT_MEMORY_SKIP_TOOLS = {
     "check_workspace_scope",
     "resolve_execution_mode",
     "check_operation_policy",
-    "start_work_session",
-    "save_work_facts",
-    "append_session_event",
-    "resume_work_session",
-    "summarize_checkpoint",
+    "record_requirement",
     "build_delivery_report",
     "generate_release_note_entry",
     "save_project_memory",
@@ -1042,7 +1038,7 @@ class QueryMcpProxyApp:
             if not isinstance(params, dict):
                 return rpc_payload
             tool_name = _normalize_text(params.get("name"), 120)
-            if tool_name not in {"bind_project_context", "start_work_session", "start_project_workflow"}:
+            if tool_name not in {"bind_project_context", "start_project_workflow"}:
                 return rpc_payload
             arguments = params.get("arguments")
             if not isinstance(arguments, dict):

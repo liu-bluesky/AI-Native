@@ -2389,8 +2389,7 @@ const MEMORY_TYPE_LABELS = {
 };
 const INTERNAL_AUTO_QUERY_RESULT_TOOL_TAGS = new Set([
   "mcp:tools/call:search_ids",
-  "mcp:tools/call:list_recent_project_requirements",
-  "mcp:tools/call:get_requirement_history",
+  "mcp:tools/call:record_requirement",
 ]);
 const memoryFilters = ref({
   query: "",
@@ -5763,13 +5762,7 @@ function isInternalAutoQuestionSnapshot(memory) {
   );
   return [
     "mcp:tools/call:bind_project_context",
-    "mcp:tools/call:start_work_session",
-    "mcp:tools/call:save_work_facts",
-    "mcp:tools/call:append_session_event",
-    "mcp:tools/call:resume_work_session",
-    "mcp:tools/call:summarize_checkpoint",
-    "mcp:tools/call:list_recent_project_requirements",
-    "mcp:tools/call:get_requirement_history",
+    "mcp:tools/call:record_requirement",
     "mcp:tools/call:build_delivery_report",
     "mcp:tools/call:generate_release_note_entry",
     "mcp:tools/call:save_project_memory",

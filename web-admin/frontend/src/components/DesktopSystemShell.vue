@@ -476,7 +476,7 @@ const dockDragState = {
   moved: false,
 };
 const DOCK_DRAG_THRESHOLD = 6;
-const DOCK_AUTO_HIDE_DELAY_MS = 3000;
+const DOCK_AUTO_HIDE_DELAY_MS = 200;
 const dockFlipAnimations = new Map();
 let dockLayoutSnapshot = new Map();
 let dockAutoHideTimer = null;

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -111,6 +112,15 @@ struct WorkspaceFileWritePreparation {
     requires_approval: bool,
     summary: String,
     reason: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpConfigFileResult {
+    scope: String,
+    path: String,
+    exists: bool,
+    content: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -663,6 +673,36 @@ fn prepare_workspace_file_write(
 }
 
 #[tauri::command]
+fn read_global_mcp_config_file(app: tauri::AppHandle) -> Result<McpConfigFileResult, String> {
+    let target = global_mcp_config_path(&app)?;
+    read_mcp_config_file("global", target, default_global_mcp_config())
+}
+
+#[tauri::command]
+fn write_global_mcp_config_file(
+    app: tauri::AppHandle,
+    content: String,
+) -> Result<McpConfigFileResult, String> {
+    let target = global_mcp_config_path(&app)?;
+    write_mcp_config_file("global", target, content)
+}
+
+#[tauri::command]
+fn read_project_mcp_config_file(workspace_path: String) -> Result<McpConfigFileResult, String> {
+    let target = project_mcp_config_path(&workspace_path)?;
+    read_mcp_config_file("project", target, default_project_mcp_config())
+}
+
+#[tauri::command]
+fn write_project_mcp_config_file(
+    workspace_path: String,
+    content: String,
+) -> Result<McpConfigFileResult, String> {
+    let target = project_mcp_config_path(&workspace_path)?;
+    write_mcp_config_file("project", target, content)
+}
+
+#[tauri::command]
 fn classify_runner_command(
     command: String,
     args: Option<Vec<String>>,
@@ -1133,6 +1173,90 @@ fn resolve_workspace_write_target(root: &Path, raw_path: String) -> Result<PathB
     ))
 }
 
+fn global_mcp_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Some(home) = std::env::var_os("HOME") {
+        return Ok(PathBuf::from(home).join(".ai-employee").join("mcp.json"));
+    }
+    let app_data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    Ok(app_data_dir.join("mcp.json"))
+}
+
+fn project_mcp_config_path(workspace_path: &str) -> Result<PathBuf, String> {
+    let root = resolve_workspace_root(workspace_path)?;
+    Ok(root.join(".ai-employee").join("mcp.json"))
+}
+
+fn default_global_mcp_config() -> Value {
+    json!({
+        "mcpServers": {
+            "prompts.chat": {
+                "type": "http",
+                "url": "https://prompts.chat/api/mcp",
+                "enabled": true
+            }
+        }
+    })
+}
+
+fn default_project_mcp_config() -> Value {
+    json!({ "mcpServers": {} })
+}
+
+fn validate_mcp_config_content(content: &str) -> Result<String, String> {
+    let raw = content.trim();
+    let parsed: Value = serde_json::from_str(if raw.is_empty() { "{}" } else { raw })
+        .map_err(|err| format!("MCP 配置 JSON 解析失败：{err}"))?;
+    if !parsed.is_object() {
+        return Err("MCP 配置必须是 JSON 对象".to_string());
+    }
+    serde_json::to_string_pretty(&parsed).map_err(|err| err.to_string())
+}
+
+fn read_mcp_config_file(
+    scope: &str,
+    target: PathBuf,
+    fallback: Value,
+) -> Result<McpConfigFileResult, String> {
+    if !target.exists() {
+        let content = serde_json::to_string_pretty(&fallback).map_err(|err| err.to_string())?;
+        return Ok(McpConfigFileResult {
+            scope: scope.to_string(),
+            path: target.to_string_lossy().to_string(),
+            exists: false,
+            content,
+        });
+    }
+    if !target.is_file() {
+        return Err("MCP 配置路径不是文件".to_string());
+    }
+    let content = fs::read_to_string(&target).map_err(|err| format!("无法读取 MCP 配置：{err}"))?;
+    Ok(McpConfigFileResult {
+        scope: scope.to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: true,
+        content,
+    })
+}
+
+fn write_mcp_config_file(
+    scope: &str,
+    target: PathBuf,
+    content: String,
+) -> Result<McpConfigFileResult, String> {
+    let normalized = validate_mcp_config_content(&content)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("无法创建 MCP 配置目录：{err}"))?;
+    }
+    fs::write(&target, format!("{normalized}\n"))
+        .map_err(|err| format!("无法写入 MCP 配置：{err}"))?;
+    Ok(McpConfigFileResult {
+        scope: scope.to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: true,
+        content: format!("{normalized}\n"),
+    })
+}
+
 fn workspace_relative_path(root: &Path, path: &Path) -> String {
     let value = path
         .strip_prefix(root)
@@ -1251,6 +1375,10 @@ fn main() {
             read_workspace_file,
             preview_workspace_diff,
             prepare_workspace_file_write,
+            read_global_mcp_config_file,
+            write_global_mcp_config_file,
+            read_project_mcp_config_file,
+            write_project_mcp_config_file,
             classify_runner_command,
             run_runner_command,
             record_runner_permission_decision,

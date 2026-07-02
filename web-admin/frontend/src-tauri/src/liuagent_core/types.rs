@@ -38,8 +38,35 @@ pub struct LocalChatRequest {
     pub ai_entry_file: Option<String>,
     #[serde(default)]
     pub attachments: Vec<LocalChatAttachment>,
+    #[serde(default)]
+    pub mcp_config: Value,
     pub backend_context: Option<LocalBackendContext>,
     pub permission_decision: Option<PermissionDecisionInput>,
+}
+
+impl Default for LocalChatRequest {
+    fn default() -> Self {
+        Self {
+            project_id: String::new(),
+            chat_session_id: String::new(),
+            message_id: None,
+            assistant_message_id: None,
+            message: String::new(),
+            workspace_path: String::new(),
+            history: Vec::new(),
+            provider_id: None,
+            model_name: None,
+            system_prompt: None,
+            system_prompt_parts: Vec::new(),
+            temperature: None,
+            model_runtime: None,
+            ai_entry_file: None,
+            attachments: Vec::new(),
+            mcp_config: json!({}),
+            backend_context: None,
+            permission_decision: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -977,7 +1004,7 @@ fn is_recoverable_tool_error(error_code: &str) -> bool {
         error_code,
         "tool.schema_invalid"
             | "tool.not_found"
-            | "mcp.adapter_missing"
+            | "mcp.config_missing"
             | "mcp.server_not_found"
             | "mcp.config_invalid"
             | "mcp.failed"
