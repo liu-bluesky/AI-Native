@@ -3129,6 +3129,7 @@ const mcpModules = ref({
   },
 });
 const runtimeExternalTools = ref([]);
+let runtimeExternalToolsRefreshKey = "";
 const messages = ref([]);
 const formJsonArtifactCache = new Map();
 const chatSessions = ref([]);
@@ -24123,8 +24124,45 @@ async function handleProjectCreated(event) {
   selectedProjectId.value = nextProjectId;
 }
 
-async function fetchProvidersByProject(projectId) {
+async function refreshRuntimeExternalToolsInBackground(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return;
+  const refreshKey = `${normalizedProjectId}:${Date.now()}`;
+  runtimeExternalToolsRefreshKey = refreshKey;
+  try {
+    const data = await fetchProjectChatProviders(normalizedProjectId, {
+      includeRuntimeExternalTools: true,
+    });
+    if (
+      runtimeExternalToolsRefreshKey !== refreshKey ||
+      normalizedProjectId !== String(selectedProjectId.value || "").trim()
+    ) {
+      return;
+    }
+    mcpModules.value = normalizeMcpModules(data.mcp_modules || {});
+    runtimeExternalTools.value = normalizeRuntimeExternalTools(
+      data?.runtime_external_tools || [],
+    );
+    externalMcpTotal.value = Number(
+      data?.mcp_modules?.summary?.external_total ||
+        mcpModules.value?.external?.modules?.length ||
+        0,
+    );
+  } catch (err) {
+    console.warn("后台刷新外部 MCP 工具失败，首屏保持可用", err);
+  } finally {
+    if (runtimeExternalToolsRefreshKey === refreshKey) {
+      runtimeExternalToolsRefreshKey = "";
+    }
+  }
+}
+
+async function fetchProvidersByProject(projectId, options = {}) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const includeRuntimeExternalTools =
+    options.includeRuntimeExternalTools !== false;
+  const refreshRuntimeExternalTools =
+    options.refreshRuntimeExternalTools === true;
   projectSettingsHydrating.value = true;
   if (
     projectSettingsHydratedProjectId.value &&
@@ -24168,7 +24206,9 @@ async function fetchProvidersByProject(projectId) {
   }
   let hydrated = false;
   try {
-    const data = await fetchProjectChatProviders(normalizedProjectId);
+    const data = await fetchProjectChatProviders(normalizedProjectId, {
+      includeRuntimeExternalTools,
+    });
     const rawSettings =
       data?.chat_settings && typeof data.chat_settings === "object"
         ? data.chat_settings
@@ -24271,6 +24311,13 @@ async function fetchProvidersByProject(projectId) {
     );
     saveProviderModelOfflineSnapshot(normalizedProjectId);
     hydrated = true;
+    if (
+      !includeRuntimeExternalTools &&
+      refreshRuntimeExternalTools &&
+      normalizedProjectId === String(selectedProjectId.value || "").trim()
+    ) {
+      void refreshRuntimeExternalToolsInBackground(normalizedProjectId);
+    }
   } catch (err) {
     const offlineProject = (projects.value || []).find(
       (item) =>
@@ -28938,7 +28985,10 @@ async function loadSelectedProjectConversation(projectId) {
   selectedProjectConversationLoadingKey = loadingKey;
   agentStatusExpanded.value = false;
   try {
-    await fetchProvidersByProject(normalizedProjectId);
+    await fetchProvidersByProject(normalizedProjectId, {
+      includeRuntimeExternalTools: false,
+      refreshRuntimeExternalTools: true,
+    });
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
     if (projectListOffline.value) {

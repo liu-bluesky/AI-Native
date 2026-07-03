@@ -618,7 +618,10 @@ async function loadModelOptions() {
   loadingModelOptions.value = true;
   try {
     const projectId = selectedProjectIds.value[0] || "proj-d16591a6";
-    const data = await api.get(`/projects/${encodeURIComponent(projectId)}/chat/providers`);
+    const data = await api.get(
+      `/projects/${encodeURIComponent(projectId)}/chat/providers`,
+      { params: { include_runtime_external_tools: false } },
+    );
     const options = [];
     for (const provider of Array.isArray(data?.providers) ? data.providers : []) {
       const providerId = String(provider?.id || "").trim();

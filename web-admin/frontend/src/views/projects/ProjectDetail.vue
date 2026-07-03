@@ -4749,7 +4749,10 @@ async function fetchRepositoryWorkspaceContext(
   }
   repositoryWorkspaceLoading.value = true;
   try {
-    const data = await api.get(`/projects/${effectiveProjectId}/chat/providers`);
+    const data = await api.get(
+      `/projects/${encodeURIComponent(effectiveProjectId)}/chat/providers`,
+      { params: { include_runtime_external_tools: false } },
+    );
     if (effectiveProjectId !== projectId.value) return;
     repositoryWorkspace.value = normalizeRepositoryWorkspaceContext(data);
   } catch {
@@ -4819,7 +4822,9 @@ async function fetchExperienceProviders() {
   }
   experienceProvidersLoading.value = true;
   try {
-    const data = await fetchProjectChatProviders(effectiveProjectId);
+    const data = await fetchProjectChatProviders(effectiveProjectId, {
+      includeRuntimeExternalTools: false,
+    });
     if (effectiveProjectId !== projectId.value) return;
     const providers = Array.isArray(data?.providers) ? data.providers : [];
     experienceProviderOptions.value = providers

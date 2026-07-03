@@ -21806,6 +21806,55 @@ def test_project_chat_providers_route_returns_connector_workspace_path(tmp_path,
     assert payload["chat_settings"]["connector_workspace_path"] == "/tmp/connector-workspace"
 
 
+def test_project_chat_providers_can_skip_runtime_external_tools(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from services.mcp import dynamic_mcp_runtime
+    from stores.json.project_store import ProjectConfig
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    monkeypatch.setattr(
+        projects_router,
+        "_pick_chat_provider",
+        lambda provider_id, auth_payload: (
+            {"id": "provider-1", "default_model": "glm-test"},
+            [{"id": "provider-1", "default_model": "glm-test"}],
+        ),
+    )
+    monkeypatch.setattr(projects_router, "_build_chat_mcp_modules", lambda project_id: {})
+    calls = []
+
+    def fake_list_project_external_tools_runtime(project_id):
+        calls.append(project_id)
+        return [{"tool_name": "external__slow__tool"}]
+
+    monkeypatch.setattr(
+        dynamic_mcp_runtime,
+        "list_project_external_tools_runtime",
+        fake_list_project_external_tools_runtime,
+    )
+
+    response = client.get(
+        "/api/projects/proj-1/chat/providers?include_runtime_external_tools=false"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["runtime_external_tools"] == []
+    assert calls == []
+
+    response = client.get("/api/projects/proj-1/chat/providers")
+
+    assert response.status_code == 200
+    assert response.json()["runtime_external_tools"] == [
+        {"tool_name": "external__slow__tool"}
+    ]
+    assert calls == ["proj-1"]
+
+
 @pytest.mark.asyncio
 async def test_delete_employee_removes_project_memberships(tmp_path, monkeypatch):
     """删除员工时应同步移除其所有项目成员记录"""

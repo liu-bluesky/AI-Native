@@ -19648,6 +19648,7 @@ async def remove_project_member(project_id: str, employee_id: str, auth_payload:
 @router.get("/{project_id}/chat/providers")
 async def list_project_chat_providers(
     project_id: str,
+    include_runtime_external_tools: bool = Query(True),
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
@@ -19664,7 +19665,11 @@ async def list_project_chat_providers(
     mcp_modules = _build_chat_mcp_modules(project_id)
     persisted_chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
     chat_settings = dict(persisted_chat_settings)
-    runtime_external_tools = list_project_external_tools_runtime(project_id)
+    runtime_external_tools = (
+        list_project_external_tools_runtime(project_id)
+        if include_runtime_external_tools
+        else []
+    )
     effective_workspace_path = _resolve_project_workspace_for_chat(project, chat_settings)
     return {
         "project_id": project_id,

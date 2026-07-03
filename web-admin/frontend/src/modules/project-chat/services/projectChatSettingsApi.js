@@ -4,8 +4,14 @@ function projectChatSettingsUrl(projectId, suffix = "") {
   return `/projects/${encodeURIComponent(projectId)}/chat${suffix}`;
 }
 
-export function fetchProjectChatProviders(projectId) {
-  return api.get(projectChatSettingsUrl(projectId, "/providers"));
+export function fetchProjectChatProviders(projectId, options = {}) {
+  const includeRuntimeExternalTools =
+    options.includeRuntimeExternalTools !== false;
+  return api.get(projectChatSettingsUrl(projectId, "/providers"), {
+    params: {
+      include_runtime_external_tools: includeRuntimeExternalTools,
+    },
+  });
 }
 
 export function saveProjectChatSettings(projectId, settings = {}) {
