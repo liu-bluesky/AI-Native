@@ -62,6 +62,7 @@ use super::{
 const REQUIREMENT_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_MODEL_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_MAX_VERIFICATION_REPROMPTS: usize = 1;
+const DEFAULT_MAX_ACCEPTANCE_GATE_REPROMPTS: usize = 1;
 const MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS: usize = 5;
 const PERMISSION_CACHE_VERSION: u32 = 1;
 const TOOL_OBSERVATION_TEXT_PREVIEW_CHARS: usize = 6_000;
@@ -649,7 +650,7 @@ fn start_local_chat_inner(
         let attempt = build_agent_loop_attempt(&replayed.tool, &replayed.result, 1);
         messages.push(RuntimeModelMessage::tool_observation(
             replayed.result.tool_call_id.clone(),
-            tool_observation_content(&replayed.result, false, Some(&attempt)),
+            tool_observation_content(&replayed.result, false, Some(&attempt), None),
         ));
         model_request = model_request.with_messages(messages);
     }
@@ -725,6 +726,7 @@ fn start_local_chat_inner(
         epoch_millis(),
     );
     let verification_report = build_verification_report(
+        &workspace_root,
         run_status,
         waiting_for,
         &agent_loop,
@@ -2809,6 +2811,7 @@ fn build_requirement_current_state_delta(
 }
 
 fn build_verification_report(
+    workspace_root: &Path,
     run_status: &str,
     waiting_for: Option<&str>,
     agent_loop: &AgentLoopResult,
@@ -2924,6 +2927,23 @@ fn build_verification_report(
             format!("本轮工具目标：{}。", targets.join("，"))
         },
     });
+    let acceptance_gate = evaluate_acceptance_gate(
+        workspace_root,
+        Some(task_goal),
+        planned_tools,
+        tool_results,
+        &agent_loop.final_model_result().content,
+    );
+    checks.push(VerificationCheck {
+        check_type: "acceptance_gate".to_string(),
+        status: if acceptance_gate.passed {
+            "passed"
+        } else {
+            "failed"
+        }
+        .to_string(),
+        summary: acceptance_gate.summary.clone(),
+    });
     let mut evidence = agent_loop.verification.evidence.clone();
     evidence.push(format!(
         "local_tool_execution planned={} results={} side_effects={} permission_blocked_side_effects={}",
@@ -2937,6 +2957,7 @@ fn build_verification_report(
     }
     evidence.push(format!("task_goal_id={}", task_goal.goal_id));
     evidence.push(format!("task_goal_intent={}", task_goal.intent));
+    evidence.extend(acceptance_gate.evidence);
 
     VerificationReport {
         version: "verification-report/v1".to_string(),
@@ -3267,6 +3288,8 @@ fn format_local_chat_response(
     {
         let assistant_content =
             deployment_claim_safe_assistant_content(model_result.content.trim(), tool_results);
+        let assistant_content =
+            append_file_mutation_failure_footer(assistant_content, planned_tools, tool_results);
         return ResponseFormattingResult {
             assistant_content,
             user_visible_error_summary: String::new(),
@@ -3457,6 +3480,9 @@ fn format_local_chat_response(
             user_visible_error_summary
         ));
     }
+    if let Some(footer) = file_mutation_failure_footer(planned_tools, tool_results) {
+        lines.push(footer);
+    }
     ResponseFormattingResult {
         assistant_content: lines.join("\n"),
         user_visible_error_summary,
@@ -3472,6 +3498,104 @@ fn format_local_chat_response(
             "tool_failure_count": tool_results.iter().filter(|item| !item.ok).count()
         }),
     }
+}
+
+fn append_file_mutation_failure_footer(
+    content: String,
+    planned_tools: &[PlannedLocalTool],
+    tool_results: &[super::types::ToolExecutionResult],
+) -> String {
+    let Some(footer) = file_mutation_failure_footer(planned_tools, tool_results) else {
+        return content;
+    };
+    if content.trim().is_empty() {
+        footer
+    } else {
+        format!("{}\n\n{}", content.trim(), footer)
+    }
+}
+
+fn file_mutation_failure_footer(
+    planned_tools: &[PlannedLocalTool],
+    tool_results: &[super::types::ToolExecutionResult],
+) -> Option<String> {
+    let failures = unresolved_file_mutation_failures(planned_tools, tool_results);
+    if failures.is_empty() {
+        return None;
+    }
+    let mut lines = vec![format!(
+        "文件修改校验：{} 个文件修改工具失败且未被后续成功写入覆盖，不能视为已完成。",
+        failures.len()
+    )];
+    for (path, tool_name, error) in failures.iter().take(10) {
+        lines.push(format!(
+            "- `{}` — [{}] {}",
+            path,
+            tool_name,
+            truncate_inline(error, 160)
+        ));
+    }
+    let remaining = failures.len().saturating_sub(10);
+    if remaining > 0 {
+        lines.push(format!("- 另有 {remaining} 个失败未列出"));
+    }
+    Some(lines.join("\n"))
+}
+
+fn unresolved_file_mutation_failures(
+    planned_tools: &[PlannedLocalTool],
+    tool_results: &[super::types::ToolExecutionResult],
+) -> Vec<(String, String, String)> {
+    let mut failures: Vec<(String, String, String)> = Vec::new();
+    for result in tool_results {
+        if !is_file_mutation_tool(&result.name) {
+            continue;
+        }
+        let path = file_mutation_target_for_result(planned_tools, result);
+        if result.ok {
+            failures.retain(|(failed_path, _, _)| failed_path != &path);
+            continue;
+        }
+        if failures
+            .iter()
+            .any(|(failed_path, _, _)| failed_path == &path)
+        {
+            continue;
+        }
+        let error = if !result.error.trim().is_empty() {
+            result.error.trim().to_string()
+        } else if !result.summary.trim().is_empty() {
+            result.summary.trim().to_string()
+        } else {
+            "file mutation failed".to_string()
+        };
+        failures.push((path, result.name.clone(), error));
+    }
+    failures
+}
+
+fn is_file_mutation_tool(tool_name: &str) -> bool {
+    matches!(tool_name.trim(), "write_file" | "apply_patch")
+}
+
+fn file_mutation_target_for_result(
+    planned_tools: &[PlannedLocalTool],
+    result: &super::types::ToolExecutionResult,
+) -> String {
+    result
+        .content
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            planned_tools
+                .iter()
+                .find(|tool| tool.tool_call_id == result.tool_call_id)
+                .and_then(tool_target_path)
+        })
+        .unwrap_or_else(|| "(unknown file target)".to_string())
 }
 
 fn deployment_claim_safe_assistant_content(
@@ -4072,6 +4196,18 @@ struct AgentLoopVerification {
     evidence: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AcceptanceGateResult {
+    passed: bool,
+    status: String,
+    summary: String,
+    required: bool,
+    changed_targets: Vec<String>,
+    project_markers: Vec<String>,
+    suggested_commands: Vec<String>,
+    evidence: Vec<String>,
+}
+
 fn run_agent_loop(
     run_key: &str,
     runtime_session_id: &str,
@@ -4113,6 +4249,7 @@ fn run_agent_loop_with(
     let mut candidate_solutions = Vec::new();
     let mut attempts = Vec::new();
     let mut verification_reprompts = 0usize;
+    let mut acceptance_gate_reprompts = 0usize;
     let mut permission_cache = load_session_permission_cache(workspace_root, run_key);
     let stopped_reason: String;
     let mut awaiting_permission = false;
@@ -4138,12 +4275,12 @@ fn run_agent_loop_with(
             plan_local_tools(run_key, &model_result)
                 .into_iter()
                 .map(|tool| {
-                    repair_planned_tool_arguments(
+                    compile_planned_tool_arguments(repair_planned_tool_arguments(
                         tool,
                         &messages,
                         Some(&model_result),
                         workspace_root,
-                    )
+                    ))
                 })
                 .collect(),
             &attempts,
@@ -4173,12 +4310,33 @@ fn run_agent_loop_with(
             break;
         }
         if current_planned_tools.is_empty() {
-            if has_unresolved_failed_attempt(&attempts, &model_result.content) {
+            let acceptance_gate = evaluate_acceptance_gate(
+                workspace_root,
+                request.task_goal.as_ref(),
+                &planned_tools,
+                &tool_results,
+                &model_result.content,
+            );
+            if has_unresolved_failed_attempt(&attempts, &model_result.content)
+                && !acceptance_gate_covers_failed_attempts(&acceptance_gate)
+            {
                 if verification_reprompts < DEFAULT_MAX_VERIFICATION_REPROMPTS {
                     verification_reprompts += 1;
                     messages.push(RuntimeModelMessage::simple(
                         "user",
                         unresolved_failure_replan_message(&attempts, &candidate_solutions),
+                    ));
+                    continue;
+                }
+                stopped_reason = "verification_failed".to_string();
+                break;
+            }
+            if !acceptance_gate.passed {
+                if acceptance_gate_reprompts < DEFAULT_MAX_ACCEPTANCE_GATE_REPROMPTS {
+                    acceptance_gate_reprompts += 1;
+                    messages.push(RuntimeModelMessage::simple(
+                        "user",
+                        acceptance_gate_replan_message(&acceptance_gate),
                     ));
                     continue;
                 }
@@ -4194,6 +4352,8 @@ fn run_agent_loop_with(
             current_planned_tools.clone(),
         ));
 
+        let batch_schema_failures = mutating_batch_schema_failures(&current_planned_tools);
+        let block_mutating_batch = !batch_schema_failures.is_empty();
         let planned_tool_count = current_planned_tools.len();
         for (tool_index, tool) in current_planned_tools.into_iter().enumerate() {
             let mut candidate =
@@ -4252,7 +4412,17 @@ fn run_agent_loop_with(
                 workspace_path: workspace_root.to_string_lossy().to_string(),
                 permission_decision: effective_permission_decision.clone(),
             };
-            let result = if let Some(drift_result) = drift_check_tool_result(&tool, &request) {
+            let result = if block_mutating_batch && is_side_effect_tool(&tool.name) {
+                batch_schema_failures
+                    .iter()
+                    .find(|failure| failure.tool_call_id == tool.tool_call_id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        tool_batch_preflight_blocked_result(&tool, &batch_schema_failures)
+                    })
+            } else if let Some(schema_result) = preflight_tool_schema_result(&tool) {
+                schema_result
+            } else if let Some(drift_result) = drift_check_tool_result(&tool, &request) {
                 drift_result
             } else if tool.name.trim() == "run_command" {
                 execute_tool_with_command_output_sink(tool_request, Some(&command_stream_sink))
@@ -4299,8 +4469,13 @@ fn run_agent_loop_with(
                         && item.strategy_signature == attempt.strategy_signature
                         && item.failure_signature == attempt.failure_signature
                 });
-            let observation_content =
-                tool_observation_content(&result, permission_denied, Some(&attempt));
+            let loop_guidance = tool_loop_guidance(&result, &attempt, &attempts);
+            let observation_content = tool_observation_content(
+                &result,
+                permission_denied,
+                Some(&attempt),
+                Some(loop_guidance.as_str()),
+            );
             messages.push(RuntimeModelMessage::tool_observation(
                 result.tool_call_id.clone(),
                 observation_content,
@@ -4684,7 +4859,10 @@ fn tool_arguments_with_backend_context(
     mut arguments: Value,
 ) -> Value {
     let tool_name = tool.name.trim();
-    if matches!(tool_name, "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool") {
+    if matches!(
+        tool_name,
+        "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool"
+    ) {
         if let Some(object) = arguments.as_object_mut() {
             if !mcp_config.is_null() {
                 object.insert("_mcp_config".to_string(), mcp_config.clone());
@@ -4700,7 +4878,9 @@ fn tool_arguments_with_backend_context(
     }
     if !matches!(
         tool_name,
-        "get_project_deploy_options" | "upload_deploy_artifact" | "deploy_workspace_files_to_target"
+        "get_project_deploy_options"
+            | "upload_deploy_artifact"
+            | "deploy_workspace_files_to_target"
     ) {
         return arguments;
     }
@@ -5344,6 +5524,311 @@ fn tool_verification_plan(tool_name: &str) -> Vec<String> {
     }
 }
 
+fn evaluate_acceptance_gate(
+    workspace_root: &Path,
+    task_goal: Option<&TaskGoal>,
+    planned_tools: &[PlannedLocalTool],
+    tool_results: &[super::types::ToolExecutionResult],
+    final_content: &str,
+) -> AcceptanceGateResult {
+    let changed_targets = successful_file_mutation_targets(planned_tools, tool_results);
+    let project_profile = discover_project_verification_profile(workspace_root);
+    if changed_targets.is_empty() {
+        return AcceptanceGateResult {
+            passed: true,
+            status: "not_required".to_string(),
+            summary: "本轮没有成功的文件修改，Acceptance Gate 不要求项目验证命令。".to_string(),
+            required: false,
+            changed_targets,
+            project_markers: project_profile.markers,
+            suggested_commands: project_profile.commands,
+            evidence: vec!["acceptance_gate=not_required_no_file_mutation".to_string()],
+        };
+    }
+    if task_goal.is_none() {
+        return AcceptanceGateResult {
+            passed: true,
+            status: "not_required".to_string(),
+            summary: "当前请求未绑定 TaskGoal，保持兼容路径，不阻断已有工具执行结果。".to_string(),
+            required: false,
+            changed_targets,
+            project_markers: project_profile.markers,
+            suggested_commands: project_profile.commands,
+            evidence: vec!["acceptance_gate=not_required_missing_task_goal".to_string()],
+        };
+    }
+
+    let last_mutation_index = tool_results
+        .iter()
+        .rposition(|result| result.ok && is_file_mutation_tool(&result.name));
+    let verification_result = last_mutation_index.and_then(|index| {
+        tool_results
+            .iter()
+            .skip(index + 1)
+            .find(|result| result.ok && is_project_verification_command(result, &project_profile))
+    });
+    if let Some(result) = verification_result {
+        return AcceptanceGateResult {
+            passed: true,
+            status: "passed".to_string(),
+            summary: format!(
+                "文件修改后已执行项目验证命令：{}。",
+                command_from_tool_result(result).unwrap_or_else(|| result.summary.clone())
+            ),
+            required: true,
+            changed_targets,
+            project_markers: project_profile.markers,
+            suggested_commands: project_profile.commands,
+            evidence: vec![
+                "acceptance_gate=passed_verification_command_after_mutation".to_string(),
+                format!("verification_tool_call_id={}", result.tool_call_id),
+            ],
+        };
+    }
+
+    if project_profile.commands.is_empty()
+        && final_content_acknowledges_verification_gap(final_content)
+    {
+        return AcceptanceGateResult {
+            passed: true,
+            status: "gap_acknowledged".to_string(),
+            summary: "未发现项目原生验证命令，最终输出已明确说明验证缺口。".to_string(),
+            required: true,
+            changed_targets,
+            project_markers: project_profile.markers,
+            suggested_commands: project_profile.commands,
+            evidence: vec!["acceptance_gate=passed_verification_gap_acknowledged".to_string()],
+        };
+    }
+
+    let summary = if project_profile.commands.is_empty() {
+        "文件修改后尚未执行项目验证命令，也未明确说明验证缺口。".to_string()
+    } else {
+        format!(
+            "文件修改后缺少项目验证证据；建议执行：{}。",
+            project_profile.commands.join(" 或 ")
+        )
+    };
+    let mut evidence = vec![
+        "acceptance_gate=failed_missing_project_verification_after_mutation".to_string(),
+        format!("changed_targets={}", changed_targets.join(",")),
+    ];
+    if !project_profile.markers.is_empty() {
+        evidence.push(format!(
+            "project_markers={}",
+            project_profile.markers.join(",")
+        ));
+    }
+    AcceptanceGateResult {
+        passed: false,
+        status: "missing_verification".to_string(),
+        summary,
+        required: true,
+        changed_targets,
+        project_markers: project_profile.markers,
+        suggested_commands: project_profile.commands,
+        evidence,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ProjectVerificationProfile {
+    markers: Vec<String>,
+    commands: Vec<String>,
+}
+
+fn discover_project_verification_profile(workspace_root: &Path) -> ProjectVerificationProfile {
+    let mut markers = Vec::new();
+    let mut commands = Vec::new();
+    if workspace_root.join("package.json").is_file() {
+        markers.push("package.json".to_string());
+        commands.extend(discover_node_verification_commands(workspace_root));
+    }
+    if workspace_root.join("Cargo.toml").is_file() {
+        markers.push("Cargo.toml".to_string());
+        commands.push("cargo test".to_string());
+        commands.push("cargo check".to_string());
+    }
+    if workspace_root.join("go.mod").is_file() {
+        markers.push("go.mod".to_string());
+        commands.push("go test ./...".to_string());
+    }
+    if workspace_root.join("pyproject.toml").is_file() {
+        markers.push("pyproject.toml".to_string());
+        commands.push("python -m pytest".to_string());
+    } else if workspace_root.join("pytest.ini").is_file() {
+        markers.push("pytest.ini".to_string());
+        commands.push("python -m pytest".to_string());
+    }
+    if workspace_root.join("pom.xml").is_file() {
+        markers.push("pom.xml".to_string());
+        commands.push("mvn test".to_string());
+    }
+    if workspace_root.join("build.gradle").is_file()
+        || workspace_root.join("build.gradle.kts").is_file()
+    {
+        markers.push("gradle".to_string());
+        commands.push("./gradlew test".to_string());
+    }
+    if workspace_root.join("Makefile").is_file() {
+        markers.push("Makefile".to_string());
+        commands.push("make test".to_string());
+    }
+    dedupe_strings(&mut markers);
+    dedupe_strings(&mut commands);
+    ProjectVerificationProfile { markers, commands }
+}
+
+fn discover_node_verification_commands(workspace_root: &Path) -> Vec<String> {
+    let package_json_path = workspace_root.join("package.json");
+    let raw = fs::read_to_string(package_json_path).unwrap_or_default();
+    let value = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({}));
+    let Some(scripts) = value.get("scripts").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let runner = if workspace_root.join("pnpm-lock.yaml").is_file() {
+        "pnpm"
+    } else if workspace_root.join("yarn.lock").is_file() {
+        "yarn"
+    } else if workspace_root.join("bun.lockb").is_file()
+        || workspace_root.join("bun.lock").is_file()
+    {
+        "bun run"
+    } else {
+        "npm run"
+    };
+    ["typecheck", "test", "lint", "build"]
+        .iter()
+        .filter(|script| scripts.contains_key(**script))
+        .map(|script| format!("{runner} {script}"))
+        .collect()
+}
+
+fn successful_file_mutation_targets(
+    planned_tools: &[PlannedLocalTool],
+    tool_results: &[super::types::ToolExecutionResult],
+) -> Vec<String> {
+    let mut targets = tool_results
+        .iter()
+        .filter(|result| result.ok && is_file_mutation_tool(&result.name))
+        .map(|result| file_mutation_target_for_result(planned_tools, result))
+        .filter(|target| target != "(unknown file target)")
+        .collect::<Vec<_>>();
+    dedupe_strings(&mut targets);
+    targets
+}
+
+fn is_project_verification_command(
+    result: &super::types::ToolExecutionResult,
+    profile: &ProjectVerificationProfile,
+) -> bool {
+    if result.name.trim() != "run_command" {
+        return false;
+    }
+    if !run_command_exit_code_succeeded(result) {
+        return false;
+    }
+    let Some(command) = command_from_tool_result(result) else {
+        return false;
+    };
+    command_matches_project_verification(&command, &profile.commands)
+}
+
+fn run_command_exit_code_succeeded(result: &super::types::ToolExecutionResult) -> bool {
+    result
+        .content
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .map(|exit_code| exit_code == 0)
+        .unwrap_or(result.ok)
+}
+
+fn command_from_tool_result(result: &super::types::ToolExecutionResult) -> Option<String> {
+    result
+        .content
+        .get("cmd")
+        .or_else(|| result.content.get("command"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn command_matches_project_verification(command: &str, suggested_commands: &[String]) -> bool {
+    let normalized = normalize_command_for_match(command);
+    if suggested_commands
+        .iter()
+        .map(|command| normalize_command_for_match(command))
+        .any(|suggested| normalized == suggested || normalized.contains(&suggested))
+    {
+        return true;
+    }
+    const VERIFICATION_TERMS: [&str; 13] = [
+        " test",
+        " check",
+        " build",
+        " lint",
+        " typecheck",
+        " vet",
+        " pytest",
+        " cargo test",
+        " cargo check",
+        " go test",
+        " mvn test",
+        " gradlew test",
+        " make test",
+    ];
+    VERIFICATION_TERMS
+        .iter()
+        .any(|term| normalized.contains(term.trim()))
+}
+
+fn normalize_command_for_match(command: &str) -> String {
+    format!(
+        " {} ",
+        command.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
+    .to_ascii_lowercase()
+}
+
+fn final_content_acknowledges_verification_gap(content: &str) -> bool {
+    let content = content.trim();
+    !content.is_empty()
+        && (content.contains("验证缺口")
+            || content.contains("无法验证")
+            || content.contains("未能验证")
+            || content.contains("verification gap")
+            || content.contains("unable to verify"))
+}
+
+fn acceptance_gate_covers_failed_attempts(result: &AcceptanceGateResult) -> bool {
+    result.required && result.status == "passed"
+}
+
+fn acceptance_gate_replan_message(result: &AcceptanceGateResult) -> String {
+    json!({
+        "agent_loop_control": "acceptance_gate_verification_required",
+        "instruction": "文件修改已经发生，但当前还缺少项目级验证证据。不要结束回答；请基于项目已发现的验证入口调用 run_command 执行验证。若确实没有可用验证入口，必须在最终结果中明确写出验证缺口和原因。",
+        "status": result.status,
+        "changed_targets": result.changed_targets,
+        "project_markers": result.project_markers,
+        "suggested_commands": result.suggested_commands,
+        "required": result.required,
+        "summary": result.summary,
+    })
+    .to_string()
+}
+
+fn dedupe_strings(items: &mut Vec<String>) {
+    let mut deduped = Vec::new();
+    for item in items.drain(..) {
+        if !deduped.iter().any(|existing| existing == &item) {
+            deduped.push(item);
+        }
+    }
+    *items = deduped;
+}
+
 fn repair_planned_tool_arguments(
     mut tool: PlannedLocalTool,
     messages: &[RuntimeModelMessage],
@@ -5410,6 +5895,212 @@ fn repair_search_text_file_path(tool: &mut PlannedLocalTool, workspace_root: &Pa
             tool.summary.trim()
         )
     };
+}
+
+fn compile_planned_tool_arguments(mut tool: PlannedLocalTool) -> PlannedLocalTool {
+    if tool.name.trim() == "write_file" {
+        compile_write_file_structured_content(&mut tool);
+    }
+    tool
+}
+
+fn compile_write_file_structured_content(tool: &mut PlannedLocalTool) {
+    let Some(path) = argument_string(&tool.arguments, "path") else {
+        return;
+    };
+    if !is_json_file_path(&path) {
+        return;
+    }
+    let Some(content) = tool.arguments.get("content").cloned() else {
+        return;
+    };
+    if !matches!(content, Value::Array(_) | Value::Object(_)) {
+        return;
+    }
+    let Ok(mut serialized) = serde_json::to_string_pretty(&content) else {
+        return;
+    };
+    serialized.push('\n');
+    let Some(object) = tool.arguments.as_object_mut() else {
+        return;
+    };
+    object.insert("content".to_string(), Value::String(serialized));
+    tool.summary = if tool.summary.trim().is_empty() {
+        format!("自动编译 write_file JSON content 为文件文本：{path}")
+    } else {
+        format!("{}；自动编译 JSON content 为文件文本", tool.summary.trim())
+    };
+}
+
+fn is_json_file_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("json"))
+        .unwrap_or(false)
+}
+
+fn mutating_batch_schema_failures(
+    tools: &[PlannedLocalTool],
+) -> Vec<super::types::ToolExecutionResult> {
+    let failures = tools
+        .iter()
+        .filter(|tool| is_side_effect_tool(&tool.name))
+        .filter_map(preflight_tool_schema_result)
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        Vec::new()
+    } else {
+        failures
+    }
+}
+
+fn tool_batch_preflight_blocked_result(
+    tool: &PlannedLocalTool,
+    failures: &[super::types::ToolExecutionResult],
+) -> super::types::ToolExecutionResult {
+    let blockers = failures
+        .iter()
+        .map(|failure| {
+            json!({
+                "tool_call_id": failure.tool_call_id,
+                "tool_name": failure.name,
+                "path": failure.content.get("path").and_then(Value::as_str).unwrap_or(""),
+                "error_code": failure.error_code,
+                "error": failure.error,
+            })
+        })
+        .collect::<Vec<_>>();
+    let path = argument_string(&tool.arguments, "path").unwrap_or_default();
+    let summary = "batch preflight blocked mutating tool because another mutating tool in the same model response has invalid schema".to_string();
+    super::types::ToolExecutionResult {
+        tool_result_id: format!("result_{}", tool.tool_call_id),
+        tool_call_id: tool.tool_call_id.clone(),
+        name: tool.name.clone(),
+        ok: false,
+        content: json!({
+            "status": "failed",
+            "terminal": false,
+            "recoverable": true,
+            "recovery_scope": "model_must_reemit_mutating_batch",
+            "path": path,
+            "batch_preflight": {
+                "status": "blocked",
+                "instruction": "同一批次里存在参数不合法的副作用工具，本批次不会执行任何副作用工具。请修正失败工具参数后重发需要执行的副作用工具。",
+                "blockers": blockers
+            }
+        }),
+        summary: summary.clone(),
+        error_code: "tool.batch_preflight_blocked".to_string(),
+        error: summary,
+    }
+}
+
+fn preflight_tool_schema_result(
+    tool: &PlannedLocalTool,
+) -> Option<super::types::ToolExecutionResult> {
+    match tool.name.trim() {
+        "write_file" => preflight_write_file_schema_result(tool),
+        _ => None,
+    }
+}
+
+fn preflight_write_file_schema_result(
+    tool: &PlannedLocalTool,
+) -> Option<super::types::ToolExecutionResult> {
+    if argument_string(&tool.arguments, "path").is_none() {
+        return Some(tool_schema_invalid_result(
+            tool,
+            "path",
+            "missing required argument: path. Re-emit write_file with both path and full content.",
+            "下一次必须同时提供 path 和完整 content；如果只想局部修改，请改用 apply_patch。",
+            json!({
+                "path": "src/App.vue",
+                "content": "完整文件内容",
+                "overwrite": false
+            }),
+        ));
+    }
+    if !tool.arguments.get("content").is_some() {
+        return Some(tool_schema_invalid_result(
+            tool,
+            "content",
+            "missing required argument: content. Re-emit write_file with both path and full content, or use apply_patch for partial edits.",
+            "下一次必须带上目标文件的完整 content；如果内容太大或只做局部修改，请切换为 apply_patch。",
+            json!({
+                "path": argument_string(&tool.arguments, "path").unwrap_or_else(|| "src/App.vue".to_string()),
+                "content": "完整文件内容",
+                "overwrite": true
+            }),
+        ));
+    }
+    if let Some(content) = tool
+        .arguments
+        .get("content")
+        .filter(|value| !value.is_string())
+    {
+        let actual_type = json_value_type_name(content);
+        return Some(tool_schema_invalid_result(
+            tool,
+            "content",
+            &format!("invalid argument: content must be a string, got {actual_type}."),
+            "write_file 的 content 必须是完整文件内容字符串；不要传对象、数组或结构化片段。请只重发这个 write_file，或改用 apply_patch。",
+            json!({
+                "path": argument_string(&tool.arguments, "path").unwrap_or_else(|| "src/App.vue".to_string()),
+                "content": "完整文件内容",
+                "overwrite": true
+            }),
+        ));
+    }
+    None
+}
+
+fn json_value_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn tool_schema_invalid_result(
+    tool: &PlannedLocalTool,
+    field: &str,
+    error: &str,
+    recovery: &str,
+    example: Value,
+) -> super::types::ToolExecutionResult {
+    let received_keys = tool
+        .arguments
+        .as_object()
+        .map(|object| object.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let path = argument_string(&tool.arguments, "path").unwrap_or_default();
+    super::types::ToolExecutionResult {
+        tool_result_id: format!("result_{}", tool.tool_call_id),
+        tool_call_id: tool.tool_call_id.clone(),
+        name: tool.name.clone(),
+        ok: false,
+        content: json!({
+            "status": "failed",
+            "terminal": false,
+            "recoverable": true,
+            "recovery_scope": "model_must_reemit_tool_call",
+            "path": path,
+            "schema_error": {
+                "field": field,
+                "received_keys": received_keys,
+                "recovery": recovery,
+                "example": example
+            }
+        }),
+        summary: error.to_string(),
+        error_code: "tool.schema_invalid".to_string(),
+        error: error.to_string(),
+    }
 }
 
 fn drift_check_tool_result(
@@ -5532,7 +6223,7 @@ fn extract_file_path_candidates(text: &str) -> Vec<String> {
     let mut candidates = Vec::new();
     let mut current = String::new();
     for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/') {
+        if ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '\\') {
             current.push(ch);
             continue;
         }
@@ -5540,6 +6231,9 @@ fn extract_file_path_candidates(text: &str) -> Vec<String> {
         current.clear();
     }
     push_file_path_candidate(&mut candidates, &current, false);
+    for candidate in extract_loose_file_path_candidates(text) {
+        push_file_path_candidate(&mut candidates, &candidate, false);
+    }
     candidates
 }
 
@@ -5550,12 +6244,38 @@ fn push_file_path_candidate(output: &mut Vec<String>, raw: &str, preceded_by_url
     let candidate = raw
         .trim_matches(|ch: char| matches!(ch, '/' | '-' | '_'))
         .trim_end_matches('.');
+    let candidate = trim_path_candidate_extension_suffix(candidate);
     if candidate.is_empty() || candidate.contains("..") {
         return;
     }
-    if looks_like_file_path(candidate) {
-        output.push(candidate.to_string());
+    if looks_like_file_path(&candidate) {
+        let normalized = candidate.replace('\\', "/");
+        if !output.iter().any(|item| item == &normalized) {
+            output.push(normalized);
+        }
     }
+}
+
+fn trim_path_candidate_extension_suffix(candidate: &str) -> String {
+    let Some(file_name) = candidate.rsplit('/').next() else {
+        return candidate.to_string();
+    };
+    let Some(dot_index) = file_name.rfind('.') else {
+        return candidate.to_string();
+    };
+    let extension = &file_name[dot_index + 1..];
+    let mut ascii_extension_end = 0usize;
+    for (index, ch) in extension.char_indices() {
+        if !ch.is_ascii_alphanumeric() {
+            break;
+        }
+        ascii_extension_end = index + ch.len_utf8();
+    }
+    if ascii_extension_end == 0 || ascii_extension_end == extension.len() {
+        return candidate.to_string();
+    }
+    let cut_index = candidate.len() - extension.len() + ascii_extension_end;
+    candidate[..cut_index].to_string()
 }
 
 fn looks_like_file_path(candidate: &str) -> bool {
@@ -5580,6 +6300,104 @@ fn looks_like_file_path(candidate: &str) -> bool {
             .next()
             .map(char::is_uppercase)
             .unwrap_or(false)
+}
+
+fn extract_loose_file_path_candidates(text: &str) -> Vec<String> {
+    let tokens = text
+        .split_whitespace()
+        .map(trim_loose_path_token)
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for start in 0..tokens.len() {
+        if !is_loose_path_start(&tokens, start) {
+            continue;
+        }
+        let mut raw_parts = Vec::new();
+        let upper = tokens.len().min(start + 8);
+        for token in tokens.iter().take(upper).skip(start) {
+            if !is_loose_path_token(token) {
+                break;
+            }
+            raw_parts.push(token.as_str());
+            if let Some(candidate) = normalize_loose_path_candidate(&raw_parts) {
+                push_file_path_candidate(&mut candidates, &candidate, false);
+                break;
+            }
+        }
+    }
+    candidates
+}
+
+fn trim_loose_path_token(token: &str) -> String {
+    token
+        .trim_matches(|ch: char| {
+            matches!(
+                ch,
+                '"' | '\''
+                    | '`'
+                    | '<'
+                    | '>'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '，'
+                    | '。'
+                    | '、'
+                    | '；'
+                    | '：'
+                    | '“'
+                    | '”'
+                    | '‘'
+                    | '’'
+            )
+        })
+        .to_string()
+}
+
+fn is_loose_path_start(tokens: &[String], index: usize) -> bool {
+    let token = tokens[index].as_str();
+    token.contains('/')
+        || token.contains('\\')
+        || matches!(
+            tokens.get(index + 1).map(String::as_str),
+            Some("/") | Some("\\")
+        )
+}
+
+fn is_loose_path_token(token: &str) -> bool {
+    token
+        .chars()
+        .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '\\'))
+}
+
+fn normalize_loose_path_candidate(parts: &[&str]) -> Option<String> {
+    let candidate = parts.join("").replace('\\', "/");
+    if !candidate.contains('/') || !has_explicit_file_extension(&candidate) {
+        return None;
+    }
+    if candidate.contains("://") || candidate.contains("//") || candidate.contains("..") {
+        return None;
+    }
+    Some(candidate)
+}
+
+fn has_explicit_file_extension(candidate: &str) -> bool {
+    let Some(file_name) = candidate.rsplit('/').next() else {
+        return false;
+    };
+    let Some(dot_index) = file_name.rfind('.') else {
+        return false;
+    };
+    if dot_index == 0 || dot_index + 1 >= file_name.len() {
+        return false;
+    }
+    file_name[dot_index + 1..]
+        .chars()
+        .all(|ch| ch.is_alphanumeric())
 }
 
 fn has_unresolved_failed_attempt(attempts: &[AgentLoopAttempt], final_content: &str) -> bool {
@@ -5921,6 +6739,7 @@ fn tool_observation_content(
     result: &super::types::ToolExecutionResult,
     permission_denied: bool,
     attempt: Option<&AgentLoopAttempt>,
+    tool_loop_guidance: Option<&str>,
 ) -> String {
     let status = if result.ok {
         "ok"
@@ -5941,6 +6760,7 @@ fn tool_observation_content(
         .unwrap_or_else(|| json!({}));
     let recovery_instruction = tool_recovery_instruction(result, permission_denied);
     let recoverable = is_recoverable_tool_failure(result, permission_denied);
+    let loop_guidance = tool_loop_guidance.unwrap_or("").trim();
     json!({
         "tool_call_id": result.tool_call_id,
         "tool_name": result.name,
@@ -5954,8 +6774,11 @@ fn tool_observation_content(
         "content_compacted_for_model": true,
         "attempt": attempt_payload,
         "recovery_instruction": recovery_instruction,
+        "tool_loop_guidance": loop_guidance,
         "retry_instruction": if result.ok || permission_denied {
             ""
+        } else if !loop_guidance.is_empty() {
+            loop_guidance
         } else if !recovery_instruction.is_empty() {
             recovery_instruction.as_str()
         } else if recoverable {
@@ -6142,9 +6965,59 @@ fn should_continue_after_recoverable_failure(
 fn max_recoverable_failure_repeats(result: &super::types::ToolExecutionResult) -> usize {
     match result.error_code.as_str() {
         "mcp.config_missing" => 2,
+        "tool.schema_invalid" if is_write_file_content_type_error(result) => 2,
         "tool.schema_invalid" => 1,
         _ => 1,
     }
+}
+
+fn tool_loop_guidance(
+    result: &super::types::ToolExecutionResult,
+    attempt: &AgentLoopAttempt,
+    previous_attempts: &[AgentLoopAttempt],
+) -> String {
+    if result.ok || attempt.failure_signature.is_empty() {
+        return String::new();
+    }
+    let exact_failure_count = previous_attempts
+        .iter()
+        .filter(|item| {
+            item.status == "failed"
+                && item.strategy_signature == attempt.strategy_signature
+                && item.failure_signature == attempt.failure_signature
+        })
+        .count()
+        + 1;
+    if exact_failure_count < 2 {
+        return String::new();
+    }
+    if is_write_file_content_type_error(result) {
+        return format!(
+            "Tool loop warning: write_file has failed {exact_failure_count} times because content is not a string. Do not repeat the same arguments. Re-emit only the failed write_file call with the same path and content as a complete escaped string, for example {{\"path\":\"{}\",\"content\":\"完整文件内容字符串\",\"overwrite\":true}}. Do not pass a JSON object/array in content.",
+            file_mutation_target_for_error_guidance(result)
+        );
+    }
+    format!(
+        "Tool loop warning: {} has failed {exact_failure_count} times with the same strategy and failure signature. Inspect the latest error and change the tool arguments or strategy instead of retrying unchanged.",
+        result.name
+    )
+}
+
+fn is_write_file_content_type_error(result: &super::types::ToolExecutionResult) -> bool {
+    result.name.trim() == "write_file"
+        && result.error_code == "tool.schema_invalid"
+        && result.error.contains("content must be a string")
+}
+
+fn file_mutation_target_for_error_guidance(result: &super::types::ToolExecutionResult) -> String {
+    result
+        .content
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("src/App.vue")
+        .to_string()
 }
 
 fn tool_recovery_instruction(
@@ -6165,6 +7038,9 @@ fn tool_recovery_instruction(
         && result.error.contains("missing required argument: content")
     {
         return "write_file 调用失败：缺少必填字段 content。下一次必须同时提供 path 和完整 content；如果只想局部修改，请改用 apply_patch。".to_string();
+    }
+    if is_write_file_content_type_error(result) {
+        return "write_file 调用失败：content 字段类型错误。content 必须是完整文件内容字符串；如果目标文件本身是 JSON，也要把整个 JSON 文件内容作为字符串传入，不要把 JSON 对象直接放进 content。下一轮只重发失败的 write_file 调用并修正 content 类型。".to_string();
     }
     if result.error_code == "tool.schema_invalid" {
         return format!(
@@ -6925,10 +7801,10 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
         &request.attachments,
     ));
 
-        ModelStepRequest {
-            project_id: request.project_id.trim().to_string(),
-            workspace_path: request.workspace_path.trim().to_string(),
-            mode,
+    ModelStepRequest {
+        project_id: request.project_id.trim().to_string(),
+        workspace_path: request.workspace_path.trim().to_string(),
+        mode,
         provider_id,
         model_name,
         base_url: runtime.base_url.unwrap_or_default().trim().to_string(),
@@ -7311,7 +8187,10 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
     }
 }
 
-fn tool_available_for_request(definition: &super::types::ToolDefinition, request: &ModelStepRequest) -> bool {
+fn tool_available_for_request(
+    definition: &super::types::ToolDefinition,
+    request: &ModelStepRequest,
+) -> bool {
     if matches!(
         definition.name,
         "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool"
@@ -8009,6 +8888,28 @@ mod tests {
     }
 
     #[test]
+    fn extracts_unicode_file_path_candidates() {
+        let candidates = extract_file_path_candidates("那你写到 docs/改造vue3.md 文件里面");
+
+        assert!(candidates.contains(&"docs/改造vue3.md".to_string()));
+        assert!(!candidates.iter().any(|item| item == "vue3.md"));
+    }
+
+    #[test]
+    fn extracts_spaced_unicode_file_path_candidates() {
+        let candidates = extract_file_path_candidates("那你写到 docs/ 改造 vue3 .md 文件里面");
+
+        assert!(candidates.contains(&"docs/改造vue3.md".to_string()));
+    }
+
+    #[test]
+    fn does_not_invent_file_path_from_unrelated_spaced_words() {
+        let candidates = extract_file_path_candidates("写一份 vue3 改造方案，放到 docs/ 里面");
+
+        assert!(!candidates.iter().any(|item| item.contains("vue3改造方案")));
+    }
+
+    #[test]
     fn repairs_write_file_path_from_latest_user_message() {
         let workspace_root = std::env::temp_dir();
         let messages = vec![RuntimeModelMessage::simple(
@@ -8397,6 +9298,41 @@ mod tests {
     }
 
     #[test]
+    fn drift_check_allows_unicode_file_path_with_directory() {
+        let mut request = test_model_request("那你写到 docs/改造vue3.md 文件里面");
+        let task_goal =
+            build_task_goal("drift-test", "那你写到 docs/改造vue3.md 文件里面", &request);
+        request.task_goal = Some(task_goal);
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_write_unicode".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": "docs/改造vue3.md", "content": "changed"}),
+            summary: "write unicode path".to_string(),
+        };
+
+        assert!(drift_check_tool_result(&tool, &request).is_none());
+    }
+
+    #[test]
+    fn drift_check_allows_spaced_unicode_file_path_with_directory() {
+        let mut request = test_model_request("那你写到 docs/ 改造 vue3 .md 文件里面");
+        let task_goal = build_task_goal(
+            "drift-test",
+            "那你写到 docs/ 改造 vue3 .md 文件里面",
+            &request,
+        );
+        request.task_goal = Some(task_goal);
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_write_spaced_unicode".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": "docs/改造vue3.md", "content": "changed"}),
+            summary: "write spaced unicode path".to_string(),
+        };
+
+        assert!(drift_check_tool_result(&tool, &request).is_none());
+    }
+
+    #[test]
     fn local_chat_writes_requirement_and_tool_summary() {
         let dir = std::env::temp_dir().join(format!("liuagent_local_chat_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
@@ -8666,13 +9602,23 @@ mod tests {
             &request,
             &prompt_stack_from_model_request(&request),
             &dir,
-            None,
+            Some(crate::liuagent_core::types::PermissionDecisionInput {
+                request_id: None,
+                decision: "approve_session".to_string(),
+                grant_scope: Some("session_full_access".to_string()),
+                comment: None,
+            }),
             None,
             &model_runner,
             &tool_runner,
         );
 
-        assert!(result.ok(), "{}", result.error());
+        assert!(
+            result.ok(),
+            "stopped_reason={} verification={:?}",
+            result.stopped_reason,
+            result.verification
+        );
         assert_eq!(model_call_count.get(), 2);
         assert_eq!(result.model_steps.len(), 2);
         assert_eq!(result.tool_results.len(), 1);
@@ -8750,7 +9696,13 @@ mod tests {
             &tool_runner,
         );
 
-        assert!(result.ok(), "{}", result.error());
+        assert!(
+            result.ok(),
+            "stopped={} error={} audit={}",
+            result.stopped_reason,
+            result.error(),
+            result.audit_value()
+        );
         assert_eq!(model_call_count.get(), 2);
         assert_eq!(result.model_steps.len(), 2);
         assert_eq!(result.tool_results.len(), 1);
@@ -8817,7 +9769,12 @@ mod tests {
             &tool_runner,
         );
 
-        assert!(result.ok(), "{}", result.error());
+        assert!(
+            result.ok(),
+            "stopped_reason={} verification={:?}",
+            result.stopped_reason,
+            result.verification
+        );
         assert_eq!(model_call_count.get(), 3);
         assert_eq!(result.tool_results.len(), 2);
         assert!(!result.attempts[0].failure_signature.is_empty());
@@ -8834,8 +9791,20 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let request = test_model_request("重复读取缺失文件");
         let model_call_count = Cell::new(0);
-        let model_runner = |_request: &ModelStepRequest| {
-            model_call_count.set(model_call_count.get() + 1);
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 2 {
+                let observation = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == "tool")
+                    .map(|message| message.content.as_str())
+                    .unwrap_or("");
+                assert!(observation.contains("Tool loop warning"));
+                assert!(observation.contains("content is not a string"));
+            }
             test_model_result(
                 "",
                 vec![PlannedLocalTool {
@@ -8874,6 +9843,707 @@ mod tests {
             result.attempts[1].failure_signature
         );
         assert_eq!(result.error_code(), "agent_loop.repeated_failure");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_loop_preflights_write_file_missing_content_before_execution() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_write_file_preflight_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("创建 src/App.vue");
+        let model_call_count = Cell::new(0);
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 2 {
+                let observation = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == "tool")
+                    .map(|message| message.content.as_str())
+                    .unwrap_or("");
+                assert!(observation.contains("Tool loop warning"));
+                assert!(observation.contains("content is not a string"));
+            }
+            test_model_result(
+                "",
+                vec![PlannedLocalTool {
+                    tool_call_id: format!("call_write_{}", model_call_count.get()),
+                    name: "write_file".to_string(),
+                    arguments: json!({"path": "src/App.vue"}),
+                    summary: "标准模型工具调用：write_file".to_string(),
+                }],
+            )
+        };
+        let actual_tool_calls = Cell::new(0);
+        let tool_runner = |request: ToolExecutionRequest| {
+            actual_tool_calls.set(actual_tool_calls.get() + 1);
+            execute_tool(request)
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-write-file-preflight-test",
+            "runtime-chat-loop-write-file-preflight-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(!result.ok());
+        assert_eq!(result.stopped_reason, "repeated_failure");
+        assert_eq!(model_call_count.get(), 2);
+        assert_eq!(actual_tool_calls.get(), 0);
+        assert_eq!(result.tool_results.len(), 2);
+        assert_eq!(result.tool_results[0].error_code, "tool.schema_invalid");
+        assert!(result.tool_results[0]
+            .error
+            .contains("missing required argument: content"));
+        assert_eq!(
+            result.tool_results[0].content["schema_error"]["field"],
+            "content"
+        );
+        assert!(!dir.join("src/App.vue").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_loop_compiles_json_object_content_for_batched_write_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_write_file_json_batch_content_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("迁移 Vue 项目并创建配置文件");
+        let model_call_count = Cell::new(0);
+        let model_runner = |_request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index > 0 {
+                return test_model_result("配置文件已创建", Vec::new());
+            }
+            test_model_result(
+                "",
+                vec![
+                    PlannedLocalTool {
+                        tool_call_id: "call_write_package_json".to_string(),
+                        name: "write_file".to_string(),
+                        arguments: json!({
+                            "path": "package.json",
+                            "content": {
+                                "scripts": {
+                                    "dev": "vite"
+                                },
+                                "dependencies": {
+                                    "vue": "^3.5.0"
+                                }
+                            }
+                        }),
+                        summary: "标准模型工具调用：write_file".to_string(),
+                    },
+                    PlannedLocalTool {
+                        tool_call_id: "call_write_tsconfig_json".to_string(),
+                        name: "write_file".to_string(),
+                        arguments: json!({
+                            "path": "tsconfig.json",
+                            "content": {
+                                "compilerOptions": {
+                                    "target": "ES2020",
+                                    "module": "ESNext"
+                                }
+                            }
+                        }),
+                        summary: "标准模型工具调用：write_file".to_string(),
+                    },
+                    PlannedLocalTool {
+                        tool_call_id: "call_write_tsconfig_node_json".to_string(),
+                        name: "write_file".to_string(),
+                        arguments: json!({
+                            "path": "tsconfig.node.json",
+                            "content": {
+                                "compilerOptions": {
+                                    "composite": true,
+                                    "module": "ESNext"
+                                }
+                            },
+                            "include": ["vite.config.ts"]
+                        }),
+                        summary: "标准模型工具调用：write_file".to_string(),
+                    },
+                ],
+            )
+        };
+        let actual_tool_calls = Cell::new(0);
+        let request_arguments = RefCell::new(Vec::new());
+        let tool_runner = |request: ToolExecutionRequest| {
+            actual_tool_calls.set(actual_tool_calls.get() + 1);
+            request_arguments
+                .borrow_mut()
+                .push(request.arguments.clone());
+            execute_tool(request)
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-write-file-json-batch-content-test",
+            "runtime-chat-loop-write-file-json-batch-content-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            Some(crate::liuagent_core::types::PermissionDecisionInput {
+                request_id: None,
+                decision: "approve_session".to_string(),
+                grant_scope: Some("session_full_access".to_string()),
+                comment: None,
+            }),
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(
+            result.ok(),
+            "stopped={} error={} audit={}",
+            result.stopped_reason,
+            result.error(),
+            result.audit_value()
+        );
+        assert_eq!(result.stopped_reason, "no_tool_calls");
+        assert_eq!(model_call_count.get(), 2);
+        assert_eq!(actual_tool_calls.get(), 3);
+        assert_eq!(result.tool_results.len(), 3);
+        assert!(result.tool_results.iter().all(|item| item.ok));
+        for arguments in request_arguments.borrow().iter() {
+            assert!(arguments["content"].is_string());
+            let content = arguments["content"].as_str().unwrap();
+            assert!(content.ends_with('\n'));
+            serde_json::from_str::<Value>(content).unwrap();
+        }
+        let package_json = fs::read_to_string(dir.join("package.json")).unwrap();
+        assert!(package_json.contains("\"scripts\""));
+        assert!(dir.join("tsconfig.json").exists());
+        assert!(dir.join("tsconfig.node.json").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_loop_keeps_non_json_write_file_structured_content_strict() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_write_file_non_json_object_content_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("创建 src/App.vue");
+        let model_call_count = Cell::new(0);
+        let model_runner = |_request: &ModelStepRequest| {
+            model_call_count.set(model_call_count.get() + 1);
+            test_model_result(
+                "",
+                vec![PlannedLocalTool {
+                    tool_call_id: format!("call_write_app_vue_{}", model_call_count.get()),
+                    name: "write_file".to_string(),
+                    arguments: json!({
+                        "path": "src/App.vue",
+                        "content": {
+                            "template": "<main>Hello</main>"
+                        }
+                    }),
+                    summary: "标准模型工具调用：write_file".to_string(),
+                }],
+            )
+        };
+        let actual_tool_calls = Cell::new(0);
+        let tool_runner = |request: ToolExecutionRequest| {
+            actual_tool_calls.set(actual_tool_calls.get() + 1);
+            execute_tool(request)
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-write-file-non-json-object-content-test",
+            "runtime-chat-loop-write-file-non-json-object-content-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(!result.ok());
+        assert_eq!(result.stopped_reason, "repeated_failure");
+        assert_eq!(actual_tool_calls.get(), 0);
+        assert_eq!(result.tool_results.len(), 3);
+        assert_eq!(result.tool_results[0].error_code, "tool.schema_invalid");
+        assert!(result.tool_results[0]
+            .error
+            .contains("content must be a string, got object"));
+        assert!(!dir.join("src/App.vue").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_loop_blocks_mutating_batch_when_one_write_file_schema_is_invalid() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_write_file_batch_preflight_block_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("创建 src/App.vue 和 package.json");
+        let model_call_count = Cell::new(0);
+        let model_runner = |_request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index > 0 {
+                return test_model_result("等待重新规划", Vec::new());
+            }
+            test_model_result(
+                "",
+                vec![
+                    PlannedLocalTool {
+                        tool_call_id: "call_write_app_vue_invalid".to_string(),
+                        name: "write_file".to_string(),
+                        arguments: json!({
+                            "path": "src/App.vue",
+                            "content": {
+                                "template": "<main>Hello</main>"
+                            }
+                        }),
+                        summary: "标准模型工具调用：write_file".to_string(),
+                    },
+                    PlannedLocalTool {
+                        tool_call_id: "call_write_package_json_valid".to_string(),
+                        name: "write_file".to_string(),
+                        arguments: json!({
+                            "path": "package.json",
+                            "content": "{\n  \"scripts\": {\n    \"dev\": \"vite\"\n  }\n}\n"
+                        }),
+                        summary: "标准模型工具调用：write_file".to_string(),
+                    },
+                ],
+            )
+        };
+        let actual_tool_calls = Cell::new(0);
+        let tool_runner = |request: ToolExecutionRequest| {
+            actual_tool_calls.set(actual_tool_calls.get() + 1);
+            execute_tool(request)
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-write-file-batch-preflight-block-test",
+            "runtime-chat-loop-write-file-batch-preflight-block-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(!result.ok());
+        assert_eq!(result.stopped_reason, "verification_failed");
+        assert_eq!(actual_tool_calls.get(), 0);
+        assert_eq!(result.tool_results.len(), 2);
+        assert_eq!(result.tool_results[0].error_code, "tool.schema_invalid");
+        assert_eq!(
+            result.tool_results[1].error_code,
+            "tool.batch_preflight_blocked"
+        );
+        assert!(!dir.join("src/App.vue").exists());
+        assert!(!dir.join("package.json").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_loop_acceptance_gate_reprompts_after_file_mutation_without_verification() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_acceptance_gate_missing_verification_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("package.json"),
+            "{\n  \"scripts\": {\n    \"build\": \"true\"\n  }\n}\n",
+        )
+        .unwrap();
+        let mut request = test_model_request("修复 src/App.vue 并验证");
+        let task_goal =
+            build_task_goal("acceptance-gate-test", "修复 src/App.vue 并验证", &request);
+        request.task_goal = Some(task_goal);
+        let model_call_count = Cell::new(0);
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_write_app_vue".to_string(),
+                        name: "write_file".to_string(),
+                        arguments: json!({
+                            "path": "src/App.vue",
+                            "content": "<template><main>Fixed</main></template>\n"
+                        }),
+                        summary: "标准模型工具调用：write_file".to_string(),
+                    }],
+                );
+            }
+            if index == 2 {
+                let latest_user = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == "user")
+                    .map(|message| message.content.as_str())
+                    .unwrap_or("");
+                assert!(latest_user.contains("acceptance_gate_verification_required"));
+                assert!(latest_user.contains("npm run build"));
+            }
+            test_model_result("已完成修改。", Vec::new())
+        };
+        let actual_tool_calls = Cell::new(0);
+        let tool_runner = |request: ToolExecutionRequest| {
+            actual_tool_calls.set(actual_tool_calls.get() + 1);
+            crate::liuagent_core::types::ToolExecutionResult::ok(
+                request.tool_call_id.unwrap_or_else(|| "call".to_string()),
+                request.name,
+                json!({"path": "src/App.vue"}),
+                "created src/App.vue".to_string(),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-acceptance-gate-missing-verification-test",
+            "runtime-chat-loop-acceptance-gate-missing-verification-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(!result.ok());
+        assert_eq!(result.stopped_reason, "verification_failed");
+        assert_eq!(model_call_count.get(), 3);
+        assert_eq!(actual_tool_calls.get(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn acceptance_gate_passes_when_project_verification_runs_after_mutation() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_acceptance_gate_verified_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("package.json"),
+            "{\n  \"scripts\": {\n    \"build\": \"vite build\",\n    \"typecheck\": \"vue-tsc --noEmit\"\n  }\n}\n",
+        )
+        .unwrap();
+        let mut request = test_model_request("修复 src/App.vue 并验证");
+        let task_goal = build_task_goal(
+            "acceptance-gate-pass-test",
+            "修复 src/App.vue 并验证",
+            &request,
+        );
+        request.task_goal = Some(task_goal.clone());
+        let planned_tool = PlannedLocalTool {
+            tool_call_id: "call_write_app_vue".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": "src/App.vue", "content": "<template />\n"}),
+            summary: "标准模型工具调用：write_file".to_string(),
+        };
+        let write_result = crate::liuagent_core::types::ToolExecutionResult::ok(
+            "call_write_app_vue".to_string(),
+            "write_file".to_string(),
+            json!({"path": "src/App.vue"}),
+            "created src/App.vue".to_string(),
+        );
+        let command_result = crate::liuagent_core::types::ToolExecutionResult::ok(
+            "call_npm_build".to_string(),
+            "run_command".to_string(),
+            json!({"cmd": "npm run build", "exit_code": 0, "stdout": "", "stderr": ""}),
+            "命令完成，exit_code=0".to_string(),
+        );
+
+        let gate = evaluate_acceptance_gate(
+            &dir,
+            request.task_goal.as_ref(),
+            &[planned_tool],
+            &[write_result, command_result],
+            "已完成并通过 npm run build。",
+        );
+
+        assert!(gate.passed, "{gate:?}");
+        assert_eq!(gate.status, "passed");
+        assert!(gate
+            .suggested_commands
+            .iter()
+            .any(|command| command == "npm run typecheck"));
+        assert!(gate
+            .suggested_commands
+            .iter()
+            .any(|command| command == "npm run build"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn acceptance_gate_rejects_nonzero_project_verification_exit_code() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_acceptance_gate_nonzero_exit_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("package.json"),
+            "{\n  \"scripts\": {\n    \"build\": \"vite build\"\n  }\n}\n",
+        )
+        .unwrap();
+        let mut request = test_model_request("修复 src/App.vue 并验证");
+        let task_goal = build_task_goal(
+            "acceptance-gate-nonzero-test",
+            "修复 src/App.vue 并验证",
+            &request,
+        );
+        request.task_goal = Some(task_goal);
+        let planned_tool = PlannedLocalTool {
+            tool_call_id: "call_write_app_vue".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": "src/App.vue", "content": "<template />\n"}),
+            summary: "标准模型工具调用：write_file".to_string(),
+        };
+        let write_result = crate::liuagent_core::types::ToolExecutionResult::ok(
+            "call_write_app_vue".to_string(),
+            "write_file".to_string(),
+            json!({"path": "src/App.vue"}),
+            "created src/App.vue".to_string(),
+        );
+        let command_result = crate::liuagent_core::types::ToolExecutionResult::ok(
+            "call_npm_build".to_string(),
+            "run_command".to_string(),
+            json!({"cmd": "npm run build", "exit_code": 1, "stdout": "", "stderr": "failed"}),
+            "命令退出码 1".to_string(),
+        );
+
+        let gate = evaluate_acceptance_gate(
+            &dir,
+            request.task_goal.as_ref(),
+            &[planned_tool],
+            &[write_result, command_result],
+            "已完成并运行 npm run build。",
+        );
+
+        assert!(!gate.passed, "{gate:?}");
+        assert_eq!(gate.status, "missing_verification");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_loop_allows_final_after_verified_mutation_even_with_later_recoverable_failure() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_acceptance_gate_covers_failed_attempt_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("package.json"),
+            "{\n  \"scripts\": {\n    \"build\": \"true\"\n  }\n}\n",
+        )
+        .unwrap();
+        let mut request = test_model_request("修复 src/App.vue 并验证");
+        let task_goal = build_task_goal(
+            "acceptance-gate-covers-failure-test",
+            "修复 src/App.vue 并验证",
+            &request,
+        );
+        request.task_goal = Some(task_goal);
+        let model_call_count = Cell::new(0);
+        let model_runner = |_request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_write_app_vue".to_string(),
+                        name: "write_file".to_string(),
+                        arguments: json!({
+                            "path": "src/App.vue",
+                            "content": "<template><main>Fixed</main></template>\n"
+                        }),
+                        summary: "标准模型工具调用：write_file".to_string(),
+                    }],
+                );
+            }
+            if index == 1 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_npm_build".to_string(),
+                        name: "run_command".to_string(),
+                        arguments: json!({"cmd": "npm run build"}),
+                        summary: "标准模型工具调用：run_command".to_string(),
+                    }],
+                );
+            }
+            if index == 2 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_optional_read".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: json!({"path": "missing-optional-note.md"}),
+                        summary: "标准模型工具调用：read_file".to_string(),
+                    }],
+                );
+            }
+            test_model_result("已完成修改，并已通过 npm run build。", Vec::new())
+        };
+        let tool_runner = |request: ToolExecutionRequest| {
+            if request.name == "write_file" {
+                return crate::liuagent_core::types::ToolExecutionResult::ok(
+                    request
+                        .tool_call_id
+                        .unwrap_or_else(|| "call_write".to_string()),
+                    request.name,
+                    json!({"path": "src/App.vue"}),
+                    "created src/App.vue".to_string(),
+                );
+            }
+            crate::liuagent_core::types::ToolExecutionResult::failed(
+                request
+                    .tool_call_id
+                    .unwrap_or_else(|| "call_read".to_string()),
+                request.name,
+                crate::liuagent_core::types::ToolError::new(
+                    "tool.not_found",
+                    "file not found: missing-optional-note.md",
+                ),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-acceptance-gate-covers-failure-test",
+            "runtime-chat-loop-acceptance-gate-covers-failure-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            Some(crate::liuagent_core::types::PermissionDecisionInput {
+                request_id: None,
+                decision: "approve_session".to_string(),
+                grant_scope: Some("session_full_access".to_string()),
+                comment: None,
+            }),
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(
+            result.ok(),
+            "stopped_reason={} verification={:?}",
+            result.stopped_reason,
+            result.verification
+        );
+        assert_eq!(result.stopped_reason, "no_tool_calls");
+        assert!(model_call_count.get() >= 2);
+        assert_eq!(result.verification.status, "passed");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_loop_recovers_when_model_reemits_non_json_write_file_content_as_string() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_write_file_object_content_recovery_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("创建 src/App.vue");
+        let model_call_count = Cell::new(0);
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index < 2 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: format!("call_write_app_vue_bad_{index}"),
+                        name: "write_file".to_string(),
+                        arguments: json!({
+                            "path": "src/App.vue",
+                            "content": {
+                                "template": "<main>Hello</main>"
+                            }
+                        }),
+                        summary: "标准模型工具调用：write_file".to_string(),
+                    }],
+                );
+            }
+            if index == 2 {
+                let observation = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == "tool")
+                    .map(|message| message.content.as_str())
+                    .unwrap_or("");
+                assert!(observation.contains("Tool loop warning"));
+                assert!(observation.contains("Re-emit only the failed write_file"));
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_write_app_vue_fixed".to_string(),
+                        name: "write_file".to_string(),
+                        arguments: json!({
+                            "path": "src/App.vue",
+                            "content": "<template><main>Hello</main></template>\n"
+                        }),
+                        summary: "标准模型工具调用：write_file".to_string(),
+                    }],
+                );
+            }
+            test_model_result("src/App.vue 已创建", Vec::new())
+        };
+        let actual_tool_calls = Cell::new(0);
+        let tool_runner = |request: ToolExecutionRequest| {
+            actual_tool_calls.set(actual_tool_calls.get() + 1);
+            crate::liuagent_core::types::ToolExecutionResult::ok(
+                request.tool_call_id.unwrap_or_else(|| "call".to_string()),
+                request.name,
+                json!({"path": "src/App.vue", "created": true}),
+                "created src/App.vue".to_string(),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-write-file-content-recovery-test",
+            "runtime-chat-loop-write-file-content-recovery-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok(), "{}", result.error());
+        assert_eq!(model_call_count.get(), 4);
+        assert_eq!(actual_tool_calls.get(), 1);
+        assert_eq!(result.tool_results.len(), 3);
+        assert_eq!(result.tool_results[0].error_code, "tool.schema_invalid");
+        assert_eq!(result.tool_results[1].error_code, "tool.schema_invalid");
+        assert!(result.tool_results[2].ok);
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -10544,7 +12214,7 @@ mod tests {
             "读取 large.html 行 1-500/500".to_string(),
         );
 
-        let observation = tool_observation_content(&result, false, None);
+        let observation = tool_observation_content(&result, false, None, None);
         let value = serde_json::from_str::<Value>(&observation).unwrap();
 
         assert_eq!(value["content_compacted_for_model"], true);
@@ -10747,6 +12417,41 @@ mod tests {
         assert!(content.contains("已执行的本机工具见下方摘要"));
         assert!(content.contains("本机工具执行摘要：共 1 个，成功 1 个，失败 0 个。"));
         assert!(!content.contains("本轮未执行任何本机工具"));
+    }
+
+    #[test]
+    fn successful_model_summary_gets_file_mutation_failure_footer() {
+        let request = test_model_request("迁移 Vue3");
+        let model_result = test_success_model_result(&request, "迁移已完成。");
+        let planned_tool = PlannedLocalTool {
+            tool_call_id: "call_write_app".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": "src/App.vue"}),
+            summary: "标准模型工具调用：write_file".to_string(),
+        };
+        let tool_result =
+            preflight_write_file_schema_result(&planned_tool).expect("preflight should fail");
+
+        let content = build_assistant_content(
+            "proj-test",
+            &PathBuf::from("/tmp/test"),
+            "迁移 Vue3",
+            &[],
+            &model_result,
+            &[tool_result],
+            &[planned_tool],
+            true,
+            false,
+            "",
+            "",
+            "",
+        );
+
+        assert!(content.starts_with("迁移已完成。"));
+        assert!(content.contains("文件修改校验"));
+        assert!(content.contains("不能视为已完成"));
+        assert!(content.contains("src/App.vue"));
+        assert!(content.contains("missing required argument: content"));
     }
 
     #[test]
@@ -11946,6 +13651,7 @@ mod tests {
         };
 
         let report = build_verification_report(
+            &std::env::temp_dir(),
             "waiting_approval",
             Some("approval"),
             &agent_loop,

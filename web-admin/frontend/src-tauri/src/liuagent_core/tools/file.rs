@@ -154,7 +154,12 @@ pub fn write_file(
     let content = arguments
         .get("content")
         .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::new("tool.schema_invalid", "missing required argument: content"))?
+        .ok_or_else(|| {
+            ToolError::new(
+                "tool.schema_invalid",
+                "missing required argument: content. Re-emit write_file with both path and full content, or use apply_patch for partial edits.",
+            )
+        })?
         .to_string();
     let overwrite = bool_arg(arguments, "overwrite", false);
     let target = resolve_workspace_write_target(&root, &path)?;

@@ -113,7 +113,7 @@ pub fn run_command_with_output_sink(
         )?;
     }
 
-    run_shell_command(
+    let (mut content, summary) = run_shell_command(
         &root,
         &cwd,
         &cmd,
@@ -121,7 +121,11 @@ pub fn run_command_with_output_sink(
         max_output_chars,
         output_sink,
         background_on_timeout,
-    )
+    )?;
+    if let Some(object) = content.as_object_mut() {
+        object.insert("cmd".to_string(), json!(cmd));
+    }
+    Ok((content, summary))
 }
 
 pub fn classify_command_risk(cmd: &str) -> (String, Vec<String>) {
