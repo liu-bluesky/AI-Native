@@ -10933,6 +10933,7 @@ def test_project_deploy_notification_sends_feishu_message(monkeypatch):
 
     assert result[0]["status"] == "sent"
     assert result[0]["chat_name"] == "部署群"
+    assert calls[0]["content"] == "发布结果：项目一/前端服务/已部署/release.zip/deploy-1"
     assert result[0]["stage"] == "ftp_upload_completed"
     assert result[0]["template"] == "发布结果：{project_name}/{component_name}/{status_label}/{artifact_name}/{run_id}"
     assert result[0]["message"] == "发布结果：项目一/前端服务/已部署/release.zip/deploy-1"
@@ -10941,8 +10942,153 @@ def test_project_deploy_notification_sends_feishu_message(monkeypatch):
     assert calls
     assert calls[0]["connector"]["id"] == "bot-1"
     assert calls[0]["chat_id"] == "chat-1"
-    assert calls[0]["content"] == "发布结果：项目一/前端服务/已部署/release.zip/deploy-1"
     assert calls[0]["idempotency_key"].startswith("project-deploy-artifact-1-success-")
+
+
+def test_project_deploy_notification_mentions_feishu_users(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact
+    from stores.json.project_store import ProjectConfig
+
+    calls = []
+
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.get_feishu_connector",
+        lambda connector_id: {
+            "id": connector_id,
+            "platform": "feishu",
+            "enabled": True,
+            "app_id": "cli_xxx",
+            "app_secret": "secret",
+        },
+    )
+
+    def fake_send(connector, *, chat_id, content, idempotency_key=""):
+        calls.append({"chat_id": chat_id, "content": content, "idempotency_key": idempotency_key})
+        return {"message_id": "om_mention"}
+
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.send_feishu_text_message_with_open_api",
+        fake_send,
+    )
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "notify": {
+                                "enabled": True,
+                                "template": "{project_name} {status_label}",
+                                "targets": [
+                                    {
+                                        "platform": "feishu",
+                                        "connector_id": "bot-1",
+                                        "chat_id": "chat-1",
+                                        "mention": {
+                                            "mode": "users",
+                                            "users": [
+                                                {"open_id": "ou_1", "name": "张三"},
+                                                {"open_id": "ou_2"},
+                                            ],
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="release.zip",
+    )
+
+    result = projects_router._build_project_deploy_notification_preview(
+        project,
+        artifact,
+        status="success",
+    )
+
+    assert result[0]["status"] == "sent"
+    assert result[0]["mention"]["mode"] == "users"
+    assert '<at user_id="ou_1">张三</at>' in calls[0]["content"]
+    assert '<at user_id="ou_2">ou_2</at>' in calls[0]["content"]
+
+
+def test_project_deploy_notification_mentions_feishu_all(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_deploy_store import ProjectDeployArtifact
+    from stores.json.project_store import ProjectConfig
+
+    calls = []
+
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.get_feishu_connector",
+        lambda connector_id: {
+            "id": connector_id,
+            "platform": "feishu",
+            "enabled": True,
+            "app_id": "cli_xxx",
+            "app_secret": "secret",
+        },
+    )
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.send_feishu_text_message_with_open_api",
+        lambda connector, *, chat_id, content, idempotency_key="": calls.append({"content": content}) or {"message_id": "om_all"},
+    )
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        deploy_settings={
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "prod",
+                    "components": [
+                        {
+                            "id": "web",
+                            "notify": {
+                                "enabled": True,
+                                "template": "{project_name} {status_label}",
+                                "targets": [
+                                    {
+                                        "platform": "feishu",
+                                        "connector_id": "bot-1",
+                                        "chat_id": "chat-1",
+                                        "mention": {"mode": "all"},
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    artifact = ProjectDeployArtifact(
+        id="artifact-1",
+        project_id="proj-1",
+        profile="prod",
+        component="web",
+        artifact_name="release.zip",
+    )
+
+    result = projects_router._build_project_deploy_notification_preview(project, artifact, status="success")
+
+    assert result[0]["status"] == "sent"
+    assert result[0]["mention"] == {"mode": "all", "users": []}
+    assert '<at user_id="all">所有人</at>' in calls[0]["content"]
 
 
 def test_project_deploy_notification_fails_when_feishu_connector_missing(monkeypatch):
@@ -14972,6 +15118,70 @@ def test_send_feishu_text_message_with_open_api_uses_connector_token(monkeypatch
     assert calls[0]["json"]["uuid"] == "deploy-key"
 
 
+def test_list_feishu_chat_members_uses_connector_token(monkeypatch):
+    from services.feishu import feishu_bot_service
+
+    calls = []
+    monkeypatch.setattr(feishu_bot_service, "_get_feishu_tenant_access_token", lambda connector: "tenant-token")
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        if len(calls) == 1:
+            return FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "items": [
+                            {"member_id": "ou_1", "name": "张三"},
+                            {"member_id": "ou_2", "display_name": "李四"},
+                        ],
+                        "has_more": True,
+                        "page_token": "next-page",
+                    },
+                }
+            )
+        return FakeResponse(
+            {
+                "code": 0,
+                "data": {
+                    "items": [
+                        {"member_id": "ou_2", "name": "重复"},
+                        {"open_id": "ou_3", "user_name": "王五"},
+                    ],
+                    "has_more": False,
+                },
+            }
+        )
+
+    monkeypatch.setattr(feishu_bot_service.requests, "get", fake_get)
+
+    result = feishu_bot_service.list_feishu_chat_members(
+        {"id": "feishu-1", "app_id": "cli_xxx", "app_secret": "secret"},
+        "oc_1",
+    )
+
+    assert result["source"] == "feishu.im.v1.chat.members"
+    assert result["items"] == [
+        {"open_id": "ou_1", "name": "张三"},
+        {"open_id": "ou_2", "name": "李四"},
+        {"open_id": "ou_3", "name": "王五"},
+    ]
+    assert calls[0]["url"].endswith("/open-apis/im/v1/chats/oc_1/members")
+    assert calls[0]["headers"]["Authorization"] == "Bearer tenant-token"
+    assert calls[0]["params"] == {"member_id_type": "open_id", "page_size": 100}
+    assert calls[1]["params"]["page_token"] == "next-page"
+
+
 def test_send_feishu_text_message_normalizes_overlong_uuid(monkeypatch):
     from services.feishu import feishu_bot_service
 
@@ -15020,6 +15230,26 @@ def test_normalize_feishu_uuid_avoids_truncation_collisions():
 
     # A key already within the limit passes through unchanged.
     assert _normalize_feishu_uuid("deploy-key") == "deploy-key"
+
+
+def test_feishu_message_mentions_for_context_normalizes_open_ids():
+    from types import SimpleNamespace
+
+    from services.feishu import feishu_bot_service
+
+    message = SimpleNamespace(
+        mentions=[
+            {"id": {"open_id": "ou_1"}, "name": "张三"},
+            SimpleNamespace(id=SimpleNamespace(open_id="ou_2"), display_name="李四"),
+            {"id": {"open_id": "ou_1"}, "name": "重复"},
+            {"name": "缺少 ID"},
+        ]
+    )
+
+    assert feishu_bot_service._feishu_message_mentions_for_context(message) == [
+        {"open_id": "ou_1", "name": "张三"},
+        {"open_id": "ou_2", "name": "李四"},
+    ]
 
 
 def test_send_feishu_text_message_surfaces_real_error_on_400(monkeypatch):
@@ -15714,12 +15944,23 @@ def test_query_mcp_sync_cli_prompt_dry_run_and_blocks_path_escape(monkeypatch, t
         target_file="../AGENTS.md",
         dry_run=True,
     )
+    ai_entry_dry_run = registered_tools["sync_query_mcp_cli_prompt_to_local_file"](
+        "proj-1",
+        "chat-session-1",
+        workspace_path=str(tmp_path),
+        target_file="AIENTRY.md",
+        dry_run=True,
+    )
 
     assert dry_run["status"] == "dry_run"
     assert dry_run["changed"] is True
     assert not (tmp_path / "AGENTS.md").exists()
     assert blocked["status"] == "blocked"
     assert "inside workspace_path" in blocked["reason"]
+    assert ai_entry_dry_run["status"] == "dry_run"
+    assert ai_entry_dry_run["client_profile"] == "desktop-agent"
+    assert "query://client-profile/desktop-agent" in ai_entry_dry_run["rendered_cli_prompt"]
+    assert not (tmp_path / "AIENTRY.md").exists()
 
 
 def test_query_mcp_proxy_app_handles_sse_and_streamable_routes(monkeypatch):
@@ -24504,6 +24745,161 @@ def test_project_deploy_notify_chats_include_scanned_connector_chats(monkeypatch
             "scanned_at": "2026-06-13T01:00:00+00:00",
         }
     ]
+
+
+def test_project_deploy_notify_mention_options_from_group_messages(monkeypatch):
+    from routers import projects
+    from stores.json.project_chat_store import ProjectChatMessage
+
+    class FakeProjectChatStore:
+        def list_messages(self, project_id, username, limit=200, chat_session_id="", offset=0):
+            assert project_id == "proj-1"
+            assert username == "tester"
+            assert limit == 200
+            return [
+                ProjectChatMessage(
+                    project_id=project_id,
+                    username=username,
+                    role="user",
+                    content="发布一下",
+                    platform="feishu",
+                    connector_id="bot-1",
+                    external_chat_id="oc_123",
+                    sender_id="ou_sender",
+                    sender_name="张三",
+                    source_context={
+                        "mentions": [
+                            {"id": {"open_id": "ou_lisi"}, "name": "李四"},
+                            {"open_id": "all", "name": "所有人"},
+                        ]
+                    },
+                ),
+                ProjectChatMessage(
+                    project_id=project_id,
+                    username=username,
+                    role="user",
+                    content="收到",
+                    source_context={
+                        "platform": "feishu",
+                        "connector_id": "bot-1",
+                        "external_chat_id": "oc_123",
+                        "sender_id": "ou_sender",
+                        "sender_name": "张三",
+                        "message_mentions": [{"open_id": "ou_wangwu", "display_name": "王五"}],
+                    },
+                ),
+                ProjectChatMessage(
+                    project_id=project_id,
+                    username=username,
+                    role="user",
+                    content="其他群消息",
+                    platform="feishu",
+                    connector_id="bot-1",
+                    external_chat_id="oc_other",
+                    sender_id="ou_other",
+                    sender_name="其他人",
+                ),
+            ]
+
+    monkeypatch.setattr(projects, "project_chat_store", FakeProjectChatStore())
+
+    items = projects._list_project_deploy_notify_mention_options(
+        "proj-1",
+        "tester",
+        platform="feishu",
+        connector_id="bot-1",
+        chat_id="oc_123",
+    )
+
+    assert items == [
+        {"open_id": "ou_sender", "name": "张三", "source_count": 2},
+        {"open_id": "ou_lisi", "name": "李四", "source_count": 1},
+        {"open_id": "ou_wangwu", "name": "王五", "source_count": 1},
+    ]
+
+
+def test_project_deploy_notify_mention_options_fallback_to_feishu_chat_members(monkeypatch):
+    from routers import projects
+
+    class FakeProjectChatStore:
+        def list_messages(self, project_id, username, limit=200, chat_session_id="", offset=0):
+            assert project_id == "proj-1"
+            assert username == "tester"
+            return []
+
+    monkeypatch.setattr(projects, "project_chat_store", FakeProjectChatStore())
+    monkeypatch.setattr(
+        projects,
+        "get_bot_connector",
+        lambda connector_id: {
+            "id": connector_id,
+            "platform": "feishu",
+            "enabled": True,
+            "project_id": "proj-1",
+            "app_id": "cli_xxx",
+            "app_secret": "secret",
+        },
+    )
+
+    def fake_list_feishu_chat_members(connector, chat_id):
+        assert connector["id"] == "bot-1"
+        assert chat_id == "oc_123"
+        return {
+            "items": [
+                {"open_id": "ou_lisi", "name": "李四"},
+                {"open_id": "ou_wangwu", "name": "王五"},
+            ]
+        }
+
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.list_feishu_chat_members",
+        fake_list_feishu_chat_members,
+    )
+
+    items = projects._list_project_deploy_notify_mention_options(
+        "proj-1",
+        "tester",
+        platform="feishu",
+        connector_id="bot-1",
+        chat_id="oc_123",
+    )
+
+    assert items == [
+        {"open_id": "ou_lisi", "name": "李四", "source_count": 1},
+        {"open_id": "ou_wangwu", "name": "王五", "source_count": 1},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_project_deploy_notify_mention_options_endpoint(monkeypatch):
+    from routers import projects
+
+    monkeypatch.setattr(projects, "_ensure_permission", lambda auth_payload, permission: None)
+    monkeypatch.setattr(projects, "_ensure_project_access", lambda project_id, auth_payload: None)
+    monkeypatch.setattr(projects, "_current_username", lambda auth_payload: "tester")
+    monkeypatch.setattr(
+        projects,
+        "_list_project_deploy_notify_mention_options",
+        lambda project_id, username, *, platform, connector_id, chat_id: [
+            {"open_id": "ou_1", "name": "张三", "source_count": 1}
+        ],
+    )
+
+    payload = await projects.get_project_deploy_notify_mention_options(
+        "proj-1",
+        platform="feishu",
+        connector_id="bot-1",
+        chat_id="oc_123",
+        auth_payload={"sub": "tester", "role": "admin"},
+    )
+
+    assert payload == {
+        "project_id": "proj-1",
+        "platform": "feishu",
+        "connector_id": "bot-1",
+        "chat_id": "oc_123",
+        "members": [{"open_id": "ou_1", "name": "张三", "source_count": 1}],
+    }
 
 
 @pytest.mark.asyncio

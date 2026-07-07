@@ -1637,6 +1637,8 @@ const EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS = [
   },
 ];
 const RISK_LEVEL_OPTIONS = ["none", "low", "medium", "high", "critical"];
+const SYSTEM_CONFIG_UPDATED_EVENT = "system-config-updated";
+const SYSTEM_CONFIG_UPDATED_STORAGE_KEY = "system-config-updated";
 function cloneConfig(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -3095,14 +3097,9 @@ async function saveConfig() {
     applyConfigToForm(data?.config, {
       preservePrompt: true,
     });
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(
-        new CustomEvent("system-config-updated", {
-          detail: { config: data?.config || {}, localMcpConfigChanged: true },
-        }),
-      );
-      window.dispatchEvent(new CustomEvent("local-mcp-config-updated"));
-    }
+    broadcastSystemConfigUpdated(data?.config || {}, {
+      localMcpConfigChanged: true,
+    });
     await Promise.all([
       refreshMcpSkills(),
       fetchGlobalAssistantChatOptions(),
@@ -3114,6 +3111,25 @@ async function saveConfig() {
     ElMessage.error(err?.detail || err?.message || "保存系统配置失败");
   } finally {
     saving.value = false;
+  }
+}
+
+function broadcastSystemConfigUpdated(config, extraDetail = {}) {
+  if (typeof window === "undefined") return;
+  const detail = {
+    config: config && typeof config === "object" ? config : {},
+    ...extraDetail,
+    updatedAt: Date.now(),
+  };
+  window.dispatchEvent(new CustomEvent(SYSTEM_CONFIG_UPDATED_EVENT, { detail }));
+  window.dispatchEvent(new CustomEvent("local-mcp-config-updated"));
+  try {
+    window.localStorage?.setItem(
+      SYSTEM_CONFIG_UPDATED_STORAGE_KEY,
+      JSON.stringify(detail),
+    );
+  } catch {
+    // Same-window CustomEvent is still enough when localStorage is unavailable.
   }
 }
 

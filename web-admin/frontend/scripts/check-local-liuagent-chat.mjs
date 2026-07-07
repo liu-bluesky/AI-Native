@@ -567,6 +567,36 @@ assert.match(
 );
 
 assert.match(
+  projectChat,
+  /if \(workspacePath !== savedWorkspacePath\) \{[\s\S]*?saveProjectWorkspaceDirectory\(workspacePath,\s*\{[\s\S]*?silent: true,[\s\S]*?rethrow: true,/,
+  "Creating AIENTRY.md must persist a draft workspace path before using the backend workspace file API",
+);
+
+assert.match(
+  projectChat,
+  /const executionWorkspacePath = computed\(\(\) =>[\s\S]*projectWorkspaceDraftNormalized\.value \|\|[\s\S]*projectWorkspaceResolved\.value \|\|[\s\S]*legacyConnectorWorkspacePath\.value/,
+  "local-runner execution workspace must prefer the project workspace over stale connector/external agent paths",
+);
+
+assert.match(
+  projectChat,
+  /workspacePathDraft\.value = String\([\s\S]*projectWorkspacePath\.value \|\|[\s\S]*settings\.connector_workspace_path/,
+  "project settings hydration must seed the local workspace draft from the project workspace before legacy connector settings",
+);
+
+assert.match(
+  projectChat,
+  /async function saveProjectWorkspaceDirectory[\s\S]*workspacePathDraft\.value = persisted;[\s\S]*connector_workspace_path: persisted,[\s\S]*workspace_path: persisted,/,
+  "saving the project workspace must refresh local runner workspace state immediately",
+);
+
+assert.match(
+  projectChat,
+  /function localLiuAgentWorkspacePath\(\) \{\s*return executionWorkspacePath\.value;\s*\}/,
+  "local liuAgent chat requests must use the canonical execution workspace",
+);
+
+assert.match(
   bridge,
   /export async function prepareNativeLiuAgentInvocation/,
   "frontend bridge must export prepareNativeLiuAgentInvocation",

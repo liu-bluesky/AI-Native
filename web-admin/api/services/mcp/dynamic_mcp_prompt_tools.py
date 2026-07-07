@@ -21,8 +21,10 @@ def _normalize_text(value: Any, max_length: int = 1000) -> str:
 
 
 def _infer_client_profile_from_target_file(target_file: str) -> str:
-    """按入口文件名推断客户端画像：CLAUDE.md→claude-code，HERMES.md→hermes，其余→codex。"""
+    """按入口文件名推断客户端画像：AIENTRY.md→desktop-agent，CLAUDE.md→claude-code，HERMES.md→hermes，其余→codex。"""
     name = Path(str(target_file or "")).name.strip().lower()
+    if name == "aientry.md":
+        return "desktop-agent"
     if name == "claude.md":
         return "claude-code"
     if name == "hermes.md":
@@ -104,7 +106,7 @@ def prompt_sync_tool_descriptor(employee_id: str = "") -> dict[str, Any]:
                 },
                 "client_profile": {
                     "type": "string",
-                    "description": "可选，客户端画像：codex / hermes / claude-code / generic-cli；未传时按 target_file 推断（CLAUDE.md→claude-code，HERMES.md→hermes，其余→codex）。",
+                    "description": "可选，客户端画像：codex / desktop-agent / hermes / claude-code / generic-cli；未传时按 target_file 推断（AIENTRY.md→desktop-agent，CLAUDE.md→claude-code，HERMES.md→hermes，其余→codex）。",
                 },
             },
             "required": ["workspace_path"],

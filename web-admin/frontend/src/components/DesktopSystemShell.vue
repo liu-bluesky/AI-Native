@@ -270,6 +270,8 @@
           </span>
         </div>
       </nav>
+
+      <GlobalAiAssistant />
     </div>
   </div>
 </template>
@@ -283,6 +285,8 @@ import {
   ref,
   watch,
 } from "vue";
+
+import GlobalAiAssistant from "@/components/GlobalAiAssistant.vue";
 
 const props = defineProps({
   dockItems: {

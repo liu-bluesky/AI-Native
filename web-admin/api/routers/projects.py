@@ -23,7 +23,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import asdict, replace
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Any
 from urllib.parse import quote, urlencode, urlparse
@@ -572,6 +572,44 @@ def _normalize_project_deploy_text(value: Any, *, limit: int = 500) -> str:
     return str(value or "").strip()[:limit]
 
 
+def _normalize_project_deploy_notify_mention_user(value: Any) -> dict[str, str] | None:
+    if isinstance(value, str):
+        parts = value.strip().split()
+        if not parts:
+            return None
+        open_id = _normalize_project_deploy_text(parts[0], limit=120)
+        name = _normalize_project_deploy_text(" ".join(parts[1:]), limit=120)
+    elif isinstance(value, dict):
+        open_id = _normalize_project_deploy_text(
+            value.get("open_id") or value.get("openId") or value.get("user_id") or value.get("userId"),
+            limit=120,
+        )
+        name = _normalize_project_deploy_text(
+            value.get("name") or value.get("label") or value.get("display_name") or value.get("displayName"),
+            limit=120,
+        )
+    else:
+        return None
+    if not open_id:
+        return None
+    return {"open_id": open_id, "name": name or open_id}
+
+
+def _normalize_project_deploy_notify_mention(value: Any) -> dict[str, Any]:
+    mention = value if isinstance(value, dict) else {}
+    raw_mode = _normalize_project_deploy_text(mention.get("mode"), limit=40).lower()
+    mode = raw_mode if raw_mode in {"all", "users"} else "none"
+    raw_users = mention.get("users") if isinstance(mention.get("users"), list) else []
+    users = [
+        normalized
+        for item in raw_users
+        if (normalized := _normalize_project_deploy_notify_mention_user(item)) is not None
+    ][:20]
+    if mode == "users" and not users:
+        mode = "none"
+    return {"mode": mode, "users": users if mode == "users" else []}
+
+
 def _normalize_project_deploy_notify(value: Any) -> dict[str, Any]:
     notify = value if isinstance(value, dict) else {}
     raw_targets = notify.get("targets") if isinstance(notify.get("targets"), list) else []
@@ -586,6 +624,7 @@ def _normalize_project_deploy_notify(value: Any) -> dict[str, Any]:
                 "connector_id": _normalize_project_deploy_text(target.get("connector_id"), limit=120),
                 "chat_id": _normalize_project_deploy_text(target.get("chat_id"), limit=200),
                 "chat_name": _normalize_project_deploy_text(target.get("chat_name"), limit=200),
+                "mention": _normalize_project_deploy_notify_mention(target.get("mention")),
             }
         )
     return {
@@ -1055,6 +1094,155 @@ def _list_project_deploy_notify_chats(
     return items
 
 
+def _project_deploy_notify_message_context(message: Any) -> dict[str, Any]:
+    raw_context = getattr(message, "source_context", None)
+    context = dict(raw_context) if isinstance(raw_context, dict) else {}
+    for key in (
+        "platform",
+        "connector_id",
+        "external_chat_id",
+        "external_chat_name",
+        "sender_id",
+        "sender_name",
+    ):
+        value = getattr(message, key, "")
+        if value not in (None, ""):
+            context[key] = value
+    return context
+
+
+def _normalize_project_deploy_notify_mention_option(value: Any) -> dict[str, str] | None:
+    if isinstance(value, dict):
+        id_payload = value.get("id") if isinstance(value.get("id"), dict) else {}
+        open_id = _normalize_project_deploy_text(
+            value.get("open_id")
+            or value.get("openId")
+            or value.get("user_id")
+            or value.get("userId")
+            or id_payload.get("open_id")
+            or id_payload.get("openId")
+            or id_payload.get("user_id")
+            or id_payload.get("userId"),
+            limit=120,
+        )
+        name = _normalize_project_deploy_text(
+            value.get("name")
+            or value.get("label")
+            or value.get("display_name")
+            or value.get("displayName")
+            or value.get("user_name")
+            or value.get("userName")
+            or id_payload.get("name")
+            or id_payload.get("display_name")
+            or id_payload.get("user_name"),
+            limit=120,
+        )
+    else:
+        open_id = _normalize_project_deploy_text(value, limit=120)
+        name = ""
+    if not open_id or open_id.lower() == "all":
+        return None
+    return {"open_id": open_id, "name": name or open_id}
+
+
+def _iter_project_deploy_notify_message_mentions(context: dict[str, Any]) -> Iterable[Any]:
+    for key in (
+        "mentions",
+        "message_mentions",
+        "mention_users",
+        "mentioned_users",
+        "at_users",
+        "atUsers",
+    ):
+        value = context.get(key)
+        if isinstance(value, list):
+            yield from value
+    interaction = context.get("interaction_submission")
+    if isinstance(interaction, dict):
+        value = interaction.get("mentions") or interaction.get("mention_users")
+        if isinstance(value, list):
+            yield from value
+
+
+def _list_project_deploy_notify_mention_options(
+    project_id: str,
+    username: str,
+    *,
+    platform: str,
+    connector_id: str,
+    chat_id: str,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    normalized_platform = _normalize_project_chat_platform(platform)
+    normalized_connector_id = _normalize_project_deploy_text(connector_id, limit=120)
+    normalized_chat_id = _normalize_project_deploy_text(chat_id, limit=200)
+    if normalized_platform != "feishu" or not normalized_connector_id or not normalized_chat_id:
+        return []
+    try:
+        messages = project_chat_store.list_messages(project_id, username, limit=limit)
+    except Exception:
+        messages = []
+    members: dict[str, dict[str, Any]] = {}
+
+    def add_user(raw: Any) -> None:
+        user = _normalize_project_deploy_notify_mention_option(raw)
+        if user is None:
+            return
+        open_id = user["open_id"]
+        existing = members.get(open_id)
+        if existing is None:
+            members[open_id] = {
+                "open_id": open_id,
+                "name": user["name"],
+                "source_count": 1,
+            }
+            return
+        existing["source_count"] = int(existing.get("source_count") or 0) + 1
+        if existing.get("name") == open_id and user.get("name") and user["name"] != open_id:
+            existing["name"] = user["name"]
+
+    for message in messages:
+        context = _project_deploy_notify_message_context(message)
+        if _normalize_project_chat_platform(context.get("platform")) != normalized_platform:
+            continue
+        if _normalize_project_deploy_text(context.get("connector_id"), limit=120) != normalized_connector_id:
+            continue
+        if _normalize_project_deploy_text(context.get("external_chat_id"), limit=200) != normalized_chat_id:
+            continue
+        add_user(
+            {
+                "open_id": context.get("sender_id"),
+                "name": context.get("sender_name"),
+            }
+        )
+        for item in _iter_project_deploy_notify_message_mentions(context):
+            add_user(item)
+
+    if not members:
+        connector = get_bot_connector(normalized_connector_id)
+        connector_payload = (
+            _serialize_project_deploy_notify_connector(dict(connector or {}), str(project_id or "").strip())
+            if isinstance(connector, dict)
+            else None
+        )
+        if connector_payload is not None:
+            from services.feishu.feishu_bot_service import list_feishu_chat_members
+
+            result = list_feishu_chat_members(dict(connector), normalized_chat_id)
+            for item in result.get("items") or []:
+                add_user(item)
+
+    items = list(members.values())
+    items.sort(
+        key=lambda item: (
+            -int(item.get("source_count") or 0),
+            str(item.get("name") or ""),
+            str(item.get("open_id") or ""),
+        )
+    )
+    return items[:50]
+
+
 def _validate_project_deploy_settings_payload(value: Any, auth_payload: dict | None = None) -> dict[str, Any]:
     settings = _normalize_project_deploy_settings(value)
     issues: list[dict[str, Any]] = []
@@ -1098,6 +1286,15 @@ def _validate_project_deploy_settings_payload(value: Any, auth_payload: dict | N
                         issues.append({"path": f"{notify_prefix}.connector_id", "message": f"{notify_label}：请选择通知机器人"})
                     if not _normalize_project_deploy_text(notify_target.get("chat_id"), limit=200):
                         issues.append({"path": f"{notify_prefix}.chat_id", "message": f"{notify_label}：请选择通知群，或输入飞书群名称后解析"})
+                    mention = (
+                        notify_target.get("mention")
+                        if isinstance(notify_target.get("mention"), dict)
+                        else {}
+                    )
+                    mention_mode = _normalize_project_deploy_text(mention.get("mode"), limit=40).lower()
+                    mention_users = mention.get("users") if isinstance(mention.get("users"), list) else []
+                    if mention_mode == "users" and not mention_users:
+                        issues.append({"path": f"{notify_prefix}.mention.users", "message": f"{notify_label}：@指定人时至少填写一个 open_id"})
             for target_index, target in enumerate(targets):
                 if not isinstance(target, dict) or not bool(target.get("enabled", True)):
                     continue
@@ -3262,6 +3459,41 @@ def _render_project_deploy_notify_template(template: str, context: dict[str, Any
     return _normalize_project_deploy_text(rendered, limit=2000)
 
 
+def _escape_feishu_text_mention_label(value: str) -> str:
+    return (
+        _normalize_project_deploy_text(value, limit=120)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _render_project_deploy_feishu_mentions(mention: dict[str, Any] | None) -> str:
+    normalized = _normalize_project_deploy_notify_mention(mention)
+    mode = normalized.get("mode")
+    if mode == "all":
+        return '<at user_id="all">所有人</at>'
+    if mode != "users":
+        return ""
+    chunks: list[str] = []
+    for user in normalized.get("users") or []:
+        if not isinstance(user, dict):
+            continue
+        open_id = _normalize_project_deploy_text(user.get("open_id"), limit=120)
+        if not open_id:
+            continue
+        label = _escape_feishu_text_mention_label(str(user.get("name") or open_id))
+        chunks.append(f'<at user_id="{open_id}">{label}</at>')
+    return " ".join(chunks)
+
+
+def _append_project_deploy_feishu_mentions(message: str, mention: dict[str, Any] | None) -> str:
+    mention_text = _render_project_deploy_feishu_mentions(mention)
+    if not mention_text:
+        return message
+    return _normalize_project_deploy_text(f"{message}\n{mention_text}", limit=2000)
+
+
 def _build_project_deploy_notification_preview(
     project: ProjectConfig,
     artifact: ProjectDeployArtifact,
@@ -3322,6 +3554,7 @@ def _build_project_deploy_notification_preview(
         connector_id = _normalize_project_deploy_text(target.get("connector_id"), limit=120)
         chat_id = _normalize_project_deploy_text(target.get("chat_id"), limit=200)
         chat_name = _normalize_project_deploy_text(target.get("chat_name"), limit=200)
+        mention = _normalize_project_deploy_notify_mention(target.get("mention"))
         target_context = {
             **base_context,
             "platform": platform,
@@ -3330,17 +3563,19 @@ def _build_project_deploy_notification_preview(
             "chat_name": chat_name,
         }
         message = _render_project_deploy_notify_template(template, target_context)
+        send_message = _append_project_deploy_feishu_mentions(message, mention) if platform == "feishu" else message
         target_payload = {
             "platform": platform,
             "connector_id": connector_id,
             "chat_id": chat_id,
             "chat_name": chat_name,
             "status": "pending",
-            "message": message,
+            "message": send_message,
             "template": template,
             "run_id": run_id,
             "stage": stage,
             "created_at": _now_iso(),
+            "mention": mention,
             **({"manual": True} if manual else {}),
         }
         if status != "success" and not force_send:
@@ -3357,7 +3592,7 @@ def _build_project_deploy_notification_preview(
                     _send_project_deploy_feishu_notification(
                         connector_id=connector_id,
                         chat_id=chat_id,
-                        message=message,
+                        message=send_message,
                         artifact=artifact,
                         status=status,
                         idempotency_scope=idempotency_scope,
@@ -16581,6 +16816,35 @@ async def get_project_deploy_notify_options(
         "project_id": project_id,
         "connectors": _list_project_deploy_notify_connectors(project_id),
         "chats": _list_project_deploy_notify_chats(project_id, username),
+    }
+
+
+@router.get("/{project_id}/deploy-notify-mention-options")
+async def get_project_deploy_notify_mention_options(
+    project_id: str,
+    platform: str = Query("feishu"),
+    connector_id: str = Query(""),
+    chat_id: str = Query(""),
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    normalized_platform = _normalize_project_chat_platform(platform)
+    normalized_connector_id = _normalize_project_deploy_text(connector_id, limit=120)
+    normalized_chat_id = _normalize_project_deploy_text(chat_id, limit=200)
+    return {
+        "project_id": project_id,
+        "platform": normalized_platform,
+        "connector_id": normalized_connector_id,
+        "chat_id": normalized_chat_id,
+        "members": _list_project_deploy_notify_mention_options(
+            project_id,
+            username,
+            platform=normalized_platform,
+            connector_id=normalized_connector_id,
+            chat_id=normalized_chat_id,
+        ),
     }
 
 

@@ -4130,6 +4130,14 @@ const projectWorkspaceDraftNormalized = computed(() =>
 const workspacePathResolved = computed(() =>
   String(externalAgentInfo.value.workspace_path || "").trim(),
 );
+const legacyConnectorWorkspacePath = computed(() =>
+  String(
+    workspacePathDraftNormalized.value ||
+      projectChatSettings.value.connector_workspace_path ||
+      workspacePathResolved.value ||
+      "",
+  ).trim(),
+);
 const agentRuntimeWorkspaceTrustPath = computed(() =>
   String(
     projectWorkspaceResolved.value || workspacePathResolved.value || "",
@@ -4141,9 +4149,9 @@ const canTrustAgentRuntimeWorkspace = computed(
 );
 const executionWorkspacePath = computed(() =>
   String(
-    workspacePathDraftNormalized.value ||
-      workspacePathResolved.value ||
+    projectWorkspaceDraftNormalized.value ||
       projectWorkspaceResolved.value ||
+      legacyConnectorWorkspacePath.value ||
       "",
   ).trim(),
 );
@@ -5481,12 +5489,7 @@ async function recordNativeTerminalApprovalDecision(choice, prompt) {
   const decision = String(matchedOption?.decision || "").trim() || "reject";
   const title = String(prompt?.title || "").trim();
   const message = String(prompt?.message || "").trim();
-  const workspacePath = String(
-    workspacePathDraftNormalized.value ||
-      workspacePathResolved.value ||
-      projectWorkspaceResolved.value ||
-      "",
-  ).trim();
+  const workspacePath = resolveNativeRuntimeWorkspacePath();
   try {
     await recordNativeRunnerPermissionDecision({
       command: "terminal_approval",
@@ -5681,12 +5684,7 @@ async function maybeWarmupNativeExternalAgentSession() {
   // 已有运行/空闲的可复用会话则无需预热。
   if (isNativeExternalAgentRunningForChatSession(chatSessionId)) return;
   if (getNativeExternalAgentRunnerSessionIdForChatSession(chatSessionId)) return;
-  const workspacePath = String(
-    workspacePathDraftNormalized.value ||
-      workspacePathResolved.value ||
-      projectWorkspaceResolved.value ||
-      "",
-  ).trim();
+  const workspacePath = resolveNativeRuntimeWorkspacePath();
   if (!workspacePath) return;
   const warmupKey = `${chatSessionId}::${agentType}::${workspacePath}`;
   if (externalAgentWarmupKey.value === warmupKey) return; // 同条件不重复预热
@@ -5737,12 +5735,7 @@ async function prepareNativeExternalAgentLaunchPlan() {
   }
   nativeExternalAgentLaunchPlanning.value = true;
   try {
-    const workspacePath = String(
-      workspacePathDraftNormalized.value ||
-        workspacePathResolved.value ||
-        projectWorkspaceResolved.value ||
-        "",
-    ).trim();
+    const workspacePath = resolveNativeRuntimeWorkspacePath();
     if (!workspacePath) {
       ElMessage.warning("请先配置本机工作区");
       return;
@@ -7468,12 +7461,7 @@ async function startNativeExternalAgentSession(
     ElMessage.warning("当前对话已有Runner 正在执行");
     return false;
   }
-  const workspacePath = String(
-    workspacePathDraftNormalized.value ||
-      workspacePathResolved.value ||
-      projectWorkspaceResolved.value ||
-      "",
-  ).trim();
+  const workspacePath = resolveNativeRuntimeWorkspacePath();
   if (!workspacePath) {
     ElMessage.warning("请先配置本机工作区");
     return false;
@@ -7666,9 +7654,7 @@ async function startNativeExternalAgentSession(
 
 function externalAgentBridgeWorkspacePath() {
   return String(
-    workspacePathDraftNormalized.value ||
-      workspacePathResolved.value ||
-      projectWorkspaceResolved.value ||
+    resolveNativeRuntimeWorkspacePath() ||
       nativeRuntimeInfo.value?.defaultWorkspacePath ||
       nativeRuntimeInfo.value?.installDir ||
       "",
@@ -15497,13 +15483,7 @@ function desktopClientToolTaskFromRuntimeEvent(eventData = {}) {
 }
 
 function localLiuAgentWorkspacePath() {
-  return String(
-    workspacePathDraftNormalized.value ||
-      projectChatSettings.value.connector_workspace_path ||
-      workspacePathResolved.value ||
-      projectWorkspaceResolved.value ||
-      "",
-  ).trim();
+  return executionWorkspacePath.value;
 }
 
 const LOCAL_LIUAGENT_LAST_WORKSPACE_KEY = "liuagent:last-workspace-path";
@@ -20262,9 +20242,7 @@ async function recordNativeExternalAgentApprovalDecision(interaction, option) {
   const decision = String(option?.decision || "").trim() || "approve_once";
   const workspacePath = String(
     nativeExternalAgentSession.value?.workspacePath ||
-      workspacePathDraftNormalized.value ||
-      workspacePathResolved.value ||
-      projectWorkspaceResolved.value ||
+      resolveNativeRuntimeWorkspacePath() ||
       "",
   ).trim();
   try {
@@ -24234,7 +24212,8 @@ async function fetchProvidersByProject(projectId, options = {}) {
     projectAiEntryFile.value = String(data?.project_ai_entry_file || "").trim();
     aiEntryFileDraft.value = projectAiEntryFile.value || DEFAULT_AI_ENTRY_FILE;
     workspacePathDraft.value = String(
-      settings.connector_workspace_path ||
+      projectWorkspacePath.value ||
+        settings.connector_workspace_path ||
         data?.workspace_path ||
         data?.external_agent?.workspace_path ||
         "",
@@ -25203,10 +25182,7 @@ async function pickWorkspaceViaLocalConnector(connectorId, options = {}) {
         String(options?.title || "").trim() ||
         `选择项目工作区目录 · ${String(currentProjectLabel.value || "").trim() || "AI 对话中心"}`,
       initial_path: String(
-        options?.initialPath ||
-          workspacePathDraftNormalized.value ||
-          workspacePathResolved.value ||
-          "",
+        options?.initialPath || resolveNativeRuntimeWorkspacePath() || "",
       ).trim(),
     }),
   });
@@ -26924,10 +26900,7 @@ async function promptProjectWorkspacePath() {
     workspacePathPicking.value = true;
     try {
       const pickedPath = await pickWorkspaceDirectory(
-        workspacePathDraftNormalized.value ||
-          workspacePathResolved.value ||
-          projectWorkspaceResolved.value ||
-          "",
+        resolveNativeRuntimeWorkspacePath() || "",
         {
           title: `选择项目工作区目录 · ${String(currentProjectLabel.value || "").trim() || "AI 对话中心"}`,
           placeholder: "/Volumes/work_mac_1_5T/self/ai-employee",
@@ -27011,12 +26984,18 @@ async function promptProjectAiEntryFile() {
   }
 }
 
-async function saveProjectWorkspaceDirectory(workspacePathOverride = null) {
+async function saveProjectWorkspaceDirectory(workspacePathOverride = null, options = {}) {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) {
     ElMessage.warning("请先选择项目");
     return;
   }
+  const saveOptions =
+    options &&
+    typeof options === "object" &&
+    !(typeof Event !== "undefined" && options instanceof Event)
+      ? options
+      : {};
   projectWorkspaceSaving.value = true;
   try {
     const normalizedOverride =
@@ -27034,20 +27013,37 @@ async function saveProjectWorkspaceDirectory(workspacePathOverride = null) {
     ).trim();
     projectWorkspacePath.value = persisted;
     projectWorkspaceDraft.value = persisted;
+    workspacePathDraft.value = persisted;
+    projectChatSettings.value = applyLocalConnectorRuntimeSettings({
+      ...projectChatSettings.value,
+      connector_workspace_path: persisted,
+    });
     projects.value = (projects.value || []).map((item) =>
       String(item?.id || "").trim() === projectId
         ? { ...item, workspace_path: persisted }
         : item,
     );
+    externalAgentWarmupKey.value = "";
     externalAgentInfo.value = normalizeExternalAgentInfo({
       ...externalAgentInfo.value,
+      ready: false,
+      session_id: "",
+      thread_id: "",
       workspace_path: persisted,
     });
-    ElMessage.success(
-      persisted ? "项目工作区路径已保存" : "已清空项目工作区路径",
-    );
+    if (!saveOptions.silent) {
+      ElMessage.success(
+        persisted ? "项目工作区路径已保存" : "已清空项目工作区路径",
+      );
+    }
+    return persisted;
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "保存项目工作区路径失败");
+    if (!saveOptions.silent) {
+      ElMessage.error(err?.detail || err?.message || "保存项目工作区路径失败");
+    }
+    if (saveOptions.rethrow) {
+      throw err;
+    }
   } finally {
     projectWorkspaceSaving.value = false;
   }
@@ -27123,6 +27119,13 @@ async function createDefaultAiEntryFile() {
   }
   aiEntryFileCreating.value = true;
   try {
+    const savedWorkspacePath = String(projectWorkspacePath.value || "").trim();
+    if (workspacePath !== savedWorkspacePath) {
+      await saveProjectWorkspaceDirectory(workspacePath, {
+        silent: true,
+        rethrow: true,
+      });
+    }
     try {
       await readProjectWorkspaceFile(projectId, DEFAULT_AI_ENTRY_FILE);
       await saveProjectAiEntryFile(DEFAULT_AI_ENTRY_FILE);
@@ -27329,12 +27332,7 @@ async function sendProjectChatRequest({
     local_connector_id: String(
       projectChatSettings.value.local_connector_id || "",
     ).trim(),
-    connector_workspace_path: String(
-      workspacePathDraftNormalized.value ||
-        projectChatSettings.value.connector_workspace_path ||
-        workspacePathResolved.value ||
-        "",
-    ).trim(),
+    connector_workspace_path: localLiuAgentWorkspacePath(),
     connector_sandbox_mode: String(
       projectChatSettings.value.connector_sandbox_mode || "workspace-write",
     ).trim(),

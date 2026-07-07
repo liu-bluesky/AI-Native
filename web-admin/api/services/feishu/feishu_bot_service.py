@@ -586,6 +586,31 @@ def _normalize_feishu_chat_list_item(raw: Any) -> dict[str, str]:
     }
 
 
+def _normalize_feishu_chat_member_item(raw: Any) -> dict[str, str]:
+    item = raw if isinstance(raw, dict) else {}
+    member_id = str(
+        item.get("member_id")
+        or item.get("memberId")
+        or item.get("open_id")
+        or item.get("openId")
+        or item.get("user_id")
+        or item.get("userId")
+        or ""
+    ).strip()
+    return {
+        "open_id": member_id,
+        "name": str(
+            item.get("name")
+            or item.get("display_name")
+            or item.get("displayName")
+            or item.get("user_name")
+            or item.get("userName")
+            or member_id
+            or ""
+        ).strip(),
+    }
+
+
 def list_feishu_bot_joined_chats(connector: dict[str, Any], *, page_size: int = 100) -> dict[str, Any]:
     normalized_page_size = max(1, min(int(page_size or 100), 100))
     token = _get_feishu_tenant_access_token(connector)
@@ -624,6 +649,54 @@ def list_feishu_bot_joined_chats(connector: dict[str, Any], *, page_size: int = 
         "source": "feishu.im.v1.chats",
         "items": chats,
         "count": len(chats),
+    }
+
+
+def list_feishu_chat_members(connector: dict[str, Any], chat_id: str, *, page_size: int = 100) -> dict[str, Any]:
+    normalized_chat_id = str(chat_id or "").strip()
+    if not normalized_chat_id:
+        raise RuntimeError("缺少飞书 chat_id，无法获取群成员")
+    normalized_page_size = max(1, min(int(page_size or 100), 100))
+    token = _get_feishu_tenant_access_token(connector)
+    page_token = ""
+    members: list[dict[str, str]] = []
+    seen: set[str] = set()
+    while True:
+        params: dict[str, Any] = {
+            "member_id_type": "open_id",
+            "page_size": normalized_page_size,
+        }
+        if page_token:
+            params["page_token"] = page_token
+        response = requests.get(
+            _feishu_open_api_url(f"/open-apis/im/v1/chats/{quote(normalized_chat_id, safe='')}/members"),
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if int(payload.get("code") or 0) != 0:
+            raise RuntimeError(str(payload.get("msg") or "飞书群成员列表获取失败"))
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        for raw in data.get("items") or []:
+            item = _normalize_feishu_chat_member_item(raw)
+            open_id = item.get("open_id")
+            if not open_id or open_id in seen:
+                continue
+            seen.add(open_id)
+            members.append(item)
+        if not bool(data.get("has_more")):
+            break
+        page_token = str(data.get("page_token") or "").strip()
+        if not page_token:
+            break
+    return {
+        "status": "scanned",
+        "platform": "feishu",
+        "source": "feishu.im.v1.chat.members",
+        "items": members,
+        "count": len(members),
     }
 
 
@@ -1264,6 +1337,30 @@ def _feishu_mention_display_name(item: Any) -> str:
         if value:
             return value
     return ""
+
+
+def _feishu_message_mentions_for_context(message: Any) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for mention in getattr(message, "mentions", None) or []:
+        id_obj = mention.get("id") if isinstance(mention, dict) else getattr(mention, "id", None)
+        open_id = (
+            _value_from_obj_or_dict(mention, "open_id")
+            or _value_from_obj_or_dict(id_obj, "open_id")
+            or _value_from_obj_or_dict(mention, "user_id")
+            or _value_from_obj_or_dict(id_obj, "user_id")
+        )
+        open_id = str(open_id or "").strip()
+        if not open_id or open_id in seen:
+            continue
+        seen.add(open_id)
+        items.append(
+            {
+                "open_id": open_id,
+                "name": _feishu_mention_display_name(mention) or open_id,
+            }
+        )
+    return items
 
 
 def _normalize_feishu_mention_label(value: Any) -> str:
@@ -3293,6 +3390,9 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         project_id=project_id,
         default_source_type=_feishu_chat_source_type(chat_type),
     )
+    message_mentions = _feishu_message_mentions_for_context(message)
+    if message_mentions:
+        source_context["mentions"] = message_mentions
     try:
         project = projects_router.project_store.get(project_id)
         workspace_path = str(getattr(project, "workspace_path", "") or "").strip() if project is not None else ""

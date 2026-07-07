@@ -98,7 +98,7 @@
           <div v-if="bootstrapping" class="assistant-empty">
             <strong>助手初始化中</strong>
             <span
-              >对话会缓存在当前浏览器，并按当前登录账号隔离，退出登录后自动清空。</span
+              >对话会缓存在当前桌面端，并按当前登录账号隔离，退出登录后自动清空。</span
             >
           </div>
 
@@ -113,7 +113,7 @@
           <div v-else-if="!messages.length" class="assistant-empty">
             <strong>对话已就绪</strong>
             <span
-              >当前助手会参考真实系统快照，并恢复当前账号在本浏览器内的临时对话。</span
+              >当前助手会通过桌面端本地智能体响应，并恢复当前账号的临时对话。</span
             >
           </div>
 
@@ -530,7 +530,12 @@ import {
   ensureAssistantBrowserBridgeInstalled,
   executeAssistantBrowserToolCall,
 } from "@/utils/assistant-browser-bridge.js";
-import { isEmbeddedDesktopApp } from "@/utils/desktop-app-bridge.js";
+import {
+  getNativeRuntimeInfo,
+  hasNativeDesktopBridge,
+  startNativeLiuAgentLocalChat,
+} from "@/utils/native-desktop-bridge.js";
+import { buildApiBaseUrl, resolveServerOrigin } from "@/utils/server-profile.js";
 import { createGlobalAssistantWsClient } from "@/utils/ws-chat.js";
 import { buildTaskTitle, createTask, parseTaskCreationCommand } from "@/utils/task-store.js";
 
@@ -552,12 +557,13 @@ const SPEECH_AUDIO_CACHE_LIMIT = 24;
 const SPEECH_VOICE_RETRY_DELAY_MS = 700;
 const SPEECH_VOICE_MAX_RETRIES = 6;
 const SYSTEM_CONFIG_UPDATED_EVENT = "system-config-updated";
+const SYSTEM_CONFIG_UPDATED_STORAGE_KEY = "system-config-updated";
+const GLOBAL_ASSISTANT_LOCAL_PROJECT_ID = "global-assistant";
 const ASSISTANT_FAB_DRAG_THRESHOLD_PX = 6;
 const ASSISTANT_FAB_DESKTOP_OFFSET_PX = 20;
 const ASSISTANT_FAB_MOBILE_OFFSET_PX = 12;
 const ASSISTANT_FAB_DESKTOP_SIZE_PX = 132;
 const ASSISTANT_FAB_MOBILE_SIZE_PX = 108;
-const HIDDEN_PATHS = new Set(["/login"]);
 const DIRECT_ROUTE_COMMANDS = [
   {
     path: "/market",
@@ -715,6 +721,9 @@ const speechAudioPendingRequests = new Map();
 const speechStreamingProgress = new Map();
 const suppressedAutoPlayMessageIds = new Set();
 const globalAssistantEnabled = ref(true);
+const globalAssistantChatProviderId = ref("");
+const globalAssistantChatModelName = ref("");
+const globalAssistantSystemPrompt = ref("");
 const VOICE_TARGET_SAMPLE_RATE = 16000;
 const VOICE_FLUSH_INTERVAL_MS = 180;
 const VOICE_MIN_CHUNK_MS = 220;
@@ -1224,8 +1233,7 @@ const voiceUiState = computed(() => {
 const shouldRender = computed(() => {
   authStateVersion.value;
   if (!getStoredToken()) return false;
-  if (isEmbeddedDesktopApp()) return false;
-  if (HIDDEN_PATHS.has(normalizedRoutePath.value)) return false;
+  if (!hasNativeDesktopBridge()) return false;
   if (!globalAssistantEnabled.value) return false;
   return hasPermission("menu.ai.chat");
 });
@@ -1263,9 +1271,9 @@ const headerSummary = computed(() => {
     return `${currentRouteLabel.value} · 实时通话待机中，说“${voiceWakePhrase.value}”即可唤醒。`;
   }
   if (wsConnected.value) {
-    return `${currentRouteLabel.value} · 当前对话仅缓存在本浏览器当前账号下，退出登录自动清空。`;
+    return `${currentRouteLabel.value} · 当前对话仅缓存在本桌面端当前账号下，退出登录自动清空。`;
   }
-  return `${currentRouteLabel.value} · 已启用浏览器本地临时缓存。`;
+  return `${currentRouteLabel.value} · 已启用桌面端本地临时缓存。`;
 });
 const voiceSettingsSummary = computed(() => {
   if (!voiceRuntimeAvailable.value) {
@@ -1585,7 +1593,7 @@ async function clearAssistantConversation() {
   if (!canClearAssistantConversation.value) return;
   try {
     await ElMessageBox.confirm(
-      "确认清空当前 AI 助手临时对话记录吗？当前浏览器内该账号的助手草稿与会话将一并清空。",
+      "确认清空当前 AI 助手临时对话记录吗？当前桌面端内该账号的助手草稿与会话将一并清空。",
       "清空对话",
       {
         confirmButtonText: "清空",
@@ -2799,6 +2807,176 @@ function toHistoryRows(list) {
     );
 }
 
+function buildDesktopBackendApiBaseUrl() {
+  const baseUrl = String(buildApiBaseUrl() || "").trim();
+  if (/^https?:\/\//i.test(baseUrl)) return baseUrl;
+  const origin = String(resolveServerOrigin() || "").trim();
+  if (/^https?:\/\//i.test(origin)) {
+    return `${origin.replace(/\/+$/, "")}/${baseUrl.replace(/^\/+/, "")}`;
+  }
+  return baseUrl;
+}
+
+async function resolveGlobalAssistantLocalWorkspacePath() {
+  const runtimeInfo = await getNativeRuntimeInfo();
+  return String(runtimeInfo?.defaultWorkspacePath || "").trim();
+}
+
+async function fetchGlobalAssistantDesktopModelRuntime(providerId) {
+  const normalizedProviderId = String(providerId || "").trim();
+  if (!normalizedProviderId) {
+    throw new Error("请先在系统配置的全局助手中选择聊天模型供应商");
+  }
+  const data = await api.get(
+    `/llm/providers/${encodeURIComponent(normalizedProviderId)}/desktop-runtime`,
+  );
+  const runtime =
+    data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
+  const baseUrl = String(runtime.base_url || runtime.baseUrl || "").trim();
+  const apiKey = String(runtime.api_key || runtime.apiKey || "").trim();
+  if (!baseUrl || !apiKey) {
+    throw new Error("当前全局助手聊天模型缺少桌面端 Base URL 或 API Key");
+  }
+  return runtime;
+}
+
+async function buildGlobalAssistantLocalModelRuntime() {
+  const providerId = String(globalAssistantChatProviderId.value || "").trim();
+  const configuredModelName = String(
+    globalAssistantChatModelName.value || "",
+  ).trim();
+  const runtime = await fetchGlobalAssistantDesktopModelRuntime(providerId);
+  const modelName = String(
+    configuredModelName ||
+      runtime.model_name ||
+      runtime.modelName ||
+      runtime.default_model ||
+      runtime.defaultModel ||
+      "",
+  ).trim();
+  if (!modelName) {
+    throw new Error("当前全局助手聊天模型没有可用模型名");
+  }
+  return {
+    mode: "direct-openai-compatible",
+    providerId,
+    modelName,
+    baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
+    apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
+    temperature: 0.1,
+  };
+}
+
+function buildGlobalAssistantLocalSystemPrompt() {
+  const configuredPrompt = String(globalAssistantSystemPrompt.value || "").trim();
+  return [
+    configuredPrompt || "你是系统状态助手。请结合当前桌面端上下文直接回答用户问题。",
+    `当前路由：${normalizedRoutePath.value || "/"}`,
+    `当前页面：${currentRouteLabel.value || "未知页面"}`,
+    "运行环境：Tauri 桌面端本地 liuAgent。不要假设当前仍有浏览器/Web 兼容场景。",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function globalAssistantLocalContentFromResult(result = {}) {
+  return String(
+    result?.assistantContent ||
+      result?.assistant_content ||
+      result?.assistant_message ||
+      result?.message ||
+      result?.content ||
+      result?.summary ||
+      "",
+  ).trim();
+}
+
+function globalAssistantLocalErrorFromResult(result = {}) {
+  return String(
+    result?.userVisibleErrorSummary ||
+      result?.user_visible_error_summary ||
+      result?.errorMessage ||
+      result?.error_message ||
+      result?.detail ||
+      result?.error ||
+      result?.summary ||
+      "本地智能体执行失败",
+  ).trim();
+}
+
+async function runGlobalAssistantLocalChat({
+  requestId,
+  sessionId,
+  userMessage,
+  assistantMessage,
+  text,
+  history,
+}) {
+  if (!hasNativeDesktopBridge()) {
+    throw new Error("当前不是 Tauri 桌面端，无法调用本地智能体");
+  }
+  const workspacePath = await resolveGlobalAssistantLocalWorkspacePath();
+  if (!workspacePath) {
+    throw new Error("桌面端未返回默认工作区路径，无法启动本地智能体");
+  }
+  await handleSocketMessage({
+    type: "start",
+    request_id: requestId,
+  });
+  await handleSocketMessage({
+    type: "status",
+    request_id: requestId,
+    message: "正在启动桌面本地智能体...",
+  });
+  const modelRuntime = await buildGlobalAssistantLocalModelRuntime();
+  await handleSocketMessage({
+    type: "status",
+    request_id: requestId,
+    message: "本地智能体正在调用模型和工具...",
+  });
+  const systemPrompt = buildGlobalAssistantLocalSystemPrompt();
+  const result = await startNativeLiuAgentLocalChat({
+    projectId: GLOBAL_ASSISTANT_LOCAL_PROJECT_ID,
+    chatSessionId: sessionId,
+    messageId: userMessage.id,
+    assistantMessageId: assistantMessage.id,
+    message: text,
+    workspacePath,
+    history,
+    providerId: modelRuntime.providerId,
+    modelName: modelRuntime.modelName,
+    systemPrompt,
+    systemPromptParts: [
+      {
+        source: "global-assistant",
+        priority: 100,
+        content: systemPrompt,
+      },
+    ],
+    temperature: modelRuntime.temperature,
+    modelRuntime,
+    backendContext: {
+      apiBaseUrl: buildDesktopBackendApiBaseUrl(),
+      token: getStoredToken(),
+    },
+  });
+  if (!result?.ok) {
+    await handleSocketMessage({
+      type: "error",
+      request_id: requestId,
+      message: globalAssistantLocalErrorFromResult(result),
+    });
+    return;
+  }
+  await handleSocketMessage({
+    type: "done",
+    request_id: requestId,
+    content:
+      globalAssistantLocalContentFromResult(result) ||
+      "本地智能体已完成执行，但没有返回最终回答，请检查本轮执行过程。",
+  });
+}
+
 function scrollToBottom() {
   nextTick(() => {
     if (!messageContainerRef.value) return;
@@ -2851,8 +3029,20 @@ async function fetchAssistantConfig() {
     const config =
       data?.config && typeof data.config === "object" ? data.config : {};
     globalAssistantEnabled.value = config.global_assistant_enabled !== false;
+    globalAssistantChatProviderId.value = String(
+      config.global_assistant_chat_provider_id || "",
+    ).trim();
+    globalAssistantChatModelName.value = String(
+      config.global_assistant_chat_model_name || "",
+    ).trim();
+    globalAssistantSystemPrompt.value = String(
+      config.global_assistant_system_prompt || "",
+    ).trim();
   } catch {
     globalAssistantEnabled.value = true;
+    globalAssistantChatProviderId.value = "";
+    globalAssistantChatModelName.value = "";
+    globalAssistantSystemPrompt.value = "";
   }
 }
 
@@ -3124,7 +3314,15 @@ function getActivePendingRequest() {
 
 function stopCurrentReply() {
   const active = getActivePendingRequest();
-  if (!active?.requestId || !wsClient.value?.isOpen?.()) {
+  if (!active?.requestId) {
+    ElMessage.warning("当前没有可停止的回复");
+    return;
+  }
+  if (active.pending?.transport === "local") {
+    ElMessage.warning("桌面本地智能体暂不支持中止当前回复");
+    return;
+  }
+  if (!wsClient.value?.isOpen?.()) {
     ElMessage.warning("当前没有可停止的回复");
     return;
   }
@@ -3598,7 +3796,6 @@ async function sendMessage(rawText, options = {}) {
 
   const requestId = createLocalMessageId();
   try {
-    const client = await ensureWsClient();
     await new Promise((resolve, reject) => {
       pendingRequests.set(requestId, {
         requestId,
@@ -3606,19 +3803,22 @@ async function sendMessage(rawText, options = {}) {
         reject,
         sessionId,
         assistantMessageId: assistantMessage.id,
+        transport: "local",
       });
       syncPendingRequestUiState();
-      client.send({
-        request_id: requestId,
-        message_id: userMessage.id,
-        assistant_message_id: assistantMessage.id,
-        chat_session_id: sessionId,
-        chat_mode: "system",
-        chat_surface: "global-assistant",
-        message: text,
+      runGlobalAssistantLocalChat({
+        requestId,
+        sessionId,
+        userMessage,
+        assistantMessage,
+        text,
         history,
-        route_path: normalizedRoutePath.value,
-        route_title: currentRouteLabel.value,
+      }).catch((err) => {
+        void handleSocketMessage({
+          type: "error",
+          request_id: requestId,
+          message: err?.message || "本地智能体执行失败",
+        });
       });
     });
   } catch (err) {
@@ -5122,12 +5322,33 @@ function handleSystemConfigUpdated(event) {
   }
 }
 
+function handleSystemConfigStorageUpdated(event) {
+  if (String(event?.key || "").trim() !== SYSTEM_CONFIG_UPDATED_STORAGE_KEY) {
+    return;
+  }
+  try {
+    const detail = JSON.parse(String(event?.newValue || "{}"));
+    handleSystemConfigUpdated({ detail });
+  } catch {
+    void fetchAssistantConfig().then(() => {
+      if (!globalAssistantEnabled.value) {
+        teardownAssistant();
+        return;
+      }
+      if (getStoredToken()) {
+        void initializeAssistant();
+      }
+    });
+  }
+}
+
 onMounted(() => {
   window.addEventListener("resize", handleAssistantFabWindowResize);
   window.addEventListener(
     SYSTEM_CONFIG_UPDATED_EVENT,
     handleSystemConfigUpdated,
   );
+  window.addEventListener("storage", handleSystemConfigStorageUpdated);
   if (!shouldRender.value) return;
   ensureAssistantBrowserBridgeInstalled();
   selectedVoiceInputDeviceId.value = normalizeVoiceInputSelectionValue(
@@ -5159,6 +5380,7 @@ onBeforeUnmount(() => {
     SYSTEM_CONFIG_UPDATED_EVENT,
     handleSystemConfigUpdated,
   );
+  window.removeEventListener("storage", handleSystemConfigStorageUpdated);
   stopSpeechVoiceRetry();
   if (window.navigator?.mediaDevices?.removeEventListener) {
     window.navigator.mediaDevices.removeEventListener(

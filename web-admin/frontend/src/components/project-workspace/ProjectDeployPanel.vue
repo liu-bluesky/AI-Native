@@ -215,6 +215,44 @@
                           />
                         </el-select>
                       </el-form-item>
+                      <el-form-item label="自动 @">
+                        <el-select
+                          v-model="notifyTargetForm.mention.mode"
+                          style="width: 100%"
+                          @change="onNotifyMentionModeChange"
+                        >
+                          <el-option label="不 @" value="none" />
+                          <el-option label="@所有人" value="all" />
+                          <el-option label="@指定人" value="users" />
+                        </el-select>
+                      </el-form-item>
+                      <el-form-item v-if="notifyTargetForm.mention.mode === 'users'" label="@ 指定人">
+                        <div class="deploy-notify-mention-picker">
+                          <el-select
+                            v-model="notifyMentionSelectedOpenIds"
+                            :loading="deployNotifyMentionOptionsLoading"
+                            multiple
+                            filterable
+                            clearable
+                            placeholder="从群消息中解析到的人里选择"
+                            @change="onNotifyMentionUsersChange"
+                          >
+                            <el-option
+                              v-for="item in deployNotifyMentionOptions"
+                              :key="item.open_id"
+                              :label="item.label"
+                              :value="item.open_id"
+                            />
+                          </el-select>
+                          <el-button
+                            :loading="deployNotifyMentionOptionsLoading"
+                            :disabled="!canResolveNotifyMentionUsers"
+                            @click="resolveNotifyMentionUsers"
+                          >
+                            解析
+                          </el-button>
+                        </div>
+                      </el-form-item>
                     </div>
                     <div v-if="notifyTargetForm.platform === 'feishu'" class="deploy-notify-resolver">
                       <el-input
@@ -1114,6 +1152,7 @@ const deployRunsLoading = ref(false);
 const ftpCredentialsLoading = ref(false);
 const deployNotifyOptionsLoading = ref(false);
 const deployNotifyResolving = ref(false);
+const deployNotifyMentionOptionsLoading = ref(false);
 const deployCommandGeneratingKey = ref("");
 const deletingArtifactId = ref("");
 const deployingArtifactId = ref("");
@@ -1149,6 +1188,7 @@ const notifyingRunId = ref("");
 const ftpCredentials = ref([]);
 const deployNotifyConnectors = ref([]);
 const deployNotifyChats = ref([]);
+const deployNotifyMentionOptions = ref([]);
 const deployValidation = ref(null);
 const deploySettingsForm = ref(createDefaultDeploySettings());
 const activeDeployTab = ref("settings");
@@ -1158,6 +1198,7 @@ const activeProfileObject = ref(null);
 const activeComponentObject = ref(null);
 const notifyTargetForm = ref(createDefaultDeployNotifyTarget());
 const notifyChatName = ref("");
+const notifyMentionSelectedOpenIds = ref([]);
 
 const deployNotifyTemplateFields = [
   { label: "项目名称", token: "{project_name}" },
@@ -1527,6 +1568,16 @@ const notifyChatOptions = computed(() =>
     .filter((item) => item.chat_id && item.label),
 );
 
+const canResolveNotifyMentionUsers = computed(() => {
+  const target = notifyTargetForm.value;
+  return Boolean(
+    props.projectId
+    && target.platform === "feishu"
+    && target.connector_id
+    && target.chat_id,
+  );
+});
+
 const selectedNotifyConnector = computed(() =>
   deployNotifyConnectors.value.find((item) =>
     item.platform === notifyTargetForm.value.platform
@@ -1875,7 +1926,67 @@ function createDefaultDeployNotifyTarget() {
     chat_id: "",
     chat_name: "",
     resolve_identity: "bot",
+    mention: {
+      mode: "none",
+      users: [],
+    },
   };
+}
+
+function normalizeDeployNotifyMentionUser(item) {
+  if (typeof item === "string") {
+    const [openId, ...nameParts] = item.trim().split(/\s+/);
+    return {
+      open_id: String(openId || "").trim(),
+      name: nameParts.join(" ").trim(),
+    };
+  }
+  const source = item && typeof item === "object" ? item : {};
+  return {
+    open_id: String(source.open_id || source.openId || source.user_id || source.userId || "").trim(),
+    name: String(source.name || source.label || source.display_name || source.displayName || "").trim(),
+  };
+}
+
+function normalizeDeployNotifyMention(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const rawMode = String(source.mode || "none").trim().toLowerCase();
+  const mode = rawMode === "all" || rawMode === "users" ? rawMode : "none";
+  const users = Array.isArray(source.users)
+    ? source.users.map((item) => normalizeDeployNotifyMentionUser(item)).filter((item) => item.open_id)
+    : [];
+  return {
+    mode,
+    users: mode === "users" ? users.slice(0, 20) : [],
+  };
+}
+
+function normalizeDeployNotifyMentionOption(item) {
+  const user = normalizeDeployNotifyMentionUser(item);
+  if (!user.open_id) return null;
+  return {
+    ...user,
+    label: [user.name || user.open_id, user.open_id].filter(Boolean).join(" · "),
+    source_count: Number(item?.source_count || item?.sourceCount || 0) || 0,
+  };
+}
+
+function selectedNotifyMentionUsers(openIds = notifyMentionSelectedOpenIds.value) {
+  const selected = new Set((Array.isArray(openIds) ? openIds : []).map((item) => String(item || "").trim()).filter(Boolean));
+  const optionMap = new Map(
+    deployNotifyMentionOptions.value.map((item) => [String(item.open_id || "").trim(), item]),
+  );
+  const existingMap = new Map(
+    (notifyTargetForm.value.mention?.users || [])
+      .map((item) => normalizeDeployNotifyMentionUser(item))
+      .filter((item) => item.open_id)
+      .map((item) => [item.open_id, item]),
+  );
+  return Array.from(selected)
+    .map((openId) => optionMap.get(openId) || existingMap.get(openId) || { open_id: openId, name: openId })
+    .map((item) => normalizeDeployNotifyMentionUser(item))
+    .filter((item) => item.open_id)
+    .slice(0, 20);
 }
 
 function _defaultDeployNotifyTemplateText() {
@@ -2004,6 +2115,7 @@ function normalizeDeployNotifyTarget(item) {
     chat_id: String(source.chat_id || "").trim(),
     chat_name: String(source.chat_name || "").trim(),
     resolve_identity: String(source.resolve_identity || "bot").trim(),
+    mention: normalizeDeployNotifyMention(source.mention),
   };
 }
 
@@ -2136,11 +2248,26 @@ function syncDeployFormsFromSettings(rawSettings) {
 function syncNotifyTargetForm() {
   notifyTargetForm.value = normalizeDeployNotifyTarget(activeComponent.value?.notify?.targets?.[0]);
   notifyChatName.value = notifyTargetForm.value.chat_name || getNotifyChatName(notifyTargetForm.value.chat_id);
+  notifyMentionSelectedOpenIds.value = (notifyTargetForm.value.mention.users || [])
+    .map((item) => String(item.open_id || "").trim())
+    .filter(Boolean);
+  void fetchDeployNotifyMentionOptions();
 }
 
 function applyNotifyTargetToActiveComponent() {
   if (!activeComponent.value) return;
-  const target = normalizeDeployNotifyTarget(notifyTargetForm.value);
+  const target = normalizeDeployNotifyTarget({
+    ...notifyTargetForm.value,
+    mention: {
+      ...notifyTargetForm.value.mention,
+      users:
+        notifyTargetForm.value.mention?.mode === "users"
+          ? selectedNotifyMentionUsers()
+          : [],
+    },
+  });
+  notifyTargetForm.value = target;
+  notifyMentionSelectedOpenIds.value = target.mention.users.map((item) => item.open_id).filter(Boolean);
   activeComponent.value.notify.targets =
     activeComponent.value.notify.enabled && target.platform && (target.connector_id || target.chat_id)
       ? [target]
@@ -2205,7 +2332,10 @@ function onNotifyPlatformChange() {
   notifyTargetForm.value.chat_id = "";
   notifyTargetForm.value.chat_name = "";
   notifyTargetForm.value.resolve_identity = "bot";
+  notifyTargetForm.value.mention = normalizeDeployNotifyMention({});
   notifyChatName.value = "";
+  notifyMentionSelectedOpenIds.value = [];
+  deployNotifyMentionOptions.value = [];
   applyNotifyTargetToActiveComponent();
 }
 
@@ -2215,6 +2345,8 @@ function onNotifyConnectorChange() {
   notifyTargetForm.value.chat_name = "";
   notifyTargetForm.value.resolve_identity = connector?.reply_identity || "bot";
   notifyChatName.value = "";
+  notifyMentionSelectedOpenIds.value = [];
+  deployNotifyMentionOptions.value = [];
   applyNotifyTargetToActiveComponent();
 }
 
@@ -2222,6 +2354,38 @@ function onNotifyChatChange(value) {
   const chatName = getNotifyChatName(value);
   notifyTargetForm.value.chat_name = chatName;
   notifyChatName.value = chatName;
+  notifyTargetForm.value.mention = normalizeDeployNotifyMention({
+    ...notifyTargetForm.value.mention,
+    users: [],
+  });
+  notifyMentionSelectedOpenIds.value = [];
+  applyNotifyTargetToActiveComponent();
+  void fetchDeployNotifyMentionOptions();
+}
+
+function onNotifyMentionModeChange(value) {
+  const mode = String(value || "none").trim();
+  notifyTargetForm.value.mention = normalizeDeployNotifyMention({
+    ...notifyTargetForm.value.mention,
+    mode,
+    users: mode === "users" ? selectedNotifyMentionUsers() : [],
+  });
+  if (notifyTargetForm.value.mention.mode !== "users") {
+    notifyMentionSelectedOpenIds.value = [];
+  }
+  applyNotifyTargetToActiveComponent();
+  if (notifyTargetForm.value.mention.mode === "users") {
+    void fetchDeployNotifyMentionOptions();
+  }
+}
+
+function onNotifyMentionUsersChange(value) {
+  notifyMentionSelectedOpenIds.value = Array.isArray(value) ? value : [];
+  notifyTargetForm.value.mention = normalizeDeployNotifyMention({
+    ...notifyTargetForm.value.mention,
+    mode: "users",
+    users: selectedNotifyMentionUsers(),
+  });
   applyNotifyTargetToActiveComponent();
 }
 
@@ -3162,8 +3326,60 @@ async function fetchDeployNotifyOptions() {
   }
 }
 
+async function fetchDeployNotifyMentionOptions({ notify = false } = {}) {
+  const projectId = props.projectId;
+  const target = notifyTargetForm.value;
+  if (
+    !projectId ||
+    target.platform !== "feishu" ||
+    !target.connector_id ||
+    !target.chat_id
+  ) {
+    deployNotifyMentionOptions.value = [];
+    if (notify) {
+      ElMessage.warning("请先选择通知机器人和通知群");
+    }
+    return;
+  }
+  deployNotifyMentionOptionsLoading.value = true;
+  try {
+    const data = await api.get(`/projects/${projectId}/deploy-notify-mention-options`, {
+      params: {
+        platform: target.platform,
+        connector_id: target.connector_id,
+        chat_id: target.chat_id,
+      },
+    });
+    deployNotifyMentionOptions.value = Array.isArray(data?.members)
+      ? data.members.map((item) => normalizeDeployNotifyMentionOption(item)).filter(Boolean)
+      : [];
+    if (notifyTargetForm.value.mention.mode === "users") {
+      applyNotifyTargetToActiveComponent();
+    }
+    if (notify) {
+      if (deployNotifyMentionOptions.value.length) {
+        ElMessage.success(`已解析 ${deployNotifyMentionOptions.value.length} 个可 @ 人员`);
+      } else {
+        ElMessage.warning("未解析到可 @ 人员，请确认机器人在群内且已开通群成员读取权限");
+      }
+    }
+  } catch (err) {
+    deployNotifyMentionOptions.value = [];
+    if (notify) {
+      ElMessage.error(err?.detail || err?.message || "解析可 @ 群成员失败");
+    }
+  } finally {
+    deployNotifyMentionOptionsLoading.value = false;
+  }
+}
+
+async function resolveNotifyMentionUsers() {
+  await fetchDeployNotifyMentionOptions({ notify: true });
+}
+
 async function refreshDeployStatus() {
   await Promise.all([fetchDeployArtifacts(), fetchDeployRuns(), fetchFtpCredentials(), fetchDeployNotifyOptions()]);
+  await fetchDeployNotifyMentionOptions();
 }
 
 async function resolveNotifyChatByName() {
@@ -3194,6 +3410,7 @@ async function resolveNotifyChatByName() {
     notifyChatName.value = notifyTargetForm.value.chat_name;
     applyNotifyTargetToActiveComponent();
     await fetchDeployNotifyOptions();
+    await fetchDeployNotifyMentionOptions();
     ElMessage.success("飞书群已解析");
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "解析飞书群失败");
@@ -3631,6 +3848,14 @@ onBeforeUnmount(() => {
   gap: 10px;
   align-items: center;
   max-width: 520px;
+}
+
+.deploy-notify-mention-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
 }
 
 .deploy-notify-template {
@@ -4359,7 +4584,8 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
-  .deploy-notify-resolver {
+  .deploy-notify-resolver,
+  .deploy-notify-mention-picker {
     grid-template-columns: 1fr;
     max-width: none;
   }
