@@ -174,7 +174,10 @@ pub fn call_mcp_tool(
     if is_error {
         return Err(ToolError::new(
             "mcp.failed",
-            format!("MCP tool returned error: {}", summarize_json_value(&response)),
+            format!(
+                "MCP tool returned error: {}",
+                summarize_json_value(&response)
+            ),
         ));
     }
     Ok((
@@ -229,7 +232,10 @@ struct ServerConfig {
 }
 
 fn read_registry_config(root: &Path, arguments: &Value) -> Result<Value, ToolError> {
-    if let Some(config) = arguments.get("_mcp_config").filter(|value| value.is_object()) {
+    if let Some(config) = arguments
+        .get("_mcp_config")
+        .filter(|value| value.is_object())
+    {
         return Ok(config.clone());
     }
 
@@ -261,7 +267,10 @@ fn server_entries(config: &Value) -> Result<Vec<(String, Value)>, ToolError> {
         entries.push((name.to_string(), value.clone()));
     }
     if entries.is_empty() {
-        return Err(ToolError::new("mcp.config_invalid", "mcpServers map is empty"));
+        return Err(ToolError::new(
+            "mcp.config_invalid",
+            "mcpServers map is empty",
+        ));
     }
     Ok(entries)
 }
@@ -422,7 +431,12 @@ fn run_http_json_rpc(
         .timeout(Duration::from_millis(timeout_ms))
         .user_agent("liuAgent-desktop-mcp/0.1")
         .build()
-        .map_err(|err| ToolError::new("mcp.failed", format!("create MCP HTTP client failed: {err}")))?;
+        .map_err(|err| {
+            ToolError::new(
+                "mcp.failed",
+                format!("create MCP HTTP client failed: {err}"),
+            )
+        })?;
     let mut session_headers = HeaderMap::new();
     let init = http_rpc_request(
         &client,
@@ -448,7 +462,10 @@ fn run_http_json_rpc(
         session_headers.insert(
             HeaderName::from_static("mcp-session-id"),
             HeaderValue::from_str(session_id).map_err(|err| {
-                ToolError::new("mcp.failed", format!("invalid MCP session id header: {err}"))
+                ToolError::new(
+                    "mcp.failed",
+                    format!("invalid MCP session id header: {err}"),
+                )
             })?,
         );
     }
@@ -495,9 +512,12 @@ fn http_rpc_request(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let text = response
-        .text()
-        .map_err(|err| ToolError::new("mcp.failed", format!("read MCP HTTP response failed: {err}")))?;
+    let text = response.text().map_err(|err| {
+        ToolError::new(
+            "mcp.failed",
+            format!("read MCP HTTP response failed: {err}"),
+        )
+    })?;
     if status >= 400 {
         return Err(ToolError::new(
             "mcp.failed",
@@ -558,14 +578,23 @@ fn build_http_headers(
     session_headers: &HeaderMap,
 ) -> Result<HeaderMap, ToolError> {
     let mut headers = HeaderMap::new();
-    headers.insert("accept", HeaderValue::from_static("application/json, text/event-stream;q=0.9, */*;q=0.8"));
+    headers.insert(
+        "accept",
+        HeaderValue::from_static("application/json, text/event-stream;q=0.9, */*;q=0.8"),
+    );
     headers.insert("content-type", HeaderValue::from_static("application/json"));
     for (key, value) in &server.headers {
         let name = HeaderName::from_bytes(key.as_bytes()).map_err(|err| {
-            ToolError::new("mcp.config_invalid", format!("invalid MCP header name: {err}"))
+            ToolError::new(
+                "mcp.config_invalid",
+                format!("invalid MCP header name: {err}"),
+            )
         })?;
         let header_value = HeaderValue::from_str(value).map_err(|err| {
-            ToolError::new("mcp.config_invalid", format!("invalid MCP header value: {err}"))
+            ToolError::new(
+                "mcp.config_invalid",
+                format!("invalid MCP header value: {err}"),
+            )
         })?;
         headers.insert(name, header_value);
     }
@@ -588,7 +617,10 @@ fn parse_http_url(raw: &str) -> Result<Url, ToolError> {
 }
 
 fn parse_http_rpc_body(body: &str, content_type: &str) -> Result<Value, ToolError> {
-    if content_type.to_ascii_lowercase().contains("text/event-stream") {
+    if content_type
+        .to_ascii_lowercase()
+        .contains("text/event-stream")
+    {
         return parse_sse_json_payload(body);
     }
     serde_json::from_str::<Value>(body.trim()).map_err(|err| {
@@ -600,7 +632,11 @@ fn parse_http_rpc_body(body: &str, content_type: &str) -> Result<Value, ToolErro
 }
 
 fn parse_sse_json_payload(body: &str) -> Result<Value, ToolError> {
-    for block in body.split("\n\n").map(str::trim).filter(|item| !item.is_empty()) {
+    for block in body
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
         let payload = block
             .lines()
             .map(str::trim)
@@ -639,10 +675,16 @@ fn run_stdio_command(
     let stdout_path = temp_base.with_extension("stdout");
     let stderr_path = temp_base.with_extension("stderr");
     let stdout_file = File::create(&stdout_path).map_err(|err| {
-        ToolError::new("tool.execution_failed", format!("create MCP stdout failed: {err}"))
+        ToolError::new(
+            "tool.execution_failed",
+            format!("create MCP stdout failed: {err}"),
+        )
     })?;
     let stderr_file = File::create(&stderr_path).map_err(|err| {
-        ToolError::new("tool.execution_failed", format!("create MCP stderr failed: {err}"))
+        ToolError::new(
+            "tool.execution_failed",
+            format!("create MCP stderr failed: {err}"),
+        )
     })?;
     let mut child = Command::new(&server.command)
         .args(&server.args)
@@ -840,7 +882,12 @@ fn flatten_tools_by_server(servers: &Value) -> Value {
     let mut output = Vec::new();
     for server in servers.as_array().into_iter().flatten() {
         let server_name = server.get("server").and_then(Value::as_str).unwrap_or("");
-        for tool in server.get("tools").and_then(Value::as_array).into_iter().flatten() {
+        for tool in server
+            .get("tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let mut item = tool.clone();
             if let Some(object) = item.as_object_mut() {
                 object.insert("server".to_string(), json!(server_name));

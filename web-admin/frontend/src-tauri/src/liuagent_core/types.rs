@@ -1004,6 +1004,9 @@ fn is_recoverable_tool_error(error_code: &str) -> bool {
         error_code,
         "tool.schema_invalid"
             | "tool.not_found"
+            | "web_search.unconfigured"
+            | "web_extract.unconfigured"
+            | "tool.disabled"
             | "mcp.config_missing"
             | "mcp.server_not_found"
             | "mcp.config_invalid"

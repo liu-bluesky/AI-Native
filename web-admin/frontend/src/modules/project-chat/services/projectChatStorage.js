@@ -2,15 +2,23 @@ import { getStoredAuthProfile } from "@/utils/auth-storage.js";
 import {
   hasNativeDesktopBridge,
   readNativeGlobalMcpConfigFile,
+  readNativeGlobalWebToolsConfigFile,
   readNativeProjectMcpConfigFile,
+  readNativeProjectWebToolsConfigFile,
   writeNativeGlobalMcpConfigFile,
+  writeNativeGlobalWebToolsConfigFile,
   writeNativeProjectMcpConfigFile,
+  writeNativeProjectWebToolsConfigFile,
 } from "@/utils/native-desktop-bridge.js";
 import {
   PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX,
   PROJECT_DEPLOY_DRAFT_STORAGE_PREFIX,
   STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX,
 } from "@/modules/project-chat/constants/projectChatConstants.js";
+import {
+  cloneJson,
+  createJsonConfigEditor,
+} from "@/modules/project-chat/services/jsonConfigEditor.js";
 
 const LOCAL_CONNECTOR_STORAGE_PREFIX = "project_chat.local_connector";
 const GUIDE_TOUR_STORAGE_PREFIX = "project_chat.guide_tour";
@@ -21,6 +29,37 @@ export const DEFAULT_LOCAL_MCP_CONFIG = {
       type: "http",
       url: "https://prompts.chat/api/mcp",
       enabled: true,
+    },
+  },
+};
+export const DEFAULT_WEB_TOOLS_CONFIG = {
+  version: 1,
+  backend: "",
+  search: {
+    backend: "",
+  },
+  extract: {
+    backend: "",
+  },
+  providers: {
+    managed: {
+      search_url: "",
+      search_token: "",
+      extract_url: "",
+      extract_token: "",
+    },
+    firecrawl: {
+      api_key: "",
+      api_url: "",
+    },
+    parallel: {
+      api_key: "",
+    },
+    tavily: {
+      api_key: "",
+    },
+    exa: {
+      api_key: "",
     },
   },
 };
@@ -316,10 +355,6 @@ export function writePreferredSkillResourceDirectory(projectId, directoryPath) {
   localStorage.removeItem(key);
 }
 
-function cloneJson(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
 function normalizeMcpServerName(value, fallback = "mcp-server") {
   const normalized = String(value || "")
     .trim()
@@ -464,19 +499,6 @@ export function formatMcpConfig(value) {
   return JSON.stringify(normalizeMcpConfig(value), null, 2);
 }
 
-export function parseMcpConfigText(text) {
-  let parsed;
-  try {
-    parsed = JSON.parse(String(text || "").trim() || "{}");
-  } catch (err) {
-    throw new Error(`MCP 配置 JSON 解析失败：${err?.message || "格式错误"}`);
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("MCP 配置必须是 JSON 对象");
-  }
-  return normalizeMcpConfig(parsed);
-}
-
 export function globalMcpConfigPathLabel() {
   return "~/.ai-employee/mcp.json";
 }
@@ -485,89 +507,75 @@ export function projectMcpConfigPathLabel() {
   return ".ai-employee/mcp.json";
 }
 
+export function normalizeWebToolsConfig(value, fallback = DEFAULT_WEB_TOOLS_CONFIG) {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value) ? value : fallback;
+  return cloneJson(source && typeof source === "object" && !Array.isArray(source) ? source : {});
+}
+
+export function formatWebToolsConfig(value) {
+  return JSON.stringify(normalizeWebToolsConfig(value), null, 2);
+}
+
+export function globalWebToolsConfigPathLabel() {
+  return "~/.ai-employee/agent-runtime-v2/web-tools/config.json";
+}
+
+export function projectWebToolsConfigPathLabel() {
+  return ".ai-employee/agent-runtime-v2/web-tools/config.json";
+}
+
+const mcpConfigEditor = createJsonConfigEditor({
+  label: "MCP 配置",
+  globalPathLabel: globalMcpConfigPathLabel(),
+  projectPathLabel: projectMcpConfigPathLabel(),
+  globalDefaultConfig: DEFAULT_LOCAL_MCP_CONFIG,
+  projectDefaultConfig: { mcpServers: {} },
+  normalize: normalizeMcpConfig,
+  hasNative: hasNativeDesktopBridge,
+  readNativeGlobal: readNativeGlobalMcpConfigFile,
+  writeNativeGlobal: writeNativeGlobalMcpConfigFile,
+  readNativeProject: readNativeProjectMcpConfigFile,
+  writeNativeProject: writeNativeProjectMcpConfigFile,
+});
+
+const webToolsConfigEditor = createJsonConfigEditor({
+  label: "web-tools 配置",
+  globalPathLabel: globalWebToolsConfigPathLabel(),
+  projectPathLabel: projectWebToolsConfigPathLabel(),
+  globalDefaultConfig: DEFAULT_WEB_TOOLS_CONFIG,
+  projectDefaultConfig: {},
+  normalize: (value, fallback = DEFAULT_WEB_TOOLS_CONFIG) =>
+    normalizeWebToolsConfig(value, fallback),
+  hasNative: hasNativeDesktopBridge,
+  readNativeGlobal: readNativeGlobalWebToolsConfigFile,
+  writeNativeGlobal: writeNativeGlobalWebToolsConfigFile,
+  readNativeProject: readNativeProjectWebToolsConfigFile,
+  writeNativeProject: writeNativeProjectWebToolsConfigFile,
+});
+
+export function parseMcpConfigText(text) {
+  return mcpConfigEditor.parse(text);
+}
+
+export function parseWebToolsConfigText(text) {
+  return webToolsConfigEditor.parse(text);
+}
+
 export async function readGlobalMcpConfigFile() {
-  if (!hasNativeDesktopBridge()) {
-    return {
-      scope: "global",
-      path: globalMcpConfigPathLabel(),
-      exists: false,
-      content: formatMcpConfig(DEFAULT_LOCAL_MCP_CONFIG),
-      config: cloneJson(DEFAULT_LOCAL_MCP_CONFIG),
-      native: false,
-    };
-  }
-  const result = await readNativeGlobalMcpConfigFile();
-  const content = String(result?.content || formatMcpConfig(DEFAULT_LOCAL_MCP_CONFIG));
-  return {
-    scope: "global",
-    path: String(result?.path || globalMcpConfigPathLabel()).trim(),
-    exists: Boolean(result?.exists),
-    content,
-    config: parseMcpConfigText(content),
-    native: true,
-  };
+  return mcpConfigEditor.readGlobal();
 }
 
 export async function writeGlobalMcpConfigFile(config) {
-  const content = formatMcpConfig(config);
-  if (!hasNativeDesktopBridge()) {
-    throw new Error("当前不是桌面端，无法写入全局 MCP 配置文件");
-  }
-  const result = await writeNativeGlobalMcpConfigFile(content);
-  const normalizedContent = String(result?.content || content);
-  return {
-    scope: "global",
-    path: String(result?.path || globalMcpConfigPathLabel()).trim(),
-    exists: Boolean(result?.exists ?? true),
-    content: normalizedContent,
-    config: parseMcpConfigText(normalizedContent),
-    native: true,
-  };
+  return mcpConfigEditor.writeGlobal(config);
 }
 
 export async function readProjectMcpConfigFile(workspacePath) {
-  const normalizedWorkspacePath = String(workspacePath || "").trim();
-  if (!normalizedWorkspacePath || !hasNativeDesktopBridge()) {
-    return {
-      scope: "project",
-      path: projectMcpConfigPathLabel(),
-      exists: false,
-      content: formatMcpConfig({ mcpServers: {} }),
-      config: { mcpServers: {} },
-      native: false,
-    };
-  }
-  const result = await readNativeProjectMcpConfigFile(normalizedWorkspacePath);
-  const content = String(result?.content || formatMcpConfig({ mcpServers: {} }));
-  return {
-    scope: "project",
-    path: String(result?.path || projectMcpConfigPathLabel()).trim(),
-    exists: Boolean(result?.exists),
-    content,
-    config: parseMcpConfigText(content),
-    native: true,
-  };
+  return mcpConfigEditor.readProject(workspacePath);
 }
 
 export async function writeProjectMcpConfigFile(workspacePath, config) {
-  const normalizedWorkspacePath = String(workspacePath || "").trim();
-  if (!normalizedWorkspacePath) {
-    throw new Error("缺少项目工作区路径，无法写入项目 MCP 配置文件");
-  }
-  if (!hasNativeDesktopBridge()) {
-    throw new Error("当前不是桌面端，无法写入项目 MCP 配置文件");
-  }
-  const content = formatMcpConfig(config);
-  const result = await writeNativeProjectMcpConfigFile(normalizedWorkspacePath, content);
-  const normalizedContent = String(result?.content || content);
-  return {
-    scope: "project",
-    path: String(result?.path || projectMcpConfigPathLabel()).trim(),
-    exists: Boolean(result?.exists ?? true),
-    content: normalizedContent,
-    config: parseMcpConfigText(normalizedContent),
-    native: true,
-  };
+  return mcpConfigEditor.writeProject(workspacePath, config);
 }
 
 export function mergeMcpConfigs(globalConfig, projectConfig) {
@@ -592,5 +600,118 @@ export async function readEffectiveMcpConfigFile(workspacePath) {
     global: globalFile,
     project: projectFile,
     config: mergeMcpConfigs(globalFile.config, projectFile.config),
+  };
+}
+
+export async function readGlobalWebToolsConfigFile() {
+  return webToolsConfigEditor.readGlobal();
+}
+
+export async function writeGlobalWebToolsConfigFile(config) {
+  return webToolsConfigEditor.writeGlobal(config);
+}
+
+export async function readProjectWebToolsConfigFile(workspacePath) {
+  return webToolsConfigEditor.readProject(workspacePath);
+}
+
+export async function writeProjectWebToolsConfigFile(workspacePath, config) {
+  return webToolsConfigEditor.writeProject(workspacePath, config);
+}
+
+function mergeWebToolConfigValues(globalValue, projectValue) {
+  const globalIsObject =
+    globalValue && typeof globalValue === "object" && !Array.isArray(globalValue);
+  const projectIsObject =
+    projectValue && typeof projectValue === "object" && !Array.isArray(projectValue);
+  if (globalIsObject || projectIsObject) {
+    const merged = {};
+    for (const key of Object.keys(globalIsObject ? globalValue : {})) {
+      merged[key] = cloneJson(globalValue[key]);
+    }
+    for (const key of Object.keys(projectIsObject ? projectValue : {})) {
+      merged[key] = mergeWebToolConfigValues(merged[key], projectValue[key]);
+    }
+    return merged;
+  }
+  if (typeof projectValue === "string" && !projectValue.trim()) {
+    return cloneJson(globalValue);
+  }
+  if (projectValue === undefined || projectValue === null) {
+    return cloneJson(globalValue);
+  }
+  return cloneJson(projectValue);
+}
+
+export function mergeWebToolsConfigs(globalConfig, projectConfig) {
+  const globalNormalized = normalizeWebToolsConfig(globalConfig, {});
+  const projectNormalized = normalizeWebToolsConfig(projectConfig, {});
+  const merged = normalizeWebToolsConfig(
+    mergeWebToolConfigValues(
+      globalNormalized,
+      projectNormalized,
+    ),
+    {},
+  );
+  applyExplicitWebBackendOverride(merged, projectNormalized, ["backend"]);
+  applyExplicitWebBackendOverride(merged, projectNormalized, ["search", "backend"]);
+  applyExplicitWebBackendOverride(merged, projectNormalized, ["extract", "backend"]);
+  return merged;
+}
+
+function hasOwnNestedValue(source, path) {
+  let current = source;
+  for (const [index, segment] of path.entries()) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return false;
+    }
+    if (!Object.prototype.hasOwnProperty.call(current, segment)) {
+      return false;
+    }
+    if (index === path.length - 1) return true;
+    current = current[segment];
+  }
+  return false;
+}
+
+function nestedValue(source, path) {
+  let current = source;
+  for (const segment of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = current[segment];
+  }
+  return current;
+}
+
+function setNestedValue(target, path, value) {
+  let current = target;
+  for (const [index, segment] of path.entries()) {
+    if (index === path.length - 1) {
+      current[segment] = value;
+      return;
+    }
+    if (!current[segment] || typeof current[segment] !== "object" || Array.isArray(current[segment])) {
+      current[segment] = {};
+    }
+    current = current[segment];
+  }
+}
+
+function applyExplicitWebBackendOverride(merged, projectConfig, path) {
+  if (!hasOwnNestedValue(projectConfig, path)) return;
+  setNestedValue(merged, path, String(nestedValue(projectConfig, path) || "").trim());
+}
+
+export async function readEffectiveWebToolsConfigFile(workspacePath) {
+  const [globalFile, projectFile] = await Promise.all([
+    readGlobalWebToolsConfigFile(),
+    readProjectWebToolsConfigFile(workspacePath),
+  ]);
+  return {
+    global: globalFile,
+    project: projectFile,
+    config: mergeWebToolsConfigs(globalFile.config, projectFile.config),
   };
 }

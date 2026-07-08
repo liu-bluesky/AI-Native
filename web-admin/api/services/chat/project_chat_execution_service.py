@@ -279,7 +279,12 @@ async def run_project_chat_once(
         )
 
     enabled_tool_names = list(runtime_settings.get("enabled_project_tool_names") or [])
-    explicit_tool_filter = bool(enabled_tool_names)
+    explicit_tool_filter = bool(runtime_settings.get("enabled_project_tool_names_explicit"))
+    explicit_tool_request = (
+        bool(runtime_settings.get("auto_use_tools"))
+        and explicit_tool_filter
+        and bool(enabled_tool_names)
+    )
 
     resolved_runtime = await projects_router._resolve_project_chat_runtime(runtime_settings, auth_payload)
     provider_mode = resolved_runtime.provider_mode
@@ -359,23 +364,29 @@ async def run_project_chat_once(
         previous_state=previous_assistant_workflow_state,
         chat_surface=str(req.chat_surface or "main-chat").strip() or "main-chat",
         auto_use_tools=bool(runtime_settings.get("auto_use_tools")) and (
-            bool(enabled_tool_names)
-            or projects_router._should_enable_chat_tools(
-                effective_user_message,
-                attachment_names,
-                normalized_images,
-                None,
+            explicit_tool_request
+            or (
+                not explicit_tool_filter
+                and projects_router._should_enable_chat_tools(
+                    effective_user_message,
+                    attachment_names,
+                    normalized_images,
+                    None,
+                )
             )
         ),
     )
     tools: list[dict[str, Any]] = []
     tools_enabled = bool(runtime_settings.get("auto_use_tools")) and (
-        bool(enabled_tool_names)
-        or projects_router._should_enable_chat_tools(
-            effective_user_message,
-            attachment_names,
-            normalized_images,
-            assistant_workflow_state,
+        explicit_tool_request
+        or (
+            not explicit_tool_filter
+            and projects_router._should_enable_chat_tools(
+                effective_user_message,
+                attachment_names,
+                normalized_images,
+                assistant_workflow_state,
+            )
         )
     )
     if tools_enabled:

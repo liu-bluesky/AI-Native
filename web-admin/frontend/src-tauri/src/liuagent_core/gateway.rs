@@ -287,7 +287,7 @@ mod tests {
 
         assert!(result.ok, "{}", result.error);
         assert_eq!(result.requirement_session.source, "project_chat");
-        assert_eq!(result.tool_manifest_bundle.builtin_tool_count, 17);
+        assert_eq!(result.tool_manifest_bundle.builtin_tool_count, 18);
         assert!(PathBuf::from(&result.requirement_record_path).exists());
         let _ = fs::remove_dir_all(dir);
     }

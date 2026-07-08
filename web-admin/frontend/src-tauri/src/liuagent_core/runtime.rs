@@ -36,6 +36,7 @@ use super::state::{
     write_runtime_artifacts, RuntimeArtifactPaths, RuntimePersistenceInput,
 };
 use super::tools::command::classify_command_risk;
+use super::tools::network::{web_extract_configured, web_search_configured};
 use super::types::{
     AgentInvocationRequest, AgentInvocationResult, AgentRunAttachmentRoute,
     AgentRunAttachmentSummary, AgentRunContext, AgentRunHistoryContext,
@@ -630,8 +631,6 @@ fn start_local_chat_inner(
         }
     };
     let runtime_event_sink: Option<&dyn Fn(Value)> = Some(&collecting_event_sink);
-    let plan_confirmation_request_id =
-        plan_confirmation_request_id(&chat_session_id, &user_message_id);
     let replayed_permission_tool = replay_pending_permission_tool_if_available(
         &workspace_root,
         &project_id,
@@ -654,29 +653,15 @@ fn start_local_chat_inner(
         ));
         model_request = model_request.with_messages(messages);
     }
-    let mut agent_loop = if clarity_assessment.requires_confirmation
-        && !has_plan_confirmation(&request, &plan_confirmation_request_id)
-        && replayed_permission_tool.is_none()
-    {
-        build_plan_confirmation_agent_loop(
-            &session_id,
-            &chat_session_id,
-            &plan_confirmation_request_id,
-            &user_message,
-            &clarity_assessment,
-            runtime_event_sink,
-        )
-    } else {
-        run_agent_loop(
-            &chat_session_id,
-            &session_id,
-            &model_request,
-            &prompt_stack,
-            &workspace_root,
-            request.permission_decision.clone(),
-            runtime_event_sink,
-        )
-    };
+    let mut agent_loop = run_agent_loop(
+        &chat_session_id,
+        &session_id,
+        &model_request,
+        &prompt_stack,
+        &workspace_root,
+        request.permission_decision.clone(),
+        runtime_event_sink,
+    );
     if let Some(replayed) = replayed_permission_tool {
         agent_loop.planned_tools.insert(0, replayed.tool);
         agent_loop.tool_results.insert(0, replayed.result);
@@ -711,11 +696,7 @@ fn start_local_chat_inner(
         "failed"
     };
     let waiting_for = if awaiting_permission {
-        if agent_loop.stopped_reason == "waiting_plan_confirmation" {
-            Some("plan_confirmation")
-        } else {
-            Some("approval")
-        }
+        Some("approval")
     } else {
         None
     };
@@ -863,9 +844,7 @@ fn start_local_chat_inner(
     );
     write_requirement_record(&requirement_path, requirement_record)?;
 
-    let result_error_code = if waiting_for == Some("plan_confirmation") {
-        "planning.confirmation_required".to_string()
-    } else if awaiting_permission {
+    let result_error_code = if awaiting_permission {
         "permission.required".to_string()
     } else if run_ok {
         String::new()
@@ -889,9 +868,7 @@ fn start_local_chat_inner(
     } else {
         model_result.summary.clone()
     };
-    let result_summary = if waiting_for == Some("plan_confirmation") {
-        "桌面端本地对话等待用户确认执行计划".to_string()
-    } else if awaiting_permission {
+    let result_summary = if awaiting_permission {
         "桌面端本地对话等待用户授权".to_string()
     } else if run_ok {
         if tool_results.is_empty() {
@@ -940,13 +917,10 @@ fn build_runtime_blockers(
     planned_tools: &[PlannedLocalTool],
 ) -> Value {
     if awaiting_permission {
-        let tool_name = planned_tools.last().map(|t| t.name.as_str()).unwrap_or(
-            if stopped_reason == "waiting_plan_confirmation" {
-                "planning_gate"
-            } else {
-                "unknown"
-            },
-        );
+        let tool_name = planned_tools
+            .last()
+            .map(|t| t.name.as_str())
+            .unwrap_or("unknown");
         json!([planning::BlockerRecord::permission_required(
             session_id,
             &format!("node-execute-{session_id}"),
@@ -1240,7 +1214,6 @@ fn build_requirement_intent_analysis(
             "context_lookup": build_context_lookup(user_message, &targets)
         },
         "focus": infer_requirement_focus(user_message),
-        "task_type": infer_requirement_task_type(user_message),
         "relationship": "related",
         "related_objects": targets,
         "context_strategy": "continue_chain",
@@ -1455,8 +1428,43 @@ fn tool_lifecycle_node_kind(tool_name: &str) -> &'static str {
         "list_files" | "search_text" => "file_search",
         "write_file" | "apply_patch" | "delete_file" => "file_edit",
         "run_command" | "check_command_risk" => "command",
+        "web_search" | "web_extract" | "http_get" => "network",
         "call_mcp_tool" | "list_mcp_tools" | "read_mcp_resource" => "mcp_call",
         _ => "tool",
+    }
+}
+
+fn web_tool_backend_label(backend: &str) -> String {
+    match backend.trim().to_ascii_lowercase().as_str() {
+        "managed" => "Managed".to_string(),
+        "firecrawl" => "Firecrawl".to_string(),
+        "parallel" => "Parallel".to_string(),
+        "tavily" => "Tavily".to_string(),
+        "exa" => "Exa".to_string(),
+        other if !other.is_empty() => other.to_string(),
+        _ => "Web".to_string(),
+    }
+}
+
+fn tool_lifecycle_node_title(tool_name: &str, content: &serde_json::Map<String, Value>) -> String {
+    let normalized_tool = tool_name.trim();
+    if matches!(normalized_tool, "web_search" | "web_extract") {
+        let backend = content
+            .get("backend")
+            .and_then(Value::as_str)
+            .map(web_tool_backend_label)
+            .unwrap_or_else(|| "Web".to_string());
+        let action = if normalized_tool == "web_search" {
+            "搜索"
+        } else {
+            "正文抽取"
+        };
+        return format!("{backend} {action}");
+    }
+    if normalized_tool.is_empty() {
+        "执行任务".to_string()
+    } else {
+        format!("执行任务：{normalized_tool}")
     }
 }
 
@@ -1566,7 +1574,7 @@ fn build_conversation_lifecycle(
             "id": format!("{session_id}:execute_task:{}", result.tool_call_id),
             "type": "execute_task",
             "kind": tool_lifecycle_node_kind(tool_name),
-            "title": if tool_name.is_empty() { "执行任务".to_string() } else { format!("执行任务：{tool_name}") },
+            "title": tool_lifecycle_node_title(tool_name, &content),
             "status": tool_result_status(result),
             "terminal": result.content.get("terminal").and_then(Value::as_bool).unwrap_or(result.ok || result.error_code != "tool.timeout"),
             "requires_judgement": result.content.get("requires_judgement").and_then(Value::as_bool).unwrap_or(false),
@@ -1612,9 +1620,7 @@ fn build_conversation_lifecycle(
         }));
     }
 
-    let final_summary = if waiting_for == Some("plan_confirmation") {
-        "等待用户确认执行计划。".to_string()
-    } else if waiting_for == Some("approval") {
+    let final_summary = if waiting_for == Some("approval") {
         "等待用户授权后继续执行。".to_string()
     } else if agent_loop.stopped_reason == "tool_no_signal" {
         "当前步骤暂无完成或失败证据，任务已保留现场等待恢复判断。".to_string()
@@ -2036,9 +2042,7 @@ fn build_runtime_scheduler_state(
         .filter(|result| !result.ok)
         .map(|result| result.tool_call_id.clone())
         .collect::<Vec<_>>();
-    let next_action = if waiting_for == Some("plan_confirmation") {
-        "wait_for_plan_confirmation"
-    } else if waiting_for == Some("approval") {
+    let next_action = if waiting_for == Some("approval") {
         "wait_for_approval"
     } else if run_status == "completed" {
         "finish"
@@ -2306,24 +2310,14 @@ fn assess_clarity(
     model_request: &ModelStepRequest,
 ) -> ClarityAssessment {
     let targets = extract_file_path_candidates(user_message);
-    let task_type = classify_clarity_task_type(user_message);
+    let task_type = "agentic_request".to_string();
     let goal_clear = !normalize_agent_user_request(user_message).is_empty();
     let target_clear = !targets.is_empty()
-        || matches!(task_type.as_str(), "query" | "explanation")
+        || goal_clear
         || infer_recent_target_path(&model_request.messages).is_some();
-    let scope_clear = !user_message.contains("随便")
-        && !user_message.contains("都行")
-        && !user_message.contains("看着办");
-    let expected_result_clear = user_message.contains("回复")
-        || user_message.contains("开发")
-        || user_message.contains("修改")
-        || user_message.contains("修复")
-        || user_message.contains("检测")
-        || user_message.contains("验证")
-        || user_message.contains("暂停")
-        || matches!(task_type.as_str(), "query" | "explanation");
-    let requires_confirmation = matches!(task_type.as_str(), "destructive" | "deployment")
-        || matches!(task_type.as_str(), "implementation");
+    let scope_clear = true;
+    let expected_result_clear = goal_clear;
+    let requires_confirmation = false;
     let mut ambiguities = Vec::new();
     if !target_clear {
         ambiguities.push("target_not_explicit".to_string());
@@ -2349,159 +2343,16 @@ fn assess_clarity(
         scope_clear,
         expected_result_clear,
         requires_confirmation,
-        confirmation_reason: if requires_confirmation {
-            "state_changing_request_requires_plan_confirmation".to_string()
-        } else {
-            String::new()
-        },
+        confirmation_reason: String::new(),
         interpretation: truncate_inline(user_message, 220),
         ambiguities,
     }
 }
 
-fn classify_clarity_task_type(user_message: &str) -> String {
-    if contains_any(user_message, &["删除", "清空", "覆盖", "重置", "rm -rf"]) {
-        "destructive".to_string()
-    } else if contains_any(user_message, &["部署", "发布", "上线", "打包"]) {
-        "deployment".to_string()
-    } else if contains_any(
-        user_message,
-        &[
-            "开发", "修改", "修复", "实现", "继续", "开始", "改造", "写入",
-        ],
-    ) {
-        "implementation".to_string()
-    } else if contains_any(user_message, &["区别", "说明", "解释", "理解"]) {
-        "explanation".to_string()
-    } else if user_message.contains("？") || user_message.contains('?') {
-        "query".to_string()
-    } else {
-        "ambiguous".to_string()
-    }
-}
-
-fn plan_confirmation_request_id(chat_session_id: &str, user_message_id: &str) -> String {
-    format!(
-        "plan_confirm_{}_{}",
-        sanitize_path_segment(chat_session_id),
-        sanitize_path_segment(user_message_id)
-    )
-}
-
-fn has_plan_confirmation(request: &LocalChatRequest, expected_request_id: &str) -> bool {
-    let Some(decision) = request.permission_decision.as_ref() else {
-        return false;
-    };
-    if is_full_access_decision(decision) {
-        return true;
-    }
-    let decision_value = decision.decision.trim();
-    if !matches!(decision_value, "approve_once" | "approve_session") {
-        return false;
-    }
-    let grant_scope = decision.grant_scope.as_deref().unwrap_or("").trim();
-    if decision_value == "approve_once" && !grant_scope.is_empty() && grant_scope != "once" {
-        return false;
-    }
-    if decision_value == "approve_session" && !matches!(grant_scope, "session" | "current_session")
-    {
-        return false;
-    }
-    decision
-        .request_id
-        .as_deref()
-        .map(str::trim)
-        .map(|request_id| request_id == expected_request_id)
-        .unwrap_or(false)
-}
-
-fn build_plan_confirmation_agent_loop(
-    runtime_session_id: &str,
-    chat_session_id: &str,
-    request_id: &str,
-    user_message: &str,
-    clarity: &ClarityAssessment,
-    event_sink: Option<&dyn Fn(Value)>,
-) -> AgentLoopResult {
-    let tool_call_id = format!("call_{request_id}");
-    let plan_summary = if clarity.task_type == "destructive" {
-        "执行前需要确认含删除、清空、覆盖或重置风险的计划。"
-    } else if clarity.task_type == "deployment" {
-        "执行前需要确认部署、发布或打包计划。"
-    } else {
-        "执行前需要确认会改变项目状态的开发计划。"
-    };
-    let permission_request = json!({
-        "requestId": request_id,
-        "action": "confirm_plan",
-        "risk": if clarity.task_type == "destructive" || clarity.task_type == "deployment" {
-            "high"
-        } else {
-            "medium"
-        },
-        "reason": plan_summary,
-        "scope": "current_chat_task",
-        "preview": {
-            "taskType": clarity.task_type,
-            "score": clarity.score,
-            "interpretation": clarity.interpretation,
-            "ambiguities": clarity.ambiguities,
-            "userRequest": truncate_inline(user_message, 500)
-        },
-        "options": [
-            {
-                "decision": "approve_once",
-                "label": "确认执行计划",
-                "grantScope": "once"
-            },
-            {
-                "decision": "deny",
-                "label": "拒绝",
-                "grantScope": null
-            }
-        ]
-    });
-    let tool_result = super::types::ToolExecutionResult {
-        tool_result_id: format!("result_{tool_call_id}"),
-        tool_call_id,
-        name: "planning_gate".to_string(),
-        ok: false,
-        content: json!({
-            "permissionRequest": permission_request,
-            "planningGate": {
-                "version": "planning-gate/v1",
-                "requires_confirmation": true,
-                "confirmation_reason": clarity.confirmation_reason,
-                "task_type": clarity.task_type,
-                "user_request": truncate_inline(user_message, 500)
-            }
-        }),
-        summary: "需要确认执行计划后继续。".to_string(),
-        error_code: "permission.required".to_string(),
-        error: "需要确认执行计划后继续。".to_string(),
-    };
-    emit_approval_required_event(
-        event_sink,
-        runtime_session_id,
-        chat_session_id,
-        &tool_result,
-    );
-    finalize_agent_loop_result(
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        vec![tool_result],
-        Vec::new(),
-        Vec::new(),
-        "waiting_plan_confirmation".to_string(),
-        true,
-    )
-}
-
 fn create_plan_state(
     session_id: &str,
     task_goal: &TaskGoal,
-    clarity: &ClarityAssessment,
+    _clarity: &ClarityAssessment,
     run_status: &str,
     created_at_epoch_ms: u128,
     agent_loop: Option<&AgentLoopResult>,
@@ -2510,7 +2361,7 @@ fn create_plan_state(
     let verification_summary = agent_loop
         .map(|loop_result| loop_result.verification.summary.clone())
         .unwrap_or_default();
-    let mut nodes = task_tree
+    let nodes = task_tree
         .nodes
         .iter()
         .filter(|node| node.node_type != "goal")
@@ -2524,21 +2375,6 @@ fn create_plan_state(
                 .unwrap_or_else(|| verification_summary.clone()),
         })
         .collect::<Vec<_>>();
-    if clarity.requires_confirmation {
-        nodes.insert(
-            0,
-            PlanNode {
-                node_id: format!("node-confirm-{session_id}"),
-                title: "记录需要确认的状态变更请求".to_string(),
-                status: if run_status == "waiting_approval" {
-                    "waiting".to_string()
-                } else {
-                    "recorded".to_string()
-                },
-                verification_result: clarity.confirmation_reason.clone(),
-            },
-        );
-    }
 
     PlanState {
         version: "plan-state/v1".to_string(),
@@ -2553,11 +2389,7 @@ fn create_plan_state(
         root_goal: truncate_inline(&task_goal.user_request, 260),
         nodes,
         current_node_id: task_tree.current_node_id.clone(),
-        destructive_steps: if clarity.task_type == "destructive" {
-            vec![truncate_inline(&task_goal.user_request, 160)]
-        } else {
-            Vec::new()
-        },
+        destructive_steps: Vec::new(),
         created_at_epoch_ms,
         updated_at_epoch_ms: epoch_millis(),
     }
@@ -2579,14 +2411,6 @@ fn route_failure(
     let (route, failure_type, reason, retry_allowed, exit_condition) = if run_status == "completed"
     {
         ("none", "none", "本轮已完成，无需重试。", false, "已完成。")
-    } else if waiting_for == Some("plan_confirmation") {
-        (
-            "draft",
-            "plan_confirmation_required",
-            "状态变更请求等待用户确认执行计划，运行时不会提前调用模型或本地工具。",
-            false,
-            "用户确认或拒绝当前 plan confirmation request。",
-        )
     } else if waiting_for == Some("approval") {
         (
             "draft",
@@ -2760,10 +2584,6 @@ fn classify_memory_writes(
         },
         created_at_epoch_ms: epoch_millis(),
     }
-}
-
-fn contains_any(value: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| value.contains(needle))
 }
 
 fn build_requirement_current_state_delta(
@@ -3084,27 +2904,20 @@ fn build_task_goal(
         .cloned()
         .or_else(|| infer_recent_target_path(&model_request.messages))
         .unwrap_or_else(|| "current user request".to_string());
-    let intent = infer_requirement_task_type(user_message).to_string();
     let title = truncate_inline(user_message, 120);
-    let mut success_criteria = vec![
+    let success_criteria = vec![
         "围绕本轮用户目标推进，不以关键词命中强制副作用工具。".to_string(),
         "模型工具调用结果能回传到同一任务目标下继续判断。".to_string(),
         "最终状态必须有验证报告或明确阻塞原因。".to_string(),
     ];
-    if intent == "modification" {
-        success_criteria.push("修改类任务需要说明涉及目标、执行结果和验证证据。".to_string());
-    } else if intent == "question" {
-        success_criteria.push("查询类任务不要求写入文件，直接回答用户问题。".to_string());
-    }
-    let mut constraints = infer_requirement_constraints(user_message);
-    constraints.push("高风险或副作用动作必须经过本地权限策略。".to_string());
+    let constraints = infer_requirement_constraints(user_message);
 
     TaskGoal {
         version: "task-goal/v1".to_string(),
         goal_id: format!("goal_{session_id}"),
         title,
         user_request: user_message.to_string(),
-        intent,
+        intent: "agentic_request".to_string(),
         target_object,
         success_criteria,
         constraints,
@@ -3136,33 +2949,18 @@ fn requirement_keywords(user_message: &str) -> Vec<String> {
     keywords
 }
 
-fn infer_requirement_capability(user_message: &str) -> String {
-    if user_message.contains("修改") || user_message.contains("改造") {
-        "modify_existing_artifact".to_string()
-    } else if user_message.contains("修复") || user_message.contains("解决") {
-        "fix_problem".to_string()
-    } else if user_message.contains("查询") || user_message.contains("查看") {
-        "answer_or_inspect".to_string()
-    } else {
-        "handle_current_request".to_string()
-    }
+fn infer_requirement_capability(_user_message: &str) -> String {
+    "handle_current_request".to_string()
 }
 
-fn infer_requirement_constraints(user_message: &str) -> Vec<String> {
-    let mut constraints = Vec::new();
-    if user_message.contains("不要兜底") || user_message.contains("不兜底") {
-        constraints.push("禁止以兜底、兼容或静默降级掩盖根因。".to_string());
-    }
-    if user_message.contains("本质解决") || user_message.contains("根因") {
-        constraints.push("优先定位并修正根因，收敛到唯一规范入口。".to_string());
-    }
-    if constraints.is_empty() {
-        constraints.push("只围绕本轮用户输入处理，不主动扩大范围。".to_string());
-    }
-    constraints
+fn infer_requirement_constraints(_user_message: &str) -> Vec<String> {
+    vec![
+        "只围绕本轮用户输入处理，不主动扩大范围。".to_string(),
+        "高风险或副作用动作必须经过本地权限策略。".to_string(),
+    ]
 }
 
-fn build_context_lookup(user_message: &str, targets: &[String]) -> Vec<String> {
+fn build_context_lookup(_user_message: &str, targets: &[String]) -> Vec<String> {
     let mut lookup = vec![
         "local requirement current_state".to_string(),
         "project context bundle".to_string(),
@@ -3173,62 +2971,11 @@ fn build_context_lookup(user_message: &str, targets: &[String]) -> Vec<String> {
             .iter()
             .map(|target| format!("workspace target {target}")),
     );
-    if user_message.contains("历史") || user_message.contains("最近") {
-        lookup.push("recent requirement history".to_string());
-    }
     lookup
 }
 
 fn infer_requirement_focus(user_message: &str) -> String {
-    let capability = infer_requirement_capability(user_message);
-    format!("{capability}: {}", truncate_inline(user_message, 120))
-}
-
-fn infer_requirement_task_type(user_message: &str) -> &'static str {
-    if user_message.contains("删除")
-        || user_message.contains("清空")
-        || user_message.contains("移除")
-        || user_message.contains("覆盖")
-    {
-        "destructive"
-    } else if user_message.contains("部署")
-        || user_message.contains("发布")
-        || user_message.contains("上线")
-    {
-        "deployment"
-    } else if user_message.contains("文档")
-        || user_message.contains(".md")
-        || user_message.contains("说明")
-        || user_message.contains("计划")
-    {
-        "documentation"
-    } else if user_message.contains("工作流")
-        || user_message.contains("任务树")
-        || user_message.contains("执行流")
-        || user_message.contains("恢复续跑")
-        || user_message.contains("MCP")
-    {
-        "governance"
-    } else if user_message.contains("最近") || user_message.contains("历史") {
-        "history_recall"
-    } else if user_message.contains("修复") || user_message.contains("解决") {
-        "bugfix"
-    } else if user_message.contains("分析")
-        || user_message.contains("看看")
-        || user_message.contains("确认")
-        || user_message.contains("为什么")
-    {
-        "analysis"
-    } else if user_message.contains("修改") || user_message.contains("改造") {
-        "modification"
-    } else if user_message.contains("吗")
-        || user_message.contains("?")
-        || user_message.contains("？")
-    {
-        "question"
-    } else {
-        "other"
-    }
+    format!("current_request: {}", truncate_inline(user_message, 120))
 }
 
 fn prepare_local_chat_invocation(
@@ -3443,20 +3190,6 @@ fn format_local_chat_response(
                     .collect::<Vec<_>>()
                     .join("，");
                 lines.push(format!("工具类型：{tool_summary}。"));
-            }
-            let mutating_tool_count = tool_results
-                .iter()
-                .filter(|item| {
-                    matches!(
-                        item.name.as_str(),
-                        "write_file" | "apply_patch" | "delete_file" | "run_command"
-                    )
-                })
-                .count();
-            if loop_failed && mutating_tool_count == 0 {
-                lines.push(
-                    "本轮没有执行写文件、补丁、删除或命令工具，因此没有完成文件修改。".to_string(),
-                );
             }
             if let Some(failed) = tool_results.iter().find(|item| !item.ok) {
                 lines.push(format!(
@@ -4069,6 +3802,7 @@ struct AgentLoopResult {
     candidate_solutions: Vec<AgentLoopCandidateSolution>,
     attempts: Vec<AgentLoopAttempt>,
     verification: AgentLoopVerification,
+    acceptance_gate: Option<AcceptanceGateResult>,
     stopped_reason: String,
     awaiting_permission: bool,
 }
@@ -4123,7 +3857,12 @@ impl AgentLoopResult {
                 "Agent Loop 检测到相同方案和相同失败签名重复出现，已暂停自动循环。".to_string()
             }
             "verification_failed" => {
-                "Agent Loop 检测到失败方案尚未被新方案验证通过，已暂停并等待重新规划。".to_string()
+                if let Some(gate) = self.acceptance_gate.as_ref().filter(|gate| !gate.passed) {
+                    format!("Agent Loop 验收没有通过：{}", gate.summary)
+                } else {
+                    "Agent Loop 验收没有通过：存在未解决的失败方案，不能把当前需求判定为完成。"
+                        .to_string()
+                }
             }
             _ => String::new(),
         }
@@ -4141,6 +3880,7 @@ impl AgentLoopResult {
                     "planned_tool_call_count": self.planned_tools.len(),
                     "stopped_reason": self.stopped_reason,
                     "awaiting_permission": self.awaiting_permission,
+                    "acceptance_gate": self.acceptance_gate,
                     "model_steps": self.model_steps,
                     "model_input_snapshots": self.model_input_snapshots,
                     "planned_tools": self.planned_tools,
@@ -4250,6 +3990,7 @@ fn run_agent_loop_with(
     let mut attempts = Vec::new();
     let mut verification_reprompts = 0usize;
     let mut acceptance_gate_reprompts = 0usize;
+    let mut last_acceptance_gate: Option<AcceptanceGateResult> = None;
     let mut permission_cache = load_session_permission_cache(workspace_root, run_key);
     let stopped_reason: String;
     let mut awaiting_permission = false;
@@ -4317,6 +4058,7 @@ fn run_agent_loop_with(
                 &tool_results,
                 &model_result.content,
             );
+            last_acceptance_gate = Some(acceptance_gate.clone());
             if has_unresolved_failed_attempt(&attempts, &model_result.content)
                 && !acceptance_gate_covers_failed_attempts(&acceptance_gate)
             {
@@ -4412,7 +4154,9 @@ fn run_agent_loop_with(
                 workspace_path: workspace_root.to_string_lossy().to_string(),
                 permission_decision: effective_permission_decision.clone(),
             };
-            let result = if block_mutating_batch && is_side_effect_tool(&tool.name) {
+            let result = if let Some(disabled_result) = disabled_tool_result(&tool, &request) {
+                disabled_result
+            } else if block_mutating_batch && is_side_effect_tool(&tool.name) {
                 batch_schema_failures
                     .iter()
                     .find(|failure| failure.tool_call_id == tool.tool_call_id)
@@ -4447,6 +4191,7 @@ fn run_agent_loop_with(
                     tool_results,
                     candidate_solutions,
                     attempts,
+                    last_acceptance_gate,
                     stopped_reason,
                     awaiting_permission,
                 );
@@ -4495,6 +4240,7 @@ fn run_agent_loop_with(
                     tool_results,
                     candidate_solutions,
                     attempts,
+                    last_acceptance_gate,
                     stopped_reason,
                     awaiting_permission,
                 );
@@ -4508,6 +4254,7 @@ fn run_agent_loop_with(
                     tool_results,
                     candidate_solutions,
                     attempts,
+                    last_acceptance_gate,
                     stopped_reason,
                     awaiting_permission,
                 );
@@ -4522,6 +4269,7 @@ fn run_agent_loop_with(
         tool_results,
         candidate_solutions,
         attempts,
+        last_acceptance_gate,
         stopped_reason,
         awaiting_permission,
     )
@@ -4822,6 +4570,15 @@ fn describe_planned_tool_intent(tool: &PlannedLocalTool) -> String {
                 format!("运行 `{}` 验证当前实现", truncate_inline(&cmd, 120))
             }
         }
+        "web_search" => {
+            let query = argument_string(&tool.arguments, "query").unwrap_or_default();
+            if query.trim().is_empty() {
+                "执行 Web 搜索，获取候选来源和摘要".to_string()
+            } else {
+                format!("执行 Web 搜索 “{}”，获取候选来源和摘要", query.trim())
+            }
+        }
+        "web_extract" => "执行 Web 正文抽取，补充搜索摘要之外的内容".to_string(),
         _ => {
             let summary = tool.summary.trim();
             if summary.is_empty() {
@@ -5302,6 +5059,7 @@ fn finalize_agent_loop_result(
     tool_results: Vec<super::types::ToolExecutionResult>,
     candidate_solutions: Vec<AgentLoopCandidateSolution>,
     attempts: Vec<AgentLoopAttempt>,
+    acceptance_gate: Option<AcceptanceGateResult>,
     stopped_reason: String,
     awaiting_permission: bool,
 ) -> AgentLoopResult {
@@ -5310,6 +5068,7 @@ fn finalize_agent_loop_result(
         awaiting_permission,
         &model_steps,
         &attempts,
+        acceptance_gate.as_ref(),
     );
     AgentLoopResult {
         model_steps,
@@ -5319,6 +5078,7 @@ fn finalize_agent_loop_result(
         candidate_solutions,
         attempts,
         verification,
+        acceptance_gate,
         stopped_reason,
         awaiting_permission,
     }
@@ -5329,15 +5089,9 @@ fn build_agent_loop_verification(
     awaiting_permission: bool,
     model_steps: &[ModelStepResult],
     attempts: &[AgentLoopAttempt],
+    acceptance_gate: Option<&AcceptanceGateResult>,
 ) -> AgentLoopVerification {
     if awaiting_permission {
-        if stopped_reason == "waiting_plan_confirmation" {
-            return AgentLoopVerification {
-                status: "waiting_approval".to_string(),
-                summary: "等待用户确认执行计划后继续同一个 Agent Loop。".to_string(),
-                evidence: vec!["planning.confirmation_required".to_string()],
-            };
-        }
         return AgentLoopVerification {
             status: "waiting_approval".to_string(),
             summary: "等待用户授权后继续同一个 Agent Loop。".to_string(),
@@ -5369,8 +5123,16 @@ fn build_agent_loop_verification(
         },
         "verification_failed" => AgentLoopVerification {
             status: "failed".to_string(),
-            summary: "存在失败方案未被后续成功方案覆盖，不能把当前需求判定为完成。".to_string(),
-            evidence: unresolved_failure_evidence(attempts),
+            summary: acceptance_gate
+                .filter(|gate| !gate.passed)
+                .map(|gate| gate.summary.clone())
+                .unwrap_or_else(|| {
+                    "存在失败方案未被后续成功方案覆盖，不能把当前需求判定为完成。".to_string()
+                }),
+            evidence: acceptance_gate
+                .filter(|gate| !gate.passed)
+                .map(|gate| gate.evidence.clone())
+                .unwrap_or_else(|| unresolved_failure_evidence(attempts)),
         },
         "repeated_failure" => AgentLoopVerification {
             status: "paused".to_string(),
@@ -5483,6 +5245,8 @@ fn tool_candidate_score(tool_name: &str, failed_count: i32) -> i32 {
         "read_file" => 86,
         "search_files" => 84,
         "get_file_info" => 82,
+        "web_search" => 78,
+        "web_extract" => 76,
         "run_command" => 68,
         "write_file" | "apply_patch" => 62,
         "download_file" => 58,
@@ -5499,7 +5263,8 @@ fn tool_candidate_score(tool_name: &str, failed_count: i32) -> i32 {
 fn tool_risk_level(tool_name: &str) -> &'static str {
     match tool_name.trim() {
         "delete_file" | "http_post" | "call_mcp_tool" => "high",
-        "write_file" | "apply_patch" | "run_command" | "download_file" => "medium",
+        "write_file" | "apply_patch" | "run_command" | "download_file" | "web_search"
+        | "web_extract" => "medium",
         _ => "low",
     }
 }
@@ -5507,7 +5272,8 @@ fn tool_risk_level(tool_name: &str) -> &'static str {
 fn tool_verifiability(tool_name: &str) -> &'static str {
     match tool_name.trim() {
         "delete_file" | "write_file" | "apply_patch" | "download_file" => "strong",
-        "read_file" | "list_files" | "search_files" | "get_file_info" | "run_command" => "direct",
+        "read_file" | "list_files" | "search_files" | "get_file_info" | "run_command"
+        | "web_search" | "web_extract" => "direct",
         _ => "manual",
     }
 }
@@ -5519,6 +5285,14 @@ fn tool_verification_plan(tool_name: &str) -> Vec<String> {
         "download_file" => vec!["确认下载目标存在且大小大于 0".to_string()],
         "read_file" => vec!["确认读取内容与用户目标相关".to_string()],
         "list_files" | "search_files" => vec!["确认结果列表能支撑下一步定位".to_string()],
+        "web_search" => vec![
+            "确认搜索结果包含 title/url/description".to_string(),
+            "需要更完整正文或更高置信度时，可按任务风险继续打开页面或补充核查".to_string(),
+        ],
+        "web_extract" => vec![
+            "确认抽取结果包含 url/title/content".to_string(),
+            "若正文为空或相关性不足，回到搜索结果重新选择来源".to_string(),
+        ],
         "run_command" => vec!["检查退出码、stdout/stderr 与用户目标".to_string()],
         _ => vec!["检查工具结果 ok 与 summary".to_string()],
     }
@@ -5531,6 +5305,10 @@ fn evaluate_acceptance_gate(
     tool_results: &[super::types::ToolExecutionResult],
     final_content: &str,
 ) -> AcceptanceGateResult {
+    if let Some(result) = evaluate_external_url_evidence(tool_results, final_content) {
+        return result;
+    }
+
     let changed_targets = successful_file_mutation_targets(planned_tools, tool_results);
     let project_profile = discover_project_verification_profile(workspace_root);
     if changed_targets.is_empty() {
@@ -5629,6 +5407,71 @@ fn evaluate_acceptance_gate(
         suggested_commands: project_profile.commands,
         evidence,
     }
+}
+
+fn evaluate_external_url_evidence(
+    _tool_results: &[super::types::ToolExecutionResult],
+    final_content: &str,
+) -> Option<AcceptanceGateResult> {
+    let urls = extract_http_urls(final_content);
+    if urls.is_empty() {
+        return None;
+    }
+
+    Some(AcceptanceGateResult {
+        passed: true,
+        status: "external_url_present".to_string(),
+        summary: format!(
+            "最终回答包含 {} 个外部 URL；Acceptance Gate 不按 URL 字符串核验状态阻断回答。",
+            urls.len()
+        ),
+        required: false,
+        changed_targets: Vec::new(),
+        project_markers: Vec::new(),
+        suggested_commands: Vec::new(),
+        evidence: vec![
+            "external_url_evidence=informational_only".to_string(),
+            format!("external_urls={}", urls.join(",")),
+        ],
+    })
+}
+
+fn extract_http_urls(text: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for scheme in ["https://", "http://"] {
+        let mut offset = 0usize;
+        while let Some(relative_start) = text[offset..].find(scheme) {
+            let start = offset + relative_start;
+            let rest = &text[start..];
+            let end = rest
+                .char_indices()
+                .find_map(|(index, ch)| {
+                    if ch.is_whitespace()
+                        || matches!(
+                            ch,
+                            '`' | '"' | '\'' | '<' | '>' | ')' | ']' | '，' | '。' | '；' | '、'
+                        )
+                    {
+                        Some(index)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(rest.len());
+            let candidate = rest[..end]
+                .trim_end_matches(['.', ',', ';', ':', '、', '`', '，', '。', '；', '）']);
+            if let Ok(url) = Url::parse(candidate) {
+                if matches!(url.scheme(), "http" | "https") {
+                    let normalized = url.as_str().to_string();
+                    if !urls.iter().any(|existing| existing == &normalized) {
+                        urls.push(normalized);
+                    }
+                }
+            }
+            offset = start + scheme.len();
+        }
+    }
+    urls
 }
 
 #[derive(Debug, Clone)]
@@ -5802,7 +5645,7 @@ fn final_content_acknowledges_verification_gap(content: &str) -> bool {
 }
 
 fn acceptance_gate_covers_failed_attempts(result: &AcceptanceGateResult) -> bool {
-    result.required && result.status == "passed"
+    result.required && result.passed && matches!(result.status.as_str(), "passed")
 }
 
 fn acceptance_gate_replan_message(result: &AcceptanceGateResult) -> String {
@@ -5994,6 +5837,30 @@ fn tool_batch_preflight_blocked_result(
         error_code: "tool.batch_preflight_blocked".to_string(),
         error: summary,
     }
+}
+
+fn disabled_tool_result(
+    tool: &PlannedLocalTool,
+    request: &ModelStepRequest,
+) -> Option<super::types::ToolExecutionResult> {
+    let reason = tool_disabled_reason(&tool.name, request, ToolAvailabilityOverrides::default())?;
+    Some(super::types::ToolExecutionResult {
+        tool_result_id: format!("result_{}", tool.tool_call_id),
+        tool_call_id: tool.tool_call_id.clone(),
+        name: tool.name.clone(),
+        ok: false,
+        content: json!({
+            "status": "disabled",
+            "terminal": false,
+            "recoverable": true,
+            "recovery_scope": "tool_disabled_by_configuration",
+            "tool_name": tool.name,
+            "reason": reason,
+        }),
+        summary: reason.clone(),
+        error_code: "tool.disabled".to_string(),
+        error: reason,
+    })
 }
 
 fn preflight_tool_schema_result(
@@ -6797,6 +6664,12 @@ fn compact_tool_observation_content(tool_name: &str, content: &Value) -> Value {
         "list_files" => {
             compact_array_field_observation(content, "entries", TOOL_OBSERVATION_MAX_ARRAY_ITEMS)
         }
+        "web_search" => {
+            compact_array_field_observation(content, "results", TOOL_OBSERVATION_MAX_ARRAY_ITEMS)
+        }
+        "web_extract" => {
+            compact_array_field_observation(content, "documents", TOOL_OBSERVATION_MAX_ARRAY_ITEMS)
+        }
         "run_command" => compact_command_observation(content),
         _ => compact_generic_observation(content),
     }
@@ -6936,6 +6809,8 @@ fn is_recoverable_tool_failure(
         result.error_code.as_str(),
         "tool.schema_invalid"
             | "tool.not_found"
+            | "web_search.unconfigured"
+            | "web_extract.unconfigured"
             | "mcp.config_missing"
             | "mcp.server_not_found"
             | "mcp.config_invalid"
@@ -6964,6 +6839,7 @@ fn should_continue_after_recoverable_failure(
 
 fn max_recoverable_failure_repeats(result: &super::types::ToolExecutionResult) -> usize {
     match result.error_code.as_str() {
+        "web_search.unconfigured" | "web_extract.unconfigured" => 2,
         "mcp.config_missing" => 2,
         "tool.schema_invalid" if is_write_file_content_type_error(result) => 2,
         "tool.schema_invalid" => 1,
@@ -7752,6 +7628,9 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
             .to_string();
     let api_key = resolve_api_key(&runtime);
     let mut messages = Vec::new();
+    if let Some(context_message) = build_desktop_local_context_message(request) {
+        messages.push(context_message);
+    }
     let system_prompt_parts = normalize_system_prompt_parts(request);
     if system_prompt_parts.is_empty() {
         if let Some(system_prompt) = request
@@ -7832,6 +7711,45 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
         task_goal: None,
         task_tree: None,
     }
+}
+
+fn build_desktop_local_context_message(request: &LocalChatRequest) -> Option<RuntimeModelMessage> {
+    let project_id = request.project_id.trim();
+    let chat_session_id = request.chat_session_id.trim();
+    let workspace_path = request.workspace_path.trim();
+    if project_id.is_empty() && chat_session_id.is_empty() && workspace_path.is_empty() {
+        return None;
+    }
+    let content = [
+        "桌面端本地智能体当前会话上下文：".to_string(),
+        format!(
+            "- project_id：{}",
+            if project_id.is_empty() {
+                "unknown"
+            } else {
+                project_id
+            }
+        ),
+        format!(
+            "- chat_session_id：{}",
+            if chat_session_id.is_empty() {
+                "unknown"
+            } else {
+                chat_session_id
+            }
+        ),
+        format!(
+            "- workspace_path：{}",
+            if workspace_path.is_empty() {
+                "unknown"
+            } else {
+                workspace_path
+            }
+        ),
+        "- 调用项目级 MCP、部署、任务树、需求记录或项目工具时，默认使用上述 project_id 和 chat_session_id。".to_string(),
+    ]
+    .join("\n");
+    Some(RuntimeModelMessage::simple("system", content))
 }
 
 fn should_exclude_history_message_from_model_context(message: &LocalChatMessage) -> bool {
@@ -8187,37 +8105,108 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ToolAvailabilityOverrides {
+    web_search_configured: Option<bool>,
+    web_extract_configured: Option<bool>,
+}
+
+fn tool_disabled_reason(
+    tool_name: &str,
+    request: &ModelStepRequest,
+    overrides: ToolAvailabilityOverrides,
+) -> Option<String> {
+    match tool_name.trim() {
+        "web_search" => {
+            let configured = overrides
+                .web_search_configured
+                .unwrap_or_else(|| web_search_configured(&request.workspace_path));
+            (!configured).then(|| {
+                "web_search is disabled because no Web search backend is explicitly enabled"
+                    .to_string()
+            })
+        }
+        "web_extract" => {
+            let configured = overrides
+                .web_extract_configured
+                .unwrap_or_else(|| web_extract_configured(&request.workspace_path));
+            (!configured).then(|| {
+                "web_extract is disabled because no Web extract backend is explicitly enabled"
+                    .to_string()
+            })
+        }
+        "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool" => {
+            (!mcp_registry_configured(&request.workspace_path, &request.mcp_config)).then(|| {
+                "MCP tools are disabled because no MCP server is explicitly enabled".to_string()
+            })
+        }
+        _ => None,
+    }
+}
+
 fn tool_available_for_request(
     definition: &super::types::ToolDefinition,
     request: &ModelStepRequest,
 ) -> bool {
-    if matches!(
+    tool_disabled_reason(
         definition.name,
-        "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool"
-    ) {
-        return mcp_registry_configured(&request.workspace_path, &request.mcp_config);
-    }
-    true
+        request,
+        ToolAvailabilityOverrides::default(),
+    )
+    .is_none()
+}
+
+fn tool_available_for_request_with_overrides(
+    definition: &super::types::ToolDefinition,
+    request: &ModelStepRequest,
+    overrides: ToolAvailabilityOverrides,
+) -> bool {
+    tool_disabled_reason(definition.name, request, overrides).is_none()
 }
 
 fn mcp_registry_configured(workspace_path: &str, mcp_config: &Value) -> bool {
     let _ = workspace_path;
-    if mcp_config
+    mcp_config
         .get("mcpServers")
         .or_else(|| mcp_config.get("servers"))
         .and_then(Value::as_object)
-        .map(|servers| !servers.is_empty())
+        .map(|servers| {
+            servers.values().any(|server| {
+                server
+                    .as_object()
+                    .map(|config| {
+                        config
+                            .get("enabled")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true)
+                    })
+                    .unwrap_or(false)
+            })
+        })
         .unwrap_or(false)
-    {
-        return true;
-    }
-    false
 }
 
 fn tool_definitions_for_request(request: &ModelStepRequest) -> Vec<super::types::ToolDefinition> {
     builtin_tool_definitions()
         .into_iter()
         .filter(|definition| tool_available_for_request(definition, request))
+        .collect()
+}
+
+fn tool_definitions_for_request_with_web_search_config(
+    request: &ModelStepRequest,
+    web_search_configured: bool,
+    web_extract_configured: bool,
+) -> Vec<super::types::ToolDefinition> {
+    let overrides = ToolAvailabilityOverrides {
+        web_search_configured: Some(web_search_configured),
+        web_extract_configured: Some(web_extract_configured),
+    };
+    builtin_tool_definitions()
+        .into_iter()
+        .filter(|definition| {
+            tool_available_for_request_with_overrides(definition, request, overrides)
+        })
         .collect()
 }
 
@@ -10349,6 +10338,97 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_gate_records_external_urls_without_blocking_final_answer() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_external_url_informational_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let doc_url = "https://example.com/reference/api";
+
+        let gate =
+            evaluate_acceptance_gate(&dir, None, &[], &[], &format!("文档地址：`{doc_url}`"));
+
+        assert!(gate.passed, "{gate:?}");
+        assert_eq!(gate.status, "external_url_present");
+        assert!(!gate.required);
+        assert!(gate
+            .evidence
+            .iter()
+            .any(|item| item == "external_url_evidence=informational_only"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn agent_loop_allows_final_answer_with_external_urls_without_runtime_url_verification() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_external_url_final_allowed_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let source_url = "https://example.com/reference/api";
+        let endpoint_url = "https://api.example.com/v1/items/{item_id}";
+        let mut request = test_model_request("查询接口文档并返回给我");
+        request.task_goal = Some(build_task_goal(
+            "external-url-final-allowed",
+            "查询接口文档并返回给我",
+            &request,
+        ));
+        let model_call_count = Cell::new(0);
+        let model_runner = |_: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "我先搜索接口文档。",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_http_get_doc".to_string(),
+                        name: "http_get".to_string(),
+                        arguments: json!({"url": source_url}),
+                        summary: "标准模型工具调用：http_get".to_string(),
+                    }],
+                );
+            }
+            test_model_result(
+                &format!("参考文档：`{source_url}`\n接口示例：`{endpoint_url}`"),
+                Vec::new(),
+            )
+        };
+        let tool_runner = |request: ToolExecutionRequest| {
+            crate::liuagent_core::types::ToolExecutionResult::ok(
+                request.tool_call_id.unwrap_or_else(|| "call".to_string()),
+                request.name,
+                json!({"status": 200, "body": "API reference", "headers": {}, "truncated": false}),
+                format!("GET {source_url} -> HTTP 200"),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-external-url-final-allowed-test",
+            "runtime-chat-loop-external-url-final-allowed-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok(), "{}", result.summary());
+        assert_eq!(result.stopped_reason, "no_tool_calls");
+        assert_eq!(result.tool_results.len(), 1);
+        assert_eq!(
+            result
+                .acceptance_gate
+                .as_ref()
+                .map(|gate| gate.status.as_str()),
+            Some("external_url_present")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn agent_loop_allows_final_after_verified_mutation_even_with_later_recoverable_failure() {
         let dir = std::env::temp_dir().join(format!(
             "liuagent_loop_acceptance_gate_covers_failed_attempt_{}",
@@ -10616,6 +10696,200 @@ mod tests {
     }
 
     #[test]
+    fn agent_loop_allows_final_after_web_search_unconfigured_observation() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_web_search_unconfigured_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("查询飞书机器人获取群人员列表文档发给我");
+        let model_call_count = Cell::new(0);
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_web_search".to_string(),
+                        name: "web_search".to_string(),
+                        arguments: json!({"query": "飞书 机器人 获取群成员列表 文档"}),
+                        summary: "标准模型工具调用：web_search".to_string(),
+                    }],
+                );
+            }
+            let observation = request
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "tool")
+                .map(|message| message.content.as_str())
+                .unwrap_or("");
+            assert!(observation.contains("unconfigured"));
+            test_model_result(
+                "web_search 未配置，已说明需要配置搜索服务或改用已知 URL 的 http_get。",
+                Vec::new(),
+            )
+        };
+        let tool_runner = |request: ToolExecutionRequest| {
+            crate::liuagent_core::types::ToolExecutionResult::ok(
+                request
+                    .tool_call_id
+                    .unwrap_or_else(|| "call_web_search".to_string()),
+                request.name,
+                json!({
+                    "backend": "unconfigured",
+                    "query": "飞书 机器人 获取群成员列表 文档",
+                    "result_count": 0,
+                    "results": [],
+                    "status": "unconfigured",
+                    "recoverable": true,
+                    "recovery_scope": "configure_search_backend_or_use_http_get"
+                }),
+                "web_search 未配置，无法直接搜索。".to_string(),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-loop-web-search-unconfigured-test",
+            "runtime-chat-loop-web-search-unconfigured-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok(), "{}", result.error());
+        assert_eq!(result.stopped_reason, "no_tool_calls");
+        assert_eq!(model_call_count.get(), 2);
+        assert_eq!(result.tool_results.len(), 1);
+        assert!(result.tool_results[0].ok);
+        assert_eq!(result.tool_results[0].content["status"], "unconfigured");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tool_definitions_hide_web_search_when_backend_unconfigured() {
+        let request = test_model_request("查询飞书机器人获取群人员列表文档发给我");
+        let tools = tool_definitions_for_request_with_web_search_config(&request, false, false);
+
+        assert!(!tools.iter().any(|tool| tool.name == "web_search"));
+        assert!(!tools.iter().any(|tool| tool.name == "web_extract"));
+        assert!(tools.iter().any(|tool| tool.name == "http_get"));
+    }
+
+    #[test]
+    fn tool_definitions_include_web_search_when_backend_configured() {
+        let request = test_model_request("查询飞书机器人获取群人员列表文档发给我");
+        let tools = tool_definitions_for_request_with_web_search_config(&request, true, false);
+
+        assert!(tools.iter().any(|tool| tool.name == "web_search"));
+    }
+
+    #[test]
+    fn tool_definitions_include_web_extract_when_backend_configured() {
+        let request = test_model_request("抽取文档正文");
+        let tools = tool_definitions_for_request_with_web_search_config(&request, false, true);
+
+        assert!(tools.iter().any(|tool| tool.name == "web_extract"));
+        assert!(!tools.iter().any(|tool| tool.name == "web_search"));
+    }
+
+    #[test]
+    fn tool_definitions_hide_mcp_tools_when_all_servers_disabled() {
+        let mut request = test_model_request("列出 MCP 工具");
+        request.mcp_config = json!({
+            "mcpServers": {
+                "query": {
+                    "type": "sse",
+                    "url": "http://127.0.0.1:8000/mcp/query/sse",
+                    "enabled": false
+                }
+            }
+        });
+
+        let tools = tool_definitions_for_request_with_web_search_config(&request, false, false);
+
+        for name in ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"] {
+            assert!(!tools.iter().any(|tool| tool.name == name));
+        }
+    }
+
+    #[test]
+    fn tool_definitions_include_mcp_tools_when_any_server_enabled() {
+        let mut request = test_model_request("列出 MCP 工具");
+        request.mcp_config = json!({
+            "mcpServers": {
+                "disabled-query": {
+                    "type": "sse",
+                    "url": "http://127.0.0.1:8000/mcp/query/sse",
+                    "enabled": false
+                },
+                "enabled-query": {
+                    "type": "sse",
+                    "url": "http://127.0.0.1:8001/mcp/query/sse",
+                    "enabled": true
+                }
+            }
+        });
+
+        let tools = tool_definitions_for_request_with_web_search_config(&request, false, false);
+
+        for name in ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"] {
+            assert!(tools.iter().any(|tool| tool.name == name));
+        }
+    }
+
+    #[test]
+    fn disabled_web_search_tool_call_is_blocked_before_execution() {
+        let request = test_model_request("搜索文档");
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_disabled_search".to_string(),
+            name: "web_search".to_string(),
+            arguments: json!({"query": "蒲公英 pgyer CLI 文档"}),
+            summary: "伪造关闭状态下的 web_search 调用".to_string(),
+        };
+
+        let result = disabled_tool_result(&tool, &request).expect("disabled result");
+
+        assert_eq!(result.error_code, "tool.disabled");
+        assert_eq!(result.content["status"], "disabled");
+        assert_eq!(
+            result.content["recovery_scope"],
+            "tool_disabled_by_configuration"
+        );
+    }
+
+    #[test]
+    fn disabled_mcp_tool_call_is_blocked_before_execution() {
+        let mut request = test_model_request("调用 MCP");
+        request.mcp_config = json!({
+            "mcpServers": {
+                "query": {
+                    "type": "sse",
+                    "url": "http://127.0.0.1:8000/mcp/query/sse",
+                    "enabled": false
+                }
+            }
+        });
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_disabled_mcp".to_string(),
+            name: "call_mcp_tool".to_string(),
+            arguments: json!({"server": "query", "tool": "search_ids"}),
+            summary: "伪造关闭状态下的 MCP 调用".to_string(),
+        };
+
+        let result = disabled_tool_result(&tool, &request).expect("disabled result");
+
+        assert_eq!(result.error_code, "tool.disabled");
+        assert_eq!(result.content["status"], "disabled");
+        assert_eq!(result.content["tool_name"], "call_mcp_tool");
+    }
+
+    #[test]
     fn list_files_progress_intent_does_not_suggest_entry_file_hunting() {
         let intent = describe_planned_tool_intent(&PlannedLocalTool {
             tool_call_id: "call_list".to_string(),
@@ -10626,6 +10900,29 @@ mod tests {
 
         assert!(intent.contains("实现入口"));
         assert!(!intent.contains("入口文件"));
+    }
+
+    #[test]
+    fn web_tool_lifecycle_title_uses_provider_label() {
+        let mut search_content = serde_json::Map::new();
+        search_content.insert("backend".to_string(), json!("firecrawl"));
+        assert_eq!(
+            tool_lifecycle_node_title("web_search", &search_content),
+            "Firecrawl 搜索"
+        );
+
+        let mut extract_content = serde_json::Map::new();
+        extract_content.insert("backend".to_string(), json!("exa"));
+        assert_eq!(
+            tool_lifecycle_node_title("web_extract", &extract_content),
+            "Exa 正文抽取"
+        );
+
+        let empty_content = serde_json::Map::new();
+        assert_eq!(
+            tool_lifecycle_node_title("web_search", &empty_content),
+            "Web 搜索"
+        );
     }
 
     #[test]
@@ -11746,14 +12043,9 @@ mod tests {
             permission_decision: None,
         });
 
-        assert!(!result.ok);
-        assert_eq!(result.tool_results.len(), 1);
-        assert_eq!(result.tool_results[0].name, "planning_gate");
-        assert_eq!(result.error_code, "planning.confirmation_required");
-        assert!(result
-            .runtime_events
-            .iter()
-            .any(|event| event["type"] == "approval_required"));
+        assert!(result.ok, "{}", result.error);
+        assert!(result.tool_results.is_empty());
+        assert!(result.error_code.is_empty());
         assert!(target.exists(), "natural language must not delete files");
         assert_eq!(fs::read_to_string(&target).unwrap(), "must stay");
         let _ = fs::remove_dir_all(dir);
@@ -12635,6 +12927,38 @@ mod tests {
     }
 
     #[test]
+    fn response_formatter_does_not_claim_query_task_failed_file_mutation() {
+        let request = test_model_request("查询接口文档并返回给我");
+        let model_result =
+            test_model_result("接口文档：https://example.com/reference/api", Vec::new());
+        let tool_result = crate::liuagent_core::types::ToolExecutionResult::ok(
+            "call_http_get_doc".to_string(),
+            "http_get".to_string(),
+            json!({"status": 200, "body": "API reference", "headers": {}, "truncated": false}),
+            "GET https://example.com/reference/api -> HTTP 200".to_string(),
+        );
+
+        let formatted = format_local_chat_response(
+            "proj-test",
+            &PathBuf::from("/tmp/pc"),
+            &request.user_message,
+            &[],
+            &model_result,
+            &[tool_result],
+            &[],
+            false,
+            false,
+            "verification_failed",
+            "Agent Loop 验收没有通过：模型返回了参考链接，但运行时不按 URL 字符串核验状态阻断。",
+            "",
+        );
+
+        assert!(formatted.assistant_content.contains("验证没有通过"));
+        assert!(!formatted.assistant_content.contains("没有完成文件修改"));
+        assert!(!formatted.assistant_content.contains("没有执行写文件"));
+    }
+
+    #[test]
     fn direct_model_runtime_calls_openai_compatible_chat_completions() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -12877,15 +13201,7 @@ mod tests {
             attachments: Vec::new(),
             backend_context: None,
             mcp_config: json!({}),
-            permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
-                request_id: Some(plan_confirmation_request_id(
-                    "chat-resume-reasoning",
-                    "msg-user",
-                )),
-                decision: "approve_once".to_string(),
-                grant_scope: Some("once".to_string()),
-                comment: None,
-            }),
+            permission_decision: None,
         };
 
         let server = thread::spawn(move || {
@@ -13173,6 +13489,43 @@ mod tests {
     }
 
     #[test]
+    fn build_model_request_injects_desktop_project_context() {
+        let request = serde_json::from_value::<LocalChatRequest>(json!({
+            "projectId": "proj-visible",
+            "chatSessionId": "chat-visible",
+            "message": "当前项目 ID 是什么",
+            "workspacePath": "/tmp/workspace",
+            "systemPromptParts": [
+                {
+                    "source": "test.system",
+                    "priority": 100,
+                    "content": "测试系统提示词"
+                }
+            ]
+        }))
+        .unwrap();
+
+        let model_request = build_model_request(&request, "当前项目 ID 是什么");
+        let context_message = model_request
+            .messages
+            .iter()
+            .find(|message| {
+                message.role == "system"
+                    && message.content.contains("桌面端本地智能体当前会话上下文")
+            })
+            .expect("desktop project context system message");
+
+        assert!(context_message.content.contains("project_id：proj-visible"));
+        assert!(context_message
+            .content
+            .contains("chat_session_id：chat-visible"));
+        assert!(context_message
+            .content
+            .contains("workspace_path：/tmp/workspace"));
+        assert_eq!(model_request.project_id, "proj-visible");
+    }
+
+    #[test]
     fn build_model_request_excludes_diagnostic_history_by_default() {
         let request = serde_json::from_value::<LocalChatRequest>(json!({
             "projectId": "proj-test",
@@ -13249,9 +13602,10 @@ mod tests {
             .iter()
             .filter(|message| message.role == "system")
             .collect::<Vec<_>>();
-        assert_eq!(system_messages.len(), 2);
-        assert_eq!(system_messages[0].content, "项目提示");
-        assert_eq!(system_messages[1].content, "全局提示");
+        assert_eq!(system_messages.len(), 3);
+        assert!(system_messages[0].content.contains("project_id：proj-test"));
+        assert_eq!(system_messages[1].content, "项目提示");
+        assert_eq!(system_messages[2].content, "全局提示");
 
         let prompt_stack = resolve_prompt_stack(&request, &model_request);
         assert_eq!(prompt_stack.items.len(), 2);
@@ -13411,7 +13765,31 @@ mod tests {
     }
 
     #[test]
-    fn planning_gate_records_state_changing_request_without_blocking_runtime() {
+    fn task_goal_uses_neutral_intent_without_keyword_routing() {
+        let request = serde_json::from_value::<LocalChatRequest>(json!({
+            "projectId": "proj-test",
+            "chatSessionId": "chat-neutral-intent",
+            "message": "文档地址为什么第一次给错了，需要核对搜索校验",
+            "workspacePath": "."
+        }))
+        .unwrap();
+        let model_request = build_model_request(&request, &request.message);
+        let task_goal = build_task_goal("local-neutral-intent", &request.message, &model_request);
+        let task_tree = planning::TaskTree::for_goal("local-neutral-intent", &task_goal);
+
+        assert_eq!(task_goal.intent, "agentic_request");
+        assert!(task_tree
+            .nodes
+            .iter()
+            .any(|node| node.title.contains("理解目标和现有上下文")));
+        assert!(!task_tree
+            .nodes
+            .iter()
+            .any(|node| node.title.contains("确认文档目标路径")));
+    }
+
+    #[test]
+    fn clarity_assessment_is_neutral_and_does_not_insert_plan_gate_node() {
         let request = serde_json::from_value::<LocalChatRequest>(json!({
             "projectId": "proj-test",
             "chatSessionId": "chat-plan",
@@ -13433,13 +13811,10 @@ mod tests {
             &task_tree,
         );
 
-        assert_eq!(clarity.task_type, "implementation");
-        assert!(clarity.requires_confirmation);
+        assert_eq!(clarity.task_type, "agentic_request");
+        assert!(!clarity.requires_confirmation);
         assert_eq!(plan.status, "completed");
-        assert!(plan
-            .nodes
-            .iter()
-            .any(|node| node.node_id == "node-confirm-local-plan"));
+        assert_eq!(plan.nodes.len(), task_tree.nodes.len() - 1);
     }
 
     #[test]
@@ -13467,6 +13842,7 @@ mod tests {
                 summary: "missing file".to_string(),
                 evidence: Vec::new(),
             },
+            acceptance_gate: None,
             stopped_reason: "tool_failed".to_string(),
             awaiting_permission: false,
         };
@@ -13585,6 +13961,7 @@ mod tests {
                 summary: "waiting approval".to_string(),
                 evidence: Vec::new(),
             },
+            acceptance_gate: None,
             stopped_reason: "waiting_approval".to_string(),
             awaiting_permission: true,
         };
@@ -13646,6 +14023,7 @@ mod tests {
                 summary: "waiting approval".to_string(),
                 evidence: vec!["permission.required".to_string()],
             },
+            acceptance_gate: None,
             stopped_reason: "waiting_approval".to_string(),
             awaiting_permission: true,
         };
@@ -13696,8 +14074,9 @@ mod tests {
     }
 
     #[test]
-    fn implementation_request_waits_for_plan_confirmation_before_agent_loop() {
-        let dir = std::env::temp_dir().join(format!("liuagent_plan_gate_{}", epoch_millis()));
+    fn implementation_request_runs_agent_loop_without_preflight_gate() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_no_preflight_gate_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
 
         let result = start_local_chat(LocalChatRequest {
@@ -13721,23 +14100,11 @@ mod tests {
             permission_decision: None,
         });
 
-        assert!(!result.ok);
+        assert!(result.ok, "{}", result.error);
         assert!(result.plan_status.is_empty());
-        assert_eq!(result.error_code, "planning.confirmation_required");
-        assert_eq!(
-            result.model_result["agent_loop"]["round_count"].as_u64(),
-            Some(0)
-        );
-        assert_eq!(result.tool_results.len(), 1);
-        assert_eq!(result.tool_results[0].name, "planning_gate");
-        assert_eq!(
-            result.tool_results[0].content["permissionRequest"]["requestId"],
-            plan_confirmation_request_id("chat-plan-test", "msg-user")
-        );
-        assert!(result
-            .runtime_events
-            .iter()
-            .any(|event| event["type"] == "approval_required"));
+        assert_eq!(result.model_result["mode"], "mock");
+        assert!(result.tool_results.is_empty());
+        assert!(result.error_code.is_empty());
         assert!(PathBuf::from(&result.requirement_record_path).exists());
         let req = serde_json::from_str::<Value>(
             &fs::read_to_string(&result.requirement_record_path).unwrap(),
@@ -13745,178 +14112,10 @@ mod tests {
         .unwrap();
         assert!(req["plan_status"].as_str().unwrap_or_default().is_empty());
         assert_eq!(
-            req["current_state_delta"]["waiting_for"],
-            "plan_confirmation"
-        );
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn matching_plan_confirmation_allows_implementation_request_to_continue() {
-        let dir =
-            std::env::temp_dir().join(format!("liuagent_plan_gate_confirmed_{}", epoch_millis()));
-        fs::create_dir_all(&dir).unwrap();
-
-        let result = start_local_chat(LocalChatRequest {
-            project_id: "proj-test".to_string(),
-            chat_session_id: "chat-plan-confirmed-test".to_string(),
-            message_id: Some("msg-user".to_string()),
-            assistant_message_id: None,
-            message: "实现规划机制模块".to_string(),
-            workspace_path: dir.to_string_lossy().to_string(),
-            history: Vec::new(),
-            provider_id: None,
-            model_name: None,
-            system_prompt: None,
-            system_prompt_parts: Vec::new(),
-            temperature: None,
-            model_runtime: None,
-            ai_entry_file: None,
-            attachments: Vec::new(),
-            backend_context: None,
-            mcp_config: json!({}),
-            permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
-                request_id: Some(plan_confirmation_request_id(
-                    "chat-plan-confirmed-test",
-                    "msg-user",
-                )),
-                decision: "approve_once".to_string(),
-                grant_scope: Some("once".to_string()),
-                comment: None,
-            }),
-        });
-
-        assert!(result.ok, "{}", result.error);
-        assert_eq!(result.model_result["mode"], "mock");
-        assert!(result.tool_results.is_empty());
-        assert!(result.error_code.is_empty());
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn session_plan_confirmation_allows_implementation_request_to_continue() {
-        let dir = std::env::temp_dir().join(format!(
-            "liuagent_plan_gate_session_confirmed_{}",
-            epoch_millis()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-
-        let result = start_local_chat(LocalChatRequest {
-            project_id: "proj-test".to_string(),
-            chat_session_id: "chat-plan-session-confirmed-test".to_string(),
-            message_id: Some("msg-user".to_string()),
-            assistant_message_id: None,
-            message: "实现规划机制模块".to_string(),
-            workspace_path: dir.to_string_lossy().to_string(),
-            history: Vec::new(),
-            provider_id: None,
-            model_name: None,
-            system_prompt: None,
-            system_prompt_parts: Vec::new(),
-            temperature: None,
-            model_runtime: None,
-            ai_entry_file: None,
-            attachments: Vec::new(),
-            backend_context: None,
-            mcp_config: json!({}),
-            permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
-                request_id: Some(plan_confirmation_request_id(
-                    "chat-plan-session-confirmed-test",
-                    "msg-user",
-                )),
-                decision: "approve_session".to_string(),
-                grant_scope: Some("session".to_string()),
-                comment: None,
-            }),
-        });
-
-        assert!(result.ok, "{}", result.error);
-        assert_eq!(result.model_result["mode"], "mock");
-        assert!(result.tool_results.is_empty());
-        assert!(result.error_code.is_empty());
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn full_access_decision_allows_plan_confirmation_to_continue() {
-        let dir =
-            std::env::temp_dir().join(format!("liuagent_plan_gate_full_access_{}", epoch_millis()));
-        fs::create_dir_all(&dir).unwrap();
-
-        let result = start_local_chat(LocalChatRequest {
-            project_id: "proj-test".to_string(),
-            chat_session_id: "chat-plan-full-access-test".to_string(),
-            message_id: Some("msg-user".to_string()),
-            assistant_message_id: None,
-            message: "实现规划机制模块".to_string(),
-            workspace_path: dir.to_string_lossy().to_string(),
-            history: Vec::new(),
-            provider_id: None,
-            model_name: None,
-            system_prompt: None,
-            system_prompt_parts: Vec::new(),
-            temperature: None,
-            model_runtime: None,
-            ai_entry_file: None,
-            attachments: Vec::new(),
-            backend_context: None,
-            mcp_config: json!({}),
-            permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
-                request_id: None,
-                decision: "approve_session".to_string(),
-                grant_scope: Some("session_full_access".to_string()),
-                comment: Some("desktop_local_agent_full_access".to_string()),
-            }),
-        });
-
-        assert!(result.ok, "{}", result.error);
-        assert_eq!(result.model_result["mode"], "mock");
-        assert!(result.tool_results.is_empty());
-        assert!(result.error_code.is_empty());
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn unrelated_permission_decision_does_not_bypass_plan_confirmation() {
-        let dir = std::env::temp_dir().join(format!(
-            "liuagent_plan_gate_wrong_decision_{}",
-            epoch_millis()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-
-        let result = start_local_chat(LocalChatRequest {
-            project_id: "proj-test".to_string(),
-            chat_session_id: "chat-plan-wrong-decision-test".to_string(),
-            message_id: Some("msg-user".to_string()),
-            assistant_message_id: None,
-            message: "实现规划机制模块".to_string(),
-            workspace_path: dir.to_string_lossy().to_string(),
-            history: Vec::new(),
-            provider_id: None,
-            model_name: None,
-            system_prompt: None,
-            system_prompt_parts: Vec::new(),
-            temperature: None,
-            model_runtime: None,
-            ai_entry_file: None,
-            attachments: Vec::new(),
-            backend_context: None,
-            mcp_config: json!({}),
-            permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
-                request_id: Some("perm_call_write_file.write".to_string()),
-                decision: "approve_once".to_string(),
-                grant_scope: Some("once".to_string()),
-                comment: None,
-            }),
-        });
-
-        assert!(!result.ok);
-        assert_eq!(result.error_code, "planning.confirmation_required");
-        assert_eq!(result.tool_results.len(), 1);
-        assert_eq!(result.tool_results[0].name, "planning_gate");
-        assert_eq!(
-            result.tool_results[0].content["permissionRequest"]["requestId"],
-            plan_confirmation_request_id("chat-plan-wrong-decision-test", "msg-user")
+            req["current_state_delta"]["waiting_for"]
+                .as_str()
+                .unwrap_or_default(),
+            ""
         );
         let _ = fs::remove_dir_all(dir);
     }

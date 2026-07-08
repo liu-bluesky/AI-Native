@@ -25,6 +25,9 @@ pub use runtime::{
     recover_local_runtime_state, refresh_local_runtime_job, save_local_offline_cache,
 };
 pub use runtime::{start_local_chat_with_event_sink, upload_provider_file};
+pub use tools::network::{
+    global_web_tool_config_path, project_web_tool_config_path, WEB_TOOL_CONFIG_TEMPLATE,
+};
 pub use types::{
     AgentInvocationRequest, AgentInvocationResult, LocalChatRequest, LocalChatResult,
     LocalRuntimeEventsRequest, LocalRuntimeEventsResult, LocalRuntimeJobRequest,
@@ -41,7 +44,7 @@ use tools::deploy::{
 };
 use tools::file::{apply_patch, delete_file, list_files, read_file, search_text, write_file};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
-use tools::network::{download_file, http_get, http_post};
+use tools::network::{download_file, http_get, http_post, web_extract, web_search};
 pub fn execute_tool(request: ToolExecutionRequest) -> ToolExecutionResult {
     execute_tool_with_command_output_sink(request, None)
 }
@@ -52,6 +55,13 @@ pub(crate) fn execute_tool_with_command_output_sink(
 ) -> ToolExecutionResult {
     let tool_call_id = normalized_tool_call_id(request.tool_call_id);
     let name = request.name.trim().to_string();
+    if let Some(reason) = direct_tool_disabled_reason(&name, &request.arguments) {
+        return ToolExecutionResult::failed(
+            tool_call_id,
+            name,
+            ToolError::new("tool.disabled", reason),
+        );
+    }
     let result = match name.as_str() {
         "list_files" => list_files(&request.workspace_path, &request.arguments),
         "read_file" => read_file(&request.workspace_path, &request.arguments),
@@ -89,6 +99,8 @@ pub(crate) fn execute_tool_with_command_output_sink(
             request.permission_decision.as_ref(),
         ),
         "http_get" => http_get(&request.workspace_path, &request.arguments),
+        "web_search" => web_search(&request.workspace_path, &request.arguments),
+        "web_extract" => web_extract(&request.workspace_path, &request.arguments),
         "http_post" => http_post(
             &tool_call_id,
             &request.workspace_path,
@@ -134,6 +146,33 @@ pub(crate) fn execute_tool_with_command_output_sink(
     }
 }
 
+fn direct_tool_disabled_reason(name: &str, arguments: &serde_json::Value) -> Option<String> {
+    if !matches!(
+        name,
+        "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool"
+    ) {
+        return None;
+    }
+    let config = arguments.get("_mcp_config")?;
+    let servers = config
+        .get("mcpServers")
+        .or_else(|| config.get("servers"))?
+        .as_object()?;
+    let any_enabled = servers.values().any(|server| {
+        server
+            .as_object()
+            .map(|server_config| {
+                server_config
+                    .get("enabled")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true)
+            })
+            .unwrap_or(false)
+    });
+    (!any_enabled)
+        .then(|| "MCP tools are disabled because no MCP server is explicitly enabled".to_string())
+}
+
 fn normalized_tool_call_id(value: Option<String>) -> String {
     let raw = value.unwrap_or_default();
     let trimmed = raw.trim();
@@ -154,10 +193,12 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 19);
         assert!(tools.iter().any(|item| item.name == "read_file"));
         assert!(tools.iter().any(|item| item.name == "delete_file"));
         assert!(tools.iter().any(|item| item.name == "run_command"));
+        assert!(tools.iter().any(|item| item.name == "web_search"));
+        assert!(tools.iter().any(|item| item.name == "web_extract"));
         assert!(tools
             .iter()
             .any(|item| item.name == "get_project_deploy_options"));
@@ -418,6 +459,31 @@ mod tests {
 
         assert!(!result.ok);
         assert_eq!(result.error_code, "mcp.config_missing");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn direct_mcp_tool_execution_is_disabled_when_all_servers_are_disabled() {
+        let dir = test_workspace("mcp_direct_disabled");
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_mcp_disabled".to_string()),
+            name: "list_mcp_tools".to_string(),
+            arguments: json!({
+                "_mcp_config": {
+                    "mcpServers": {
+                        "fake": {
+                            "command": "fake",
+                            "enabled": false
+                        }
+                    }
+                }
+            }),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "tool.disabled");
         let _ = std::fs::remove_dir_all(dir);
     }
 

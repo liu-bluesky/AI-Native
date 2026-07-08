@@ -6341,7 +6341,7 @@ def test_public_contact_channels_endpoint_returns_enabled_items(tmp_path, monkey
     ]
 
 
-def test_filter_project_tools_by_names_keeps_tools_when_empty_selection():
+def test_filter_project_tools_by_names_treats_explicit_empty_selection_as_disabled():
     from routers.projects import _filter_project_tools_by_names
 
     tools = [
@@ -6349,8 +6349,9 @@ def test_filter_project_tools_by_names_keeps_tools_when_empty_selection():
         {"tool_name": "search_project_context"},
     ]
 
-    assert _filter_project_tools_by_names(tools, [], explicit_filter=True) == tools
-    assert _filter_project_tools_by_names(tools, None, explicit_filter=True) == tools
+    assert _filter_project_tools_by_names(tools, [], explicit_filter=True) == []
+    assert _filter_project_tools_by_names(tools, None, explicit_filter=True) == []
+    assert _filter_project_tools_by_names(tools, [], explicit_filter=False) == tools
     assert _filter_project_tools_by_names(
         tools,
         ["query_project_members"],

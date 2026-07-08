@@ -63,6 +63,21 @@ markdownRenderer.code = ({ text, lang, escaped }) => {
   ].join("");
 };
 
+markdownRenderer.link = function ({ href, title, tokens, text }) {
+  const rawHref = String(href || "").trim();
+  const label = Array.isArray(tokens)
+    ? this.parser.parseInline(tokens)
+    : escapeHtml(text || rawHref);
+  const safeHref = escapeHtml(rawHref);
+  const safeTitle = String(title || "").trim();
+  const titleAttr = safeTitle ? ` title="${escapeHtml(safeTitle)}"` : "";
+  const isExternal = /^https?:\/\//i.test(rawHref);
+  if (isExternal) {
+    return `<a href="${safeHref}"${titleAttr} target="_blank" rel="noopener noreferrer" data-external-url="${safeHref}">${label}</a>`;
+  }
+  return `<a href="${safeHref}"${titleAttr}>${label}</a>`;
+};
+
 export function renderProjectChatMarkdown(text) {
   return marked.parse(String(text || ""), { renderer: markdownRenderer });
 }

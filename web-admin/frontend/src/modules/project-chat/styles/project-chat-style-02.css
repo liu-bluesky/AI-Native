@@ -219,7 +219,8 @@
 
 .settings-chat-layout,
 .settings-center-context-bar {
-  width: min(100%, var(--settings-center-max-width));
+  width: 100%;
+  max-width: none;
 }
 
 .settings-chat-layout {

@@ -36,6 +36,8 @@ def normalize_connector_sandbox_mode(
 def filter_tools_by_names(
     tools: list[dict[str, Any]],
     enabled_tool_names: list[str] | None,
+    *,
+    explicit_filter: bool = False,
 ) -> list[dict[str, Any]]:
     normalized = [
         str(item or "").strip()
@@ -44,7 +46,7 @@ def filter_tools_by_names(
     ]
     allowed = set(normalized)
     if not allowed:
-        return list(tools)
+        return [] if explicit_filter else list(tools)
     return [
         item
         for item in tools
@@ -177,6 +179,7 @@ def collect_project_runtime_tools(
     *,
     selected_employee_ids: list[str] | None,
     enabled_tool_names: list[str] | None,
+    explicit_tool_filter: bool = False,
     tool_priority: list[str] | None,
     list_internal_tools: Callable[[str], list[dict[str, Any]]],
     list_external_tools: Callable[[str], list[dict[str, Any]]],
@@ -188,8 +191,13 @@ def collect_project_runtime_tools(
     internal_tools = filter_tools_by_names(
         internal_tools,
         enabled_tool_names,
+        explicit_filter=explicit_tool_filter,
     )
-    external_tools = list_external_tools(project_id)
+    external_tools = filter_tools_by_names(
+        list_external_tools(project_id),
+        enabled_tool_names,
+        explicit_filter=explicit_tool_filter,
+    )
     return sort_tools_by_priority(
         internal_tools + external_tools,
         list(tool_priority or []),

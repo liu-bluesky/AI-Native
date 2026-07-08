@@ -115,16 +115,19 @@
                 <button
                   type="button"
                   class="desktop-system__traffic desktop-system__traffic--close"
+                  @pointerdown.stop
                   @click.stop="$emit('close-window', window.id)"
                 />
                 <button
                   type="button"
                   class="desktop-system__traffic desktop-system__traffic--min"
+                  @pointerdown.stop
                   @click.stop="$emit('minimize-window', window.id)"
                 />
                 <button
                   type="button"
                   class="desktop-system__traffic desktop-system__traffic--max"
+                  @pointerdown.stop
                   @click.stop="$emit('maximize-window', window.id)"
                 />
               </div>

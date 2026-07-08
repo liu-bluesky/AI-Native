@@ -400,6 +400,7 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "auto_use_tools": False,
     "auto_use_tools_explicit": False,
     "enabled_project_tool_names": [],
+    "enabled_project_tool_names_explicit": False,
     "tool_priority": [],
     "history_limit": 20,
     "upload_file_limit": 6,
@@ -6743,6 +6744,10 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
         else False
     )
     settings["enabled_project_tool_names"] = _to_unique_string_list(source.get("enabled_project_tool_names"), max_items=200, max_item_len=160)
+    settings["enabled_project_tool_names_explicit"] = _coerce_bool(
+        source.get("enabled_project_tool_names_explicit"),
+        settings["enabled_project_tool_names_explicit"],
+    )
     settings["tool_priority"] = _to_unique_string_list(source.get("tool_priority"), max_items=200, max_item_len=160)
     settings["history_limit"] = _coerce_int(source.get("history_limit"), settings["history_limit"], min_value=1, max_value=50)
     settings["upload_file_limit"] = _coerce_int(source.get("upload_file_limit"), settings["upload_file_limit"], min_value=1, max_value=20)
@@ -8076,8 +8081,11 @@ def _filter_project_tools_by_names(
     *,
     explicit_filter: bool,
 ) -> list[dict[str, Any]]:
-    _ = explicit_filter
-    return filter_tools_by_names_via_registry(tools, enabled_tool_names)
+    return filter_tools_by_names_via_registry(
+        tools,
+        enabled_tool_names,
+        explicit_filter=explicit_filter,
+    )
 
 
 def _sort_tools_by_priority(tools: list[dict[str, Any]], tool_priority: list[str] | None) -> list[dict[str, Any]]:
@@ -8099,6 +8107,7 @@ def _collect_runtime_tools(
         project_id,
         selected_employee_ids=selected_employee_ids,
         enabled_tool_names=enabled_tool_names,
+        explicit_tool_filter=explicit_tool_filter,
         tool_priority=tool_priority,
         list_internal_tools=lambda current_project_id: list_project_proxy_tools_runtime(
             current_project_id,
@@ -8182,6 +8191,8 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
                 merged[key] = value
             if key == "auto_use_tools":
                 merged["auto_use_tools_explicit"] = True
+            if key == "enabled_project_tool_names":
+                merged["enabled_project_tool_names_explicit"] = True
     return _normalize_project_chat_settings(merged)
 
 
@@ -24896,8 +24907,12 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             employee_id_val = selected_employee_ids[0] if len(selected_employee_ids) == 1 else ""
 
             enabled_tool_names = list(runtime_settings.get("enabled_project_tool_names") or [])
-            explicit_tool_filter = bool(enabled_tool_names)
-            explicit_tool_request = bool(runtime_settings.get("auto_use_tools")) and bool(enabled_tool_names)
+            explicit_tool_filter = bool(runtime_settings.get("enabled_project_tool_names_explicit"))
+            explicit_tool_request = (
+                bool(runtime_settings.get("auto_use_tools"))
+                and explicit_tool_filter
+                and bool(enabled_tool_names)
+            )
             task_tree_payload = _resolve_project_chat_task_tree_context(
                 project_id,
                 username,
@@ -25287,11 +25302,14 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 chat_surface=chat_surface,
                 auto_use_tools=bool(runtime_settings.get("auto_use_tools")) and (
                     explicit_tool_request
-                    or _should_enable_chat_tools(
-                        effective_user_message,
-                        attachment_names,
-                        normalized_images,
-                        None,
+                    or (
+                        not explicit_tool_filter
+                        and _should_enable_chat_tools(
+                            effective_user_message,
+                            attachment_names,
+                            normalized_images,
+                            None,
+                        )
                     )
                 ),
             )
@@ -25302,11 +25320,14 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             local_connector_sandbox_mode = ""
             tools_enabled = bool(runtime_settings.get("auto_use_tools")) and (
                 explicit_tool_request
-                or _should_enable_chat_tools(
-                    effective_user_message,
-                    attachment_names,
-                    normalized_images,
-                    assistant_workflow_state,
+                or (
+                    not explicit_tool_filter
+                    and _should_enable_chat_tools(
+                        effective_user_message,
+                        attachment_names,
+                        normalized_images,
+                        assistant_workflow_state,
+                    )
                 )
             )
             if tools_enabled:
@@ -26068,8 +26089,12 @@ async def stream_project_chat(
     selected_employee_ids = [str(item.get("id") or "") for item in selected_employees if str(item.get("id") or "")]
     employee_id_val = selected_employee_ids[0] if len(selected_employee_ids) == 1 else ""
     enabled_tool_names = list(runtime_settings.get("enabled_project_tool_names") or [])
-    explicit_tool_filter = bool(enabled_tool_names)
-    explicit_tool_request = bool(runtime_settings.get("auto_use_tools")) and bool(enabled_tool_names)
+    explicit_tool_filter = bool(runtime_settings.get("enabled_project_tool_names_explicit"))
+    explicit_tool_request = (
+        bool(runtime_settings.get("auto_use_tools"))
+        and explicit_tool_filter
+        and bool(enabled_tool_names)
+    )
     try:
         task_tree_payload = _resolve_project_chat_task_tree_context(
             project_id,
@@ -26528,11 +26553,14 @@ async def stream_project_chat(
         chat_surface=chat_surface,
         auto_use_tools=bool(runtime_settings.get("auto_use_tools")) and (
             explicit_tool_request
-            or _should_enable_chat_tools(
-                effective_user_message,
-                attachment_names,
-                normalized_images,
-                None,
+            or (
+                not explicit_tool_filter
+                and _should_enable_chat_tools(
+                    effective_user_message,
+                    attachment_names,
+                    normalized_images,
+                    None,
+                )
             )
         ),
     )
@@ -26543,11 +26571,14 @@ async def stream_project_chat(
     local_connector_sandbox_mode = ""
     tools_enabled = bool(runtime_settings.get("auto_use_tools")) and (
         explicit_tool_request
-        or _should_enable_chat_tools(
-            effective_user_message,
-            attachment_names,
-            normalized_images,
-            assistant_workflow_state,
+        or (
+            not explicit_tool_filter
+            and _should_enable_chat_tools(
+                effective_user_message,
+                attachment_names,
+                normalized_images,
+                assistant_workflow_state,
+            )
         )
     )
     if tools_enabled:

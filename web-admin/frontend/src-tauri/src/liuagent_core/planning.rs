@@ -160,120 +160,15 @@ impl TaskTree {
             is_destructive: false,
             verification_result: None,
         }];
-        let child_specs: Vec<(&str, String, bool)> = match task_goal.intent.as_str() {
-            "question" | "history_recall" => {
-                vec![("answer", format!("回答用户问题{target_suffix}"), false)]
-            }
-            "analysis" => vec![
-                ("scope", format!("界定分析对象{target_suffix}"), false),
-                (
-                    "inspect",
-                    format!("读取证据并定位原因{target_suffix}"),
-                    false,
-                ),
-                ("conclude", format!("形成分析结论{target_suffix}"), false),
-            ],
-            "documentation" => vec![
-                (
-                    "doc-target",
-                    format!("确认文档目标路径{target_suffix}"),
-                    false,
-                ),
-                (
-                    "doc-review",
-                    format!("梳理现有文档结构{target_suffix}"),
-                    false,
-                ),
-                (
-                    "doc-write",
-                    format!("写入或更新文档内容{target_suffix}"),
-                    false,
-                ),
-                (
-                    "doc-verify",
-                    format!("回读校对文档结果{target_suffix}"),
-                    false,
-                ),
-            ],
-            "bugfix" => vec![
-                (
-                    "reproduce",
-                    format!("复现或确认问题现象{target_suffix}"),
-                    false,
-                ),
-                (
-                    "locate",
-                    format!("定位根因和影响范围{target_suffix}"),
-                    false,
-                ),
-                ("fix", format!("实施最小修复{target_suffix}"), false),
-                ("regress", format!("运行回归验证{target_suffix}"), false),
-            ],
-            "governance" => vec![
-                ("entry", format!("梳理执行入口链路{target_suffix}"), false),
-                (
-                    "state",
-                    format!("改造目标和节点状态流{target_suffix}"),
-                    false,
-                ),
-                (
-                    "recovery",
-                    format!("完善恢复续跑与进度反馈{target_suffix}"),
-                    false,
-                ),
-                ("verify", format!("验证执行流闭环{target_suffix}"), false),
-            ],
-            "modification" => vec![
-                (
-                    "locate",
-                    format!("定位需要修改的对象{target_suffix}"),
-                    false,
-                ),
-                (
-                    "change",
-                    format!("实施目标范围内的修改{target_suffix}"),
-                    false,
-                ),
-                ("verify", format!("验证修改满足目标{target_suffix}"), false),
-            ],
-            "deployment" => vec![
-                (
-                    "target",
-                    format!("确认部署目标和配置{target_suffix}"),
-                    false,
-                ),
-                ("artifact", format!("准备部署产物{target_suffix}"), false),
-                (
-                    "release",
-                    format!("触发部署并记录结果{target_suffix}"),
-                    true,
-                ),
-                ("verify", format!("验证部署状态{target_suffix}"), false),
-            ],
-            "destructive" => vec![
-                ("scope", format!("确认高风险影响范围{target_suffix}"), true),
-                (
-                    "approval",
-                    format!("等待用户明确授权{target_suffix}"),
-                    false,
-                ),
-                ("execute", format!("执行已授权动作{target_suffix}"), true),
-                (
-                    "verify",
-                    format!("验证可恢复性和结果{target_suffix}"),
-                    false,
-                ),
-            ],
-            _ => vec![
-                (
-                    "analyze",
-                    format!("理解目标和现有上下文{target_suffix}"),
-                    false,
-                ),
-                ("execute", format!("推进当前目标{target_suffix}"), false),
-                ("verify", format!("验证目标完成情况{target_suffix}"), false),
-            ],
-        };
+        let child_specs: Vec<(&str, String, bool)> = vec![
+            (
+                "analyze",
+                format!("理解目标和现有上下文{target_suffix}"),
+                false,
+            ),
+            ("execute", format!("推进当前目标{target_suffix}"), false),
+            ("verify", format!("验证目标完成情况{target_suffix}"), false),
+        ];
         let current_node_id = child_specs
             .first()
             .map(|(key, _, _)| format!("node-{key}-{session_id}"))
@@ -350,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn task_tree_for_question_stays_single_answer_node() {
+    fn task_tree_for_goal_uses_generic_nodes_even_for_question_intent() {
         let goal = TaskGoal {
             version: "task-goal/test".to_string(),
             goal_id: "goal-test".to_string(),
@@ -363,9 +258,13 @@ mod tests {
             created_at_epoch_ms: 1,
         };
         let tree = TaskTree::for_goal("sess-2", &goal);
-        assert_eq!(tree.nodes.len(), 2);
-        assert_eq!(tree.current_node_id, "node-answer-sess-2");
-        assert!(tree.nodes[1].title.contains("回答用户问题"));
+        assert_eq!(tree.nodes.len(), 4);
+        assert_eq!(tree.current_node_id, "node-analyze-sess-2");
+        assert!(tree.nodes[1].title.contains("理解目标和现有上下文"));
+        assert!(!tree
+            .nodes
+            .iter()
+            .any(|node| node.title.contains("回答用户问题")));
     }
 
     #[test]
@@ -389,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn task_tree_for_bugfix_uses_repair_specific_nodes() {
+    fn task_tree_for_goal_uses_generic_nodes_even_for_bugfix_intent() {
         let goal = TaskGoal {
             version: "task-goal/test".to_string(),
             goal_id: "goal-test".to_string(),
@@ -409,15 +308,16 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert_eq!(tree.nodes.len(), 5);
-        assert!(titles.contains("复现或确认问题现象"));
-        assert!(titles.contains("定位根因和影响范围"));
-        assert!(titles.contains("实施最小修复"));
-        assert!(titles.contains("运行回归验证"));
+        assert_eq!(tree.nodes.len(), 4);
+        assert!(titles.contains("理解目标和现有上下文"));
+        assert!(titles.contains("推进当前目标"));
+        assert!(titles.contains("验证目标完成情况"));
+        assert!(!titles.contains("复现或确认问题现象"));
+        assert!(!titles.contains("实施最小修复"));
     }
 
     #[test]
-    fn task_tree_for_governance_is_not_fixed_three_step_template() {
+    fn task_tree_for_goal_uses_generic_nodes_even_for_governance_intent() {
         let goal = TaskGoal {
             version: "task-goal/test".to_string(),
             goal_id: "goal-test".to_string(),
@@ -437,10 +337,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert_eq!(tree.nodes.len(), 5);
-        assert!(!titles.contains("理解目标和现有上下文"));
-        assert!(titles.contains("梳理执行入口链路"));
-        assert!(titles.contains("改造目标和节点状态流"));
-        assert!(titles.contains("完善恢复续跑与进度反馈"));
+        assert_eq!(tree.nodes.len(), 4);
+        assert!(titles.contains("理解目标和现有上下文"));
+        assert!(titles.contains("推进当前目标"));
+        assert!(titles.contains("验证目标完成情况"));
+        assert!(!titles.contains("梳理执行入口链路"));
+        assert!(!titles.contains("改造目标和节点状态流"));
     }
 }

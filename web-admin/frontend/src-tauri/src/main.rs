@@ -125,6 +125,15 @@ struct McpConfigFileResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct WebToolsConfigFileResult {
+    scope: String,
+    path: String,
+    exists: bool,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RunnerCommandClassification {
     allowed: bool,
     risk_level: String,
@@ -703,6 +712,48 @@ fn write_project_mcp_config_file(
 }
 
 #[tauri::command]
+fn read_global_web_tools_config_file() -> Result<WebToolsConfigFileResult, String> {
+    let target = global_web_tools_config_path()?;
+    read_web_tools_config_file("global", target, default_web_tools_config())
+}
+
+#[tauri::command]
+fn write_global_web_tools_config_file(content: String) -> Result<WebToolsConfigFileResult, String> {
+    let target = global_web_tools_config_path()?;
+    write_web_tools_config_file("global", target, content)
+}
+
+#[tauri::command]
+fn read_project_web_tools_config_file(
+    workspace_path: String,
+) -> Result<WebToolsConfigFileResult, String> {
+    let target = project_web_tools_config_path(&workspace_path)?;
+    read_web_tools_config_file("project", target, default_web_tools_config())
+}
+
+#[tauri::command]
+fn write_project_web_tools_config_file(
+    workspace_path: String,
+    content: String,
+) -> Result<WebToolsConfigFileResult, String> {
+    let target = project_web_tools_config_path(&workspace_path)?;
+    write_web_tools_config_file("project", target, content)
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<bool, String> {
+    let normalized = url.trim();
+    if normalized.is_empty() {
+        return Err("缺少外部链接".to_string());
+    }
+    let parsed = reqwest::Url::parse(normalized).map_err(|err| format!("外部链接无效：{err}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("只允许打开 http/https 外部链接".to_string());
+    }
+    open_external_url_with_system(parsed.as_str())
+}
+
+#[tauri::command]
 fn classify_runner_command(
     command: String,
     args: Option<Vec<String>>,
@@ -1186,6 +1237,16 @@ fn project_mcp_config_path(workspace_path: &str) -> Result<PathBuf, String> {
     Ok(root.join(".ai-employee").join("mcp.json"))
 }
 
+fn global_web_tools_config_path() -> Result<PathBuf, String> {
+    liuagent_core::global_web_tool_config_path()
+        .ok_or_else(|| "缺少 HOME，无法定位全局 web-tools 配置文件".to_string())
+}
+
+fn project_web_tools_config_path(workspace_path: &str) -> Result<PathBuf, String> {
+    let root = resolve_workspace_root(workspace_path)?;
+    Ok(liuagent_core::project_web_tool_config_path(&root))
+}
+
 fn default_global_mcp_config() -> Value {
     json!({
         "mcpServers": {
@@ -1202,10 +1263,18 @@ fn default_project_mcp_config() -> Value {
     json!({ "mcpServers": {} })
 }
 
+fn default_web_tools_config() -> Value {
+    serde_json::from_str(liuagent_core::WEB_TOOL_CONFIG_TEMPLATE).unwrap_or_else(|_| json!({}))
+}
+
 fn validate_mcp_config_content(content: &str) -> Result<String, String> {
     let raw = content.trim();
-    let parsed: Value = serde_json::from_str(if raw.is_empty() { "{}" } else { raw })
-        .map_err(|err| format!("MCP 配置 JSON 解析失败：{err}"))?;
+    let parsed: Value = serde_json::from_str(if raw.is_empty() || raw == "undefined" {
+        "{}"
+    } else {
+        raw
+    })
+    .map_err(|err| format!("MCP 配置 JSON 解析失败：{err}"))?;
     if !parsed.is_object() {
         return Err("MCP 配置必须是 JSON 对象".to_string());
     }
@@ -1255,6 +1324,88 @@ fn write_mcp_config_file(
         exists: true,
         content: format!("{normalized}\n"),
     })
+}
+
+fn validate_web_tools_config_content(content: &str) -> Result<String, String> {
+    let raw = content.trim();
+    let parsed: Value = serde_json::from_str(if raw.is_empty() || raw == "undefined" {
+        "{}"
+    } else {
+        raw
+    })
+    .map_err(|err| format!("web-tools 配置 JSON 解析失败：{err}"))?;
+    if !parsed.is_object() {
+        return Err("web-tools 配置必须是 JSON 对象".to_string());
+    }
+    serde_json::to_string_pretty(&parsed).map_err(|err| err.to_string())
+}
+
+fn read_web_tools_config_file(
+    scope: &str,
+    target: PathBuf,
+    fallback: Value,
+) -> Result<WebToolsConfigFileResult, String> {
+    if !target.exists() {
+        let content = serde_json::to_string_pretty(&fallback).map_err(|err| err.to_string())?;
+        return Ok(WebToolsConfigFileResult {
+            scope: scope.to_string(),
+            path: target.to_string_lossy().to_string(),
+            exists: false,
+            content,
+        });
+    }
+    if !target.is_file() {
+        return Err("web-tools 配置路径不是文件".to_string());
+    }
+    let content =
+        fs::read_to_string(&target).map_err(|err| format!("无法读取 web-tools 配置：{err}"))?;
+    Ok(WebToolsConfigFileResult {
+        scope: scope.to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: true,
+        content,
+    })
+}
+
+fn write_web_tools_config_file(
+    scope: &str,
+    target: PathBuf,
+    content: String,
+) -> Result<WebToolsConfigFileResult, String> {
+    let normalized = validate_web_tools_config_content(&content)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("无法创建 web-tools 配置目录：{err}"))?;
+    }
+    fs::write(&target, format!("{normalized}\n"))
+        .map_err(|err| format!("无法写入 web-tools 配置：{err}"))?;
+    Ok(WebToolsConfigFileResult {
+        scope: scope.to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: true,
+        content: format!("{normalized}\n"),
+    })
+}
+
+fn open_external_url_with_system(url: &str) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open")
+        .arg(url)
+        .status()
+        .map_err(|err| format!("打开外部浏览器失败：{err}"))?;
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .status()
+        .map_err(|err| format!("打开外部浏览器失败：{err}"))?;
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = Command::new("xdg-open")
+        .arg(url)
+        .status()
+        .map_err(|err| format!("打开外部浏览器失败：{err}"))?;
+
+    Ok(status.success())
 }
 
 fn workspace_relative_path(root: &Path, path: &Path) -> String {
@@ -1379,6 +1530,11 @@ fn main() {
             write_global_mcp_config_file,
             read_project_mcp_config_file,
             write_project_mcp_config_file,
+            read_global_web_tools_config_file,
+            write_global_web_tools_config_file,
+            read_project_web_tools_config_file,
+            write_project_web_tools_config_file,
+            open_external_url,
             classify_runner_command,
             run_runner_command,
             record_runner_permission_decision,

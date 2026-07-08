@@ -145,6 +145,11 @@ const DESKTOP_WINDOW_MIN_HEIGHT = 480;
 const DESKTOP_WINDOW_MINIMIZE_DURATION = 680;
 const windowMotionTimers = new Map();
 
+function isDesktopInternalPath(path) {
+  const normalized = String(path || "").trim();
+  return normalized.startsWith("/") && !/^\/https?:\/\//i.test(normalized);
+}
+
 function createWindowMotionState() {
   return {
     motionActive: false,
@@ -385,6 +390,7 @@ function persistDesktopSession() {
 function createRestoredWindow(rawWindow, index, usedIds) {
   const sourcePath = normalizeDesktopBridgePath(rawWindow?.sourcePath || rawWindow?.path);
   if (!sourcePath) return null;
+  if (!isDesktopInternalPath(sourcePath) || !canAccessPath(sourcePath)) return null;
   const meta = resolveDesktopAppMeta(sourcePath);
   const baseId =
     String(rawWindow?.id || "").trim()
@@ -500,6 +506,7 @@ function ensureDesktopHomeRoute() {
 }
 
 function createWindowForPath(path, payload = {}) {
+  if (!isDesktopInternalPath(path) || !canAccessPath(path)) return;
   const meta = resolveDesktopAppMeta(path);
   const countForApp = desktopWindows.value.filter((item) => item.appId === meta.appId).length;
   const offset = countForApp * 28;
@@ -540,6 +547,8 @@ function syncRouteAsWindow(fullPath) {
   const path = normalizeDesktopBridgePath(fullPath);
   if (
     !path
+    || !isDesktopInternalPath(path)
+    || !canAccessPath(path)
     || path === "/"
     || path === "/intro"
     || path === "/login"

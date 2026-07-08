@@ -83,7 +83,7 @@
 }
 
 .settings-center-page {
-  --settings-center-max-width: 1440px;
+  --settings-center-max-width: 100%;
   --settings-center-shell-gap: 24px;
   --settings-center-shell-padding-inline: 24px;
   --settings-center-sidebar-width: 332px;
@@ -328,8 +328,8 @@
 }
 
 .settings-center-stage--single {
-  width: min(100%, 1180px);
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
 }
 
 .settings-center-context-bar {

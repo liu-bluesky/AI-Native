@@ -1680,6 +1680,45 @@
     </template>
   </el-dialog>
 
+  <el-dialog
+    v-model="webToolsProviderDialogVisible"
+    :title="webToolsProviderDialogTitle"
+    width="min(640px, 92vw)"
+    append-to-body
+  >
+    <el-form label-position="top" class="web-tools-provider-form">
+      <el-form-item label="作用域">
+        <el-segmented
+          v-model="webToolsProviderDialogScope"
+          :options="webToolsScopeOptions"
+        />
+      </el-form-item>
+      <el-form-item>
+        <el-checkbox v-model="webToolsProviderDraft.enabled">
+          设为当前作用域默认搜索后端
+        </el-checkbox>
+      </el-form-item>
+      <el-form-item
+        v-for="field in webToolsProviderDialogFieldRows"
+        :key="field.key"
+        :label="field.label"
+      >
+        <el-input
+          v-model="webToolsProviderDraft.fields[field.key]"
+          :type="field.secret ? 'password' : 'text'"
+          :show-password="field.secret"
+          :placeholder="field.placeholder"
+        />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="webToolsProviderDialogVisible = false">取消</el-button>
+      <el-button type="primary" @click="saveWebToolsProviderDraft">
+        保存
+      </el-button>
+    </template>
+  </el-dialog>
+
   <CodePreviewDialog
     v-model="codePreviewVisible"
     :title="codePreviewTitle"
@@ -1970,24 +2009,183 @@
                   </article>
                 </section>
 
-                <section
-                  class="settings-parameter-section settings-parameter-section--compact"
-                >
-                  <div class="settings-parameter-section__header">
-                    <div class="settings-parameter-section__title">
-                      快速调整
-                    </div>
-                    <p class="settings-parameter-section__desc">
-                      打开页面后优先处理这里。模型切换仍在主对话输入框左下角完成，这里只负责本轮的上下文、风格和工具边界。
-                    </p>
-                  </div>
-                  <el-form
-                    label-position="top"
-                    class="settings-form settings-form--quick"
-                    size="default"
+                <section class="settings-module-toolbar">
+                  <el-input
+                    v-model="settingsModuleSearchQuery"
+                    clearable
+                    placeholder="搜索设置、工具、MCP、模型参数"
+                    class="settings-module-toolbar__search"
+                  />
+                  <el-segmented
+                    v-model="settingsModuleScope"
+                    :options="settingsModuleScopeOptions"
+                    class="settings-module-toolbar__scope"
+                  />
+                </section>
+
+                <div class="settings-module-workspace">
+                  <aside class="settings-module-menu" aria-label="对话设置模块">
+                    <button
+                      v-for="item in visibleSettingsModuleNavItems"
+                      :key="item.id"
+                      type="button"
+                      class="settings-module-menu__item"
+                      :class="{ 'is-active': activeSettingsModule === item.id }"
+                      @click="activeSettingsModule = item.id"
+                    >
+                      <span class="settings-module-menu__title">
+                        {{ item.label }}
+                      </span>
+                      <span class="settings-module-menu__desc">
+                        {{ item.desc }}
+                      </span>
+                      <span class="settings-module-menu__meta">
+                        {{ item.meta }}
+                      </span>
+                    </button>
+                    <el-empty
+                      v-if="!visibleSettingsModuleNavItems.length"
+                      description="没有匹配的设置模块"
+                      :image-size="42"
+                    />
+                  </aside>
+
+                  <div class="settings-module-list">
+                  <section
+                    v-show="
+                      activeSettingsModule === 'context' &&
+                      settingsModuleMatches('项目 上下文 工作区 AIENTRY 入口 文件 workspace ai entry', 'project')
+                    "
+                    class="settings-module-section"
                   >
-                    <div class="settings-quick-form-grid">
-                      <el-form-item label="执行员工">
+                    <div class="settings-module-section__head">
+                      <div>
+                        <strong>项目上下文</strong>
+                        <span>工作区和入口文件决定桌面智能体在本机如何理解项目。</span>
+                      </div>
+                    </div>
+                    <article
+                      v-if="hasSelectedProject"
+                      class="settings-module-row settings-module-row--stacked"
+                    >
+                      <div class="settings-module-row__icon">
+                        <el-icon><Files /></el-icon>
+                      </div>
+                      <div class="settings-module-row__main">
+                        <strong>项目工作区</strong>
+                        <span>本机真实目录；命令执行和相对路径解析会以这里为基准。</span>
+                        <el-input
+                          v-model="projectWorkspaceDraft"
+                          class="settings-module-row__input"
+                          placeholder="/Volumes/work/project"
+                        />
+                        <div class="settings-module-row__hint">
+                          <template v-if="projectWorkspaceResolved">
+                            已保存：{{ projectWorkspaceResolved }}
+                          </template>
+                          <template v-else>
+                            当前项目还没有配置工作区路径。
+                          </template>
+                          <template v-if="projectWorkspaceDirty">
+                            当前输入尚未保存。
+                          </template>
+                        </div>
+                      </div>
+                      <div class="settings-module-row__actions">
+                        <el-button
+                          @click="promptProjectWorkspaceDirectory"
+                          :loading="projectWorkspacePicking"
+                        >
+                          选择目录
+                        </el-button>
+                        <el-button
+                          type="primary"
+                          :loading="projectWorkspaceSaving"
+                          @click="saveProjectWorkspaceDirectory()"
+                        >
+                          保存
+                        </el-button>
+                      </div>
+                    </article>
+                    <article
+                      v-if="hasSelectedProject"
+                      class="settings-module-row settings-module-row--stacked"
+                    >
+                      <div class="settings-module-row__icon">
+                        <el-icon><DocumentCopy /></el-icon>
+                      </div>
+                      <div class="settings-module-row__main">
+                        <strong>AI 入口文件</strong>
+                        <span>项目级规则入口；未设置时继续使用内置统一入口。</span>
+                        <el-input
+                          v-model="aiEntryFileDraft"
+                          class="settings-module-row__input"
+                          placeholder="AIENTRY.md"
+                        />
+                        <div class="settings-module-row__hint">
+                          <template v-if="aiEntryFileResolved">
+                            已保存：{{ aiEntryFileResolved }}
+                          </template>
+                          <template v-if="aiEntryFileDirty">
+                            当前输入尚未保存。
+                          </template>
+                        </div>
+                      </div>
+                      <div class="settings-module-row__actions">
+                        <el-button
+                          @click="promptProjectAiEntryFile"
+                          :loading="aiEntryFilePicking"
+                        >
+                          选择文件
+                        </el-button>
+                        <el-button
+                          :loading="aiEntryFileCreating"
+                          @click="createDefaultAiEntryFile"
+                        >
+                          创建
+                        </el-button>
+                        <el-button
+                          type="primary"
+                          :loading="aiEntryFileSaving"
+                          @click="saveProjectAiEntryFile()"
+                        >
+                          保存
+                        </el-button>
+                      </div>
+                    </article>
+                    <article v-else class="settings-module-row">
+                      <div class="settings-module-row__icon">
+                        <el-icon><InfoFilled /></el-icon>
+                      </div>
+                      <div class="settings-module-row__main">
+                        <strong>尚未选择项目</strong>
+                        <span>选择项目后才能配置项目工作区和入口文件。</span>
+                      </div>
+                    </article>
+                  </section>
+
+                  <section
+                    v-show="
+                      activeSettingsModule === 'execution' &&
+                      settingsModuleMatches('执行 员工 协作 模式 历史 消息 本轮 仅回答', 'project')
+                    "
+                    class="settings-module-section"
+                  >
+                    <div class="settings-module-section__head">
+                      <div>
+                        <strong>执行策略</strong>
+                        <span>控制本轮对话如何分配员工、使用历史和选择工具边界。</span>
+                      </div>
+                    </div>
+                    <article class="settings-module-row">
+                      <div class="settings-module-row__icon">
+                        <el-icon><CollectionTag /></el-icon>
+                      </div>
+                      <div class="settings-module-row__main">
+                        <strong>执行员工</strong>
+                        <span>{{ selectedEmployeeSummary }}</span>
+                      </div>
+                      <div class="settings-module-row__control">
                         <el-select
                           v-model="selectedEmployeeIds"
                           multiple
@@ -1995,8 +2193,8 @@
                           collapse-tags-tooltip
                           filterable
                           clearable
-                          placeholder="留空表示自动分配员工"
-                          class="full-width"
+                          placeholder="留空自动分配"
+                          class="settings-module-row__select"
                           :disabled="!selectedProjectId"
                         >
                           <el-option
@@ -2004,296 +2202,97 @@
                             :key="item.id"
                             :label="`${item.name || item.id}`"
                             :value="item.id"
-                          >
-                            <div class="settings-employee-option">
-                              <div class="settings-employee-option__head">
-                                <span class="settings-employee-option__name">
-                                  {{ item.name || item.id }}
-                                </span>
-                                <el-tag
-                                  size="small"
-                                  :type="
-                                    item.role === 'admin' ? 'danger' : 'info'
-                                  "
-                                >
-                                  {{ item.role || "member" }}
-                                </el-tag>
-                              </div>
-                              <div
-                                v-if="
-                                  item.skill_names && item.skill_names.length
-                                "
-                                class="settings-employee-option__meta"
-                              >
-                                技能: {{ item.skill_names.join(", ") }}
-                              </div>
-                            </div>
-                          </el-option>
+                          />
                         </el-select>
-                      </el-form-item>
-
-                      <div class="settings-execution-section">
-                        <span>执行入口</span>
-                        <strong>
-                          桌面端本地 liuAgent Runtime
-                        </strong>
                       </div>
-
-                      <div class="settings-execution-section">
-                        <span>协作策略</span>
-                        <strong
-                          >协作策略决定员工如何分工；当前对话统一使用系统模型执行。</strong
-                        >
+                    </article>
+                    <article class="settings-module-row">
+                      <div class="settings-module-row__icon">
+                        <el-icon><CircleCheck /></el-icon>
                       </div>
-
-                      <el-form-item label="协作模式">
+                      <div class="settings-module-row__main">
+                        <strong>协作模式</strong>
+                        <span>决定员工如何分工；当前对话统一使用系统模型执行。</span>
+                      </div>
+                      <div class="settings-module-row__control">
                         <el-select
-                          v-model="
-                            projectChatSettings.employee_coordination_mode
-                          "
-                          class="full-width"
+                          v-model="projectChatSettings.employee_coordination_mode"
+                          class="settings-module-row__select"
                           :disabled="!selectedProjectId"
                         >
                           <el-option label="自动协作" value="auto" />
                           <el-option label="手动模式" value="manual" />
                         </el-select>
-                      </el-form-item>
-
-                      <el-form-item label="回答风格">
-                        <el-select
-                          v-model="projectChatSettings.answer_style"
-                          class="full-width"
-                        >
-                          <el-option label="简洁 (Concise)" value="concise" />
-                          <el-option label="平衡 (Balanced)" value="balanced" />
-                          <el-option label="详细 (Detailed)" value="detailed" />
-                        </el-select>
-                      </el-form-item>
-
-                      <el-form-item label="历史消息条数">
+                      </div>
+                    </article>
+                    <article class="settings-module-row">
+                      <div class="settings-module-row__icon">
+                        <el-icon><EditPen /></el-icon>
+                      </div>
+                      <div class="settings-module-row__main">
+                        <strong>历史消息条数</strong>
+                        <span>控制发送给模型的上下文消息数量。</span>
+                      </div>
+                      <div class="settings-module-row__control">
                         <el-input-number
                           v-model="projectChatSettings.history_limit"
                           :min="1"
                           :max="50"
-                          class="full-width"
                         />
-                      </el-form-item>
-
-                      <el-form-item label="按需启用工具">
-                        <el-switch
-                          v-model="projectChatSettings.auto_use_tools"
-                          @change="
-                            projectChatSettings.auto_use_tools_explicit = true
-                          "
-                        />
-                      </el-form-item>
-
-                      <el-form-item label="单轮仅回答">
-                        <el-switch v-model="singleRoundAnswerOnly" />
-                      </el-form-item>
-
-                      <el-form-item
-                        v-if="currentModelParameterMode === 'text'"
-                        label="先结论后步骤"
-                      >
-                        <el-switch
-                          v-model="projectChatSettings.prefer_conclusion_first"
-                        />
-                      </el-form-item>
-
-                      <el-form-item
-                        v-if="currentModelParameterMode === 'text'"
-                        label="温度"
-                      >
-                        <el-slider
-                          v-model="temperature"
-                          :min="0"
-                          :max="2"
-                          :step="0.1"
-                          show-input
-                          :show-input-controls="false"
-                        />
-                      </el-form-item>
-                    </div>
-                  </el-form>
-                </section>
-
-                <el-tabs v-if="activeSettingsPanel === 'chat'" class="settings-tabs">
-                  <el-tab-pane label="上下文与提示">
-                    <el-form
-                      label-position="left"
-                      label-width="160px"
-                      class="settings-form"
-                      size="default"
-                    >
-                      <section class="settings-parameter-section">
-                        <div class="settings-parameter-section__header">
-                          <div class="settings-parameter-section__title">
-                            项目上下文
-                          </div>
-                          <p class="settings-parameter-section__desc">
-                            让系统知道真实工作区和项目级 AI 入口文件；入口文件是可选项。
-                          </p>
-                        </div>
-                        <el-form-item
-                          v-if="hasSelectedProject"
-                        >
-                          <template #label>
-                            <span class="label-with-tooltip">
-                              项目工作区
-                              <el-tooltip
-                                content="当前项目在这台电脑上的真实目录。AI 直接执行本机命令、解析相对 AI 入口文件时都会以这里为基准。"
-                                placement="top"
-                              >
-                                <el-icon class="label-icon"
-                                  ><InfoFilled
-                                /></el-icon>
-                              </el-tooltip>
-                            </span>
-                          </template>
-                          <div class="workspace-path-editor">
-                            <el-input
-                              v-model="projectWorkspaceDraft"
-                              class="full-width"
-                              placeholder="/Volumes/苹果1_5T/self/ai-employee"
-                            />
-                            <div class="workspace-path-actions">
-                              <el-button
-                                @click="promptProjectWorkspaceDirectory"
-                                :loading="projectWorkspacePicking"
-                              >
-                                选择目录
-                              </el-button>
-                              <el-button
-                                type="primary"
-                                :loading="projectWorkspaceSaving"
-                                @click="saveProjectWorkspaceDirectory()"
-                              >
-                                保存工作区
-                              </el-button>
-                            </div>
-                            <div class="workspace-path-hint">
-                              <template v-if="projectWorkspaceResolved">
-                                当前已保存：{{ projectWorkspaceResolved }}
-                              </template>
-                              <template v-else>
-                                当前项目还没有配置工作区路径，AI
-                                不能直接在本机执行项目命令。
-                              </template>
-                              <template v-if="projectWorkspaceDirty">
-                                当前输入尚未保存。
-                              </template>
-                            </div>
-                          </div>
-                        </el-form-item>
-
-                        <el-form-item
-                          v-if="hasSelectedProject"
-                        >
-                          <template #label>
-                            <span class="label-with-tooltip">
-                              AI 入口文件
-                              <el-tooltip
-                                content="项目级规则入口。系统对话会优先读取它来理解规则、目录约定和实现约束。"
-                                placement="top"
-                              >
-                                <el-icon class="label-icon"
-                                  ><InfoFilled
-                                /></el-icon>
-                              </el-tooltip>
-                            </span>
-                          </template>
-                          <div class="workspace-path-editor">
-                            <el-input
-                              v-model="aiEntryFileDraft"
-                              class="full-width"
-                              placeholder="AIENTRY.md"
-                            />
-                            <div class="workspace-path-actions">
-                              <el-button
-                                @click="promptProjectAiEntryFile"
-                                :loading="aiEntryFilePicking"
-                              >
-                                选择文件
-                              </el-button>
-                              <el-button
-                                type="primary"
-                                :loading="aiEntryFileSaving"
-                                @click="saveProjectAiEntryFile()"
-                              >
-                                保存入口
-                              </el-button>
-                              <el-button
-                                :loading="aiEntryFileCreating"
-                                @click="createDefaultAiEntryFile"
-                              >
-                                创建 AIENTRY.md
-                              </el-button>
-                            </div>
-                            <div class="workspace-path-hint">
-                              <template
-                                v-if="
-                                  projectWorkspaceDraftNormalized ||
-                                  projectWorkspacePath
-                                "
-                              >
-                                当前项目工作区：{{
-                                  projectWorkspaceDraftNormalized ||
-                                  projectWorkspacePath
-                                }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话统一复用。
-                              </template>
-                              <template v-else>
-                                入口文件不是必选项；未设置时，系统继续使用内置统一入口。
-                              </template>
-                              <template v-if="aiEntryFileResolved">
-                                当前已保存：{{ aiEntryFileResolved }}
-                              </template>
-                              <template v-if="aiEntryFileDirty">
-                                当前输入尚未保存。
-                              </template>
-                            </div>
-                          </div>
-                        </el-form-item>
-                      </section>
-                    </el-form>
-                  </el-tab-pane>
-                </el-tabs>
-
-                <el-tabs v-if="activeSettingsPanel === 'chat'" class="settings-tabs">
-                  <el-tab-pane label="生成回答">
-                    <el-form
-                      label-position="left"
-                      label-width="160px"
-                      class="settings-form"
-                      size="default"
-                    >
-                      <div class="model-parameter-note">
-                        <div class="model-parameter-note__title">
-                          当前模型类型：{{ currentModelTypeLabel }}
-                        </div>
-                        <div class="model-parameter-note__text">
-                          {{
-                            currentModelTypeDescription ||
-                            "参数面板会跟随当前模型类型切换。"
-                          }}
-                        </div>
                       </div>
+                    </article>
+                    <article class="settings-module-row">
+                      <div class="settings-module-row__icon">
+                        <el-icon><InfoFilled /></el-icon>
+                      </div>
+                      <div class="settings-module-row__main">
+                        <strong>单轮仅回答</strong>
+                        <span>只对下一次对话生效，不主动调用工具。</span>
+                      </div>
+                      <el-switch v-model="singleRoundAnswerOnly" />
+                    </article>
+                  </section>
 
-                      <template v-if="currentModelParameterMode === 'text'">
-                        <el-form-item>
-                          <template #label>
-                            <span class="label-with-tooltip">
-                              温度 (Temperature)
-                              <el-tooltip
-                                content="控制 AI 生成文本的随机性。值越小（如 0.1）回答越严谨保守，适合代码生成；值越大（如 0.8）回答越发散具有创造力。"
-                                placement="top"
-                              >
-                                <el-icon class="label-icon"
-                                  ><InfoFilled
-                                /></el-icon>
-                              </el-tooltip>
-                            </span>
-                          </template>
+                  <section
+                    v-show="
+                      activeSettingsModule === 'generation' &&
+                      settingsModuleMatches('生成 回答 模型 温度 风格 图片 视频 参数 结论', 'all')
+                    "
+                    class="settings-module-section"
+                  >
+                    <div class="settings-module-section__head">
+                      <div>
+                        <strong>生成回答</strong>
+                        <span>当前模型类型：{{ currentModelTypeLabel }}。{{ currentModelTypeDescription || "参数面板会跟随当前模型类型切换。" }}</span>
+                      </div>
+                    </div>
+                    <template v-if="currentModelParameterMode === 'text'">
+                      <article class="settings-module-row">
+                        <div class="settings-module-row__icon">
+                          <el-icon><EditPen /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>回答风格</strong>
+                          <span>偏好 AI 返回内容的详细程度。</span>
+                        </div>
+                        <div class="settings-module-row__control">
+                          <el-select
+                            v-model="projectChatSettings.answer_style"
+                            class="settings-module-row__select"
+                          >
+                            <el-option label="简洁" value="concise" />
+                            <el-option label="平衡" value="balanced" />
+                            <el-option label="详细" value="detailed" />
+                          </el-select>
+                        </div>
+                      </article>
+                      <article class="settings-module-row settings-module-row--stacked">
+                        <div class="settings-module-row__icon">
+                          <el-icon><RefreshRight /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>温度</strong>
+                          <span>值越小越稳，值越大越发散。</span>
                           <el-slider
                             v-model="temperature"
                             :min="0"
@@ -2302,84 +2301,40 @@
                             show-input
                             :show-input-controls="false"
                           />
-                        </el-form-item>
-
-                        <el-form-item>
-                          <template #label>
-                            <span class="label-with-tooltip">
-                              回答风格
-                              <el-tooltip
-                                content="偏好 AI 返回内容的详细程度。"
-                                placement="top"
-                              >
-                                <el-icon class="label-icon"
-                                  ><InfoFilled
-                                /></el-icon>
-                              </el-tooltip>
-                            </span>
-                          </template>
-                          <el-select
-                            v-model="projectChatSettings.answer_style"
-                            class="full-width"
-                          >
-                            <el-option label="简洁 (Concise)" value="concise" />
-                            <el-option
-                              label="平衡 (Balanced)"
-                              value="balanced"
-                            />
-                            <el-option
-                              label="详细 (Detailed)"
-                              value="detailed"
-                            />
-                          </el-select>
-                        </el-form-item>
-
-                        <el-form-item>
-                          <template #label>
-                            <span class="label-with-tooltip">
-                              先结论后步骤
-                              <el-tooltip
-                                content="让 AI 在长篇大论前，先给出简明扼要的核心结论。"
-                                placement="top"
-                              >
-                                <el-icon class="label-icon"
-                                  ><InfoFilled
-                                /></el-icon>
-                              </el-tooltip>
-                            </span>
-                          </template>
-                          <el-switch
-                            v-model="
-                              projectChatSettings.prefer_conclusion_first
-                            "
-                          />
-                        </el-form-item>
-                      </template>
-
-                      <template
-                        v-else-if="
-                          currentModelParameterMode === 'image' ||
-                          currentModelParameterMode === 'video'
-                        "
+                        </div>
+                      </article>
+                      <article class="settings-module-row">
+                        <div class="settings-module-row__icon">
+                          <el-icon><CircleCheck /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>先结论后步骤</strong>
+                          <span>长回答优先给出核心结论。</span>
+                        </div>
+                        <el-switch
+                          v-model="projectChatSettings.prefer_conclusion_first"
+                        />
+                      </article>
+                    </template>
+                    <template
+                      v-else-if="
+                        currentModelParameterMode === 'image' ||
+                        currentModelParameterMode === 'video'
+                      "
+                    >
+                      <article
+                        v-for="section in currentModelParameterSections"
+                        :key="`settings-module-${section.key}`"
+                        class="settings-module-row"
                       >
-                        <el-form-item
-                          v-for="section in currentModelParameterSections"
-                          :key="`settings-${section.key}`"
-                        >
-                          <template #label>
-                            <span class="label-with-tooltip">
-                              {{ section.label }}
-                              <el-tooltip
-                                v-if="section.helper"
-                                :content="section.helper"
-                                placement="top"
-                              >
-                                <el-icon class="label-icon"
-                                  ><InfoFilled
-                                /></el-icon>
-                              </el-tooltip>
-                            </span>
-                          </template>
+                        <div class="settings-module-row__icon">
+                          <el-icon><EditPen /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>{{ section.label }}</strong>
+                          <span>{{ section.helper || "模型参数" }}</span>
+                        </div>
+                        <div class="settings-module-row__control">
                           <el-segmented
                             v-if="section.useSegmented"
                             :model-value="section.modelValue"
@@ -2389,25 +2344,18 @@
                                 value: item.value,
                               }))
                             "
-                            class="full-width"
                             @change="
                               (value) =>
-                                setCurrentModelParameterValue(
-                                  section.key,
-                                  value,
-                                )
+                                setCurrentModelParameterValue(section.key, value)
                             "
                           />
                           <el-select
                             v-else
                             :model-value="section.modelValue"
-                            class="full-width"
+                            class="settings-module-row__select"
                             @change="
                               (value) =>
-                                setCurrentModelParameterValue(
-                                  section.key,
-                                  value,
-                                )
+                                setCurrentModelParameterValue(section.key, value)
                             "
                           >
                             <el-option
@@ -2417,175 +2365,210 @@
                               :value="option.value"
                             />
                           </el-select>
-                        </el-form-item>
-                      </template>
-                    </el-form>
-                  </el-tab-pane>
+                        </div>
+                      </article>
+                    </template>
+                  </section>
 
-                  <el-tab-pane label="MCP 与护栏">
-                    <el-form
-                      label-position="left"
-                      label-width="160px"
-                      class="settings-form"
-                      size="default"
-                    >
-                      <section class="settings-parameter-section">
-                        <div class="settings-parameter-section__header">
-                          <div class="settings-parameter-section__title">
-                            工具使用策略
-                          </div>
-                          <p class="settings-parameter-section__desc">
-                            默认保持纯对话。只有本轮明确允许时，系统才会按需选择工具或命令参与。
-                          </p>
-                        </div>
-                        <div class="settings-tools-overview">
-                          <div class="settings-tools-overview__item">
-                            <span class="settings-tools-overview__label"
-                              >当前模式</span
-                            >
-                            <strong class="settings-tools-overview__value">{{
-                              singleRoundAnswerOnly
-                                ? "仅回答"
-                                : projectChatSettings.auto_use_tools
-                                  ? "按需工具"
-                                  : "纯文本"
-                            }}</strong>
-                            <span class="settings-tools-overview__meta">
-                              {{
-                                singleRoundAnswerOnly
-                                  ? "只对下一次对话生效"
-                                  : projectChatSettings.auto_use_tools
-                                    ? "允许系统在必要时选择工具"
-                                    : "系统不会主动调工具"
-                              }}
-                            </span>
-                          </div>
-                          <div class="settings-tools-overview__item">
-                            <span class="settings-tools-overview__label"
-                              >项目工具</span
-                            >
-                            <strong class="settings-tools-overview__value">{{
-                              projectToolModules.length
-                                ? `${selectedProjectToolNames.length}/${projectToolModules.length}`
-                                : "0"
-                            }}</strong>
-                            <span class="settings-tools-overview__meta">
-                              {{
-                                projectToolModules.length
-                                  ? "当前项目关联工具可按轮次收紧"
-                                  : "当前没有项目级工具可选"
-                              }}
-                            </span>
-                          </div>
-                        </div>
-                      </section>
-
-                      <section class="settings-parameter-section">
-                        <div class="settings-parameter-section__header">
-                          <div class="settings-parameter-section__title">
-                            项目 MCP 配置
-                          </div>
-                          <p class="settings-parameter-section__desc">
-                            项目 MCP registry 保存到项目根目录；全局配置文件为 {{ globalMcpConfigPath }}，同名 server 以项目配置为准。
-                          </p>
-                        </div>
-                        <el-form-item label="MCP 模块">
-                          <div
-                            v-if="hasSelectedProject"
-                            class="mcp-source-panel"
+                  <section
+                    v-show="
+                      activeSettingsModule === 'tools' &&
+                      settingsModuleMatches('工具 MCP 护栏 web search extract provider firecrawl tavily exa parallel managed', 'all')
+                    "
+                    class="settings-module-section"
+                  >
+                    <div class="settings-module-section__head">
+                      <div>
+                        <strong>工具与 MCP</strong>
+                        <span>管理当前对话可用的工具、MCP registry 和 Web 搜索 provider。</span>
+                      </div>
+                    </div>
+                    <article class="settings-module-row">
+                      <div class="settings-module-row__icon">
+                        <el-icon><CollectionTag /></el-icon>
+                      </div>
+                      <div class="settings-module-row__main">
+                        <strong>按需启用工具</strong>
+                        <span>{{ projectChatSettings.auto_use_tools ? "允许系统在必要时选择工具" : "系统不会主动调工具" }}</span>
+                      </div>
+                      <el-switch
+                        v-model="projectChatSettings.auto_use_tools"
+                        @change="projectChatSettings.auto_use_tools_explicit = true"
+                      />
+                    </article>
+                    <div class="settings-module-subsection">
+                      <div class="settings-module-subsection__head">
+                        <strong>MCP 模块</strong>
+                        <div class="settings-module-row__actions">
+                          <el-button size="small" @click="openMcpServerDialog('project')">
+                            添加项目 Server
+                          </el-button>
+                          <el-button size="small" @click="openMcpServerDialog('global')">
+                            添加全局 Server
+                          </el-button>
+                          <el-button
+                            size="small"
+                            type="primary"
+                            :loading="projectMcpConfigSaving"
+                            @click="saveProjectMcpConfig"
                           >
-                            <div class="mcp-file-manager">
-                              <div class="mcp-file-manager__head">
-                                <div>
-                                  <strong>{{ projectMcpConfigPath }}</strong>
-                                  <p>
-                                    项目配置只写入当前项目；全局配置可在系统配置页维护。
-                                  </p>
-                                </div>
-                                <div class="mcp-file-manager__actions">
-                                  <el-button size="small" @click="openMcpServerDialog('project')">
-                                    添加项目 Server
-                                  </el-button>
-                                  <el-button size="small" @click="openMcpServerDialog('global')">
-                                    添加全局 Server
-                                  </el-button>
-                                  <el-button
-                                    size="small"
-                                    type="primary"
-                                    :loading="projectMcpConfigSaving"
-                                    @click="saveProjectMcpConfig"
-                                  >
-                                    保存项目文件
-                                  </el-button>
-                                </div>
-                              </div>
-                              <div class="mcp-server-table">
-                                <article
-                                  v-for="server in effectiveMcpServerRows"
-                                  :key="`${server.scope}:${server.name}`"
-                                  class="mcp-server-row"
-                                >
-                                  <div class="mcp-server-row__main">
-                                    <strong>{{ server.name }}</strong>
-                                    <span>{{ server.type }} · {{ server.endpoint || "未配置入口" }}</span>
-                                  </div>
-                                  <el-tag size="small" :type="server.scope === 'project' ? 'warning' : 'info'">
-                                    {{ server.scope === "project" ? "项目" : "全局" }}
-                                  </el-tag>
-                                  <el-tag size="small" :type="server.enabled ? 'success' : 'info'">
-                                    {{ server.enabled ? "启用" : "停用" }}
-                                  </el-tag>
-                                  <div class="mcp-server-row__actions">
-                                    <el-button size="small" @click="testMcpServer(server)">
-                                      测试
-                                    </el-button>
-                                    <el-button size="small" @click="editMcpServer(server)">
-                                      编辑
-                                    </el-button>
-                                    <el-button size="small" type="danger" plain @click="removeMcpServer(server)">
-                                      删除
-                                    </el-button>
-                                  </div>
-                                </article>
-                                <el-empty
-                                  v-if="!effectiveMcpServerRows.length"
-                                  description="暂无 MCP server"
-                                  :image-size="48"
-                                />
-                              </div>
-                              <details class="mcp-json-details">
-                                <summary>查看 JSON</summary>
-                                <el-input
-                                  v-model="projectMcpConfigText"
-                                  type="textarea"
-                                  :rows="8"
-                                  resize="vertical"
-                                  spellcheck="false"
-                                />
-                                <div class="mcp-local-editor__actions">
-                                  <el-button size="small" @click="formatProjectMcpConfigText">
-                                    格式化 JSON
-                                  </el-button>
-                                  <el-button size="small" @click="resetProjectMcpConfigText">
-                                    清空项目配置
-                                  </el-button>
-                                </div>
-                              </details>
-                              <div class="mcp-section-tip">
-                                最终传给桌面智能体的是全局 + 项目合并后的 MCP 配置；同名 server 使用项目配置。
-                              </div>
-                            </div>
+                            保存项目文件
+                          </el-button>
+                        </div>
+                      </div>
+                      <div class="mcp-server-table">
+                        <article
+                          v-for="server in effectiveMcpServerRows"
+                          :key="`${server.scope}:${server.name}`"
+                          class="mcp-server-row"
+                        >
+                          <div class="mcp-server-row__main">
+                            <strong>{{ server.name }}</strong>
+                            <span>{{ server.type }} · {{ server.endpoint || "未配置入口" }}</span>
                           </div>
-
-                          <div v-else class="mcp-section-tip">
-                            先选择项目，才能管理当前项目 MCP 配置。
+                          <el-tag size="small" :type="server.scope === 'project' ? 'warning' : 'info'">
+                            {{ server.scope === "project" ? "项目" : "全局" }}
+                          </el-tag>
+                          <el-tag size="small" :type="server.enabled ? 'success' : 'info'">
+                            {{ server.enabled ? "启用" : "停用" }}
+                          </el-tag>
+                          <div class="mcp-server-row__actions">
+                            <el-button size="small" @click="testMcpServer(server)">
+                              测试
+                            </el-button>
+                            <el-button size="small" @click="editMcpServer(server)">
+                              编辑
+                            </el-button>
+                            <el-button size="small" type="danger" plain @click="removeMcpServer(server)">
+                              删除
+                            </el-button>
                           </div>
-                        </el-form-item>
-                      </section>
-
-                    </el-form>
-                  </el-tab-pane>
-                </el-tabs>
+                        </article>
+                        <el-empty
+                          v-if="!effectiveMcpServerRows.length"
+                          description="暂无 MCP server"
+                          :image-size="48"
+                        />
+                      </div>
+                      <details class="mcp-json-details">
+                        <summary>查看 MCP JSON</summary>
+                        <el-input
+                          v-model="projectMcpConfigText"
+                          type="textarea"
+                          :rows="8"
+                          resize="vertical"
+                          spellcheck="false"
+                        />
+                        <div class="mcp-local-editor__actions">
+                          <el-button size="small" @click="formatProjectMcpConfigText">
+                            格式化 JSON
+                          </el-button>
+                          <el-button size="small" @click="resetProjectMcpConfigText">
+                            清空项目配置
+                          </el-button>
+                        </div>
+                      </details>
+                    </div>
+                    <div class="settings-module-subsection">
+                      <div class="settings-module-subsection__head">
+                        <strong>Web 搜索 Provider</strong>
+                        <el-segmented
+                          v-model="webToolsConfigScope"
+                          :options="webToolsScopeOptions"
+                        />
+                      </div>
+                      <div
+                        v-if="hasSelectedProject || webToolsConfigScope === 'global'"
+                        class="web-tools-provider-table"
+                      >
+                        <article
+                          v-for="provider in webToolsProviderRows"
+                          :key="`${webToolsConfigScope}:${provider.id}`"
+                          class="web-tools-provider-row"
+                        >
+                          <div class="web-tools-provider-row__icon">
+                            <el-icon><CollectionTag /></el-icon>
+                          </div>
+                          <div class="web-tools-provider-row__main">
+                            <strong>{{ provider.label }}</strong>
+                            <span>{{ provider.description }}</span>
+                          </div>
+                          <el-tag v-if="provider.selected" size="small" type="success">
+                            当前
+                          </el-tag>
+                          <el-tag v-else-if="provider.inherited" size="small" type="info">
+                            继承
+                          </el-tag>
+                          <el-tag v-else-if="provider.configured" size="small" type="warning">
+                            已配置
+                          </el-tag>
+                          <el-switch
+                            :model-value="provider.selected"
+                            :disabled="webToolsConfigScope === 'project' && !hasSelectedProject"
+                            @change="
+                              (value) =>
+                                setWebToolProviderEnabled(provider.id, value)
+                            "
+                          />
+                          <el-button
+                            size="small"
+                            :icon="EditPen"
+                            circle
+                            @click="openWebToolsProviderDialog(provider.id)"
+                          />
+                        </article>
+                      </div>
+                      <div v-else class="mcp-section-tip">
+                        先选择项目，才能管理当前项目 web-tools 配置。
+                      </div>
+                      <details class="mcp-json-details">
+                        <summary>高级 web-tools JSON</summary>
+                        <el-input
+                          v-if="webToolsConfigScope === 'global'"
+                          v-model="globalWebToolsConfigText"
+                          type="textarea"
+                          :rows="8"
+                          resize="vertical"
+                          spellcheck="false"
+                        />
+                        <el-input
+                          v-else
+                          v-model="projectWebToolsConfigText"
+                          type="textarea"
+                          :rows="8"
+                          resize="vertical"
+                          spellcheck="false"
+                        />
+                        <div class="mcp-local-editor__actions">
+                          <el-button size="small" @click="formatActiveWebToolsConfigText">
+                            格式化 JSON
+                          </el-button>
+                          <el-button
+                            v-if="webToolsConfigScope === 'project'"
+                            size="small"
+                            @click="resetProjectWebToolsConfigText"
+                          >
+                            清空项目配置
+                          </el-button>
+                          <el-button
+                            size="small"
+                            type="primary"
+                            :loading="activeWebToolsConfigSaving"
+                            @click="saveActiveWebToolsConfig"
+                          >
+                            保存文件
+                          </el-button>
+                        </div>
+                      </details>
+                    </div>
+                  </section>
+                  <el-empty
+                    v-if="!visibleSettingsModuleNavItems.length"
+                    description="调整搜索词或范围后继续配置"
+                    :image-size="56"
+                  />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -2770,6 +2753,7 @@ import {
   uploadNativeLiuAgentProviderFile,
   writeNativeExternalAgentSessionInput,
   executeNativeLiuAgentTool,
+  openNativeExternalUrl,
 } from "@/utils/native-desktop-bridge.js";
 import {
   buildChatSettingsRoute,
@@ -2937,16 +2921,21 @@ import {
   consumeProjectDeployDraft,
   consumeStatisticsAnalysisDraft,
   formatMcpConfig,
+  formatWebToolsConfig,
   hasSeenGuideTour,
   markGuideTourSeen,
   mergeMcpConfigs,
+  mergeWebToolsConfigs,
   rememberChatSession,
   parseMcpConfigText,
+  parseWebToolsConfigText,
   readGlobalMcpConfigFile,
   readPreferredLocalConnectorId,
   readPreferredLocalWorkspacePath,
   readPreferredSkillResourceDirectory,
   readEffectiveMcpConfigFile,
+  readGlobalWebToolsConfigFile,
+  readProjectWebToolsConfigFile,
   readSelectedProjectId,
   resolveCurrentUsername,
   restoreChatSession,
@@ -2954,7 +2943,9 @@ import {
   writePreferredLocalWorkspacePath,
   writePreferredSkillResourceDirectory,
   writeGlobalMcpConfigFile,
+  writeGlobalWebToolsConfigFile,
   writeProjectMcpConfigFile,
+  writeProjectWebToolsConfigFile,
   writeSelectedProjectId,
 } from "@/modules/project-chat/services/projectChatStorage.js";
 import {
@@ -3179,6 +3170,7 @@ const aiContextDialogMessageId = ref("");
 const aiContextDialogPayload = ref(null);
 const aiContextDialogError = ref("");
 let handleLocalMcpConfigUpdated = null;
+let handleLocalWebToolsConfigUpdated = null;
 
 const selectedProjectId = ref("");
 let selectedProjectConversationLoadingKey = "";
@@ -3202,6 +3194,70 @@ const projectMcpConfigText = ref(formatMcpConfig({ mcpServers: {} }));
 const projectMcpConfigPath = ref(".ai-employee/mcp.json");
 const globalMcpConfigPath = ref("~/.ai-employee/mcp.json");
 const projectMcpConfigSaving = ref(false);
+const settingsModuleSearchQuery = ref("");
+const settingsModuleScope = ref("all");
+const settingsModuleScopeOptions = [
+  { label: "全部", value: "all" },
+  { label: "项目", value: "project" },
+  { label: "全局", value: "global" },
+];
+const activeSettingsModule = ref("context");
+const settingsModuleNavItems = [
+  {
+    id: "context",
+    label: "项目上下文",
+    desc: "工作区、入口文件",
+    meta: "项目",
+    scope: "project",
+    keywords: "项目 上下文 工作区 AIENTRY 入口 文件 workspace ai entry",
+  },
+  {
+    id: "execution",
+    label: "执行策略",
+    desc: "员工、协作、历史",
+    meta: "项目",
+    scope: "project",
+    keywords: "执行 员工 协作 模式 历史 消息 本轮 仅回答",
+  },
+  {
+    id: "generation",
+    label: "生成回答",
+    desc: "风格、温度、模型参数",
+    meta: "通用",
+    scope: "all",
+    keywords: "生成 回答 模型 温度 风格 图片 视频 参数 结论",
+  },
+  {
+    id: "tools",
+    label: "工具与 MCP",
+    desc: "工具、MCP、Web 搜索",
+    meta: "通用",
+    scope: "all",
+    keywords: "工具 MCP 护栏 web search extract provider firecrawl tavily exa parallel managed",
+  },
+];
+const visibleSettingsModuleNavItems = computed(() =>
+  settingsModuleNavItems.filter((item) =>
+    settingsModuleMatches(item.keywords, item.scope),
+  ),
+);
+const effectiveWebToolsConfig = ref({});
+const globalWebToolsConfig = ref({});
+const projectWebToolsConfig = ref({});
+const globalWebToolsConfigText = ref(formatWebToolsConfig({}));
+const projectWebToolsConfigText = ref(formatWebToolsConfig({}));
+const globalWebToolsConfigPath = ref("~/.ai-employee/agent-runtime-v2/web-tools/config.json");
+const projectWebToolsConfigPath = ref(".ai-employee/agent-runtime-v2/web-tools/config.json");
+const globalWebToolsConfigSaving = ref(false);
+const projectWebToolsConfigSaving = ref(false);
+const webToolsConfigScope = ref("project");
+const webToolsProviderDialogVisible = ref(false);
+const webToolsProviderDialogScope = ref("project");
+const webToolsProviderDialogProvider = ref("managed");
+const webToolsProviderDraft = reactive({
+  enabled: false,
+  fields: {},
+});
 const mcpServerDialogVisible = ref(false);
 const mcpServerDialogMode = ref("create");
 const mcpServerScope = ref("project");
@@ -3227,9 +3283,88 @@ const mcpTransportOptions = [
   { label: "HTTP", value: "http" },
   { label: "SSE", value: "sse" },
 ];
+const webToolsScopeOptions = [
+  { label: "项目", value: "project" },
+  { label: "全局", value: "global" },
+];
+const webToolsProviderDefinitions = [
+  {
+    id: "managed",
+    label: "Managed",
+    description: "连接自托管或桌面托管的搜索与正文抽取服务。",
+    fields: [
+      { key: "search_url", label: "Search URL", placeholder: "https://search.example.com/search" },
+      { key: "search_token", label: "Search Token", placeholder: "可选", secret: true },
+      { key: "extract_url", label: "Extract URL", placeholder: "https://search.example.com/extract" },
+      { key: "extract_token", label: "Extract Token", placeholder: "可选", secret: true },
+    ],
+  },
+  {
+    id: "firecrawl",
+    label: "Firecrawl",
+    description: "使用 Firecrawl 搜索与页面抓取能力。",
+    fields: [
+      { key: "api_key", label: "API Key", placeholder: "fc-...", secret: true },
+      { key: "api_url", label: "API URL", placeholder: "https://api.firecrawl.dev" },
+    ],
+  },
+  {
+    id: "parallel",
+    label: "Parallel",
+    description: "使用 Parallel 的搜索与网页内容 API。",
+    fields: [{ key: "api_key", label: "API Key", placeholder: "parallel...", secret: true }],
+  },
+  {
+    id: "tavily",
+    label: "Tavily",
+    description: "使用 Tavily 搜索与页面抽取 API。",
+    fields: [{ key: "api_key", label: "API Key", placeholder: "tvly-...", secret: true }],
+  },
+  {
+    id: "exa",
+    label: "Exa",
+    description: "使用 Exa 搜索与内容抓取 API。",
+    fields: [{ key: "api_key", label: "API Key", placeholder: "exa...", secret: true }],
+  },
+];
 const mcpServerDialogTitle = computed(() =>
   `${mcpServerDialogMode.value === "edit" ? "编辑" : "添加"}${mcpServerScope.value === "global" ? "全局" : "项目"} MCP Server`,
 );
+const webToolsActiveConfigPath = computed(() =>
+  webToolsConfigScope.value === "global"
+    ? globalWebToolsConfigPath.value
+    : projectWebToolsConfigPath.value,
+);
+const activeWebToolsConfigSaving = computed(() =>
+  webToolsConfigScope.value === "global"
+    ? globalWebToolsConfigSaving.value
+    : projectWebToolsConfigSaving.value,
+);
+const webToolsProviderDialogDefinition = computed(
+  () =>
+    webToolsProviderDefinitions.find(
+      (item) => item.id === webToolsProviderDialogProvider.value,
+    ) || webToolsProviderDefinitions[0],
+);
+const webToolsProviderDialogTitle = computed(
+  () =>
+    `配置 ${webToolsProviderDialogScope.value === "global" ? "全局" : "项目"} ${webToolsProviderDialogDefinition.value.label}`,
+);
+const webToolsProviderDialogFieldRows = computed(
+  () => webToolsProviderDialogDefinition.value.fields || [],
+);
+const webToolsProviderRows = computed(() => {
+  const scope = webToolsConfigScope.value === "global" ? "global" : "project";
+  const scopeConfig = webToolsConfigForScope(scope);
+  const globalBackend = selectedWebToolsBackend(globalWebToolsConfig.value);
+  const scopeBackend = selectedWebToolsBackend(scopeConfig);
+  return webToolsProviderDefinitions.map((definition) => ({
+    ...definition,
+    selected: scopeBackend === definition.id,
+    inherited: scope === "project" && !scopeBackend && globalBackend === definition.id,
+    configured: webToolsProviderConfigured(scopeConfig, definition.id),
+  }));
+});
 const effectiveMcpServerRows = computed(() => {
   const globalServers = normalizeMcpServerRows(globalMcpConfig.value, "global");
   const projectServers = normalizeMcpServerRows(projectMcpConfig.value, "project");
@@ -3306,6 +3441,50 @@ async function reloadLocalMcpConfig(projectId = selectedProjectId.value) {
   }
 }
 
+async function reloadLocalWebToolsConfig(projectId = selectedProjectId.value) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const workspacePath = localLiuAgentWorkspacePath();
+  try {
+    const globalFile = await readGlobalWebToolsConfigFile();
+    globalWebToolsConfigText.value = String(globalFile?.content || formatWebToolsConfig({}));
+    globalWebToolsConfig.value = globalFile?.config || {};
+    globalWebToolsConfigPath.value = String(
+      globalFile?.path || "~/.ai-employee/agent-runtime-v2/web-tools/config.json",
+    ).trim();
+  } catch (err) {
+    globalWebToolsConfigText.value = formatWebToolsConfig({});
+    globalWebToolsConfig.value = {};
+    globalWebToolsConfigPath.value = "~/.ai-employee/agent-runtime-v2/web-tools/config.json";
+    ElMessage.error(err?.message || "读取全局 web-tools 配置文件失败");
+  }
+  if (!normalizedProjectId || !workspacePath) {
+    projectWebToolsConfigText.value = formatWebToolsConfig({});
+    projectWebToolsConfig.value = {};
+    effectiveWebToolsConfig.value = mergeWebToolsConfigs(globalWebToolsConfig.value, {});
+    projectWebToolsConfigPath.value = ".ai-employee/agent-runtime-v2/web-tools/config.json";
+    return;
+  }
+  try {
+    const projectFile = await readProjectWebToolsConfigFile(workspacePath);
+    if (normalizedProjectId !== String(selectedProjectId.value || "").trim()) return;
+    projectWebToolsConfigText.value = String(projectFile?.content || formatWebToolsConfig({}));
+    projectWebToolsConfig.value = projectFile?.config || {};
+    effectiveWebToolsConfig.value = mergeWebToolsConfigs(
+      globalWebToolsConfig.value,
+      projectWebToolsConfig.value,
+    );
+    projectWebToolsConfigPath.value = String(
+      projectFile?.path || ".ai-employee/agent-runtime-v2/web-tools/config.json",
+    ).trim();
+  } catch (err) {
+    projectWebToolsConfigText.value = formatWebToolsConfig({});
+    projectWebToolsConfig.value = {};
+    effectiveWebToolsConfig.value = mergeWebToolsConfigs(globalWebToolsConfig.value, {});
+    projectWebToolsConfigPath.value = ".ai-employee/agent-runtime-v2/web-tools/config.json";
+    ElMessage.error(err?.message || "读取项目 web-tools 配置文件失败");
+  }
+}
+
 function formatProjectMcpConfigText() {
   try {
     const parsed = parseProjectMcpConfig();
@@ -3323,6 +3502,34 @@ function resetProjectMcpConfigText() {
   projectMcpConfig.value = { mcpServers: {} };
   syncEffectiveMcpConfig();
 }
+
+function settingsModuleMatches(keywords, scope = "all") {
+  const activeScope = String(settingsModuleScope.value || "all").trim();
+  const moduleScope = String(scope || "all").trim();
+  if (
+    activeScope !== "all" &&
+    moduleScope !== "all" &&
+    activeScope !== moduleScope
+  ) {
+    return false;
+  }
+  const query = String(settingsModuleSearchQuery.value || "")
+    .trim()
+    .toLowerCase();
+  if (!query) return true;
+  return String(keywords || "")
+    .toLowerCase()
+    .includes(query);
+}
+
+watch(
+  visibleSettingsModuleNavItems,
+  (items) => {
+    if (items.some((item) => item.id === activeSettingsModule.value)) return;
+    activeSettingsModule.value = items[0]?.id || "";
+  },
+  { immediate: true },
+);
 
 async function saveProjectMcpConfig() {
   const projectId = String(selectedProjectId.value || "").trim();
@@ -3360,6 +3567,275 @@ async function saveProjectMcpConfig() {
   }
 }
 
+function syncEffectiveWebToolsConfig() {
+  effectiveWebToolsConfig.value = mergeWebToolsConfigs(
+    globalWebToolsConfig.value,
+    projectWebToolsConfig.value,
+  );
+}
+
+function webToolsConfigForScope(scope = webToolsConfigScope.value) {
+  return scope === "global"
+    ? globalWebToolsConfig.value || {}
+    : projectWebToolsConfig.value || {};
+}
+
+function selectedWebToolsBackend(config) {
+  const source = config && typeof config === "object" && !Array.isArray(config) ? config : {};
+  return String(
+    source?.backend ||
+      source?.search?.backend ||
+      source?.extract?.backend ||
+      "",
+  ).trim().toLowerCase();
+}
+
+function webToolsProviderConfig(config, providerId) {
+  const source = config && typeof config === "object" && !Array.isArray(config) ? config : {};
+  const providers =
+    source.providers && typeof source.providers === "object" && !Array.isArray(source.providers)
+      ? source.providers
+      : {};
+  const provider = providers[providerId];
+  return provider && typeof provider === "object" && !Array.isArray(provider) ? provider : {};
+}
+
+function webToolsProviderConfigured(config, providerId) {
+  return Object.values(webToolsProviderConfig(config, providerId)).some((value) =>
+    String(value || "").trim(),
+  );
+}
+
+function cloneWebToolsScopeConfig(scope = webToolsConfigScope.value) {
+  const raw =
+    scope === "global" ? globalWebToolsConfigText.value : projectWebToolsConfigText.value;
+  return parseWebToolsConfigText(raw);
+}
+
+function assignWebToolsScopeConfig(scope, config) {
+  const formatted = formatWebToolsConfig(config);
+  if (scope === "global") {
+    globalWebToolsConfigText.value = formatted;
+    globalWebToolsConfig.value = config;
+  } else {
+    projectWebToolsConfigText.value = formatted;
+    projectWebToolsConfig.value = config;
+  }
+  syncEffectiveWebToolsConfig();
+}
+
+function setWebToolsBackend(config, providerId, enabled) {
+  const next = config && typeof config === "object" && !Array.isArray(config) ? config : {};
+  const current = selectedWebToolsBackend(next);
+  if (enabled) {
+    next.backend = providerId;
+    if (next.search && typeof next.search === "object" && !Array.isArray(next.search)) {
+      next.search.backend = "";
+    }
+    if (next.extract && typeof next.extract === "object" && !Array.isArray(next.extract)) {
+      next.extract.backend = "";
+    }
+  } else if (current === providerId) {
+    next.backend = "";
+    if (next.search && typeof next.search === "object" && !Array.isArray(next.search)) {
+      next.search.backend = "";
+    }
+    if (next.extract && typeof next.extract === "object" && !Array.isArray(next.extract)) {
+      next.extract.backend = "";
+    }
+  }
+  return next;
+}
+
+function formatGlobalWebToolsConfigText() {
+  try {
+    const parsed = parseWebToolsConfigText(globalWebToolsConfigText.value);
+    globalWebToolsConfigText.value = formatWebToolsConfig(parsed);
+    globalWebToolsConfig.value = parsed;
+    syncEffectiveWebToolsConfig();
+    ElMessage.success("全局 web-tools JSON 已格式化");
+  } catch (err) {
+    ElMessage.error(err?.message || "全局 web-tools 配置格式错误");
+  }
+}
+
+function formatProjectWebToolsConfigText() {
+  try {
+    const parsed = parseWebToolsConfigText(projectWebToolsConfigText.value);
+    projectWebToolsConfigText.value = formatWebToolsConfig(parsed);
+    projectWebToolsConfig.value = parsed;
+    syncEffectiveWebToolsConfig();
+    ElMessage.success("项目 web-tools JSON 已格式化");
+  } catch (err) {
+    ElMessage.error(err?.message || "项目 web-tools 配置格式错误");
+  }
+}
+
+function resetProjectWebToolsConfigText() {
+  projectWebToolsConfigText.value = formatWebToolsConfig({});
+  projectWebToolsConfig.value = {};
+  syncEffectiveWebToolsConfig();
+}
+
+function formatActiveWebToolsConfigText() {
+  if (webToolsConfigScope.value === "global") {
+    formatGlobalWebToolsConfigText();
+  } else {
+    formatProjectWebToolsConfigText();
+  }
+}
+
+async function saveActiveWebToolsConfig() {
+  if (webToolsConfigScope.value === "global") {
+    await saveGlobalWebToolsConfig();
+  } else {
+    await saveProjectWebToolsConfig();
+  }
+}
+
+async function persistWebToolsScopeConfig(scope) {
+  if (scope === "global") {
+    await saveGlobalWebToolsConfig();
+  } else {
+    await saveProjectWebToolsConfig();
+  }
+}
+
+async function setWebToolProviderEnabled(providerId, enabled) {
+  const scope = webToolsConfigScope.value === "global" ? "global" : "project";
+  if (scope === "project" && !hasSelectedProject.value) {
+    ElMessage.warning("先选择项目，再启用项目 web-tools 配置");
+    return;
+  }
+  try {
+    const config = setWebToolsBackend(
+      cloneWebToolsScopeConfig(scope),
+      providerId,
+      Boolean(enabled),
+    );
+    assignWebToolsScopeConfig(scope, config);
+    await persistWebToolsScopeConfig(scope);
+  } catch (err) {
+    ElMessage.error(err?.message || "更新 web-tools provider 失败");
+  }
+}
+
+function openWebToolsProviderDialog(providerId) {
+  const scope = webToolsConfigScope.value === "global" ? "global" : "project";
+  webToolsProviderDialogScope.value = scope;
+  webToolsProviderDialogProvider.value = providerId;
+  hydrateWebToolsProviderDraft(scope, providerId);
+  webToolsProviderDialogVisible.value = true;
+}
+
+function hydrateWebToolsProviderDraft(scope, providerId) {
+  const config = webToolsConfigForScope(scope);
+  const provider = webToolsProviderConfig(config, providerId);
+  const fields = {};
+  const definition =
+    webToolsProviderDefinitions.find((item) => item.id === providerId) ||
+    webToolsProviderDefinitions[0];
+  for (const field of definition.fields || []) {
+    fields[field.key] = String(provider[field.key] || "");
+  }
+  webToolsProviderDraft.enabled = selectedWebToolsBackend(config) === providerId;
+  webToolsProviderDraft.fields = fields;
+}
+
+async function saveWebToolsProviderDraft() {
+  const scope = webToolsProviderDialogScope.value === "global" ? "global" : "project";
+  const providerId = webToolsProviderDialogProvider.value;
+  if (scope === "project" && !hasSelectedProject.value) {
+    ElMessage.warning("先选择项目，再保存项目 web-tools 配置");
+    return;
+  }
+  try {
+    const config = cloneWebToolsScopeConfig(scope);
+    config.providers =
+      config.providers && typeof config.providers === "object" && !Array.isArray(config.providers)
+        ? config.providers
+        : {};
+    const nextProvider = {};
+    for (const field of webToolsProviderDialogFieldRows.value) {
+      nextProvider[field.key] = String(webToolsProviderDraft.fields?.[field.key] || "").trim();
+    }
+    config.providers[providerId] = nextProvider;
+    setWebToolsBackend(config, providerId, Boolean(webToolsProviderDraft.enabled));
+    assignWebToolsScopeConfig(scope, config);
+    await persistWebToolsScopeConfig(scope);
+    webToolsConfigScope.value = scope;
+    webToolsProviderDialogVisible.value = false;
+  } catch (err) {
+    ElMessage.error(err?.message || "保存 web-tools provider 失败");
+  }
+}
+
+async function saveGlobalWebToolsConfig() {
+  let parsed;
+  try {
+    parsed = parseWebToolsConfigText(globalWebToolsConfigText.value);
+  } catch (err) {
+    ElMessage.error(err?.message || "全局 web-tools 配置格式错误");
+    return;
+  }
+  globalWebToolsConfigSaving.value = true;
+  try {
+    const result = await writeGlobalWebToolsConfigFile(parsed);
+    globalWebToolsConfigText.value = String(result?.content || formatWebToolsConfig(parsed));
+    globalWebToolsConfig.value = result?.config || parsed;
+    globalWebToolsConfigPath.value = String(
+      result?.path || "~/.ai-employee/agent-runtime-v2/web-tools/config.json",
+    ).trim();
+    syncEffectiveWebToolsConfig();
+    ElMessage.success("全局 web-tools 配置文件已保存");
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("local-web-tools-config-updated"));
+    }
+  } catch (err) {
+    ElMessage.error(err?.message || "保存全局 web-tools 配置文件失败");
+  } finally {
+    globalWebToolsConfigSaving.value = false;
+  }
+}
+
+async function saveProjectWebToolsConfig() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const workspacePath = localLiuAgentWorkspacePath();
+  if (!projectId) {
+    ElMessage.warning("先选择项目，再保存项目 web-tools 配置");
+    return;
+  }
+  if (!workspacePath) {
+    ElMessage.warning("先配置本机工作区，再保存项目 web-tools 配置");
+    return;
+  }
+  let parsed;
+  try {
+    parsed = parseWebToolsConfigText(projectWebToolsConfigText.value);
+  } catch (err) {
+    ElMessage.error(err?.message || "项目 web-tools 配置格式错误");
+    return;
+  }
+  projectWebToolsConfigSaving.value = true;
+  try {
+    const result = await writeProjectWebToolsConfigFile(workspacePath, parsed);
+    projectWebToolsConfigText.value = String(result?.content || formatWebToolsConfig(parsed));
+    projectWebToolsConfig.value = result?.config || parsed;
+    projectWebToolsConfigPath.value = String(
+      result?.path || ".ai-employee/agent-runtime-v2/web-tools/config.json",
+    ).trim();
+    await reloadLocalWebToolsConfig(projectId);
+    ElMessage.success("项目 web-tools 配置文件已保存");
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("local-web-tools-config-updated"));
+    }
+  } catch (err) {
+    ElMessage.error(err?.message || "保存项目 web-tools 配置文件失败");
+  } finally {
+    projectWebToolsConfigSaving.value = false;
+  }
+}
+
 async function saveGlobalMcpConfig(config) {
   const result = await writeGlobalMcpConfigFile(config);
   globalMcpConfigText.value = String(result?.content || formatMcpConfig(config));
@@ -3384,6 +3860,20 @@ function resetMcpServerDraft(scope = "project") {
   mcpServerDraft.rawJsonText = "";
   mcpServerDraft.enabled = true;
   mcpServerDraftSyncing.value = false;
+}
+
+function normalizeDialogJsonText(text, fallbackText) {
+  const raw = String(text ?? "").trim();
+  if (!raw || raw === "undefined") return fallbackText;
+  return raw;
+}
+
+function parseDialogJsonText(text, fallbackText, errorPrefix) {
+  try {
+    return JSON.parse(normalizeDialogJsonText(text, fallbackText));
+  } catch (err) {
+    throw new Error(`${errorPrefix}：${err?.message || "格式错误"}`);
+  }
 }
 
 function openMcpServerDialog(scope = "project") {
@@ -3443,13 +3933,13 @@ function buildMcpServerConfigFromFields() {
   let args = [];
   let headers = {};
   try {
-    args = JSON.parse(String(mcpServerDraft.argsText || "[]").trim() || "[]");
+    args = parseDialogJsonText(mcpServerDraft.argsText, "[]", "参数 JSON 解析失败");
   } catch {
     return null;
   }
   if (!Array.isArray(args)) return null;
   try {
-    headers = JSON.parse(String(mcpServerDraft.headersText || "{}").trim() || "{}");
+    headers = parseDialogJsonText(mcpServerDraft.headersText, "{}", "请求头 JSON 解析失败");
   } catch {
     return null;
   }
@@ -3493,13 +3983,13 @@ function syncMcpServerFieldsFromRawJson() {
 }
 
 function resolveMcpServerPayloadFromRawJson() {
-  const rawText = String(mcpServerDraft.rawJsonText || "").trim();
+  const rawText = normalizeDialogJsonText(mcpServerDraft.rawJsonText, "");
   if (!rawText) return null;
   let rawInput;
   try {
-    rawInput = JSON.parse(rawText);
+    rawInput = parseDialogJsonText(rawText, "{}", "MCP 配置 JSON 解析失败");
   } catch (err) {
-    throw new Error(`MCP 配置 JSON 解析失败：${err?.message || "格式错误"}`);
+    throw new Error(err?.message || "MCP 配置 JSON 解析失败");
   }
   if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) {
     throw new Error("MCP 配置必须是 JSON 对象");
@@ -3574,15 +4064,15 @@ function buildMcpServerConfigFromDraft() {
   let args = [];
   let headers = {};
   try {
-    args = JSON.parse(String(mcpServerDraft.argsText || "[]").trim() || "[]");
+    args = parseDialogJsonText(mcpServerDraft.argsText, "[]", "参数 JSON 解析失败");
   } catch (err) {
-    throw new Error(`参数 JSON 解析失败：${err?.message || "格式错误"}`);
+    throw new Error(err?.message || "参数 JSON 解析失败");
   }
   if (!Array.isArray(args)) throw new Error("参数必须是 JSON 数组");
   try {
-    headers = JSON.parse(String(mcpServerDraft.headersText || "{}").trim() || "{}");
+    headers = parseDialogJsonText(mcpServerDraft.headersText, "{}", "请求头 JSON 解析失败");
   } catch (err) {
-    throw new Error(`请求头 JSON 解析失败：${err?.message || "格式错误"}`);
+    throw new Error(err?.message || "请求头 JSON 解析失败");
   }
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
     throw new Error("请求头必须是 JSON 对象");
@@ -13360,6 +13850,12 @@ async function openExternalUrlViaSystem(url) {
   const normalizedUrl = String(url || "").trim();
   if (!normalizedUrl) return false;
   try {
+    const opened = await openNativeExternalUrl(normalizedUrl);
+    if (opened) return true;
+  } catch (_err) {
+    // Fall through to the server-side opener when the desktop bridge is unavailable.
+  }
+  try {
     const response = await api.post("/projects/external-url/open", {
       url: normalizedUrl,
     });
@@ -18752,13 +19248,6 @@ async function handleOperationAction(operation, actionKey) {
       opened = false;
     }
     if (!opened) {
-      try {
-        opened = Boolean(window.open(url, "_blank", "noopener,noreferrer"));
-      } catch (_error) {
-        opened = false;
-      }
-    }
-    if (!opened) {
       ElMessage.warning("自动打开失败，请手动复制链接继续");
     }
     return;
@@ -20972,6 +21461,19 @@ function setCodeCopyButtonState(button, copied) {
 }
 
 async function handleMessageAreaClick(event) {
+  const link = event?.target?.closest?.("a[href]");
+  if (link) {
+    const rawUrl = String(link.dataset.externalUrl || link.href || "").trim();
+    if (/^https?:\/\//i.test(rawUrl)) {
+      event.preventDefault();
+      event.stopPropagation();
+      const opened = await openExternalUrlViaSystem(rawUrl);
+      if (!opened) {
+        ElMessage.warning("自动打开失败，请手动复制链接继续");
+      }
+      return;
+    }
+  }
   const previewButton = event?.target?.closest?.(".chat-code-block__preview");
   const copyButton = event?.target?.closest?.(".chat-code-block__copy");
   const button = previewButton || copyButton;
@@ -22555,7 +23057,7 @@ function openCurrentProjectDetail() {
     `/projects/${encodeURIComponent(projectId)}`,
     {
       mode: "new-window",
-      appId: "projects",
+      appId: "project-detail",
       title: currentProjectLabel.value || "项目详情",
       eyebrow: "Project Workspace",
       summary: "项目详情作为独立桌面窗口打开，避免在 AI 对话窗口里吞掉上下文。",
@@ -29089,6 +29591,7 @@ watch(selectedProjectId, async (value) => {
   const projectId = String(value || "").trim();
   projectSettingsHydratedProjectId.value = "";
   reloadLocalMcpConfig(projectId);
+  reloadLocalWebToolsConfig(projectId);
   if (projectId) {
     writeSelectedProjectId(projectId);
   } else {
@@ -29135,6 +29638,14 @@ watch(selectedProjectId, async (value) => {
     ElMessage.error(err?.detail || err?.message || "切换项目失败");
   }
 });
+
+watch(
+  () => [webToolsProviderDialogScope.value, webToolsProviderDialogProvider.value],
+  ([scope, providerId]) => {
+    if (!webToolsProviderDialogVisible.value) return;
+    hydrateWebToolsProviderDraft(scope === "global" ? "global" : "project", providerId);
+  },
+);
 
 watch(
   () => String(currentChatSessionId.value || "").trim(),
@@ -29241,10 +29752,15 @@ watch(
 onMounted(async () => {
   loading.value = true;
   reloadLocalMcpConfig(selectedProjectId.value);
+  reloadLocalWebToolsConfig(selectedProjectId.value);
   handleLocalMcpConfigUpdated = () => {
     reloadLocalMcpConfig(selectedProjectId.value);
   };
+  handleLocalWebToolsConfigUpdated = () => {
+    reloadLocalWebToolsConfig(selectedProjectId.value);
+  };
   window.addEventListener("local-mcp-config-updated", handleLocalMcpConfigUpdated);
+  window.addEventListener("local-web-tools-config-updated", handleLocalWebToolsConfigUpdated);
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.addEventListener("keydown", handleWorkingStatusKeydown);
   void hydrateNativeDesktopRuntimeInfo();
@@ -29294,6 +29810,13 @@ onUnmounted(() => {
   if (handleLocalMcpConfigUpdated) {
     window.removeEventListener("local-mcp-config-updated", handleLocalMcpConfigUpdated);
     handleLocalMcpConfigUpdated = null;
+  }
+  if (handleLocalWebToolsConfigUpdated) {
+    window.removeEventListener(
+      "local-web-tools-config-updated",
+      handleLocalWebToolsConfigUpdated,
+    );
+    handleLocalWebToolsConfigUpdated = null;
   }
   window.removeEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.removeEventListener("keydown", handleWorkingStatusKeydown);
@@ -29482,13 +30005,299 @@ onUnmounted(() => {
   gap: 2px 16px;
 }
 
+.web-tools-provider-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 16px;
+}
+
 .mcp-server-form :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
+
+.web-tools-provider-form :deep(.el-form-item) {
   margin-bottom: 14px;
 }
 
 .mcp-server-form :deep(.el-form-item:nth-last-child(-n + 2)),
 .mcp-server-form :deep(.el-form-item:has(textarea)) {
   grid-column: 1 / -1;
+}
+
+.web-tools-provider-form :deep(.el-form-item:nth-child(-n + 2)) {
+  grid-column: 1 / -1;
+}
+
+.settings-center-stage__body--chat .settings-chat-main-card {
+  gap: 14px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.84);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: none;
+}
+
+.settings-center-stage__body--chat .settings-chat-quick-overview {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-center-stage__body--chat .settings-chat-quick-overview__card {
+  gap: 3px;
+  min-height: 74px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border-color: rgba(226, 232, 240, 0.86);
+  background: #fff;
+  box-shadow: none;
+}
+
+.settings-center-stage__body--chat .settings-chat-quick-overview__label {
+  color: #64748b;
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+.settings-center-stage__body--chat .settings-chat-quick-overview__value {
+  color: #111827;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.settings-center-stage__body--chat .settings-chat-quick-overview__meta {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-module-toolbar {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(226, 232, 240, 0.88);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.settings-module-toolbar__search {
+  min-width: 0;
+}
+
+.settings-module-toolbar__scope {
+  justify-self: end;
+}
+
+.settings-module-workspace {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.settings-module-menu {
+  position: sticky;
+  top: 0;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.settings-module-menu__item {
+  width: 100%;
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-module-menu__item:hover {
+  background: rgba(248, 250, 252, 0.96);
+}
+
+.settings-module-menu__item.is-active {
+  border-color: rgba(37, 99, 235, 0.24);
+  background: rgba(239, 246, 255, 0.78);
+}
+
+.settings-module-menu__title {
+  min-width: 0;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.settings-module-menu__desc {
+  grid-column: 1 / -1;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.settings-module-menu__meta {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.78);
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.settings-module-list {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.settings-module-section {
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.settings-module-section__head,
+.settings-module-subsection__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.settings-module-section__head > div,
+.settings-module-subsection__head > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.settings-module-section__head strong,
+.settings-module-subsection__head strong {
+  color: #111827;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.settings-module-section__head span {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-module-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) minmax(180px, auto);
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.76);
+}
+
+.settings-module-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-module-row--stacked {
+  align-items: start;
+}
+
+.settings-module-row__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: #334155;
+  background: rgba(241, 245, 249, 0.96);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.settings-module-row__main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.settings-module-row__main strong {
+  color: #111827;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.settings-module-row__main span,
+.settings-module-row__hint {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.settings-module-row__input {
+  width: min(100%, 720px);
+  margin-top: 6px;
+}
+
+.settings-module-row__control {
+  justify-self: end;
+  min-width: 180px;
+}
+
+.settings-module-row__select {
+  width: min(320px, 32vw);
+  min-width: 220px;
+}
+
+.settings-module-row__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-module-subsection {
+  border-top: 1px solid rgba(226, 232, 240, 0.76);
+}
+
+.settings-module-subsection:first-of-type {
+  border-top: 0;
+}
+
+.settings-module-subsection__head {
+  min-height: 44px;
+  background: #fff;
+}
+
+.settings-module-subsection__head strong {
+  font-size: 12px;
+}
+
+.settings-module-subsection .mcp-server-table,
+.settings-module-subsection .web-tools-provider-table,
+.settings-module-subsection .mcp-section-tip {
+  margin: 12px 14px 0;
+}
+
+.settings-module-subsection .mcp-json-details {
+  margin: 12px 14px 14px;
 }
 
 .mcp-file-manager {
@@ -29537,6 +30346,15 @@ onUnmounted(() => {
   gap: 8px;
 }
 
+.web-tools-provider-table {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: #fff;
+}
+
 .mcp-server-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto;
@@ -29548,7 +30366,39 @@ onUnmounted(() => {
   background: #fff;
 }
 
+.web-tools-provider-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.web-tools-provider-row:last-child {
+  border-bottom: 0;
+}
+
+.web-tools-provider-row__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+}
+
 .mcp-server-row__main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.web-tools-provider-row__main {
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -29560,11 +30410,22 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
+.web-tools-provider-row__main strong {
+  color: #111827;
+  font-size: 13px;
+}
+
 .mcp-server-row__main span {
   color: #64748b;
   font-size: 12px;
   line-height: 1.45;
   word-break: break-all;
+}
+
+.web-tools-provider-row__main span {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .mcp-json-details {
@@ -29591,8 +30452,52 @@ onUnmounted(() => {
     grid-template-columns: 1fr;
   }
 
+  .web-tools-provider-form {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-module-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-module-toolbar__scope {
+    justify-self: stretch;
+  }
+
+  .settings-module-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-module-menu {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-module-row {
+    grid-template-columns: 32px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .settings-module-row > .el-switch,
+  .settings-module-row__control,
+  .settings-module-row__actions {
+    grid-column: 2;
+    justify-self: start;
+    min-width: 0;
+  }
+
+  .settings-module-row__select {
+    width: min(100%, 320px);
+    min-width: 0;
+  }
+
+  .settings-center-stage__body--chat .settings-chat-quick-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .mcp-file-manager__head,
-  .mcp-server-row {
+  .mcp-server-row,
+  .web-tools-provider-row {
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -29601,6 +30506,30 @@ onUnmounted(() => {
   .mcp-file-manager__actions,
   .mcp-server-row__actions {
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-center-stage__body--chat .settings-chat-main-card {
+    padding: 12px;
+  }
+
+  .settings-center-stage__body--chat .settings-chat-quick-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-module-section__head,
+  .settings-module-subsection__head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-module-row {
+    padding: 10px 12px;
+  }
+
+  .settings-module-menu {
+    grid-template-columns: 1fr;
   }
 }
 </style>

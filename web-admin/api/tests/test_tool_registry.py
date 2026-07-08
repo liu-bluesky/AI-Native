@@ -61,6 +61,7 @@ def test_collect_project_runtime_tools_filters_employee_and_name_and_priority():
         "proj-1",
         selected_employee_ids=["emp-a"],
         enabled_tool_names=["query_project_rules", "emp_a__tool", "external_search"],
+        explicit_tool_filter=True,
         tool_priority=["external_search", "emp_a__tool"],
         list_internal_tools=lambda project_id: list(internal_tools),
         list_external_tools=lambda project_id: list(external_tools),
@@ -71,6 +72,24 @@ def test_collect_project_runtime_tools_filters_employee_and_name_and_priority():
         "emp_a__tool",
         "query_project_rules",
     ]
+
+
+def test_collect_project_runtime_tools_explicit_empty_names_disable_all_project_tools():
+    result = tool_registry.collect_project_runtime_tools(
+        "proj-1",
+        selected_employee_ids=None,
+        enabled_tool_names=[],
+        explicit_tool_filter=True,
+        tool_priority=[],
+        list_internal_tools=lambda project_id: [
+            {"tool_name": "query_project_rules", "builtin": True},
+        ],
+        list_external_tools=lambda project_id: [
+            {"tool_name": "external_search", "module_type": "external_mcp_tool"},
+        ],
+    )
+
+    assert result == []
 
 
 def test_summarize_effective_tools_infers_sources():

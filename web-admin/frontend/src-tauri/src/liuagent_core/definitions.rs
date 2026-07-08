@@ -173,6 +173,44 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "web_search",
+            description: "搜索网络信息，返回标题、URL、摘要和来源后端。搜索结果是候选信息；是否需要继续打开页面、读取正文或补充核查，由模型根据用户目标、结果质量和任务风险判断。",
+            action: "network.search",
+            risk: "medium",
+            requires_approval: false,
+            scope: "network",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "number", "default": 5},
+                    "timeout_ms": {"type": "number", "default": 30000}
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDefinition {
+            name: "web_extract",
+            description: "从指定网页 URL 抽取正文内容，返回 URL、标题、正文和截断状态。用于需要比搜索摘要更完整正文的场景；是否调用由模型根据任务目标和搜索结果质量判断。",
+            action: "network.extract",
+            risk: "medium",
+            requires_approval: false,
+            scope: "network",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 5
+                    },
+                    "format": {"type": "string", "default": "markdown"},
+                    "timeout_ms": {"type": "number", "default": 30000}
+                },
+                "required": ["urls"]
+            }),
+        },
+        ToolDefinition {
             name: "http_post",
             description: "发起 HTTP POST 请求",
             action: "network.write",

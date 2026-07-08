@@ -21,6 +21,11 @@ const TAURI_COMMAND_NAMES = {
   writeGlobalMcpConfigFile: "write_global_mcp_config_file",
   readProjectMcpConfigFile: "read_project_mcp_config_file",
   writeProjectMcpConfigFile: "write_project_mcp_config_file",
+  readGlobalWebToolsConfigFile: "read_global_web_tools_config_file",
+  writeGlobalWebToolsConfigFile: "write_global_web_tools_config_file",
+  readProjectWebToolsConfigFile: "read_project_web_tools_config_file",
+  writeProjectWebToolsConfigFile: "write_project_web_tools_config_file",
+  openExternalUrl: "open_external_url",
   classifyRunnerCommand: "classify_runner_command",
   runRunnerCommand: "run_runner_command",
   recordRunnerPermissionDecision: "record_runner_permission_decision",
@@ -220,26 +225,31 @@ export async function getNativeRuntimeInfo() {
   };
 }
 
-function normalizeMcpConfigFileResult(result) {
+function normalizeConfigFileContent(value) {
+  const content = String(value ?? "");
+  return content.trim().toLowerCase() === "undefined" ? "" : content;
+}
+
+function normalizeConfigFileResult(result) {
   if (!result || typeof result !== "object") return null;
   return {
     scope: String(result.scope || "").trim(),
     path: String(result.path || "").trim(),
     exists: Boolean(result.exists),
-    content: String(result.content || ""),
+    content: normalizeConfigFileContent(result.content),
   };
 }
 
 export async function readNativeGlobalMcpConfigFile() {
   const result = await invokeNativeDesktopBridge("readGlobalMcpConfigFile");
-  return normalizeMcpConfigFileResult(result);
+  return normalizeConfigFileResult(result);
 }
 
 export async function writeNativeGlobalMcpConfigFile(content = "") {
   const result = await invokeNativeDesktopBridge("writeGlobalMcpConfigFile", {
     content: String(content || ""),
   });
-  return normalizeMcpConfigFileResult(result);
+  return normalizeConfigFileResult(result);
 }
 
 export async function readNativeProjectMcpConfigFile(workspacePath = "") {
@@ -248,7 +258,7 @@ export async function readNativeProjectMcpConfigFile(workspacePath = "") {
   const result = await invokeNativeDesktopBridge("readProjectMcpConfigFile", {
     workspacePath: normalizedWorkspacePath,
   });
-  return normalizeMcpConfigFileResult(result);
+  return normalizeConfigFileResult(result);
 }
 
 export async function writeNativeProjectMcpConfigFile(workspacePath = "", content = "") {
@@ -258,7 +268,47 @@ export async function writeNativeProjectMcpConfigFile(workspacePath = "", conten
     workspacePath: normalizedWorkspacePath,
     content: String(content || ""),
   });
-  return normalizeMcpConfigFileResult(result);
+  return normalizeConfigFileResult(result);
+}
+
+export async function readNativeGlobalWebToolsConfigFile() {
+  const result = await invokeNativeDesktopBridge("readGlobalWebToolsConfigFile");
+  return normalizeConfigFileResult(result);
+}
+
+export async function writeNativeGlobalWebToolsConfigFile(content = "") {
+  const result = await invokeNativeDesktopBridge("writeGlobalWebToolsConfigFile", {
+    content: String(content || ""),
+  });
+  return normalizeConfigFileResult(result);
+}
+
+export async function readNativeProjectWebToolsConfigFile(workspacePath = "") {
+  const normalizedWorkspacePath = String(workspacePath || "").trim();
+  if (!normalizedWorkspacePath) return null;
+  const result = await invokeNativeDesktopBridge("readProjectWebToolsConfigFile", {
+    workspacePath: normalizedWorkspacePath,
+  });
+  return normalizeConfigFileResult(result);
+}
+
+export async function writeNativeProjectWebToolsConfigFile(workspacePath = "", content = "") {
+  const normalizedWorkspacePath = String(workspacePath || "").trim();
+  if (!normalizedWorkspacePath) return null;
+  const result = await invokeNativeDesktopBridge("writeProjectWebToolsConfigFile", {
+    workspacePath: normalizedWorkspacePath,
+    content: String(content || ""),
+  });
+  return normalizeConfigFileResult(result);
+}
+
+export async function openNativeExternalUrl(url = "") {
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) return false;
+  const result = await invokeNativeDesktopBridge("openExternalUrl", {
+    url: normalizedUrl,
+  });
+  return result === true || result?.opened === true;
 }
 
 export async function listNativeLiuAgentBuiltinTools() {
