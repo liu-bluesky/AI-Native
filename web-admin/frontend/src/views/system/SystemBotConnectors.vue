@@ -8,11 +8,11 @@
           <div class="page-header__stats">
             <span>{{ platformCount }} 个平台</span>
             <span>{{ configuredConnectorCount }} 个已配置</span>
-            <span>按当前用户权限访问项目</span>
+            <span>{{ connectorConfigPath }}</span>
           </div>
         </div>
         <p class="page-header__desc">
-          这里只管理机器人凭证、可用模型、机器人提示词和配置说明。机器人不绑定单个项目，消息处理时按当前登录用户权限访问可见项目。
+          这里只管理机器人凭证、可用模型、机器人提示词和配置说明。配置保存到本机全局存储，消息处理由桌面智能体按当前登录用户权限访问可见项目。
         </p>
       </div>
       <div class="page-header__actions">
@@ -34,14 +34,21 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
-import api from "@/utils/api.js";
+import api from "@/utils/api";
 import BotPlatformConnectorModule from "@/components/system/BotPlatformConnectorModule.vue";
+import {
+  DEFAULT_BOT_CONNECTOR_CONFIG,
+  globalBotConnectorConfigPathLabel,
+  readGlobalBotConnectorConfigFile,
+  writeGlobalBotConnectorConfigFile,
+} from "@/modules/project-chat/services/projectChatStorage.js";
 
 const SUPPORTED_PLATFORMS = ["qq", "feishu", "wechat"];
 
 const loading = ref(false);
 const saving = ref(false);
 const connectors = ref([]);
+const connectorConfigPath = ref(globalBotConnectorConfigPathLabel());
 
 const platformCount = SUPPORTED_PLATFORMS.length;
 const configuredConnectorCount = computed(() =>
@@ -57,9 +64,10 @@ const configuredConnectorCount = computed(() =>
 );
 
 async function fetchConfig() {
-  const data = await api.get("/bot-connectors");
-  connectors.value = Array.isArray(data?.items)
-    ? data.items
+  const data = await readGlobalBotConnectorConfigFile();
+  connectorConfigPath.value = String(data?.path || globalBotConnectorConfigPathLabel()).trim();
+  connectors.value = Array.isArray(data?.config?.connectors)
+    ? data.config.connectors
     : [];
 }
 
@@ -74,17 +82,84 @@ async function refreshPage() {
   }
 }
 
+async function fetchDesktopModelRuntime(providerId) {
+  const normalizedProviderId = String(providerId || "").trim();
+  if (!normalizedProviderId) return null;
+  const data = await api.get(
+    `/llm/providers/${encodeURIComponent(normalizedProviderId)}/desktop-runtime`,
+  );
+  const runtime =
+    data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
+  const baseUrl = String(runtime.base_url || runtime.baseUrl || "").trim();
+  const apiKey = String(runtime.api_key || runtime.apiKey || "").trim();
+  if (!baseUrl || !apiKey) {
+    throw new Error("当前模型供应商缺少 Base URL 或 API Key，桌面端无法本地调用模型");
+  }
+  return runtime;
+}
+
+async function enrichConnectorModelRuntime(connector) {
+  const providerId = String(connector?.provider_id || connector?.providerId || "").trim();
+  const modelName = String(connector?.model_name || connector?.modelName || "").trim();
+  if (!providerId) {
+    return {
+      ...connector,
+      model_runtime: null,
+    };
+  }
+  const runtime = await fetchDesktopModelRuntime(providerId);
+  const resolvedModelName = String(
+    modelName ||
+      runtime?.model_name ||
+      runtime?.modelName ||
+      runtime?.default_model ||
+      runtime?.defaultModel ||
+      "",
+  ).trim();
+  if (!resolvedModelName) {
+    throw new Error(`机器人模型供应商缺少可用模型名：${providerId}`);
+  }
+  return {
+    ...connector,
+    provider_id: providerId,
+    model_name: resolvedModelName,
+    model_runtime: {
+      mode: "direct-openai-compatible",
+      providerId,
+      modelName: resolvedModelName,
+      baseUrl: String(runtime?.base_url || runtime?.baseUrl || "").trim(),
+      apiKey: String(runtime?.api_key || runtime?.apiKey || "").trim(),
+      temperature:
+        Number.isFinite(Number(runtime?.temperature)) && runtime?.temperature !== ""
+          ? Number(runtime.temperature)
+          : null,
+    },
+  };
+}
+
+async function enrichConnectorsForLocalRuntime(items) {
+  const nextItems = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    nextItems.push(await enrichConnectorModelRuntime(item));
+  }
+  return nextItems;
+}
+
 async function saveConnectors(nextItems) {
   saving.value = true;
   try {
     const items = Array.isArray(nextItems) ? nextItems : connectors.value;
-    const data = await api.put("/bot-connectors", {
-      items: Array.isArray(items) ? items : [],
+    const enrichedItems = await enrichConnectorsForLocalRuntime(items);
+    const data = await writeGlobalBotConnectorConfigFile({
+      ...DEFAULT_BOT_CONNECTOR_CONFIG,
+      connectors: enrichedItems,
     });
-    connectors.value = Array.isArray(data?.items)
-      ? data.items
+    connectorConfigPath.value = String(data?.path || globalBotConnectorConfigPathLabel()).trim();
+    connectors.value = Array.isArray(data?.config?.connectors)
+      ? data.config.connectors
       : [];
     if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("local-bot-connectors-config-updated"));
       window.dispatchEvent(
         new CustomEvent("system-config-updated", {
           detail: {
@@ -95,7 +170,7 @@ async function saveConnectors(nextItems) {
         }),
       );
     }
-    ElMessage.success("机器人接入配置已保存");
+    ElMessage.success(`机器人接入配置已保存：${connectorConfigPath.value}`);
     return connectors.value;
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "保存机器人接入配置失败");

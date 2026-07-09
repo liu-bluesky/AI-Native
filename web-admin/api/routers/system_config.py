@@ -853,12 +853,8 @@ async def patch_system_config(
     if "bot_platform_connectors" in updates:
         bot_connectors_payload = updates.pop("bot_platform_connectors")
 
-    worker_toggle_requested = False
     if "feishu_bot_long_connection_worker_enabled" in updates:
         next_worker_enabled = bool(updates["feishu_bot_long_connection_worker_enabled"])
-        worker_toggle_requested = next_worker_enabled != bool(
-            getattr(current_config, "feishu_bot_long_connection_worker_enabled", False)
-        )
         updates["feishu_bot_long_connection_worker_enabled"] = next_worker_enabled
 
     if "query_mcp_public_base_url" in updates:
@@ -940,13 +936,6 @@ async def patch_system_config(
         updated = current_config
     if bot_connectors_payload is not None:
         replace_bot_connectors(bot_connectors_payload)
-    supervisor = getattr(request.app.state, "feishu_long_connection_supervisor", None)
-    if supervisor is not None:
-        worker_enabled = bool(getattr(updated, "feishu_bot_long_connection_worker_enabled", False))
-        if worker_enabled and (worker_toggle_requested or bot_connectors_payload is not None):
-            supervisor.restart()
-        elif worker_toggle_requested:
-            await supervisor.stop()
     previous_storage_path = str(previous_greeting_audio.get("storage_path") or "").strip()
     current_storage_path = str(getattr(updated, "global_assistant_greeting_audio", {}).get("storage_path") or "").strip()
     if previous_storage_path and previous_storage_path != current_storage_path:

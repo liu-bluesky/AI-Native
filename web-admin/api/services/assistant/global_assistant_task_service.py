@@ -15,6 +15,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from core.config import get_api_data_dir
+from core.deps import build_user_auth_payload, get_auth_role_ids
 from services.feishu.feishu_archive_writer_service import archive_feishu_task_message, is_feishu_auto_archive_action
 
 logger = logging.getLogger(__name__)
@@ -1110,6 +1111,8 @@ def _execute_dynamic_project_chat_action(
 
         project_id = str(task.get("project_id") or "").strip()
         username = _normalize_username(str(task.get("created_by") or "admin"))
+        auth_payload = build_user_auth_payload(username)
+        auth_role_ids = get_auth_role_ids(auth_payload) or ["user"]
         if not project_id:
             return {"status": "failed", "message": "动态任务缺少 project_id", "dynamic_action_count": 0}
         if projects_router.project_store.get(project_id) is None:
@@ -1156,7 +1159,7 @@ def _execute_dynamic_project_chat_action(
             project_id=project_id,
             username=username,
             req=req,
-            auth_payload={"sub": username, "role": "admin", "roles": ["admin"]},
+            auth_payload=auth_payload,
             save_memory_snapshot=False,
             publish_realtime=False,
         )
@@ -1176,7 +1179,7 @@ def _execute_dynamic_project_chat_action(
                 speech_result = await enqueue_system_speech(
                     str(dynamic_action["text"]),
                     owner_username=username,
-                    role_ids=params.get("role_ids") if isinstance(params.get("role_ids"), list) else ["admin"],
+                    role_ids=params.get("role_ids") if isinstance(params.get("role_ids"), list) else auth_role_ids,
                     source="global-assistant-dynamic-task",
                     require_enabled=bool(params.get("require_enabled", True)),
                 )
@@ -1235,7 +1238,9 @@ def _enqueue_system_speech_action(task: dict[str, Any], action: dict[str, Any]) 
     except (TypeError, ValueError):
         repeat = 1
     repeat = max(1, min(repeat, 10))
-    role_ids = params.get("role_ids") if isinstance(params.get("role_ids"), list) else ["admin"]
+    owner_username = str(task.get("created_by") or "").strip()
+    auth_role_ids = get_auth_role_ids(build_user_auth_payload(owner_username)) or ["user"]
+    role_ids = params.get("role_ids") if isinstance(params.get("role_ids"), list) else auth_role_ids
     require_enabled = bool(params.get("require_enabled", True))
     if not text:
         return {"queued": False, "reason": "语音内容为空"}
@@ -1256,7 +1261,7 @@ def _enqueue_system_speech_action(task: dict[str, Any], action: dict[str, Any]) 
         for _ in range(repeat):
             last_result = await enqueue_system_speech(
                 text,
-                owner_username=str(task.get("created_by") or "").strip(),
+                owner_username=owner_username,
                 role_ids=role_ids,
                 source="global-assistant-task",
                 require_enabled=False,

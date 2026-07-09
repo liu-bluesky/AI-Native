@@ -1271,7 +1271,7 @@ def test_system_config_patch_accepts_bot_platform_connectors(tmp_path, monkeypat
     assert _store_factory.bot_connector_store.list_all() == connectors
 
 
-def test_system_config_patch_restarts_feishu_worker_after_connector_change(tmp_path, monkeypatch):
+def test_system_config_patch_does_not_restart_backend_feishu_worker_after_connector_change(tmp_path, monkeypatch):
     client, _store_factory = _build_global_assistant_test_client(
         tmp_path,
         monkeypatch,
@@ -1311,7 +1311,7 @@ def test_system_config_patch_restarts_feishu_worker_after_connector_change(tmp_p
     )
 
     assert response.status_code == 200
-    assert supervisor.restart_calls == 1
+    assert supervisor.restart_calls == 0
     assert supervisor.stop_calls == 0
 
 
@@ -1368,7 +1368,7 @@ def test_bot_connectors_route_persists_to_dedicated_store(tmp_path, monkeypatch)
     assert [item["platform"] for item in items] == ["feishu", "feishu"]
     assert items[0]["name"] == "飞书主机器人"
     assert items[0]["system_prompt"] == "你是飞书主机器人，只处理项目协作问题。"
-    assert items[0]["chat_mode"] == "system"
+    assert items[0]["chat_mode"] == "desktop_local_agent"
     assert items[0]["external_agent_type"] == "claude_code"
     assert items[0]["provider_id"] == "provider-bot"
     assert items[0]["model_name"] == "bot-model"
@@ -1381,7 +1381,7 @@ def test_bot_connectors_route_persists_to_dedicated_store(tmp_path, monkeypatch)
     assert items[1]["reply_identity"] == "bot"
     assert items[1]["name"] == "测试用例机器人"
     assert items[1]["agent_name"] == ""
-    assert items[1]["chat_mode"] == "system"
+    assert items[1]["chat_mode"] == "desktop_local_agent"
     assert items[1]["external_agent_type"] == "codex_cli"
     assert items[1]["owner_username"] == "tester"
     assert items[1]["project_id"] == ""
@@ -1392,7 +1392,7 @@ def test_bot_connectors_route_persists_to_dedicated_store(tmp_path, monkeypatch)
     assert get_response.json()["config"]["bot_platform_connectors"] == items
 
 
-def test_bot_connectors_route_restarts_feishu_worker_when_enabled(tmp_path, monkeypatch):
+def test_bot_connectors_route_does_not_restart_backend_feishu_worker_when_enabled(tmp_path, monkeypatch):
     client, store_factory = _build_global_assistant_test_client(
         tmp_path,
         monkeypatch,
@@ -1438,8 +1438,9 @@ def test_bot_connectors_route_restarts_feishu_worker_when_enabled(tmp_path, monk
     )
 
     assert response.status_code == 200
-    assert supervisor.restart_calls == 1
-    assert response.json()["feishu_long_connection"]["feishu-main"]["running"] is True
+    assert supervisor.restart_calls == 0
+    assert response.json()["feishu_long_connection"]["status"] == "disabled"
+    assert response.json()["feishu_long_connection"]["runtime"] == "desktop_tauri_sidecar"
 
 
 def test_bot_connector_platforms_and_feishu_diagnose(tmp_path, monkeypatch):
@@ -1490,9 +1491,9 @@ def test_bot_connector_platforms_and_feishu_diagnose(tmp_path, monkeypatch):
     checks = {item["id"]: item for item in payload["checks"]}
     assert checks["credentials_present"]["ok"] is True
     assert checks["feishu_credentials_valid"]["ok"] is True
-    assert checks["feishu_system_worker_enabled"]["ok"] is False
-    assert checks["feishu_long_connection_worker"]["ok"] is False
-    assert "系统配置页" in " ".join(payload["next_actions"])
+    assert checks["feishu_backend_worker_disabled"]["ok"] is True
+    assert checks["feishu_desktop_sidecar_required"]["ok"] is True
+    assert "桌面 Tauri" in " ".join(payload["next_actions"])
 
 
 def test_feishu_bot_event_route_returns_503_when_sdk_unavailable(tmp_path, monkeypatch):

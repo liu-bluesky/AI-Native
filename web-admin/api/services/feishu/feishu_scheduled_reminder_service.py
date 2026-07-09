@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from services.plugins.cli_plugin_market_service import build_cli_plugin_runtime_environment
 from services.assistant.global_assistant_task_service import upsert_global_assistant_task
 
 _LOCAL_TZ = ZoneInfo("Asia/Shanghai")
@@ -276,6 +277,8 @@ def send_feishu_scheduled_message(*, task: dict[str, Any], action: dict[str, Any
         identity = "bot"
     if not chat_id:
         raise RuntimeError("缺少飞书 chat_id，无法发送定时提醒")
+    owner_username = str(task.get("created_by") or task.get("createdBy") or "").strip()
+    exec_env, _ = build_cli_plugin_runtime_environment(owner_username=owner_username)
     command = [
         "lark-cli",
         "im",
@@ -290,7 +293,7 @@ def send_feishu_scheduled_message(*, task: dict[str, Any], action: dict[str, Any
         f"feishu-reminder-{task.get('id') or ''}",
     ]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False, env=exec_env)
     except FileNotFoundError as exc:
         raise RuntimeError("未找到 lark-cli，请先安装 @larksuite/cli 并重新启动服务") from exc
     except subprocess.TimeoutExpired as exc:

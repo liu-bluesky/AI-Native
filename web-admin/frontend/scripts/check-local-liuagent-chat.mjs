@@ -562,7 +562,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /<el-form-item\s+v-if="hasSelectedProject"[\s\S]*?AI 入口文件/,
+  /v-if="hasSelectedProject"[\s\S]*?class="settings-module-row settings-module-row--stacked"[\s\S]*?AI 入口文件/,
   "AI entry file setting must stay visible in chat settings for selected projects",
 );
 

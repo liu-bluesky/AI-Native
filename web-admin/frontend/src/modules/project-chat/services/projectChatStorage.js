@@ -1,10 +1,12 @@
 import { getStoredAuthProfile } from "@/utils/auth-storage.js";
 import {
   hasNativeDesktopBridge,
+  readNativeGlobalBotConnectorConfigFile,
   readNativeGlobalMcpConfigFile,
   readNativeGlobalWebToolsConfigFile,
   readNativeProjectMcpConfigFile,
   readNativeProjectWebToolsConfigFile,
+  writeNativeGlobalBotConnectorConfigFile,
   writeNativeGlobalMcpConfigFile,
   writeNativeGlobalWebToolsConfigFile,
   writeNativeProjectMcpConfigFile,
@@ -62,6 +64,10 @@ export const DEFAULT_WEB_TOOLS_CONFIG = {
       api_key: "",
     },
   },
+};
+export const DEFAULT_BOT_CONNECTOR_CONFIG = {
+  version: 1,
+  connectors: [],
 };
 
 function chatSessionStorageKey(projectId) {
@@ -517,12 +523,134 @@ export function formatWebToolsConfig(value) {
   return JSON.stringify(normalizeWebToolsConfig(value), null, 2);
 }
 
+function normalizeBotConnectorId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 80);
+}
+
+function normalizeBotConnectorScannedChats(value) {
+  const items = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const normalized = [];
+  for (const item of items) {
+    const chatId = String(item?.chat_id || item?.chatId || "").trim().slice(0, 200);
+    if (!chatId || seen.has(chatId)) continue;
+    seen.add(chatId);
+    normalized.push({
+      chat_id: chatId,
+      chat_name: String(item?.chat_name || item?.chatName || item?.name || "")
+        .trim()
+        .slice(0, 200),
+      chat_type: String(item?.chat_type || item?.chatType || item?.chat_mode || "group")
+        .trim()
+        .slice(0, 80),
+      chat_mode: String(item?.chat_mode || item?.chatMode || "").trim().slice(0, 80),
+      source: String(item?.source || "").trim().slice(0, 200),
+      scanned_at: String(item?.scanned_at || item?.scannedAt || "").trim().slice(0, 80),
+    });
+    if (normalized.length >= 500) break;
+  }
+  return normalized;
+}
+
+export function normalizeBotConnectorItem(value) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const platform = String(raw.platform || "")
+    .trim()
+    .toLowerCase();
+  const id = normalizeBotConnectorId(raw.id || `${platform || "bot"}-connector`);
+  return {
+    id,
+    enabled: raw.enabled !== false,
+    platform,
+    name: String(raw.name || "").trim().slice(0, 120),
+    agent_name: "",
+    description: String(raw.description || "").trim().slice(0, 280),
+    system_prompt: String(raw.system_prompt || raw.systemPrompt || "").trim().slice(0, 4000),
+    chat_mode: "desktop_local_agent",
+    external_agent_type: ["codex_cli", "hermes", "claude_code"].includes(
+      String(raw.external_agent_type || raw.externalAgentType || "").trim().toLowerCase(),
+    )
+      ? String(raw.external_agent_type || raw.externalAgentType || "").trim().toLowerCase()
+      : "codex_cli",
+    provider_id: String(raw.provider_id || raw.providerId || "").trim().slice(0, 120),
+    model_name: String(raw.model_name || raw.modelName || "").trim().slice(0, 160),
+    model_runtime:
+      raw.model_runtime && typeof raw.model_runtime === "object"
+        ? cloneJson(raw.model_runtime)
+        : raw.modelRuntime && typeof raw.modelRuntime === "object"
+          ? cloneJson(raw.modelRuntime)
+          : null,
+    app_id: String(raw.app_id || raw.appId || "").trim().slice(0, 160),
+    app_secret: String(raw.app_secret || raw.appSecret || "").trim().slice(0, 200),
+    verification_token: String(raw.verification_token || raw.verificationToken || "")
+      .trim()
+      .slice(0, 200),
+    encrypt_key: String(raw.encrypt_key || raw.encryptKey || "").trim().slice(0, 200),
+    event_receive_mode: String(raw.event_receive_mode || raw.eventReceiveMode || "manual")
+      .trim()
+      .toLowerCase(),
+    auto_start_worker: raw.auto_start_worker ?? raw.autoStartWorker ?? false,
+    reply_identity: ["bot", "user"].includes(
+      String(raw.reply_identity || raw.replyIdentity || "").trim().toLowerCase(),
+    )
+      ? String(raw.reply_identity || raw.replyIdentity || "").trim().toLowerCase()
+      : "bot",
+    project_id: "",
+    guide_url: String(raw.guide_url || raw.guideUrl || "").trim().slice(0, 500),
+    sort_order: Math.min(999, Math.max(0, Number(raw.sort_order || raw.sortOrder || 0) || 0)),
+    sandbox_mode: String(raw.sandbox_mode || raw.sandboxMode || "workspace-write")
+      .trim()
+      .toLowerCase(),
+    high_risk_tool_confirm: raw.high_risk_tool_confirm ?? raw.highRiskToolConfirm ?? true,
+    scanned_chats: normalizeBotConnectorScannedChats(raw.scanned_chats || raw.scannedChats),
+  };
+}
+
+export function normalizeBotConnectorConfig(value, fallback = DEFAULT_BOT_CONNECTOR_CONFIG) {
+  const raw = Array.isArray(value)
+    ? { connectors: value }
+    : value && typeof value === "object"
+      ? value
+      : fallback;
+  const seen = new Set();
+  const connectors = [];
+  for (const item of Array.isArray(raw?.connectors) ? raw.connectors : []) {
+    const normalized = normalizeBotConnectorItem(item);
+    if (!normalized.id || !normalized.platform) continue;
+    const uniqueKey = normalized.id.toLowerCase();
+    if (seen.has(uniqueKey)) continue;
+    seen.add(uniqueKey);
+    connectors.push(normalized);
+  }
+  connectors.sort(
+    (a, b) => a.sort_order - b.sort_order || a.platform.localeCompare(b.platform) || a.id.localeCompare(b.id),
+  );
+  return {
+    version: Number(raw?.version || 1) || 1,
+    connectors,
+  };
+}
+
+export function formatBotConnectorConfig(value) {
+  return JSON.stringify(normalizeBotConnectorConfig(value), null, 2);
+}
+
 export function globalWebToolsConfigPathLabel() {
   return "~/.ai-employee/agent-runtime-v2/web-tools/config.json";
 }
 
 export function projectWebToolsConfigPathLabel() {
   return ".ai-employee/agent-runtime-v2/web-tools/config.json";
+}
+
+export function globalBotConnectorConfigPathLabel() {
+  return "~/.ai-employee/agent-runtime-v2/bots/connectors.json";
 }
 
 const mcpConfigEditor = createJsonConfigEditor({
@@ -554,12 +682,27 @@ const webToolsConfigEditor = createJsonConfigEditor({
   writeNativeProject: writeNativeProjectWebToolsConfigFile,
 });
 
+const botConnectorConfigEditor = createJsonConfigEditor({
+  label: "机器人连接器配置",
+  globalPathLabel: globalBotConnectorConfigPathLabel(),
+  globalDefaultConfig: DEFAULT_BOT_CONNECTOR_CONFIG,
+  normalize: (value, fallback = DEFAULT_BOT_CONNECTOR_CONFIG) =>
+    normalizeBotConnectorConfig(value, fallback),
+  hasNative: hasNativeDesktopBridge,
+  readNativeGlobal: readNativeGlobalBotConnectorConfigFile,
+  writeNativeGlobal: writeNativeGlobalBotConnectorConfigFile,
+});
+
 export function parseMcpConfigText(text) {
   return mcpConfigEditor.parse(text);
 }
 
 export function parseWebToolsConfigText(text) {
   return webToolsConfigEditor.parse(text);
+}
+
+export function parseBotConnectorConfigText(text) {
+  return botConnectorConfigEditor.parse(text);
 }
 
 export async function readGlobalMcpConfigFile() {
@@ -609,6 +752,14 @@ export async function readGlobalWebToolsConfigFile() {
 
 export async function writeGlobalWebToolsConfigFile(config) {
   return webToolsConfigEditor.writeGlobal(config);
+}
+
+export async function readGlobalBotConnectorConfigFile() {
+  return botConnectorConfigEditor.readGlobal();
+}
+
+export async function writeGlobalBotConnectorConfigFile(config) {
+  return botConnectorConfigEditor.writeGlobal(config);
 }
 
 export async function readProjectWebToolsConfigFile(workspacePath) {

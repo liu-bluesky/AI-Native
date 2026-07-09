@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from stores.factory import system_config_store
 from services.connectors.bot_connector_service import get_bot_connector
 from services.feishu.feishu_bot_service import (
     check_feishu_connector_credentials,
@@ -40,7 +39,7 @@ def bot_connector_platform_manifests() -> list[dict[str, Any]]:
                 "事件订阅选择“使用长连接接收事件”或 HTTP 回调；推荐长连接。",
                 "添加事件 im.message.receive_v1，并开通机器人接收消息权限。",
                 "把机器人添加到目标群，在系统里保存连接器后运行诊断。",
-                "若使用长连接，后端需启动飞书长连接 worker。",
+                "若使用长连接，桌面端需保持运行，由 Tauri 侧飞书 SDK 监听事件。",
             ],
         },
         {
@@ -124,20 +123,10 @@ def diagnose_bot_connector(connector_id: str, *, worker_status: dict[str, Any] |
         else:
             checks.append(_check("feishu_credentials_valid", "飞书凭证有效", False, "缺少凭证，跳过飞书 token 校验", action="补齐 App ID / App Secret 后重新诊断"))
         if receive_mode == "long_connection":
-            system_worker_enabled = bool(
-                getattr(
-                    system_config_store.get_global(),
-                    "feishu_bot_long_connection_worker_enabled",
-                    False,
-                )
-            )
-            checks.append(_check("feishu_system_worker_enabled", "系统已启用长连接 worker", system_worker_enabled, "系统配置已启用飞书长连接 worker" if system_worker_enabled else "系统配置未启用飞书长连接 worker", action="到系统配置页打开“飞书长连接 worker”开关并保存"))
-            auto_start = connector.get("auto_start_worker") is True
-            checks.append(_check("feishu_auto_start_worker", "连接器允许托管 worker", auto_start, "连接器允许后端托管长连接 worker" if auto_start else "连接器未开启 worker 托管开关", action="在连接器编辑里打开长连接 worker 开关"))
-            running = bool((worker_status or {}).get("running"))
-            checks.append(_check("feishu_long_connection_worker", "长连接 worker 运行中", running, "worker 正在运行" if running else "worker 未运行或未由当前 API 进程托管", action="打开系统配置开关并保存；若仍未运行，点击 worker 重启或手动运行 worker 脚本"))
+            checks.append(_check("feishu_backend_worker_disabled", "后端长连接 worker 已停用", True, "后端不再托管飞书长连接 worker，消息监听由桌面 Tauri 侧接管"))
+            checks.append(_check("feishu_desktop_sidecar_required", "桌面端监听负责接收事件", True, "请保持桌面智能体运行；飞书 SDK 长连接在桌面 Tauri 侧启动"))
             next_actions.append("在飞书开放平台把事件订阅方式设为长连接，并添加 im.message.receive_v1")
-            next_actions.append("到系统配置页打开“飞书长连接 worker”开关并保存，系统会尝试启动/停止 worker")
+            next_actions.append("启动桌面智能体并保持机器人连接器启用，由桌面 Tauri 侧监听飞书消息")
         else:
             next_actions.append("若使用 HTTP 回调，在飞书后台配置 /api/bot-events/feishu/{connector_id}/event 公网 URL")
         next_actions.append("在目标项目对话里绑定飞书群来源后，把机器人加入目标群并 @ 机器人发送测试消息")

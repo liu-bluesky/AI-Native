@@ -29,6 +29,9 @@
   "bundle": {
     "active": false,
     "targets": "all",
+    "resources": [
+      "bot_workers/feishu_sdk_listener.py"
+    ],
     "icon": []
   }
 }

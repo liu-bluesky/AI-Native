@@ -3992,6 +3992,8 @@ fn run_agent_loop_with(
     let mut acceptance_gate_reprompts = 0usize;
     let mut last_acceptance_gate: Option<AcceptanceGateResult> = None;
     let mut permission_cache = load_session_permission_cache(workspace_root, run_key);
+    let active_workspace_root = RefCell::new(workspace_root.clone());
+    let allow_project_workspace_switch = is_tauri_bot_local_chat_request(base_request);
     let stopped_reason: String;
     let mut awaiting_permission = false;
 
@@ -4151,7 +4153,7 @@ fn run_agent_loop_with(
                     &request.mcp_config,
                     tool_arguments_with_file_access_policy(&tool, &request),
                 ),
-                workspace_path: workspace_root.to_string_lossy().to_string(),
+                workspace_path: active_workspace_root.borrow().to_string_lossy().to_string(),
                 permission_decision: effective_permission_decision.clone(),
             };
             let result = if let Some(disabled_result) = disabled_tool_result(&tool, &request) {
@@ -4197,9 +4199,16 @@ fn run_agent_loop_with(
                 );
             }
             if result.ok {
+                if allow_project_workspace_switch {
+                    if let Some(project_workspace_root) =
+                        project_workspace_root_from_tool_result(&tool.name, &result)
+                    {
+                        *active_workspace_root.borrow_mut() = project_workspace_root;
+                    }
+                }
                 record_session_permission_grant(
                     &mut permission_cache,
-                    workspace_root,
+                    &active_workspace_root.borrow(),
                     run_key,
                     &tool,
                     effective_permission_decision.as_ref(),
@@ -4273,6 +4282,51 @@ fn run_agent_loop_with(
         stopped_reason,
         awaiting_permission,
     )
+}
+
+fn is_tauri_bot_local_chat_request(request: &ModelStepRequest) -> bool {
+    request
+        .mcp_config
+        .get("botContext")
+        .and_then(|context| context.get("runtime"))
+        .and_then(|runtime| runtime.get("source"))
+        .and_then(Value::as_str)
+        .map(|source| source.trim() == "tauri_bot_local_chat")
+        .unwrap_or(false)
+}
+
+fn project_workspace_root_from_tool_result(
+    tool_name: &str,
+    result: &super::types::ToolExecutionResult,
+) -> Option<PathBuf> {
+    if tool_name.trim() != "get_project" || !result.ok {
+        return None;
+    }
+    let project = result
+        .content
+        .get("response")
+        .and_then(|response| response.get("project"))
+        .or_else(|| result.content.get("project"))?;
+    let workspace_path = json_string(project, &["workspace_path", "workspacePath"])?;
+    let path = PathBuf::from(workspace_path.trim());
+    if !path.is_absolute() {
+        return None;
+    }
+    path.canonicalize().ok().filter(|value| value.is_dir())
+}
+
+fn json_string(value: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(text) = value
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            return Some(text.to_string());
+        }
+    }
+    None
 }
 
 fn emit_model_step_event(
@@ -4635,7 +4689,9 @@ fn tool_arguments_with_backend_context(
     }
     if !matches!(
         tool_name,
-        "get_project_deploy_options"
+        "list_projects"
+            | "get_project"
+            | "get_project_deploy_options"
             | "upload_deploy_artifact"
             | "deploy_workspace_files_to_target"
     ) {
@@ -4647,12 +4703,13 @@ fn tool_arguments_with_backend_context(
     let Some(object) = arguments.as_object_mut() else {
         return arguments;
     };
-    if object
-        .get("project_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_none()
+    if tool_name != "list_projects"
+        && object
+            .get("project_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
     {
         let normalized_project_id = project_id.trim();
         if !normalized_project_id.is_empty() {
@@ -8140,6 +8197,19 @@ fn tool_disabled_reason(
                 "MCP tools are disabled because no MCP server is explicitly enabled".to_string()
             })
         }
+        "list_projects" | "get_project" => {
+            let has_backend_context = request
+                .backend_context
+                .as_ref()
+                .map(|context| {
+                    !context.api_base_url.trim().is_empty() && !context.token.trim().is_empty()
+                })
+                .unwrap_or(false);
+            (!has_backend_context).then(|| {
+                "Project tools are disabled because no backend login context is available"
+                    .to_string()
+            })
+        }
         _ => None,
     }
 }
@@ -8896,6 +8966,47 @@ mod tests {
         let candidates = extract_file_path_candidates("写一份 vue3 改造方案，放到 docs/ 里面");
 
         assert!(!candidates.iter().any(|item| item.contains("vue3改造方案")));
+    }
+
+    #[test]
+    fn detects_tauri_bot_local_chat_context_for_project_workspace_switch() {
+        let mut request = test_model_request("读取项目目录");
+        request.mcp_config = json!({
+            "botContext": {
+                "runtime": {
+                    "source": "tauri_bot_local_chat"
+                }
+            }
+        });
+
+        assert!(is_tauri_bot_local_chat_request(&request));
+
+        request.mcp_config = json!({});
+        assert!(!is_tauri_bot_local_chat_request(&request));
+    }
+
+    #[test]
+    fn extracts_project_workspace_root_from_get_project_result() {
+        let workspace = std::env::temp_dir().join(format!("runtime-project-{}", epoch_millis()));
+        std::fs::create_dir_all(&workspace).expect("workspace dir");
+        let result = super::super::types::ToolExecutionResult::ok(
+            "call_get_project".to_string(),
+            "get_project".to_string(),
+            json!({
+                "response": {
+                    "project": {
+                        "id": "proj-b786c6f1",
+                        "workspace_path": workspace.to_string_lossy()
+                    }
+                }
+            }),
+            "已读取项目详情：浩成CRM".to_string(),
+        );
+
+        let resolved = project_workspace_root_from_tool_result("get_project", &result)
+            .expect("workspace root");
+        assert_eq!(resolved, workspace.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(workspace);
     }
 
     #[test]
@@ -12487,6 +12598,39 @@ mod tests {
 
         assert_eq!(execution_args["project_id"], "proj-current");
         assert_eq!(execution_args["_backend_token"], "secret-token");
+    }
+
+    #[test]
+    fn project_tools_backend_context_is_injected_only_for_execution() {
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_list_projects".to_string(),
+            name: "list_projects".to_string(),
+            arguments: json!({
+                "page_size": 50
+            }),
+            summary: "list projects".to_string(),
+        };
+        let backend_context = LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "secret-token".to_string(),
+        };
+
+        assert!(tool.arguments.get("_backend_token").is_none());
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            "desktop-bot-global",
+            Some(&backend_context),
+            &json!({}),
+            tool.arguments.clone(),
+        );
+
+        assert_eq!(
+            execution_args["_backend_api_base_url"],
+            "http://127.0.0.1:8000/api"
+        );
+        assert_eq!(execution_args["_backend_token"], "secret-token");
+        assert!(execution_args.get("project_id").is_none());
+        assert!(tool.arguments.get("_backend_token").is_none());
     }
 
     #[test]

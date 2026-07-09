@@ -247,6 +247,40 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "list_projects",
+            description: "列出当前桌面登录用户在后端有权限访问的真实项目列表。用户询问“项目列表 / 有哪些项目 / 列出项目”时优先使用本工具；不要用 desktop-bot-global 或本地 workspace 目录缓存冒充真实项目列表。",
+            action: "project.list",
+            risk: "low",
+            requires_approval: false,
+            scope: "project",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "page": {"type": "number", "default": 1},
+                    "page_size": {"type": "number", "default": 20},
+                    "name": {"type": "string", "description": "按项目名称关键词过滤，可选"},
+                    "created_by": {"type": "string", "description": "按创建人过滤，可选"},
+                    "timeout_ms": {"type": "number", "default": 30000}
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "get_project",
+            description: "读取当前桌面登录用户有权限访问的真实项目详情。用户给出项目 ID 或需要查看某个项目元数据时使用。",
+            action: "project.read",
+            risk: "low",
+            requires_approval: false,
+            scope: "project",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "timeout_ms": {"type": "number", "default": 30000}
+                },
+                "required": ["project_id"]
+            }),
+        },
+        ToolDefinition {
             name: "get_project_deploy_options",
             description: "读取当前项目后端部署配置摘要（脱敏），包含可选 profile、component、target、remote_path、artifact_kind、是否存在 deploy_command、notify_enabled。部署/发布/上线类任务必须先调用该工具，再让用户选择环境和目标；该工具只读，不上传、不部署、不返回服务器凭据。",
             action: "deploy.options.read",

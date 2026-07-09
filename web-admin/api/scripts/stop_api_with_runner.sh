@@ -34,7 +34,6 @@ load_env_defaults "${API_DIR}/.env"
 load_env_defaults "${API_DIR}/.env.local"
 
 API_PORT="${API_PORT:-8000}"
-FEISHU_WORKER_CONNECTOR_IDS="${FEISHU_WORKER_CONNECTOR_IDS:-feishu-main}"
 API_RUNTIME_DIR="${API_RUNTIME_DIR:-${API_DIR}/.runtime}"
 
 FORCE=0
@@ -50,9 +49,8 @@ api_pid_by_cmd() {
   pgrep -f "${API_DIR}.*uvicorn server:app" 2>/dev/null || true
 }
 
-feishu_worker_pids_for_connector() {
-  local connector_id="$1"
-  pgrep -f "${API_DIR}/scripts/feishu_long_connection_worker.py --connector-id ${connector_id}" 2>/dev/null || true
+legacy_feishu_worker_pids() {
+  pgrep -f "${API_DIR}/scripts/feishu_long_connection_worker.py" 2>/dev/null || true
 }
 
 start_script_pids() {
@@ -98,25 +96,19 @@ stop_pid() {
   return 0
 }
 
-stop_feishu_workers() {
-  local found=0
-  local connector_id
-  for connector_id in ${FEISHU_WORKER_CONNECTOR_IDS//,/ }; do
-    connector_id="${connector_id//[[:space:]]/}"
-    [[ -z "${connector_id}" ]] && continue
-    local pids=""
-    pids="$(feishu_worker_pids_for_connector "${connector_id}" || true)"
-    if [[ -z "${pids}" ]]; then
-      echo "[feishu-worker] no worker found for ${connector_id}"
-      continue
-    fi
-    local pid
-    for pid in ${pids}; do
-      found=1
-      stop_pid "feishu-worker" "${pid}"
-    done
-    rm -f "${API_RUNTIME_DIR}/pids/feishu-worker-${connector_id}.pid" 2>/dev/null || true
+stop_legacy_feishu_workers() {
+  local pids=""
+  pids="$(legacy_feishu_worker_pids | unique_pids || true)"
+  if [[ -z "${pids}" ]]; then
+    echo "[feishu-worker] no legacy backend worker found"
+    rm -f "${API_RUNTIME_DIR}"/pids/feishu-worker-*.pid 2>/dev/null || true
+    return 0
+  fi
+  local pid
+  for pid in ${pids}; do
+    stop_pid "feishu-worker" "${pid}"
   done
+  rm -f "${API_RUNTIME_DIR}"/pids/feishu-worker-*.pid 2>/dev/null || true
   return 0
 }
 
@@ -157,13 +149,7 @@ verify_stopped() {
   local remaining_api=""
   local remaining_workers=""
   remaining_api="$(api_pids || true)"
-  local connector_id
-  for connector_id in ${FEISHU_WORKER_CONNECTOR_IDS//,/ }; do
-    connector_id="${connector_id//[[:space:]]/}"
-    [[ -z "${connector_id}" ]] && continue
-    remaining_workers+=$'\n'"$(feishu_worker_pids_for_connector "${connector_id}" || true)"
-  done
-  remaining_workers="$(printf "%s\n" "${remaining_workers}" | unique_pids || true)"
+  remaining_workers="$(legacy_feishu_worker_pids | unique_pids || true)"
   if [[ -n "${remaining_api}" || -n "${remaining_workers}" ]]; then
     echo "[stop] remaining project processes detected:" >&2
     [[ -n "${remaining_api}" ]] && echo "[stop] api pids: ${remaining_api}" >&2
@@ -173,15 +159,15 @@ verify_stopped() {
   return 0
 }
 
-echo "=== Stopping API and Feishu workers ==="
+echo "=== Stopping API and legacy backend Feishu workers ==="
 echo ""
 
 stop_start_scripts
-stop_feishu_workers
+stop_legacy_feishu_workers
 stop_api
-# API supervisor can spawn workers too, so run worker cleanup again after API stops.
-stop_feishu_workers
+# Older API supervisors or start scripts could spawn backend Feishu workers, so clean them again after API stops.
+stop_legacy_feishu_workers
 verify_stopped
 
 echo ""
-echo "=== API and Feishu workers stopped ==="
+echo "=== API and legacy backend Feishu workers stopped ==="

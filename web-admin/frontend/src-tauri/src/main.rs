@@ -10,6 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
+mod bot;
 mod liuagent_core;
 
 #[derive(Debug, Serialize)]
@@ -280,6 +281,91 @@ async fn liuagent_start_local_chat(
             ),
         ),
     }
+}
+
+#[tauri::command]
+async fn bot_start_local_chat(
+    app: tauri::AppHandle,
+    request: bot::BotChatRequest,
+) -> liuagent_core::LocalChatResult {
+    let chat_session_id = request.chat_session_id.trim().to_string();
+    let live_events = Arc::new(Mutex::new(Vec::new()));
+    let live_events_for_worker = Arc::clone(&live_events);
+    let app_for_worker = app.clone();
+
+    match tauri::async_runtime::spawn_blocking(move || {
+        bot::start_bot_chat_with_event_sink(request, |event| {
+            if let Ok(mut items) = live_events_for_worker.lock() {
+                items.push(event.clone());
+            }
+            let _ = app_for_worker.emit("bot-runtime-event", event.clone());
+            let _ = app_for_worker.emit("bot://runtime-event", event);
+        })
+    })
+    .await
+    {
+        Ok(mut result) => {
+            if let Ok(items) = live_events.lock() {
+                result.runtime_events = items.clone();
+            }
+            result
+        }
+        Err(error) => liuagent_core::LocalChatResult::failed(
+            chat_session_id,
+            liuagent_core::ToolError::new(
+                "runtime.join_failed",
+                format!("bot local chat worker failed: {error}"),
+            ),
+        ),
+    }
+}
+
+#[tauri::command]
+fn bot_start_feishu_local_listener(
+    app: tauri::AppHandle,
+    request: bot::feishu::FeishuLocalListenerStartRequest,
+) -> Result<bot::feishu::FeishuLocalListenerStatus, String> {
+    bot::feishu::start_local_listener(app, request)
+}
+
+#[tauri::command]
+fn bot_stop_feishu_local_listener(
+    connector_id: String,
+) -> Result<bot::feishu::FeishuLocalListenerStatus, String> {
+    bot::feishu::stop_local_listener(connector_id)
+}
+
+#[tauri::command]
+fn bot_list_feishu_local_listeners() -> Vec<bot::feishu::FeishuLocalListenerStatus> {
+    bot::feishu::list_local_listeners()
+}
+
+#[tauri::command]
+fn bot_reply_feishu_message(
+    request: bot::feishu::FeishuLocalReplyRequest,
+) -> Result<bot::feishu::FeishuLocalReplyResult, String> {
+    bot::feishu::reply_message(request)
+}
+
+#[tauri::command]
+fn bot_scan_feishu_chats(
+    request: bot::feishu::FeishuChatScanRequest,
+) -> Result<bot::feishu::FeishuChatScanResult, String> {
+    bot::feishu::scan_chats(request)
+}
+
+#[tauri::command]
+fn bot_download_feishu_message_resource(
+    request: bot::feishu::FeishuResourceDownloadRequest,
+) -> Result<bot::feishu::FeishuResourceDownloadResult, String> {
+    bot::feishu::download_resource(request)
+}
+
+#[tauri::command]
+fn bot_get_feishu_message(
+    request: bot::feishu::FeishuMessageGetRequest,
+) -> Result<bot::feishu::FeishuMessageGetResult, String> {
+    bot::feishu::get_message(request)
 }
 
 #[tauri::command]
@@ -738,6 +824,25 @@ fn write_project_web_tools_config_file(
 ) -> Result<WebToolsConfigFileResult, String> {
     let target = project_web_tools_config_path(&workspace_path)?;
     write_web_tools_config_file("project", target, content)
+}
+
+#[tauri::command]
+fn read_global_bot_connector_config_file() -> Result<WebToolsConfigFileResult, String> {
+    let target = global_bot_connector_config_path()?;
+    read_json_object_config_file(
+        "global",
+        target,
+        default_bot_connector_config(),
+        "机器人连接器",
+    )
+}
+
+#[tauri::command]
+fn write_global_bot_connector_config_file(
+    content: String,
+) -> Result<WebToolsConfigFileResult, String> {
+    let target = global_bot_connector_config_path()?;
+    write_json_object_config_file("global", target, content, "机器人连接器")
 }
 
 #[tauri::command]
@@ -1247,6 +1352,18 @@ fn project_web_tools_config_path(workspace_path: &str) -> Result<PathBuf, String
     Ok(liuagent_core::project_web_tool_config_path(&root))
 }
 
+fn global_bot_connector_config_path() -> Result<PathBuf, String> {
+    std::env::var_os("HOME")
+        .map(|home| {
+            PathBuf::from(home)
+                .join(".ai-employee")
+                .join("agent-runtime-v2")
+                .join("bots")
+                .join("connectors.json")
+        })
+        .ok_or_else(|| "缺少 HOME，无法定位全局机器人连接器配置文件".to_string())
+}
+
 fn default_global_mcp_config() -> Value {
     json!({
         "mcpServers": {
@@ -1265,6 +1382,13 @@ fn default_project_mcp_config() -> Value {
 
 fn default_web_tools_config() -> Value {
     serde_json::from_str(liuagent_core::WEB_TOOL_CONFIG_TEMPLATE).unwrap_or_else(|_| json!({}))
+}
+
+fn default_bot_connector_config() -> Value {
+    json!({
+        "version": 1,
+        "connectors": []
+    })
 }
 
 fn validate_mcp_config_content(content: &str) -> Result<String, String> {
@@ -1378,6 +1502,68 @@ fn write_web_tools_config_file(
     }
     fs::write(&target, format!("{normalized}\n"))
         .map_err(|err| format!("无法写入 web-tools 配置：{err}"))?;
+    Ok(WebToolsConfigFileResult {
+        scope: scope.to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: true,
+        content: format!("{normalized}\n"),
+    })
+}
+
+fn validate_json_object_config_content(content: &str, label: &str) -> Result<String, String> {
+    let raw = content.trim();
+    let parsed: Value = serde_json::from_str(if raw.is_empty() || raw == "undefined" {
+        "{}"
+    } else {
+        raw
+    })
+    .map_err(|err| format!("{label}配置 JSON 解析失败：{err}"))?;
+    if !parsed.is_object() {
+        return Err(format!("{label}配置必须是 JSON 对象"));
+    }
+    serde_json::to_string_pretty(&parsed).map_err(|err| err.to_string())
+}
+
+fn read_json_object_config_file(
+    scope: &str,
+    target: PathBuf,
+    fallback: Value,
+    label: &str,
+) -> Result<WebToolsConfigFileResult, String> {
+    if !target.exists() {
+        let content = serde_json::to_string_pretty(&fallback).map_err(|err| err.to_string())?;
+        return Ok(WebToolsConfigFileResult {
+            scope: scope.to_string(),
+            path: target.to_string_lossy().to_string(),
+            exists: false,
+            content,
+        });
+    }
+    if !target.is_file() {
+        return Err(format!("{label}配置路径不是文件"));
+    }
+    let content =
+        fs::read_to_string(&target).map_err(|err| format!("无法读取{label}配置：{err}"))?;
+    Ok(WebToolsConfigFileResult {
+        scope: scope.to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: true,
+        content,
+    })
+}
+
+fn write_json_object_config_file(
+    scope: &str,
+    target: PathBuf,
+    content: String,
+    label: &str,
+) -> Result<WebToolsConfigFileResult, String> {
+    let normalized = validate_json_object_config_content(&content, label)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("无法创建{label}配置目录：{err}"))?;
+    }
+    fs::write(&target, format!("{normalized}\n"))
+        .map_err(|err| format!("无法写入{label}配置：{err}"))?;
     Ok(WebToolsConfigFileResult {
         scope: scope.to_string(),
         path: target.to_string_lossy().to_string(),
@@ -1534,6 +1720,8 @@ fn main() {
             write_global_web_tools_config_file,
             read_project_web_tools_config_file,
             write_project_web_tools_config_file,
+            read_global_bot_connector_config_file,
+            write_global_bot_connector_config_file,
             open_external_url,
             classify_runner_command,
             run_runner_command,
@@ -1543,6 +1731,14 @@ fn main() {
             liuagent_execute_tool,
             liuagent_upload_provider_file,
             liuagent_start_local_chat,
+            bot_start_local_chat,
+            bot_start_feishu_local_listener,
+            bot_stop_feishu_local_listener,
+            bot_list_feishu_local_listeners,
+            bot_reply_feishu_message,
+            bot_scan_feishu_chats,
+            bot_download_feishu_message_resource,
+            bot_get_feishu_message,
             liuagent_prepare_agent_invocation,
             liuagent_recover_runtime_state,
             liuagent_refresh_runtime_job,
@@ -1554,6 +1750,10 @@ fn main() {
             liuagent_load_offline_cache,
             liuagent_cleanup_offline_cache
         ])
+        .setup(|app| {
+            bot::feishu::start_persisted_local_listeners(app.handle().clone());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running AI Employee Factory desktop app");
 }

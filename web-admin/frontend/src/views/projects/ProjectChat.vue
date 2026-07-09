@@ -2749,7 +2749,15 @@ import {
   warmupNativeExternalAgentSession as warmupNativeExternalAgentSessionCommand,
   subscribeNativeExternalAgentSessionEvents,
   subscribeNativeLiuAgentRuntimeEvents,
+  subscribeNativeFeishuLocalBotEvents,
+  subscribeNativeFeishuLocalBotStatus,
+  startNativeBotLocalChat,
+  startNativeFeishuLocalBotListener,
   startNativeLiuAgentLocalChat,
+  stopNativeFeishuLocalBotListener,
+  replyNativeFeishuBotMessage,
+  downloadNativeFeishuMessageResource,
+  getNativeFeishuMessage,
   uploadNativeLiuAgentProviderFile,
   writeNativeExternalAgentSessionInput,
   executeNativeLiuAgentTool,
@@ -2929,6 +2937,7 @@ import {
   rememberChatSession,
   parseMcpConfigText,
   parseWebToolsConfigText,
+  readGlobalBotConnectorConfigFile,
   readGlobalMcpConfigFile,
   readPreferredLocalConnectorId,
   readPreferredLocalWorkspacePath,
@@ -3171,6 +3180,7 @@ const aiContextDialogPayload = ref(null);
 const aiContextDialogError = ref("");
 let handleLocalMcpConfigUpdated = null;
 let handleLocalWebToolsConfigUpdated = null;
+let handleLocalBotConnectorsConfigUpdated = null;
 
 const selectedProjectId = ref("");
 let selectedProjectConversationLoadingKey = "";
@@ -4527,6 +4537,13 @@ let nativeExternalAgentSessionEventUnlisten = null;
 const ignoredNativeExternalAgentSessionIds = new Set();
 let externalAgentBridgeTaskPollTimer = null;
 let externalAgentBridgeTaskRunning = false;
+const localFeishuBotListenerIds = new Set();
+const localFeishuBotProcessingEventIds = new Set();
+let localFeishuBotListenerContextKey = "";
+let localFeishuBotEventUnlisten = null;
+let localFeishuBotStatusUnlisten = null;
+const localFeishuBotStatuses = ref({});
+const localFeishuBotStatusWarningKeys = new Set();
 const nativeExternalAgentSessionRecords = ref([]);
 const nativeExternalAgentSessionRecordsLoading = ref(false);
 const selectedNativeExternalAgentRecordId = ref("");
@@ -5524,10 +5541,33 @@ const chatHeaderStatusText = computed(() => {
   if (externalAgentInfo.value.ready) return "已就绪";
   return "未就绪";
 });
+const localFeishuBotStatusText = computed(() => {
+  const statuses = Object.entries(localFeishuBotStatuses.value || {}).map(
+    ([connectorId, status]) => ({
+      connectorId,
+      state: String(status?.state || "").trim().toLowerCase(),
+      message: String(status?.message || "").trim(),
+    }),
+  );
+  if (!statuses.length) return "";
+  const failed = statuses.find((item) =>
+    ["error", "exited", "failed"].includes(item.state),
+  );
+  if (failed) {
+    const detail = failed.message
+      .replace(/\s+/g, " ")
+      .slice(0, 90);
+    return detail ? `飞书监听失败：${detail}` : "飞书监听失败";
+  }
+  if (statuses.some((item) => item.state === "ready")) return "飞书监听已就绪";
+  if (statuses.some((item) => item.state === "starting")) return "飞书监听启动中";
+  return "";
+});
 const localOfflineStatusText = computed(() => {
   if (pendingLocalOutboxCount.value > 0) {
     return `待同步 ${pendingLocalOutboxCount.value} 条`;
   }
+  if (localFeishuBotStatusText.value) return localFeishuBotStatusText.value;
   if (modelProviderOffline.value) return "离线 · 本地模型";
   if (projectListOffline.value) return "离线 · 本地项目";
   return "";
@@ -8805,9 +8845,33 @@ function normalizeBotPlatformConnector(item) {
     name: String(raw.name || "").trim(),
     agent_name: String(raw.agent_name || "").trim(),
     description: String(raw.description || "").trim(),
+    system_prompt: String(raw.system_prompt || raw.systemPrompt || "").trim(),
+    chat_mode: "desktop_local_agent",
+    external_agent_type: ["codex_cli", "hermes", "claude_code"].includes(
+      String(raw.external_agent_type || raw.externalAgentType || "").trim().toLowerCase(),
+    )
+      ? String(raw.external_agent_type || raw.externalAgentType || "").trim().toLowerCase()
+      : "codex_cli",
+    provider_id: String(raw.provider_id || raw.providerId || "").trim(),
+    model_name: String(raw.model_name || raw.modelName || "").trim(),
     app_id: String(raw.app_id || "").trim(),
     app_secret: String(raw.app_secret || "").trim(),
+    verification_token: String(raw.verification_token || raw.verificationToken || "").trim(),
+    encrypt_key: String(raw.encrypt_key || raw.encryptKey || "").trim(),
+    event_receive_mode: String(raw.event_receive_mode || raw.eventReceiveMode || "manual")
+      .trim()
+      .toLowerCase(),
+    auto_start_worker: raw.auto_start_worker ?? raw.autoStartWorker ?? false,
+    reply_identity: ["bot", "user"].includes(
+      String(raw.reply_identity || raw.replyIdentity || "").trim().toLowerCase(),
+    )
+      ? String(raw.reply_identity || raw.replyIdentity || "").trim().toLowerCase()
+      : "bot",
     project_id: String(raw.project_id || "").trim(),
+    sandbox_mode: String(raw.sandbox_mode || raw.connector_sandbox_mode || "workspace-write")
+      .trim()
+      .toLowerCase(),
+    high_risk_tool_confirm: raw.high_risk_tool_confirm !== false,
   };
 }
 const autoSaveStatusText = computed(() => {
@@ -10323,6 +10387,766 @@ function stopNativeLiuAgentRuntimeEventSubscription() {
       }
     } catch {
       // ignore cleanup errors
+    }
+  }
+}
+
+function localBotRunnerResultContent(result = {}) {
+  return String(
+    result?.assistantContent ||
+      result?.assistant_content ||
+      result?.summary ||
+      result?.userVisibleErrorSummary ||
+      result?.user_visible_error_summary ||
+      result?.error ||
+      "",
+  ).trim();
+}
+
+function localBotRunnerPlainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function localBotRunnerString(...values) {
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function findLocalBotConnectorForRequest(request = {}) {
+  const connector = localBotRunnerPlainObject(request.connector);
+  const connectorId = localBotRunnerString(
+    connector.connectorId,
+    connector.connector_id,
+    request.connectorId,
+    request.connector_id,
+  );
+  if (!connectorId) return null;
+  return (botPlatformConnectors.value || []).find(
+    (item) => String(item?.id || "").trim() === connectorId,
+  ) || null;
+}
+
+async function buildLocalBotRunnerModelRuntime(request = {}) {
+  const connector = localBotRunnerPlainObject(request.connector);
+  const existingRuntime =
+    request.modelRuntime && typeof request.modelRuntime === "object"
+      ? request.modelRuntime
+      : request.model_runtime && typeof request.model_runtime === "object"
+        ? request.model_runtime
+        : null;
+  if (existingRuntime) return existingRuntime;
+
+  const providerId = localBotRunnerString(
+    request.providerId,
+    request.provider_id,
+    connector.providerId,
+    connector.provider_id,
+  );
+  const requestedModelName = localBotRunnerString(
+    request.modelName,
+    request.model_name,
+    connector.modelName,
+    connector.model_name,
+  );
+  if (!providerId) return buildLocalLiuAgentModelRuntime();
+
+  const runtime = await fetchLocalLiuAgentDesktopModelRuntime(providerId);
+  const modelName = localBotRunnerString(
+    requestedModelName,
+    runtime.model_name,
+    runtime.modelName,
+    runtime.default_model,
+    runtime.defaultModel,
+  );
+  if (!modelName) {
+    throw new Error(`机器人模型供应商缺少可用模型名：${providerId}`);
+  }
+  return {
+    mode: "direct-openai-compatible",
+    providerId,
+    modelName,
+    baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
+    apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
+    temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
+  };
+}
+
+async function enrichLocalBotRunnerRequest(request = {}, workspacePath = "") {
+  const normalizedRequest = localBotRunnerPlainObject(request);
+  const localConnector = findLocalBotConnectorForRequest(normalizedRequest);
+  const requestConnector = localBotRunnerPlainObject(normalizedRequest.connector);
+  const connectorId = localBotRunnerString(
+    requestConnector.connectorId,
+    requestConnector.connector_id,
+    normalizedRequest.connectorId,
+    normalizedRequest.connector_id,
+  );
+  if (connectorId && !localConnector) {
+    throw new Error(`本机全局机器人配置中找不到连接器：${connectorId}`);
+  }
+  if (localConnector) {
+    normalizedRequest.connector = {
+      ...requestConnector,
+      connectorId: localConnector.id,
+      connector_id: localConnector.id,
+      platform: localConnector.platform,
+      name: localConnector.name,
+      systemPrompt: localConnector.system_prompt,
+      system_prompt: localConnector.system_prompt,
+      providerId: localConnector.provider_id,
+      provider_id: localConnector.provider_id,
+      modelName: localConnector.model_name,
+      model_name: localConnector.model_name,
+      replyIdentity: localConnector.reply_identity,
+      reply_identity: localConnector.reply_identity,
+      ownerUsername: localBotRunnerString(
+        requestConnector.ownerUsername,
+        requestConnector.owner_username,
+        normalizedRequest.ownerUsername,
+        normalizedRequest.owner_username,
+        currentUsername.value,
+      ),
+      owner_username: localBotRunnerString(
+        requestConnector.ownerUsername,
+        requestConnector.owner_username,
+        normalizedRequest.ownerUsername,
+        normalizedRequest.owner_username,
+        currentUsername.value,
+      ),
+      sandboxMode: localConnector.sandbox_mode,
+      sandbox_mode: localConnector.sandbox_mode,
+      highRiskToolConfirm: localConnector.high_risk_tool_confirm,
+      high_risk_tool_confirm: localConnector.high_risk_tool_confirm,
+    };
+    normalizedRequest.providerId = localConnector.provider_id;
+    normalizedRequest.provider_id = localConnector.provider_id;
+    normalizedRequest.modelName = localConnector.model_name;
+    normalizedRequest.model_name = localConnector.model_name;
+  }
+  const requestMcpConfig = localBotRunnerPlainObject(
+    normalizedRequest.mcpConfig || normalizedRequest.mcp_config,
+  );
+  normalizedRequest.mcpConfig = mergeMcpConfigs(
+    effectiveMcpConfig.value,
+    requestMcpConfig,
+  );
+  if (!normalizedRequest.backendContext && !normalizedRequest.backend_context) {
+    normalizedRequest.backendContext = {
+      apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
+      token: getStoredToken(),
+    };
+  }
+  if (!normalizedRequest.modelRuntime && !normalizedRequest.model_runtime) {
+    normalizedRequest.modelRuntime =
+      await buildLocalBotRunnerModelRuntime(normalizedRequest);
+  }
+  if (!normalizedRequest.permissionDecision && !normalizedRequest.permission_decision) {
+    normalizedRequest.permissionDecision = localLiuAgentFullAccessEnabled()
+      ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
+      : null;
+  }
+  normalizedRequest.workspacePath = localBotRunnerString(
+    normalizedRequest.workspacePath,
+    normalizedRequest.workspace_path,
+    workspacePath,
+  );
+  return normalizedRequest;
+}
+
+function localFeishuBotEventString(value, ...fallbacks) {
+  for (const item of [value, ...fallbacks]) {
+    const normalized = String(item || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function localFeishuBotConnectorById(connectorId) {
+  const normalizedId = String(connectorId || "").trim();
+  if (!normalizedId) return null;
+  return (botPlatformConnectors.value || []).find(
+    (item) => String(item?.id || "").trim() === normalizedId,
+  ) || null;
+}
+
+function parseLocalFeishuJsonObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  const text = String(value || "").trim();
+  if (!text || !text.startsWith("{")) return {};
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeLocalFeishuBotStatusMessage(message = "") {
+  const raw = String(message || "").trim();
+  if (!raw) return "";
+  const parsed = parseLocalFeishuJsonObject(raw);
+  const error = parsed?.error && typeof parsed.error === "object" ? parsed.error : {};
+  const parts = [
+    localFeishuBotEventString(error.message, parsed.message),
+    localFeishuBotEventString(error.hint, parsed.hint),
+  ].filter(Boolean);
+  return (parts.length ? parts.join("；") : raw).replace(/\s+/g, " ").trim();
+}
+
+function localFeishuArray(...values) {
+  for (const value of values) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+function localFeishuSenderId(sender = {}) {
+  if (!sender || typeof sender !== "object") return "";
+  const senderId = sender.sender_id || sender.senderId || sender.id || {};
+  if (senderId && typeof senderId === "object") {
+    return localFeishuBotEventString(
+      senderId.open_id,
+      senderId.openId,
+      senderId.user_id,
+      senderId.userId,
+      senderId.union_id,
+      senderId.unionId,
+    );
+  }
+  return localFeishuBotEventString(senderId);
+}
+
+function normalizeLocalFeishuBotEvent(rawEvent = {}) {
+  const root = rawEvent && typeof rawEvent === "object" ? rawEvent : {};
+  const event = root.event && typeof root.event === "object" ? root.event : root;
+  const message =
+    event.message && typeof event.message === "object" ? event.message : event;
+  const sender =
+    event.sender && typeof event.sender === "object"
+      ? event.sender
+      : message.sender && typeof message.sender === "object"
+        ? message.sender
+        : {};
+  const rawContent = localFeishuBotEventString(
+    message.content,
+    event.content,
+    root.content,
+  );
+  const parsedContent = parseLocalFeishuJsonObject(rawContent);
+  const text = localFeishuBotEventString(
+    parsedContent.text,
+    parsedContent.content,
+    message.text,
+    event.text,
+    root.text,
+    rawContent.startsWith("{") ? "" : rawContent,
+  );
+  const mentions = localFeishuArray(
+    message.mentions,
+    event.mentions,
+    root.mentions,
+    parsedContent.mentions,
+    message.message_mentions,
+    event.message_mentions,
+    root.message_mentions,
+  );
+  return {
+    ...root,
+    ...event,
+    ...message,
+    content: text,
+    text,
+    raw_content: rawContent,
+    parsed_content: parsedContent,
+    mentions,
+    message_mentions: mentions,
+    message_id: localFeishuBotEventString(
+      message.message_id,
+      message.messageId,
+      event.message_id,
+      event.messageId,
+      root.message_id,
+      root.messageId,
+      root.id,
+    ),
+    event_id: localFeishuBotEventString(
+      root.event_id,
+      root.eventId,
+      event.event_id,
+      event.eventId,
+      message.message_id,
+      message.messageId,
+    ),
+    chat_id: localFeishuBotEventString(
+      message.chat_id,
+      message.chatId,
+      event.chat_id,
+      event.chatId,
+      root.chat_id,
+      root.chatId,
+    ),
+    chat_type: localFeishuBotEventString(
+      message.chat_type,
+      message.chatType,
+      event.chat_type,
+      event.chatType,
+      root.chat_type,
+      root.chatType,
+    ),
+    chat_name: localFeishuBotEventString(
+      message.chat_name,
+      message.chatName,
+      event.chat_name,
+      event.chatName,
+      root.chat_name,
+      root.chatName,
+    ),
+    thread_id: localFeishuBotEventString(
+      message.thread_id,
+      message.threadId,
+      event.thread_id,
+      event.threadId,
+      root.thread_id,
+      root.threadId,
+    ),
+    sender_id: localFeishuSenderId(sender),
+    raw_event: root,
+  };
+}
+
+function handleNativeFeishuLocalBotStatus(payload = {}) {
+  const connectorId = localFeishuBotEventString(
+    payload.connectorId,
+    payload.connector_id,
+  );
+  if (!connectorId) return;
+  const state = localFeishuBotEventString(payload.state, "log");
+  const message = normalizeLocalFeishuBotStatusMessage(
+    localFeishuBotEventString(payload.message),
+  );
+  localFeishuBotStatuses.value = {
+    ...(localFeishuBotStatuses.value || {}),
+    [connectorId]: {
+      state,
+      message,
+      updatedAt: new Date().toISOString(),
+    },
+  };
+  if (["error", "exited"].includes(state)) {
+    localFeishuBotListenerIds.delete(connectorId);
+    const warningKey = `${connectorId}:${state}:${message}`;
+    if (!localFeishuBotStatusWarningKeys.has(warningKey)) {
+      localFeishuBotStatusWarningKeys.add(warningKey);
+      ElMessage.warning(message ? `飞书机器人监听${state === "exited" ? "已退出" : "失败"}：${message}` : "飞书机器人监听失败");
+    }
+  }
+}
+
+function normalizeLocalFeishuBotMessage(connector, event = {}) {
+  let content = localFeishuBotEventString(event.content, event.text, event.message);
+  const names = [
+    connector?.name,
+    connector?.agent_name,
+    connector?.id,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  for (const name of names) {
+    content = content
+      .replace(new RegExp(`^@?${escapeRegExp(name)}[\\s:：,，]*`, "i"), "")
+      .trim();
+  }
+  return content;
+}
+
+function localFeishuBotMentionedByEvent(event = {}) {
+  const mentions = Array.isArray(event.mentions)
+    ? event.mentions
+    : Array.isArray(event.message_mentions)
+      ? event.message_mentions
+      : [];
+  return mentions.some((mention) => {
+    const type = String(mention?.type || mention?.mention_type || "").toLowerCase();
+    return type.includes("bot") || type.includes("app");
+  });
+}
+
+function shouldHandleLocalFeishuBotEvent(connector, event = {}) {
+  if (!connector || connector.enabled === false) return false;
+  if (String(connector.platform || "").trim().toLowerCase() !== "feishu") return false;
+  const chatType = String(event.chat_type || event.chatType || "").trim().toLowerCase();
+  if (chatType === "p2p") return true;
+  if (localFeishuBotMentionedByEvent(event)) return true;
+  const content = localFeishuBotEventString(event.content, event.text, event.message);
+  const mentionTargets = [
+    connector.name,
+    connector.agent_name,
+    connector.id,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return mentionTargets.some((target) =>
+    content.toLowerCase().includes(target.toLowerCase()),
+  );
+}
+
+function resolveLocalFeishuBotBoundSessionId(connector, event = {}) {
+  const chatId = localFeishuBotEventString(event.chat_id, event.chatId);
+  const connectorId = String(connector?.id || "").trim();
+  if (!chatId || !connectorId) return "";
+  const matched = (chatSessions.value || []).find((session) => {
+    const source = normalizeChatSourceContext(session || {});
+    return (
+      String(source.platform || "").trim().toLowerCase() === "feishu" &&
+      String(source.connector_id || source.connectorId || "").trim() === connectorId &&
+      String(source.external_chat_id || source.externalChatId || "").trim() === chatId
+    );
+  });
+  return String(matched?.id || "").trim();
+}
+
+async function ensureLocalFeishuBotChatSession(connector, event = {}) {
+  const existing = resolveLocalFeishuBotBoundSessionId(connector, event);
+  if (existing) return existing;
+  const chatId = localFeishuBotEventString(event.chat_id, event.chatId);
+  if (!chatId) return String(currentChatSessionId.value || "").trim();
+  const sourceContext = {
+    platform: "feishu",
+    connector_id: String(connector?.id || "").trim(),
+    connector_name: String(connector?.name || "").trim(),
+    external_chat_id: chatId,
+    external_chat_name: localFeishuBotEventString(
+      event.chat_name,
+      event.chatName,
+      chatId,
+    ),
+    source_type:
+      String(event.chat_type || "").trim().toLowerCase() === "p2p"
+        ? "private_message"
+        : "group_message",
+  };
+  const created = await createChatSession({
+    switchTo: false,
+    title: sourceContext.external_chat_name || `${connector?.name || "飞书"}机器人对话`,
+    sourceContext,
+  });
+  return String(created?.id || "").trim();
+}
+
+function collectLocalFeishuResourceRefs(value, refs = []) {
+  if (!value || refs.length >= 8) return refs;
+  if (Array.isArray(value)) {
+    for (const item of value) collectLocalFeishuResourceRefs(item, refs);
+    return refs;
+  }
+  if (typeof value === "string") {
+    const parsed = parseLocalFeishuJsonObject(value);
+    if (Object.keys(parsed).length) {
+      collectLocalFeishuResourceRefs(parsed, refs);
+    }
+    const matches = value.match(/\b(?:img|file)_[A-Za-z0-9._-]+\b/g) || [];
+    for (const fileKey of matches) {
+      if (refs.length >= 8) break;
+      if (refs.some((item) => item.fileKey === fileKey)) continue;
+      refs.push({
+        fileKey,
+        resourceType: /^file_/i.test(fileKey) ? "file" : "image",
+        label: fileKey,
+      });
+    }
+    return refs;
+  }
+  if (typeof value !== "object") return refs;
+  const fileKey = localFeishuBotEventString(
+    value.file_key,
+    value.fileKey,
+    value.image_key,
+    value.imageKey,
+    value.key,
+  );
+  if (fileKey && /^(img|file)_/i.test(fileKey)) {
+    const resourceType =
+      String(value.type || value.resource_type || value.resourceType || "")
+        .toLowerCase()
+        .includes("file") || /^file_/i.test(fileKey)
+        ? "file"
+        : "image";
+    if (!refs.some((item) => item.fileKey === fileKey)) {
+      refs.push({
+        fileKey,
+        resourceType,
+        label: localFeishuBotEventString(value.name, value.label, fileKey),
+      });
+    }
+  }
+  for (const item of Object.values(value)) {
+    collectLocalFeishuResourceRefs(item, refs);
+  }
+  return refs;
+}
+
+async function enrichLocalFeishuBotEventForResources(
+  event = {},
+  messageId = "",
+  identity = "bot",
+) {
+  if (collectLocalFeishuResourceRefs(event).length || !messageId) {
+    return event;
+  }
+  try {
+    const result = await getNativeFeishuMessage({
+      messageId,
+      identity,
+      downloadResources: true,
+    });
+    const payload = result?.payload && typeof result.payload === "object"
+      ? result.payload
+      : {};
+    return {
+      ...event,
+      message_detail: payload,
+    };
+  } catch (error) {
+    console.warn("fetch feishu message detail for resources failed", error);
+    return event;
+  }
+}
+
+function dataUrlMimeType(dataUrl = "") {
+  const matched = String(dataUrl || "").match(/^data:([^;,]+)[;,]/);
+  return matched?.[1] || "";
+}
+
+async function buildLocalFeishuBotAttachments(event = {}, messageId = "", identity = "bot") {
+  const eventWithDetail = await enrichLocalFeishuBotEventForResources(
+    event,
+    messageId,
+    identity,
+  );
+  const refs = collectLocalFeishuResourceRefs(eventWithDetail);
+  const attachments = [];
+  for (const [index, ref] of refs.entries()) {
+    try {
+      const result = await downloadNativeFeishuMessageResource({
+        messageId,
+        fileKey: ref.fileKey,
+        resourceType: ref.resourceType,
+        identity,
+      });
+      const dataUrl = String(result?.dataUrl || result?.data_url || "").trim();
+      const name = String(result?.name || ref.label || ref.fileKey).trim();
+      attachments.push({
+        attachmentId: `feishu_${messageId}_${index}`,
+        name,
+        mimeType: dataUrlMimeType(dataUrl),
+        size: Number(result?.size || 0) || 0,
+        kind: ref.resourceType === "image" ? "image" : "file",
+        routingMode: ref.resourceType === "image" ? "inline_image" : "local_extract",
+        extractionStatus: dataUrl ? "image_data_url" : "metadata_only",
+        dataUrl,
+        extractedText: String(result?.localPath || result?.local_path || "").trim()
+          ? `飞书资源已下载到本机：${String(result?.localPath || result?.local_path || "").trim()}`
+          : "",
+        providerFileId: "",
+        error: "",
+      });
+    } catch (error) {
+      attachments.push({
+        attachmentId: `feishu_${messageId}_${index}`,
+        name: ref.label || ref.fileKey,
+        mimeType: "",
+        size: 0,
+        kind: ref.resourceType,
+        routingMode: "local_extract",
+        extractionStatus: "error",
+        dataUrl: "",
+        extractedText: "",
+        providerFileId: "",
+        error: error?.message || "飞书资源下载失败",
+      });
+    }
+  }
+  return attachments;
+}
+
+async function handleNativeFeishuLocalBotEvent(payload = {}) {
+  const rawEvent = payload?.event && typeof payload.event === "object" ? payload.event : {};
+  const event = normalizeLocalFeishuBotEvent(rawEvent);
+  const connectorId = localFeishuBotEventString(
+    payload.connectorId,
+    payload.connector_id,
+    event.connector_id,
+  );
+  const connector = localFeishuBotConnectorById(connectorId);
+  const eventId = localFeishuBotEventString(event.event_id, event.message_id, event.id);
+  const eventKey = `${connectorId}:${eventId || JSON.stringify(event).slice(0, 160)}`;
+  if (!connector || localFeishuBotProcessingEventIds.has(eventKey)) return;
+  if (!shouldHandleLocalFeishuBotEvent(connector, event)) return;
+
+  const projectId = localFeishuBotEventString(payload.projectId, selectedProjectId.value);
+  const chatSessionId = await ensureLocalFeishuBotChatSession(connector, event);
+  const workspacePath = localFeishuBotEventString(
+    payload.workspacePath,
+    localLiuAgentWorkspacePath(),
+  );
+  const message = normalizeLocalFeishuBotMessage(connector, event);
+  const messageId = localFeishuBotEventString(event.message_id, event.id);
+  if (!projectId || !chatSessionId || !workspacePath || !message || !messageId) return;
+
+  localFeishuBotProcessingEventIds.add(eventKey);
+  try {
+    const attachments = await buildLocalFeishuBotAttachments(
+      event,
+      messageId,
+      connector.reply_identity || "bot",
+    );
+    const request = {
+      projectId,
+      chatSessionId,
+      messageId,
+      assistantMessageId: `bot-local-${Date.now().toString(36)}`,
+      message,
+      workspacePath,
+      connector: {
+        connectorId: connector.id,
+        platform: connector.platform,
+        name: connector.name,
+        systemPrompt: connector.system_prompt,
+        providerId: connector.provider_id,
+        modelName: connector.model_name,
+        replyIdentity: connector.reply_identity,
+        ownerUsername: String(currentUsername.value || "").trim(),
+        sandboxMode: connector.sandbox_mode,
+        highRiskToolConfirm: connector.high_risk_tool_confirm,
+      },
+      attachments,
+      sourceContext: {
+        source_type:
+          String(event.chat_type || "").trim().toLowerCase() === "p2p"
+            ? "private_message"
+            : "group_message",
+        platform: "feishu",
+        connector_id: connector.id,
+        external_chat_id: localFeishuBotEventString(event.chat_id),
+        external_chat_name: localFeishuBotEventString(event.chat_name, event.chatName),
+        external_message_id: messageId,
+        sender_id: localFeishuBotEventString(event.sender_id),
+        chat_type: localFeishuBotEventString(event.chat_type),
+        runtime_migration_status: "desktop_frontend_local_listener",
+        execution_authority: "delegated_user_desktop_runner",
+        raw: rawEvent,
+      },
+      mcpConfig: effectiveMcpConfig.value,
+    };
+    const result = await startNativeBotLocalChat(
+      await enrichLocalBotRunnerRequest(request, workspacePath),
+    );
+    const replyContent = localBotRunnerResultContent(result);
+    if (replyContent) {
+      await replyNativeFeishuBotMessage({
+        messageId,
+        content: replyContent,
+        contentFormat: "markdown",
+        replyIdentity: connector.reply_identity || "bot",
+        replyInThread: Boolean(event.thread_id || event.threadId),
+        idempotencyKey: `desktop-bot-reply-${messageId}`,
+      });
+    }
+  } catch (error) {
+    console.warn("handle local feishu bot event failed", error);
+  } finally {
+    window.setTimeout(() => {
+      localFeishuBotProcessingEventIds.delete(eventKey);
+    }, 60_000);
+  }
+}
+
+async function syncLocalFeishuBotListeners() {
+  if (!hasNativeDesktopBridge()) return;
+  const runtimeInfo = await getNativeRuntimeInfo().catch(() => null);
+  const workspacePath = String(
+    runtimeInfo?.defaultWorkspacePath ||
+      runtimeInfo?.default_workspace_path ||
+      localLiuAgentWorkspacePath() ||
+      "",
+  ).trim();
+  const contextKey = ["desktop-bot-global", workspacePath].join("|");
+  if (
+    localFeishuBotListenerContextKey &&
+    localFeishuBotListenerContextKey !== contextKey
+  ) {
+    for (const connectorId of Array.from(localFeishuBotListenerIds)) {
+      try {
+        await stopNativeFeishuLocalBotListener(connectorId);
+      } catch (error) {
+        console.warn("restart local feishu bot listener failed", error);
+      }
+    }
+    localFeishuBotListenerIds.clear();
+  }
+  localFeishuBotListenerContextKey = contextKey;
+
+  if (!localFeishuBotStatusUnlisten) {
+    localFeishuBotStatusUnlisten =
+      await subscribeNativeFeishuLocalBotStatus(handleNativeFeishuLocalBotStatus);
+  }
+
+  const enabledConnectorIds = new Set(
+    (botPlatformConnectors.value || [])
+      .filter((connector) => {
+        return (
+          connector?.enabled !== false &&
+          connector?.auto_start_worker === true &&
+          String(connector?.platform || "").trim().toLowerCase() === "feishu" &&
+          String(connector?.event_receive_mode || "").trim().toLowerCase() === "long_connection" &&
+          String(connector?.id || "").trim()
+        );
+      })
+      .map((connector) => String(connector.id).trim()),
+  );
+
+  for (const connectorId of Array.from(localFeishuBotListenerIds)) {
+    if (enabledConnectorIds.has(connectorId)) continue;
+    try {
+      await stopNativeFeishuLocalBotListener(connectorId);
+    } catch (error) {
+      console.warn("stop local feishu bot listener failed", error);
+    } finally {
+      localFeishuBotListenerIds.delete(connectorId);
+    }
+  }
+
+  for (const connectorId of enabledConnectorIds) {
+    if (localFeishuBotListenerIds.has(connectorId)) continue;
+    try {
+      const connector = localFeishuBotConnectorById(connectorId);
+      const modelRuntime = await buildLocalBotRunnerModelRuntime({ connector });
+      await startNativeFeishuLocalBotListener({
+        connectorId,
+        workspacePath,
+        ownerUsername: currentUsername.value,
+        modelRuntime,
+        mcpConfig: globalMcpConfig.value,
+        backendContext: {
+          apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
+          token: getStoredToken(),
+        },
+        permissionDecision: localLiuAgentFullAccessEnabled()
+          ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
+          : null,
+      });
+      localFeishuBotListenerIds.add(connectorId);
+    } catch (error) {
+      console.warn("start local feishu bot listener failed", error);
     }
   }
 }
@@ -24359,11 +25183,7 @@ async function fetchSystemConfig() {
     desktopAgentGlobalPrompt.value = String(
       data?.config?.desktop_agent_global_prompt || "",
     );
-    botPlatformConnectors.value = Array.isArray(
-      data?.config?.bot_platform_connectors,
-    )
-      ? data.config.bot_platform_connectors.map(normalizeBotPlatformConnector)
-      : [];
+    await reloadLocalBotConnectorConfig();
     employeeDraftAutoRuleGenerationEnabled.value =
       !Object.prototype.hasOwnProperty.call(
         data?.config || {},
@@ -24397,8 +25217,22 @@ async function fetchSystemConfig() {
     ];
     employeeDraftExternalSkillSites.value = [];
     employeeDraftAutoRuleGenerationMaxCount.value = 3;
-    botPlatformConnectors.value = [];
+    await reloadLocalBotConnectorConfig();
     desktopAgentGlobalPrompt.value = "";
+  }
+}
+
+async function reloadLocalBotConnectorConfig() {
+  try {
+    const data = await readGlobalBotConnectorConfigFile();
+    botPlatformConnectors.value = Array.isArray(data?.config?.connectors)
+      ? data.config.connectors.map(normalizeBotPlatformConnector)
+      : [];
+    void syncLocalFeishuBotListeners();
+  } catch (err) {
+    console.warn("读取本机机器人连接器配置失败", err);
+    botPlatformConnectors.value = [];
+    void syncLocalFeishuBotListeners();
   }
 }
 
@@ -29592,6 +30426,7 @@ watch(selectedProjectId, async (value) => {
   projectSettingsHydratedProjectId.value = "";
   reloadLocalMcpConfig(projectId);
   reloadLocalWebToolsConfig(projectId);
+  reloadLocalBotConnectorConfig();
   if (projectId) {
     writeSelectedProjectId(projectId);
   } else {
@@ -29753,20 +30588,30 @@ onMounted(async () => {
   loading.value = true;
   reloadLocalMcpConfig(selectedProjectId.value);
   reloadLocalWebToolsConfig(selectedProjectId.value);
+  await reloadLocalBotConnectorConfig();
   handleLocalMcpConfigUpdated = () => {
     reloadLocalMcpConfig(selectedProjectId.value);
   };
   handleLocalWebToolsConfigUpdated = () => {
     reloadLocalWebToolsConfig(selectedProjectId.value);
   };
+  handleLocalBotConnectorsConfigUpdated = async () => {
+    await reloadLocalBotConnectorConfig();
+    await syncLocalFeishuBotListeners();
+  };
   window.addEventListener("local-mcp-config-updated", handleLocalMcpConfigUpdated);
   window.addEventListener("local-web-tools-config-updated", handleLocalWebToolsConfigUpdated);
+  window.addEventListener(
+    "local-bot-connectors-config-updated",
+    handleLocalBotConnectorsConfigUpdated,
+  );
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.addEventListener("keydown", handleWorkingStatusKeydown);
   void hydrateNativeDesktopRuntimeInfo();
   void startNativeLiuAgentRuntimeEventSubscription();
   window.setTimeout(() => {
     void hydrateNativeDesktopRuntimeInfo();
+    void syncLocalFeishuBotListeners();
   }, 300);
   try {
     await Promise.all([
@@ -29804,6 +30649,7 @@ onMounted(async () => {
   }
   await applyStatisticsAnalysisDraftFromRoute();
   await applyProjectDeployDraftFromRoute();
+  void syncLocalFeishuBotListeners();
 });
 
 onUnmounted(() => {
@@ -29818,6 +30664,13 @@ onUnmounted(() => {
     );
     handleLocalWebToolsConfigUpdated = null;
   }
+  if (handleLocalBotConnectorsConfigUpdated) {
+    window.removeEventListener(
+      "local-bot-connectors-config-updated",
+      handleLocalBotConnectorsConfigUpdated,
+    );
+    handleLocalBotConnectorsConfigUpdated = null;
+  }
   window.removeEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.removeEventListener("keydown", handleWorkingStatusKeydown);
   clearExternalAgentStatusRefreshTimer();
@@ -29825,6 +30678,25 @@ onUnmounted(() => {
   stopNativeExternalAgentSessionPolling();
   stopNativeExternalAgentSessionEventSubscription();
   stopNativeLiuAgentRuntimeEventSubscription();
+  localFeishuBotListenerIds.clear();
+  localFeishuBotListenerContextKey = "";
+  if (localFeishuBotEventUnlisten) {
+    try {
+      localFeishuBotEventUnlisten();
+    } catch (_error) {
+      // ignore cleanup errors
+    }
+    localFeishuBotEventUnlisten = null;
+  }
+  if (localFeishuBotStatusUnlisten) {
+    try {
+      localFeishuBotStatusUnlisten();
+    } catch (_error) {
+      // ignore cleanup errors
+    }
+    localFeishuBotStatusUnlisten = null;
+  }
+  localFeishuBotStatuses.value = {};
   if (localLiuAgentRuntimeEventPollTimer) {
     window.clearInterval(localLiuAgentRuntimeEventPollTimer);
     localLiuAgentRuntimeEventPollTimer = null;

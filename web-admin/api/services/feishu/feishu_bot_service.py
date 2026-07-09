@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     import lark_oapi as _lark_module
 
 from core.config import get_api_data_dir
-from models.requests import ProjectChatReq
+from core.deps import build_user_auth_payload
 from services.assistant.assistant_workflow_state_service import (
     assistant_workflow_from_context,
     evolve_assistant_workflow_state,
@@ -61,7 +61,6 @@ from services.feishu.feishu_archive_writer_service import (
     archive_feishu_task_message,
     is_feishu_auto_archive_action,
 )
-from services.chat.project_chat_execution_service import run_project_chat_once
 from services.assistant.global_assistant_task_service import (
     execute_global_assistant_task,
     list_global_assistant_tasks,
@@ -71,6 +70,11 @@ from services.feishu.feishu_scheduled_reminder_service import create_feishu_meet
 from services.providers.system_speech_service import enqueue_system_speech
 
 logger = logging.getLogger(__name__)
+
+# Compatibility hook for older tests/extensions that monkeypatch this module
+# attribute. Feishu bot runtime must enqueue desktop-runner tasks instead of
+# calling the backend project-chat execution service.
+run_project_chat_once = None
 
 _FEISHU_REPLY_CHAR_LIMIT = 4000
 _FEISHU_OPEN_API_BASE_URL = "https://open.feishu.cn"
@@ -1130,19 +1134,65 @@ def _resolve_feishu_chat_name_by_id(connector: dict[str, Any], chat_id: str) -> 
 
 def _connector_owner_auth_payload(owner_username: str, projects_router: Any) -> dict[str, Any]:
     username = str(owner_username or "").strip()
-    if not username:
-        return {"sub": "admin", "role": "admin", "roles": ["admin"]}
-    try:
-        user = projects_router.user_store.get(username)
-    except Exception:
-        user = None
-    role_ids = list(getattr(user, "role_ids", []) or []) if user is not None else []
-    role = str(getattr(user, "role", "") or "").strip() if user is not None else ""
-    if role and role not in role_ids:
-        role_ids.append(role)
-    if not role_ids:
-        role_ids = ["user"]
-    return {"sub": username, "role": role_ids[0], "roles": role_ids}
+    return build_user_auth_payload(username or "admin")
+
+
+def _resolve_feishu_runtime_owner_username(connector: dict[str, Any], fallback_username: str) -> str:
+    owner_username = str(connector.get("owner_username") or connector.get("created_by") or "").strip()
+    return owner_username or str(fallback_username or "").strip()
+
+
+def _build_feishu_bot_permission_contract(
+    connector: dict[str, Any],
+    *,
+    project_id: str,
+    runtime_owner_username: str,
+    workspace_path: str = "",
+) -> dict[str, Any]:
+    connector_id = str(connector.get("id") or "").strip()
+    platform = str(connector.get("platform") or "feishu").strip().lower() or "feishu"
+    sandbox_mode = str(
+        connector.get("sandbox_mode")
+        or connector.get("connector_sandbox_mode")
+        or "workspace-write"
+    ).strip() or "workspace-write"
+    high_risk_confirm = bool(connector.get("high_risk_tool_confirm", True))
+    return {
+        "channel": {
+            "platform": platform,
+            "connectorId": connector_id,
+            "scope": "transport_only",
+            "canReceiveMessages": True,
+            "canReplyMessages": True,
+            "canDownloadAttachments": True,
+        },
+        "delegatedUser": {
+            "username": str(runtime_owner_username or "").strip(),
+            "projectId": str(project_id or "").strip(),
+            "projectAccess": "owner_visible_projects_only",
+            "providerAccess": "same_as_project_chat_user_provider_scope",
+            "toolAccess": "same_as_desktop_project_chat_tools",
+        },
+        "runner": {
+            "mode": "desktop_local_agent",
+            "workspacePath": str(workspace_path or "").strip(),
+            "sandboxMode": sandbox_mode,
+            "commandExecution": "desktop_runner_confirmed",
+            "fileMutation": "desktop_runner_confirmed",
+            "deployment": "project_deploy_config_and_separate_confirmation",
+        },
+        "oauth": {
+            "policy": "user_scoped_oauth_only",
+            "allowedScopes": [],
+        },
+        "confirmations": {
+            "shellCommands": "confirm",
+            "fileWrites": "confirm",
+            "externalSideEffects": "confirm",
+            "deployments": "separate_confirm",
+            "highRiskTools": "confirm" if high_risk_confirm else "policy_defined",
+        },
+    }
 
 
 def _resolve_feishu_fallback_project(connector: dict[str, Any], projects_router: Any) -> tuple[str, str] | None:
@@ -1950,7 +2000,7 @@ def _build_feishu_meeting_reminder_reply(result: dict[str, Any] | None) -> str:
 
 
 def _build_feishu_archive_truth_prompt(connector: dict[str, Any], source_context: dict[str, Any]) -> str:
-    bot_name = str(connector.get("name") or "当前机器人").strip() or "当前机器人"
+    bot_name = str(connector.get("agent_name") or connector.get("name") or "当前机器人").strip() or "当前机器人"
     group_name = str(source_context.get("external_chat_name") or source_context.get("group_name") or "当前飞书群").strip() or "当前飞书群"
     return (
         "飞书归档真实性约束："
@@ -3282,7 +3332,11 @@ def _update_feishu_external_agent_approval_card(
 
 
 async def process_feishu_message_event(connector_id: str, event: P2ImMessageReceiveV1) -> None:
-    from routers import projects as projects_router
+    logger.info(
+        "backend feishu bot message runtime disabled; desktop Tauri sidecar owns bot listening and execution",
+        extra={"connector_id": connector_id},
+    )
+    return
 
     connector = get_feishu_connector(connector_id)
     if connector is None or not bool(connector.get("enabled", True)):
@@ -3613,255 +3667,134 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         _cleanup_downloaded_feishu_resources(downloaded_resources)
         return
 
-    auth_payload = {"sub": username, "role": "admin", "roles": ["admin"]}
+    runtime_owner_username = _resolve_feishu_runtime_owner_username(connector, username)
     skill_resource_directory = _resolve_feishu_skill_resource_directory(project_id, projects_router)
     chat_mode = str(connector.get("chat_mode") or "desktop_local_agent").strip().lower()
     if chat_mode != "desktop_local_agent":
         chat_mode = "desktop_local_agent"
-    if chat_mode == "desktop_local_agent":
-        reply_content = (
-            "已收到，但当前机器人已切换为桌面本地智能体；"
-            "桌面端接管队列尚未接通，不能回退到后端系统智能体。"
-        )
-        next_source_context = dict(source_context)
-        next_source_context["chat_mode"] = "desktop_local_agent"
-        next_source_context["runtime_migration_status"] = "desktop_local_agent_handoff_missing"
-        assistant_record = projects_router._append_chat_record(
-            project_id=project_id,
-            username=username,
-            role="assistant",
-            content=reply_content,
-            message_id=f"bot-reply-{uuid.uuid4().hex[:12]}",
-            chat_session_id=chat_session_id,
-            source_context=next_source_context,
-        )
-        await projects_router.publish_project_chat_record_realtime(
-            project_id=project_id,
-            username=username,
-            chat_session_id=chat_session_id,
-            message=assistant_record,
-        )
-        await _reply_feishu_text(
-            connector,
-            message_id=message_id,
-            content=reply_content,
-            reply_in_thread=should_reply_in_thread,
-        )
-        await projects_router.publish_project_chat_group_status_realtime(
-            project_id=project_id,
-            username=username,
-            chat_session_id=chat_session_id,
-            status="blocked",
-            message="机器人已切换为桌面本地智能体，等待桌面端接管队列实现。",
-            source_context=next_source_context,
-        )
-        _cleanup_downloaded_feishu_resources(downloaded_resources)
-        return
+    source_context = dict(source_context)
+    source_context["chat_mode"] = chat_mode
+    source_context["runtime_migration_status"] = "desktop_local_agent_project_chat_runtime"
+    source_context["runtime_owner_username"] = runtime_owner_username
+    source_context["desktop_bot_runner_required"] = True
+    source_context["execution_authority"] = "delegated_user_desktop_runner"
+    source_context["bot_permission_contract"] = _build_feishu_bot_permission_contract(
+        connector,
+        project_id=project_id,
+        runtime_owner_username=runtime_owner_username,
+        workspace_path=workspace_path,
+    )
     external_agent_type = str(connector.get("external_agent_type") or "").strip().lower()
     if external_agent_type not in {"codex_cli", "hermes", "claude_code"}:
         external_agent_type = "codex_cli"
-    req = ProjectChatReq(
-        message=text_message,
-        message_id=message_id,
-        assistant_message_id=f"bot-reply-{uuid.uuid4().hex[:12]}",
-        chat_session_id=chat_session_id,
-        chat_mode=chat_mode,
-        chat_surface="main-chat",
+    source_context["reply_in_thread"] = should_reply_in_thread
+    source_context["skill_resource_directory"] = skill_resource_directory
+    source_context["downloaded_resources_retained_for_desktop_runner"] = bool(downloaded_resources)
+    assistant_message_id = f"bot-reply-{uuid.uuid4().hex[:12]}"
+    permission_contract = source_context["bot_permission_contract"]
+    request_payload = {
+        "projectId": project_id,
+        "chatSessionId": chat_session_id,
+        "messageId": message_id,
+        "assistantMessageId": assistant_message_id,
+        "message": text_message,
+        "workspacePath": workspace_path,
+        "history": history,
+        "connector": {
+            "connectorId": connector_id,
+            "platform": "feishu",
+            "name": str(connector.get("name") or "飞书机器人").strip(),
+            "systemPrompt": str(connector.get("system_prompt") or "").strip(),
+            "providerId": str(connector.get("provider_id") or "").strip(),
+            "modelName": str(connector.get("model_name") or "").strip(),
+            "replyIdentity": str(connector.get("reply_identity") or "bot").strip(),
+            "ownerUsername": runtime_owner_username,
+            "sandboxMode": str(connector.get("sandbox_mode") or "workspace-write").strip(),
+            "highRiskToolConfirm": bool(connector.get("high_risk_tool_confirm", True)),
+        },
+        "sourceContext": source_context,
+        "permissionContract": permission_contract,
+        "providerId": str(connector.get("provider_id") or "").strip(),
+        "modelName": str(connector.get("model_name") or "").strip(),
+        "attachments": [],
+        "mcpConfig": {
+            "skillResourceDirectory": skill_resource_directory,
+        },
+        "backendContext": None,
+    }
+    task = projects_router.project_chat_external_agent_task_store.enqueue(
+        project_id=project_id,
+        username=runtime_owner_username,
+        request=request_payload,
         external_agent_type=external_agent_type,
-        provider_id=str(connector.get("provider_id") or "").strip(),
-        model_name=str(connector.get("model_name") or "").strip(),
-        history=history,
-        employee_id="",
-        system_prompt="\n\n".join(
-            item
-            for item in (
-                str(connector.get("system_prompt") or "").strip(),
-                _build_feishu_agent_workflow_prompt(
-                    connector,
-                    source_context,
-                    skill_resource_directory=skill_resource_directory,
-                ),
-                _build_feishu_archive_truth_prompt(connector, source_context),
-            )
-            if item
-        ),
-        source_context=source_context,
+        task_type="bot_local_chat",
+    )
+    task_source_context = dict(source_context)
+    task_source_context["external_agent_task_id"] = task.id
+    task_source_context["external_agent_task_status"] = task.status
+    request_payload["sourceContext"] = task_source_context
+    task.request = request_payload
+    projects_router.project_chat_external_agent_task_store.save(task)
+
+    user_record = projects_router._append_chat_record(
+        project_id=project_id,
+        username=runtime_owner_username,
+        role="user",
+        content=text_message,
+        message_id=message_id,
+        chat_session_id=chat_session_id,
         images=image_urls,
-        skill_resource_directory=skill_resource_directory,
+        source_context=task_source_context,
+    )
+    if user_record is not None:
+        await projects_router.publish_project_chat_record_realtime(
+            project_id=project_id,
+            username=runtime_owner_username,
+            chat_session_id=chat_session_id,
+            message=user_record,
+        )
+    assistant_record = projects_router._append_chat_record(
+        project_id=project_id,
+        username=runtime_owner_username,
+        role="assistant",
+        content="已进入桌面智能体队列，等待桌面端接管。",
+        message_id=assistant_message_id,
+        chat_session_id=chat_session_id,
+        display_mode="external-agent-waiting",
+        source_context=task_source_context,
+    )
+    if assistant_record is not None:
+        await projects_router.publish_project_chat_record_realtime(
+            project_id=project_id,
+            username=runtime_owner_username,
+            chat_session_id=chat_session_id,
+            message=assistant_record,
+        )
+    await projects_router.publish_project_chat_group_status_realtime(
+        project_id=project_id,
+        username=runtime_owner_username,
+        chat_session_id=chat_session_id,
+        status="processing",
+        message="已进入桌面智能体队列，等待桌面端接管",
+        source_context=task_source_context,
     )
     try:
-        try:
-            await _reply_feishu_text(
-                connector,
-                message_id=message_id,
-                content="收到，正在处理。",
-                reply_in_thread=should_reply_in_thread,
-                idempotency_suffix="processing",
-            )
-        except Exception:
-            logger.warning(
-                "failed to send feishu processing acknowledgement",
-                exc_info=True,
-                extra={
-                    "connector_id": connector_id,
-                    "message_id": message_id,
-                    "chat_id": chat_id,
-                },
-            )
-        result = await run_project_chat_once(
-            project_id=project_id,
-            username=username,
-            req=req,
-            auth_payload=auth_payload,
-            save_memory_snapshot=False,
-            publish_realtime=True,
-        )
-        if bool(getattr(result, "is_error", False)):
-            await projects_router.publish_project_chat_group_status_realtime(
-                project_id=project_id,
-                username=username,
-                chat_session_id=chat_session_id,
-                status="error",
-                message=result.content,
-                source_context=source_context,
-            )
-            await _reply_feishu_text(
-                connector,
-                message_id=message_id,
-                content=result.content,
-                reply_in_thread=should_reply_in_thread,
-            )
-            _cleanup_downloaded_feishu_resources(downloaded_resources)
-            return
-        await projects_router.publish_project_chat_group_status_realtime(
-            project_id=project_id,
-            username=username,
-            chat_session_id=chat_session_id,
-            status="linked",
-            message="当前飞书群已链接工作群",
-            source_context=source_context,
-        )
-        latest_messages = projects_router.project_chat_store.list_messages(
-            project_id,
-            username,
-            limit=80,
-            chat_session_id=chat_session_id,
-        )
-        late_image_urls = _recent_feishu_image_urls(latest_messages, source_context)
-        if late_image_urls:
-            _merge_source_image_urls(source_context, late_image_urls)
-        matched_tasks = process_global_assistant_tasks_for_event(
-            username=username,
-            project_id=project_id,
-            message_text=text_message,
-            source_context=source_context,
-            skip_auto_archive_actions=True,
-        )
-        meeting_reminder_result = create_feishu_meeting_reminder_task(
-            username=username,
-            project_id=project_id,
-            connector=connector,
-            connector_id=connector_id,
-            chat_id=chat_id,
-            message_id=message_id,
-            message_text=text_message,
-            source_context=source_context,
-        )
-        matched_tasks.extend(
-            _process_feishu_archive_tasks_after_reply(
-                username=username,
-                project_id=project_id,
-                message_text=text_message,
-                reply_content=result.content,
-                source_context=source_context,
-                already_matched_tasks=matched_tasks,
-            )
-        )
-        direct_archive_result = None
-        if not _matched_tasks_have_archive_success(matched_tasks):
-            direct_archive_result = await _process_direct_bitable_archive_after_reply(
-                connector=connector,
-                connector_id=connector_id,
-                message_text=text_message,
-                reply_content=result.content,
-                source_context=source_context,
-            )
-        speech_text = _build_feishu_task_listener_speech_text(
-            message_text=text_message,
-            matched_tasks=matched_tasks,
-            source_context=source_context,
-        )
-        if speech_text:
-            speech_result = await enqueue_system_speech(
-                speech_text,
-                owner_username=username,
-                role_ids=["admin"],
-                source="feishu-task-listener",
-                require_enabled=True,
-            )
-            if not bool(speech_result.get("queued")):
-                logger.info(
-                    "feishu task-listener response was not queued for system speech",
-                    extra={
-                        "reason": str(speech_result.get("reason") or "").strip(),
-                        "connector_id": connector_id,
-                        "matched_task_ids": [str(item.get("id") or "") for item in matched_tasks],
-                        "speech_text": speech_text,
-                    },
-                )
-        reply_content = (
-            _build_feishu_meeting_reminder_reply(meeting_reminder_result)
-            or
-            _build_confirmed_archive_reply(matched_tasks)
-            or _build_failed_archive_reply(matched_tasks)
-            or _build_direct_bitable_archive_reply(direct_archive_result)
-            or _downgrade_unconfirmed_archive_reply(result.content, matched_tasks)
-        )
-        archive_workflow_state = _reply_archive_workflow_state(
-            reply_content=reply_content,
-            matched_tasks=matched_tasks,
-            direct_archive_result=direct_archive_result,
-        )
-        current_assistant_workflow = {}
-        latest_messages_for_state = projects_router.project_chat_store.list_messages(
-            project_id,
-            username,
-            limit=20,
-            chat_session_id=chat_session_id,
-        )
-        for item in reversed(latest_messages_for_state):
-            if str(getattr(item, "id", "") or "").strip() != str(req.assistant_message_id or "").strip():
-                continue
-            current_assistant_workflow = assistant_workflow_from_context(getattr(item, "source_context", None))
-            break
-        next_source_context = _with_archive_workflow_state(source_context, archive_workflow_state)
-        next_source_context = with_assistant_workflow_state(
-            next_source_context,
-            evolve_assistant_workflow_state(
-                current_assistant_workflow,
-                reply_content=reply_content,
-                archive_workflow_state=archive_workflow_state,
-            ),
-        )
-        updated_record = projects_router.project_chat_store.update_message(
-            project_id,
-            username,
-            str(req.assistant_message_id or "").strip(),
-            content=reply_content,
-            source_context=next_source_context,
-        )
-        if updated_record is not None:
-            await projects_router.publish_project_chat_record_realtime(
-                project_id=project_id,
-                username=username,
-                chat_session_id=chat_session_id,
-                message=updated_record,
-            )
         await _reply_feishu_text(
             connector,
             message_id=message_id,
-            content=reply_content,
+            content="收到，已进入桌面智能体队列，等待桌面端接管。",
             reply_in_thread=should_reply_in_thread,
+            idempotency_suffix=f"queued-{task.id}",
         )
-    finally:
-        _cleanup_downloaded_feishu_resources(downloaded_resources)
+    except Exception:
+        logger.warning(
+            "failed to send feishu queued acknowledgement",
+            exc_info=True,
+            extra={
+                "connector_id": connector_id,
+                "message_id": message_id,
+                "chat_id": chat_id,
+                "task_id": task.id,
+            },
+        )
+    return

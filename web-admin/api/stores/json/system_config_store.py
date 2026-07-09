@@ -1205,6 +1205,17 @@ def normalize_bot_platform_connectors(value: object) -> list[dict[str, object]]:
                     in {"codex_cli", "hermes", "claude_code"}
                     else "codex_cli"
                 ),
+                "sandbox_mode": (
+                    str(raw_item.get("sandbox_mode") or raw_item.get("connector_sandbox_mode") or "workspace-write")
+                    .strip()
+                    .lower()
+                    if str(raw_item.get("sandbox_mode") or raw_item.get("connector_sandbox_mode") or "workspace-write")
+                    .strip()
+                    .lower()
+                    in {"workspace-write", "read-only", "full-access"}
+                    else "workspace-write"
+                ),
+                "high_risk_tool_confirm": bool(raw_item.get("high_risk_tool_confirm", True)),
                 "provider_id": str(raw_item.get("provider_id") or "").strip()[:120],
                 "model_name": str(raw_item.get("model_name") or "").strip()[:160],
                 "app_id": str(raw_item.get("app_id") or "").strip()[:160],

@@ -1022,15 +1022,15 @@
             <div class="employee-skill-site-card voice-config-card">
               <div class="voice-config-section__head">
                 <div>
-                  <div class="employee-skill-site-card__title">飞书事件接收 Worker（高级）</div>
+                  <div class="employee-skill-site-card__title">飞书后端事件入口（兼容）</div>
                   <div class="switch-desc">
-                    只控制后端是否托管飞书长连接事件监听，不是飞书机器人模块总开关。
+                    只控制旧后端是否托管飞书长连接事件入口；机器人配置和业务处理以桌面端本机配置为准。
                   </div>
                 </div>
                 <el-switch v-model="form.feishu_bot_long_connection_worker_enabled" />
               </div>
               <div class="field-desc field-desc-block">
-                机器人身份、权限和消息发送能力仍在机器人接入页配置；这里仅影响“收消息 / 收事件”的长连接后台通道。仍需要在机器人接入页选择“长连接”并打开对应连接器的 worker 托管开关。
+                这个开关只保留给旧部署的事件入口，不代表机器人模块总开关；新的机器人连接器保存在本机全局文件，并由桌面智能体执行消息处理、工具调用和命令确认。
               </div>
             </div>
 
@@ -3053,9 +3053,6 @@ async function saveConfig() {
           30,
           Number(form.value.global_assistant_idle_timeout_sec || 5) || 5,
         ),
-      ),
-      bot_platform_connectors: normalizeBotPlatformConnectors(
-        form.value.bot_platform_connectors,
       ),
       feishu_bot_long_connection_worker_enabled: Boolean(
         form.value.feishu_bot_long_connection_worker_enabled,

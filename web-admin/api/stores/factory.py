@@ -198,6 +198,15 @@ def _create_project_chat_runtime_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_project_chat_external_agent_task_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import ProjectChatExternalAgentTaskStore
+
+        return ProjectChatExternalAgentTaskStore(_data_dir())
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_project_chat_task_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -447,6 +456,7 @@ agent_template_store = _StoreProxy(_create_agent_template_store)
 project_store = _StoreProxy(_create_project_store)
 project_chat_store = _StoreProxy(_create_project_chat_store)
 project_chat_runtime_store = _StoreProxy(_create_project_chat_runtime_store)
+project_chat_external_agent_task_store = _StoreProxy(_create_project_chat_external_agent_task_store)
 project_chat_task_store = _StoreProxy(_create_project_chat_task_store)
 project_deploy_store = _StoreProxy(_create_project_deploy_store)
 project_material_store = _StoreProxy(_create_project_material_store)
@@ -475,6 +485,7 @@ __all__ = [
     "project_store",
     "project_chat_store",
     "project_chat_runtime_store",
+    "project_chat_external_agent_task_store",
     "project_chat_task_store",
     "project_deploy_store",
     "project_material_store",

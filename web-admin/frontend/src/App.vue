@@ -9,12 +9,29 @@ import { useRouter } from 'vue-router'
 import api from './utils/api.js'
 import { syncCurrentUser } from './utils/auth.js'
 import { authStateVersion, clearAuthSession, getStoredToken } from './utils/auth-storage.js'
-import { getServerScopedStorageKey, serverProfileVersion } from './utils/server-profile.js'
+import {
+  buildApiBaseUrl,
+  getServerScopedStorageKey,
+  resolveServerOrigin,
+  serverProfileVersion,
+} from './utils/server-profile.js'
+import {
+  readGlobalBotConnectorConfigFile,
+  readGlobalMcpConfigFile,
+} from './modules/project-chat/services/projectChatStorage.js'
+import {
+  hasNativeDesktopBridge,
+  listNativeFeishuLocalBotListeners,
+  startNativeFeishuLocalBotListener,
+  stopNativeFeishuLocalBotListener,
+} from './utils/native-desktop-bridge.js'
 
 const router = useRouter()
 const ONLINE_HEARTBEAT_INTERVAL_MS = 60 * 1000
 let onlineHeartbeatTimer = null
 let onlineHeartbeatPending = false
+let localBotSyncTimer = null
+let localBotSyncPending = false
 const AUTH_PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
 
 function stopOnlineHeartbeat() {
@@ -46,6 +63,142 @@ function startOnlineHeartbeat() {
   onlineHeartbeatTimer = window.setInterval(() => {
     void sendOnlineHeartbeat()
   }, ONLINE_HEARTBEAT_INTERVAL_MS)
+}
+
+function buildDesktopBackendApiBaseUrl() {
+  const baseUrl = String(buildApiBaseUrl() || '').trim()
+  if (/^https?:\/\//i.test(baseUrl)) return baseUrl
+  const origin = String(resolveServerOrigin() || '').trim()
+  if (/^https?:\/\//i.test(origin)) {
+    return `${origin.replace(/\/+$/, '')}/${baseUrl.replace(/^\/+/, '')}`
+  }
+  return baseUrl
+}
+
+function connectorString(value, fallback = '') {
+  const normalized = String(value || '').trim()
+  return normalized || String(fallback || '').trim()
+}
+
+function connectorEnabledForLocalFeishu(connector = {}) {
+  return (
+    connector?.enabled !== false &&
+    connector?.auto_start_worker === true &&
+    connectorString(connector.platform).toLowerCase() === 'feishu' &&
+    connectorString(connector.event_receive_mode || connector.eventReceiveMode).toLowerCase() === 'long_connection' &&
+    connectorString(connector.id)
+  )
+}
+
+async function fetchDesktopModelRuntime(providerId) {
+  const normalizedProviderId = connectorString(providerId)
+  if (!normalizedProviderId) return null
+  const data = await api.get(
+    `/llm/providers/${encodeURIComponent(normalizedProviderId)}/desktop-runtime`,
+  )
+  const runtime = data?.runtime && typeof data.runtime === 'object' ? data.runtime : {}
+  const baseUrl = connectorString(runtime.base_url || runtime.baseUrl)
+  const apiKey = connectorString(runtime.api_key || runtime.apiKey)
+  if (!baseUrl || !apiKey) {
+    throw new Error(`机器人模型供应商缺少桌面运行时：${normalizedProviderId}`)
+  }
+  return runtime
+}
+
+async function buildConnectorModelRuntime(connector = {}) {
+  const existing =
+    connector?.model_runtime && typeof connector.model_runtime === 'object'
+      ? connector.model_runtime
+      : connector?.modelRuntime && typeof connector.modelRuntime === 'object'
+        ? connector.modelRuntime
+        : null
+  if (existing?.baseUrl || existing?.base_url) return existing
+  const providerId = connectorString(connector.provider_id || connector.providerId)
+  if (!providerId) return null
+  const runtime = await fetchDesktopModelRuntime(providerId)
+  const modelName = connectorString(
+    connector.model_name || connector.modelName,
+    runtime?.model_name || runtime?.modelName || runtime?.default_model || runtime?.defaultModel,
+  )
+  if (!modelName) {
+    throw new Error(`机器人模型供应商缺少可用模型名：${providerId}`)
+  }
+  return {
+    mode: 'direct-openai-compatible',
+    providerId,
+    modelName,
+    baseUrl: connectorString(runtime.base_url || runtime.baseUrl),
+    apiKey: connectorString(runtime.api_key || runtime.apiKey),
+    temperature:
+      Number.isFinite(Number(runtime.temperature)) && runtime.temperature !== ''
+        ? Number(runtime.temperature)
+        : null,
+  }
+}
+
+function scheduleLocalBotListenerSync() {
+  if (!hasNativeDesktopBridge()) return
+  if (localBotSyncTimer !== null) {
+    window.clearTimeout(localBotSyncTimer)
+  }
+  localBotSyncTimer = window.setTimeout(() => {
+    localBotSyncTimer = null
+    void syncLocalBotListeners()
+  }, 500)
+}
+
+async function syncLocalBotListeners() {
+  if (!hasNativeDesktopBridge() || !getStoredToken() || localBotSyncPending) return
+  localBotSyncPending = true
+  try {
+    const configData = await readGlobalBotConnectorConfigFile()
+    const connectors = Array.isArray(configData?.config?.connectors)
+      ? configData.config.connectors
+      : []
+    const enabled = connectors.filter(connectorEnabledForLocalFeishu)
+    const enabledIds = new Set(enabled.map((item) => connectorString(item.id)).filter(Boolean))
+    const listeners = await listNativeFeishuLocalBotListeners()
+    for (const listener of Array.isArray(listeners) ? listeners : []) {
+      const connectorId = connectorString(listener?.connectorId || listener?.connector_id)
+      if (!connectorId || enabledIds.has(connectorId)) continue
+      try {
+        await stopNativeFeishuLocalBotListener(connectorId)
+      } catch (err) {
+        console.warn('stop desktop feishu bot listener failed', err)
+      }
+    }
+
+    const mcpData = await readGlobalMcpConfigFile()
+    const mcpConfig = mcpData?.config && typeof mcpData.config === 'object'
+      ? mcpData.config
+      : {}
+    for (const connector of enabled) {
+      const connectorId = connectorString(connector.id)
+      if (!connectorId) continue
+      try {
+        const modelRuntime = await buildConnectorModelRuntime(connector)
+        await startNativeFeishuLocalBotListener({
+          connectorId,
+          workspacePath: '',
+          ownerUsername: connectorString(
+            window.localStorage?.getItem(getServerScopedStorageKey('username')) ||
+              window.localStorage?.getItem('username'),
+          ),
+          modelRuntime,
+          mcpConfig,
+          backendContext: {
+            apiBaseUrl: buildDesktopBackendApiBaseUrl(),
+            token: getStoredToken(),
+          },
+          permissionDecision: null,
+        })
+      } catch (err) {
+        console.warn('start desktop feishu bot listener failed', err)
+      }
+    }
+  } finally {
+    localBotSyncPending = false
+  }
 }
 
 function redirectToLoginIfNeeded() {
@@ -97,6 +250,7 @@ onMounted(async () => {
       try {
         await syncCurrentUser()
         startOnlineHeartbeat()
+        scheduleLocalBotListenerSync()
       } catch {
         clearAuthSession()
         stopOnlineHeartbeat()
@@ -123,6 +277,7 @@ watch(
       return
     }
     startOnlineHeartbeat()
+    scheduleLocalBotListenerSync()
   },
 )
 
@@ -136,7 +291,16 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  if (localBotSyncTimer !== null) {
+    window.clearTimeout(localBotSyncTimer)
+    localBotSyncTimer = null
+  }
   stopOnlineHeartbeat()
   window.removeEventListener('storage', handleAuthStorageChange)
+  window.removeEventListener('local-bot-connectors-config-updated', scheduleLocalBotListenerSync)
+})
+
+onMounted(() => {
+  window.addEventListener('local-bot-connectors-config-updated', scheduleLocalBotListenerSync)
 })
 </script>

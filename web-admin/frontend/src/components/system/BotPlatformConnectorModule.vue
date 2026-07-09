@@ -5,7 +5,7 @@
         <p class="bot-connectors__eyebrow">Robot Hub</p>
         <h3>第三方机器人接入</h3>
         <p class="bot-connectors__desc">
-          把 QQ、飞书、微信等机器人配置收敛到一个独立模块里，支持同一平台添加多个机器人实例。当前页面负责凭证、项目关联、提示词和接入说明，不代表平台消息已经全部接通。
+          把 QQ、飞书、微信等机器人配置保存到本机全局存储，支持同一平台添加多个机器人实例。机器人提示词只来自当前配置，业务处理由桌面智能体执行。
         </p>
       </div>
       <el-tag type="info" effect="plain">按机器人实例管理</el-tag>
@@ -242,9 +242,9 @@
             <el-form-item v-if="showAutoStartWorkerField" label="长连接 worker">
               <div class="connector-dialog__switch connector-dialog__switch--inline">
                 <div>
-                  <div class="connector-dialog__switch-title">允许后端启动长连接 worker</div>
+                  <div class="connector-dialog__switch-title">允许桌面端启动长连接监听</div>
                   <div class="connector-dialog__switch-desc">
-                    仍需要在系统配置页打开“飞书长连接 worker”总开关，保存后后端才会托管启动。
+                    保存后由桌面端机器人模块读取本机配置并监听平台事件，不把机器人业务托管给后端服务。
                   </div>
                 </div>
                 <el-switch v-model="draft.auto_start_worker" />
@@ -486,11 +486,14 @@
 import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
-import { buildServerUrl } from "@/utils/server-profile.js";
 import {
   FALLBACK_MODEL_TYPE_OPTIONS,
   normalizeProviderModelConfigs as normalizeLlmProviderModelConfigs,
 } from "@/utils/llm-models.js";
+import {
+  hasNativeDesktopBridge,
+  scanNativeFeishuBotChats,
+} from "@/utils/native-desktop-bridge.js";
 
 const props = defineProps({
   modelValue: {
@@ -563,9 +566,9 @@ const RECEIVE_MODE_LABELS = {
   manual: "手动配置",
 };
 const RECEIVE_MODE_HINTS = {
-  http_callback: "平台会把事件 POST 到系统公网回调地址，适合已有公网域名的部署。",
-  long_connection: "后端 worker 主动连接平台事件网关，飞书推荐此方式，不需要公网回调域名。",
-  polling: "由后端定时拉取平台消息，适合少量不支持事件推送的平台。",
+  http_callback: "平台会把事件 POST 到公网回调入口；该入口只负责收事件，业务处理仍交给桌面智能体。",
+  long_connection: "桌面端机器人模块主动连接平台事件网关，飞书推荐此方式，不需要公网回调域名。",
+  polling: "由桌面端机器人模块定时拉取平台消息，适合少量不支持事件推送的平台。",
   manual: "先保存凭证和说明，事件适配后续再接入。",
 };
 function findPreset(platform) {
@@ -612,6 +615,31 @@ function normalizeExternalAgentType(value) {
     : "codex_cli";
 }
 
+function normalizeScannedChats(value) {
+  const items = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const normalized = [];
+  for (const item of items) {
+    const chatId = String(item?.chat_id || item?.chatId || "").trim().slice(0, 200);
+    if (!chatId || seen.has(chatId)) continue;
+    seen.add(chatId);
+    normalized.push({
+      chat_id: chatId,
+      chat_name: String(item?.chat_name || item?.chatName || item?.name || "")
+        .trim()
+        .slice(0, 200),
+      chat_type: String(item?.chat_type || item?.chatType || item?.chat_mode || "group")
+        .trim()
+        .slice(0, 80),
+      chat_mode: String(item?.chat_mode || item?.chatMode || "").trim().slice(0, 80),
+      source: String(item?.source || "").trim().slice(0, 200),
+      scanned_at: String(item?.scanned_at || item?.scannedAt || "").trim().slice(0, 80),
+    });
+    if (normalized.length >= 500) break;
+  }
+  return normalized;
+}
+
 function normalizeConnector(item) {
   const raw = item && typeof item === "object" && !Array.isArray(item) ? item : {};
   const platform = String(raw.platform || "").trim().toLowerCase();
@@ -629,6 +657,12 @@ function normalizeConnector(item) {
     external_agent_type: normalizeExternalAgentType(raw.external_agent_type),
     provider_id: String(raw.provider_id || "").trim().slice(0, 120),
     model_name: String(raw.model_name || "").trim().slice(0, 160),
+    model_runtime:
+      raw.model_runtime && typeof raw.model_runtime === "object"
+        ? { ...raw.model_runtime }
+        : raw.modelRuntime && typeof raw.modelRuntime === "object"
+          ? { ...raw.modelRuntime }
+          : null,
     app_id: String(raw.app_id || "").trim().slice(0, 160),
     app_secret: String(raw.app_secret || "").trim().slice(0, 200),
     verification_token: String(raw.verification_token || "").trim().slice(0, 200),
@@ -641,6 +675,7 @@ function normalizeConnector(item) {
     project_id: "",
     guide_url: String(raw.guide_url || "").trim().slice(0, 500),
     sort_order: Math.min(999, Math.max(0, Number(raw.sort_order || 0) || 0)),
+    scanned_chats: normalizeScannedChats(raw.scanned_chats || raw.scannedChats),
     display_name: String(raw.name || preset?.name || id || "机器人").trim(),
   };
 }
@@ -740,9 +775,9 @@ const connectorCards = computed(() =>
       ),
       event_url:
         connector.event_receive_mode === "long_connection"
-          ? "长连接 worker"
+          ? "桌面长连接监听"
           : connector.platform === "feishu" && connector.event_receive_mode === "http_callback"
-            ? buildServerUrl(`/api/bot-events/feishu/${encodeURIComponent(connector.id)}/event`)
+            ? "公网事件入口仅转发到桌面队列"
             : "待平台适配",
     };
   }),
@@ -896,10 +931,10 @@ async function openDiagnose(connector) {
   }
   diagnosingConnectorId.value = connectorId;
   try {
-    diagnosePayload.value = await api.post(`/bot-connectors/${encodeURIComponent(connectorId)}/diagnose`, {});
+    diagnosePayload.value = buildLocalDiagnosePayload(connector);
     diagnoseDialogVisible.value = true;
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "机器人安装诊断失败");
+    ElMessage.error(err?.message || "机器人安装诊断失败");
   } finally {
     diagnosingConnectorId.value = "";
   }
@@ -913,13 +948,148 @@ async function openChatScan(connector) {
   }
   scanningConnectorId.value = connectorId;
   try {
-    chatScanPayload.value = await api.post(`/bot-connectors/${encodeURIComponent(connectorId)}/chats/scan`, {});
+    chatScanPayload.value = await buildLocalChatScanPayload(connector);
+    if (chatScanPayload.value?.status === "scanned") {
+      await persistConnectorChatScan(connectorId, chatScanPayload.value);
+    }
     chatScanDialogVisible.value = true;
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "扫描机器人所在群失败");
+    ElMessage.error(err?.message || "扫描机器人所在群失败");
   } finally {
     scanningConnectorId.value = "";
   }
+}
+
+async function persistConnectorChatScan(connectorId, payload) {
+  const scannedAt = new Date().toISOString();
+  const scannedChats = normalizeScannedChats(
+    (Array.isArray(payload?.items) ? payload.items : []).map((item) => ({
+      ...item,
+      scanned_at: scannedAt,
+    })),
+  );
+  const nextConnectors = normalizedConnectors.value.map((item) =>
+    item.id === connectorId
+      ? normalizeConnector({
+          ...item,
+          scanned_chats: scannedChats,
+        })
+      : item,
+  );
+  await persistNextConnectors(nextConnectors, "群列表已写入本机机器人配置");
+}
+
+function buildLocalDiagnosePayload(connector) {
+  const item = normalizeConnector(connector);
+  const checks = [
+    {
+      id: "local_config",
+      ok: Boolean(item.id && item.platform),
+      title: "本机全局配置",
+      message: item.id && item.platform ? "机器人配置已在本机全局文件中维护" : "缺少机器人配置 ID 或平台",
+      action: item.id && item.platform ? "" : "补齐配置 ID 与平台后保存",
+    },
+    {
+      id: "credentials",
+      ok: Boolean(item.app_id && item.app_secret),
+      title: "平台凭证",
+      message: item.app_id && item.app_secret ? "已填写平台 App ID 和 App Secret" : "缺少平台 App ID 或 App Secret",
+      action: item.app_id && item.app_secret ? "" : "在连接配置里补齐平台凭证",
+    },
+    {
+      id: "runtime",
+      ok: item.chat_mode === "desktop_local_agent",
+      title: "运行位置",
+      message: "机器人业务逻辑配置为桌面本地智能体执行",
+      action: "",
+    },
+    {
+      id: "lark_cli_identity",
+      ok: item.platform !== "feishu" || hasNativeDesktopBridge(),
+      title: "飞书本机身份",
+      message: item.platform === "feishu"
+        ? "桌面长连接使用本机 lark-cli 当前 bot 身份；App ID / Secret 用于配置记录和人工核对，不会自动切换 lark-cli 应用身份。"
+        : "当前平台暂未接入本机身份检查。",
+      action: item.platform === "feishu"
+        ? "如需多个飞书应用隔离，请先切换本机 lark-cli 应用配置，或后续接入原生 OpenAPI 长连接客户端。"
+        : "",
+    },
+    {
+      id: "prompt_policy",
+      ok: true,
+      title: "提示词来源",
+      message: item.system_prompt ? "运行时只使用当前机器人配置里的提示词" : "未填写机器人提示词，运行时不会注入内置机器人提示词",
+      action: "",
+    },
+  ];
+  return {
+    ok: checks.every((check) => check.ok),
+    platform: item.platform,
+    receive_mode: item.event_receive_mode,
+    checks,
+    manifest: {
+      install_steps: [
+        "在机器人平台创建应用并填写 App ID / App Secret",
+        "桌面端读取本机全局机器人配置",
+        "桌面智能体执行消息处理、工具调用和命令确认",
+      ],
+      required_events: item.platform === "feishu" ? ["im.message.receive_v1"] : [],
+      required_permissions: item.platform === "feishu" ? ["im:message", "im:chat"] : [],
+    },
+    next_actions: item.event_receive_mode === "http_callback"
+      ? ["HTTP 回调只作为事件入口；业务处理仍需桌面端在线并领取任务。"]
+      : ["启动桌面端机器人监听后再测试平台消息。"],
+  };
+}
+
+async function buildLocalChatScanPayload(connector) {
+  const item = normalizeConnector(connector);
+  if (item.platform === "feishu") {
+    if (!hasNativeDesktopBridge()) {
+      return {
+        status: "unsupported",
+        message: "群扫描需要在桌面端运行，当前浏览器环境不可用。",
+        platform: item.platform,
+        connector_id: item.id,
+        count: 0,
+        items: [],
+        missing: ["桌面端 Tauri 运行时"],
+      };
+    }
+    const result = await scanNativeFeishuBotChats({
+      identity: item.reply_identity || "bot",
+      pageSize: 100,
+      pageLimit: 10,
+    });
+    const items = (Array.isArray(result?.items) ? result.items : []).map((row) => ({
+      chat_id: String(row.chat_id || row.chatId || "").trim(),
+      chat_name: String(row.name || row.chat_name || row.chatName || "").trim(),
+      chat_type: String(row.chat_mode || row.chat_type || row.chatMode || "group").trim(),
+      chat_mode: String(row.chat_mode || row.chatMode || "").trim(),
+      source: `lark-cli --as ${result?.identity || item.reply_identity || "bot"}`,
+    })).filter((row) => row.chat_id);
+    return {
+      status: "scanned",
+      message: result?.message || "桌面端已扫描机器人所在群",
+      platform: item.platform,
+      connector_id: item.id,
+      count: items.length,
+      items,
+      missing: [],
+    };
+  }
+  return {
+    status: "unsupported",
+    message: "当前平台缺少桌面端本地群扫描适配器。",
+    platform: item.platform,
+    connector_id: item.id,
+    count: 0,
+    items: [],
+    missing: [
+      "桌面端本地群扫描适配器",
+      "平台授权后的本地扫描命令",
+    ],
+  };
 }
 
 function scanStatusLabel(status) {

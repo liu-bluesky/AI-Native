@@ -11,6 +11,7 @@ from stores.json.ftp_credential_store import FtpCredentialStore
 from stores.json.local_connector_store import LocalConnectorStore
 from stores.json.project_chat_store import ProjectChatStore
 from stores.json.project_chat_runtime_store import ProjectChatRuntimeStore
+from stores.json.project_chat_external_agent_task_store import ProjectChatExternalAgentTaskStore
 from stores.json.project_chat_task_store import ProjectChatTaskStore
 from stores.json.project_deploy_store import ProjectDeployStore
 from stores.json.project_experience_summary_store import ProjectExperienceSummaryStore
@@ -38,6 +39,7 @@ __all__ = [
     "LocalConnectorStore",
     "ProjectChatStore",
     "ProjectChatRuntimeStore",
+    "ProjectChatExternalAgentTaskStore",
     "ProjectChatTaskStore",
     "ProjectDeployStore",
     "ProjectExperienceSummaryStore",

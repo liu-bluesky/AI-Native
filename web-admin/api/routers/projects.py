@@ -46,7 +46,7 @@ from core.config import get_api_data_dir, get_project_root, get_settings
 from core.data_scope import can_view_username_data, filter_records_by_data_scope
 from core.ownership import can_view_record
 from core.redis_client import get_redis_client
-from core.deps import employee_store, ensure_any_permission, ensure_permission, external_mcp_store, ftp_credential_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_deploy_store, project_experience_summary_store, project_material_store, project_requirement_record_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_log_template_store, work_session_store
+from core.deps import employee_store, ensure_any_permission, ensure_permission, external_mcp_store, ftp_credential_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_external_agent_task_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_deploy_store, project_experience_summary_store, project_material_store, project_requirement_record_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_log_template_store, work_session_store
 from stores.json.work_log_template_store import WorkLogTemplate
 from services.feedback_service import get_feedback_service
 from services.assistant.global_assistant_service import (
@@ -23395,7 +23395,17 @@ async def claim_project_chat_external_agent_task(
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
     _ensure_project_access(project_id, auth_payload)
-    raise HTTPException(410, "代理会话功能已移除")
+    username = _current_username(auth_payload)
+    task = project_chat_external_agent_task_store.claim_next(
+        project_id=project_id,
+        username=username,
+        runner_id=req.runner_id,
+        supported_agent_types=req.supported_agent_types,
+        workspace_path=req.workspace_path,
+    )
+    if task is None:
+        return {"task": None}
+    return {"task": asdict(task)}
 
 
 @router.post("/{project_id}/chat/external-agent/tasks/{task_id}/complete")
@@ -23407,7 +23417,100 @@ async def complete_project_chat_external_agent_task(
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
     _ensure_project_access(project_id, auth_payload)
-    raise HTTPException(410, "代理会话功能已移除")
+    username = _current_username(auth_payload)
+    existing_task = project_chat_external_agent_task_store.get(project_id, task_id)
+    if existing_task is None:
+        raise HTTPException(404, "External agent task not found")
+    if str(existing_task.username or "").strip() != username:
+        raise HTTPException(403, "External agent task access denied")
+    task = project_chat_external_agent_task_store.complete(
+        project_id=project_id,
+        task_id=task_id,
+        status=req.status,
+        content=req.content,
+        error_message=req.error_message,
+        runner_session_id=req.runner_session_id,
+        runner_meta=req.runner_meta,
+    )
+    request_payload = dict(task.request or {})
+    chat_session_id = str(
+        request_payload.get("chatSessionId") or request_payload.get("chat_session_id") or ""
+    ).strip()
+    assistant_message_id = str(
+        request_payload.get("assistantMessageId")
+        or request_payload.get("assistant_message_id")
+        or ""
+    ).strip()
+    content = str(req.content or "").strip()
+    if req.status != "completed" and not content:
+        content = str(req.error_message or "").strip() or "桌面智能体执行失败。"
+    if not content:
+        content = "已处理完成。"
+    source_context = dict(request_payload.get("sourceContext") or request_payload.get("source_context") or {})
+    source_context["external_agent_task_id"] = task.id
+    source_context["external_agent_task_status"] = task.status
+    source_context["external_agent_runner_id"] = task.runner_id
+    source_context["external_agent_runner_session_id"] = task.runner_session_id
+    if assistant_message_id:
+        updated = project_chat_store.update_message(
+            project_id,
+            username,
+            assistant_message_id,
+            content=content,
+            source_context=source_context,
+        )
+        if updated is not None:
+            await publish_project_chat_record_realtime(
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                message=updated,
+            )
+    await publish_project_chat_group_status_realtime(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        status="linked" if req.status == "completed" else "error",
+        message="桌面智能体已完成机器人任务" if req.status == "completed" else content,
+        source_context=source_context,
+    )
+    connector = dict(request_payload.get("connector") or {})
+    platform = str(connector.get("platform") or source_context.get("platform") or "").strip().lower()
+    if platform == "feishu":
+        try:
+            from services.feishu.feishu_bot_service import _reply_feishu_text, get_feishu_connector
+
+            connector_id = str(
+                connector.get("connectorId")
+                or connector.get("connector_id")
+                or source_context.get("connector_id")
+                or ""
+            ).strip()
+            feishu_connector = get_feishu_connector(connector_id) if connector_id else None
+            external_message_id = str(
+                source_context.get("external_message_id")
+                or request_payload.get("messageId")
+                or request_payload.get("message_id")
+                or ""
+            ).strip()
+            if feishu_connector and external_message_id:
+                await _reply_feishu_text(
+                    feishu_connector,
+                    message_id=external_message_id,
+                    content=content,
+                    reply_in_thread=bool(source_context.get("reply_in_thread")),
+                    idempotency_suffix=f"desktop-runner-{task.id}",
+                )
+        except Exception:
+            logger.exception(
+                "failed to reply external-agent task result to feishu",
+                extra={
+                    "project_id": project_id,
+                    "task_id": task_id,
+                    "chat_session_id": chat_session_id,
+                },
+            )
+    return {"task": asdict(task)}
 
 
 @router.post("/{project_id}/chat/external-agent/tasks/{task_id}/approval-requests")

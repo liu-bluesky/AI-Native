@@ -16,6 +16,7 @@ from stores.factory import (
     external_mcp_store,
     ftp_credential_store,
     local_connector_store,
+    project_chat_external_agent_task_store,
     project_chat_store,
     project_chat_runtime_store,
     project_chat_task_store,
@@ -68,6 +69,33 @@ def get_auth_role_ids(auth_payload: dict | None) -> list[str]:
     if role_id and role_id not in seen:
         normalized.append(role_id)
     return normalized
+
+
+def build_user_auth_payload(username: str, *, fallback_role: str = "user") -> dict:
+    normalized_username = str(username or "").strip()
+    normalized_fallback_role = str(fallback_role or "user").strip().lower() or "user"
+    if not normalized_username:
+        return {"sub": "", "role": normalized_fallback_role, "roles": [normalized_fallback_role]}
+    try:
+        user = user_store.get(normalized_username)
+    except Exception:
+        user = None
+    role_ids = list(getattr(user, "role_ids", []) or []) if user is not None else []
+    role = str(getattr(user, "role", "") or "").strip().lower() if user is not None else ""
+    if role and role not in role_ids:
+        role_ids.append(role)
+    normalized_role_ids = [
+        str(item or "").strip().lower()
+        for item in role_ids
+        if str(item or "").strip()
+    ]
+    if not normalized_role_ids:
+        normalized_role_ids = ["admin"] if normalized_username.lower() == "admin" else [normalized_fallback_role]
+    return {
+        "sub": normalized_username,
+        "role": normalized_role_ids[0],
+        "roles": normalized_role_ids,
+    }
 
 
 def is_super_admin_payload(auth_payload: dict | None) -> bool:

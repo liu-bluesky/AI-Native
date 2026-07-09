@@ -38,21 +38,26 @@ export function normalizeChatSourceContext(item) {
       ? item.source_context
       : item || {};
   const normalized = {
-    source_type: String(source.source_type || "").trim(),
+    source_type: String(source.source_type || source.sourceType || "").trim(),
     platform: String(source.platform || "").trim(),
-    connector_id: String(source.connector_id || "").trim(),
-    resolve_identity: String(source.resolve_identity || "").trim(),
-    external_chat_id: String(source.external_chat_id || "").trim(),
-    external_chat_name: String(source.external_chat_name || "").trim(),
-    external_message_id: String(source.external_message_id || "").trim(),
-    sender_id: String(source.sender_id || "").trim(),
-    sender_name: String(source.sender_name || "").trim(),
-    thread_key: String(source.thread_key || "").trim(),
-    chat_mode: String(source.chat_mode || "").trim(),
-    external_agent_type: String(source.external_agent_type || "").trim(),
-    agent_session_id: String(source.agent_session_id || "").trim(),
-    session_id: String(source.session_id || "").trim(),
-    thread_id: String(source.thread_id || "").trim(),
+    connector_id: String(source.connector_id || source.connectorId || "").trim(),
+    connector_name: String(source.connector_name || source.connectorName || "").trim(),
+    resolve_identity: String(source.resolve_identity || source.resolveIdentity || "").trim(),
+    external_chat_id: String(source.external_chat_id || source.externalChatId || "").trim(),
+    external_chat_name: String(source.external_chat_name || source.externalChatName || "").trim(),
+    external_message_id: String(
+      source.external_message_id || source.externalMessageId || "",
+    ).trim(),
+    sender_id: String(source.sender_id || source.senderId || "").trim(),
+    sender_name: String(source.sender_name || source.senderName || "").trim(),
+    thread_key: String(source.thread_key || source.threadKey || "").trim(),
+    chat_mode: String(source.chat_mode || source.chatMode || "").trim(),
+    external_agent_type: String(
+      source.external_agent_type || source.externalAgentType || "",
+    ).trim(),
+    agent_session_id: String(source.agent_session_id || source.agentSessionId || "").trim(),
+    session_id: String(source.session_id || source.sessionId || "").trim(),
+    thread_id: String(source.thread_id || source.threadId || "").trim(),
   };
   [
     "assistant_workflow",
@@ -90,6 +95,7 @@ export function normalizeChatSession(item) {
     source_type: sourceContext.source_type,
     platform: sourceContext.platform,
     connector_id: sourceContext.connector_id,
+    connector_name: sourceContext.connector_name,
     external_chat_id: sourceContext.external_chat_id,
     external_chat_name: sourceContext.external_chat_name,
     thread_key: sourceContext.thread_key,

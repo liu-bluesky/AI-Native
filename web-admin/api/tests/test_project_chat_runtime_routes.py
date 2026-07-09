@@ -27,7 +27,9 @@ def _build_project_chat_runtime_test_client(tmp_path, monkeypatch, auth_payload)
         "project_store",
         "project_chat_store",
         "project_chat_runtime_store",
+        "project_chat_external_agent_task_store",
         "project_chat_task_store",
+        "user_store",
         "work_session_store",
         "task_tree_evolution_store",
     ):
@@ -67,6 +69,39 @@ def _create_feishu_project_chat_session(
         source_context=context,
     )
     return projects_router._serialize_chat_session(session)
+
+
+def test_feishu_message_event_backend_runtime_disabled_does_not_enqueue_with_postgres_store(monkeypatch):
+    from core import config as core_config
+    from services.feishu.feishu_bot_service import process_feishu_message_event
+    from stores import factory as store_factory
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "postgres")
+    core_config.get_settings.cache_clear()
+    store_factory.project_chat_external_agent_task_store._instance = None
+
+    class Obj:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    event = Obj(
+        event=Obj(
+            sender=Obj(sender_type="user", sender_id=Obj(open_id="ou_sender_1")),
+            message=Obj(
+                chat_type="group",
+                chat_id="oc_real_group_1",
+                thread_id="",
+                message_id="om_message_1",
+                message_type="text",
+                content='{"text":"@_user_1 好"}',
+                mentions=[],
+            ),
+        )
+    )
+
+    asyncio.run(process_feishu_message_event("conn-feishu-1", event))
+
+    assert store_factory.project_chat_external_agent_task_store._instance is None
 
 
 def test_project_deploy_options_route_returns_sanitized_summary(tmp_path, monkeypatch):
@@ -891,11 +926,20 @@ def test_regular_project_chat_session_resolve_source_keeps_existing_validation(t
 def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, monkeypatch):
     from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
+    from stores.json.user_store import User, hash_password
 
     client, store_factory = _build_project_chat_runtime_test_client(
         tmp_path,
         monkeypatch,
         {"sub": "tester", "role": "admin"},
+    )
+    store_factory.user_store.save(
+        User(
+            username="tester",
+            password_hash=hash_password("tester-secret"),
+            role="project-operator",
+            role_ids=["project-operator", "viewer"],
+        )
     )
     store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
     store_factory.project_store.upsert_user_member(
@@ -940,7 +984,7 @@ def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, m
 
     async def fake_run_project_chat_once(**kwargs):
         calls.append(kwargs)
-        return FakeResult()
+        raise AssertionError("Feishu desktop bot path must not call backend project chat runtime")
 
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
@@ -985,21 +1029,231 @@ def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, m
 
     asyncio.run(process_feishu_message_event("conn-feishu-1", event))
 
-    assert len(calls) == 1
-    assert calls[0]["project_id"] == "proj-1"
-    assert calls[0]["username"] == "tester"
-    req = calls[0]["req"]
-    assert req.chat_session_id == session["id"]
-    assert req.message == "帮我总结一下"
-    assert "你是飞书群里的需求协作机器人，只回答和项目推进有关的问题。" in req.system_prompt
-    assert "飞书机器人通用工作流约束" in req.system_prompt
-    assert "不要暴露或强调 Hermes、Codex、Claude Code、桌面 Runner" in req.system_prompt
-    assert "lark-cli im +messages-reply" in req.system_prompt
-    assert req.skill_resource_directory.endswith("skills")
-    assert req.source_context["external_chat_id"] == "oc_real_group_1"
-    assert req.source_context["thread_key"] == "feishu:conn-feishu-1:chat:oc_real_group_1"
+    assert calls == []
+    task = store_factory.project_chat_external_agent_task_store.claim_next(
+        project_id="proj-1",
+        username="tester",
+        runner_id="test-runner",
+        supported_agent_types=["bot_local_chat", "codex_cli"],
+        workspace_path="/tmp/workspace",
+    )
+    assert task is not None
+    assert task.task_type == "bot_local_chat"
+    assert task.external_agent_type == "codex_cli"
+    request_payload = task.request
+    assert request_payload["projectId"] == "proj-1"
+    assert request_payload["chatSessionId"] == session["id"]
+    assert request_payload["message"] == "帮我总结一下"
+    assert request_payload["connector"]["ownerUsername"] == "tester"
+    assert request_payload["connector"]["systemPrompt"] == "你是飞书群里的需求协作机器人，只回答和项目推进有关的问题。"
+    assert request_payload["sourceContext"]["chat_mode"] == "desktop_local_agent"
+    assert request_payload["sourceContext"]["runtime_migration_status"] == "desktop_local_agent_project_chat_runtime"
+    assert request_payload["sourceContext"]["runtime_owner_username"] == "tester"
+    assert request_payload["sourceContext"]["desktop_bot_runner_required"] is True
+    assert request_payload["sourceContext"]["execution_authority"] == "delegated_user_desktop_runner"
+    permission_contract = request_payload["permissionContract"]
+    assert permission_contract["channel"]["scope"] == "transport_only"
+    assert permission_contract["delegatedUser"]["username"] == "tester"
+    assert permission_contract["delegatedUser"]["projectAccess"] == "owner_visible_projects_only"
+    assert permission_contract["runner"]["mode"] == "desktop_local_agent"
+    assert permission_contract["runner"]["commandExecution"] == "desktop_runner_confirmed"
+    assert permission_contract["confirmations"]["highRiskTools"] == "confirm"
+    configured_prompt = request_payload["connector"]["systemPrompt"]
+    assert "飞书机器人通用工作流约束" not in configured_prompt
+    assert "飞书归档真实性约束" not in configured_prompt
+    assert "不要暴露或强调 Hermes、Codex、Claude Code、桌面 Runner" not in configured_prompt
+    assert "lark-cli im +messages-reply" not in configured_prompt
+    assert request_payload["sourceContext"]["skill_resource_directory"].endswith("skills")
+    assert request_payload["sourceContext"]["external_chat_id"] == "oc_real_group_1"
+    assert request_payload["sourceContext"]["thread_key"] == "feishu:conn-feishu-1:chat:oc_real_group_1"
     assert speech_calls == []
     assert replies[0][1]["message_id"] == "om_message_1"
+    assert "桌面智能体队列" in replies[0][1]["content"]
+
+
+def test_external_agent_task_claim_and_complete_updates_chat_message(tmp_path, monkeypatch):
+    from stores.json.project_chat_store import ProjectChatMessage
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+
+    client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.project_store.upsert_user_member(
+        ProjectUserMember(project_id="proj-1", username="tester", role="owner")
+    )
+    store_factory.project_chat_store.append_message(
+        ProjectChatMessage(
+            id="assistant-queued-1",
+            project_id="proj-1",
+            username="tester",
+            role="assistant",
+            content="已进入桌面智能体队列，等待桌面端接管。",
+            chat_session_id="chat-1",
+        )
+    )
+    task = store_factory.project_chat_external_agent_task_store.enqueue(
+        project_id="proj-1",
+        username="tester",
+        external_agent_type="codex_cli",
+        request={
+            "projectId": "proj-1",
+            "chatSessionId": "chat-1",
+            "messageId": "msg-1",
+            "assistantMessageId": "assistant-queued-1",
+            "message": "继续",
+            "workspacePath": "/tmp/workspace",
+            "connector": {"platform": "feishu", "connectorId": "conn-1"},
+            "sourceContext": {"platform": "feishu", "connector_id": "conn-1"},
+        },
+    )
+
+    claim_response = client.post(
+        "/api/projects/proj-1/chat/external-agent/tasks/claim",
+        json={
+            "runner_id": "runner-1",
+            "supported_agent_types": ["codex_cli"],
+            "workspace_path": "/tmp/workspace",
+        },
+    )
+    assert claim_response.status_code == 200
+    assert claim_response.json()["task"]["id"] == task.id
+    assert claim_response.json()["task"]["status"] == "claimed"
+
+    complete_response = client.post(
+        f"/api/projects/proj-1/chat/external-agent/tasks/{task.id}/complete",
+        json={
+            "status": "completed",
+            "content": "桌面执行完成",
+            "runner_session_id": "runner-session-1",
+            "runner_meta": {"ok": True},
+        },
+    )
+    assert complete_response.status_code == 200
+    assert complete_response.json()["task"]["status"] == "completed"
+    messages = store_factory.project_chat_store.list_messages(
+        "proj-1",
+        "tester",
+        chat_session_id="chat-1",
+    )
+    updated = next(item for item in messages if item.id == "assistant-queued-1")
+    assert updated.content == "桌面执行完成"
+    assert updated.source_context["external_agent_task_status"] == "completed"
+
+
+def test_feishu_message_event_uses_connector_owner_auth_payload(tmp_path, monkeypatch):
+    from services.feishu.feishu_bot_service import process_feishu_message_event
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+    from stores.json.user_store import User, hash_password
+
+    _client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.user_store.save(
+        User(
+            username="tester",
+            password_hash=hash_password("tester-secret"),
+            role="viewer",
+            role_ids=["viewer"],
+        )
+    )
+    store_factory.user_store.save(
+        User(
+            username="connector-owner",
+            password_hash=hash_password("owner-secret"),
+            role="project-operator",
+            role_ids=["project-operator"],
+        )
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.project_store.upsert_user_member(
+        ProjectUserMember(project_id="proj-1", username="tester", role="owner")
+    )
+    store_factory.bot_connector_store.replace_all(
+        [
+            {
+                "id": "conn-feishu-1",
+                "platform": "feishu",
+                "name": "飞书机器人",
+                "enabled": True,
+                "project_id": "",
+                "app_id": "cli_xxx",
+                "app_secret": "secret_xxx",
+                "bot_open_id": "ou_bot_1",
+                "owner_username": "connector-owner",
+            }
+        ]
+    )
+    _create_feishu_project_chat_session(
+        store_factory,
+        username="tester",
+        title="飞书群：产品研发群",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
+        },
+    )
+
+    calls = []
+    replies = []
+
+    class FakeResult:
+        content = "项目对话回复"
+
+    async def fake_run_project_chat_once(**kwargs):
+        calls.append(kwargs)
+        return FakeResult()
+
+    async def fake_reply_feishu_text(connector, **kwargs):
+        replies.append(kwargs)
+
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.run_project_chat_once",
+        fake_run_project_chat_once,
+    )
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service._reply_feishu_text",
+        fake_reply_feishu_text,
+    )
+
+    class Obj:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    event = Obj(
+        event=Obj(
+            sender=Obj(sender_type="user", sender_id=Obj(open_id="ou_sender_1")),
+            message=Obj(
+                chat_type="group",
+                chat_id="oc_real_group_1",
+                thread_id="",
+                message_id="om_message_1",
+                message_type="text",
+                content='{"text":"@_user_1 查一下项目"}',
+                mentions=[Obj(key="@_user_1", id=Obj(open_id="ou_bot_1"))],
+            ),
+        )
+    )
+
+    import asyncio
+
+    asyncio.run(process_feishu_message_event("conn-feishu-1", event))
+
+    assert calls[0]["username"] == "tester"
+    assert calls[0]["auth_payload"] == {
+        "sub": "connector-owner",
+        "role": "project-operator",
+        "roles": ["project-operator"],
+    }
+    assert calls[0]["req"].source_context["runtime_owner_username"] == "connector-owner"
+    assert [item["content"] for item in replies] == ["收到，正在处理。", "项目对话回复"]
 
 
 def test_feishu_external_agent_connector_is_normalized_to_system_chat(tmp_path, monkeypatch):
@@ -1094,6 +1348,181 @@ def test_feishu_external_agent_connector_is_normalized_to_system_chat(tmp_path, 
     assert req.external_agent_type == "hermes"
     assert [item[1]["content"] for item in replies] == ["收到，正在处理。", "系统对话正常回复"]
     assert replies[0][1].get("idempotency_suffix") == "processing"
+
+
+def test_feishu_message_event_replies_project_chat_result_when_post_hooks_fail(tmp_path, monkeypatch):
+    from services.feishu.feishu_bot_service import process_feishu_message_event
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+
+    _client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.project_store.upsert_user_member(
+        ProjectUserMember(project_id="proj-1", username="tester", role="owner")
+    )
+    store_factory.bot_connector_store.replace_all(
+        [
+            {
+                "id": "conn-feishu-1",
+                "platform": "feishu",
+                "name": "飞书机器人",
+                "enabled": True,
+                "project_id": "",
+                "app_id": "cli_xxx",
+                "app_secret": "secret_xxx",
+                "bot_open_id": "ou_bot_1",
+            }
+        ]
+    )
+    _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：产品研发群",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
+        },
+    )
+
+    replies = []
+
+    class FakeResult:
+        content = "项目对话最终回复"
+
+    async def fake_run_project_chat_once(**kwargs):
+        return FakeResult()
+
+    async def fake_reply_feishu_text(connector, **kwargs):
+        replies.append(kwargs)
+
+    def fake_process_global_assistant_tasks_for_event(**kwargs):
+        raise RuntimeError("post hook failed")
+
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.run_project_chat_once",
+        fake_run_project_chat_once,
+    )
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service._reply_feishu_text",
+        fake_reply_feishu_text,
+    )
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.process_global_assistant_tasks_for_event",
+        fake_process_global_assistant_tasks_for_event,
+    )
+
+    class Obj:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    event = Obj(
+        event=Obj(
+            sender=Obj(sender_type="user", sender_id=Obj(open_id="ou_sender_1")),
+            message=Obj(
+                chat_type="group",
+                chat_id="oc_real_group_1",
+                thread_id="",
+                message_id="om_message_1",
+                message_type="text",
+                content='{"text":"@_user_1 好"}',
+                mentions=[Obj(key="@_user_1", id=Obj(open_id="ou_bot_1"))],
+            ),
+        )
+    )
+
+    import asyncio
+
+    asyncio.run(process_feishu_message_event("conn-feishu-1", event))
+
+    assert [item["content"] for item in replies] == ["收到，正在处理。", "项目对话最终回复"]
+
+
+def test_feishu_message_event_replies_runtime_http_error(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from services.feishu.feishu_bot_service import process_feishu_message_event
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+
+    _client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.project_store.upsert_user_member(
+        ProjectUserMember(project_id="proj-1", username="tester", role="owner")
+    )
+    store_factory.bot_connector_store.replace_all(
+        [
+            {
+                "id": "conn-feishu-1",
+                "platform": "feishu",
+                "name": "飞书机器人",
+                "enabled": True,
+                "project_id": "",
+                "app_id": "cli_xxx",
+                "app_secret": "secret_xxx",
+                "bot_open_id": "ou_bot_1",
+            }
+        ]
+    )
+    _create_feishu_project_chat_session(
+        store_factory,
+        title="飞书群：产品研发群",
+        source_context={
+            "source_type": "group_message",
+            "platform": "feishu",
+            "connector_id": "conn-feishu-1",
+            "external_chat_id": "oc_real_group_1",
+            "external_chat_name": "产品研发群",
+        },
+    )
+
+    replies = []
+
+    async def fake_run_project_chat_once(**kwargs):
+        raise HTTPException(400, "未配置可用的 LLM 提供商")
+
+    async def fake_reply_feishu_text(connector, **kwargs):
+        replies.append(kwargs)
+
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service.run_project_chat_once",
+        fake_run_project_chat_once,
+    )
+    monkeypatch.setattr(
+        "services.feishu.feishu_bot_service._reply_feishu_text",
+        fake_reply_feishu_text,
+    )
+
+    class Obj:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    event = Obj(
+        event=Obj(
+            sender=Obj(sender_type="user", sender_id=Obj(open_id="ou_sender_1")),
+            message=Obj(
+                chat_type="group",
+                chat_id="oc_real_group_1",
+                thread_id="",
+                message_id="om_message_1",
+                message_type="text",
+                content='{"text":"@_user_1 好"}',
+                mentions=[Obj(key="@_user_1", id=Obj(open_id="ou_bot_1"))],
+            ),
+        )
+    )
+
+    import asyncio
+
+    asyncio.run(process_feishu_message_event("conn-feishu-1", event))
+
+    assert [item["content"] for item in replies] == ["收到，正在处理。", "未配置可用的 LLM 提供商"]
 
 
 def test_feishu_message_event_auto_binds_unbound_group_to_connector_project(tmp_path, monkeypatch):
@@ -1796,7 +2225,10 @@ def test_feishu_followup_group_text_without_explicit_mention_is_ignored_even_if_
 
     assert len(calls) == 1
     assert calls[0]["req"].message == "帮我总结一下"
-    assert len(replies) == 1
+    assert len(replies) == 2
+    assert replies[0][1]["content"] == "收到，正在处理。"
+    assert replies[0][1]["idempotency_suffix"] == "processing"
+    assert replies[-1][1]["content"] == "收到"
     assert replies[0][1]["message_id"] == "om_first_mention_1"
 
 
@@ -2452,8 +2884,7 @@ def test_feishu_non_text_image_message_routes_resource_to_model_context(tmp_path
     ]
     image_path = Path(req.source_context["attachment_files"][0]["path"])
     assert image_path.name == "img_v3_1.png"
-    assert "message_resources" in req.system_prompt
-    assert "lark-im" in req.system_prompt
+    assert req.system_prompt == ""
     assert replies[0][1]["message_id"] == "om_image_1"
     assert not image_path.exists()
 
@@ -2735,7 +3166,8 @@ def test_feishu_text_redownloads_recent_image_resource_for_model_context(tmp_pat
     )
     assert stored[0].source_context["message_resources"][0]["file_key"] == "img_v3_1"
     assert replies[0][1]["message_id"] == "om_append_1"
-    assert "已收到" in replies[0][1]["content"]
+    assert replies[0][1]["content"] == "收到，正在处理。"
+    assert "已收到" in replies[-1][1]["content"]
 
 
 def test_feishu_text_recovers_recent_image_resource_from_previous_reply_text(tmp_path, monkeypatch):
@@ -3885,7 +4317,7 @@ def test_feishu_message_event_queues_speech_only_when_task_listener_matches(tmp_
         {
             "text": "飞书群 产品研发群有新事项：帮我总结需求。机器人已回复，请查看。",
             "owner_username": "tester",
-            "role_ids": ["admin"],
+            "role_ids": ["user"],
             "source": "feishu-task-listener",
             "require_enabled": True,
         }
@@ -4671,6 +5103,7 @@ def test_global_assistant_async_project_chat_action_finalizes_execution_history(
 
     from core import config as core_config
     from stores.json.project_store import ProjectConfig
+    from stores.json.user_store import User, hash_password
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
     core_config.get_settings.cache_clear()
@@ -4680,6 +5113,14 @@ def test_global_assistant_async_project_chat_action_finalizes_execution_history(
         tmp_path,
         monkeypatch,
         {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    store_factory.user_store.save(
+        User(
+            username="tester",
+            password_hash=hash_password("tester-secret"),
+            role="project-operator",
+            role_ids=["project-operator"],
+        )
     )
     store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
 
@@ -4694,8 +5135,10 @@ def test_global_assistant_async_project_chat_action_finalizes_execution_history(
         content = '{"actions":[{"type":"system_speech","text":"测试成功","repeat":2}],"summary":"播报两次"}'
 
     queued_calls = []
+    model_calls = []
 
     async def fake_run_project_chat_once(**kwargs):
+        model_calls.append(kwargs)
         return FakeResult()
 
     async def fake_enqueue_system_speech(text, **kwargs):
@@ -4736,7 +5179,13 @@ def test_global_assistant_async_project_chat_action_finalizes_execution_history(
     latest = tasks[0]["execution_history"][-1]["action_results"][0]
     assert latest["status"] == "completed"
     assert latest["dynamic_action_count"] == 2
+    assert model_calls[0]["auth_payload"] == {
+        "sub": "tester",
+        "role": "project-operator",
+        "roles": ["project-operator"],
+    }
     assert [item["text"] for item in queued_calls] == ["测试成功", "测试成功"]
+    assert {item["role_ids"][0] for item in queued_calls} == {"project-operator"}
 
 
 def test_global_assistant_async_project_chat_failure_reactivates_schedule_for_retry(tmp_path, monkeypatch):
@@ -5029,6 +5478,11 @@ def test_feishu_scheduled_reminder_sends_due_message_and_completes(tmp_path, mon
         calls.append({"command": command, **kwargs})
         return Completed()
 
+    monkeypatch.setattr(
+        reminders,
+        "build_cli_plugin_runtime_environment",
+        lambda owner_username: ({"PATH": "/mock/bin", "AI_EMPLOYEE_OWNER": owner_username}, {"owner_username": owner_username}),
+    )
     monkeypatch.setattr(reminders.subprocess, "run", fake_run)
     due_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(timespec="seconds")
     upsert_global_assistant_task(
@@ -5058,6 +5512,7 @@ def test_feishu_scheduled_reminder_sends_due_message_and_completes(tmp_path, mon
     assert calls[0]["command"][:3] == ["lark-cli", "im", "+messages-send"]
     assert calls[0]["command"][calls[0]["command"].index("--chat-id") + 1] == "oc_real_group_1"
     assert calls[0]["command"][calls[0]["command"].index("--text") + 1] == "会议提醒：下午三点开会"
+    assert calls[0]["env"]["AI_EMPLOYEE_OWNER"] == "tester"
     assert tasks[0]["status"] == "done"
     assert tasks[0]["next_run_at"] == ""
 

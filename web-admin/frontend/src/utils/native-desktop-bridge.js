@@ -25,6 +25,8 @@ const TAURI_COMMAND_NAMES = {
   writeGlobalWebToolsConfigFile: "write_global_web_tools_config_file",
   readProjectWebToolsConfigFile: "read_project_web_tools_config_file",
   writeProjectWebToolsConfigFile: "write_project_web_tools_config_file",
+  readGlobalBotConnectorConfigFile: "read_global_bot_connector_config_file",
+  writeGlobalBotConnectorConfigFile: "write_global_bot_connector_config_file",
   openExternalUrl: "open_external_url",
   classifyRunnerCommand: "classify_runner_command",
   runRunnerCommand: "run_runner_command",
@@ -34,6 +36,14 @@ const TAURI_COMMAND_NAMES = {
   liuagentExecuteTool: "liuagent_execute_tool",
   liuagentUploadProviderFile: "liuagent_upload_provider_file",
   liuagentStartLocalChat: "liuagent_start_local_chat",
+  botStartLocalChat: "bot_start_local_chat",
+  botStartFeishuLocalListener: "bot_start_feishu_local_listener",
+  botStopFeishuLocalListener: "bot_stop_feishu_local_listener",
+  botListFeishuLocalListeners: "bot_list_feishu_local_listeners",
+  botReplyFeishuMessage: "bot_reply_feishu_message",
+  botScanFeishuChats: "bot_scan_feishu_chats",
+  botDownloadFeishuMessageResource: "bot_download_feishu_message_resource",
+  botGetFeishuMessage: "bot_get_feishu_message",
   liuagentPrepareAgentInvocation: "liuagent_prepare_agent_invocation",
   liuagentRecoverRuntimeState: "liuagent_recover_runtime_state",
   liuagentRefreshRuntimeJob: "liuagent_refresh_runtime_job",
@@ -302,6 +312,18 @@ export async function writeNativeProjectWebToolsConfigFile(workspacePath = "", c
   return normalizeConfigFileResult(result);
 }
 
+export async function readNativeGlobalBotConnectorConfigFile() {
+  const result = await invokeNativeDesktopBridge("readGlobalBotConnectorConfigFile");
+  return normalizeConfigFileResult(result);
+}
+
+export async function writeNativeGlobalBotConnectorConfigFile(content = "") {
+  const result = await invokeNativeDesktopBridge("writeGlobalBotConnectorConfigFile", {
+    content: String(content || ""),
+  });
+  return normalizeConfigFileResult(result);
+}
+
 export async function openNativeExternalUrl(url = "") {
   const normalizedUrl = String(url || "").trim();
   if (!normalizedUrl) return false;
@@ -451,6 +473,250 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
         errorCode: "native_bridge.unavailable",
         error: "native liuAgent local chat runtime is unavailable",
       };
+}
+
+export async function startNativeBotLocalChat(request = {}) {
+  const projectId = String(request?.projectId || request?.project_id || "").trim();
+  const chatSessionId = String(
+    request?.chatSessionId || request?.chat_session_id || "",
+  ).trim();
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  const message = String(request?.message || "").trim();
+  const connector =
+    request?.connector && typeof request.connector === "object"
+      ? request.connector
+      : {};
+  const connectorId = String(
+    connector.connectorId || connector.connector_id || request?.connectorId || "",
+  ).trim();
+  const platform = String(connector.platform || request?.platform || "").trim();
+  if (!projectId || !chatSessionId || !workspacePath || !message || !connectorId) {
+    return {
+      ok: false,
+      errorCode: "tool.schema_invalid",
+      error:
+        "projectId, chatSessionId, workspacePath, message and connector.connectorId are required",
+    };
+  }
+  const result = await invokeNativeDesktopBridge("botStartLocalChat", {
+    request: {
+      projectId,
+      chatSessionId,
+      messageId: String(request?.messageId || request?.message_id || "").trim(),
+      assistantMessageId: String(
+        request?.assistantMessageId || request?.assistant_message_id || "",
+      ).trim(),
+      message,
+      workspacePath,
+      history: Array.isArray(request?.history) ? request.history : [],
+      connector: {
+        connectorId,
+        platform,
+        name: String(connector.name || request?.connectorName || "").trim(),
+        systemPrompt: String(
+          connector.systemPrompt ||
+            connector.system_prompt ||
+            "",
+        ).trim(),
+        providerId: String(
+          connector.providerId ||
+            connector.provider_id ||
+            request?.providerId ||
+            request?.provider_id ||
+            "",
+        ).trim(),
+        modelName: String(
+          connector.modelName ||
+            connector.model_name ||
+            request?.modelName ||
+            request?.model_name ||
+            "",
+        ).trim(),
+        replyIdentity: String(
+          connector.replyIdentity || connector.reply_identity || "bot",
+        ).trim(),
+        ownerUsername: String(
+          connector.ownerUsername ||
+            connector.owner_username ||
+            request?.ownerUsername ||
+            request?.owner_username ||
+            "",
+        ).trim(),
+        sandboxMode: String(
+          connector.sandboxMode ||
+            connector.sandbox_mode ||
+            request?.sandboxMode ||
+            request?.sandbox_mode ||
+            "workspace-write",
+        ).trim(),
+        highRiskToolConfirm:
+          connector.highRiskToolConfirm ??
+          connector.high_risk_tool_confirm ??
+          request?.highRiskToolConfirm ??
+          request?.high_risk_tool_confirm ??
+          true,
+      },
+      sourceContext:
+        request?.sourceContext && typeof request.sourceContext === "object"
+          ? request.sourceContext
+          : request?.source_context && typeof request.source_context === "object"
+            ? request.source_context
+            : {},
+      permissionContract:
+        request?.permissionContract && typeof request.permissionContract === "object"
+          ? request.permissionContract
+          : request?.permission_contract &&
+              typeof request.permission_contract === "object"
+            ? request.permission_contract
+            : null,
+      providerId: String(request?.providerId || request?.provider_id || "").trim(),
+      modelName: String(request?.modelName || request?.model_name || "").trim(),
+      modelRuntime:
+        request?.modelRuntime && typeof request.modelRuntime === "object"
+          ? request.modelRuntime
+          : request?.model_runtime && typeof request.model_runtime === "object"
+            ? request.model_runtime
+            : null,
+      attachments: Array.isArray(request?.attachments)
+        ? request.attachments
+        : Array.isArray(request?.localAttachments)
+          ? request.localAttachments
+          : [],
+      mcpConfig:
+        request?.mcpConfig && typeof request.mcpConfig === "object"
+          ? request.mcpConfig
+          : request?.mcp_config && typeof request.mcp_config === "object"
+            ? request.mcp_config
+            : null,
+      backendContext:
+        request?.backendContext && typeof request.backendContext === "object"
+          ? request.backendContext
+          : request?.backend_context && typeof request.backend_context === "object"
+            ? request.backend_context
+            : null,
+      permissionDecision:
+        request?.permissionDecision && typeof request.permissionDecision === "object"
+          ? request.permissionDecision
+          : request?.permission_decision &&
+              typeof request.permission_decision === "object"
+            ? request.permission_decision
+            : null,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        errorCode: "native_bridge.unavailable",
+        error: "native bot local chat runtime is unavailable",
+      };
+}
+
+export async function startNativeFeishuLocalBotListener(options = {}) {
+  const connectorId = String(options?.connectorId || options?.connector_id || "").trim();
+  if (!connectorId) {
+    throw new Error("缺少机器人连接器 ID");
+  }
+  return invokeNativeDesktopBridge("botStartFeishuLocalListener", {
+    request: {
+      connectorId,
+      workspacePath: String(
+        options?.workspacePath || options?.workspace_path || "",
+      ).trim(),
+      ownerUsername: String(
+        options?.ownerUsername || options?.owner_username || "",
+      ).trim(),
+      modelRuntime: options?.modelRuntime || options?.model_runtime || null,
+      mcpConfig: options?.mcpConfig || options?.mcp_config || {},
+      backendContext: options?.backendContext || options?.backend_context || null,
+      permissionDecision:
+        options?.permissionDecision || options?.permission_decision || null,
+    },
+  });
+}
+
+export async function stopNativeFeishuLocalBotListener(connectorId) {
+  return invokeNativeDesktopBridge("botStopFeishuLocalListener", {
+    connectorId: String(connectorId || "").trim(),
+  });
+}
+
+export async function listNativeFeishuLocalBotListeners() {
+  const result = await invokeNativeDesktopBridge("botListFeishuLocalListeners");
+  return Array.isArray(result) ? result : [];
+}
+
+export async function replyNativeFeishuBotMessage(options = {}) {
+  const messageId = String(options?.messageId || options?.message_id || "").trim();
+  const content = String(options?.content || "").trim();
+  if (!messageId || !content) {
+    throw new Error("飞书回复需要 messageId 和 content");
+  }
+  return invokeNativeDesktopBridge("botReplyFeishuMessage", {
+    request: {
+      messageId,
+      content,
+      contentFormat: String(
+        options?.contentFormat || options?.content_format || "text",
+      ).trim(),
+      replyIdentity: String(
+        options?.replyIdentity || options?.reply_identity || "bot",
+      ).trim(),
+      replyInThread: Boolean(options?.replyInThread || options?.reply_in_thread),
+      idempotencyKey: String(
+        options?.idempotencyKey || options?.idempotency_key || "",
+      ).trim(),
+      connectorId: String(
+        options?.connectorId || options?.connector_id || "",
+      ).trim(),
+    },
+  });
+}
+
+export async function scanNativeFeishuBotChats(options = {}) {
+  return invokeNativeDesktopBridge("botScanFeishuChats", {
+    request: {
+      identity: String(options?.identity || "bot").trim(),
+      pageSize: Number(options?.pageSize || options?.page_size || 100) || 100,
+      pageLimit: Number(options?.pageLimit || options?.page_limit || 10) || 10,
+    },
+  });
+}
+
+export async function downloadNativeFeishuMessageResource(options = {}) {
+  const messageId = String(options?.messageId || options?.message_id || "").trim();
+  const fileKey = String(options?.fileKey || options?.file_key || "").trim();
+  if (!messageId || !fileKey) {
+    throw new Error("下载飞书资源需要 messageId 和 fileKey");
+  }
+  return invokeNativeDesktopBridge("botDownloadFeishuMessageResource", {
+    request: {
+      messageId,
+      fileKey,
+      resourceType: String(
+        options?.resourceType || options?.resource_type || "image",
+      ).trim(),
+      identity: String(options?.identity || "bot").trim(),
+    },
+  });
+}
+
+export async function getNativeFeishuMessage(options = {}) {
+  const messageId = String(options?.messageId || options?.message_id || "").trim();
+  if (!messageId) {
+    throw new Error("读取飞书消息需要 messageId");
+  }
+  return invokeNativeDesktopBridge("botGetFeishuMessage", {
+    request: {
+      messageId,
+      identity: String(options?.identity || "bot").trim(),
+      downloadResources: Boolean(
+        options?.downloadResources || options?.download_resources,
+      ),
+    },
+  });
 }
 
 export async function uploadNativeLiuAgentProviderFile(request = {}) {
@@ -1013,6 +1279,94 @@ export async function subscribeNativeLiuAgentRuntimeEvents(handler) {
   if (!unlisteners.length) {
     return () => {};
   }
+  return () => {
+    for (const unlisten of unlisteners) {
+      try {
+        unlisten?.();
+      } catch (_error) {
+        // ignore cleanup errors
+      }
+    }
+  };
+}
+
+export async function subscribeNativeFeishuLocalBotEvents(handler) {
+  if (typeof handler !== "function") return () => {};
+  if (!hasNativeDesktopBridge()) return () => {};
+  const handleEvent = (event) => {
+    handler(event?.payload && typeof event.payload === "object" ? event.payload : {});
+  };
+  const unlisteners = [];
+  try {
+    unlisteners.push(await listenTauriEvent("bot-feishu-local-event", handleEvent));
+  } catch (_error) {
+    // keep fallback below
+  }
+  try {
+    unlisteners.push(await listenTauriEvent("bot://feishu-local-event", handleEvent));
+  } catch (_error) {
+    // keep primary listener if available
+  }
+  if (!unlisteners.length) {
+    const fallbackListen = resolveTauriEventListen();
+    if (fallbackListen) {
+      try {
+        unlisteners.push(await fallbackListen("bot-feishu-local-event", handleEvent));
+      } catch (_error) {
+        // ignore
+      }
+      try {
+        unlisteners.push(await fallbackListen("bot://feishu-local-event", handleEvent));
+      } catch (_error) {
+        // ignore
+      }
+    }
+  }
+  if (!unlisteners.length) return () => {};
+  return () => {
+    for (const unlisten of unlisteners) {
+      try {
+        unlisten?.();
+      } catch (_error) {
+        // ignore cleanup errors
+      }
+    }
+  };
+}
+
+export async function subscribeNativeFeishuLocalBotStatus(handler) {
+  if (typeof handler !== "function") return () => {};
+  if (!hasNativeDesktopBridge()) return () => {};
+  const handleEvent = (event) => {
+    handler(event?.payload && typeof event.payload === "object" ? event.payload : {});
+  };
+  const unlisteners = [];
+  try {
+    unlisteners.push(await listenTauriEvent("bot-feishu-local-status", handleEvent));
+  } catch (_error) {
+    // keep fallback below
+  }
+  try {
+    unlisteners.push(await listenTauriEvent("bot://feishu-local-status", handleEvent));
+  } catch (_error) {
+    // keep primary listener if available
+  }
+  if (!unlisteners.length) {
+    const fallbackListen = resolveTauriEventListen();
+    if (fallbackListen) {
+      try {
+        unlisteners.push(await fallbackListen("bot-feishu-local-status", handleEvent));
+      } catch (_error) {
+        // ignore
+      }
+      try {
+        unlisteners.push(await fallbackListen("bot://feishu-local-status", handleEvent));
+      } catch (_error) {
+        // ignore
+      }
+    }
+  }
+  if (!unlisteners.length) return () => {};
   return () => {
     for (const unlisten of unlisteners) {
       try {
