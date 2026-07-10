@@ -43,15 +43,6 @@
           项目详情
         </el-button>
         <el-button
-          v-if="hasSelectedProject"
-          size="small"
-          plain
-          class="chat-context-bar__action-button"
-          @click="emit('open-material-library')"
-        >
-          素材库
-        </el-button>
-        <el-button
           v-if="canTrustWorkspace"
           size="small"
           plain
@@ -102,7 +93,6 @@ defineProps({
 const emit = defineEmits([
   "start-guide",
   "open-project-detail",
-  "open-material-library",
   "sync-local-cache",
   "trust-workspace",
   "open-mcp",

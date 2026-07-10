@@ -325,17 +325,6 @@ class ProjectDeploySettingsValidateReq(BaseModel):
     deploy_settings: dict[str, Any] = Field(default_factory=dict)
 
 
-class ProjectDeployCommandGenerateReq(BaseModel):
-    profile: dict[str, Any] = Field(default_factory=dict)
-    component: dict[str, Any] = Field(default_factory=dict)
-    target: dict[str, Any] = Field(default_factory=dict)
-    artifact_name: str = ""
-    artifact_path: str = ""
-    artifact_kind: str = "source-bundle"
-    provider_id: str = ""
-    model_name: str = ""
-
-
 class ProjectDeployArtifactPushReq(BaseModel):
     profile: str = "prod"
     component: str = ""
@@ -358,13 +347,6 @@ class ProjectDeployArtifactDeployReq(BaseModel):
     task_tree_node_id: str = ""
     requirement: str = ""
     plan: str = ""
-    target_ids: list[str] = Field(default_factory=list)
-
-
-class ProjectDeployArtifactPlanGenerateReq(BaseModel):
-    requirement: str = ""
-    provider_id: str = ""
-    model_name: str = ""
     target_ids: list[str] = Field(default_factory=list)
 
 
@@ -408,140 +390,6 @@ class ProjectWorkflowSkillUpdateReq(BaseModel):
     skill_id: str
 
 
-class ProjectMaterialAssetCreateReq(BaseModel):
-    asset_type: Literal["image", "storyboard", "video", "audio"]
-    title: str
-    summary: str = ""
-    source_message_id: str = ""
-    source_chat_session_id: str = ""
-    source_username: str = ""
-    preview_url: str = ""
-    content_url: str = ""
-    mime_type: str = ""
-    status: str = "ready"
-    structured_content: dict[str, Any] = {}
-    metadata: dict[str, Any] = {}
-
-
-class ProjectMaterialAssetUpdateReq(BaseModel):
-    title: str | None = None
-    summary: str | None = None
-    preview_url: str | None = None
-    content_url: str | None = None
-    mime_type: str | None = None
-    status: str | None = None
-    structured_content: dict[str, Any] | None = None
-    metadata: dict[str, Any] | None = None
-
-
-class StudioClipTransformReq(BaseModel):
-    fit: Literal["cover", "contain", "stretch"] = "cover"
-    align: Literal["center", "top", "bottom", "left", "right"] = "center"
-    background: str = "#000000"
-
-
-class StudioClipReq(BaseModel):
-    id: str
-    type: Literal["image", "video"] = "video"
-    title: str = ""
-    durationSeconds: float = Field(default=1, gt=0)
-    startSeconds: float = Field(default=0, ge=0)
-    asset_id: str = ""
-    storage_path: str = ""
-    content_url: str = ""
-    preview_url: str = ""
-    mime_type: str = ""
-    original_filename: str = ""
-    source_type: Literal["project_material", "studio_draft", "external_url", "ai_generated"] = "project_material"
-    transform: StudioClipTransformReq = Field(default_factory=StudioClipTransformReq)
-    meta: dict[str, Any] = Field(default_factory=dict)
-
-
-class StudioTimelineSummaryReq(BaseModel):
-    title: str = ""
-    timelineDurationSeconds: float = Field(default=0, ge=0)
-    clipCount: int = Field(default=0, ge=0)
-
-
-class StudioTimelinePayloadReq(BaseModel):
-    version: Literal["studio-export-v2"] = "studio-export-v2"
-    summary: StudioTimelineSummaryReq = Field(default_factory=StudioTimelineSummaryReq)
-    clips: list[StudioClipReq] = Field(default_factory=list)
-
-
-class StudioAudioTrackReq(BaseModel):
-    id: str
-    kind: Literal["voice", "bgm", "sfx"]
-    title: str = ""
-    startSeconds: float = Field(default=0, ge=0)
-    durationSeconds: float = Field(default=0, ge=0)
-    volume: float = Field(default=1, ge=0, le=1.5)
-    asset_id: str = ""
-    storage_path: str = ""
-    content_url: str = ""
-    mime_type: str = ""
-    original_filename: str = ""
-    required: bool = False
-    bind_clip_id: str = ""
-
-
-class StudioAudioPayloadReq(BaseModel):
-    version: Literal["studio-audio-v2"] = "studio-audio-v2"
-    tracks: list[StudioAudioTrackReq] = Field(default_factory=list)
-
-
-class ProjectStudioExportCreateReq(BaseModel):
-    title: str = ""
-    export_format: Literal["mp4-h264", "mp4-h265"] = "mp4-h264"
-    export_resolution: Literal["720p", "1080p", "4K"] = "1080p"
-    aspect_ratio: str = "16:9"
-    timeline_payload: dict[str, Any] | StudioTimelinePayloadReq = Field(default_factory=dict)
-    audio_payload: dict[str, Any] | StudioAudioPayloadReq = Field(default_factory=dict)
-
-
-class ProjectStudioExportUpdateReq(BaseModel):
-    status: str | None = None
-    progress: int | None = None
-    result_asset_id: str | None = None
-    result_work_id: str | None = None
-    cover_asset_id: str | None = None
-    error_code: str | None = None
-    error_message: str | None = None
-    error_details: dict[str, Any] | None = None
-    started_at: str | None = None
-    finished_at: str | None = None
-
-
-class ProjectStudioDraftSaveReq(BaseModel):
-    job_id: str = ""
-    title: str = ""
-    snapshot: dict[str, Any] = {}
-
-
-class ProjectStudioExtractionRunReq(BaseModel):
-    provider_id: str = ""
-    model_name: str = ""
-    focus_kind: Literal["role", "scene", "prop"] = "role"
-    duration: str = ""
-    quality: str = ""
-    script_content: str = ""
-    styles: list[str] = Field(default_factory=list)
-    chapters: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ProjectStudioStoryboardGenerateReq(BaseModel):
-    provider_id: str = ""
-    model_name: str = ""
-    chapter_id: str = ""
-    chapter_title: str = ""
-    chapter_content: str = ""
-    duration: str = ""
-    quality: str = ""
-    sfx: bool = False
-    styles: list[str] = Field(default_factory=list)
-    elements: list[dict[str, Any]] = Field(default_factory=list)
-
-
 class ProjectStudioVoiceGenerateReq(BaseModel):
     provider_id: str = ""
     model_name: str = ""
@@ -551,20 +399,6 @@ class ProjectStudioVoiceGenerateReq(BaseModel):
     voice_record_id: str = ""
     response_format: Literal["wav", "pcm"] = "wav"
     speed: float = 1.0
-
-
-class ProjectStudioCharacterReferenceGenerateReq(BaseModel):
-    provider_id: str = ""
-    model_name: str = ""
-    prompt: str = ""
-    character_id: str = ""
-    character_name: str = ""
-    reference_image_urls: list[str] = Field(default_factory=list)
-    target_view: Literal["front", "back", "left", "right"] = "front"
-    generate_all_views: bool = False
-    image_size: str = "1024x1024"
-    image_style: str = "auto"
-    image_quality: str = "high"
 
 
 class ProjectStudioVoiceUpdateReq(BaseModel):
@@ -682,25 +516,6 @@ class ProjectChatRequirementRecordUpsertReq(BaseModel):
 class ProjectChatRuntimeSnapshotUpdateReq(BaseModel):
     chat_session_id: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class ProjectChatExternalAgentTaskClaimReq(BaseModel):
-    runner_id: str = ""
-    supported_agent_types: list[str] = Field(default_factory=list)
-    workspace_path: str = ""
-
-
-class ProjectChatExternalAgentTaskCompleteReq(BaseModel):
-    status: Literal["completed", "failed", "cancelled", "timeout"] = "completed"
-    content: str = ""
-    error_message: str = ""
-    runner_session_id: str = ""
-    runner_meta: dict[str, Any] = Field(default_factory=dict)
-
-
-class ProjectChatExternalAgentApprovalRequestReq(BaseModel):
-    runner_session_id: str = ""
-    approval: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectChatSettingsUpdateReq(BaseModel):

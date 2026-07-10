@@ -318,13 +318,6 @@ async def run_project_chat_once(
         )
         if not artifacts:
             raise RuntimeError("模型未返回有效媒体结果")
-        projects_router._save_chat_media_artifacts_to_materials(
-            project_id=project_id,
-            username=username,
-            chat_session_id=chat_session_id,
-            source_message_id=assistant_message_id,
-            artifacts=artifacts,
-        )
         images = projects_router._collect_chat_artifact_urls(artifacts, asset_type="image")
         videos = projects_router._collect_chat_artifact_urls(artifacts, asset_type="video")
         content = projects_router._build_generated_media_answer(artifacts)
@@ -497,14 +490,6 @@ async def run_project_chat_once(
             if event_type == "artifact":
                 artifact_batch = projects_router._normalize_chat_media_artifacts(outgoing.get("artifacts"))
                 if artifact_batch:
-                    projects_router._save_chat_media_artifacts_to_materials(
-                        project_id=project_id,
-                        username=username,
-                        chat_session_id=chat_session_id,
-                        source_message_id=assistant_message_id,
-                        artifacts=artifact_batch,
-                        tool_name=str(outgoing.get("tool_name") or "").strip(),
-                    )
                     assistant_artifacts = projects_router._merge_chat_media_artifacts(
                         assistant_artifacts,
                         artifact_batch,

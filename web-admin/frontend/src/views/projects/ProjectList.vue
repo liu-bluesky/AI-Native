@@ -617,7 +617,7 @@ function handleProjectAction(project, actionKey) {
         title: project.name || "项目详情",
         eyebrow: "Project Workspace",
         summary:
-          "项目详情作为桌面中的独立应用窗口打开，可与列表、对话和素材库并行工作。",
+          "项目详情作为桌面中的独立应用窗口打开，可与列表和对话并行工作。",
       });
       return;
     case "edit":

@@ -198,15 +198,6 @@ def _create_project_chat_runtime_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
-def _create_project_chat_external_agent_task_store() -> Any:
-    settings = get_settings()
-    if settings.core_store_backend == "json":
-        from stores.json import ProjectChatExternalAgentTaskStore
-
-        return ProjectChatExternalAgentTaskStore(_data_dir())
-    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
-
-
 def _create_project_chat_task_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -234,21 +225,6 @@ def _create_project_deploy_store() -> Any:
         except ModuleNotFoundError as exc:
             raise _missing_driver("CORE_STORE_BACKEND") from exc
         return ProjectDeployStorePostgres(settings.database_url, _data_dir())
-    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
-
-
-def _create_project_material_store() -> Any:
-    settings = get_settings()
-    if settings.core_store_backend == "json":
-        from stores.json import ProjectMaterialStore
-
-        return ProjectMaterialStore(_data_dir())
-    if settings.core_store_backend == "postgres":
-        try:
-            from stores.postgres.project_material_store import ProjectMaterialStorePostgres
-        except ModuleNotFoundError as exc:
-            raise _missing_driver("CORE_STORE_BACKEND") from exc
-        return ProjectMaterialStorePostgres(settings.database_url)
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
@@ -283,23 +259,6 @@ def _create_project_experience_summary_store() -> Any:
         except ModuleNotFoundError as exc:
             raise _missing_driver("CORE_STORE_BACKEND") from exc
         return ProjectExperienceSummaryStorePostgres(settings.database_url)
-    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
-
-
-def _create_project_studio_export_store() -> Any:
-    settings = get_settings()
-    if settings.core_store_backend == "json":
-        from stores.json import ProjectStudioExportStore
-
-        return ProjectStudioExportStore(_data_dir())
-    if settings.core_store_backend == "postgres":
-        try:
-            from stores.postgres.project_studio_export_store import (
-                ProjectStudioExportStorePostgres,
-            )
-        except ModuleNotFoundError as exc:
-            raise _missing_driver("CORE_STORE_BACKEND") from exc
-        return ProjectStudioExportStorePostgres(settings.database_url)
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
@@ -456,13 +415,10 @@ agent_template_store = _StoreProxy(_create_agent_template_store)
 project_store = _StoreProxy(_create_project_store)
 project_chat_store = _StoreProxy(_create_project_chat_store)
 project_chat_runtime_store = _StoreProxy(_create_project_chat_runtime_store)
-project_chat_external_agent_task_store = _StoreProxy(_create_project_chat_external_agent_task_store)
 project_chat_task_store = _StoreProxy(_create_project_chat_task_store)
 project_deploy_store = _StoreProxy(_create_project_deploy_store)
-project_material_store = _StoreProxy(_create_project_material_store)
 project_requirement_record_store = _StoreProxy(_create_project_requirement_record_store)
 project_experience_summary_store = _StoreProxy(_create_project_experience_summary_store)
-project_studio_export_store = _StoreProxy(_create_project_studio_export_store)
 system_config_store = _StoreProxy(_create_system_config_store)
 bot_connector_store = _StoreProxy(_create_bot_connector_store)
 ftp_credential_store = _StoreProxy(_create_ftp_credential_store)
@@ -485,12 +441,9 @@ __all__ = [
     "project_store",
     "project_chat_store",
     "project_chat_runtime_store",
-    "project_chat_external_agent_task_store",
     "project_chat_task_store",
     "project_deploy_store",
-    "project_material_store",
     "project_requirement_record_store",
-    "project_studio_export_store",
     "system_config_store",
     "bot_connector_store",
     "ftp_credential_store",

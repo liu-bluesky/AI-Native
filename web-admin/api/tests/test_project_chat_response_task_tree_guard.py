@@ -98,7 +98,6 @@ async def test_generate_project_chat_media_done_payload_attaches_task_tree_audit
     )
 
     monkeypatch.setattr(projects_router, "is_admin_like", lambda auth_payload: False)
-    monkeypatch.setattr(projects_router, "_save_chat_media_artifacts_to_materials", lambda **kwargs: [])
     monkeypatch.setattr(projects_router, "_append_chat_record", lambda **kwargs: None)
     monkeypatch.setattr(projects_router, "_save_project_chat_memory_snapshot", lambda **kwargs: None)
     monkeypatch.setattr(

@@ -17,8 +17,8 @@
             <div class="creation-sidebar-brand">
               <div class="creation-sidebar-brand__mark">AI</div>
               <div>
-                <div class="creation-sidebar-brand__name">素材工作区</div>
-                <div class="creation-sidebar-brand__meta">项目创作</div>
+                <div class="creation-sidebar-brand__name">项目音色</div>
+                <div class="creation-sidebar-brand__meta">Voice Studio</div>
               </div>
             </div>
           </div>
@@ -100,32 +100,11 @@ const project = ref({});
 
 const navItems = computed(() => [
   {
-    key: "library",
-    label: "素材库",
-    note: "正式资产沉淀",
-    path: "/materials",
-    active: route.path === "/materials",
-  },
-  {
-    key: "studio",
-    label: "短片制作",
-    note: "创作流程工作区",
-    path: "/materials/studio",
-    active: route.path === "/materials/studio",
-  },
-  {
     key: "voices",
     label: "音色模块",
     note: "创建自定义音色",
     path: "/materials/voices",
     active: route.path === "/materials/voices",
-  },
-  {
-    key: "works",
-    label: "我的作品",
-    note: "结果回看与整理",
-    path: "/materials/works",
-    active: route.path === "/materials/works",
   },
 ]);
 

@@ -57,7 +57,6 @@
             :workspace-trust-saving="workspaceTrustSaving"
             @start-guide="startChatTour"
             @open-project-detail="openCurrentProjectDetail"
-            @open-material-library="openCurrentMaterialLibrary"
             @sync-local-cache="syncCurrentLocalLiuAgentRuntimeOutbox"
             @trust-workspace="trustAgentRuntimeWorkspace"
             @open-mcp="openUnifiedMcpDialog"
@@ -1783,30 +1782,6 @@
     @close="resetEmployeeDraftDialogState"
   />
 
-  <ProjectMaterialSaveDialog
-    v-model="materialDialogVisible"
-    :loading="materialDialogSaving"
-    :project-label="currentProjectLabel"
-    :message-role-label="
-      materialDialogPayload
-        ? messageRoleName(materialDialogPayload.message)
-        : ''
-    "
-    :image-count="
-      materialDialogPayload
-        ? extractImages(materialDialogPayload.message).length
-        : 0
-    "
-    :source-chat-session-id="
-      materialDialogPayload?.source_chat_session_id || ''
-    "
-    :initial-form="materialDialogPayload?.form || {}"
-    :asset-type-options="MATERIAL_ASSET_TYPE_OPTIONS"
-    :mime-type-options="MATERIAL_MIME_TYPE_OPTIONS"
-    @submit="submitMaterialDialog"
-    @close="resetMaterialDialogState"
-  />
-
   <SkillResourceDialog
     v-model="skillResourceDialogVisible"
     v-model:search-query="skillResourceSearchQuery"
@@ -2643,7 +2618,6 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { ElementEasyForm } from "element-easy-form";
 import "element-easy-form/dist/style.css";
 import ProjectEmployeeDraftCreateDialog from "@/components/ProjectEmployeeDraftCreateDialog.vue";
-import ProjectMaterialSaveDialog from "@/components/ProjectMaterialSaveDialog.vue";
 import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
 import ChatComposer from "@/modules/project-chat/components/composer/ChatComposer.vue";
 import ChatMediaParameterPopover from "@/modules/project-chat/components/composer/ChatMediaParameterPopover.vue";
@@ -2706,12 +2680,6 @@ import {
   normalizeProviderModelNames,
   resolveChatParameterOptions,
 } from "@/utils/llm-models.js";
-import {
-  buildMaterialDialogPayload,
-  canSaveMessageAsMaterial as canSaveMessageAsMaterialEntry,
-  MATERIAL_ASSET_TYPE_OPTIONS,
-  MATERIAL_MIME_TYPE_OPTIONS,
-} from "@/utils/project-materials.js";
 import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
@@ -2812,9 +2780,6 @@ import {
   installVettSkillResource,
   searchSkillResourceItems,
 } from "@/modules/project-chat/services/projectChatSkillResources.js";
-import {
-  createProjectMaterial,
-} from "@/modules/project-chat/services/projectChatMaterialsApi.js";
 import {
   submitAgentRuntimePermissionActionRequest,
   trustAgentRuntimeWorkspaceRequest,
@@ -3147,9 +3112,6 @@ const employeeDraftDialogVisible = ref(false);
 const employeeDraftDialogLoading = ref(false);
 const employeeDraftDialogPayload = ref(null);
 const employeeDraftDialogItem = ref(null);
-const materialDialogVisible = ref(false);
-const materialDialogSaving = ref(false);
-const materialDialogPayload = ref(null);
 const employeeDraftExternalSkillSites = ref([]);
 const employeeDraftAutoCreateSkills = ref(true);
 const employeeDraftAutoCreateRules = ref(true);
@@ -8495,7 +8457,7 @@ const chatTourSteps = computed(() => [
       ? `${currentProjectLabel.value} 的主要能力入口`
       : "先看当前对话工作台",
     description: hasSelectedProject.value
-      ? "项目详情、素材库、外部 MCP、AI 入口文件和本地工作区设置都集中在设置中心；对话页面只保留消息流和输入。"
+      ? "项目详情、外部 MCP、AI 入口文件和本地工作区设置都集中在设置中心；对话页面只保留消息流和输入。"
       : "设置中心用于选择项目、模型、外部 MCP 和本地工作区；对话页面只保留消息流和输入。",
     target: () => resolveTourTarget(chatSettingsButtonRef),
     placement: "right-start",
@@ -22197,13 +22159,6 @@ function getMessageActions(item, messageIndex) {
       icon: Files,
     });
   }
-  if (canSaveMessageAsMaterial(item)) {
-    actions.push({
-      key: "save_to_material_library",
-      tooltip: "加入素材库",
-      icon: CollectionTag,
-    });
-  }
   if (canDeleteMessage(item, messageIndex)) {
     actions.push({
       key: "delete_message",
@@ -22230,9 +22185,6 @@ function handleMessageAction(item, messageIndex, actionKey) {
       return;
     case "copy_with_process":
       copyMessageMarkdown(item, { includeProcess: true });
-      return;
-    case "save_to_material_library":
-      void openMaterialDialog(item, messageIndex);
       return;
     case "delete_message":
       void deleteMessageAt(messageIndex);
@@ -23011,7 +22963,7 @@ function buildPackageDeployCommandPrompt(commandPrompt) {
     "执行边界：",
     "- 部署方式必须由已读取的项目部署配置决定；不要扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据。",
     "- 桌面智能体部署主流程使用 deploy_workspace_files_to_target：桌面 AI 负责判断是否需要本机打包、选择要部署的原文件/目录/文件清单，并调用后端原子能力上传到配置目标、执行已配置 deploy_command、按配置通知。",
-    "- deploy_workspace_files_to_target 不创建部署产物记录，不调用部署产物 AI，不走 /deploy-artifacts/{artifact_id}/deploy/ai-execute；后端只使用项目部署配置里的凭据、远端目录、deploy_command 和通知配置。",
+    "- deploy_workspace_files_to_target 不创建部署产物记录；后端只使用项目部署配置里的凭据、远端目录、deploy_command 和通知配置。",
     "- 只有用户明确说“只上传到部署产物/部署产物模块/保存 artifact”时，才使用 upload_deploy_artifact；普通“部署/上传部署/新代码部署”不要走部署产物模块。",
     "- 上传/部署规则是“原文件是什么就是什么”：单个 HTML/CSS/JS/图片等文件就原样部署该文件；目录就按目录内原文件逐个部署；多个文件就用 artifact_paths 逐个部署原文件。",
     "- 禁止为了部署多个静态文件而自行创建 zip/tar；静态站点、多 HTML/CSS/JS/图片文件或用户要求“直接上传这些文件”时，必须把目录传给 deploy_workspace_files_to_target 的 artifact_path，或把文件清单传给 artifact_paths，并设置 artifact_root 保留正确相对路径。",
@@ -23543,64 +23495,6 @@ function buildFormJsonCommandPrompt(commandPrompt) {
   ].join("\n");
 }
 
-function canSaveMessageAsMaterial(message) {
-  return canSaveMessageAsMaterialEntry(
-    message,
-    String(selectedProjectId.value || "").trim(),
-  );
-}
-
-function resetMaterialDialogState() {
-  materialDialogSaving.value = false;
-  materialDialogPayload.value = null;
-}
-
-async function openMaterialDialog(message, messageIndex) {
-  if (!canSaveMessageAsMaterial(message)) {
-    ElMessage.warning("当前消息暂无可入库的内容");
-    return;
-  }
-  materialDialogPayload.value = buildMaterialDialogPayload({
-    message,
-    messageIndex,
-    currentChatSessionId: String(currentChatSessionId.value || "").trim(),
-    currentUsername: String(currentUsername.value || "").trim(),
-  });
-  materialDialogVisible.value = true;
-}
-
-async function submitMaterialDialog(formPayload) {
-  const projectId = String(selectedProjectId.value || "").trim();
-  const payloadState = materialDialogPayload.value;
-  if (!projectId || !payloadState || !formPayload) {
-    materialDialogVisible.value = false;
-    return;
-  }
-  materialDialogSaving.value = true;
-  try {
-    await createProjectMaterial(projectId, {
-      asset_type: formPayload.asset_type,
-      title: formPayload.title,
-      summary: formPayload.summary,
-      preview_url: formPayload.preview_url,
-      content_url: formPayload.content_url,
-      mime_type: formPayload.mime_type,
-      status: "ready",
-      source_message_id: payloadState.source_message_id,
-      source_chat_session_id: payloadState.source_chat_session_id,
-      source_username: payloadState.source_username,
-      structured_content: formPayload.structured_content,
-      metadata: formPayload.metadata,
-    });
-    ElMessage.success("已加入当前项目素材库");
-    materialDialogVisible.value = false;
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "保存素材失败");
-  } finally {
-    materialDialogSaving.value = false;
-  }
-}
-
 async function ensureEmployeeDraftCatalog(force = false) {
   const now = Date.now();
   const loadedAt = Number(employeeDraftCatalog.value.loaded_at || 0);
@@ -23849,25 +23743,6 @@ function setSkillResourceDirectory(directoryPath, options = {}) {
 function openSkillResourceCenter() {
   syncSkillResourceDirectoryDraft();
   skillResourceDialogVisible.value = true;
-}
-
-function openCurrentMaterialLibrary() {
-  const projectId = String(selectedProjectId.value || "").trim();
-  if (!projectId) {
-    ElMessage.warning("请先选择项目");
-    return;
-  }
-  void openRouteInDesktop(
-    router,
-    { path: "/materials", query: { project_id: projectId } },
-    {
-      mode: "new-window",
-      appId: "materials",
-      title: "素材库",
-      eyebrow: "Asset Workspace",
-      summary: "项目素材库作为桌面应用窗口打开，和 AI 对话并行处理素材。",
-    },
-  );
 }
 
 function openCurrentProjectDetail() {

@@ -32,7 +32,7 @@ def build_global_assistant_builtin_tools() -> list[dict[str, Any]]:
                 "properties": {
                     "focus": {
                         "type": "string",
-                        "description": "可选。用户当前最关心的主题，例如 项目管理、模型供应商、系统配置、素材库。",
+                        "description": "可选。用户当前最关心的主题，例如 项目管理、模型供应商、系统配置、项目音色。",
                     },
                     "include_paths": {
                         "type": "boolean",
@@ -206,7 +206,7 @@ def build_global_assistant_system_guide(
         if has_permission(permissions, str(item.get("key") or "").strip(), role_id=primary_role_id)
     ]
     guide_lines = [
-        "这是一个把 AI 对话、项目协作、员工技能编排、规则治理、素材生产和短片制作放在一起的后台系统。",
+        "这是一个把 AI 对话、项目协作、员工技能编排、规则治理和素材生产放在一起的后台系统。",
         "核心目标是让团队围绕数字分身、AI 图片视频生成和系统协作，在同一套工作台里完成配置、生产和管理。",
         "如果用户想知道这个系统怎么用，优先从 AI 对话中心、项目管理、员工管理、规则管理、系统配置、模型供应商、素材工作区 这几条主路径解释。",
     ]
@@ -480,8 +480,7 @@ def _build_visible_usage_guide(visible_modules: list[dict[str, Any]]) -> list[st
         "employees": "想维护 AI 员工、职责与手册：进入 /employees。",
         "skills": "想维护技能与技能资源：进入 /skills 和 /skill-resources。",
         "rules": "想维护执行规则与约束：进入 /rules。",
-        "materials": "想查看素材和声音资产：进入 /materials。",
-        "studio": "想做短片生产与导出：进入 /materials/studio。",
+        "materials": "想创建和管理项目音色：进入 /materials/voices。",
         "users-roles": "想管理账号、角色和权限：进入 /users 和 /roles。",
         "intro": "想快速了解产品定位和整体工作流：进入 /intro。",
         "market": "想查看对外展示的能力介绍和市场化页面：进入 /market。",

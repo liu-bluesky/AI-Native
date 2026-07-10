@@ -16,8 +16,6 @@ const regressionBaselines = {
   "src/views/projects/ProjectDetail.vue": 8739,
   "src/views/projects/ProjectChat.vue": 23809,
   "src/views/projects/ProjectList.vue": 995,
-  "src/views/projects/ProjectMaterialLibrary.vue": 3180,
-  "src/views/projects/ProjectShortFilmStudio.vue": 8181,
   "src/views/projects/ProjectVoiceLibrary.vue": 1056,
   "src/views/public/ChangelogPage.vue": 833,
   "src/views/public/IntroPage.vue": 3660,

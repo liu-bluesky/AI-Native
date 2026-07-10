@@ -18,8 +18,6 @@ def _build_work_session_api_test_client(tmp_path, monkeypatch, auth_payload):
         "bot_connector_store",
         "system_config_store",
         "project_store",
-        "project_material_store",
-        "project_studio_export_store",
         "work_session_store",
     ):
         getattr(store_factory, proxy_name)._instance = None

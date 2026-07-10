@@ -83,10 +83,8 @@ const routes = [
         path: 'materials',
         component: () => import('../views/projects/ProjectCreationWorkspace.vue'),
         children: [
-          { path: '', component: () => import('../views/projects/ProjectMaterialLibrary.vue') },
-          { path: 'studio', component: () => import('../views/projects/ProjectShortFilmStudio.vue') },
+          { path: '', redirect: { path: '/materials/voices' } },
           { path: 'voices', component: () => import('../views/projects/ProjectVoiceLibrary.vue') },
-          { path: 'works', component: () => import('../views/projects/ProjectWorksGallery.vue') },
         ],
       },
       { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },

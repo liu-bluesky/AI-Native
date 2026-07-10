@@ -12,9 +12,7 @@ from core.config import get_settings
 from core.db_migrations import run_postgres_migrations
 from core.deps import (
     project_experience_summary_store,
-    project_material_store,
     project_store,
-    project_studio_export_store,
 )
 from routers import (
     agent_templates,
@@ -62,9 +60,6 @@ from services.chat.project_chat_realtime_service import (
     start_project_chat_realtime_subscriber,
     stop_project_chat_realtime_subscriber,
 )
-from services.studio_export_service import StudioExportBackgroundService
-
-
 def create_app() -> FastAPI:
     settings = get_settings()
 
@@ -74,25 +69,16 @@ def create_app() -> FastAPI:
             settings.core_store_backend == "postgres" or settings.usage_store_backend == "postgres"
         ):
             run_postgres_migrations(settings.database_url)
-        worker = StudioExportBackgroundService(
-            project_store=project_store,
-            project_studio_export_store=project_studio_export_store,
-            project_material_store=project_material_store,
-            api_data_dir=settings.api_data_dir,
-            poll_interval_seconds=settings.studio_export_worker_poll_seconds,
-        )
         experience_summary_worker = ProjectExperienceSummaryBackgroundService(
             project_store=project_store,
             project_experience_summary_store=project_experience_summary_store,
-            poll_interval_seconds=settings.studio_export_worker_poll_seconds,
+            poll_interval_seconds=settings.project_experience_summary_worker_poll_seconds,
         )
-        app.state.studio_export_worker = worker
         app.state.project_experience_summary_worker = experience_summary_worker
         app.state.feishu_long_connection_supervisor = None
         app.state.project_chat_realtime_subscriber = start_project_chat_realtime_subscriber()
         app.state.global_assistant_task_scheduler = start_global_assistant_task_scheduler()
-        if settings.studio_export_worker_enabled:
-            worker.start()
+        if settings.project_experience_summary_worker_enabled:
             experience_summary_worker.start()
         try:
             yield
@@ -100,7 +86,6 @@ def create_app() -> FastAPI:
             await stop_global_assistant_task_scheduler()
             await stop_project_chat_realtime_subscriber()
             await experience_summary_worker.stop()
-            await worker.stop()
 
     app = FastAPI(title="AI Employee Factory", version="0.1.0", lifespan=lifespan)
     app.add_middleware(

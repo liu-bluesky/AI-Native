@@ -282,7 +282,7 @@
                 ? "编辑不会重建音色本体，只会更新项目内的展示和试听信息。"
                 : createMode === "clone"
                   ? "复刻完成后，会自动加入当前项目音色列表。"
-                  : "登记后会立即作为项目音色加入，可直接在短片制作里使用。"
+                  : "登记后会立即加入当前项目的音色列表。"
             }}
           </div>
           <el-button @click="dialogVisible = false">取消</el-button>
@@ -302,7 +302,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 
 import api from "@/utils/api.js";
 import { normalizeProviderModelConfigs } from "@/utils/llm-models.js";
-import { resolveMaterialResourceUrl } from "@/utils/project-materials.js";
+import { resolveVoiceResourceUrl } from "@/utils/voice-resources.js";
 import {
   getStoredProjectContextId,
   setStoredProjectContextId,
@@ -458,7 +458,7 @@ function statusLabel(status) {
 }
 
 function resolveUrl(url) {
-  return resolveMaterialResourceUrl(String(url || "").trim());
+  return resolveVoiceResourceUrl(String(url || "").trim());
 }
 
 function resolveVoiceAudioUrl(item) {
@@ -728,7 +728,7 @@ async function removeVoice(item) {
   if (!currentProjectId || !id) return;
   try {
     await ElMessageBox.confirm(
-      `删除后音色「${item.name || "未命名音色"}」将无法继续在短片制作中复用。`,
+      `删除后音色「${item.name || "未命名音色"}」及其预览将无法恢复。`,
       "删除项目音色",
       { type: "warning" },
     );

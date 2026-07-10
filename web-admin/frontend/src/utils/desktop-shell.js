@@ -71,7 +71,7 @@ const DESKTOP_APP_ICON_THEMES = {
   "work-logs": ["#14b8a6", "#0f766e"],
   projects: ["#38bdf8", "#0f766e"],
   "project-detail": ["#60a5fa", "#4f46e5"],
-  materials: ["#34d399", "#059669"],
+  voices: ["#34d399", "#059669"],
   market: ["#fb7185", "#f97316"],
   "settings-home": ["#94a3b8", "#475569"],
   "settings-user": ["#818cf8", "#4f46e5"],
@@ -310,12 +310,12 @@ const DESKTOP_APP_ITEMS = [
       /^\/ai\/chat\/settings\/projects\/[^/]+/.test(String(path || "")),
   }),
   createApp({
-    id: "materials",
-    label: "素材",
-    shortLabel: "MT",
-    path: "/materials",
-    summary: "围绕项目资产、工作流和内容产出管理素材应用。",
-    eyebrow: "Asset Workspace",
+    id: "voices",
+    label: "音色",
+    shortLabel: "VC",
+    path: "/materials/voices",
+    summary: "创建、试听和管理项目音色。",
+    eyebrow: "Voice Studio",
     width: 1180,
     height: 780,
     dock: true,
@@ -945,8 +945,8 @@ export function resolveDesktopLaunchPath(appId) {
   if (app.id === "chat" && projectId) {
     return `/ai/chat?project_id=${encodeURIComponent(projectId)}`;
   }
-  if (app.id === "materials" && projectId) {
-    return `/materials?project_id=${encodeURIComponent(projectId)}`;
+  if (app.id === "voices" && projectId) {
+    return `/materials/voices?project_id=${encodeURIComponent(projectId)}`;
   }
   return app.path;
 }

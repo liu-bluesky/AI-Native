@@ -26,9 +26,6 @@
                 @click="openProjectChat"
                 >AI 对话</el-button
               >
-              <el-button type="primary" plain @click="openMaterialLibrary"
-                >素材库</el-button
-              >
             </div>
             <div class="project-hero__actions-secondary">
               <el-button
@@ -457,14 +454,12 @@
             <template #label>
               <span class="project-detail-tab-label">
                 <span class="project-detail-tab-label__title">部署配置</span>
-                <span class="project-detail-tab-label__meta">
-                  {{ deployTabMeta }}
-                </span>
+                <span class="project-detail-tab-label__meta">{{ deployTabMeta }}</span>
               </span>
             </template>
 
             <div class="project-detail-tab-pane">
-              <ProjectDeployPanel
+              <ProjectDeploySettingsPanel
                 :project-id="projectId"
                 :project="project"
                 :can-manage-project="canManageProject"
@@ -2222,7 +2217,7 @@ import { marked } from "marked";
 import ModelProviderPickerDialog from "@/components/ModelProviderPickerDialog.vue";
 import ProjectAppHeader from "@/components/project-workspace/ProjectAppHeader.vue";
 import ProjectAppSection from "@/components/project-workspace/ProjectAppSection.vue";
-import ProjectDeployPanel from "@/components/project-workspace/ProjectDeployPanel.vue";
+import ProjectDeploySettingsPanel from "@/components/project-workspace/ProjectDeploySettingsPanel.vue";
 import ProjectWorkspaceMetricStrip from "@/components/project-workspace/ProjectWorkspaceMetricStrip.vue";
 import ProjectWorkspaceBlock from "@/components/project-workspace/ProjectWorkspaceBlock.vue";
 import ProjectWorkspaceToolbar from "@/components/project-workspace/ProjectWorkspaceToolbar.vue";
@@ -2699,17 +2694,12 @@ const repositoryTabMeta = computed(() => {
 
 const deployTabMeta = computed(() => {
   const settings = project.value?.deploy_settings || {};
-  const settingsEnabled = Boolean(settings.enabled);
-  const profileCount = Array.isArray(settings.profiles)
-    ? settings.profiles.length
-    : 0;
-  if (!settingsEnabled) return "未启用";
+  const profileCount = Array.isArray(settings.profiles) ? settings.profiles.length : 0;
+  if (!settings.enabled) return "未启用";
   return profileCount ? `${profileCount} 个档位` : "待补档位";
 });
 
-const isProjectDeployEnabled = computed(
-  () => Boolean(project.value?.deploy_settings?.enabled),
-);
+const isProjectDeployEnabled = computed(() => Boolean(project.value?.deploy_settings?.enabled));
 
 const canInitializeRepository = computed(
   () =>
@@ -6432,27 +6422,6 @@ function openProjectChat(chatSessionId = "") {
       title: "AI 对话",
       eyebrow: "AI Workspace",
       summary: "项目对话作为独立应用窗口打开，可与项目详情并排处理。",
-    },
-  );
-}
-
-function openMaterialLibrary() {
-  const currentProjectId = String(
-    project.value?.id || projectId.value || "",
-  ).trim();
-  if (!currentProjectId) {
-    ElMessage.warning("当前项目 ID 无效");
-    return;
-  }
-  void openRouteInDesktop(
-    router,
-    { path: "/materials", query: { project_id: currentProjectId } },
-    {
-      mode: "new-window",
-      appId: "materials",
-      title: "素材库",
-      eyebrow: "Asset Workspace",
-      summary: "项目素材库作为桌面应用窗口打开，和项目详情并行处理素材。",
     },
   );
 }
