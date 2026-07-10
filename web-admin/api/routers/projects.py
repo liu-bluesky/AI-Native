@@ -4155,6 +4155,7 @@ async def _execute_project_deploy_artifact_agent_payload(
     }
 
 
+def _project_creator_username(project_id: str, project: ProjectConfig | None = None) -> str:
     resolved_project = project or project_store.get(project_id)
     created_by = str(getattr(resolved_project, "created_by", "") or "").strip()
     if created_by:

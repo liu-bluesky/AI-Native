@@ -1470,6 +1470,57 @@
               </el-button>
             </div>
           </div>
+          <section
+            v-if="activeComposerPlan"
+            class="composer-plan-panel"
+            :class="[`is-${activeComposerPlan.phase}`, { 'is-collapsed': !composerPlanExpanded }]"
+          >
+            <button
+              type="button"
+              class="composer-plan-panel__header"
+              :aria-expanded="composerPlanExpanded"
+              @click="composerPlanExpanded = !composerPlanExpanded"
+            >
+              <span class="composer-plan-panel__heading">
+                <span class="composer-plan-panel__pulse" aria-hidden="true"></span>
+                <span>
+                  <strong>{{ activeComposerPlan.title }}</strong>
+                  <small>{{ activeComposerPlan.summary }}</small>
+                </span>
+              </span>
+              <span class="composer-plan-panel__toggle">
+                {{ composerPlanExpanded ? "收起" : "展开" }}
+                <el-icon>
+                  <ArrowUp v-if="composerPlanExpanded" />
+                  <ArrowDown v-else />
+                </el-icon>
+              </span>
+            </button>
+            <div v-show="composerPlanExpanded" class="composer-plan-panel__body">
+              <ol class="composer-plan-panel__steps">
+                <li
+                  v-for="(step, stepIndex) in activeComposerPlan.steps"
+                  :key="String(step.step_id || stepIndex)"
+                  :class="`is-${planStepPhase(step)}`"
+                >
+                  <span class="composer-plan-panel__step-icon">
+                    <CircleCheck
+                      v-if="planStepPhase(step) === 'completed'"
+                      :size="15"
+                    />
+                    <span v-else>{{ stepIndex + 1 }}</span>
+                  </span>
+                  <span class="composer-plan-panel__step-content">
+                    <strong>{{ step.title || `步骤 ${stepIndex + 1}` }}</strong>
+                    <small v-if="step.summary">{{ step.summary }}</small>
+                  </span>
+                  <span class="composer-plan-panel__step-status">
+                    {{ planStepStatusLabel(step) }}
+                  </span>
+                </li>
+              </ol>
+            </div>
+          </section>
           <ChatComposer
             ref="chatComposerRef"
             v-model:draft-text="draftText"
@@ -2657,6 +2708,8 @@ import {
   InfoFilled,
   View,
   CircleCheck,
+  ArrowDown,
+  ArrowUp,
 } from "@element-plus/icons-vue";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
@@ -3096,6 +3149,9 @@ const mcpModules = ref({
 const runtimeExternalTools = ref([]);
 let runtimeExternalToolsRefreshKey = "";
 const messages = ref([]);
+const activeComposerPlan = ref(null);
+const composerPlanExpanded = ref(true);
+const activeComposerPlanOwnerId = ref("");
 const formJsonArtifactCache = new Map();
 const chatSessions = ref([]);
 const chatSessionsLoading = ref(false);
@@ -4278,6 +4334,20 @@ const activeComposerAssist = ref("");
 const externalMcpTotal = ref(0);
 const agentStatusExpanded = ref(false);
 const currentChatSessionId = ref("");
+watch(currentChatSessionId, (chatSessionId) => {
+  const activePlanSessionId = String(
+    activeComposerPlan.value?.chatSessionId || "",
+  ).trim();
+  if (
+    activeComposerPlan.value &&
+    activePlanSessionId &&
+    activePlanSessionId !== String(chatSessionId || "").trim()
+  ) {
+    activeComposerPlan.value = null;
+    activeComposerPlanOwnerId.value = "";
+    composerPlanExpanded.value = true;
+  }
+});
 const chatTaskTree = ref(null);
 const taskTreePanelVisible = ref(false);
 const taskTreeLoading = ref(false);
@@ -10001,6 +10071,7 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
   const startedAt = normalizeLocalLiuAgentRuntimeEpochMs(context?.startedAt);
   for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
     if (!markLocalLiuAgentRuntimeEventSeen(event)) continue;
+    const eventType = String(event?.type || "").trim();
     const payload = localLiuAgentRuntimeEventPayload(event);
     if (
       String(event?.type || "").trim() === "tool_result" &&
@@ -10010,6 +10081,20 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
       continue;
     }
     updateLocalLiuAgentRuntimeTimingFromEvent(row, event, { startedAt });
+    if (["plan_created", "plan_updated", "plan_completed"].includes(eventType)) {
+      applyLiuAgentPlanEvent(
+        row,
+        {
+          run_id: String(
+            event?.runtime_session_id || event?.runtimeSessionId || event?.run_id || "",
+          ).trim(),
+          event_type: eventType,
+          event,
+        },
+        String(context?.requestId || context?.assistantMessageId || row.id || "").trim(),
+      );
+      continue;
+    }
     applyLocalLiuAgentReasoningContent(row, event);
     applyLocalLiuAgentModelStepFailure(row, event, context);
     const operation = localLiuAgentRuntimeEventOperation(event, {
@@ -10244,11 +10329,27 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
     startedAt: run.startedAt,
   });
   const payload = localLiuAgentRuntimeEventPayload(event);
+  const eventType = String(event?.type || "").trim();
   if (
     String(event?.type || "").trim() === "tool_result" &&
     String(payload?.error_code || payload?.errorCode || "").trim() ===
       "permission.required"
   ) {
+    return;
+  }
+  if (["plan_created", "plan_updated", "plan_completed"].includes(eventType)) {
+    applyLiuAgentPlanEvent(
+      row,
+      {
+        run_id: String(
+          event?.runtime_session_id || event?.runtimeSessionId || event?.run_id || "",
+        ).trim(),
+        event_type: eventType,
+        event,
+      },
+      String(run.assistantMessageId || row.id || "").trim(),
+    );
+    scrollToBottom({ force: false });
     return;
   }
   applyLocalLiuAgentReasoningContent(row, event);
@@ -16667,6 +16768,10 @@ function applyAgentRuntimeEvent(row, eventData = {}) {
   const runId = String(eventData?.run_id || "").trim();
   const eventType = String(eventData?.event_type || "").trim();
   if (!runId || !eventType) return false;
+  if (["plan_created", "plan_updated", "plan_completed"].includes(eventType)) {
+    applyLiuAgentPlanEvent(row, eventData, runId);
+    return true;
+  }
   const summary = formatAgentRuntimeEventSummary(eventData);
   const phase = formatAgentRuntimeEventPhase(eventData);
   if (["query_engine_completed", "run_finished"].includes(eventType)) {
@@ -16707,6 +16812,128 @@ function applyAgentRuntimeEvent(row, eventData = {}) {
   row.processExpanded =
     ["running", "waiting_user"].includes(phase) ||
     !String(row.content || "").trim();
+  return true;
+}
+
+function applyLiuAgentPlanEvent(row, eventData = {}, requestId = "") {
+  const payload = agentRuntimeNestedPayload(eventData);
+  const ownerId = String(row?.id || requestId || eventData?.request_id || "").trim();
+  if (
+    activeComposerPlanOwnerId.value &&
+    ownerId &&
+    activeComposerPlanOwnerId.value !== ownerId
+  ) {
+    return false;
+  }
+  const eventTimestamp = Number(
+    payload?.updated_at_epoch_ms ||
+      payload?.updatedAtEpochMs ||
+      eventData?.event?.created_at_epoch_ms ||
+      eventData?.created_at_epoch_ms ||
+      0,
+  ) || 0;
+  if (
+    activeComposerPlan.value?.ownerId === ownerId &&
+    Number(activeComposerPlan.value?.eventTimestamp || 0) > eventTimestamp &&
+    eventTimestamp > 0
+  ) {
+    return false;
+  }
+  const previousSteps =
+    activeComposerPlan.value?.ownerId === ownerId &&
+    Array.isArray(activeComposerPlan.value?.steps)
+      ? activeComposerPlan.value.steps
+      : [];
+  const rawSteps = (Array.isArray(payload?.steps) ? payload.steps : []).map(
+    (step, index) => {
+      const stepId = String(
+        step?.step_id || step?.node_id || `step-${index + 1}`,
+      ).trim();
+      const previousStep = previousSteps.find(
+        (candidate) => String(candidate?.step_id || "").trim() === stepId,
+      );
+      const previousPhase = planStepPhase(previousStep);
+      const incomingStatus = String(step?.status || "pending").trim();
+      return {
+        ...step,
+        step_id: stepId,
+        title: String(step?.title || `步骤 ${index + 1}`).trim(),
+        status:
+          previousPhase === "completed" &&
+          planStepPhase({ status: incomingStatus }) !== "completed"
+            ? "completed"
+            : incomingStatus,
+        summary: String(
+          step?.summary ||
+            step?.verification_result ||
+            previousStep?.summary ||
+            "",
+        ).trim(),
+      };
+    },
+  );
+  const currentStepId = String(payload?.current_step_id || "").trim();
+  const currentStepIndex = rawSteps.findIndex(
+    (step) => String(step?.step_id || "").trim() === currentStepId,
+  );
+  const runningIndexes = rawSteps
+    .map((step, index) => (planStepPhase(step) === "running" ? index : -1))
+    .filter((index) => index >= 0);
+  const selectedRunningIndex =
+    currentStepIndex >= 0
+      ? currentStepIndex
+      : runningIndexes.length
+        ? runningIndexes[runningIndexes.length - 1]
+        : -1;
+  const steps = rawSteps.map((step, index) => {
+    if (selectedRunningIndex < 0 || planStepPhase(step) !== "running") {
+      return step;
+    }
+    if (index === selectedRunningIndex) return step;
+    return {
+      ...step,
+      status: index < selectedRunningIndex ? "completed" : "pending",
+    };
+  });
+  const planId = String(payload?.plan_id || `plan_${requestId}`).trim();
+  const status = String(payload?.status || "running").trim().toLowerCase();
+  const completedCount = steps.filter(
+    (step) => planStepPhase(step) === "completed",
+  ).length;
+  const hasBlocked = steps.some((step) =>
+    ["blocked", "failed"].includes(planStepPhase(step)),
+  );
+  const allDone =
+    steps.length > 0 && steps.every((step) => planStepPhase(step) === "completed");
+  const phase =
+    allDone || status === "completed"
+      ? "completed"
+      : hasBlocked || ["blocked", "failed"].includes(status)
+        ? "blocked"
+        : "running";
+  activeComposerPlan.value = {
+    ownerId,
+    planId,
+    requestId: String(requestId || eventData?.request_id || "").trim(),
+    chatSessionId: String(
+      eventData?.chat_session_id || eventData?.event?.chat_session_id || currentChatSessionId.value || "",
+    ).trim(),
+    title: String(payload?.title || "执行计划").trim(),
+    summary:
+      phase === "completed"
+        ? `已完成 ${completedCount}/${steps.length}`
+        : phase === "blocked"
+          ? `执行受阻 ${completedCount}/${steps.length}`
+          : `正在执行 ${completedCount}/${steps.length}`,
+    phase,
+    currentStepId,
+    eventTimestamp,
+    completedCount,
+    totalCount: steps.length,
+    steps,
+  };
+  if (ownerId) activeComposerPlanOwnerId.value = ownerId;
+  if (phase === "running") composerPlanExpanded.value = true;
   return true;
 }
 
@@ -17865,27 +18092,18 @@ function maybeExecuteDesktopClientToolTasksFromResume(row, eventData = {}, reque
 }
 
 function applyPlanCreatedEvent(row, eventData = {}, requestId = "") {
-  if (!row) return;
-  const planId = String(eventData?.plan_id || requestId || "active").trim();
-  const steps = Array.isArray(eventData?.steps) ? eventData.steps : [];
-  const detail = formatPlanStepsDetail(steps);
-  upsertMessageOperation(row, {
-    operationId: `plan:${planId}`,
-    kind: "plan",
-    title: "执行计划",
-    summary: steps.length ? `已生成 ${steps.length} 个步骤` : "执行计划暂无步骤明细",
-    detail,
-    phase: "running",
-    actionType: "none",
-    meta: {
-      request_id: String(requestId || eventData?.request_id || "").trim(),
-      plan_id: planId,
-      intent: String(eventData?.intent || "").trim(),
-      task_type: String(eventData?.task_type || "").trim(),
-      steps,
+  applyLiuAgentPlanEvent(
+    row,
+    {
+      run_id: String(eventData?.run_id || requestId || "active").trim(),
+      event_type: "plan_created",
+      chat_session_id: String(
+        eventData?.chat_session_id || currentChatSessionId.value || "",
+      ).trim(),
+      payload: eventData,
     },
-  });
-  row.processExpanded = true;
+    requestId,
+  );
 }
 
 function formatPlanStepsDetail(steps) {
@@ -29349,6 +29567,9 @@ async function generateEmployeeDraftWithoutProject() {
 
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
+  activeComposerPlan.value = null;
+  activeComposerPlanOwnerId.value = assistantMessage.id;
+  composerPlanExpanded.value = true;
   applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
 
   const assistantIndex = messages.value.length - 1;
@@ -29821,6 +30042,9 @@ async function doSend(options = {}) {
   };
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
+  activeComposerPlan.value = null;
+  activeComposerPlanOwnerId.value = assistantMessage.id;
+  composerPlanExpanded.value = true;
   applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
 
   chatLoading.value = true;
@@ -30699,6 +30923,212 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.composer-plan-panel {
+  flex: 0 0 auto;
+  margin: 0 16px 10px;
+  overflow: hidden;
+  border: 1px solid rgba(59, 130, 246, 0.24);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--el-bg-color, #fff) 94%, #eff6ff 6%);
+  box-shadow: 0 10px 30px rgba(30, 64, 175, 0.1);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.composer-plan-panel.is-completed {
+  border-color: rgba(34, 197, 94, 0.28);
+}
+
+.composer-plan-panel.is-blocked {
+  border-color: rgba(245, 158, 11, 0.36);
+}
+
+.composer-plan-panel__header {
+  width: 100%;
+  min-height: 54px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-plan-panel__header:hover {
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.composer-plan-panel__heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.composer-plan-panel__heading > span:last-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.composer-plan-panel__heading strong {
+  font-size: 14px;
+  color: var(--el-text-color-primary, #303133);
+}
+
+.composer-plan-panel__heading small,
+.composer-plan-panel__step-content small {
+  color: var(--el-text-color-secondary, #909399);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.composer-plan-panel__pulse {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #3b82f6;
+  box-shadow: 0 0 0 5px rgba(59, 130, 246, 0.12);
+}
+
+.composer-plan-panel.is-running .composer-plan-panel__pulse {
+  animation: composer-plan-pulse 1.8s ease-in-out infinite;
+}
+
+.composer-plan-panel.is-completed .composer-plan-panel__pulse {
+  background: #22c55e;
+  box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.12);
+}
+
+.composer-plan-panel.is-blocked .composer-plan-panel__pulse {
+  background: #f59e0b;
+  box-shadow: 0 0 0 5px rgba(245, 158, 11, 0.14);
+}
+
+.composer-plan-panel__toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--el-text-color-secondary, #909399);
+  font-size: 12px;
+}
+
+.composer-plan-panel__body {
+  padding: 0 14px 12px;
+}
+
+.composer-plan-panel__steps {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  list-style: none;
+}
+
+.composer-plan-panel__steps li {
+  min-height: 42px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter, #fafafa);
+}
+
+.composer-plan-panel__steps li.is-running {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.composer-plan-panel__steps li.is-completed {
+  background: rgba(34, 197, 94, 0.07);
+}
+
+.composer-plan-panel__steps li.is-blocked,
+.composer-plan-panel__steps li.is-failed {
+  background: rgba(245, 158, 11, 0.09);
+}
+
+.composer-plan-panel__step-icon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--el-border-color, #dcdfe6);
+  border-radius: 50%;
+  color: var(--el-text-color-secondary, #909399);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.composer-plan-panel__steps li.is-completed .composer-plan-panel__step-icon {
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #16a34a;
+}
+
+.composer-plan-panel__steps li.is-running .composer-plan-panel__step-icon {
+  border-color: rgba(59, 130, 246, 0.4);
+  color: #2563eb;
+}
+
+.composer-plan-panel__step-content {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.composer-plan-panel__step-content strong {
+  overflow: hidden;
+  color: var(--el-text-color-primary, #303133);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-plan-panel__step-status {
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #909399);
+}
+
+.composer-plan-panel__steps li.is-running .composer-plan-panel__step-status {
+  color: #2563eb;
+}
+
+.composer-plan-panel__steps li.is-completed .composer-plan-panel__step-status {
+  color: #16a34a;
+}
+
+.composer-plan-panel__steps li.is-blocked .composer-plan-panel__step-status,
+.composer-plan-panel__steps li.is-failed .composer-plan-panel__step-status {
+  color: #d97706;
+}
+
+@keyframes composer-plan-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.82); opacity: 0.72; }
+}
+
+@media (max-width: 720px) {
+  .composer-plan-panel {
+    margin-inline: 10px;
+  }
+
+  .composer-plan-panel__steps li {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  .composer-plan-panel__step-status {
+    grid-column: 2;
+  }
 }
 
 .message-runtime-duration {

@@ -138,6 +138,24 @@ pub fn progress_update_event(
     )
 }
 
+pub fn plan_event(
+    event_id: String,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    event_type: &str,
+    payload: Value,
+    created_at_epoch_ms: u128,
+) -> Value {
+    agent_runtime_event(
+        event_id,
+        runtime_session_id,
+        chat_session_id,
+        event_type,
+        payload,
+        created_at_epoch_ms,
+    )
+}
+
 pub fn command_started_event(
     event_id: String,
     runtime_session_id: &str,

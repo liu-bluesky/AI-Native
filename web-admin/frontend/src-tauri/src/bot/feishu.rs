@@ -2794,6 +2794,35 @@ fn bot_full_access_permission_decision(
 fn bot_progress_reply_for_runtime_event(event: &Value) -> Option<(String, String)> {
     let payload = event.get("payload").unwrap_or(&Value::Null);
     match event.get("type").and_then(Value::as_str).unwrap_or("") {
+        "plan_created" | "plan_updated" | "plan_completed" => {
+            let steps = payload
+                .get("steps")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if steps.is_empty() {
+                return None;
+            }
+            let lines = steps
+                .iter()
+                .map(|step| {
+                    let status = value_string(step, &["status"]);
+                    let marker = match status.as_str() {
+                        "completed" | "done" | "skipped" => "✓",
+                        "running" | "in_progress" | "verifying" => "◉",
+                        "blocked" | "failed" => "!",
+                        _ => "□",
+                    };
+                    let title = value_string(step, &["title"]);
+                    format!("{marker} {}", truncate_status_text(&title, 60))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Some((
+                "plan-progress".to_string(),
+                format!("Updated Plan\n{lines}"),
+            ))
+        }
         "model_call_started" => Some((
             "model-started".to_string(),
             "正在调用模型处理。".to_string(),
@@ -3097,12 +3126,12 @@ fn epoch_millis() -> u128 {
 mod tests {
     use super::{
         append_bot_conversation_messages, approval_request_id_from_runtime_event,
-        bot_project_binding_from_project_content, bot_project_binding_from_runtime_event,
-        bot_reply_content, card_action_value, connector_model_runtime, epoch_millis,
-        extract_chat_items, extract_next_page_token, feishu_bot_approval_card,
-        is_feishu_card_action_event, is_runtime_approval_required_event, project_ids_from_text,
-        runtime_permission_decision_parts, safe_resource_filename, should_handle_event,
-        text_permission_decision, trim_bot_conversation_history,
+        bot_progress_reply_for_runtime_event, bot_project_binding_from_project_content,
+        bot_project_binding_from_runtime_event, bot_reply_content, card_action_value,
+        connector_model_runtime, epoch_millis, extract_chat_items, extract_next_page_token,
+        feishu_bot_approval_card, is_feishu_card_action_event, is_runtime_approval_required_event,
+        project_ids_from_text, runtime_permission_decision_parts, safe_resource_filename,
+        should_handle_event, text_permission_decision, trim_bot_conversation_history,
         validate_card_action_matches_pending, StoredBotPendingApproval,
     };
     use crate::bot::types::BotConnectorConfig;
@@ -3116,6 +3145,23 @@ mod tests {
             name: "测试机器人".to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn plan_progress_uses_shared_step_statuses() {
+        let event = json!({
+            "type": "plan_updated",
+            "payload": {
+                "steps": [
+                    {"title": "分析", "status": "completed"},
+                    {"title": "实现", "status": "running"},
+                    {"title": "验证", "status": "pending"}
+                ]
+            }
+        });
+
+        let (_, content) = bot_progress_reply_for_runtime_event(&event).unwrap();
+        assert_eq!(content, "Updated Plan\n✓ 分析\n◉ 实现\n□ 验证");
     }
 
     #[test]

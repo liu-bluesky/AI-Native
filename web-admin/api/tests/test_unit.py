@@ -3659,6 +3659,77 @@ def test_project_routes_include_created_by_for_create_list_and_detail(tmp_path, 
     assert detail_response.json()["project"]["created_by"] == "alice"
 
 
+def test_project_patch_workspace_path_returns_serialized_project(tmp_path, monkeypatch):
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "alice", "role": "admin"},
+    )
+
+    create_response = client.post(
+        "/api/projects",
+        json={"name": "工作区保存测试项目"},
+    )
+    project_id = create_response.json()["project"]["id"]
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    workspace_path = str(workspace)
+
+    patch_response = client.patch(
+        f"/api/projects/{project_id}",
+        json={"workspace_path": workspace_path},
+    )
+
+    assert patch_response.status_code == 200
+    updated_project = patch_response.json()["project"]
+    assert updated_project["workspace_path"] == workspace_path
+    assert updated_project["created_by"] == "alice"
+    assert project_store.get(project_id).workspace_path == workspace_path
+
+
+def test_project_creator_username_falls_back_to_first_enabled_owner(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+
+    project = ProjectConfig(id="proj-owner", name="Owner fallback")
+    members = [
+        ProjectUserMember(
+            project_id=project.id,
+            username="disabled-owner",
+            role="owner",
+            enabled=False,
+            joined_at="2026-01-01T00:00:00+00:00",
+        ),
+        ProjectUserMember(
+            project_id=project.id,
+            username="later-owner",
+            role="owner",
+            enabled=True,
+            joined_at="2026-01-03T00:00:00+00:00",
+        ),
+        ProjectUserMember(
+            project_id=project.id,
+            username="first-owner",
+            role="owner",
+            enabled=True,
+            joined_at="2026-01-02T00:00:00+00:00",
+        ),
+    ]
+
+    class DummyProjectStore:
+        @staticmethod
+        def get(project_id):
+            return project if project_id == project.id else None
+
+        @staticmethod
+        def list_user_members(project_id):
+            return members if project_id == project.id else []
+
+    monkeypatch.setattr(projects_router, "project_store", DummyProjectStore())
+
+    assert projects_router._project_creator_username(project.id) == "first-owner"
+
+
 def test_project_list_route_returns_compact_payload(tmp_path, monkeypatch):
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 

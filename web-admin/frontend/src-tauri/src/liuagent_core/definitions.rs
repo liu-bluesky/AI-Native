@@ -9,6 +9,43 @@ use super::types::ToolDefinition;
 pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
+            name: "update_execution_plan",
+            description: "为当前复杂任务创建或更新执行计划。仅当任务确实需要多个步骤时调用；简单问答不要调用。steps 必须是按执行顺序排列的具体步骤，数量 2-8；同一时刻最多一个 in_progress，已完成步骤不得退回 pending 或 in_progress。",
+            action: "plan.update",
+            risk: "low",
+            requires_approval: false,
+            scope: "session",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "explanation": {
+                        "type": "string",
+                        "description": "本次创建或调整计划的简短原因"
+                    },
+                    "steps": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 8,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {
+                                    "type": "string",
+                                    "description": "面向用户目标的具体动作，不要写理解目标、推进目标等固定模板"
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed", "blocked"]
+                                }
+                            },
+                            "required": ["title", "status"]
+                        }
+                    }
+                },
+                "required": ["steps"]
+            }),
+        },
+        ToolDefinition {
             name: "list_files",
             description: "列出本地 workspace 内目录内容",
             action: "file.read",

@@ -19,8 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::adapters::protocol::{
     approval_required_event, command_finished_event, command_output_chunk_event,
-    command_started_event, model_call_started_event, model_step_event, progress_update_event,
-    tool_call_started_event, tool_result_event,
+    command_started_event, model_call_started_event, model_step_event, plan_event,
+    progress_update_event, tool_call_started_event, tool_result_event,
 };
 use super::audit::build_tool_audit_logs;
 use super::definitions::builtin_tool_definitions;
@@ -606,9 +606,9 @@ fn start_local_chat_inner(
         normalized_id(request.assistant_message_id.as_deref(), "local_assistant");
     let mut model_request = build_model_request(&request, &user_message);
     let task_goal = build_task_goal(&session_id, &user_message, &model_request);
-    let initial_task_tree = planning::TaskTree::for_goal(&session_id, &task_goal);
+    let initial_task_tree = planning::TaskTree::without_plan(&session_id, &task_goal);
     model_request.task_goal = Some(task_goal.clone());
-    model_request.task_tree = Some(initial_task_tree);
+    model_request.task_tree = Some(initial_task_tree.clone());
     let prompt_stack = resolve_prompt_stack(&request, &model_request);
     let clarity_assessment = assess_clarity(&user_message, &request, &model_request);
     let plan_created_at = epoch_millis();
@@ -671,7 +671,6 @@ fn start_local_chat_inner(
     let tool_results = agent_loop.tool_results.clone();
     let awaiting_permission = agent_loop.awaiting_permission;
     let run_ok = agent_loop.ok();
-
     let response_format = format_local_chat_response(
         &project_id,
         &workspace_root,
@@ -722,13 +721,25 @@ fn start_local_chat_inner(
         &planned_tools,
         &tool_results,
     );
-    let dynamic_task_tree = planning::TaskTree::finalize_for_goal(
-        &session_id,
-        &task_goal,
-        agent_loop.stopped_reason.as_str(),
-        awaiting_permission,
-        run_ok,
-    );
+    let mut dynamic_task_tree = agent_loop
+        .model_plan_tree
+        .clone()
+        .unwrap_or_else(|| planning::TaskTree::without_plan(&session_id, &task_goal));
+    if agent_loop.model_plan_tree.is_some() {
+        dynamic_task_tree.finalize_model_plan(awaiting_permission, run_ok);
+        collecting_event_sink(plan_event(
+            format!("evt_plan_{session_id}_final"),
+            &session_id,
+            &chat_session_id,
+            if run_ok {
+                "plan_completed"
+            } else {
+                "plan_updated"
+            },
+            plan_snapshot_payload(&dynamic_task_tree, run_status, plan_created_at),
+            epoch_millis(),
+        ));
+    }
     let plan_state = create_plan_state(
         &session_id,
         &task_goal,
@@ -2395,6 +2406,126 @@ fn create_plan_state(
     }
 }
 
+fn plan_snapshot_payload(
+    task_tree: &planning::TaskTree,
+    status: &str,
+    created_at_epoch_ms: u128,
+) -> Value {
+    let steps = task_tree
+        .nodes
+        .iter()
+        .filter(|node| node.node_type != "goal")
+        .enumerate()
+        .map(|(index, node)| {
+            json!({
+                "step_id": node.node_id,
+                "title": node.title,
+                "stage_key": match index {
+                    0 => "analysis",
+                    1 => "implementation",
+                    _ => "verification",
+                },
+                "status": match node.status.as_str() {
+                    "done" => "completed",
+                    other => other,
+                },
+                "summary": node.verification_result.clone().unwrap_or_default()
+            })
+        })
+        .collect::<Vec<_>>();
+    let completed_count = steps
+        .iter()
+        .filter(|step| step.get("status").and_then(Value::as_str) == Some("completed"))
+        .count();
+    let total_count = steps.len();
+    json!({
+        "plan_id": format!("plan_{}", task_tree.session_id),
+        "title": "执行计划",
+        "status": status,
+        "steps": steps,
+        "current_step_id": task_tree.current_node_id,
+        "completed_count": completed_count,
+        "total_count": total_count,
+        "created_at_epoch_ms": created_at_epoch_ms,
+        "updated_at_epoch_ms": epoch_millis()
+    })
+}
+
+fn model_plan_tree_from_tool(
+    session_id: &str,
+    task_goal: Option<&TaskGoal>,
+    arguments: &Value,
+    previous: Option<&planning::TaskTree>,
+) -> Option<planning::TaskTree> {
+    let task_goal = task_goal?;
+    let raw_steps = arguments.get("steps")?.as_array()?;
+    if !(2..=8).contains(&raw_steps.len()) {
+        return None;
+    }
+    let mut running_count = 0usize;
+    let mut steps = Vec::with_capacity(raw_steps.len());
+    let mut normalized_titles = std::collections::HashSet::new();
+    for step in raw_steps {
+        let title = step.get("title")?.as_str()?.trim();
+        if title.is_empty() || title.chars().count() > 120 {
+            return None;
+        }
+        let normalized_title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !normalized_titles.insert(normalized_title) {
+            return None;
+        }
+        let mut status = step
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending")
+            .trim()
+            .to_string();
+        if !matches!(
+            status.as_str(),
+            "pending" | "in_progress" | "completed" | "blocked"
+        ) {
+            return None;
+        }
+        if status == "in_progress" {
+            running_count += 1;
+        }
+        if previous.is_some_and(|tree| {
+            tree.nodes.iter().any(|node| {
+                node.node_type != "goal" && node.title == title && node.status == "done"
+            })
+        }) {
+            status = "completed".to_string();
+        }
+        steps.push((title.to_string(), status));
+    }
+    if running_count > 1 {
+        return None;
+    }
+    Some(planning::TaskTree::from_model_steps(
+        session_id, task_goal, &steps,
+    ))
+}
+
+fn emit_model_execution_plan_event(
+    event_sink: Option<&dyn Fn(Value)>,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    event_type: &str,
+    index: u64,
+    task_tree: &planning::TaskTree,
+) {
+    if let Some(sink) = event_sink {
+        sink(plan_event(
+            format!("evt_plan_{runtime_session_id}_{index}"),
+            runtime_session_id,
+            chat_session_id,
+            event_type,
+            plan_snapshot_payload(task_tree, "running", epoch_millis()),
+            epoch_millis(),
+        ));
+    }
+}
+
 fn route_failure(
     session_id: &str,
     run_status: &str,
@@ -2896,13 +3027,12 @@ fn changed_or_inspected_targets(planned_tools: &[PlannedLocalTool]) -> Vec<Strin
 fn build_task_goal(
     session_id: &str,
     user_message: &str,
-    model_request: &ModelStepRequest,
+    _model_request: &ModelStepRequest,
 ) -> TaskGoal {
     let targets = extract_file_path_candidates(user_message);
     let target_object = targets
         .last()
         .cloned()
-        .or_else(|| infer_recent_target_path(&model_request.messages))
         .unwrap_or_else(|| "current user request".to_string());
     let title = truncate_inline(user_message, 120);
     let success_criteria = vec![
@@ -3803,6 +3933,7 @@ struct AgentLoopResult {
     attempts: Vec<AgentLoopAttempt>,
     verification: AgentLoopVerification,
     acceptance_gate: Option<AcceptanceGateResult>,
+    model_plan_tree: Option<planning::TaskTree>,
     stopped_reason: String,
     awaiting_permission: bool,
 }
@@ -3881,6 +4012,7 @@ impl AgentLoopResult {
                     "stopped_reason": self.stopped_reason,
                     "awaiting_permission": self.awaiting_permission,
                     "acceptance_gate": self.acceptance_gate,
+                    "model_plan_tree": self.model_plan_tree,
                     "model_steps": self.model_steps,
                     "model_input_snapshots": self.model_input_snapshots,
                     "planned_tools": self.planned_tools,
@@ -3991,6 +4123,8 @@ fn run_agent_loop_with(
     let mut verification_reprompts = 0usize;
     let mut acceptance_gate_reprompts = 0usize;
     let mut last_acceptance_gate: Option<AcceptanceGateResult> = None;
+    let mut model_plan_tree: Option<planning::TaskTree> = None;
+    let mut model_plan_event_index = 0_u64;
     let mut permission_cache = load_session_permission_cache(workspace_root, run_key);
     let active_workspace_root = RefCell::new(workspace_root.clone());
     let allow_project_workspace_switch = is_tauri_bot_local_chat_request(base_request);
@@ -4014,7 +4148,7 @@ fn run_agent_loop_with(
             &request,
         );
         let model_result = model_runner(&request);
-        let current_planned_tools = rank_local_tool_candidates(
+        let all_planned_tools = rank_local_tool_candidates(
             plan_local_tools(run_key, &model_result)
                 .into_iter()
                 .map(|tool| {
@@ -4028,6 +4162,10 @@ fn run_agent_loop_with(
                 .collect(),
             &attempts,
         );
+        let (plan_tools, current_planned_tools): (Vec<_>, Vec<_>) = all_planned_tools
+            .iter()
+            .cloned()
+            .partition(|tool| tool.name.trim() == "update_execution_plan");
         let model_content = model_result.content.clone();
         model_steps.push(model_result.clone());
         emit_progress_update_event(
@@ -4051,6 +4189,61 @@ fn run_agent_loop_with(
         if !model_result.ok {
             stopped_reason = "model_failed".to_string();
             break;
+        }
+        let has_plan_tools = !plan_tools.is_empty();
+        if has_plan_tools {
+            messages.push(RuntimeModelMessage::assistant_tool_call(
+                model_content.clone(),
+                model_result.reasoning_content.clone(),
+                all_planned_tools.clone(),
+            ));
+            for plan_tool in plan_tools {
+                let updated_tree = model_plan_tree_from_tool(
+                    runtime_session_id,
+                    base_request.task_goal.as_ref(),
+                    &plan_tool.arguments,
+                    model_plan_tree.as_ref(),
+                );
+                let result = if let Some(tree) = updated_tree {
+                    model_plan_event_index += 1;
+                    let event_type = if model_plan_tree.is_some() {
+                        "plan_updated"
+                    } else {
+                        "plan_created"
+                    };
+                    emit_model_execution_plan_event(
+                        event_sink,
+                        runtime_session_id,
+                        run_key,
+                        event_type,
+                        model_plan_event_index,
+                        &tree,
+                    );
+                    model_plan_tree = Some(tree);
+                    super::types::ToolExecutionResult::ok(
+                        plan_tool.tool_call_id.clone(),
+                        plan_tool.name.clone(),
+                        json!({"accepted": true}),
+                        "执行计划已更新".to_string(),
+                    )
+                } else {
+                    super::types::ToolExecutionResult::failed(
+                        plan_tool.tool_call_id.clone(),
+                        plan_tool.name.clone(),
+                        super::types::ToolError::new(
+                            "plan.invalid",
+                            "执行计划必须包含 2-8 个标题明确的步骤，且最多一个步骤为 in_progress",
+                        ),
+                    )
+                };
+                messages.push(RuntimeModelMessage::tool_observation(
+                    result.tool_call_id.clone(),
+                    tool_observation_content(&result, false, None, None),
+                ));
+            }
+            if current_planned_tools.is_empty() {
+                continue;
+            }
         }
         if current_planned_tools.is_empty() {
             let acceptance_gate = evaluate_acceptance_gate(
@@ -4090,11 +4283,13 @@ fn run_agent_loop_with(
             stopped_reason = "no_tool_calls".to_string();
             break;
         }
-        messages.push(RuntimeModelMessage::assistant_tool_call(
-            model_content,
-            model_result.reasoning_content.clone(),
-            current_planned_tools.clone(),
-        ));
+        if !has_plan_tools {
+            messages.push(RuntimeModelMessage::assistant_tool_call(
+                model_content,
+                model_result.reasoning_content.clone(),
+                current_planned_tools.clone(),
+            ));
+        }
 
         let batch_schema_failures = mutating_batch_schema_failures(&current_planned_tools);
         let block_mutating_batch = !batch_schema_failures.is_empty();
@@ -4194,6 +4389,7 @@ fn run_agent_loop_with(
                     candidate_solutions,
                     attempts,
                     last_acceptance_gate,
+                    model_plan_tree,
                     stopped_reason,
                     awaiting_permission,
                 );
@@ -4250,6 +4446,7 @@ fn run_agent_loop_with(
                     candidate_solutions,
                     attempts,
                     last_acceptance_gate,
+                    model_plan_tree,
                     stopped_reason,
                     awaiting_permission,
                 );
@@ -4264,6 +4461,7 @@ fn run_agent_loop_with(
                     candidate_solutions,
                     attempts,
                     last_acceptance_gate,
+                    model_plan_tree,
                     stopped_reason,
                     awaiting_permission,
                 );
@@ -4279,6 +4477,7 @@ fn run_agent_loop_with(
         candidate_solutions,
         attempts,
         last_acceptance_gate,
+        model_plan_tree,
         stopped_reason,
         awaiting_permission,
     )
@@ -5117,6 +5316,7 @@ fn finalize_agent_loop_result(
     candidate_solutions: Vec<AgentLoopCandidateSolution>,
     attempts: Vec<AgentLoopAttempt>,
     acceptance_gate: Option<AcceptanceGateResult>,
+    model_plan_tree: Option<planning::TaskTree>,
     stopped_reason: String,
     awaiting_permission: bool,
 ) -> AgentLoopResult {
@@ -5136,6 +5336,7 @@ fn finalize_agent_loop_result(
         attempts,
         verification,
         acceptance_gate,
+        model_plan_tree,
         stopped_reason,
         awaiting_permission,
     }
@@ -7688,6 +7889,20 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
     if let Some(context_message) = build_desktop_local_context_message(request) {
         messages.push(context_message);
     }
+    messages.push(RuntimeModelMessage::simple(
+        "system",
+        [
+            "执行计划工具规则：",
+            "- update_execution_plan 是内部计划工具，不是业务操作。",
+            "- 简单问答、单次查询或无需多阶段执行的请求不要调用该工具，直接回答。",
+            "- 需要跨多个文件、多个工具调用、修改与验证或其他多阶段工作的任务，应在开始实质执行前调用该工具提交 2-8 个具体步骤。",
+            "- 步骤标题必须描述真实动作与对象，禁止使用‘理解目标’‘推进当前目标’‘检查执行结果’等固定模板。",
+            "- 每完成一个阶段，应再次调用该工具更新状态；已完成步骤保持 completed，不得退回。",
+            "- 同一时刻最多一个步骤为 in_progress；其余步骤使用 pending、completed 或 blocked。",
+            "- 计划发生实质变化时可以调整、增加或合并步骤，并用 explanation 简述原因。",
+        ]
+        .join("\n"),
+    ));
     let system_prompt_parts = normalize_system_prompt_parts(request);
     if system_prompt_parts.is_empty() {
         if let Some(system_prompt) = request
@@ -8934,6 +9149,145 @@ mod tests {
     use std::thread;
 
     #[test]
+    fn model_plan_tool_builds_dynamic_steps_without_fixed_template() {
+        let goal = TaskGoal {
+            version: "task-goal/test".to_string(),
+            goal_id: "goal-test".to_string(),
+            user_request: "删除项目详情 AI 部署并保留项目对话部署".to_string(),
+            title: "删除项目详情 AI 部署并保留项目对话部署".to_string(),
+            intent: "agentic_request".to_string(),
+            target_object: "current user request".to_string(),
+            success_criteria: Vec::new(),
+            constraints: Vec::new(),
+            created_at_epoch_ms: 1,
+        };
+        let tree = model_plan_tree_from_tool(
+            "session-model-plan",
+            Some(&goal),
+            &json!({
+                "explanation": "按前后端边界拆解",
+                "steps": [
+                    {"title": "确认项目详情部署入口和项目对话部署边界", "status": "completed"},
+                    {"title": "移除项目详情 AI 部署前后端链路", "status": "in_progress"},
+                    {"title": "验证项目对话部署仍可用", "status": "pending"}
+                ]
+            }),
+            None,
+        )
+        .expect("valid model plan");
+        let snapshot = plan_snapshot_payload(&tree, "running", 1);
+
+        assert_eq!(snapshot["steps"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            snapshot["steps"][1]["title"],
+            "移除项目详情 AI 部署前后端链路"
+        );
+        assert_eq!(snapshot["steps"][0]["status"], "completed");
+        assert_eq!(snapshot["steps"][1]["status"], "running");
+        assert!(!snapshot.to_string().contains("确认当前状态与执行条件"));
+    }
+
+    #[test]
+    fn model_plan_update_preserves_completed_steps() {
+        let goal = TaskGoal {
+            version: "task-goal/test".to_string(),
+            goal_id: "goal-test".to_string(),
+            user_request: "实现动态计划".to_string(),
+            title: "实现动态计划".to_string(),
+            intent: "agentic_request".to_string(),
+            target_object: "current user request".to_string(),
+            success_criteria: Vec::new(),
+            constraints: Vec::new(),
+            created_at_epoch_ms: 1,
+        };
+        let initial = model_plan_tree_from_tool(
+            "session-model-plan-update",
+            Some(&goal),
+            &json!({"steps": [
+                {"title": "定义计划协议", "status": "completed"},
+                {"title": "接入模型计划事件", "status": "in_progress"}
+            ]}),
+            None,
+        )
+        .unwrap();
+        let updated = model_plan_tree_from_tool(
+            "session-model-plan-update",
+            Some(&goal),
+            &json!({"steps": [
+                {"title": "定义计划协议", "status": "pending"},
+                {"title": "接入模型计划事件", "status": "completed"}
+            ]}),
+            Some(&initial),
+        )
+        .unwrap();
+        let snapshot = plan_snapshot_payload(&updated, "running", 1);
+
+        assert_eq!(snapshot["steps"][0]["status"], "completed");
+        assert_eq!(snapshot["steps"][1]["status"], "completed");
+    }
+
+    #[test]
+    fn model_plan_update_preserves_completion_after_reordering() {
+        let goal = TaskGoal {
+            version: "task-goal/test".to_string(),
+            goal_id: "goal-test".to_string(),
+            user_request: "实现动态计划".to_string(),
+            title: "实现动态计划".to_string(),
+            intent: "agentic_request".to_string(),
+            target_object: "current user request".to_string(),
+            success_criteria: Vec::new(),
+            constraints: Vec::new(),
+            created_at_epoch_ms: 1,
+        };
+        let initial = model_plan_tree_from_tool(
+            "session-model-plan-reorder",
+            Some(&goal),
+            &json!({"steps": [
+                {"title": "定义计划协议", "status": "completed"},
+                {"title": "接入模型计划事件", "status": "in_progress"}
+            ]}),
+            None,
+        )
+        .unwrap();
+        let updated = model_plan_tree_from_tool(
+            "session-model-plan-reorder",
+            Some(&goal),
+            &json!({"steps": [
+                {"title": "接入模型计划事件", "status": "in_progress"},
+                {"title": "定义计划协议", "status": "pending"}
+            ]}),
+            Some(&initial),
+        )
+        .unwrap();
+        let snapshot = plan_snapshot_payload(&updated, "running", 1);
+
+        assert_eq!(snapshot["steps"][0]["status"], "running");
+        assert_eq!(snapshot["steps"][1]["status"], "completed");
+    }
+
+    #[test]
+    fn model_request_exposes_dynamic_plan_tool_and_guidance() {
+        let request = serde_json::from_value::<LocalChatRequest>(json!({
+            "projectId": "proj-test",
+            "chatSessionId": "chat-model-plan-tool",
+            "message": "重构登录模块并运行测试",
+            "workspacePath": "."
+        }))
+        .unwrap();
+        let model_request = build_model_request(&request, &request.message);
+        let tools = openai_compatible_tool_schemas(&model_request);
+
+        assert!(tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "update_execution_plan"));
+        assert!(model_request.messages.iter().any(|message| {
+            message.role == "system"
+                && message.content.contains("简单问答")
+                && message.content.contains("update_execution_plan")
+        }));
+    }
+
+    #[test]
     fn extracts_file_paths_without_fixed_extension_allowlist() {
         let candidates = extract_file_path_candidates(
             "更新 Dockerfile、scripts/deploy.sh、db/schema.sql 和 .env.local；参考 https://example.com/docs。",
@@ -9367,7 +9721,7 @@ mod tests {
         let mut request = test_model_request("修改 src/main.rs 并验证");
         let task_goal = build_task_goal("drift-test", "修改 src/main.rs 并验证", &request);
         request.task_goal = Some(task_goal.clone());
-        request.task_tree = Some(planning::TaskTree::for_goal("drift-test", &task_goal));
+        request.task_tree = Some(planning::TaskTree::without_plan("drift-test", &task_goal));
         let tool = PlannedLocalTool {
             tool_call_id: "call_write_other".to_string(),
             name: "write_file".to_string(),
@@ -13555,6 +13909,178 @@ mod tests {
     }
 
     #[test]
+    fn simple_answer_does_not_emit_execution_plan() {
+        let request = test_model_request("目前有什么路由？");
+        let events = RefCell::new(Vec::<Value>::new());
+        let event_sink = |event: Value| events.borrow_mut().push(event);
+        let model_runner = |_request: &ModelStepRequest| {
+            test_model_result("当前有 /login 和 /wechat 两个路由。", Vec::new())
+        };
+        let tool_runner =
+            |_request: ToolExecutionRequest| panic!("simple answer must not execute tools");
+
+        let result = run_agent_loop_with(
+            "chat-simple-no-plan",
+            "runtime-simple-no-plan",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &PathBuf::from("."),
+            None,
+            Some(&event_sink),
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.model_plan_tree.is_none());
+        assert!(!events.borrow().iter().any(|event| {
+            matches!(
+                event.get("type").and_then(Value::as_str),
+                Some("plan_created" | "plan_updated" | "plan_completed")
+            )
+        }));
+    }
+
+    #[test]
+    fn model_plan_tool_emits_dynamic_plan_without_business_execution() {
+        let mut request = test_model_request("移除项目详情部署并保留项目对话部署");
+        let goal = build_task_goal("runtime-model-plan", &request.user_message, &request);
+        request.task_goal = Some(goal.clone());
+        request.task_tree = Some(planning::TaskTree::without_plan(
+            "runtime-model-plan",
+            &goal,
+        ));
+        let model_call_count = Cell::new(0usize);
+        let executed_tools = Cell::new(0usize);
+        let events = RefCell::new(Vec::<Value>::new());
+        let event_sink = |event: Value| events.borrow_mut().push(event);
+        let model_runner = |_request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_plan".to_string(),
+                        name: "update_execution_plan".to_string(),
+                        arguments: json!({"steps": [
+                            {"title": "定位项目详情部署前后端入口", "status": "in_progress"},
+                            {"title": "移除项目详情部署并保留对话部署", "status": "pending"},
+                            {"title": "运行回归测试确认部署入口", "status": "pending"}
+                        ]}),
+                        summary: "提交动态执行计划".to_string(),
+                    }],
+                );
+            }
+            test_model_result("计划已确认，开始执行。", Vec::new())
+        };
+        let tool_runner = |_request: ToolExecutionRequest| {
+            executed_tools.set(executed_tools.get() + 1);
+            panic!("plan tool must be intercepted before business execution")
+        };
+
+        let result = run_agent_loop_with(
+            "chat-dynamic-plan",
+            "runtime-model-plan",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &PathBuf::from("."),
+            None,
+            Some(&event_sink),
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert_eq!(executed_tools.get(), 0);
+        let tree = result.model_plan_tree.expect("model plan tree");
+        assert_eq!(tree.nodes.len(), 4);
+        let created = events
+            .borrow()
+            .iter()
+            .find(|event| event["type"] == "plan_created")
+            .cloned()
+            .expect("plan_created event");
+        assert_eq!(
+            created["payload"]["steps"][1]["title"],
+            "移除项目详情部署并保留对话部署"
+        );
+    }
+
+    #[test]
+    fn mixed_plan_and_business_tools_receive_one_observation_each() {
+        let mut request = test_model_request("读取配置并按阶段处理");
+        let goal = build_task_goal("runtime-mixed-plan", &request.user_message, &request);
+        request.task_goal = Some(goal.clone());
+        request.task_tree = Some(planning::TaskTree::without_plan(
+            "runtime-mixed-plan",
+            &goal,
+        ));
+        let model_call_count = Cell::new(0usize);
+        let second_request_observations = RefCell::new(Vec::<String>::new());
+        let model_runner = |model_request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![
+                        PlannedLocalTool {
+                            tool_call_id: "call_plan_mixed".to_string(),
+                            name: "update_execution_plan".to_string(),
+                            arguments: json!({"steps": [
+                                {"title": "读取当前配置", "status": "in_progress"},
+                                {"title": "根据配置完成处理", "status": "pending"}
+                            ]}),
+                            summary: "提交执行计划".to_string(),
+                        },
+                        PlannedLocalTool {
+                            tool_call_id: "call_read_mixed".to_string(),
+                            name: "read_file".to_string(),
+                            arguments: json!({"path": "Cargo.toml"}),
+                            summary: "读取配置".to_string(),
+                        },
+                    ],
+                );
+            }
+            second_request_observations.replace(
+                model_request
+                    .messages
+                    .iter()
+                    .filter_map(|message| message.tool_call_id.clone())
+                    .collect(),
+            );
+            test_model_result("已读取配置。", Vec::new())
+        };
+        let tool_runner = |tool_request: ToolExecutionRequest| {
+            crate::liuagent_core::ToolExecutionResult::ok(
+                tool_request.tool_call_id.unwrap_or_default(),
+                tool_request.name,
+                json!({"content": "[package]"}),
+                "读取成功".to_string(),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-mixed-plan",
+            "runtime-mixed-plan",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &PathBuf::from("."),
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.model_plan_tree.is_some());
+        let mut observation_ids = second_request_observations.borrow().clone();
+        observation_ids.sort();
+        assert_eq!(
+            observation_ids,
+            vec!["call_plan_mixed".to_string(), "call_read_mixed".to_string()]
+        );
+    }
+
+    #[test]
     fn assistant_tool_call_payload_preserves_reasoning_content() {
         let message = RuntimeModelMessage::assistant_tool_call(
             "我需要读取文件。",
@@ -13919,17 +14445,45 @@ mod tests {
         .unwrap();
         let model_request = build_model_request(&request, &request.message);
         let task_goal = build_task_goal("local-neutral-intent", &request.message, &model_request);
-        let task_tree = planning::TaskTree::for_goal("local-neutral-intent", &task_goal);
+        let task_tree = planning::TaskTree::without_plan("local-neutral-intent", &task_goal);
 
         assert_eq!(task_goal.intent, "agentic_request");
-        assert!(task_tree
-            .nodes
+        assert_eq!(task_tree.nodes.len(), 1);
+    }
+
+    #[test]
+    fn task_goal_does_not_inherit_target_from_history() {
+        let request = serde_json::from_value::<LocalChatRequest>(json!({
+            "projectId": "proj-test",
+            "chatSessionId": "chat-current-round-target",
+            "message": "帮我说明当前页面的登录结构",
+            "workspacePath": ".",
+            "history": [
+                {
+                    "role": "user",
+                    "content": "打开 8080/wechat"
+                },
+                {
+                    "role": "assistant",
+                    "content": "上一轮正在处理未登录授权流程"
+                }
+            ]
+        }))
+        .unwrap();
+        let model_request = build_model_request(&request, &request.message);
+
+        let task_goal = build_task_goal(
+            "local-current-round-target",
+            &request.message,
+            &model_request,
+        );
+
+        assert!(model_request
+            .messages
             .iter()
-            .any(|node| node.title.contains("理解目标和现有上下文")));
-        assert!(!task_tree
-            .nodes
-            .iter()
-            .any(|node| node.title.contains("确认文档目标路径")));
+            .any(|message| message.content.contains("8080/wechat")));
+        assert_eq!(task_goal.user_request, request.message);
+        assert_eq!(task_goal.target_object, "current user request");
     }
 
     #[test]
@@ -13943,7 +14497,7 @@ mod tests {
         .unwrap();
         let model_request = build_model_request(&request, "修改 src/main.rs 并验证");
         let task_goal = build_task_goal("local-plan", &request.message, &model_request);
-        let task_tree = planning::TaskTree::for_goal("local-plan", &task_goal);
+        let task_tree = planning::TaskTree::without_plan("local-plan", &task_goal);
         let clarity = assess_clarity(&request.message, &request, &model_request);
         let plan = create_plan_state(
             "local-plan",
@@ -13987,6 +14541,7 @@ mod tests {
                 evidence: Vec::new(),
             },
             acceptance_gate: None,
+            model_plan_tree: None,
             stopped_reason: "tool_failed".to_string(),
             awaiting_permission: false,
         };
@@ -14106,6 +14661,7 @@ mod tests {
                 evidence: Vec::new(),
             },
             acceptance_gate: None,
+            model_plan_tree: None,
             stopped_reason: "waiting_approval".to_string(),
             awaiting_permission: true,
         };
@@ -14168,6 +14724,7 @@ mod tests {
                 evidence: vec!["permission.required".to_string()],
             },
             acceptance_gate: None,
+            model_plan_tree: None,
             stopped_reason: "waiting_approval".to_string(),
             awaiting_permission: true,
         };
