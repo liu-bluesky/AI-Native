@@ -41,9 +41,7 @@ pub use types::{
 };
 
 use tools::command::{check_command_risk, run_command, run_command_with_output_sink};
-use tools::deploy::{
-    deploy_workspace_files_to_target, get_project_deploy_options, upload_deploy_artifact,
-};
+use tools::deploy::{deploy_workspace_files_to_target, get_project_deploy_options};
 use tools::file::{apply_patch, delete_file, list_files, read_file, search_text, write_file};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
 use tools::network::{download_file, http_get, http_post, web_extract, web_search};
@@ -119,12 +117,6 @@ pub(crate) fn execute_tool_with_command_output_sink(
         "list_projects" => list_projects(&request.arguments),
         "get_project" => get_project(&request.arguments),
         "get_project_deploy_options" => get_project_deploy_options(&request.arguments),
-        "upload_deploy_artifact" => upload_deploy_artifact(
-            &tool_call_id,
-            &request.workspace_path,
-            &request.arguments,
-            request.permission_decision.as_ref(),
-        ),
         "deploy_workspace_files_to_target" => deploy_workspace_files_to_target(
             &tool_call_id,
             &request.workspace_path,
@@ -209,9 +201,6 @@ mod tests {
         assert!(tools
             .iter()
             .any(|item| item.name == "get_project_deploy_options"));
-        assert!(tools
-            .iter()
-            .any(|item| item.name == "upload_deploy_artifact"));
         assert!(tools
             .iter()
             .any(|item| item.name == "deploy_workspace_files_to_target"));

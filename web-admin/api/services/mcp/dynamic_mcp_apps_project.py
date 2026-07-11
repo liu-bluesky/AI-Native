@@ -223,11 +223,8 @@ def create_project_mcp(
     def _project_deploy_artifact_capability_lines() -> list[str]:
         return [
             "- 部署型需求第一步: 先用 get_project_profile / get_project_detail 读取 deploy_settings（脱敏），把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；deploy_settings 未启用或为空时报 blocked/missing，不要凭空打包或臆造服务器信息。部署不一定是压缩包，按 component 的 artifact_kind 与 target 部署方式判断；通知由配置的 notify_enabled 决定，不询问用户。",
-            "- list_project_deploy_artifacts: 查看当前项目服务端已保存的部署产物和最近部署结果。",
-            "- push_project_deploy_artifact: 上传本地 zip/文件到服务端项目详情的部署产物模块；MCP 客户端必须传 `artifact_content_base64`，不要把 Windows/macOS 本地路径当作服务端可读路径；无法提供 base64 时改用 project-deploy-artifact 的本地上传脚本或页面上传。",
-            "- deploy_project_deploy_artifact: 仅对用户本轮明确指定的服务端 artifact_id 触发部署；如果用户说的是本地 zip、新代码、重新打包、推送部署产物，必须先调用 push_project_deploy_artifact 生成新 artifact，不得复用历史 artifact。",
-            "- 用户说“推送到服务端部署”“上传部署”“部署这个 zip”且没有限定“只上传”时，`push_project_deploy_artifact.auto_deploy` 默认 `true`；只有明确说“只上传”才传 `false`。",
-            "- `artifact_path` 不作为项目 MCP 远程客户端上传参数；它只保留给 REST 后端同机/共享文件系统兼容场景。",
+            "- list_project_deploy_artifacts: 仅查看当前项目历史服务端部署产物和最近部署结果，不提供上传或重新部署。",
+            "- 部署只能由桌面 Runner 直接读取本地文件并上传 FTP；项目 MCP 和远程客户端必须返回 desktop_runner_required。",
         ]
 
     def _build_usage_guide(project) -> dict:
@@ -267,7 +264,7 @@ def create_project_mcp(
             "6. 若当前需求可能复用历史开发经验，调用 resolve_project_experience_rules 按任务文本只加载相关经验卡片；不要全量拼接全部经验规则。",
             "7. 如需历史记忆或续跑线索，只在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时调用 recall_project_memory；同一任务轮进入执行后不要重复 recall。",
             "8. 规则检索用 query_project_rules；其中项目级 UI 规则优先于员工个人规则。协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断单人主责或多人协作；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
-            "9. 如用户要求部署/发布到服务器，先调用 get_project_profile 或 get_project_detail 读取 deploy_settings（脱敏），把可选环境档位 profile 和服务器目标 target 摆给用户让其选择再执行；部署不一定是 zip，按 component 的 artifact_kind 和 target 是否带 deploy_command 判断方式；通知由配置决定不询问用户。推送 zip/新代码到服务端部署用 push_project_deploy_artifact 并上传本轮文件内容；只有用户明确给出 artifact_id 或明确说部署已有服务端产物时，才使用 deploy_project_deploy_artifact。",
+            "9. 如用户要求部署/发布到服务器，先调用 get_project_profile 或 get_project_detail 读取 deploy_settings（脱敏），把可选环境档位 profile 和服务器目标 target 摆给用户让其选择再执行；部署不一定是 zip，按 component 的 artifact_kind 和 target 是否带 deploy_command 判断方式；通知由配置决定不询问用户。部署只能由桌面 Runner 直接读取本地文件并上传 FTP；非桌面客户端返回 desktop_runner_required。",
             "",
             "## 调用建议",
             "- 页面、交互、视觉相关任务先检查项目级 UI 规则，其优先级高于员工个人规则。",
@@ -351,7 +348,7 @@ def create_project_mcp(
                 "list_project_members or list_project_proxy_tools",
                 "get_current_task_tree / update_task_node_status / complete_task_node_with_verification",
                 "query_project_rules / invoke_project_skill_tool / invoke_external_mcp_tool",
-                "push_project_deploy_artifact / deploy_project_deploy_artifact",
+                "deploy_workspace_files_to_target",
             ],
             "guide_markdown": "\n".join(guide_lines),
         }
@@ -440,7 +437,7 @@ def create_project_mcp(
             )
         return "\n".join(lines)
 
-    @mcp.tool()
+    # Removed: server-side artifact upload; desktop direct deploy is required.
     def get_project_usage_guide() -> dict:
         """获取当前项目 MCP 的使用说明、推荐调用顺序和项目入口文件摘录"""
         project = _get_project()
@@ -745,64 +742,11 @@ def create_project_mcp(
             "total": len(project_deploy_store.list_artifacts(project.id, limit=max_limit)),
         }
 
-    @mcp.tool()
-    def push_project_deploy_artifact(
-        artifact_name: str,
-        profile: str = "prod",
-        component: str = "",
-        artifact_kind: str = "source-bundle",
-        manifest: dict | None = None,
-        artifact_content_base64: str = "",
-        auto_deploy: bool = True,
-        chat_session_id: str = "",
-        task_tree_node_id: str = "",
-        requirement: str = "",
-        plan: str = "",
-    ) -> dict:
-        """把本轮打包产物推送到服务端项目部署产物模块；MCP 客户端必须传 artifact_content_base64。"""
-        project = _get_project()
-        if not project:
-            return {"error": "Project not found"}
-        from models.requests import ProjectDeployArtifactPushReq
-        from routers.projects import _push_project_deploy_artifact_payload
+    # Compatibility shim for callers using an old MCP schema.
+    def push_project_deploy_artifact(*args, **kwargs) -> dict:
+        return {"error": "server-side deploy artifact upload has been removed; use desktop direct deploy", "status_code": 410, "code": "desktop_runner_required"}
 
-        artifact_name_value = str(artifact_name or "").strip()
-        if not artifact_name_value:
-            return {"error": "artifact_name is required"}
-        if not str(artifact_content_base64 or "").strip():
-            return {
-                "error": (
-                    "artifact_content_base64 is required for project MCP uploads; "
-                    "for a client-local zip, read the file and pass artifact_content_base64, "
-                    "or use the project-deploy-artifact scripts/push_local_artifact.py local upload script / deploy artifact page"
-                )
-            }
-        _, fallback_chat_session_id = _resolve_task_tree_context()
-        try:
-            return _push_project_deploy_artifact_payload(
-                project=project,
-                req=ProjectDeployArtifactPushReq(
-                    profile=str(profile or "").strip() or "prod",
-                    component=str(component or "").strip(),
-                    artifact_name=artifact_name_value,
-                    artifact_kind=str(artifact_kind or "").strip() or "source-bundle",
-                    manifest=manifest or {},
-                    artifact_content_base64=str(artifact_content_base64 or "").strip(),
-                    auto_deploy=bool(auto_deploy),
-                    chat_session_id=str(chat_session_id or "").strip() or fallback_chat_session_id,
-                    task_tree_node_id=str(task_tree_node_id or "").strip(),
-                    requirement=str(requirement or "").strip(),
-                    plan=str(plan or "").strip(),
-                    ai_deploy=True,
-                ),
-                uploaded_by=_feedback_actor(),
-            )
-        except HTTPException as exc:
-            return {"error": exc.detail, "status_code": exc.status_code}
-        except Exception as exc:  # pragma: no cover - defensive boundary for MCP callers
-            return {"error": str(exc)}
-
-    @mcp.tool()
+    # Removed: existing server artifacts are no longer deployable.
     def deploy_project_deploy_artifact(
         artifact_id: str,
         chat_session_id: str = "",

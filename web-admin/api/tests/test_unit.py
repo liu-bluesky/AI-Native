@@ -8593,8 +8593,10 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     assert experience_result["experience_rule_count"] == 1
     assert experience_result["items"][0]["id"] == "rule-exp"
     assert "list_project_deploy_artifacts" in registered_tools
-    assert "push_project_deploy_artifact" in registered_tools
-    assert "deploy_project_deploy_artifact" in registered_tools
+    assert "get_project_deploy_options" not in registered_tools
+    assert "list_project_deploy_artifacts" not in registered_tools
+    assert "push_project_deploy_artifact" not in registered_tools
+    assert "deploy_project_deploy_artifact" not in registered_tools
     assert "get_project_deploy_upload_status" not in registered_tools
     proxy_tools = registered_tools["list_project_proxy_tools"]()
     proxy_tool_names = {item["tool_name"] for item in proxy_tools}
@@ -12658,7 +12660,9 @@ def test_project_detail_ai_deploy_routes_are_removed_but_chat_deploy_routes_rema
     assert "/api/projects/{project_id}/deploy/direct-prepare" in route_paths
     assert "/api/projects/{project_id}/deploy/direct-complete" in route_paths
     assert "/api/projects/{project_id}/deploy/direct-upload" not in route_paths
-    assert "/api/projects/{project_id}/deploy-artifacts/{artifact_id}/deploy" in route_paths
+    assert "/api/projects/{project_id}/deploy-artifacts" in route_paths
+    assert "/api/projects/{project_id}/deploy-artifacts/upload" not in route_paths
+    assert "/api/projects/{project_id}/deploy-artifacts/{artifact_id}/deploy" not in route_paths
 
 
 def test_codex_exec_command_skips_git_repo_check_for_plain_directories():
@@ -16992,18 +16996,14 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "禁止以兜底、兼容、静默降级" in usage_guide
     assert "优先定位并修正根因" in usage_guide
     assert "query://client-profile/hermes" in usage_guide
-    assert "打包命令只能通过项目聊天命令执行能力处理" in usage_guide
-    assert "外部智能体" in usage_guide
-    assert "桌面端 Runner" in usage_guide
-    assert "push_project_deploy_artifact" in usage_guide
-    assert "deploy_project_deploy_artifact" in usage_guide
-    assert "只有用户明确给出 artifact_id 或明确说部署已有服务端产物时" in usage_guide
-    assert "必须先调用 `push_project_deploy_artifact` 上传本轮文件内容生成新 artifact" in usage_guide
+    assert "get_project_deploy_options" not in usage_guide
+    assert "桌面端 Runner" not in usage_guide
+    assert "push_project_deploy_artifact" not in usage_guide
+    assert "deploy_project_deploy_artifact" not in usage_guide
     assert "FTP-only 部署要求" not in usage_guide
     assert "客户端通过 MCP/部署技能读取项目的 FTP" not in usage_guide
-    assert "artifact_content_base64" in usage_guide
-    assert "push_local_artifact.py" in usage_guide
-    assert "用户回复“确认部署”时未重复 project_id" in usage_guide
+    assert "artifact_content_base64" not in usage_guide
+    assert "push_local_artifact.py" not in usage_guide
     assert "MCP 可访问地址" not in usage_guide
     assert "项目级权威状态文件" not in usage_guide
     assert "需求记录文件为 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`" in usage_guide
@@ -17018,19 +17018,15 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "start_project_workflow" in codex_profile
     assert "get_manual_content" in codex_profile
     assert "build_delivery_report" in codex_profile
-    assert "打包命令只能通过项目聊天命令执行能力处理" in codex_profile
-    assert "外部智能体" in codex_profile
-    assert "桌面端 Runner" in codex_profile
-    assert "push_project_deploy_artifact" in codex_profile
-    assert "deploy_project_deploy_artifact" in codex_profile
-    assert "只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时" in codex_profile
-    assert "本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact" in codex_profile
+    assert "get_project_deploy_options" not in codex_profile
+    assert "桌面端 Runner" not in codex_profile
+    assert "push_project_deploy_artifact" not in codex_profile
+    assert "deploy_project_deploy_artifact" not in codex_profile
     assert "客户端通过 MCP/部署技能读取项目的 FTP" not in codex_profile
-    assert "artifact_content_base64" in codex_profile
-    assert "push_local_artifact.py" in codex_profile
-    assert "渲染出的 CLI 提示词已提供 `project_id`" in codex_profile
+    assert "artifact_content_base64" not in codex_profile
+    assert "push_local_artifact.py" not in codex_profile
     assert "MCP 可访问地址" not in codex_profile
-    assert "禁止扫描、读取或复用历史发布配置" in codex_profile
+    assert "部署约束:" not in codex_profile
     assert "Auto inferred proxy entry from scripts/..." in codex_profile
     assert "客户端通过 MCP/部署技能读取项目的 FTP" not in codex_profile
     assert "FTP-only 部署要求" not in codex_profile
@@ -17097,16 +17093,12 @@ def test_query_mcp_system_config_migrates_legacy_active_state_prompts():
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert "sync_query_mcp_cli_prompt_to_local_file" in config.query_mcp_bootstrap_prompt_template
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
-    assert "项目聊天部署约束" in config.query_mcp_bootstrap_prompt_template
-    assert "get_project_deploy_options" in config.query_mcp_bootstrap_prompt_template
-    assert "外部智能体" in config.query_mcp_bootstrap_prompt_template
-    assert "桌面端 Runner" in config.query_mcp_bootstrap_prompt_template
-    assert "把产物推送到服务端项目详情的部署产物模块" in config.query_mcp_bootstrap_prompt_template
-    assert "自动部署由部署产物 AI/服务端部署能力" in config.query_mcp_bootstrap_prompt_template
+    assert "项目聊天部署约束" not in config.query_mcp_bootstrap_prompt_template
+    assert "get_project_deploy_options" not in config.query_mcp_bootstrap_prompt_template
+    assert "桌面端 Runner" not in config.query_mcp_bootstrap_prompt_template
     assert "客户端先通过 MCP/部署技能读取项目级部署参数" not in config.query_mcp_bootstrap_prompt_template
-    assert "artifact_content_base64" in config.query_mcp_bootstrap_prompt_template
-    assert "push_local_artifact.py" in config.query_mcp_bootstrap_prompt_template
-    assert "入口当前接入上下文已提供默认 `project_id`" in config.query_mcp_bootstrap_prompt_template
+    assert "artifact_content_base64" not in config.query_mcp_bootstrap_prompt_template
+    assert "push_local_artifact.py" not in config.query_mcp_bootstrap_prompt_template
 
 
 def test_query_mcp_system_config_completes_partial_resource_discovery_prompt_rules():
@@ -17142,23 +17134,21 @@ def test_query_mcp_system_config_completes_partial_resource_discovery_prompt_rul
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert config.query_mcp_bootstrap_prompt_template.count("sync_query_mcp_cli_prompt_to_local_file") == 1
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
-    assert config.query_mcp_bootstrap_prompt_template.count("项目聊天部署约束") == 1
-    assert "get_project_deploy_options" in config.query_mcp_bootstrap_prompt_template
-    assert "外部智能体" in config.query_mcp_bootstrap_prompt_template
-    assert "桌面端 Runner" in config.query_mcp_bootstrap_prompt_template
+    assert "项目聊天部署约束" not in config.query_mcp_bootstrap_prompt_template
+    assert "get_project_deploy_options" not in config.query_mcp_bootstrap_prompt_template
+    assert "桌面端 Runner" not in config.query_mcp_bootstrap_prompt_template
     assert config.query_mcp_usage_guide_template.count("`list_mcp_resources` 只用于发现资源目录") == 1
     assert "query://client-profile/generic-cli" in config.query_mcp_usage_guide_template
     assert "简单查询直达业务工具" in config.query_mcp_usage_guide_template
-    assert "打包命令只能通过项目聊天命令执行能力处理" in config.query_mcp_usage_guide_template
-    assert "外部智能体" in config.query_mcp_usage_guide_template
-    assert "桌面端 Runner" in config.query_mcp_usage_guide_template
-    assert "push_project_deploy_artifact" in config.query_mcp_usage_guide_template
-    assert "deploy_project_deploy_artifact" in config.query_mcp_usage_guide_template
-    assert "部署产物自动部署能力" in config.query_mcp_usage_guide_template
+    assert "直接把本地文件上传到已配置 FTP" not in config.query_mcp_usage_guide_template
+    assert "桌面端 Runner" not in config.query_mcp_usage_guide_template
+    assert "push_project_deploy_artifact" not in config.query_mcp_usage_guide_template
+    assert "deploy_project_deploy_artifact" not in config.query_mcp_usage_guide_template
+    assert "部署产物自动部署能力" not in config.query_mcp_usage_guide_template
     assert "客户端通过 MCP/部署技能读取项目的 FTP" not in config.query_mcp_usage_guide_template
-    assert "artifact_content_base64" in config.query_mcp_usage_guide_template
-    assert "push_local_artifact.py" in config.query_mcp_usage_guide_template
-    assert "用户回复“确认部署”时未重复 project_id" in config.query_mcp_usage_guide_template
+    assert "artifact_content_base64" not in config.query_mcp_usage_guide_template
+    assert "push_local_artifact.py" not in config.query_mcp_usage_guide_template
+    assert "desktop_runner_required" not in config.query_mcp_usage_guide_template
 
 
 def test_query_mcp_system_config_inserts_resource_discovery_prompt_rules_without_anchor():
@@ -17173,20 +17163,19 @@ def test_query_mcp_system_config_inserts_resource_discovery_prompt_rules_without
     assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
     assert "sync_query_mcp_cli_prompt_to_local_file" in config.query_mcp_bootstrap_prompt_template
     assert "覆盖当前项目根目录提示词文件" in config.query_mcp_bootstrap_prompt_template
-    assert "项目聊天部署约束" in config.query_mcp_bootstrap_prompt_template
-    assert "get_project_deploy_options" in config.query_mcp_bootstrap_prompt_template
-    assert "外部智能体" in config.query_mcp_bootstrap_prompt_template
-    assert "桌面端 Runner" in config.query_mcp_bootstrap_prompt_template
+    assert "项目聊天部署约束" not in config.query_mcp_bootstrap_prompt_template
+    assert "get_project_deploy_options" not in config.query_mcp_bootstrap_prompt_template
+    assert "桌面端 Runner" not in config.query_mcp_bootstrap_prompt_template
     assert "`list_mcp_resources` 只用于发现资源目录" in config.query_mcp_usage_guide_template
     assert "简单查询直达业务工具" in config.query_mcp_usage_guide_template
-    assert "打包命令只能通过项目聊天命令执行能力处理" in config.query_mcp_usage_guide_template
-    assert "外部智能体" in config.query_mcp_usage_guide_template
-    assert "桌面端 Runner" in config.query_mcp_usage_guide_template
-    assert "push_project_deploy_artifact" in config.query_mcp_usage_guide_template
-    assert "deploy_project_deploy_artifact" in config.query_mcp_usage_guide_template
-    assert "部署产物自动部署能力" in config.query_mcp_usage_guide_template
+    assert "直接把本地文件上传到已配置 FTP" not in config.query_mcp_usage_guide_template
+    assert "桌面端 Runner" not in config.query_mcp_usage_guide_template
+    assert "push_project_deploy_artifact" not in config.query_mcp_usage_guide_template
+    assert "deploy_project_deploy_artifact" not in config.query_mcp_usage_guide_template
+    assert "部署产物自动部署能力" not in config.query_mcp_usage_guide_template
     assert "客户端通过 MCP/部署技能读取项目的 FTP" not in config.query_mcp_usage_guide_template
-    assert "artifact_content_base64" in config.query_mcp_usage_guide_template
+    assert "artifact_content_base64" not in config.query_mcp_usage_guide_template
+    assert "desktop_runner_required" not in config.query_mcp_usage_guide_template
 
 
 def test_query_mcp_system_config_replaces_legacy_deploy_contract_prompt():
@@ -17210,16 +17199,16 @@ def test_query_mcp_system_config_replaces_legacy_deploy_contract_prompt():
 
     assert "客户端 AI 打包部署契约" not in prompt
     assert "旧部署规则" not in prompt
-    assert "项目聊天部署约束" in prompt
-    assert "get_project_deploy_options" in prompt
-    assert "外部智能体" in prompt
-    assert "桌面端 Runner" in prompt
-    assert "push_project_deploy_artifact" in prompt
-    assert "deploy_project_deploy_artifact" in prompt
-    assert "自动部署由部署产物 AI/服务端部署能力" in prompt
+    assert "项目聊天部署约束" not in prompt
+    assert "get_project_deploy_options" not in prompt
+    assert "桌面端 Runner" not in prompt
+    assert "push_project_deploy_artifact" not in prompt
+    assert "deploy_project_deploy_artifact" not in prompt
+    assert "自动部署由部署产物 AI/服务端部署能力" not in prompt
     assert "客户端先通过 MCP/部署技能读取项目级部署参数" not in prompt
-    assert "artifact_content_base64" in prompt
-    assert "入口当前接入上下文已提供默认 `project_id`" in prompt
+    assert "artifact_content_base64" not in prompt
+    assert "desktop_runner_required" not in prompt
+    assert "直接读取本地文件并上传到已配置 FTP" not in prompt
     for keyword in ("travis", "qiniu", "七牛", "oss", "github actions", "qshell"):
         assert keyword not in prompt.lower()
 
@@ -17254,26 +17243,28 @@ def test_query_mcp_system_config_deduplicates_legacy_deploy_usage_contract():
     usage_guide = config.query_mcp_usage_guide_template
     client_profile = config.query_mcp_client_profile_template
 
-    assert usage_guide.count("1.4 用户提“部署") == 1
-    assert usage_guide.count("1.4.1 打包命令只能通过项目聊天命令执行能力处理") == 1
-    assert "get_project_deploy_options" in usage_guide
-    assert usage_guide.count("push_project_deploy_artifact") == 2
-    assert usage_guide.count("deploy_project_deploy_artifact") == 2
-    assert "artifact_content_base64" in usage_guide
-    assert "auto_deploy=true" in usage_guide
+    assert "1.4 用户提“部署" not in usage_guide
+    assert "1.4.1 部署只能通过可访问用户工作区的桌面端 Runner 执行" not in usage_guide
+    assert "get_project_deploy_options" not in usage_guide
+    assert "push_project_deploy_artifact" not in usage_guide
+    assert "deploy_project_deploy_artifact" not in usage_guide
+    assert "artifact_content_base64" not in usage_guide
+    assert "auto_deploy=true" not in usage_guide
+    assert "desktop_runner_required" not in usage_guide
+    assert "直接把本地文件上传到已配置 FTP" not in usage_guide
     assert "通过 MCP/项目能力推送" not in usage_guide
     assert "MCP 提示词不提供打包产物上传" not in usage_guide
     assert "部署产物上传/部署" not in usage_guide
     assert "先把本地打包产物推送到部署产物模块" not in usage_guide
 
-    assert client_profile.count("- 部署约束:") == 6
-    assert "get_project_deploy_options" in client_profile
-    assert "push_project_deploy_artifact" in client_profile
-    assert "deploy_project_deploy_artifact" in client_profile
-    assert "artifact_content_base64" in client_profile
-    assert "缺少 project_id" in client_profile
-    assert "只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时" in client_profile
-    assert "本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact" in client_profile
+    assert client_profile.count("- 部署约束:") == 0
+    assert "get_project_deploy_options" not in client_profile
+    assert "push_project_deploy_artifact" not in client_profile
+    assert "deploy_project_deploy_artifact" not in client_profile
+    assert "artifact_content_base64" not in client_profile
+    assert "缺少 project_id" not in client_profile
+    assert "desktop_runner_required" not in client_profile
+    assert "直接把本地文件上传到已配置 FTP" not in client_profile
     assert "通过 MCP/项目能力推送" not in client_profile
     assert "已有服务端 artifact 的部署请求不应要求用户重新上传" not in client_profile
 

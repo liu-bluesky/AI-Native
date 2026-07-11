@@ -143,9 +143,6 @@
             </div>
 
             <div class="deploy-settings-panel__switches">
-              <el-checkbox v-model="activeComponent.safety.auto_deploy_on_artifact_update">
-                上传产物后自动部署
-              </el-checkbox>
               <el-checkbox v-model="activeComponent.notify.enabled">启用部署通知</el-checkbox>
             </div>
 
@@ -412,7 +409,7 @@ function createDefaultComponent(index = 0) {
     enabled: true,
     artifact_kind: "source-bundle",
     package: {},
-    safety: { auto_deploy_on_artifact_update: false, dry_run_default: false },
+    safety: { dry_run_default: false },
     notify: { enabled: false, template: defaultNotifyTemplate(), targets: [] },
     targets: [createDefaultTarget()],
   };
@@ -460,7 +457,7 @@ function createDefaultProfile(index = 0) {
     transport: {},
     remote_executor: {},
     notify: { enabled: false, template: defaultNotifyTemplate(), targets: [] },
-    safety: { auto_deploy_on_artifact_update: false, dry_run_default: false },
+    safety: { dry_run_default: false },
     components: [createDefaultComponent()],
   };
 }
@@ -502,7 +499,6 @@ function normalizeComponent(value, index, legacyProfile = {}) {
     artifact_kind: String(source.artifact_kind || legacyProfile.artifact_kind || "source-bundle").trim(),
     package: source.package && typeof source.package === "object" ? { ...source.package } : {},
     safety: {
-      auto_deploy_on_artifact_update: Boolean(safety.auto_deploy_on_artifact_update),
       dry_run_default: Boolean(safety.dry_run_default),
     },
     notify: {

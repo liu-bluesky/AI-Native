@@ -334,49 +334,6 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "upload_deploy_artifact",
-            description: "仅当用户明确要求“上传到部署产物模块/只上传部署产物”时使用：把本地 workspace 内已生成的部署产物直连上传到后端项目部署产物模块。上传规则是“原文件是什么就上传什么”：artifact_path 指向单个文件时原样上传该文件；artifact_path 指向目录或 artifact_paths 传多个文件时，用 multipart 逐个上传原文件并保存为目录型产物，不会压缩成 zip/tar。静态页面/多 HTML/CSS/JS/图片文件必须上传目录或 artifact_paths，禁止为了搬运多文件自行创建压缩包。该工具不代表远端已部署成功；桌面智能体部署主流程应优先使用 deploy_workspace_files_to_target。",
-            action: "deploy.artifact.upload",
-            risk: "high",
-            requires_approval: true,
-            scope: "network",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "project_id": {"type": "string"},
-                    "artifact_path": {"type": "string", "description": "workspace 内部署产物路径；可指向单个文件或目录。目录会按目录型产物上传并保留相对路径。"},
-                    "artifact_paths": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "workspace 内多个部署文件路径清单。适合直接上传若干 HTML/CSS/JS/图片等静态文件；后端会保存为目录型产物。传该字段时优先于 artifact_path。"
-                    },
-                    "artifact_root": {
-                        "type": "string",
-                        "description": "artifact_paths 的相对路径根目录；例如传 . 时保留 login/index.html，传 dist 时保留 dist 内部路径。"
-                    },
-                    "profile": {"type": "string", "default": "prod"},
-                    "component": {"type": "string", "default": ""},
-                    "target_ids": {"type": "array", "items": {"type": "string"}},
-                    "artifact_name": {"type": "string"},
-                    "artifact_kind": {"type": "string", "default": "source-bundle"},
-                    "version": {"type": "string"},
-                    "manifest": {"type": "object"},
-                    "auto_deploy": {"type": "boolean", "default": true},
-                    "ai_deploy": {"type": "boolean", "default": true},
-                    "chat_session_id": {"type": "string"},
-                    "task_tree_node_id": {"type": "string"},
-                    "requirement": {"type": "string"},
-                    "plan": {"type": "string"},
-                    "timeout_ms": {"type": "number", "default": 120000}
-                },
-                "required": ["project_id"],
-                "anyOf": [
-                    {"required": ["artifact_path"]},
-                    {"required": ["artifact_paths"]}
-                ]
-            }),
-        },
-        ToolDefinition {
             name: "deploy_workspace_files_to_target",
             description: "桌面智能体直连部署主工具。由桌面 AI 先调用 get_project_deploy_options 读取配置并让用户选择 profile/component/target 后，由桌面运行时直接把 workspace 内的原文件、目录或文件清单上传到目标 FTP 服务器，文件不经过业务后端中转；后端仅负责权限校验、提供本次部署连接配置、执行已配置 deploy_command、发送配置通知和接收结果。FTP 凭据不会进入模型上下文或工具结果。上传目录时按根层文件和文件夹生成任务，实际并发受 FTP 连接的最大上传线程数限制。只有本工具返回 deployment_confirmed_success=true/status=success 时，才允许回复部署成功。",
             action: "deploy.direct.upload",

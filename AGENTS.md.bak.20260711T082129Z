@@ -2,10 +2,10 @@
 
 详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：
 - `query://usage-guide`
-- `query://client-profile/claude-code`（Claude Code）
+- `query://client-profile/codex`（Codex CLI）
 
 强制接入步骤：
-1. 先读取 `query://usage-guide`；当前客户端是 Claude Code，再读取对应画像 `query://client-profile/claude-code`。
+1. 先读取 `query://usage-guide`；当前客户端是 Codex CLI，再读取对应画像 `query://client-profile/codex`。
 1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和当前客户端对应的 `query://client-profile/...`，禁止反复调用 `list_mcp_resources`。
 1.2 对“有几个员工 / 有哪些员工 / 有哪些工具 / 有哪些规则”这类简单查询，且 `project_id` 已明确时，直接调用对应业务工具（如 `list_project_members(project_id=...)`、`list_project_proxy_tools(...)`），不要为了满足 bootstrap 机械列资源目录。
 2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用；canonical session 状态只使用 `active-sessions/<chat_session_id>.json` 与 `session-history/<project_id>__<chat_session_id>.json`。
@@ -49,7 +49,7 @@
 - 部署、上传或推送部署产物时，如果用户未另给 `project_id`，必须直接使用当前默认项目 `proj-d16591a6`；不要因“缺少 project_id”暂停或要求用户重复提供。
 - 涉及当前项目时，若项目和对象已明确，可直接 `get_manual_content(project_id="proj-d16591a6")` 或进入 `start_project_workflow(...)`；仅在缺少 ID 或需要跨项目定位时，再调用 `search_ids(keyword="<用户原始问题>", project_id="proj-d16591a6")`。
 - 若要创建或续接当前项目任务树，优先显式调用 `bind_project_context(project_id="proj-d16591a6", chat_session_id="<聊天会话ID>", root_goal="<用户原始问题>")`。
-- 当前页面已有 `chat_session_id=chat-session-2c9488bbcb11`；仅在明确要续接当前任务树时复用，否则新开的并行 CLI 应重新生成自己的 `chat_session_id`。
+- 当前页面已有 `chat_session_id=chat-session-5859748b-aa8`；仅在明确要续接当前任务树时复用，否则新开的并行 CLI 应重新生成自己的 `chat_session_id`。
 - `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。
 - requirement 本地对象与 query-mcp canonical 状态要同时维护；不要只写 session 文件而缺失 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，但 requirement 文件只记录需求内容。
 - 如果自动 bootstrap 把状态写到了别的服务子目录，不能把它当成当前仓库根目录已初始化；入口提示词必须以当前 CLI 工作区为准重新核对。

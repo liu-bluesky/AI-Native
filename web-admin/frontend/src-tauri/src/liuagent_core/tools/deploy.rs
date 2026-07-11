@@ -1,12 +1,11 @@
 //! Project deploy tools.
 //!
-//! These tools let the desktop agent read deploy configuration and either
-//! upload local artifacts to the artifact module or directly deploy workspace
-//! files through backend atomic capabilities. Credentials are supplied by the
-//! backend deploy settings, not by the model prompt.
+//! These tools let the desktop agent read deploy configuration and directly
+//! deploy workspace files. Credentials are supplied by the backend deploy
+//! settings, not by the model prompt.
 
 use chrono::Local;
-use reqwest::blocking::{multipart, Client};
+use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Url;
 use serde_json::{json, Value};
@@ -161,221 +160,6 @@ pub fn get_project_deploy_options(arguments: &Value) -> Result<(Value, String), 
         json!({
             "status": status,
             "project_id": project_id,
-            "response": body,
-        }),
-        summary,
-    ))
-}
-
-pub fn upload_deploy_artifact(
-    tool_call_id: &str,
-    workspace_path: &str,
-    arguments: &Value,
-    permission_decision: Option<&PermissionDecisionInput>,
-) -> Result<(Value, String), ToolError> {
-    let api_base_url = string_arg(arguments, "_backend_api_base_url", "");
-    let backend_token = string_arg(arguments, "_backend_token", "");
-    if api_base_url.is_empty() || backend_token.is_empty() {
-        return Err(ToolError::new(
-            "deploy.backend_context_missing",
-            "缺少后端连接上下文，不能从桌面端直连上传部署产物",
-        ));
-    }
-    let project_id = required_string_arg(arguments, "project_id")?;
-    let workspace_root = resolve_workspace_root(workspace_path)?;
-    let upload_source = upload_source_arg(&workspace_root, arguments)?;
-    if upload_source.size() == 0 {
-        return Err(ToolError::new("tool.schema_invalid", "artifact is empty"));
-    }
-    if upload_source.size() > MAX_UPLOAD_BYTES {
-        return Err(ToolError::new(
-            "tool.output_too_large",
-            format!("artifact is larger than {} bytes", MAX_UPLOAD_BYTES),
-        ));
-    }
-
-    let profile = string_arg(arguments, "profile", "prod");
-    let component = string_arg(arguments, "component", "");
-    let artifact_name = string_arg(arguments, "artifact_name", "")
-        .trim()
-        .to_string();
-    let artifact_name = if artifact_name.is_empty() {
-        default_artifact_name(&upload_source)
-    } else {
-        Path::new(&artifact_name)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("deploy-artifact")
-            .to_string()
-    };
-    let artifact_kind = string_arg(arguments, "artifact_kind", "source-bundle");
-    let version = string_arg(arguments, "version", "");
-    let requirement = string_arg(arguments, "requirement", "");
-    let plan = string_arg(arguments, "plan", "");
-    let chat_session_id = string_arg(arguments, "chat_session_id", "");
-    let task_tree_node_id = string_arg(arguments, "task_tree_node_id", "");
-    let auto_deploy = bool_arg(arguments, "auto_deploy", false);
-    let ai_deploy = bool_arg(arguments, "ai_deploy", true);
-    let timeout_ms = number_arg(arguments, "timeout_ms", 120_000, 1_000, 600_000) as u64;
-    let target_ids = target_ids_arg(arguments);
-    let manifest = upload_manifest_arg(arguments, &upload_source)?;
-    let relative_path = upload_source.display_path().to_string();
-
-    require_approval(
-        tool_call_id,
-        "deploy.artifact.upload",
-        if auto_deploy { "high" } else { "medium" },
-        "network",
-        &format!(
-            "上传部署产物 {} 到项目 {}{}",
-            relative_path,
-            project_id,
-            if auto_deploy {
-                " 并触发服务端部署"
-            } else {
-                ""
-            }
-        ),
-        json!({
-            "project_id": project_id,
-            "profile": profile,
-            "component": component,
-            "artifact_path": relative_path,
-            "artifact_name": artifact_name,
-            "artifact_kind": artifact_kind,
-            "source_type": upload_source.source_type(),
-            "file_count": upload_source.file_count(),
-            "size": upload_source.size(),
-            "auto_deploy": auto_deploy,
-            "ai_deploy": ai_deploy,
-            "target_ids": target_ids,
-            "timeout_ms": timeout_ms,
-        }),
-        permission_decision,
-    )?;
-
-    let endpoint = deploy_upload_url(&api_base_url, &project_id)?;
-    let form = multipart::Form::new()
-        .text("profile", profile.clone())
-        .text("component", component.clone())
-        .text("artifact_name", artifact_name.clone())
-        .text("artifact_kind", artifact_kind.clone())
-        .text("version", version)
-        .text("size", upload_source.size().to_string())
-        .text(
-            "target_ids_json",
-            serde_json::to_string(&target_ids).unwrap_or_else(|_| "[]".to_string()),
-        )
-        .text(
-            "manifest_json",
-            serde_json::to_string(&manifest).unwrap_or_else(|_| "{}".to_string()),
-        )
-        .text("chat_session_id", chat_session_id)
-        .text("task_tree_node_id", task_tree_node_id)
-        .text("requirement", requirement)
-        .text("plan", plan)
-        .text(
-            "auto_deploy",
-            if auto_deploy { "true" } else { "false" }.to_string(),
-        )
-        .text(
-            "ai_deploy",
-            if ai_deploy { "true" } else { "false" }.to_string(),
-        );
-    let form = add_upload_parts(form, &upload_source, &artifact_name)?;
-
-    let mut headers = HeaderMap::new();
-    let auth =
-        HeaderValue::from_str(&format!("Bearer {}", backend_token.trim())).map_err(|err| {
-            ToolError::new(
-                "tool.schema_invalid",
-                format!("invalid backend auth header: {err}"),
-            )
-        })?;
-    headers.insert(AUTHORIZATION, auth);
-    let client = Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .user_agent("liuAgent-desktop-local-runtime/0.1")
-        .build()
-        .map_err(|err| {
-            ToolError::new(
-                "tool.execution_failed",
-                format!("create http client failed: {err}"),
-            )
-        })?;
-    let response = client
-        .post(endpoint.clone())
-        .headers(headers)
-        .multipart(form)
-        .send()
-        .map_err(|err| {
-            ToolError::new(
-                "tool.execution_failed",
-                format!("deploy artifact upload failed: {err}"),
-            )
-        })?;
-    let status = response.status().as_u16();
-    let text = response.text().map_err(|err| {
-        ToolError::new(
-            "tool.execution_failed",
-            format!("read upload response failed: {err}"),
-        )
-    })?;
-    let body = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({"raw": text}));
-    if !(200..300).contains(&status) {
-        return Err(ToolError::new(
-            "tool.execution_failed",
-            format!(
-                "deploy artifact upload failed with HTTP {status}: {}",
-                safe_error_detail(&body)
-            ),
-        ));
-    }
-    let artifact_id = body
-        .get("artifact")
-        .and_then(|artifact| artifact.get("id"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let artifact_status = body.get("status").and_then(Value::as_str).unwrap_or("");
-    let deployment = body.get("deployment").filter(|value| value.is_object());
-    let deployment_status = deployment
-        .and_then(|value| value.get("status"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let deployment_id = deployment
-        .and_then(|value| value.get("id"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let deployment_confirmed_success = deployment_status == "success";
-    let summary = deploy_upload_summary(
-        artifact_id,
-        artifact_status,
-        auto_deploy,
-        deployment_id,
-        deployment_status,
-    );
-    Ok((
-        json!({
-            "status": status,
-            "project_id": project_id,
-            "profile": profile,
-            "component": component,
-            "artifact_path": relative_path,
-            "artifact_name": artifact_name,
-            "artifact_kind": artifact_kind,
-            "source_type": upload_source.source_type(),
-            "file_count": upload_source.file_count(),
-            "size": upload_source.size(),
-            "auto_deploy": auto_deploy,
-            "artifact_status": artifact_status,
-            "deployment_id": deployment_id,
-            "deployment_status": deployment_status,
-            "deployment_confirmed_success": deployment_confirmed_success,
-            "deployment_claim_policy": if deployment_confirmed_success {
-                "deployment_success_may_be_reported"
-            } else {
-                "artifact_uploaded_only_do_not_claim_deployment_success"
-            },
             "response": body,
         }),
         summary,
@@ -1154,79 +938,6 @@ fn upload_manifest_arg(arguments: &Value, source: &UploadSource) -> Result<Value
     Ok(manifest)
 }
 
-fn add_upload_parts(
-    mut form: multipart::Form,
-    source: &UploadSource,
-    artifact_name: &str,
-) -> Result<multipart::Form, ToolError> {
-    match source {
-        UploadSource::File { path, .. } => {
-            let file_part = multipart::Part::file(path).map_err(|err| {
-                ToolError::new(
-                    "tool.execution_failed",
-                    format!("read artifact file failed: {err}"),
-                )
-            })?;
-            Ok(form.part("file", file_part.file_name(artifact_name.to_string())))
-        }
-        UploadSource::Directory { entries, .. } => {
-            for entry in entries {
-                let content = fs::read(&entry.path).map_err(|err| {
-                    ToolError::new(
-                        "tool.execution_failed",
-                        format!("read artifact file failed: {err}"),
-                    )
-                })?;
-                form = form.part(
-                    "files",
-                    multipart::Part::bytes(content).file_name(entry.name.clone()),
-                );
-            }
-            Ok(form)
-        }
-    }
-}
-
-fn deploy_upload_summary(
-    artifact_id: &str,
-    artifact_status: &str,
-    auto_deploy: bool,
-    deployment_id: &str,
-    deployment_status: &str,
-) -> String {
-    let artifact_label = if artifact_id.trim().is_empty() {
-        "部署产物".to_string()
-    } else {
-        format!("部署产物 {artifact_id}")
-    };
-    if deployment_status == "success" {
-        let deployment_label = if deployment_id.trim().is_empty() {
-            "deployment".to_string()
-        } else {
-            format!("deployment {deployment_id}")
-        };
-        return format!("{artifact_label} 已上传并部署成功，{deployment_label} 状态：success");
-    }
-    if !deployment_status.trim().is_empty() {
-        return format!(
-            "{artifact_label} 已上传，但部署未确认成功：artifact 状态={}，deployment 状态={}；不能宣称部署完成",
-            artifact_status_label(artifact_status),
-            deployment_status
-        );
-    }
-    if auto_deploy {
-        format!(
-            "{artifact_label} 已上传，但没有返回部署执行记录：artifact 状态={}；当前只能视为产物就绪，不能宣称部署完成",
-            artifact_status_label(artifact_status)
-        )
-    } else {
-        format!(
-            "{artifact_label} 已上传，未请求自动部署：artifact 状态={}；不能宣称部署完成",
-            artifact_status_label(artifact_status)
-        )
-    }
-}
-
 fn direct_deploy_summary(
     deployment_id: &str,
     deployment_status: &str,
@@ -1256,15 +967,6 @@ fn direct_deploy_summary(
     format!("{source_label} 已由桌面智能体发起直连部署，但没有返回部署执行记录；不能宣称部署完成")
 }
 
-fn artifact_status_label(value: &str) -> &str {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        "unknown"
-    } else {
-        trimmed
-    }
-}
-
 fn deploy_options_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
     let base = Url::parse(api_base_url.trim()).map_err(|err| {
         ToolError::new(
@@ -1290,28 +992,6 @@ fn deploy_options_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolE
             format!("invalid deploy options url: {err}"),
         )
     })
-}
-
-fn deploy_upload_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
-    let base = Url::parse(api_base_url.trim()).map_err(|err| {
-        ToolError::new(
-            "tool.schema_invalid",
-            format!("invalid api_base_url: {err}"),
-        )
-    })?;
-    if !matches!(base.scheme(), "http" | "https") {
-        return Err(ToolError::new(
-            "tool.schema_invalid",
-            "api_base_url must use http or https",
-        ));
-    }
-    let clean_base = base.as_str().trim_end_matches('/').to_string();
-    Url::parse(&format!(
-        "{}/projects/{}/deploy-artifacts/upload",
-        clean_base,
-        url_path_escape(project_id)
-    ))
-    .map_err(|err| ToolError::new("tool.schema_invalid", format!("invalid upload url: {err}")))
 }
 
 fn direct_deploy_prepare_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
@@ -1429,25 +1109,6 @@ fn url_path_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn deploy_upload_summary_distinguishes_ready_artifact_from_successful_deployment() {
-        let summary = deploy_upload_summary("artifact-1", "ready", true, "", "");
-
-        assert!(summary.contains("已上传"));
-        assert!(summary.contains("没有返回部署执行记录"));
-        assert!(summary.contains("不能宣称部署完成"));
-        assert!(!summary.contains("部署成功"));
-    }
-
-    #[test]
-    fn deploy_upload_summary_reports_success_only_for_successful_deployment() {
-        let summary = deploy_upload_summary("artifact-1", "deployed", true, "deploy-1", "success");
-
-        assert!(summary.contains("部署成功"));
-        assert!(summary.contains("deployment deploy-1 状态：success"));
-        assert!(!summary.contains("不能宣称部署完成"));
-    }
 
     #[test]
     fn direct_deploy_phase_urls_target_prepare_and_complete_endpoints() {

@@ -3537,7 +3537,7 @@ fn has_deploy_upload_without_confirmed_success(
         result.ok
             && matches!(
                 result.name.trim(),
-                "upload_deploy_artifact" | "deploy_workspace_files_to_target"
+                "deploy_workspace_files_to_target"
             )
             && !deploy_upload_confirmed_success(result)
     })
@@ -3569,7 +3569,7 @@ fn latest_deploy_upload_summary(
             result.ok
                 && matches!(
                     result.name.trim(),
-                    "upload_deploy_artifact" | "deploy_workspace_files_to_target"
+                    "deploy_workspace_files_to_target"
                 )
         })
         .map(|result| result.summary.trim().to_string())
@@ -4874,7 +4874,6 @@ fn tool_arguments_with_backend_context(
         "list_projects"
             | "get_project"
             | "get_project_deploy_options"
-            | "upload_deploy_artifact"
             | "deploy_workspace_files_to_target"
     ) {
         return arguments;
@@ -6783,7 +6782,6 @@ fn permission_action_for_tool(tool_name: &str) -> Option<&'static str> {
         "run_command" => Some("command.run"),
         "http_post" => Some("network.write"),
         "download_file" => Some("network.read"),
-        "upload_deploy_artifact" => Some("deploy.artifact.upload"),
         "deploy_workspace_files_to_target" => Some("deploy.direct.upload"),
         "call_mcp_tool" => Some("mcp.call"),
         _ => None,
@@ -12891,13 +12889,13 @@ mod tests {
     #[test]
     fn deploy_backend_context_is_injected_only_for_execution() {
         let tool = PlannedLocalTool {
-            tool_call_id: "call_upload_artifact".to_string(),
-            name: "upload_deploy_artifact".to_string(),
+            tool_call_id: "call_direct_deploy".to_string(),
+            name: "deploy_workspace_files_to_target".to_string(),
             arguments: json!({
                 "project_id": "proj-test",
                 "artifact_path": "dist/app.zip"
             }),
-            summary: "upload artifact".to_string(),
+            summary: "direct deploy".to_string(),
         };
         let backend_context = LocalBackendContext {
             api_base_url: "http://127.0.0.1:8000/api".to_string(),
@@ -13298,24 +13296,22 @@ mod tests {
     }
 
     #[test]
-    fn deploy_upload_ready_does_not_allow_success_claim() {
+    fn direct_deploy_failure_does_not_allow_success_claim() {
         let request = test_model_request("部署登录注册页");
         let model_result =
             test_success_model_result(&request, "## ✅ 部署完成\n登录注册页已经部署成功。");
         let tool_results = vec![crate::liuagent_core::types::ToolExecutionResult::ok(
             "call_upload".to_string(),
-            "upload_deploy_artifact".to_string(),
+            "deploy_workspace_files_to_target".to_string(),
             json!({
-                "artifact_status": "ready",
-                "deployment_status": "",
+                "status": "failed",
                 "deployment_confirmed_success": false,
                 "response": {
-                    "status": "ready",
-                    "artifact": {"id": "artifact-1"},
-                    "deployment": null
+                    "status": "failed",
+                    "stage": "upload_failed"
                 }
             }),
-            "部署产物 artifact-1 已上传，但没有返回部署执行记录：artifact 状态=ready；当前只能视为产物就绪，不能宣称部署完成".to_string(),
+            "桌面 FTP 直传失败，不能宣称部署完成".to_string(),
         )];
 
         let content = build_assistant_content(
@@ -13346,18 +13342,16 @@ mod tests {
             test_success_model_result(&request, "## ✅ 部署完成\n登录注册页已经部署成功。");
         let tool_results = vec![crate::liuagent_core::types::ToolExecutionResult::ok(
             "call_upload".to_string(),
-            "upload_deploy_artifact".to_string(),
+            "deploy_workspace_files_to_target".to_string(),
             json!({
-                "artifact_status": "deployed",
-                "deployment_status": "success",
+                "status": "success",
                 "deployment_confirmed_success": true,
                 "response": {
-                    "status": "deployed",
-                    "artifact": {"id": "artifact-1"},
-                    "deployment": {"id": "deploy-1", "status": "success"}
+                    "status": "success",
+                    "run_id": "direct-run-1"
                 }
             }),
-            "部署产物 artifact-1 已上传并部署成功，deployment deploy-1 状态：success".to_string(),
+            "桌面 FTP 直传成功，deployment direct-run-1 状态：success".to_string(),
         )];
 
         let content = build_assistant_content(

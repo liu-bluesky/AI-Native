@@ -206,64 +206,6 @@ def project_deploy_artifact_tool_descriptors(employee_id: str = "") -> list[dict
                 "required": [],
             },
         },
-        {
-            "tool_name": PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-            "employee_id": employee_id_value,
-            "base_tool_name": PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-            "scoped_tool_name": PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-            "skill_id": "__builtin__",
-            "entry_name": PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-            "script_type": "builtin",
-            "description": (
-                "把本地打包产物推送为当前项目服务端部署产物；MCP 远程客户端只接受 "
-                "artifact_content_base64。不要把 Windows/macOS 本地路径传给 artifact_path；"
-                "无法提供 base64 时改用 project-deploy-artifact 技能的本地上传脚本或页面上传。"
-                "用户说本地 zip、新代码、重新打包、上传部署或推送部署产物时，必须使用本工具生成新 artifact。"
-            ),
-            "builtin": True,
-            "parameters_schema": {
-                "type": "object",
-                "properties": {
-                    "profile": {"type": "string", "description": "部署环境 ID，例如 test、prod。默认 prod。"},
-                    "component": {"type": "string", "description": "部署单元/组件 ID，例如 testpc。"},
-                    "artifact_name": {"type": "string", "description": "产物文件名，例如 source-bundle-testpc.zip。"},
-                    "artifact_kind": {"type": "string", "description": "产物类型，默认 source-bundle。"},
-                    "manifest": {"type": "object", "description": "可选产物元数据，如 checksum、size、version。"},
-                    "artifact_content_base64": {
-                        "type": "string",
-                        "description": "必填，本地文件内容 base64。客户端本地路径不能直接给服务端读取。",
-                    },
-                    "auto_deploy": {"type": "boolean", "description": "默认 true；明确只上传时才传 false。"},
-                    "chat_session_id": {"type": "string", "description": "可选，当前聊天会话 ID。"},
-                    "task_tree_node_id": {"type": "string", "description": "可选，当前任务树节点 ID。"},
-                    "requirement": {"type": "string", "description": "可选，用户部署要求，例如解压后部署。"},
-                    "plan": {"type": "string", "description": "可选，部署计划摘要。"},
-                },
-                "required": ["artifact_name", "artifact_content_base64"],
-            },
-        },
-        {
-            "tool_name": DEPLOY_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-            "employee_id": employee_id_value,
-            "base_tool_name": DEPLOY_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-            "scoped_tool_name": DEPLOY_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-            "skill_id": "__builtin__",
-            "entry_name": DEPLOY_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-            "script_type": "builtin",
-            "description": "仅触发用户本轮明确指定的已有服务端 artifact_id；本地 zip/新代码必须先 push 新 artifact，禁止复用历史 artifact。",
-            "builtin": True,
-            "parameters_schema": {
-                "type": "object",
-                "properties": {
-                    "artifact_id": {"type": "string", "description": "必填，服务端部署产物 ID。"},
-                    "chat_session_id": {"type": "string", "description": "可选，当前聊天会话 ID。"},
-                    "task_tree_node_id": {"type": "string", "description": "可选，当前任务树节点 ID。"},
-                    "requirement": {"type": "string", "description": "可选，用户部署要求。"},
-                    "plan": {"type": "string", "description": "可选，部署计划摘要。"},
-                },
-                "required": ["artifact_id"],
-            },
-        },
     ]
 
 
@@ -787,108 +729,21 @@ def invoke_project_builtin_tool(
         }
 
     if normalized_tool_name == PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME:
-        payload, err = parse_object_args(args=args, args_json=args_json)
-        if payload is None:
-            return {"error": err}
-        from fastapi import HTTPException
-
-        from models.requests import ProjectDeployArtifactPushReq
-        from routers.projects import _push_project_deploy_artifact_payload
-
-        project = project_store.get(project_id)
-        if project is None:
-            return {"error": "Project not found"}
-        artifact_name = str(payload.get("artifact_name") or "").strip()
-        if not artifact_name:
-            return {"error": "artifact_name is required"}
-        artifact_content_base64 = str(payload.get("artifact_content_base64") or "").strip()
-        artifact_path = str(payload.get("artifact_path") or "").strip()
-        if artifact_path and not artifact_content_base64:
-            return {
-                "tool_name": PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-                "employee_id": employee_id_value,
-                "error": (
-                    "artifact_path is not accepted by the project MCP upload tool for remote clients; "
-                    "read the local file and pass artifact_content_base64, or use the "
-                    "project-deploy-artifact scripts/push_local_artifact.py local upload script / deploy artifact page"
-                ),
-                "status_code": 400,
-            }
-        if not artifact_content_base64:
-            return {
-                "error": (
-                    "artifact_content_base64 is required; for a client-local zip, read the file and pass "
-                    "artifact_content_base64, or use the project-deploy-artifact scripts/push_local_artifact.py local upload script"
-                )
-            }
-        try:
-            result = _push_project_deploy_artifact_payload(
-                project=project,
-                req=ProjectDeployArtifactPushReq(
-                    profile=str(payload.get("profile") or "prod").strip() or "prod",
-                    component=str(payload.get("component") or "").strip(),
-                    artifact_name=artifact_name,
-                    artifact_kind=str(payload.get("artifact_kind") or "source-bundle").strip() or "source-bundle",
-                    manifest=payload.get("manifest") if isinstance(payload.get("manifest"), dict) else {},
-                    artifact_path=artifact_path,
-                    artifact_content_base64=artifact_content_base64,
-                    auto_deploy=bool(payload.get("auto_deploy", True)),
-                    chat_session_id=str(payload.get("chat_session_id") or chat_session_id).strip(),
-                    task_tree_node_id=str(payload.get("task_tree_node_id") or "").strip(),
-                    requirement=str(payload.get("requirement") or "").strip(),
-                    plan=str(payload.get("plan") or "").strip(),
-                    ai_deploy=True,
-                ),
-                uploaded_by=str(username or "").strip() or "unknown",
-            )
-        except HTTPException as exc:
-            return {
-                "tool_name": PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-                "employee_id": employee_id_value,
-                "error": exc.detail,
-                "status_code": exc.status_code,
-            }
         return {
             "tool_name": PUSH_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
             "employee_id": employee_id_value,
-            **result,
+            "error": "server-side deploy artifact upload has been removed; use desktop direct deploy",
+            "status_code": 410,
+            "code": "desktop_runner_required",
         }
 
     if normalized_tool_name == DEPLOY_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME:
-        payload, err = parse_object_args(args=args, args_json=args_json)
-        if payload is None:
-            return {"error": err}
-        from fastapi import HTTPException
-
-        from routers.projects import _deploy_project_deploy_artifact_payload
-
-        project = project_store.get(project_id)
-        if project is None:
-            return {"error": "Project not found"}
-        artifact_id = str(payload.get("artifact_id") or "").strip()
-        if not artifact_id:
-            return {"error": "artifact_id is required"}
-        try:
-            result = _deploy_project_deploy_artifact_payload(
-                project=project,
-                artifact_id=artifact_id,
-                requested_by=str(username or "").strip() or "unknown",
-                chat_session_id=str(payload.get("chat_session_id") or chat_session_id).strip(),
-                task_tree_node_id=str(payload.get("task_tree_node_id") or "").strip(),
-                requirement=str(payload.get("requirement") or "").strip(),
-                plan=str(payload.get("plan") or "").strip(),
-            )
-        except HTTPException as exc:
-            return {
-                "tool_name": DEPLOY_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
-                "employee_id": employee_id_value,
-                "error": exc.detail,
-                "status_code": exc.status_code,
-            }
         return {
             "tool_name": DEPLOY_PROJECT_DEPLOY_ARTIFACT_TOOL_NAME,
             "employee_id": employee_id_value,
-            **result,
+            "error": "deploying existing server artifacts has been removed; use desktop direct deploy",
+            "status_code": 410,
+            "code": "desktop_runner_required",
         }
 
     if normalized_tool_name == PROMPT_PREVIEW_TOOL_NAME:

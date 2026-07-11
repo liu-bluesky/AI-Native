@@ -2953,11 +2953,6 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
             "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象只记录需求内容和必要定位字段，不写入任务树、任务节点、执行历史或项目智能体上下文。",
             "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
-            "- 部署约束: 用户提“部署 / 发布到服务器 / 上线”需求时，先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 是否带 deploy_command 判断方式；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。",
-            "- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须在桌面端 Runner 中运行；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。",
-            "- 部署约束: 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。",
-            "- 部署约束: 未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact。",
-            "- 部署约束: 部署到生产档位或触发远端 deploy_command 等不可逆操作前，必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才执行。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall。",
             f"- 交互约束: {clarity_threshold_line}",
             f"- 交互约束: {clarity_direct_line}",
@@ -2993,13 +2988,6 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`。",
             "- 接入约束: 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；缺失时从系统技能库同步或创建到本地，已存在则直接复用，并优先读取本地副本。",
             "- 接入约束: 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。",
-            "- 部署约束: 用户提“部署 / 发布到服务器 / 上线”需求时，先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 是否带 deploy_command 判断方式；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。",
-            "- 部署约束: 打包命令只能通过项目聊天命令执行能力处理，并且必须在桌面端 Runner 中运行；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。",
-            "- 部署约束: 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权；部署到生产档位或触发远端 deploy_command 等不可逆操作前必须单独说明影响范围和可恢复性并取得用户确认。",
-            "- 部署约束: 未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；本地 zip、新代码、重新打包、上传部署或推送部署产物必须先上传本轮文件生成新 artifact。",
-            "- 部署约束: 如果 URL 默认上下文、MCP 绑定上下文、渲染出的 CLI 提示词或本地 canonical 状态已提供 `project_id`，部署、上传或推送部署产物时直接使用它；不要在用户已确认部署后再因为“缺少 project_id”暂停。",
-            "- 部署约束: 渲染出的 CLI 提示词已提供 `project_id` 时，直接把它视为明确项目 ID，不要重复追问。",
-            "- 部署约束: 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给模型或本地命令；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时直接报告 `blocked` / `missing`。",
             "- 接入约束: 每个 Codex CLI 会话都应先持久化自己生成的 `chat_session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Codex 自己的本地存储。同一进程整轮任务固定复用，只有新开的并行任务或全新需求才重新生成。",
             "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
             "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象只记录需求内容和必要定位字段，不写入任务树、任务节点、执行历史或项目智能体上下文。",
@@ -3042,7 +3030,6 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 需求记录: requirement 文件记录用户需求内容和必要定位字段；任务树、执行步骤、文件变更、验证结果和运行事件保留在对应运行轨迹中。",
             "- 工作流程: 明确项目和会话后进入 start_project_workflow；执行前读取相关项目规则和上下文；执行中更新任务树、本地 runtime 和验证结果。",
             "- 本地执行: 文件读写和命令执行按风险使用 classify_command_risk、check_operation_policy 和 check_workspace_scope；高风险操作先说明对象、影响范围、可恢复性和所需授权。",
-            "- 部署流程: 部署请求先读取 get_project_deploy_options(project_id)，展示可选 profile、target、remote_path 和 deploy_command 摘要；用户选定后再处理打包、上传部署产物和服务端部署。",
             "- 部署产物: 本地 zip、新代码、重新打包或上传部署产物先生成本轮 artifact；已有服务端 artifact_id 才进入已有产物部署。",
             "- 异常处理: 工具缺失、配置缺失、路径不一致、状态不一致或接口不匹配时，报告真实缺失项和可继续完成的本地部分。",
             "- 项目能力: 项目绑定员工、规则、技能和经验卡片作为主要上下文；项目能力不足时补充本地分析和验证。",
@@ -3153,12 +3140,6 @@ def build_query_usage_guide_text() -> str:
         "1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。\n"
         "1.2 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；若不存在，再从系统技能库同步或创建到本地；已存在则直接复用，禁止重复创建。\n"
         "1.3 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。\n"
-        "1.4 用户提“部署 / 发布到服务器 / 上线”需求时，先调用 `get_project_deploy_options(project_id)` 读取脱敏部署配置，把可选环境档位 profile（prod/test 等）和服务器目标 target（含 remote_path、是否带 deploy_command）摆给用户让其选择，再决定打包/上传/触发远端命令；部署不一定是压缩包，按 component 的 `artifact_kind` 和 target 是否带 deploy_command 判断方式；通知由配置的 `notify_enabled` 决定，不询问用户；返回 `configured=false` 时报 `blocked` / `missing` 并提示去项目详情补齐部署配置，不要凭空打包或臆造服务器信息。\n"
-        "1.4.1 打包命令只能通过项目聊天命令执行能力处理，并且必须在桌面端 Runner 中运行；客户端打包或读取指定压缩包后，必须推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/Runner 读取本地文件并上传，否则调用 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`；再由部署产物 AI/服务端自动部署能力执行部署。\n"
-        "1.4.2 执行本地打包命令前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权；部署到生产档位或触发远端 deploy_command 等不可逆操作前必须单独说明影响范围和可恢复性并取得用户确认。\n"
-        "1.4.3 未运行桌面端 Runner 或当前电脑不可达时，必须停止并提示无法执行本地打包命令；只有用户明确给出 `artifact_id` 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`。\n"
-        "1.4.4 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给模型或本地命令；凭据只通过项目部署配置由服务端使用，AI 侧只读到脱敏摘要；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 blocked / missing。\n"
-        "1.4.5 只有用户明确给出 artifact_id 或明确说部署已有服务端产物时，才调用 `deploy_project_deploy_artifact`；用户说本地 zip、新代码、重新打包、上传部署或推送部署产物时，必须先调用 `push_project_deploy_artifact` 上传本轮文件内容生成新 artifact；用户说“推送到服务端部署”时 `auto_deploy=true`，只有明确“只上传”才设为 false。\n"
         "2. MCP 配置里的 description、项目说明、\"当前项目\" 这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文、MCP 会话绑定、渲染出的 CLI 提示词和本地 canonical 状态。\n"
         "3. 先从 URL 默认上下文、MCP 绑定上下文、渲染出的 CLI 提示词和本地 canonical 状态恢复 `project_id`；只有这些位置都缺失时，才调用 bind_project_context(project_id, chat_session_id?, root_goal?) 或要求用户提供项目 ID。\n"
         "4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。\n"
@@ -4509,7 +4490,7 @@ def create_query_mcp(
     def query_client_profile_generic_cli() -> str:
         return build_query_client_profile_text("generic-cli")
 
-    @mcp.tool()
+    # Removed: server-side deploy artifact upload. Desktop direct deploy is the only deploy path.
     def get_query_mcp_cli_prompt_preview(
         project_id: str = "",
         chat_session_id: str = "",
@@ -6330,167 +6311,6 @@ def create_query_mcp(
             "project_name": str(getattr(project, "name", "") or ""),
             "project_mcp_path": f"/mcp/projects/{project_id_value}",
             "result": result,
-        }
-
-    @mcp.tool()
-    def get_project_deploy_options(project_id: str) -> dict:
-        """读取当前项目部署配置摘要（脱敏）：可选环境档位 profile、服务器目标 target、部署方式与通知开关。
-
-        部署型需求的固定第一步：先调用本工具拿到可选档位/目标，向用户摆出来让其选择，
-        再决定打包/上传/触发远端命令。未配置或未启用部署时返回 configured=false，应据此报 blocked/missing，
-        不要凭空打包或臆造服务器信息。
-        """
-
-        project_id_value = str(project_id or "").strip()
-        if not project_id_value:
-            return {"error": "project_id is required"}
-        project = project_store.get(project_id_value)
-        if project is None:
-            return {"error": f"Project {project_id_value} not found"}
-        from routers.projects import project_deploy_options_summary
-
-        summary = project_deploy_options_summary(getattr(project, "deploy_settings", {}) or {})
-        return {
-            "project_id": project_id_value,
-            "project_name": str(getattr(project, "name", "") or ""),
-            "project_mcp_path": f"/mcp/projects/{project_id_value}",
-            **summary,
-        }
-
-    @mcp.tool()
-    def list_project_deploy_artifacts(project_id: str, limit: int = 50) -> dict:
-        """列出当前项目服务端部署产物记录和最近部署状态。"""
-
-        project_id_value = str(project_id or "").strip()
-        if not project_id_value:
-            return {"error": "project_id is required"}
-        project = project_store.get(project_id_value)
-        if project is None:
-            return {"error": f"Project {project_id_value} not found"}
-        from services.mcp.dynamic_mcp_runtime import invoke_project_skill_tool_runtime
-        resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
-
-        result = invoke_project_skill_tool_runtime(
-            project_id=project_id_value,
-            tool_name="list_project_deploy_artifacts",
-            username=resolved_username,
-            chat_session_id=resolved_chat_session_id,
-            args={"limit": limit},
-            timeout_sec=30,
-        )
-        return {
-            "project_id": project_id_value,
-            "project_name": str(getattr(project, "name", "") or ""),
-            "project_mcp_path": f"/mcp/projects/{project_id_value}",
-            **(result if isinstance(result, dict) else {"result": result}),
-        }
-
-    @mcp.tool()
-    def push_project_deploy_artifact(
-        project_id: str,
-        artifact_name: str,
-        profile: str = "prod",
-        component: str = "",
-        artifact_kind: str = "source-bundle",
-        manifest: dict | None = None,
-        artifact_content_base64: str = "",
-        auto_deploy: bool = True,
-        chat_session_id: str = "",
-        task_tree_node_id: str = "",
-        requirement: str = "",
-        plan: str = "",
-    ) -> dict:
-        """推送本轮部署产物到服务端；统一查询 MCP 客户端必须传 artifact_content_base64。"""
-
-        project_id_value = str(project_id or "").strip()
-        if not project_id_value:
-            return {"error": "project_id is required"}
-        project = project_store.get(project_id_value)
-        if project is None:
-            return {"error": f"Project {project_id_value} not found"}
-        artifact_name_value = str(artifact_name or "").strip()
-        if not artifact_name_value:
-            return {"error": "artifact_name is required"}
-        if not str(artifact_content_base64 or "").strip():
-            return {
-                "error": (
-                    "artifact_content_base64 is required for query MCP deploy artifact uploads; "
-                    "use project-deploy-artifact scripts/push_local_artifact.py for client-local files"
-                ),
-                "status_code": 400,
-            }
-        from services.mcp.dynamic_mcp_runtime import invoke_project_skill_tool_runtime
-        resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
-
-        result = invoke_project_skill_tool_runtime(
-            project_id=project_id_value,
-            tool_name="push_project_deploy_artifact",
-            username=resolved_username,
-            chat_session_id=resolved_chat_session_id,
-            args={
-                "profile": str(profile or "").strip() or "prod",
-                "component": str(component or "").strip(),
-                "artifact_name": artifact_name_value,
-                "artifact_kind": str(artifact_kind or "").strip() or "source-bundle",
-                "manifest": manifest or {},
-                "artifact_content_base64": str(artifact_content_base64 or "").strip(),
-                "auto_deploy": bool(auto_deploy),
-                "chat_session_id": str(chat_session_id or "").strip() or resolved_chat_session_id,
-                "task_tree_node_id": str(task_tree_node_id or "").strip(),
-                "requirement": str(requirement or "").strip(),
-                "plan": str(plan or "").strip(),
-            },
-            timeout_sec=120,
-        )
-        return {
-            "project_id": project_id_value,
-            "project_name": str(getattr(project, "name", "") or ""),
-            "project_mcp_path": f"/mcp/projects/{project_id_value}",
-            **(result if isinstance(result, dict) else {"result": result}),
-        }
-
-    @mcp.tool()
-    def deploy_project_deploy_artifact(
-        project_id: str,
-        artifact_id: str,
-        chat_session_id: str = "",
-        task_tree_node_id: str = "",
-        requirement: str = "",
-        plan: str = "",
-    ) -> dict:
-        """仅触发用户本轮明确指定的已有服务端 artifact_id；本地 zip/新代码必须先 push 新 artifact。"""
-
-        project_id_value = str(project_id or "").strip()
-        artifact_id_value = str(artifact_id or "").strip()
-        if not project_id_value:
-            return {"error": "project_id is required"}
-        if not artifact_id_value:
-            return {"error": "artifact_id is required"}
-        project = project_store.get(project_id_value)
-        if project is None:
-            return {"error": f"Project {project_id_value} not found"}
-        from services.mcp.dynamic_mcp_runtime import invoke_project_skill_tool_runtime
-        resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
-
-        result = invoke_project_skill_tool_runtime(
-            project_id=project_id_value,
-            tool_name="deploy_project_deploy_artifact",
-            username=resolved_username,
-            chat_session_id=resolved_chat_session_id,
-            args={
-                "artifact_id": artifact_id_value,
-                "chat_session_id": str(chat_session_id or "").strip() or resolved_chat_session_id,
-                "task_tree_node_id": str(task_tree_node_id or "").strip(),
-                "requirement": str(requirement or "").strip(),
-                "plan": str(plan or "").strip(),
-            },
-            timeout_sec=120,
-        )
-        return {
-            "project_id": project_id_value,
-            "project_name": str(getattr(project, "name", "") or ""),
-            "project_mcp_path": f"/mcp/projects/{project_id_value}",
-            **(result if isinstance(result, dict) else {"result": result}),
         }
 
     @mcp.tool()

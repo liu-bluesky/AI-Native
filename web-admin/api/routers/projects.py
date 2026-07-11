@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import ftplib
 import hashlib
 import io
 import json
@@ -39,7 +38,8 @@ from services.conversation_manager import ConversationManager
 from core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
-project_deploy_ftp_client_factory = ftplib.FTP
+def project_deploy_ftp_client_factory(*args: Any, **kwargs: Any) -> Any:
+    raise RuntimeError("server-side FTP deployment has been removed; use desktop direct deploy")
 
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
@@ -1365,18 +1365,7 @@ def _build_project_deploy_missing_target_report(
 
 
 def _ftp_ensure_remote_dir(ftp: Any, remote_path: str) -> None:
-    parts = [part for part in str(remote_path or "").strip().split("/") if part]
-    if str(remote_path or "").startswith("/"):
-        with contextlib.suppress(Exception):
-            ftp.cwd("/")
-    for part in parts:
-        try:
-            ftp.cwd(part)
-        except Exception:
-            with contextlib.suppress(Exception):
-                ftp.mkd(part)
-            ftp.cwd(part)
-
+    raise RuntimeError("server-side FTP deployment has been removed")
 
 def _project_deploy_remote_path_join(base_path: str, relative_path: str) -> str:
     base = str(base_path or "").rstrip("/")
@@ -1935,83 +1924,11 @@ def _project_deploy_agent_extract_artifact(
     }
 
 
-def _project_deploy_agent_ftp_upload_file(
-    *,
-    artifact: ProjectDeployArtifact,
-    target: dict[str, Any],
-    local_path: Path,
-    action: str,
-    remote_name: str | None = None,
-) -> dict[str, Any]:
-    credential_id = _normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120)
-    credential = _resolve_visible_ftp_credential(credential_id, None)
-    if credential is None:
-        raise _ProjectDeployAgentError("缺少可用 FTP 连接", stage="ai_deploy_agent_tool_failed")
-    remote_path = _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
-    if not remote_path:
-        raise _ProjectDeployAgentError("缺少远端目录 remote_path", stage="ai_deploy_agent_tool_failed")
-    ftp = project_deploy_ftp_client_factory(timeout=30)
-    try:
-        ftp.connect(
-            host=_normalize_project_deploy_text(getattr(credential, "host", ""), limit=300),
-            port=int(str(getattr(credential, "port", "") or "21").strip() or "21"),
-            timeout=30,
-        )
-        ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
-        return _project_deploy_upload_prepared_file_to_ftp(
-            ftp=ftp,
-            artifact=artifact,
-            target=target,
-            remote_path=remote_path,
-            prepared_path=local_path,
-            action=action,
-            remote_name=remote_name,
-        )
-    finally:
-        try:
-            ftp.quit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                ftp.close()
+def _project_deploy_agent_ftp_upload_file(**kwargs: Any) -> dict[str, Any]:
+    raise _ProjectDeployAgentError("server-side FTP deployment has been removed", stage="desktop_runner_required")
 
-
-def _project_deploy_agent_ftp_upload_directory(
-    *,
-    artifact: ProjectDeployArtifact,
-    target: dict[str, Any],
-    local_path: Path,
-) -> dict[str, Any]:
-    credential_id = _normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120)
-    credential = _resolve_visible_ftp_credential(credential_id, None)
-    if credential is None:
-        raise _ProjectDeployAgentError("缺少可用 FTP 连接", stage="ai_deploy_agent_tool_failed")
-    remote_path = _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
-    if not remote_path:
-        raise _ProjectDeployAgentError("缺少远端目录 remote_path", stage="ai_deploy_agent_tool_failed")
-    ftp = project_deploy_ftp_client_factory(timeout=30)
-    try:
-        ftp.connect(
-            host=_normalize_project_deploy_text(getattr(credential, "host", ""), limit=300),
-            port=int(str(getattr(credential, "port", "") or "21").strip() or "21"),
-            timeout=30,
-        )
-        ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
-        return _project_deploy_upload_prepared_directory_to_ftp(
-            ftp=ftp,
-            artifact=artifact,
-            target=target,
-            remote_path=remote_path,
-            prepared_path=local_path,
-            prepared_entries=[],
-            execution_plan={"source": "ai_deploy_agent_loop"},
-        )
-    finally:
-        try:
-            ftp.quit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                ftp.close()
-
+def _project_deploy_agent_ftp_upload_directory(**kwargs: Any) -> dict[str, Any]:
+    raise _ProjectDeployAgentError("server-side FTP deployment has been removed", stage="desktop_runner_required")
 
 def _project_deploy_agent_run_configured_remote_command(
     *,
@@ -2749,45 +2666,11 @@ def _project_deploy_upload_prepared_directory_to_ftp(
     }
 
 
-def _project_deploy_upload_directory_entries_to_ftp(
-    *,
-    ftp: Any,
-    remote_path: str,
-    prepared_path: Path,
-    root_entries: list[Path],
-) -> list[dict[str, Any]]:
-    uploaded_files: list[dict[str, Any]] = []
-    for root_entry in root_entries:
-        local_files = [root_entry] if root_entry.is_file() else sorted(root_entry.rglob("*"))
-        for local_file in local_files:
-            if not local_file.is_file():
-                continue
-            relative_path = local_file.relative_to(prepared_path).as_posix()
-            relative_parent = Path(relative_path).parent.as_posix()
-            remote_dir = remote_path.rstrip("/")
-            if relative_parent and relative_parent != ".":
-                remote_dir = f"{remote_dir}/{relative_parent}"
-            _ftp_ensure_remote_dir(ftp, remote_dir)
-            with local_file.open("rb") as handle:
-                ftp.storbinary(f"STOR {local_file.name}", handle)
-            uploaded_files.append(
-                {
-                    "path": relative_path,
-                    "remote_file": f"{remote_dir.rstrip('/')}/{local_file.name}",
-                    "size": local_file.stat().st_size,
-                }
-            )
-    return uploaded_files
-
+def _project_deploy_upload_directory_entries_to_ftp(**kwargs: Any) -> list[dict[str, Any]]:
+    raise RuntimeError("server-side FTP deployment has been removed")
 
 def _project_deploy_open_ftp_connection(credential: Any) -> Any:
-    ftp = project_deploy_ftp_client_factory(timeout=30)
-    host = _normalize_project_deploy_text(getattr(credential, "host", ""), limit=300)
-    port = int(str(getattr(credential, "port", "") or "21").strip() or "21")
-    ftp.connect(host=host, port=port, timeout=30)
-    ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
-    return ftp
-
+    raise RuntimeError("server-side FTP deployment has been removed")
 
 def _project_deploy_close_ftp_connection(ftp: Any) -> None:
     try:
@@ -2816,33 +2699,8 @@ def _project_deploy_upload_directory_task(
         _project_deploy_close_ftp_connection(ftp)
 
 
-def _project_deploy_upload_prepared_file_to_ftp(
-    *,
-    ftp: Any,
-    artifact: ProjectDeployArtifact,
-    target: dict[str, Any],
-    remote_path: str,
-    prepared_path: Path,
-    action: str,
-    remote_name: str | None = None,
-) -> dict[str, Any]:
-    effective_remote_name = Path(remote_name or artifact.artifact_name or prepared_path.name).name or prepared_path.name
-    remote_file = _project_deploy_remote_path_join(remote_path, effective_remote_name)
-    backup_result = _project_deploy_backup_remote_target(ftp, remote_path)
-    _ftp_ensure_remote_dir(ftp, remote_path)
-    with prepared_path.open("rb") as handle:
-        ftp.storbinary(f"STOR {effective_remote_name}", handle)
-    return {
-        "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
-        "action": action,
-        "remote_path": remote_path,
-        "remote_file": remote_file,
-        "storage_kind": "file",
-        "prepared_storage_kind": "file",
-        "size": prepared_path.stat().st_size if prepared_path.exists() else artifact.size,
-        **backup_result,
-    }
-
+def _project_deploy_upload_prepared_file_to_ftp(**kwargs: Any) -> dict[str, Any]:
+    raise RuntimeError("server-side FTP deployment has been removed")
 
 def _project_deploy_direct_upload_to_ftp(
     *,
@@ -2912,154 +2770,8 @@ def _project_deploy_direct_upload_to_ftp(
             _project_deploy_close_ftp_connection(ftp)
 
 
-def _upload_project_deploy_artifact_to_ftp(
-    *,
-    artifact: ProjectDeployArtifact,
-    target: dict[str, Any],
-    archive_upload_policy: str = "auto",
-    execution_plan: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    credential_id = _normalize_project_deploy_text(target.get("ftp_credential_id"), limit=120)
-    credential = _resolve_visible_ftp_credential(credential_id, None)
-    if credential is None:
-        raise RuntimeError("缺少可用 FTP 连接")
-    source_path = Path(artifact.storage_path).expanduser().resolve()
-    if not source_path.exists() or not (source_path.is_file() or source_path.is_dir()):
-        raise RuntimeError("服务端 artifact 文件不存在")
-    remote_path = _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
-    if not remote_path:
-        raise RuntimeError("缺少远端目录 remote_path")
-    ftp = project_deploy_ftp_client_factory(timeout=30)
-    host = _normalize_project_deploy_text(getattr(credential, "host", ""), limit=300)
-    port = int(str(getattr(credential, "port", "") or "21").strip() or "21")
-    prepared_path: Path | None = None
-    prepared_kind = "file"
-    prepared_entries: list[dict[str, Any]] = []
-    prepared_cleanup: Any = None
-    resolved_plan = execution_plan or _project_deploy_resolve_execution_plan(
-        archive_upload_policy=archive_upload_policy,
-    )
-    if (
-        source_path.is_dir()
-        and str(resolved_plan.get("archive_upload_policy") or "").strip() == "auto"
-        and bool(resolved_plan.get("upload_original_archive"))
-        and not bool(resolved_plan.get("upload_extracted_files"))
-    ):
-        resolved_plan = {
-            **resolved_plan,
-            "upload_original_archive": False,
-            "actions": [],
-        }
-    upload_results: list[dict[str, Any]] = []
-    file_operation_results: list[dict[str, Any]] = []
-    try:
-        ftp.connect(host=host, port=port, timeout=30)
-        ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
-        if bool(resolved_plan.get("upload_extracted_files")):
-            prepared_path, prepared_kind, prepared_entries, prepared_cleanup = _project_deploy_prepare_ftp_upload_source(
-                artifact,
-                archive_upload_policy="extract_before_upload",
-                extract_to_path=_normalize_project_deploy_text(resolved_plan.get("extract_to_path"), limit=1000),
-            )
-            if prepared_kind != "directory":
-                raise RuntimeError("用户要求上传解压后的文件，但服务端没有可上传的解压目录")
-            upload_results.append(
-                _project_deploy_upload_prepared_directory_to_ftp(
-                    ftp=ftp,
-                    artifact=artifact,
-                    target=target,
-                    remote_path=remote_path,
-                    prepared_path=prepared_path,
-                    prepared_entries=prepared_entries,
-                    execution_plan=resolved_plan,
-                    )
-                )
-        elif bool(resolved_plan.get("copy_extracted_to_path")) and _normalize_project_deploy_text(resolved_plan.get("extract_to_path"), limit=1000):
-            prepared_path, prepared_kind, prepared_entries, prepared_cleanup = _project_deploy_prepare_ftp_upload_source(
-                artifact,
-                archive_upload_policy="extract_before_upload",
-                extract_to_path=_normalize_project_deploy_text(resolved_plan.get("extract_to_path"), limit=1000),
-            )
-            if prepared_kind != "directory":
-                raise RuntimeError("用户要求复制解压后的文件，但服务端没有可复制的解压目录")
-        file_operation_results = _project_deploy_execute_file_operations(
-            artifact=artifact,
-            execution_plan=resolved_plan,
-        )
-        if bool(resolved_plan.get("upload_original_archive")):
-            original_archive_path = _project_deploy_original_archive_upload_path(artifact)
-            upload_results.append(
-                _project_deploy_upload_prepared_file_to_ftp(
-                    ftp=ftp,
-                    artifact=artifact,
-                    target=target,
-                    remote_path=remote_path,
-                    prepared_path=original_archive_path,
-                    action="upload_original_archive",
-                )
-            )
-        if not upload_results:
-            prepared_path, prepared_kind, prepared_entries, prepared_cleanup = _project_deploy_prepare_ftp_upload_source(
-                artifact,
-                archive_upload_policy=archive_upload_policy,
-            )
-            if prepared_kind == "directory":
-                upload_results.append(
-                    _project_deploy_upload_prepared_directory_to_ftp(
-                        ftp=ftp,
-                        artifact=artifact,
-                        target=target,
-                        remote_path=remote_path,
-                        prepared_path=prepared_path,
-                        prepared_entries=prepared_entries,
-                        execution_plan=resolved_plan,
-                    )
-                )
-            else:
-                upload_results.append(
-                    _project_deploy_upload_prepared_file_to_ftp(
-                        ftp=ftp,
-                        artifact=artifact,
-                        target=target,
-                        remote_path=remote_path,
-                        prepared_path=prepared_path,
-                        action="upload_file",
-                    )
-                )
-        if len(upload_results) == 1:
-            return {
-                **upload_results[0],
-                "execution_plan": resolved_plan,
-                "upload_actions": [upload_results[0].get("action")],
-                "file_operations": file_operation_results,
-            }
-        prepared_kinds = {
-            str(item.get("prepared_storage_kind") or item.get("storage_kind") or "").strip()
-            for item in upload_results
-            if isinstance(item, dict)
-        }
-        return {
-            "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
-            "remote_path": remote_path,
-            "storage_kind": "mixed",
-            "prepared_storage_kind": "mixed" if len(prepared_kinds) > 1 else next(iter(prepared_kinds), ""),
-            "upload_actions": [item.get("action") for item in upload_results],
-            "upload_results": upload_results,
-            "file_count": sum(int(item.get("file_count") or (1 if item.get("remote_file") else 0)) for item in upload_results),
-            "size": artifact.size,
-            "execution_plan": resolved_plan,
-            "file_operations": file_operation_results,
-        }
-    finally:
-        if callable(getattr(prepared_cleanup, "cleanup", None)):
-            with contextlib.suppress(Exception):
-                prepared_cleanup.cleanup()
-        try:
-            ftp.quit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                ftp.close()
-
+def _upload_project_deploy_artifact_to_ftp(**kwargs: Any) -> dict[str, Any]:
+    raise RuntimeError("server-side FTP deployment has been removed; use desktop direct deploy")
 
 def _project_deploy_upload_log_prefix(
     *,
@@ -12438,7 +12150,6 @@ def _build_query_mcp_cli_prompt(
             [
                 f"- 默认项目: `{normalized_project_id}`",
                 f"- 建议把 URL 默认上下文里的 `project_id` 固定为 `{normalized_project_id}`。",
-                f"- 部署、上传或推送部署产物时，如果用户未另给 `project_id`，必须直接使用当前默认项目 `{normalized_project_id}`；不要因“缺少 project_id”暂停或要求用户重复提供。",
                 f"- 涉及当前项目时，若项目和对象已明确，可直接 `get_manual_content(project_id=\"{normalized_project_id}\")` 或进入 `start_project_workflow(...)`；仅在缺少 ID 或需要跨项目定位时，再调用 `search_ids(keyword=\"<用户原始问题>\", project_id=\"{normalized_project_id}\")`。",
                 f"- 若要创建或续接当前项目任务树，优先显式调用 `bind_project_context(project_id=\"{normalized_project_id}\", chat_session_id=\"<聊天会话ID>\", root_goal=\"<用户原始问题>\")`。",
             ]
@@ -12505,17 +12216,6 @@ def _build_query_mcp_cli_prompt(
         "18. 真正进入执行前，再读取一次 `get_current_task_tree` 确认当前节点；开始节点用 `update_task_node_status`，完成节点必须用 `complete_task_node_with_verification` 补验证结果后再结束。",
         "19. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。",
         "20. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
-        "",
-        "项目聊天打包部署命令约束：",
-        "1. “打包部署”“发布测试环境”“推送部署产物”等需要在用户机器上运行打包命令的任务，只能通过项目聊天的命令执行能力处理。",
-        "2. 本地打包命令只允许在桌面端 Runner 中通过项目聊天命令执行能力使用；未运行桌面端或当前电脑不可达时，必须停止并提示无法执行本地命令。",
-        "3. 命令执行前必须明确命令内容、工作目录、影响范围、生成产物路径和可恢复性；执行本地打包命令前必须取得用户明确授权。",
-        "4. 客户端打包完成或读取用户指定压缩包后，必须把产物推送到服务端项目详情的部署产物模块；若本地 `project-deploy-artifact` 技能提供 `scripts/push_local_artifact.py`，优先用脚本从当前客户端/桌面端 Runner 读取本地文件并上传；否则调用项目 MCP 工具 `push_project_deploy_artifact` 时必须传 `artifact_content_base64`，不要把 Windows/macOS 本地路径当作服务端可读路径。自动部署由部署产物 AI/服务端部署能力基于服务端 artifact 和项目部署配置执行。",
-        "4.1 用户说“推送到服务端部署”“上传部署”“部署这个 zip”且未限定“只上传”时，`push_project_deploy_artifact.auto_deploy=true`；只有明确“只上传”才传 false。已有 `artifact_id` / 服务端部署产物上下文时，直接调用 `deploy_project_deploy_artifact`，不要要求用户重新上传。",
-        "4.2 如果入口当前接入上下文已提供默认 `project_id`，部署、上传或推送部署产物时直接使用该项目；不要在用户已确认部署后再因为“缺少 project_id”暂停。",
-        "5. 禁止扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据；禁止把 FTP/SSH 账号密码交给模型或本地命令；缺少桌面端 Runner、打包命令、部署产物上传能力、服务端 artifact、项目部署配置或部署产物自动部署能力时，直接报告 `blocked` / `missing`。",
-        "6. 当前删除打包文件只删除服务端保存的部署 artifact 文件及 artifact 记录；不删除外部平台消息，也不删除远端服务器已部署目录。",
-        "7. 机器人通知群优先使用机器人连接器扫描结果；飞书支持扫描机器人所在群，微信/QQ 若返回 `unsupported`，客户端必须提示平台缺少群列表 API/适配能力。",
         "",
         "当前接入上下文：",
     ]
@@ -15593,177 +15293,8 @@ def _project_deploy_direct_upload_source_to_temp(
         raise
 
 
-def _execute_project_desktop_direct_deploy(
-    *,
-    project: ProjectConfig,
-    profile_id: str,
-    component_id: str,
-    target_ids: list[str],
-    artifact_name: str,
-    artifact_kind: str,
-    manifest: dict[str, Any],
-    source_path: Path,
-    storage_kind: str,
-    file_entries: list[dict[str, Any]],
-    total_size: int,
-    checksum: str,
-    requested_by: str,
-    chat_session_id: str,
-    task_tree_node_id: str,
-    requirement: str,
-    plan: str,
-    run_deploy_command: bool,
-) -> dict[str, Any]:
-    profile_id = _normalize_project_deploy_text(profile_id, limit=80) or "prod"
-    component_id = _normalize_project_deploy_text(component_id, limit=80)
-    profile = _find_project_deploy_profile(project, profile_id)
-    if profile is None:
-        raise HTTPException(400, f"deploy profile not found: {profile_id}")
-    if not bool(profile.get("enabled", True)):
-        raise HTTPException(400, f"deploy profile disabled: {profile_id}")
-    component = _find_project_deploy_component(profile, component_id)
-    if component is None:
-        raise HTTPException(400, f"deploy component not found: {component_id or 'default'}")
-    if not bool(component.get("enabled", True)):
-        raise HTTPException(400, f"deploy component disabled: {component_id or component.get('id') or 'default'}")
-    targets = _select_project_deploy_targets(component, target_ids)
-    if not targets:
-        raise HTTPException(400, "deploy target is required")
-    deployable_targets = [target for target in targets if not _project_deploy_target_missing_fields(target, None)]
-    if len(deployable_targets) != len(targets):
-        missing = _build_project_deploy_missing_target_report(targets=targets, auth_payload=None)
-        return {
-            "status": "blocked",
-            "deployment_confirmed_success": False,
-            "stage": "blocked_missing_target_config",
-            "project_id": project.id,
-            "profile": profile_id,
-            "component": _normalize_project_deploy_text(component.get("id") or component_id, limit=80),
-            "missing_targets": missing,
-            "message": "部署目标缺少 FTP 连接或远端目录，未执行上传",
-        }
-    artifact = ProjectDeployArtifact(
-        id=f"direct-{uuid.uuid4().hex[:12]}",
-        project_id=project.id,
-        profile=profile_id,
-        component=_normalize_project_deploy_text(component.get("id") or component_id, limit=80),
-        artifact_name=_normalize_project_deploy_text(artifact_name, limit=240) or source_path.name,
-        artifact_kind=_normalize_project_deploy_text(artifact_kind, limit=120)
-        or _normalize_project_deploy_text(component.get("artifact_kind"), limit=120)
-        or "source-bundle",
-        version=_normalize_project_deploy_text(manifest.get("version"), limit=120),
-        checksum=checksum,
-        size=total_size,
-        storage_path=source_path.as_posix(),
-        status="direct_deploying",
-        manifest={
-            **manifest,
-            "source": "desktop_agent_direct_deploy",
-            "source_type": storage_kind,
-            "file_count": len(file_entries),
-            "file_entries": file_entries[:1000],
-        },
-        storage_kind=storage_kind,
-        file_tree=_build_project_deploy_file_tree(file_entries),
-        uploaded_by=requested_by,
-        ready_at=_now_iso(),
-    )
-    run_id = f"direct-run-{uuid.uuid4().hex[:12]}"
-    upload_results: list[dict[str, Any]] = []
-    command_results: list[dict[str, Any]] = []
-    status = "success"
-    stage = "ftp_upload_completed"
-    log_excerpt = "desktop direct deploy uploaded original files by FTP"
-    for target in deployable_targets:
-        try:
-            upload_results.append(_project_deploy_direct_upload_to_ftp(artifact=artifact, target=target))
-        except Exception as exc:
-            status = "failed"
-            stage = "upload_failed"
-            log_excerpt = f"direct deploy upload failed: {exc}"
-            break
-    if status == "success":
-        command_targets = [
-            target
-            for target in deployable_targets
-            if _project_deploy_target_deploy_command(target)
-        ]
-        if command_targets and not run_deploy_command:
-            status = "blocked"
-            stage = "blocked_deploy_command_not_requested"
-            log_excerpt = "uploaded original files, but target has deploy_command and direct tool was not allowed to run it"
-        else:
-            for target in command_targets:
-                if not _project_deploy_target_supports_remote_command(target):
-                    status = "blocked"
-                    stage = "blocked_missing_remote_executor"
-                    log_excerpt = "uploaded original files, but target deploy_command has no supported remote executor"
-                    break
-                try:
-                    command_result = _project_deploy_agent_run_configured_remote_command(
-                        project=project,
-                        target=target,
-                        args={},
-                        requested_by=requested_by,
-                    )
-                except Exception as exc:
-                    command_result = {
-                        "ok": False,
-                        "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
-                        "error": str(exc),
-                    }
-                command_results.append(command_result)
-                if not bool(command_result.get("ok")):
-                    status = "failed" if not command_result.get("blocked") else "blocked"
-                    stage = "deploy_command_failed" if status == "failed" else "blocked_deploy_command"
-                    log_excerpt = "configured deploy_command did not complete successfully"
-                    break
-            if status == "success" and command_targets:
-                stage = "deploy_command_completed"
-                log_excerpt = "desktop direct deploy uploaded original files and configured deploy_command completed"
-    notify_result = _build_project_deploy_notification_preview(
-        project,
-        artifact,
-        status=status,
-        run_id=run_id,
-        stage=stage,
-        log_excerpt=log_excerpt,
-        deploy_time=_now_iso(),
-        idempotency_scope=f"desktop-direct-{run_id}-{requested_by}",
-    )
-    return {
-        "status": status,
-        "deployment_confirmed_success": status == "success",
-        "stage": stage,
-        "project_id": project.id,
-        "profile": profile_id,
-        "component": artifact.component,
-        "target_ids": [
-            _normalize_project_deploy_text(target.get("id"), limit=80)
-            for target in deployable_targets
-        ],
-        "run_id": run_id,
-        "artifact": {
-            "id": artifact.id,
-            "name": artifact.artifact_name,
-            "kind": artifact.artifact_kind,
-            "storage_kind": storage_kind,
-            "size": total_size,
-            "checksum": checksum,
-            "file_count": len(file_entries),
-            "file_tree": artifact.file_tree,
-            "persisted_to_deploy_artifacts": False,
-        },
-        "upload_results": upload_results,
-        "command_results": command_results,
-        "notify_result": notify_result,
-        "requirement": _normalize_project_deploy_text(requirement, limit=2000),
-        "plan": _normalize_project_deploy_text(plan, limit=4000),
-        "chat_session_id": _normalize_project_deploy_text(chat_session_id, limit=120),
-        "task_tree_node_id": _normalize_project_deploy_text(task_tree_node_id, limit=120),
-        "log_excerpt": log_excerpt,
-    }
-
+def _execute_project_desktop_direct_deploy(**kwargs: Any) -> dict[str, Any]:
+    raise HTTPException(410, "server-side direct deployment has been removed; use desktop Runner")
 
 def _push_project_deploy_artifact_content(
     *,
@@ -16203,7 +15734,6 @@ def _send_project_deploy_run_notification_payload(
     }
 
 
-@router.post("/{project_id}/deploy-artifacts")
 async def push_project_deploy_artifact(
     project_id: str,
     req: ProjectDeployArtifactPushReq,
@@ -16219,7 +15749,6 @@ async def push_project_deploy_artifact(
     )
 
 
-@router.post("/{project_id}/deploy-artifacts/upload")
 async def upload_project_deploy_artifact(
     project_id: str,
     request: Request,
@@ -16436,7 +15965,6 @@ async def complete_project_desktop_direct_deploy(
     }
 
 
-@router.post("/{project_id}/deploy-artifacts/{artifact_id}/deploy")
 async def deploy_project_deploy_artifact(
     project_id: str,
     artifact_id: str,
