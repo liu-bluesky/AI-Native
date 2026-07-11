@@ -158,6 +158,106 @@
               />
             </el-form-item>
 
+            <section v-if="activeComponent.notify.enabled" class="deploy-settings-panel__notify">
+              <div class="deploy-settings-panel__targets-head">
+                <div>
+                  <strong>通知目标</strong>
+                  <p>选择机器人、群聊和提醒对象；这些配置随当前部署单元保存。</p>
+                </div>
+                <el-button :disabled="!canManageProject" @click="addNotifyTarget">新增通知目标</el-button>
+              </div>
+              <div
+                v-for="(target, targetIndex) in activeComponent.notify.targets"
+                :key="`${target.platform}-${target.connector_id}-${target.chat_id}-${targetIndex}`"
+                class="deploy-settings-panel__notify-target"
+              >
+                <div class="deploy-settings-panel__grid three-columns">
+                  <el-form-item label="通知平台">
+                    <el-select v-model="target.platform" @change="resetNotifyTarget(target)">
+                      <el-option label="飞书" value="feishu" />
+                      <el-option label="微信" value="wechat" />
+                      <el-option label="QQ" value="qq" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="通知机器人">
+                    <el-select
+                      v-model="target.connector_id"
+                      :loading="notifyOptionsLoading"
+                      filterable
+                      clearable
+                      placeholder="选择机器人"
+                      @change="resetNotifyTargetChat(target)"
+                    >
+                      <el-option
+                        v-for="connector in notifyConnectorsFor(target)"
+                        :key="connector.id"
+                        :label="connector.label"
+                        :value="connector.id"
+                      />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="通知群">
+                    <el-select
+                      v-model="target.chat_id"
+                      :loading="notifyOptionsLoading"
+                      filterable
+                      clearable
+                      placeholder="选择已识别群"
+                      @change="syncNotifyTargetChatName(target)"
+                    >
+                      <el-option
+                        v-for="chat in notifyChatsFor(target)"
+                        :key="chat.chat_id"
+                        :label="chat.label"
+                        :value="chat.chat_id"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </div>
+                <div v-if="target.platform === 'feishu'" class="deploy-settings-panel__notify-resolver">
+                  <el-input v-model="target.chat_name" placeholder="输入飞书群名称，可直接解析" />
+                  <el-button
+                    :loading="resolvingNotifyTarget === target"
+                    :disabled="!target.connector_id || !String(target.chat_name || '').trim()"
+                    @click="resolveNotifyChat(target)"
+                  >解析群</el-button>
+                </div>
+                <div class="deploy-settings-panel__grid two-columns">
+                  <el-form-item label="提醒方式">
+                    <el-select v-model="target.mention.mode">
+                      <el-option label="不提醒成员" value="none" />
+                      <el-option label="@所有人" value="all" />
+                      <el-option label="@指定人" value="users" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item v-if="target.mention.mode === 'users'" label="指定成员">
+                    <el-select
+                      v-model="target.mention.users"
+                      multiple
+                      filterable
+                      clearable
+                      :loading="mentionOptionsLoadingKey === notifyTargetKey(target)"
+                      placeholder="选择需要提醒的人"
+                      @visible-change="(visible) => visible && fetchMentionOptions(target)"
+                    >
+                      <el-option
+                        v-for="member in mentionOptionsFor(target)"
+                        :key="member.open_id"
+                        :label="member.name || member.open_id"
+                        :value="member.open_id"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </div>
+                <div class="deploy-settings-panel__notify-actions">
+                  <el-button text type="danger" :disabled="!canManageProject" @click="removeNotifyTarget(targetIndex)">
+                    删除通知目标
+                  </el-button>
+                </div>
+              </div>
+              <el-empty v-if="!activeComponent.notify.targets.length" description="尚未配置通知目标" :image-size="56" />
+            </section>
+
             <div class="deploy-settings-panel__targets-head">
               <div>
                 <strong>服务器目标</strong>
@@ -252,6 +352,12 @@ const saving = ref(false);
 const validating = ref(false);
 const ftpLoading = ref(false);
 const ftpCredentials = ref([]);
+const notifyOptionsLoading = ref(false);
+const notifyConnectors = ref([]);
+const notifyChats = ref([]);
+const resolvingNotifyTarget = ref(null);
+const mentionOptionsLoadingKey = ref("");
+const mentionOptions = ref({});
 const validation = ref(null);
 const form = ref(createDefaultSettings());
 const activeProfileId = ref("prod");
@@ -309,6 +415,37 @@ function createDefaultComponent(index = 0) {
     safety: { auto_deploy_on_artifact_update: false, dry_run_default: false },
     notify: { enabled: false, template: defaultNotifyTemplate(), targets: [] },
     targets: [createDefaultTarget()],
+  };
+}
+
+function createDefaultNotifyTarget() {
+  return {
+    platform: "feishu",
+    connector_id: "",
+    chat_id: "",
+    chat_name: "",
+    resolve_identity: "bot",
+    mention: { mode: "none", users: [] },
+  };
+}
+
+function normalizeNotifyTarget(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const mention = source.mention && typeof source.mention === "object" ? source.mention : {};
+  return {
+    ...createDefaultNotifyTarget(),
+    ...source,
+    platform: String(source.platform || "feishu").trim(),
+    connector_id: String(source.connector_id || "").trim(),
+    chat_id: String(source.chat_id || "").trim(),
+    chat_name: String(source.chat_name || "").trim(),
+    resolve_identity: String(source.resolve_identity || "bot").trim(),
+    mention: {
+      mode: String(mention.mode || "none").trim(),
+      users: Array.isArray(mention.users)
+        ? mention.users.map((item) => typeof item === "object" ? String(item.open_id || "").trim() : String(item || "").trim()).filter(Boolean)
+        : [],
+    },
   };
 }
 
@@ -372,7 +509,7 @@ function normalizeComponent(value, index, legacyProfile = {}) {
       ...notify,
       enabled: Boolean(notify.enabled),
       template: String(notify.template || defaultNotifyTemplate()).trim(),
-      targets: Array.isArray(notify.targets) ? notify.targets.map((item) => ({ ...item })) : [],
+      targets: Array.isArray(notify.targets) ? notify.targets.map(normalizeNotifyTarget) : [],
     },
     targets: rawTargets.length
       ? rawTargets.map((item, targetIndex) => normalizeTarget(item, targetIndex))
@@ -503,6 +640,129 @@ async function fetchFtpCredentials() {
   }
 }
 
+function normalizeNotifyConnector(item) {
+  const source = item && typeof item === "object" ? item : {};
+  return {
+    id: String(source.id || "").trim(),
+    platform: String(source.platform || "").trim(),
+    name: String(source.name || source.id || "").trim(),
+    agent_name: String(source.agent_name || "").trim(),
+    reply_identity: String(source.reply_identity || "bot").trim(),
+  };
+}
+
+function normalizeNotifyChat(item) {
+  const source = item && typeof item === "object" ? item : {};
+  return {
+    platform: String(source.platform || "").trim(),
+    connector_id: String(source.connector_id || "").trim(),
+    chat_id: String(source.chat_id || "").trim(),
+    chat_name: String(source.chat_name || "").trim(),
+  };
+}
+
+function notifyConnectorsFor(target) {
+  return notifyConnectors.value
+    .filter((item) => item.platform === target.platform)
+    .map((item) => ({ ...item, label: [item.name || item.id, item.agent_name].filter(Boolean).join(" · ") }));
+}
+
+function notifyChatsFor(target) {
+  return notifyChats.value
+    .filter((item) => item.platform === target.platform && item.connector_id === target.connector_id)
+    .map((item) => ({ ...item, label: [item.chat_name, item.chat_id].filter(Boolean).join(" · ") }));
+}
+
+function notifyTargetKey(target) {
+  return [target.platform, target.connector_id, target.chat_id].join(":");
+}
+
+function mentionOptionsFor(target) {
+  return mentionOptions.value[notifyTargetKey(target)] || [];
+}
+
+function addNotifyTarget() {
+  activeComponent.value?.notify?.targets?.push(createDefaultNotifyTarget());
+}
+
+function removeNotifyTarget(index) {
+  activeComponent.value?.notify?.targets?.splice(index, 1);
+}
+
+function resetNotifyTarget(target) {
+  target.connector_id = "";
+  resetNotifyTargetChat(target);
+}
+
+function resetNotifyTargetChat(target) {
+  target.chat_id = "";
+  target.chat_name = "";
+  target.mention = { mode: "none", users: [] };
+  const connector = notifyConnectors.value.find((item) => item.id === target.connector_id);
+  target.resolve_identity = connector?.reply_identity || "bot";
+}
+
+function syncNotifyTargetChatName(target) {
+  const chat = notifyChats.value.find((item) => item.platform === target.platform
+    && item.connector_id === target.connector_id && item.chat_id === target.chat_id);
+  target.chat_name = chat?.chat_name || target.chat_name || "";
+  target.mention = { mode: target.mention?.mode || "none", users: [] };
+}
+
+async function fetchNotifyOptions() {
+  notifyOptionsLoading.value = true;
+  try {
+    const data = await api.get(`/projects/${props.projectId}/deploy-notify-options`);
+    notifyConnectors.value = Array.isArray(data?.connectors) ? data.connectors.map(normalizeNotifyConnector).filter((item) => item.id) : [];
+    notifyChats.value = Array.isArray(data?.chats) ? data.chats.map(normalizeNotifyChat).filter((item) => item.chat_id) : [];
+  } catch (error) {
+    notifyConnectors.value = [];
+    notifyChats.value = [];
+    ElMessage.error(error?.detail || error?.message || "加载部署通知配置失败");
+  } finally {
+    notifyOptionsLoading.value = false;
+  }
+}
+
+async function resolveNotifyChat(target) {
+  resolvingNotifyTarget.value = target;
+  try {
+    const data = await api.post(`/projects/${props.projectId}/deploy-notify-chat/resolve`, {
+      platform: target.platform,
+      connector_id: target.connector_id,
+      chat_name: String(target.chat_name || "").trim(),
+      identity: target.resolve_identity || "bot",
+    });
+    const chat = normalizeNotifyChat(data?.chat);
+    const index = notifyChats.value.findIndex((item) => item.platform === chat.platform && item.connector_id === chat.connector_id && item.chat_id === chat.chat_id);
+    if (index >= 0) notifyChats.value[index] = chat;
+    else notifyChats.value.push(chat);
+    target.chat_id = chat.chat_id;
+    target.chat_name = chat.chat_name;
+    ElMessage.success("通知群已解析");
+  } catch (error) {
+    ElMessage.error(error?.detail || error?.message || "解析通知群失败");
+  } finally {
+    resolvingNotifyTarget.value = null;
+  }
+}
+
+async function fetchMentionOptions(target) {
+  const key = notifyTargetKey(target);
+  if (!target.connector_id || !target.chat_id || mentionOptions.value[key]) return;
+  mentionOptionsLoadingKey.value = key;
+  try {
+    const data = await api.get(`/projects/${props.projectId}/deploy-notify-mention-options`, {
+      params: { platform: target.platform, connector_id: target.connector_id, chat_id: target.chat_id },
+    });
+    mentionOptions.value = { ...mentionOptions.value, [key]: Array.isArray(data?.members) ? data.members : [] };
+  } catch (error) {
+    ElMessage.error(error?.detail || error?.message || "加载提醒成员失败");
+  } finally {
+    mentionOptionsLoadingKey.value = "";
+  }
+}
+
 async function validateSettings({ notify = true } = {}) {
   validating.value = true;
   try {
@@ -544,7 +804,7 @@ async function saveSettings() {
 }
 
 watch(() => props.project?.deploy_settings, (settings) => syncFromProject(settings || {}), { immediate: true });
-onMounted(fetchFtpCredentials);
+onMounted(() => Promise.all([fetchFtpCredentials(), fetchNotifyOptions()]));
 </script>
 
 <style scoped>
@@ -645,6 +905,33 @@ onMounted(fetchFtpCredentials);
 
 .deploy-settings-panel__component {
   padding: 16px;
+}
+
+.deploy-settings-panel__notify {
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  background: var(--el-fill-color-extra-light);
+}
+
+.deploy-settings-panel__notify-target {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-bg-color);
+}
+
+.deploy-settings-panel__notify-resolver {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.deploy-settings-panel__notify-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .deploy-settings-panel__switches {

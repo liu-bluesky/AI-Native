@@ -378,7 +378,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "deploy_workspace_files_to_target",
-            description: "桌面智能体直连部署主工具。由桌面 AI 先调用 get_project_deploy_options 读取配置并让用户选择 profile/component/target 后，再把 workspace 内的原文件、目录或文件清单直接上传到项目部署配置里的目标服务器；后端只使用已保存的部署配置和凭据执行 FTP 上传、已配置 deploy_command 和配置通知，不创建部署产物记录，不调用部署产物 AI，不接受自定义服务器凭据或自定义远端命令。上传规则是“原文件是什么就部署什么”：目录和 artifact_paths 会逐个 multipart 上传原文件并保留相对路径，禁止为了多文件部署自行创建 zip/tar；只有用户指定的原始产物本身就是 zip/tar 时，才按单个原文件部署。只有本工具返回 deployment_confirmed_success=true/status=success 时，才允许回复部署成功。",
+            description: "桌面智能体直连部署主工具。由桌面 AI 先调用 get_project_deploy_options 读取配置并让用户选择 profile/component/target 后，由桌面运行时直接把 workspace 内的原文件、目录或文件清单上传到目标 FTP 服务器，文件不经过业务后端中转；后端仅负责权限校验、提供本次部署连接配置、执行已配置 deploy_command、发送配置通知和接收结果。FTP 凭据不会进入模型上下文或工具结果。上传目录时按根层文件和文件夹生成任务，实际并发受 FTP 连接的最大上传线程数限制。只有本工具返回 deployment_confirmed_success=true/status=success 时，才允许回复部署成功。",
             action: "deploy.direct.upload",
             risk: "high",
             requires_approval: true,

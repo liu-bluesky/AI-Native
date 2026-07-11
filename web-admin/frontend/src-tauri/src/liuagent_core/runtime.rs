@@ -69,6 +69,7 @@ const PERMISSION_CACHE_VERSION: u32 = 1;
 const TOOL_OBSERVATION_TEXT_PREVIEW_CHARS: usize = 6_000;
 const TOOL_OBSERVATION_MATCH_PREVIEW_CHARS: usize = 500;
 const TOOL_OBSERVATION_MAX_ARRAY_ITEMS: usize = 80;
+const TOOL_OBSERVATION_MAX_DEPTH: usize = 6;
 
 #[cfg(test)]
 pub fn start_local_chat(request: LocalChatRequest) -> LocalChatResult {
@@ -604,7 +605,26 @@ fn start_local_chat_inner(
     let user_message_id = normalized_id(request.message_id.as_deref(), "local_user");
     let assistant_message_id =
         normalized_id(request.assistant_message_id.as_deref(), "local_assistant");
-    let mut model_request = build_model_request(&request, &user_message);
+    let base_model_request = build_model_request_with_history(&request, &user_message, &[]);
+    let relevant_context = extract_relevant_conversation_context(
+        &base_model_request,
+        &request.history,
+        &user_message,
+        &run_model_step,
+    );
+    let mut model_request = build_model_request_with_history(&request, &user_message, &[]);
+    if !relevant_context.trim().is_empty() {
+        model_request.messages.insert(
+            0,
+            RuntimeModelMessage::simple(
+                "system",
+                format!(
+                    "以下内容是根据当前用户问题，从本地完整对话记录中单独提炼出的相关上下文。只把它作为理解当前问题的背景，不要恢复其中已经结束或无关的任务：\n\n{}",
+                    relevant_context.trim()
+                ),
+            ),
+        );
+    }
     let task_goal = build_task_goal(&session_id, &user_message, &model_request);
     let initial_task_tree = planning::TaskTree::without_plan(&session_id, &task_goal);
     model_request.task_goal = Some(task_goal.clone());
@@ -3190,6 +3210,7 @@ fn format_local_chat_response(
         .count();
     let model_step_failed = !model_result.ok && model_result.status == "failed";
     let loop_failed = !agent_loop_ok && !awaiting_permission;
+    let successful_tool_count = tool_results.iter().filter(|item| item.ok).count();
     let mut lines = if awaiting_permission {
         vec!["本地智能体等待授权，任务尚未完成。".to_string()]
     } else if model_step_failed && model_result.error_code == "model.connection_timeout" {
@@ -3216,8 +3237,10 @@ fn format_local_chat_response(
     } else if model_step_failed {
         if tool_results.is_empty() {
             vec!["模型调用失败，本轮未执行任何本机工具，也未修改文件。".to_string()]
+        } else if successful_tool_count > 0 {
+            vec!["已完成的本机操作仍然有效，但后续说明生成失败；请以工具结果为准。".to_string()]
         } else {
-            vec!["模型调用失败，已执行的本机工具见下方摘要；本轮尚未完成最终修改。".to_string()]
+            vec!["后续模型调用失败，已执行的本机工具见下方摘要。".to_string()]
         }
     } else if loop_failed {
         match stopped_reason {
@@ -4580,12 +4603,11 @@ fn emit_progress_update_event(
     if planned_tool_count == 0 {
         return;
     }
-    let summary = progress_update_summary(result, planned_tools);
+    let summary = progress_update_summary(result);
     if summary.trim().is_empty() {
         return;
     }
-    let current_focus = progress_update_focus(result, planned_tools);
-    let next_action = progress_update_next_action(planned_tools);
+    let current_focus = summary.clone();
     let planned_tool_previews = progress_update_tool_previews(planned_tools);
     let arguments_preview = planned_tool_previews
         .iter()
@@ -4611,7 +4633,8 @@ fn emit_progress_update_event(
                 "summary": summary,
                 "current_focus": current_focus,
                 "work_direction": current_focus,
-                "next_action": next_action,
+                "next_action": "",
+                "goal_alignment": "model_generated_from_current_task_goal",
                 "tool_call_count": planned_tool_count,
                 "planned_tools": planned_tool_previews,
                 "arguments_preview": truncate_inline(&arguments_preview, 2_000),
@@ -4630,73 +4653,33 @@ fn emit_progress_update_event(
     }
 }
 
-fn progress_update_summary(result: &ModelStepResult, planned_tools: &[PlannedLocalTool]) -> String {
+fn progress_update_summary(result: &ModelStepResult) -> String {
     let content_summary = truncate_inline(&result.content, 500);
-    if !content_summary.trim().is_empty() {
+    if !content_summary.trim().is_empty() && !looks_like_tool_operation_plan(&content_summary) {
         return content_summary;
     }
-    let mut tool_summaries = planned_tools
-        .iter()
-        .take(3)
-        .map(describe_planned_tool_intent)
-        .filter(|summary| !summary.trim().is_empty())
-        .collect::<Vec<_>>();
-    if planned_tools.len() > tool_summaries.len() {
-        tool_summaries.push(format!(
-            "另有 {} 个工具调用",
-            planned_tools.len() - tool_summaries.len()
-        ));
-    }
-    if tool_summaries.is_empty() {
-        return format!("准备执行模型请求的 {} 个本地工具调用", planned_tools.len());
-    }
-    truncate_inline(&format!("准备{}", tool_summaries.join("；")), 500)
+    String::new()
 }
 
-fn progress_update_focus(result: &ModelStepResult, planned_tools: &[PlannedLocalTool]) -> String {
-    let content_summary = truncate_inline(&result.content, 220);
-    if !content_summary.trim().is_empty() {
-        return content_summary;
-    }
-    let has_write = planned_tools
+fn looks_like_tool_operation_plan(content: &str) -> bool {
+    let normalized = content.replace(['\n', '\r'], " ");
+    let operation_markers = [
+        "准备读取",
+        "准备查看",
+        "读取 ",
+        "读取`",
+        "查看 ",
+        "查看`",
+        "搜索 ",
+        "搜索`",
+        "工具调用",
+        "另有 ",
+    ];
+    let operation_count = operation_markers
         .iter()
-        .any(|tool| matches!(tool.name.trim(), "write_file" | "apply_patch"));
-    if has_write {
-        return "进入代码修改阶段".to_string();
-    }
-    let has_read = planned_tools.iter().any(|tool| {
-        matches!(
-            tool.name.trim(),
-            "list_files" | "read_file" | "search_files" | "search_text" | "get_file_info"
-        )
-    });
-    if has_read {
-        return "收集实现所需的文件结构和现有页面风格".to_string();
-    }
-    "推进当前任务".to_string()
-}
-
-fn progress_update_next_action(planned_tools: &[PlannedLocalTool]) -> String {
-    if planned_tools.is_empty() {
-        return String::new();
-    }
-    let descriptions = planned_tools
-        .iter()
-        .take(3)
-        .map(describe_planned_tool_intent)
-        .filter(|value| !value.trim().is_empty())
-        .collect::<Vec<_>>();
-    if descriptions.is_empty() {
-        return format!("执行 {} 个本地工具调用", planned_tools.len());
-    }
-    let mut text = descriptions.join("；");
-    if planned_tools.len() > descriptions.len() {
-        text.push_str(&format!(
-            "；另有 {} 个工具调用",
-            planned_tools.len() - descriptions.len()
-        ));
-    }
-    truncate_inline(&text, 360)
+        .filter(|marker| normalized.contains(**marker))
+        .count();
+    operation_count >= 2 || normalized.contains("另有") && normalized.contains("工具调用")
 }
 
 fn progress_update_tool_previews(planned_tools: &[PlannedLocalTool]) -> Vec<Value> {
@@ -6915,117 +6898,57 @@ fn tool_observation_content(
     .to_string()
 }
 
-fn compact_tool_observation_content(tool_name: &str, content: &Value) -> Value {
-    match tool_name.trim() {
-        "read_file" => compact_read_file_observation(content),
-        "search_text" | "search_files" => compact_search_observation(content),
-        "list_files" => {
-            compact_array_field_observation(content, "entries", TOOL_OBSERVATION_MAX_ARRAY_ITEMS)
-        }
-        "web_search" => {
-            compact_array_field_observation(content, "results", TOOL_OBSERVATION_MAX_ARRAY_ITEMS)
-        }
-        "web_extract" => {
-            compact_array_field_observation(content, "documents", TOOL_OBSERVATION_MAX_ARRAY_ITEMS)
-        }
-        "run_command" => compact_command_observation(content),
-        _ => compact_generic_observation(content),
-    }
+fn compact_tool_observation_content(_tool_name: &str, content: &Value) -> Value {
+    compact_observation_value(content, 0)
 }
 
-fn compact_read_file_observation(content: &Value) -> Value {
-    let Some(object) = content.as_object() else {
-        return compact_generic_observation(content);
-    };
-    let mut compacted = object.clone();
-    if let Some(text) = object.get("content").and_then(Value::as_str) {
-        let (preview, truncated_for_model) =
-            truncate_chars_with_flag(text, TOOL_OBSERVATION_TEXT_PREVIEW_CHARS);
-        compacted.insert("content".to_string(), json!(preview));
-        compacted.insert(
-            "content_truncated_for_model".to_string(),
-            json!(truncated_for_model),
-        );
-        compacted.insert("content_chars".to_string(), json!(text.chars().count()));
+fn compact_observation_value(value: &Value, depth: usize) -> Value {
+    if depth >= TOOL_OBSERVATION_MAX_DEPTH {
+        return compact_generic_observation(value);
     }
-    Value::Object(compacted)
-}
-
-fn compact_search_observation(content: &Value) -> Value {
-    let Some(object) = content.as_object() else {
-        return compact_generic_observation(content);
-    };
-    let mut compacted = object.clone();
-    if let Some(matches) = object.get("matches").and_then(Value::as_array) {
-        let total = matches.len();
-        let compact_matches = matches
-            .iter()
-            .take(TOOL_OBSERVATION_MAX_ARRAY_ITEMS)
-            .map(|item| {
-                let Some(item_object) = item.as_object() else {
-                    return compact_generic_observation(item);
-                };
-                let mut compact_item = item_object.clone();
-                if let Some(text) = item_object.get("content").and_then(Value::as_str) {
-                    let (preview, truncated_for_model) =
-                        truncate_chars_with_flag(text, TOOL_OBSERVATION_MATCH_PREVIEW_CHARS);
-                    compact_item.insert("content".to_string(), json!(preview));
-                    compact_item.insert(
-                        "content_truncated_for_model".to_string(),
-                        json!(truncated_for_model),
-                    );
-                }
-                Value::Object(compact_item)
-            })
-            .collect::<Vec<_>>();
-        compacted.insert("matches".to_string(), json!(compact_matches));
-        compacted.insert("matches_total".to_string(), json!(total));
-        compacted.insert(
-            "matches_truncated_for_model".to_string(),
-            json!(total > TOOL_OBSERVATION_MAX_ARRAY_ITEMS),
-        );
-    }
-    Value::Object(compacted)
-}
-
-fn compact_array_field_observation(content: &Value, field: &str, max_items: usize) -> Value {
-    let Some(object) = content.as_object() else {
-        return compact_generic_observation(content);
-    };
-    let mut compacted = object.clone();
-    if let Some(items) = object.get(field).and_then(Value::as_array) {
-        let total = items.len();
-        compacted.insert(
-            field.to_string(),
-            Value::Array(items.iter().take(max_items).cloned().collect()),
-        );
-        compacted.insert(format!("{field}_total"), json!(total));
-        compacted.insert(
-            format!("{field}_truncated_for_model"),
-            json!(total > max_items),
-        );
-    }
-    Value::Object(compacted)
-}
-
-fn compact_command_observation(content: &Value) -> Value {
-    let Some(object) = content.as_object() else {
-        return compact_generic_observation(content);
-    };
-    let mut compacted = object.clone();
-    for field in ["stdout", "stderr"] {
-        if let Some(text) = object.get(field).and_then(Value::as_str) {
-            let (preview, truncated_for_model) =
-                truncate_chars_with_flag(text, TOOL_OBSERVATION_TEXT_PREVIEW_CHARS);
-            compacted.insert(field.to_string(), json!(preview));
-            compacted.insert(format!("{field}_chars"), json!(text.chars().count()));
-            compacted.insert(
-                format!("{field}_truncated_for_model"),
-                json!(truncated_for_model),
-            );
+    match value {
+        Value::String(text) => {
+            let max_chars = if depth > 1 {
+                TOOL_OBSERVATION_MATCH_PREVIEW_CHARS
+            } else {
+                TOOL_OBSERVATION_TEXT_PREVIEW_CHARS
+            };
+            let (preview, truncated) = truncate_chars_with_flag(text, max_chars);
+            if truncated {
+                json!({
+                    "preview": preview,
+                    "text_chars": text.chars().count(),
+                    "truncated_for_model": true
+                })
+            } else {
+                value.clone()
+            }
         }
+        Value::Array(items) => {
+            let total = items.len();
+            let values = items
+                .iter()
+                .take(TOOL_OBSERVATION_MAX_ARRAY_ITEMS)
+                .map(|item| compact_observation_value(item, depth + 1))
+                .collect::<Vec<_>>();
+            if total > TOOL_OBSERVATION_MAX_ARRAY_ITEMS {
+                json!({
+                    "items": values,
+                    "items_total": total,
+                    "truncated_for_model": true
+                })
+            } else {
+                Value::Array(values)
+            }
+        }
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, item)| (key.clone(), compact_observation_value(item, depth + 1)))
+                .collect(),
+        ),
+        _ => value.clone(),
     }
-    Value::Object(compacted)
 }
 
 fn compact_generic_observation(content: &Value) -> Value {
@@ -7859,6 +7782,14 @@ struct OpenAiCompatibleFunctionCall {
 }
 
 fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelStepRequest {
+    build_model_request_with_history(request, user_message, &request.history)
+}
+
+fn build_model_request_with_history(
+    request: &LocalChatRequest,
+    user_message: &str,
+    history: &[LocalChatMessage],
+) -> ModelStepRequest {
     let runtime = request
         .model_runtime
         .clone()
@@ -7900,6 +7831,14 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
             "- 每完成一个阶段，应再次调用该工具更新状态；已完成步骤保持 completed，不得退回。",
             "- 同一时刻最多一个步骤为 in_progress；其余步骤使用 pending、completed 或 blocked。",
             "- 计划发生实质变化时可以调整、增加或合并步骤，并用 explanation 简述原因。",
+            "",
+            "用户可见进度播报规则：",
+            "- 在调用业务工具前，只在确实有新的判断或目标校准信息时输出一段简短自然语言。",
+            "- 进度必须根据本轮用户原始需求动态生成，说明当前确认了什么，以及下一步为何仍服务于原始目标。",
+            "- 进度用于持续校准目标、及时暴露理解偏差，禁止把读取文件、搜索代码、执行命令等操作清单当作进度。",
+            "- 禁止使用‘正在确认现有实现’‘正在推进当前问题’‘完成后继续验证’等固定模板或阶段套话。",
+            "- 如果准备执行的内容与原始需求不一致，先在进度中明确修正后的理解，再决定是否继续调用工具。",
+            "- 没有新的目标相关信息时不要输出进度文字，直接调用工具。",
         ]
         .join("\n"),
     ));
@@ -7923,7 +7862,7 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
                 .map(|(_, _, _, content)| RuntimeModelMessage::simple("system", content)),
         );
     }
-    messages.extend(request.history.iter().filter_map(|message| {
+    messages.extend(history.iter().filter_map(|message| {
         if should_exclude_history_message_from_model_context(message) {
             return None;
         }
@@ -8030,6 +7969,60 @@ fn should_exclude_history_message_from_model_context(message: &LocalChatMessage)
     }
     let visibility = message.visibility.as_deref().map(str::trim).unwrap_or("");
     visibility != "model_context"
+}
+
+fn extract_relevant_conversation_context(
+    base_request: &ModelStepRequest,
+    history: &[LocalChatMessage],
+    user_message: &str,
+    model_runner: &dyn Fn(&ModelStepRequest) -> ModelStepResult,
+) -> String {
+    let conversation_history = history
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| !should_exclude_history_message_from_model_context(message))
+        .filter(|(_, message)| !message.content.trim().is_empty())
+        .map(|(index, message)| {
+            format!(
+                "[{}] {}\n{}",
+                index,
+                normalize_model_message_role(&message.role),
+                truncate_inline(&message.content, 600)
+            )
+        })
+        .collect::<Vec<_>>();
+    if conversation_history.is_empty() {
+        return String::new();
+    }
+    let context_messages = vec![
+        RuntimeModelMessage::simple(
+            "system",
+            [
+                "先理解当前用户问题真正表达的意思，再阅读单独提供的历史对话数据。",
+                "你的唯一任务是提炼本轮回答或执行真正需要的历史上下文，不执行用户任务，不调用任何工具。",
+                "不要做关系类型分类，不要输出 JSON、字段、索引或路由结论。",
+                "不要因为对象、项目或关键词相同就保留旧任务；只有确实帮助理解当前提问的内容才保留。",
+                "如果当前问题引用了较早内容，应从完整记录中找到对应内容，不要只关注最近消息。",
+                "已结束、暂停或取消任务中的执行计划和工具过程，除非当前问题明确询问它们，否则不要保留。",
+                "输出一段简洁、可直接提供给另一个模型阅读的相关对话上下文；没有相关内容时输出空内容。",
+            ]
+            .join("\n"),
+        ),
+        RuntimeModelMessage::simple(
+            "user",
+            format!(
+                "当前用户问题：\n{}\n\n本地完整对话记录（独立数据）：\n{}",
+                user_message.trim(),
+                conversation_history.join("\n\n")
+            ),
+        ),
+    ];
+    let context_request = base_request.with_messages(context_messages);
+    let result = model_runner(&context_request);
+    if !result.ok || !result.tool_calls.is_empty() {
+        return String::new();
+    }
+    result.content.trim().to_string()
 }
 
 fn build_user_message_with_attachments(
@@ -9510,7 +9503,7 @@ mod tests {
     }
 
     #[test]
-    fn progress_update_emits_tool_summary_when_model_content_is_empty() {
+    fn progress_update_skips_when_model_content_is_empty() {
         let events = RefCell::new(Vec::<Value>::new());
         let sink = |event: Value| events.borrow_mut().push(event);
         let result = ModelStepResult {
@@ -9547,25 +9540,55 @@ mod tests {
         );
 
         let events = events.borrow();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["type"], "progress_update");
-        assert!(events[0]["payload"]["summary"]
-            .as_str()
-            .unwrap()
-            .contains("搜索"));
-        assert_eq!(
-            events[0]["payload"]["current_focus"],
-            "收集实现所需的文件结构和现有页面风格"
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn progress_update_skips_tool_list_content_instead_of_using_template() {
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+        let result = ModelStepResult {
+            ok: true,
+            mode: "mock".to_string(),
+            provider_id: "test".to_string(),
+            model_name: "test-model".to_string(),
+            status: "completed".to_string(),
+            content: "准备读取 src/styles/theme.css，定位实现需要参考的代码；读取 src/views/login/LoginView.vue，判断现有登录页能否复用或改造；另有 7 个工具调用".to_string(),
+            reasoning_content: String::new(),
+            tool_calls: Vec::new(),
+            allow_compat_text_tool_call: false,
+            compat_text_tool_call_detected: false,
+            summary: String::new(),
+            error_code: String::new(),
+            error: String::new(),
+        };
+        let planned_tools = vec![
+            PlannedLocalTool {
+                tool_call_id: "call_theme".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": "src/styles/theme.css"}),
+                summary: "标准模型工具调用：read_file".to_string(),
+            },
+            PlannedLocalTool {
+                tool_call_id: "call_login".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": "src/views/login/LoginView.vue"}),
+                summary: "标准模型工具调用：read_file".to_string(),
+            },
+        ];
+        let request = test_model_request("优化登录页面");
+
+        emit_progress_update_event(
+            Some(&sink),
+            "runtime-test",
+            "chat-test",
+            2,
+            &result,
+            &planned_tools,
+            &request,
         );
-        assert!(events[0]["payload"]["next_action"]
-            .as_str()
-            .unwrap()
-            .contains("搜索"));
-        assert_eq!(events[0]["payload"]["tool_call_count"], 1);
-        assert!(events[0]["payload"]["arguments_preview"]
-            .as_str()
-            .unwrap()
-            .contains("progress_update"));
+
+        assert!(events.borrow().is_empty());
     }
 
     #[test]
@@ -9578,7 +9601,7 @@ mod tests {
             provider_id: "test".to_string(),
             model_name: "test-model".to_string(),
             status: "completed".to_string(),
-            content: String::new(),
+            content: "目标是创建 index.html；已确认写入内容仍限定在该文件，下一步生成文件以满足原始需求。".to_string(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
             allow_compat_text_tool_call: false,
@@ -9674,7 +9697,9 @@ mod tests {
             provider_id: "test".to_string(),
             model_name: "test-model".to_string(),
             status: "completed".to_string(),
-            content: String::new(),
+            content:
+                "目标是修改 index.html；当前补丁只调整该目标文件，下一步应用修改以保持范围不偏离。"
+                    .to_string(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
             allow_compat_text_tool_call: false,
@@ -13009,17 +13034,44 @@ mod tests {
 
         assert_eq!(value["content_compacted_for_model"], true);
         assert_eq!(
-            value["content"]["content"]
+            value["content"]["content"]["preview"]
                 .as_str()
                 .unwrap()
                 .chars()
                 .count(),
             TOOL_OBSERVATION_TEXT_PREVIEW_CHARS
         );
-        assert_eq!(value["content"]["content_truncated_for_model"], true);
+        assert_eq!(value["content"]["content"]["truncated_for_model"], true);
         assert_eq!(
-            value["content"]["content_chars"],
+            value["content"]["content"]["text_chars"],
             TOOL_OBSERVATION_TEXT_PREVIEW_CHARS + 200
+        );
+        assert_eq!(
+            result.content["content"].as_str().unwrap().chars().count(),
+            TOOL_OBSERVATION_TEXT_PREVIEW_CHARS + 200
+        );
+    }
+
+    #[test]
+    fn tool_observation_compacts_unknown_nested_content_without_tool_rules() {
+        let large_content = "x".repeat(TOOL_OBSERVATION_MATCH_PREVIEW_CHARS + 200);
+        let result = super::super::types::ToolExecutionResult::ok(
+            "call_unknown_large".to_string(),
+            "future_tool_not_known_by_runtime".to_string(),
+            json!({"response": {"records": [{"payload": large_content}]}}),
+            "未来工具执行成功".to_string(),
+        );
+
+        let observation = tool_observation_content(&result, false, None, None);
+        let value = serde_json::from_str::<Value>(&observation).unwrap();
+
+        assert_eq!(
+            value["content"]["response"]["records"][0]["payload"]["truncated_for_model"],
+            true
+        );
+        assert_eq!(
+            value["content"]["response"]["records"][0]["payload"]["text_chars"],
+            TOOL_OBSERVATION_MATCH_PREVIEW_CHARS + 200
         );
     }
 
@@ -13175,7 +13227,7 @@ mod tests {
     }
 
     #[test]
-    fn model_failure_after_tools_reports_executed_tools() {
+    fn model_failure_after_successful_tools_preserves_completed_operations() {
         let request = test_model_request("创建一个注册页面");
         let model_result = ModelStepResult::failed(
             &request,
@@ -13203,10 +13255,11 @@ mod tests {
             "model gateway returned HTTP 429",
         );
 
-        assert!(content.starts_with("模型调用失败"));
-        assert!(content.contains("已执行的本机工具见下方摘要"));
+        assert!(content.starts_with("已完成的本机操作仍然有效"));
+        assert!(content.contains("后续说明生成失败"));
         assert!(content.contains("本机工具执行摘要：共 1 个，成功 1 个，失败 0 个。"));
         assert!(!content.contains("本轮未执行任何本机工具"));
+        assert!(!content.contains("本轮尚未完成最终修改"));
     }
 
     #[test]
@@ -14156,6 +14209,131 @@ mod tests {
             let payload = openai_compatible_message_payload(assistant_message);
             assert_eq!(payload["reasoning_content"], expected);
         }
+    }
+
+    #[test]
+    fn relevant_context_extractor_receives_complete_history_as_separate_data() {
+        let history = vec![
+            LocalChatMessage {
+                role: "user".to_string(),
+                content: "改造登录和注册页面".to_string(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+            LocalChatMessage {
+                role: "assistant".to_string(),
+                content: "我会读取页面源码并开始改造".to_string(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+        ];
+        let base_request = test_model_request("目录结构展示一级就可以");
+        let saw_history = Cell::new(false);
+        let runner = |request: &ModelStepRequest| {
+            let input = request
+                .messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            saw_history.set(
+                input.contains("改造登录和注册页面")
+                    && input.contains("我会读取页面源码并开始改造")
+                    && input.contains("目录结构展示一级就可以"),
+            );
+            test_model_result("", Vec::new())
+        };
+
+        let context = extract_relevant_conversation_context(
+            &base_request,
+            &history,
+            "目录结构展示一级就可以",
+            &runner,
+        );
+
+        assert!(saw_history.get());
+        assert!(context.is_empty());
+    }
+
+    #[test]
+    fn relevant_context_extractor_can_recover_early_conversation_content() {
+        let history = vec![
+            LocalChatMessage {
+                role: "user".to_string(),
+                content: "改造登录页面".to_string(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+            LocalChatMessage {
+                role: "assistant".to_string(),
+                content: "登录页改造进行中".to_string(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+            LocalChatMessage {
+                role: "user".to_string(),
+                content: "查询一级目录".to_string(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+            LocalChatMessage {
+                role: "assistant".to_string(),
+                content: "一级目录已展示".to_string(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+        ];
+        let base_request = test_model_request("找找我们一开始的任务");
+        let runner = |_request: &ModelStepRequest| {
+            test_model_result(
+                "最初任务是改造登录页面；后续一级目录查询与当前问题无关。",
+                Vec::new(),
+            )
+        };
+
+        let context = extract_relevant_conversation_context(
+            &base_request,
+            &history,
+            "找找我们一开始的任务",
+            &runner,
+        );
+
+        assert!(context.contains("最初任务是改造登录页面"));
+        assert!(!context.contains("relationship"));
+        assert!(!context.starts_with('{'));
+    }
+
+    #[test]
+    fn relevant_context_extractor_failure_returns_no_history() {
+        let history = vec![LocalChatMessage {
+            role: "user".to_string(),
+            content: "旧任务".to_string(),
+            reasoning_content: None,
+            source_kind: None,
+            diagnostic: None,
+            visibility: None,
+        }];
+        let base_request = test_model_request("新任务");
+        let runner = |request: &ModelStepRequest| {
+            ModelStepResult::failed(request, "model.failed", "context extraction unavailable")
+        };
+
+        let context =
+            extract_relevant_conversation_context(&base_request, &history, "新任务", &runner);
+
+        assert!(context.is_empty());
     }
 
     #[test]

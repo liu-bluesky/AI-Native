@@ -35,6 +35,36 @@ assert.match(
   "stopGeneration must cancel local liuAgent first, then active pending request before Runner fallback",
 );
 
+assert.match(
+  source,
+  /const activeRun = \{[\s\S]*?userMessageId: userMessage\.id,[\s\S]*?rootGoal: displayUserMessageContent \|\| finalUserPrompt,[\s\S]*?workspacePath,/,
+  "local liuAgent active runs must retain the original task goal for cancellation",
+);
+
+assert.match(
+  source,
+  /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?title: "本轮任务已取消"[\s\S]*?phase: "completed"[\s\S]*?terminal_task: true,[\s\S]*?resumable: false,/,
+  "paused local task cards must become terminal and non-resumable",
+);
+
+assert.match(
+  source,
+  /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?status: "cancelled",[\s\S]*?rootGoal:[\s\S]*?String\(run\.rootGoal \|\| ""\)\.trim\(\)/,
+  "pausing a local task must preserve its original goal and write cancelled status",
+);
+
+assert.doesNotMatch(
+  source,
+  /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?status: "blocked",[\s\S]*?rootGoal: message,/,
+  "pausing a local task must not overwrite its goal with the stop message",
+);
+
+assert.match(
+  source,
+  /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?queuedFollowupMessages\.value = \[\];[\s\S]*?activeFollowupAssistantMessageId = "";/,
+  "pausing a local task must detach queued followups from the cancelled card",
+);
+
 assert.doesNotMatch(
   source,
   /function stopGeneration\(\)[\s\S]*?backgroundCurrentNativeExternalAgentSession\(\)/,

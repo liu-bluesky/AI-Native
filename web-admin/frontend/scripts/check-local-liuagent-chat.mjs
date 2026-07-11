@@ -356,8 +356,14 @@ assert.match(
 
 assert.match(
   projectChat,
-  /type === "model_call_started"[\s\S]*?请求中/,
-  "ProjectChat must render model_call_started as a visible running detail",
+  /function shouldHideProcessLogEntry\(row, entry\)[\s\S]*?eventType === "model_call_started"\) return true;[\s\S]*?eventType === "model_step"[\s\S]*?return payload\?\.ok !== false;/,
+  "ProjectChat must retain model lifecycle events in state but hide successful internal steps from users",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /正在整理结果并判断是否完成|正在理解目标并制定下一步|已完成根据工具结果规划下一步|将继续执行必要的检查、修改或验证/,
+  "ProjectChat must not generate fixed model-stage progress templates for users",
 );
 
 assert.match(
@@ -424,6 +430,12 @@ assert.match(
   projectChat,
   /function applyLocalLiuAgentReasoningContent\(row, event = \{\}\)[\s\S]*?event\?\.type[\s\S]*?model_step[\s\S]*?payload\?\.reasoning_content[\s\S]*?row\.reasoningContent = reasoningContent/,
   "local liuAgent model_step events must persist reasoningContent onto assistant rows for follow-up history",
+);
+
+assert.match(
+  projectChat,
+  /function applyLiuAgentPlanEvent\(row, eventData = \{\}, requestId = ""\)[\s\S]*?if \(phase !== "running"\) \{[\s\S]*?activeComposerPlan\.value = null;[\s\S]*?activeComposerPlanOwnerId\.value = "";[\s\S]*?return true;/,
+  "terminal execution plans must release the composer plan instead of leaving completed steps active",
 );
 
 assert.match(
@@ -798,6 +810,18 @@ assert.match(
   projectChat,
   /status: ok \? "done" : "blocked"[\s\S]*await syncLocalLiuAgentRuntimeOutbox\(/,
   "ProjectChat must sync local runtime outbox after local chat completes or fails",
+);
+
+assert.match(
+  projectChat,
+  /deleteLocalLiuAgentActiveRun\(activeChatSessionId\);\s*syncChatLoadingWithCurrentSession\(\);\s*scrollToBottom\(\);\s*void \(async \(\) => \{[\s\S]*persistLocalLiuAgentFinalMessages/,
+  "local liuAgent must reveal the final answer before background persistence finishes",
+);
+
+assert.match(
+  projectChat,
+  /function applyLocalLiuAgentConversationLifecycle\([\s\S]*hasRuntimeEntries[\s\S]*if \(hasRuntimeEntries\) return false;/,
+  "conversation lifecycle fallback must not replace the live runtime process log",
 );
 
 assert.doesNotMatch(

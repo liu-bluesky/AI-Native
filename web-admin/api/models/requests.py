@@ -756,6 +756,7 @@ class FtpCredentialCreateReq(BaseModel):
     port: str = ""
     username: str = ""
     password: str = ""
+    max_upload_threads: int = Field(default=4, ge=1, le=32)
     enabled: bool = True
 
 
@@ -765,6 +766,7 @@ class FtpCredentialUpdateReq(BaseModel):
     port: str | None = None
     username: str | None = None
     password: str | None = None
+    max_upload_threads: int | None = Field(default=None, ge=1, le=32)
     enabled: bool | None = None
 
 

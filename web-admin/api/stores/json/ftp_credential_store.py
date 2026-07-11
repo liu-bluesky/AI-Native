@@ -19,6 +19,7 @@ class FtpCredential:
     host: str = ""
     port: str = ""
     password: str = ""
+    max_upload_threads: int = 4
     enabled: bool = True
     created_by: str = ""
     created_at: str = field(default_factory=_now_iso)
@@ -49,6 +50,13 @@ def normalize_ftp_credential_payload(
         port=str(source.get("port") or (existing.port if existing else "") or "").strip()[:20],
         username=str(source.get("username") or (existing.username if existing else "") or "").strip()[:200],
         password=password[:1000],
+        max_upload_threads=max(
+            1,
+            min(
+                32,
+                int(source.get("max_upload_threads") or (existing.max_upload_threads if existing else 4) or 4),
+            ),
+        ),
         enabled=bool(source.get("enabled", existing.enabled if existing else True)),
         created_by=owner,
         created_at=str(existing.created_at if existing else source.get("created_at") or now),

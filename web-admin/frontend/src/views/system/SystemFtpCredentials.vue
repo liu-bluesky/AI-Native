@@ -31,6 +31,9 @@
           <template #default="{ row }">{{ row.port || "21" }}</template>
         </el-table-column>
         <el-table-column prop="username" label="登录账号" min-width="160" />
+        <el-table-column label="最大线程" width="110">
+          <template #default="{ row }">{{ row.max_upload_threads || 4 }}</template>
+        </el-table-column>
         <el-table-column label="密码" width="110">
           <template #default="{ row }">
             <el-tag :type="row.has_password ? 'success' : 'warning'" effect="plain">
@@ -95,6 +98,16 @@
             :placeholder="editingId ? '留空则保持原密码' : '请输入 FTP 密码'"
           />
         </el-form-item>
+        <el-form-item label="最大上传线程数">
+          <el-input-number
+            v-model="draft.max_upload_threads"
+            :min="1"
+            :max="32"
+            :step="1"
+            class="credential-form__port"
+          />
+          <div class="credential-form__hint">按上传目录根层的文件和文件夹生成任务，同时运行数量不超过此值。</div>
+        </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="draft.enabled" active-text="启用" inactive-text="停用" />
         </el-form-item>
@@ -136,6 +149,7 @@ function createDraft(item = null) {
     port: item?.port ? Number(item.port) : null,
     username: String(item?.username || "").trim(),
     password: "",
+    max_upload_threads: Math.max(1, Math.min(32, Number(item?.max_upload_threads || 4))),
     enabled: item?.enabled !== false,
   };
 }
@@ -370,6 +384,13 @@ onMounted(() => {
 
 .credential-form__port {
   width: 100%;
+}
+
+.credential-form__hint {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 @media (max-width: 900px) {

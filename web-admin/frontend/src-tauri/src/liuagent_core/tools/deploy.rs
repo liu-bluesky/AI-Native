@@ -5,12 +5,17 @@
 //! files through backend atomic capabilities. Credentials are supplied by the
 //! backend deploy settings, not by the model prompt.
 
+use chrono::Local;
 use reqwest::blocking::{multipart, Client};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Url;
 use serde_json::{json, Value};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use crate::liuagent_core::args::{bool_arg, number_arg, required_string_arg, string_arg};
@@ -461,32 +466,6 @@ pub fn deploy_workspace_files_to_target(
         permission_decision,
     )?;
 
-    let endpoint = direct_deploy_url(&api_base_url, &project_id)?;
-    let form = multipart::Form::new()
-        .text("profile", profile.clone())
-        .text("component", component.clone())
-        .text("artifact_name", artifact_name.clone())
-        .text("artifact_kind", artifact_kind.clone())
-        .text("version", version)
-        .text("size", upload_source.size().to_string())
-        .text(
-            "target_ids_json",
-            serde_json::to_string(&target_ids).unwrap_or_else(|_| "[]".to_string()),
-        )
-        .text(
-            "manifest_json",
-            serde_json::to_string(&manifest).unwrap_or_else(|_| "{}".to_string()),
-        )
-        .text(
-            "run_deploy_command",
-            if run_deploy_command { "true" } else { "false" }.to_string(),
-        )
-        .text("chat_session_id", chat_session_id)
-        .text("task_tree_node_id", task_tree_node_id)
-        .text("requirement", requirement)
-        .text("plan", plan);
-    let form = add_upload_parts(form, &upload_source, &artifact_name)?;
-
     let mut headers = HeaderMap::new();
     let auth =
         HeaderValue::from_str(&format!("Bearer {}", backend_token.trim())).map_err(|err| {
@@ -506,22 +485,83 @@ pub fn deploy_workspace_files_to_target(
                 format!("create http client failed: {err}"),
             )
         })?;
-    let response = client
-        .post(endpoint)
-        .headers(headers)
-        .multipart(form)
+    let prepare_endpoint = direct_deploy_prepare_url(&api_base_url, &project_id)?;
+    let prepare_response = client
+        .post(prepare_endpoint)
+        .headers(headers.clone())
+        .json(&json!({
+            "profile": profile,
+            "component": component,
+            "target_ids": target_ids,
+        }))
         .send()
         .map_err(|err| {
             ToolError::new(
                 "tool.execution_failed",
-                format!("direct deploy failed: {err}"),
+                format!("prepare direct deploy failed: {err}"),
+            )
+        })?;
+    let prepare_status = prepare_response.status().as_u16();
+    let prepare_text = prepare_response.text().map_err(|err| {
+        ToolError::new(
+            "tool.execution_failed",
+            format!("read direct deploy prepare response failed: {err}"),
+        )
+    })?;
+    let prepare_body = serde_json::from_str::<Value>(&prepare_text)
+        .unwrap_or_else(|_| json!({"raw": prepare_text}));
+    if !(200..300).contains(&prepare_status) {
+        return Err(ToolError::new(
+            "tool.execution_failed",
+            format!(
+                "prepare direct deploy failed with HTTP {prepare_status}: {}",
+                safe_error_detail(&prepare_body)
+            ),
+        ));
+    }
+    let prepared_targets = prepare_body
+        .get("targets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut upload_results = Vec::new();
+    for target in prepared_targets {
+        upload_results.push(upload_source_to_ftp(&upload_source, &target)?);
+    }
+
+    let complete_endpoint = direct_deploy_complete_url(&api_base_url, &project_id)?;
+    let response = client
+        .post(complete_endpoint)
+        .headers(headers)
+        .json(&json!({
+            "profile": profile,
+            "component": component,
+            "target_ids": target_ids,
+            "artifact_name": artifact_name,
+            "artifact_kind": artifact_kind,
+            "version": version,
+            "size": upload_source.size(),
+            "file_count": upload_source.file_count(),
+            "manifest": manifest,
+            "run_deploy_command": run_deploy_command,
+            "chat_session_id": chat_session_id,
+            "task_tree_node_id": task_tree_node_id,
+            "requirement": requirement,
+            "plan": plan,
+            "upload_results": upload_results,
+        }))
+        .send()
+        .map_err(|err| {
+            ToolError::new(
+                "tool.execution_failed",
+                format!("complete direct deploy failed: {err}"),
             )
         })?;
     let status = response.status().as_u16();
     let text = response.text().map_err(|err| {
         ToolError::new(
             "tool.execution_failed",
-            format!("read direct deploy response failed: {err}"),
+            format!("read direct deploy completion failed: {err}"),
         )
     })?;
     let body = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({"raw": text}));
@@ -529,7 +569,7 @@ pub fn deploy_workspace_files_to_target(
         return Err(ToolError::new(
             "tool.execution_failed",
             format!(
-                "direct deploy failed with HTTP {status}: {}",
+                "complete direct deploy failed with HTTP {status}: {}",
                 safe_error_detail(&body)
             ),
         ));
@@ -567,6 +607,298 @@ pub fn deploy_workspace_files_to_target(
         }),
         summary,
     ))
+}
+
+fn upload_source_to_ftp(source: &UploadSource, target: &Value) -> Result<Value, ToolError> {
+    let host = target
+        .get("host")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let port = target.get("port").and_then(Value::as_u64).unwrap_or(21);
+    let username = target
+        .get("username")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let password = target
+        .get("password")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let remote_path = target
+        .get("remote_path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let max_threads = target
+        .get("max_upload_threads")
+        .and_then(Value::as_u64)
+        .unwrap_or(4)
+        .clamp(1, 32) as usize;
+    if host.is_empty() || username.is_empty() || password.is_empty() || remote_path.is_empty() {
+        return Err(ToolError::new(
+            "deploy.ftp_config_missing",
+            "桌面直连 FTP 配置不完整",
+        ));
+    }
+    let backup_source_path = match source {
+        UploadSource::File { relative_path, .. } => [
+            remote_path.trim_end_matches('/'),
+            Path::new(relative_path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("deploy-file"),
+        ]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("/"),
+        UploadSource::Directory { .. } => remote_path.clone(),
+    };
+    let backup =
+        curl_ftp_backup_remote_path(host, port, &username, &password, &backup_source_path)?;
+    let files = match source {
+        UploadSource::File {
+            path,
+            relative_path,
+            size,
+        } => vec![(
+            path.clone(),
+            Path::new(relative_path)
+                .file_name()
+                .and_then(|v| v.to_str())
+                .unwrap_or("deploy-file")
+                .to_string(),
+            *size,
+        )],
+        UploadSource::Directory { entries, .. } => entries
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.upload_path.clone(), entry.size))
+            .collect(),
+    };
+    let mut groups: std::collections::BTreeMap<String, Vec<(PathBuf, String, u64)>> =
+        std::collections::BTreeMap::new();
+    for file in files {
+        let root = file.1.split('/').next().unwrap_or(&file.1).to_string();
+        groups.entry(root).or_default().push(file);
+    }
+    let tasks = Arc::new(Mutex::new(groups.into_values().collect::<Vec<_>>()));
+    let root_task_count = tasks.lock().map(|items| items.len()).unwrap_or(0);
+    let uploaded = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let worker_count = max_threads.min(root_task_count).max(1);
+    let mut workers = Vec::new();
+    for _ in 0..worker_count {
+        let tasks = Arc::clone(&tasks);
+        let uploaded = Arc::clone(&uploaded);
+        let host = host.to_string();
+        let username = username.clone();
+        let password = password.clone();
+        let remote_path = remote_path.clone();
+        workers.push(thread::spawn(move || -> Result<(), String> {
+            loop {
+                let task = tasks
+                    .lock()
+                    .map_err(|_| "FTP任务队列不可用".to_string())?
+                    .pop();
+                let Some(files) = task else { break };
+                curl_ftp_upload_task(&host, port, &username, &password, &remote_path, &files)?;
+                for (_, relative_path, size) in files {
+                    uploaded
+                        .lock()
+                        .map_err(|_| "FTP结果队列不可用".to_string())?
+                        .push(json!({"path": relative_path, "size": size}));
+                }
+            }
+            Ok(())
+        }));
+    }
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|_| ToolError::new("tool.execution_failed", "FTP上传线程异常退出"))?
+            .map_err(|error| ToolError::new("tool.execution_failed", error))?;
+    }
+    let uploaded_files = uploaded
+        .lock()
+        .map_err(|_| ToolError::new("tool.execution_failed", "FTP上传结果不可用"))?
+        .clone();
+    Ok(json!({
+        "ok": true,
+        "target_id": target.get("id").and_then(Value::as_str).unwrap_or(""),
+        "file_count": uploaded_files.len(),
+        "root_task_count": root_task_count,
+        "worker_count": worker_count,
+        "max_upload_threads": max_threads,
+        "backup_status": backup.get("status").and_then(Value::as_str).unwrap_or(""),
+        "backup_path": backup.get("path").and_then(Value::as_str).unwrap_or(""),
+        "backup_at": backup.get("at").and_then(Value::as_str).unwrap_or(""),
+        "files": uploaded_files.into_iter().take(200).collect::<Vec<_>>(),
+    }))
+}
+
+fn curl_ftp_backup_remote_path(
+    host: &str,
+    port: u64,
+    username: &str,
+    password: &str,
+    remote_path: &str,
+) -> Result<Value, ToolError> {
+    let backup_path = ftp_backup_path(remote_path);
+    let root_url = ftp_remote_url(host, port, "", "")
+        .map_err(|error| ToolError::new("tool.execution_failed", error))?;
+    let config = format!(
+        "silent\nshow-error\nfail\nuser = \"{}:{}\"\nquote = \"RNFR {}\"\nquote = \"RNTO {}\"\nurl = \"{}\"\n",
+        curl_config_escape(username),
+        curl_config_escape(password),
+        curl_config_escape(remote_path),
+        curl_config_escape(&backup_path),
+        curl_config_escape(&root_url),
+    );
+    let mut child = Command::new("curl")
+        .args(["--config", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            ToolError::new("tool.execution_failed", format!("启动FTP备份失败：{error}"))
+        })?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(config.as_bytes()).map_err(|error| {
+            ToolError::new(
+                "tool.execution_failed",
+                format!("写入FTP备份任务失败：{error}"),
+            )
+        })?;
+    }
+    let output = child.wait_with_output().map_err(|error| {
+        ToolError::new("tool.execution_failed", format!("等待FTP备份失败：{error}"))
+    })?;
+    let now = Local::now();
+    if output.status.success() {
+        return Ok(json!({
+            "status": "renamed",
+            "path": backup_path,
+            "at": now.to_rfc3339(),
+        }));
+    }
+    let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if error.contains("550") || error.to_lowercase().contains("not found") {
+        return Ok(json!({"status": "missing", "path": "", "at": ""}));
+    }
+    Err(ToolError::new(
+        "tool.execution_failed",
+        format!("FTP备份远端目录失败：{error}"),
+    ))
+}
+
+fn ftp_backup_path(remote_path: &str) -> String {
+    let normalized = remote_path.trim().trim_end_matches('/');
+    let (parent, name) = normalized
+        .rsplit_once('/')
+        .map(|(parent, name)| (parent, name))
+        .unwrap_or(("", normalized));
+    let backup_name = format!(
+        "{}_备份_{}",
+        if name.is_empty() { normalized } else { name },
+        Local::now().format("%Y年%m月%d日_%H时%M分%S秒")
+    );
+    if parent.is_empty() {
+        backup_name
+    } else {
+        format!("{parent}/{backup_name}")
+    }
+}
+
+fn curl_ftp_upload_task(
+    host: &str,
+    port: u64,
+    username: &str,
+    password: &str,
+    remote_root: &str,
+    files: &[(PathBuf, String, u64)],
+) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let config = curl_ftp_task_config(host, port, username, password, remote_root, files)?;
+    let mut child = Command::new("curl")
+        .args(["--config", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("启动FTP上传失败：{error}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(config.as_bytes())
+            .map_err(|error| format!("写入FTP任务失败：{error}"))?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("等待FTP上传失败：{error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "FTP上传失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+fn curl_ftp_task_config(
+    host: &str,
+    port: u64,
+    username: &str,
+    password: &str,
+    remote_root: &str,
+    files: &[(PathBuf, String, u64)],
+) -> Result<String, String> {
+    let mut config = String::from("silent\nshow-error\nfail\nftp-create-dirs\n");
+    config.push_str(&format!(
+        "user = \"{}:{}\"\n",
+        curl_config_escape(username),
+        curl_config_escape(password)
+    ));
+    for (local_path, relative_path, _) in files {
+        let remote = ftp_remote_url(host, port, remote_root, relative_path)?;
+        config.push_str(&format!(
+            "upload-file = \"{}\"\nurl = \"{}\"\n",
+            curl_config_escape(&local_path.to_string_lossy()),
+            curl_config_escape(&remote)
+        ));
+    }
+    Ok(config)
+}
+
+fn ftp_remote_url(
+    host: &str,
+    port: u64,
+    remote_root: &str,
+    relative_path: &str,
+) -> Result<String, String> {
+    let mut url = Url::parse(&format!("ftp://{host}:{port}/"))
+        .map_err(|error| format!("FTP服务器地址无效：{error}"))?;
+    let remote_path = [
+        remote_root.trim_matches('/'),
+        relative_path.trim_matches('/'),
+    ]
+    .into_iter()
+    .filter(|value| !value.is_empty())
+    .collect::<Vec<_>>()
+    .join("/");
+    url.set_path(&remote_path);
+    Ok(url.to_string())
+}
+
+fn curl_config_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace(['\r', '\n'], "")
 }
 
 fn upload_source_arg(workspace_root: &Path, arguments: &Value) -> Result<UploadSource, ToolError> {
@@ -982,24 +1314,38 @@ fn deploy_upload_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolEr
     .map_err(|err| ToolError::new("tool.schema_invalid", format!("invalid upload url: {err}")))
 }
 
-fn direct_deploy_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
+fn direct_deploy_prepare_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
+    direct_deploy_phase_url(api_base_url, project_id, "direct-prepare")
+}
+
+fn direct_deploy_complete_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
+    direct_deploy_phase_url(api_base_url, project_id, "direct-complete")
+}
+
+fn direct_deploy_phase_url(
+    api_base_url: &str,
+    project_id: &str,
+    phase: &str,
+) -> Result<Url, ToolError> {
     let base = Url::parse(api_base_url.trim()).map_err(|err| {
         ToolError::new(
             "tool.schema_invalid",
             format!("invalid api_base_url: {err}"),
         )
     })?;
-    if !matches!(base.scheme(), "http" | "https") {
+    let is_local = matches!(base.host_str(), Some("127.0.0.1" | "localhost" | "::1"));
+    if base.scheme() != "https" && !is_local {
         return Err(ToolError::new(
-            "tool.schema_invalid",
-            "api_base_url must use http or https",
+            "deploy.insecure_credential_transport",
+            "桌面直连 FTP 需要通过 HTTPS 或本机后端获取部署连接配置",
         ));
     }
-    let clean_base = base.as_str().trim_end_matches('/').to_string();
+    let clean_base = base.as_str().trim_end_matches('/');
     Url::parse(&format!(
-        "{}/projects/{}/deploy/direct-upload",
+        "{}/projects/{}/deploy/{}",
         clean_base,
-        url_path_escape(project_id)
+        url_path_escape(project_id),
+        phase
     ))
     .map_err(|err| {
         ToolError::new(
@@ -1104,13 +1450,19 @@ mod tests {
     }
 
     #[test]
-    fn direct_deploy_url_targets_direct_upload_endpoint() {
-        let url = direct_deploy_url("http://127.0.0.1:8000/api", "proj-1").unwrap();
+    fn direct_deploy_phase_urls_target_prepare_and_complete_endpoints() {
+        let prepare = direct_deploy_prepare_url("http://127.0.0.1:8000/api", "proj-1").unwrap();
+        let complete = direct_deploy_complete_url("http://127.0.0.1:8000/api", "proj-1").unwrap();
 
         assert_eq!(
-            url.as_str(),
-            "http://127.0.0.1:8000/api/projects/proj-1/deploy/direct-upload"
+            prepare.as_str(),
+            "http://127.0.0.1:8000/api/projects/proj-1/deploy/direct-prepare"
         );
+        assert_eq!(
+            complete.as_str(),
+            "http://127.0.0.1:8000/api/projects/proj-1/deploy/direct-complete"
+        );
+        assert!(direct_deploy_prepare_url("http://example.com/api", "proj-1").is_err());
     }
 
     #[test]
@@ -1123,6 +1475,52 @@ mod tests {
         let success = direct_deploy_summary("direct-run-1", "success", "selected files");
         assert!(success.contains("直接部署并确认成功"));
         assert!(success.contains("direct deployment direct-run-1 状态：success"));
+    }
+
+    #[test]
+    fn ftp_task_uses_one_process_config_for_multiple_files() {
+        let files = vec![
+            (
+                PathBuf::from("/tmp/site/js/a.js"),
+                "js/a.js".to_string(),
+                10,
+            ),
+            (
+                PathBuf::from("/tmp/site/js/b.js"),
+                "js/b.js".to_string(),
+                20,
+            ),
+        ];
+        let config = curl_ftp_task_config(
+            "ftp.example.com",
+            21,
+            "ftp-user",
+            "secret",
+            "/www/site",
+            &files,
+        )
+        .unwrap();
+
+        assert_eq!(config.matches("user = ").count(), 1);
+        assert_eq!(config.matches("upload-file = ").count(), 2);
+        assert_eq!(config.matches("url = ").count(), 2);
+        assert!(config.contains("/www/site/js/a.js"));
+        assert!(config.contains("/www/site/js/b.js"));
+    }
+
+    #[test]
+    fn ftp_backup_path_keeps_original_name_and_second_precision() {
+        let backup = ftp_backup_path("/www/site");
+
+        assert!(backup.starts_with("/www/site_备份_"));
+        let timestamp = backup.trim_start_matches("/www/site_备份_");
+        assert_eq!(timestamp.chars().count(), 21);
+        assert!(timestamp.ends_with('秒'));
+        assert!(timestamp.contains('年'));
+        assert!(timestamp.contains('月'));
+        assert!(timestamp.contains('日'));
+        assert!(timestamp.contains('时'));
+        assert!(timestamp.contains('分'));
     }
 
     #[test]

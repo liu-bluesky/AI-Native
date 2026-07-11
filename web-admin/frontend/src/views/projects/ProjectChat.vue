@@ -9251,8 +9251,13 @@ function applyLocalLiuAgentConversationLifecycle(row, result = {}) {
   const lifecycleEntries = lifecycle.nodes.map((node) =>
     localLiuAgentLifecycleNodeProcessEntry(node, lifecycle),
   );
+  const existing = Array.isArray(row.processLog) ? row.processLog.slice() : [];
+  const hasRuntimeEntries = existing.some((item) => {
+    const eventType = String(item?.eventType || item?.event_type || "").trim();
+    return eventType && eventType !== "conversation_lifecycle";
+  });
+  if (hasRuntimeEntries) return false;
   if (result?.ok === false) {
-    const existing = Array.isArray(row.processLog) ? row.processLog.slice() : [];
     const existingIds = new Set(existing.map((item) => String(item?.id || "").trim()));
     row.processLog = existing.concat(
       lifecycleEntries.filter((item) => !existingIds.has(String(item?.id || "").trim())),
@@ -9369,14 +9374,6 @@ function localLiuAgentToolResultLabel(toolName = "") {
   return normalized || "Tool";
 }
 
-function localLiuAgentModelStepGoal(index = 0, payload = {}) {
-  const step = Number(index || payload?.index || 0) || 0;
-  const toolCount = Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0;
-  if (step <= 1) return "理解目标并制定下一步";
-  if (toolCount > 0) return "根据工具结果规划下一步";
-  return "整理结果并判断是否完成";
-}
-
 function localLiuAgentRuntimeEventTranscriptText(event = {}) {
   const type = String(event?.type || "").trim();
   const payload = localLiuAgentRuntimeEventPayload(event);
@@ -9390,45 +9387,19 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
       payload?.next_action || payload?.nextAction || "",
       260,
     );
-    const argumentsPreview = compactLocalLiuAgentInline(
-      payload?.arguments_preview || payload?.argumentsPreview || "",
-      1200,
-    );
     return [
-      currentFocus || summary || "推进当前任务",
+      currentFocus || summary,
       currentFocus && summary && summary !== currentFocus ? `  - ${summary}` : "",
-      nextAction ? `  - 下一步：${nextAction}` : "",
-      argumentsPreview ? `  - 工具参数：${argumentsPreview}` : "",
+      nextAction ? `  - 完成后：${nextAction}` : "",
     ]
       .filter(Boolean)
       .join("\n");
   }
-  if (type === "model_call_started") {
-    const index = Number(payload?.index || 0) || 0;
-    const provider = String(payload?.provider_id || payload?.providerId || "").trim();
-    const model = String(payload?.model_name || payload?.modelName || "").trim();
-    const runtime = [provider, model].filter(Boolean).join(" / ");
-    const messageCount = Number(payload?.message_count || payload?.messageCount || 0) || 0;
-    return [
-      `正在${localLiuAgentModelStepGoal(index, payload)}`,
-      index > 0 ? `  - 模型步骤：${index}` : "",
-      runtime ? `  - 模型：${runtime}` : "",
-      messageCount > 0 ? `  - 上下文：${messageCount} 条` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-  }
+  if (type === "model_call_started") return "";
   if (type === "model_step") {
-    const index = Number(payload?.index || 0) || 0;
-    const toolCount = Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0;
     const error = compactLocalLiuAgentInline(payload?.error || payload?.error_code || "", 260);
-    const ok = payload?.ok !== false;
-    return [
-      ok ? `已完成${localLiuAgentModelStepGoal(index, payload)}` : "模型调用失败",
-      index > 0 ? `  - 模型步骤：${index}` : "",
-      toolCount > 0 ? `  - 下一步工具调用：${toolCount} 个` : "  - 没有继续调用工具",
-      error ? `  - 错误：${error}` : "",
-    ]
+    if (payload?.ok !== false) return "";
+    return ["模型调用失败", error ? `  - 错误：${error}` : ""]
       .filter(Boolean)
       .join("\n");
   }
@@ -9525,7 +9496,7 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
     const summary = String(payload?.summary || "").trim();
     const currentFocus = String(payload?.current_focus || payload?.currentFocus || "").trim();
     const nextAction = String(payload?.next_action || payload?.nextAction || "").trim();
-    return [currentFocus || summary || "推进当前任务", nextAction ? `下一步：${nextAction}` : ""]
+    return [currentFocus || summary, nextAction ? `下一步：${nextAction}` : ""]
       .filter(Boolean)
       .join(" · ");
   }
@@ -15374,9 +15345,19 @@ function isCompletedDoneProcessLog(entry) {
 }
 
 function shouldHideProcessLogEntry(row, entry) {
-  return (
-    hasNonTerminalUserWaitingOperation(row) && isCompletedDoneProcessLog(entry)
-  );
+  if (hasNonTerminalUserWaitingOperation(row) && isCompletedDoneProcessLog(entry)) {
+    return true;
+  }
+  const eventType = String(
+    entry?.eventType || entry?.event_type || entry?.payload?.event_type || "",
+  ).trim();
+  if (eventType === "model_call_started") return true;
+  if (eventType === "model_step") {
+    const payload =
+      entry?.payload && typeof entry.payload === "object" ? entry.payload : {};
+    return payload?.ok !== false;
+  }
+  return false;
 }
 
 function messageProcessLogEntries(row) {
@@ -16911,6 +16892,14 @@ function applyLiuAgentPlanEvent(row, eventData = {}, requestId = "") {
       : hasBlocked || ["blocked", "failed"].includes(status)
         ? "blocked"
         : "running";
+  if (phase !== "running") {
+    if (!activeComposerPlanOwnerId.value || activeComposerPlanOwnerId.value === ownerId) {
+      activeComposerPlan.value = null;
+      activeComposerPlanOwnerId.value = "";
+      composerPlanExpanded.value = true;
+    }
+    return true;
+  }
   activeComposerPlan.value = {
     ownerId,
     planId,
@@ -20628,6 +20617,9 @@ async function continueLocalLiuAgentChatPermission(
     projectId: selectedProjectId.value,
     assistantMessageId: row.id,
     userMessageId: pending.userMessageId,
+    rootGoal:
+      String(pending.displayUserMessageContent || pending.finalUserPrompt || "").trim() ||
+      String(pending.localChatPayload?.message || "").trim(),
     workspacePath,
     cancelled: false,
     startedAt: Date.now(),
@@ -28977,6 +28969,7 @@ async function sendLocalLiuAgentChatRequest({
     projectId,
     assistantMessageId: assistantMessage.id,
     userMessageId: userMessage.id,
+    rootGoal: displayUserMessageContent || finalUserPrompt,
     workspacePath,
     cancelled: false,
     startedAt: Date.now(),
@@ -29180,58 +29173,65 @@ async function sendLocalLiuAgentChatRequest({
     autoExpand: !ok,
   });
   collapseMessageProcessAfterFinalAnswer(assistantMessage);
-  await persistLocalLiuAgentFinalMessages({
-    projectId,
-    chatSessionId: activeChatSessionId,
-    userMessage,
-    assistantMessage,
-    workspacePath,
-    sourceContext,
-    persistUser: false,
-  });
-  await upsertProjectChatRequirementRecord({
-    chatSessionId: activeChatSessionId,
-    status: ok ? "done" : "blocked",
-    rootGoal: displayUserMessageContent || finalUserPrompt,
-    messageId: userMessage.id,
-    assistantMessageId: assistantMessage.id,
-    resultSummary: assistantMessage.content,
-    verificationResult: ok
-      ? "桌面端 Tauri 本地 runtime 已返回 assistant 内容，并写入 workspace requirement 记录。"
-      : String(result?.error || "桌面端本地 runtime 执行失败。"),
-    source: "desktop_local_agent",
-    sourceContext: {
-      ...sourceContext,
-      runtime: "tauri",
-      workspace_path: workspacePath,
-      requirement_record_path: String(
-        result?.requirementRecordPath || result?.requirement_record_path || "",
-      ).trim(),
-      ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
-    },
-  });
-  await syncLocalLiuAgentRuntimeOutbox({
-    projectId,
-    chatSessionId: activeChatSessionId,
-    workspacePath,
-    rootGoal: displayUserMessageContent || finalUserPrompt,
-    messageId: userMessage.id,
-    assistantMessageId: assistantMessage.id,
-  });
-  await saveLocalLiuAgentSessionOfflineCache({
-    projectId,
-    chatSessionId: activeChatSessionId,
-    workspacePath,
-    status: ok ? "done" : "blocked",
-    userMessage,
-    assistantMessage,
-    historyRows,
-    rootGoal: displayUserMessageContent || finalUserPrompt,
-    modelRuntime,
-    result,
-  });
   deleteLocalLiuAgentActiveRun(activeChatSessionId);
   syncChatLoadingWithCurrentSession();
+  scrollToBottom();
+  void (async () => {
+    try {
+      await persistLocalLiuAgentFinalMessages({
+        projectId,
+        chatSessionId: activeChatSessionId,
+        userMessage,
+        assistantMessage,
+        workspacePath,
+        sourceContext,
+        persistUser: false,
+      });
+      await upsertProjectChatRequirementRecord({
+        chatSessionId: activeChatSessionId,
+        status: ok ? "done" : "blocked",
+        rootGoal: displayUserMessageContent || finalUserPrompt,
+        messageId: userMessage.id,
+        assistantMessageId: assistantMessage.id,
+        resultSummary: assistantMessage.content,
+        verificationResult: ok
+          ? "桌面端 Tauri 本地 runtime 已返回 assistant 内容，并写入 workspace requirement 记录。"
+          : String(result?.error || "桌面端本地 runtime 执行失败。"),
+        source: "desktop_local_agent",
+        sourceContext: {
+          ...sourceContext,
+          runtime: "tauri",
+          workspace_path: workspacePath,
+          requirement_record_path: String(
+            result?.requirementRecordPath || result?.requirement_record_path || "",
+          ).trim(),
+          ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
+        },
+      });
+      await syncLocalLiuAgentRuntimeOutbox({
+        projectId,
+        chatSessionId: activeChatSessionId,
+        workspacePath,
+        rootGoal: displayUserMessageContent || finalUserPrompt,
+        messageId: userMessage.id,
+        assistantMessageId: assistantMessage.id,
+      });
+      await saveLocalLiuAgentSessionOfflineCache({
+        projectId,
+        chatSessionId: activeChatSessionId,
+        workspacePath,
+        status: ok ? "done" : "blocked",
+        userMessage,
+        assistantMessage,
+        historyRows,
+        rootGoal: displayUserMessageContent || finalUserPrompt,
+        modelRuntime,
+        result,
+      });
+    } catch (error) {
+      console.warn("persist completed local liuAgent turn failed", error);
+    }
+  })();
   return result;
 }
 
@@ -29418,10 +29418,10 @@ async function cancelActiveLocalLiuAgentRun() {
     upsertMessageOperation(row, {
       operationId: `local-agent-cancelled:${row.id}`,
       kind: "request",
-      title: "桌面本地 Agent Runtime",
+      title: "本轮任务已取消",
       summary: message,
       detail: "前端已停止等待本轮本地运行结果；底层 Tauri 任务可能仍会短暂收尾，返回后不会覆盖当前消息。",
-      phase: "blocked",
+      phase: "completed",
       actionType: "none",
       meta: {
         local_liuagent_operation: "true",
@@ -29429,6 +29429,8 @@ async function cancelActiveLocalLiuAgentRun() {
         chat_session_id: chatSessionId,
         cwd: String(run.workspacePath || "").trim(),
         cancelled: true,
+        terminal_task: true,
+        resumable: false,
       },
     });
     appendMessageProcessLog(row, {
@@ -29454,8 +29456,11 @@ async function cancelActiveLocalLiuAgentRun() {
     });
     void upsertProjectChatRequirementRecord({
       chatSessionId,
-      status: "blocked",
-      rootGoal: message,
+      status: "cancelled",
+      rootGoal:
+        String(run.rootGoal || "").trim() ||
+        String(row.content || "").trim() ||
+        message,
       messageId: String(run.userMessageId || "").trim(),
       assistantMessageId: row.id,
       resultSummary: row.content,

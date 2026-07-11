@@ -20,6 +20,7 @@ import time
 import uuid
 import wave
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import asdict, replace
@@ -1372,7 +1373,8 @@ def _ftp_ensure_remote_dir(ftp: Any, remote_path: str) -> None:
         try:
             ftp.cwd(part)
         except Exception:
-            ftp.mkd(part)
+            with contextlib.suppress(Exception):
+                ftp.mkd(part)
             ftp.cwd(part)
 
 
@@ -2726,25 +2728,12 @@ def _project_deploy_upload_prepared_directory_to_ftp(
     execution_plan: dict[str, Any],
 ) -> dict[str, Any]:
     backup_result = _project_deploy_backup_remote_target(ftp, remote_path)
-    uploaded_files: list[dict[str, Any]] = []
-    for local_file in sorted(prepared_path.rglob("*")):
-        if not local_file.is_file():
-            continue
-        relative_path = local_file.relative_to(prepared_path).as_posix()
-        relative_parent = Path(relative_path).parent.as_posix()
-        remote_dir = remote_path.rstrip("/")
-        if relative_parent and relative_parent != ".":
-            remote_dir = f"{remote_dir}/{relative_parent}"
-        _ftp_ensure_remote_dir(ftp, remote_dir)
-        with local_file.open("rb") as handle:
-            ftp.storbinary(f"STOR {local_file.name}", handle)
-        uploaded_files.append(
-            {
-                "path": relative_path,
-                "remote_file": f"{remote_dir.rstrip('/')}/{local_file.name}",
-                "size": local_file.stat().st_size,
-            }
-        )
+    uploaded_files = _project_deploy_upload_directory_entries_to_ftp(
+        ftp=ftp,
+        remote_path=remote_path,
+        prepared_path=prepared_path,
+        root_entries=sorted(prepared_path.iterdir(), key=lambda item: item.name),
+    )
     return {
         "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
         "action": "upload_extracted_files",
@@ -2758,6 +2747,73 @@ def _project_deploy_upload_prepared_directory_to_ftp(
         "files": uploaded_files[:200],
         **backup_result,
     }
+
+
+def _project_deploy_upload_directory_entries_to_ftp(
+    *,
+    ftp: Any,
+    remote_path: str,
+    prepared_path: Path,
+    root_entries: list[Path],
+) -> list[dict[str, Any]]:
+    uploaded_files: list[dict[str, Any]] = []
+    for root_entry in root_entries:
+        local_files = [root_entry] if root_entry.is_file() else sorted(root_entry.rglob("*"))
+        for local_file in local_files:
+            if not local_file.is_file():
+                continue
+            relative_path = local_file.relative_to(prepared_path).as_posix()
+            relative_parent = Path(relative_path).parent.as_posix()
+            remote_dir = remote_path.rstrip("/")
+            if relative_parent and relative_parent != ".":
+                remote_dir = f"{remote_dir}/{relative_parent}"
+            _ftp_ensure_remote_dir(ftp, remote_dir)
+            with local_file.open("rb") as handle:
+                ftp.storbinary(f"STOR {local_file.name}", handle)
+            uploaded_files.append(
+                {
+                    "path": relative_path,
+                    "remote_file": f"{remote_dir.rstrip('/')}/{local_file.name}",
+                    "size": local_file.stat().st_size,
+                }
+            )
+    return uploaded_files
+
+
+def _project_deploy_open_ftp_connection(credential: Any) -> Any:
+    ftp = project_deploy_ftp_client_factory(timeout=30)
+    host = _normalize_project_deploy_text(getattr(credential, "host", ""), limit=300)
+    port = int(str(getattr(credential, "port", "") or "21").strip() or "21")
+    ftp.connect(host=host, port=port, timeout=30)
+    ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
+    return ftp
+
+
+def _project_deploy_close_ftp_connection(ftp: Any) -> None:
+    try:
+        ftp.quit()
+    except Exception:
+        with contextlib.suppress(Exception):
+            ftp.close()
+
+
+def _project_deploy_upload_directory_task(
+    *,
+    credential: Any,
+    remote_path: str,
+    prepared_path: Path,
+    root_entry: Path,
+) -> list[dict[str, Any]]:
+    ftp = _project_deploy_open_ftp_connection(credential)
+    try:
+        return _project_deploy_upload_directory_entries_to_ftp(
+            ftp=ftp,
+            remote_path=remote_path,
+            prepared_path=prepared_path,
+            root_entries=[root_entry],
+        )
+    finally:
+        _project_deploy_close_ftp_connection(ftp)
 
 
 def _project_deploy_upload_prepared_file_to_ftp(
@@ -2803,22 +2859,46 @@ def _project_deploy_direct_upload_to_ftp(
     source_path = Path(artifact.storage_path).expanduser().resolve()
     if not source_path.exists() or not (source_path.is_file() or source_path.is_dir()):
         raise RuntimeError("桌面端上传的部署源文件不存在")
-    ftp = project_deploy_ftp_client_factory(timeout=30)
-    host = _normalize_project_deploy_text(getattr(credential, "host", ""), limit=300)
-    port = int(str(getattr(credential, "port", "") or "21").strip() or "21")
+    ftp = _project_deploy_open_ftp_connection(credential)
     try:
-        ftp.connect(host=host, port=port, timeout=30)
-        ftp.login(user=getattr(credential, "username", ""), passwd=getattr(credential, "password", ""))
         if source_path.is_dir():
-            return _project_deploy_upload_prepared_directory_to_ftp(
-                ftp=ftp,
-                artifact=artifact,
-                target=target,
-                remote_path=remote_path,
-                prepared_path=source_path,
-                prepared_entries=artifact.file_tree if isinstance(artifact.file_tree, list) else [],
-                execution_plan={"source": "desktop_agent_direct_deploy", "archive_upload_policy": "none"},
-            )
+            backup_result = _project_deploy_backup_remote_target(ftp, remote_path)
+            _ftp_ensure_remote_dir(ftp, remote_path)
+            root_entries = sorted(source_path.iterdir(), key=lambda item: item.name)
+            max_threads = max(1, min(32, int(getattr(credential, "max_upload_threads", 4) or 4)))
+            worker_count = min(len(root_entries), max_threads) if root_entries else 1
+            _project_deploy_close_ftp_connection(ftp)
+            ftp = None
+            uploaded_files: list[dict[str, Any]] = []
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(
+                        _project_deploy_upload_directory_task,
+                        credential=credential,
+                        remote_path=remote_path,
+                        prepared_path=source_path,
+                        root_entry=root_entry,
+                    )
+                    for root_entry in root_entries
+                ]
+                for future in as_completed(futures):
+                    uploaded_files.extend(future.result())
+            uploaded_files.sort(key=lambda item: str(item.get("path") or ""))
+            return {
+                "target_id": _normalize_project_deploy_text(target.get("id"), limit=80),
+                "action": "upload_extracted_files",
+                "remote_path": remote_path,
+                "storage_kind": "directory",
+                "prepared_storage_kind": "directory",
+                "prepared_file_count": len(artifact.file_tree) if isinstance(artifact.file_tree, list) else len(uploaded_files),
+                "file_count": len(uploaded_files),
+                "root_task_count": len(root_entries),
+                "max_upload_threads": max_threads,
+                "worker_count": worker_count,
+                "size": artifact.size,
+                "files": uploaded_files[:200],
+                **backup_result,
+            }
         return _project_deploy_upload_prepared_file_to_ftp(
             ftp=ftp,
             artifact=artifact,
@@ -2828,11 +2908,8 @@ def _project_deploy_direct_upload_to_ftp(
             action="upload_file",
         )
     finally:
-        try:
-            ftp.quit()
-        except Exception:
-            with contextlib.suppress(Exception):
-                ftp.close()
+        if ftp is not None:
+            _project_deploy_close_ftp_connection(ftp)
 
 
 def _upload_project_deploy_artifact_to_ftp(
@@ -16263,97 +16340,100 @@ async def upload_project_deploy_artifact(
     )
 
 
-@router.post("/{project_id}/deploy/direct-upload")
-async def direct_upload_project_deploy(
+@router.post("/{project_id}/deploy/direct-prepare")
+async def prepare_project_desktop_direct_deploy(
     project_id: str,
-    request: Request,
+    payload: dict[str, Any] | None = Body(default=None),
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.projects")
     project = _ensure_project_manage_access(project_id, auth_payload)
-    try:
-        form = await request.form(
-            max_files=_PROJECT_DEPLOY_ARTIFACT_MAX_FILES,
-            max_fields=_PROJECT_DEPLOY_ARTIFACT_MAX_FILES + 100,
-            max_part_size=_PROJECT_DEPLOY_ARTIFACT_MANIFEST_MAX_CHARS,
-        )
-    except Exception as exc:
-        detail = str(exc)
-        if "Too many files" in detail:
-            raise HTTPException(
-                413,
-                f"too many deploy source files; maximum is {_PROJECT_DEPLOY_ARTIFACT_MAX_FILES}",
-            ) from exc
-        raise HTTPException(400, f"invalid direct deploy upload form: {detail}") from exc
-    profile = _project_deploy_form_text(form, "profile", "prod")
-    component = _project_deploy_form_text(form, "component", "")
-    artifact_name = _project_deploy_form_text(form, "artifact_name", "")
-    artifact_kind = _project_deploy_form_text(form, "artifact_kind", "source-bundle")
-    manifest = _parse_project_deploy_upload_manifest(
-        manifest_json=_project_deploy_form_text(form, "manifest_json", ""),
-        checksum=_project_deploy_form_text(form, "checksum", ""),
-        size=_project_deploy_form_int(form, "size", 0),
-        version=_project_deploy_form_text(form, "version", ""),
-    )
-    target_ids = _normalize_project_deploy_target_ids(
-        _project_deploy_form_text(form, "target_ids_json", "")
-    ) or _normalize_project_deploy_target_ids(manifest.get("target_ids"))
-    run_deploy_command = _project_deploy_form_text(form, "run_deploy_command", "true").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
+    body = payload if isinstance(payload, dict) else {}
+    profile_id = _normalize_project_deploy_text(body.get("profile"), limit=80) or "prod"
+    component_id = _normalize_project_deploy_text(body.get("component"), limit=80)
+    profile = _find_project_deploy_profile(project, profile_id)
+    component = _find_project_deploy_component(profile or {}, component_id) if profile else None
+    if profile is None or component is None:
+        raise HTTPException(400, "deploy profile or component not found")
+    targets = _select_project_deploy_targets(component, _normalize_project_deploy_target_ids(body.get("target_ids")))
+    prepared_targets = []
+    for target in targets:
+        credential = _resolve_visible_ftp_credential(target.get("ftp_credential_id"), auth_payload)
+        remote_path = _normalize_project_deploy_text(target.get("remote_path"), limit=1000)
+        if credential is None or not remote_path:
+            raise HTTPException(400, "部署目标缺少可用 FTP 连接或远端目录")
+        prepared_targets.append({
+            "id": _normalize_project_deploy_text(target.get("id"), limit=80),
+            "host": str(getattr(credential, "host", "") or "").strip(),
+            "port": int(str(getattr(credential, "port", "") or "21").strip() or "21"),
+            "username": str(getattr(credential, "username", "") or ""),
+            "password": str(getattr(credential, "password", "") or ""),
+            "max_upload_threads": max(1, min(32, int(getattr(credential, "max_upload_threads", 4) or 4))),
+            "remote_path": remote_path,
+        })
+    return {
+        "project_id": project.id,
+        "profile": profile_id,
+        "component": _normalize_project_deploy_text(component.get("id") or component_id, limit=80),
+        "targets": prepared_targets,
     }
-    chat_session_id = _project_deploy_form_text(form, "chat_session_id", "")
-    task_tree_node_id = _project_deploy_form_text(form, "task_tree_node_id", "")
-    requirement = _project_deploy_form_text(form, "requirement", "")
-    plan = _project_deploy_form_text(form, "plan", "")
-    upload_files = [item for item in form.getlist("files") if _is_project_deploy_upload_file(item)]
-    single_file = form.get("file")
-    if _is_project_deploy_upload_file(single_file):
-        upload_files = [single_file, *upload_files] if not upload_files else upload_files
-    if not upload_files:
-        raise HTTPException(400, "deploy source file is required")
-    total_size = 0
-    for upload in upload_files:
-        content = await _read_project_deploy_upload_content(upload)
-        setattr(upload, "_direct_deploy_content", content)
-        total_size += len(content)
-    if total_size > _PROJECT_DEPLOY_ARTIFACT_MAX_BYTES:
-        raise HTTPException(413, "deploy source is larger than 200MB")
-    temp_dir, source_path, storage_kind, file_entries, actual_size, checksum = _project_deploy_direct_upload_source_to_temp(
-        upload_files=upload_files,
-        manifest=manifest,
-        artifact_name=_normalize_project_deploy_text(artifact_name, limit=240)
-        or _normalize_project_deploy_text(upload_files[0].filename, limit=240)
-        or "deploy-source",
+
+
+@router.post("/{project_id}/deploy/direct-complete")
+async def complete_project_desktop_direct_deploy(
+    project_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    body = payload if isinstance(payload, dict) else {}
+    profile_id = _normalize_project_deploy_text(body.get("profile"), limit=80) or "prod"
+    component_id = _normalize_project_deploy_text(body.get("component"), limit=80)
+    profile = _find_project_deploy_profile(project, profile_id)
+    component = _find_project_deploy_component(profile or {}, component_id) if profile else None
+    if profile is None or component is None:
+        raise HTTPException(400, "deploy profile or component not found")
+    targets = _select_project_deploy_targets(component, _normalize_project_deploy_target_ids(body.get("target_ids")))
+    upload_results = body.get("upload_results") if isinstance(body.get("upload_results"), list) else []
+    status = "success" if upload_results and all(isinstance(item, dict) and bool(item.get("ok")) for item in upload_results) else "failed"
+    stage = "ftp_upload_completed" if status == "success" else "upload_failed"
+    command_results = []
+    command_targets = [target for target in targets if _project_deploy_target_deploy_command(target)]
+    if status == "success" and command_targets and not bool(body.get("run_deploy_command", True)):
+        status = "blocked"
+        stage = "blocked_deploy_command_not_requested"
+    elif status == "success":
+        for target in command_targets:
+            result = _project_deploy_agent_run_configured_remote_command(
+                project=project, target=target, args={}, requested_by=_current_username(auth_payload) or "unknown"
+            )
+            command_results.append(result)
+            if not bool(result.get("ok")):
+                status = "blocked" if result.get("blocked") else "failed"
+                stage = "blocked_deploy_command" if status == "blocked" else "deploy_command_failed"
+                break
+        if command_results and status == "success":
+            stage = "deploy_command_completed"
+    run_id = f"direct-run-{uuid.uuid4().hex[:12]}"
+    artifact = ProjectDeployArtifact(
+        id=f"direct-{uuid.uuid4().hex[:12]}", project_id=project.id, profile=profile_id,
+        component=_normalize_project_deploy_text(component.get("id") or component_id, limit=80),
+        artifact_name=_normalize_project_deploy_text(body.get("artifact_name"), limit=240),
+        artifact_kind=_normalize_project_deploy_text(body.get("artifact_kind"), limit=120),
+        size=int(body.get("size") or 0), status=status,
     )
-    try:
-        return await run_in_threadpool(
-            _execute_project_desktop_direct_deploy,
-            project=project,
-            profile_id=profile,
-            component_id=component,
-            target_ids=target_ids,
-            artifact_name=_normalize_project_deploy_text(artifact_name, limit=240)
-            or _normalize_project_deploy_text(upload_files[0].filename, limit=240)
-            or "deploy-source",
-            artifact_kind=artifact_kind,
-            manifest=manifest,
-            source_path=source_path,
-            storage_kind=storage_kind,
-            file_entries=file_entries,
-            total_size=actual_size,
-            checksum=checksum,
-            requested_by=_current_username(auth_payload) or "unknown",
-            chat_session_id=chat_session_id,
-            task_tree_node_id=task_tree_node_id,
-            requirement=requirement,
-            plan=plan,
-            run_deploy_command=run_deploy_command,
-        )
-    finally:
-        temp_dir.cleanup()
+    notify_result = _build_project_deploy_notification_preview(
+        project, artifact, status=status, run_id=run_id, stage=stage,
+        log_excerpt="desktop direct FTP upload completed", deploy_time=_now_iso(),
+        idempotency_scope=f"desktop-direct-{run_id}-{_current_username(auth_payload)}",
+    )
+    return {
+        "status": status, "deployment_confirmed_success": status == "success", "stage": stage,
+        "run_id": run_id, "project_id": project.id, "profile": profile_id,
+        "component": artifact.component, "upload_results": upload_results,
+        "command_results": command_results, "notify_result": notify_result,
+    }
 
 
 @router.post("/{project_id}/deploy-artifacts/{artifact_id}/deploy")

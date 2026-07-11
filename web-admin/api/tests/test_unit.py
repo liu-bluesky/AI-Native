@@ -8997,7 +8997,9 @@ def test_project_desktop_direct_deploy_uploads_original_directory_without_artifa
 
     deploy_store = ProjectDeployStore(tmp_path)
     monkeypatch.setattr(projects_router, "project_deploy_store", deploy_store)
-    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore())
+    credential = _FakeFtpCredential()
+    credential.max_upload_threads = 1
+    monkeypatch.setattr(projects_router, "ftp_credential_store", _FakeFtpCredentialStore([credential]))
 
     class FakeFtp:
         uploaded = []
@@ -9093,6 +9095,10 @@ def test_project_desktop_direct_deploy_uploads_original_directory_without_artifa
     assert result["deployment_confirmed_success"] is True
     assert result["artifact"]["persisted_to_deploy_artifacts"] is False
     assert deploy_store.list_artifacts("proj-direct") == []
+    upload_result = result["upload_results"][0]
+    assert upload_result["root_task_count"] == 2
+    assert upload_result["max_upload_threads"] == 1
+    assert upload_result["worker_count"] == 1
     assert ("/www/site", "STOR index.html", b"<h1>home</h1>") in FakeFtp.uploaded
     assert ("/www/site/login", "STOR index.html", b"login") in FakeFtp.uploaded
 
@@ -12649,7 +12655,9 @@ def test_project_detail_ai_deploy_routes_are_removed_but_chat_deploy_routes_rema
     assert "/api/projects/{project_id}/deploy-artifacts/{artifact_id}/deploy/ai-execute" not in route_paths
     assert "/api/projects/{project_id}/deploy-artifacts/{artifact_id}/plan/generate" not in route_paths
     assert "/api/projects/{project_id}/deploy-options" in route_paths
-    assert "/api/projects/{project_id}/deploy/direct-upload" in route_paths
+    assert "/api/projects/{project_id}/deploy/direct-prepare" in route_paths
+    assert "/api/projects/{project_id}/deploy/direct-complete" in route_paths
+    assert "/api/projects/{project_id}/deploy/direct-upload" not in route_paths
     assert "/api/projects/{project_id}/deploy-artifacts/{artifact_id}/deploy" in route_paths
 
 
