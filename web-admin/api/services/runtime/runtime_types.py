@@ -18,6 +18,8 @@ class ChatRuntimeContext:
     workspace_path: str = ""
     host_workspace_path: str = ""
     skill_resource_directory: str = ""
+    skill_directory: str = ""
+    rule_directory: str = ""
     chat_surface: str = "main-chat"
     history: list[dict[str, Any]] = field(default_factory=list)
     images: list[str] = field(default_factory=list)

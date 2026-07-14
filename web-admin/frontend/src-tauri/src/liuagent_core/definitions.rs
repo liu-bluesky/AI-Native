@@ -172,7 +172,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "run_command",
-            description: "在本地 workspace 内执行命令",
+            description: "在本地 workspace 内执行命令。预计会退出的命令使用前台模式；服务器、watcher、开发服务等长期运行命令必须设置 background=true，工具会立即返回 session_id，后续统一使用 process 工具查询日志、等待、输入或终止。",
             action: "command.run",
             risk: "medium",
             requires_approval: true,
@@ -182,14 +182,60 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "cmd": {"type": "string"},
                     "cwd": {"type": "string", "default": "."},
+                    "background": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "是否创建后台进程会话。服务器、watcher、npm run dev 等不会自行退出的命令应设为 true；成功后立即返回 session_id。"
+                    },
                     "timeout_ms": {
                         "type": "number",
                         "default": 30000,
-                        "description": "命令超时时间。普通命令默认 30 秒；构建、测试、打包、部署类命令可设置到小时级，最大 21600000ms。"
+                        "description": "前台命令最长等待时间，默认 30 秒，最大 21600000ms；background=true 时后台进程立即返回 session_id，不使用该值等待退出。"
                     },
                     "max_output_chars": {"type": "number", "default": 20000}
                 },
                 "required": ["cmd"]
+            }),
+        },
+        ToolDefinition {
+            name: "process",
+            description: "管理 run_command(background=true) 创建的后台进程。使用 action=list 列出进程；poll 查询状态和本次新增输出；log 分页读取日志；wait 在有限时间内等待退出；kill 终止整个进程组，并由 Runtime 权限门冻结本次准确调用等待用户确认，模型不得先用自然语言询问；write 写入原始 stdin；submit 写入并追加回车；close 关闭 stdin 并发送 EOF。",
+            action: "command.process",
+            risk: "low",
+            requires_approval: false,
+            scope: "workspace",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close"]
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "run_command 后台模式返回的进程会话 ID；list 之外的 action 必填。"
+                    },
+                    "data": {
+                        "type": "string",
+                        "description": "write 或 submit 写入 stdin 的文本。"
+                    },
+                    "timeout_ms": {
+                        "type": "number",
+                        "default": 5000,
+                        "description": "wait 最长等待毫秒数，最大 300000。"
+                    },
+                    "offset": {
+                        "type": "number",
+                        "default": 0,
+                        "description": "log 的起始行；0 表示读取最后 limit 行。"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "default": 200,
+                        "description": "log 返回的最大行数，最大 2000。"
+                    }
+                },
+                "required": ["action"]
             }),
         },
         ToolDefinition {
@@ -303,7 +349,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_project",
-            description: "读取当前桌面登录用户有权限访问的真实项目详情。用户给出项目 ID 或需要查看某个项目元数据时使用。",
+            description: "读取当前桌面登录用户有权限访问的真实项目详情及项目绑定智能体清单。回答项目绑定几个/哪些智能体时，必须使用 bound_agent_count / bound_agents；selected_employee_ids 为空仅表示自动分配。",
             action: "project.read",
             risk: "low",
             requires_approval: false,
@@ -373,53 +419,6 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     {"required": ["artifact_path"]},
                     {"required": ["artifact_paths"]}
                 ]
-            }),
-        },
-        ToolDefinition {
-            name: "list_mcp_tools",
-            description: "列出当前会话统一 MCP registry 中的工具。MCP 服务来源于对话/项目设置；stdio/http/sse 都是 MCP transport。",
-            action: "mcp.list",
-            risk: "low",
-            requires_approval: false,
-            scope: "project",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string"}
-                }
-            }),
-        },
-        ToolDefinition {
-            name: "read_mcp_resource",
-            description: "读取当前会话统一 MCP registry 中的资源，例如 query://usage-guide 或 client-profile 资源。",
-            action: "mcp.read",
-            risk: "low",
-            requires_approval: false,
-            scope: "project",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string"},
-                    "uri": {"type": "string"}
-                },
-                "required": ["server", "uri"]
-            }),
-        },
-        ToolDefinition {
-            name: "call_mcp_tool",
-            description: "调用当前会话统一 MCP registry 中的工具。先用 list_mcp_tools 获取 server/tool 与参数 schema。",
-            action: "mcp.call",
-            risk: "medium",
-            requires_approval: true,
-            scope: "project",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "server": {"type": "string"},
-                    "tool": {"type": "string"},
-                    "arguments": {"type": "object"}
-                },
-                "required": ["server", "tool"]
             }),
         },
     ]

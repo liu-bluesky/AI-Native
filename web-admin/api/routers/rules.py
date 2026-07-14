@@ -135,14 +135,6 @@ def _projects_having_rule(rule_id: str) -> list[dict[str, str]]:
     return items
 
 
-def _is_project_experience_rule(rule: Rule | None) -> bool:
-    if rule is None:
-        return False
-    domain = str(getattr(rule, "domain", "") or "").strip()
-    title = str(getattr(rule, "title", "") or "").strip()
-    return domain == "项目经验" and title.startswith("经验卡片 · ")
-
-
 def _rule_system_source(rule: Rule | None) -> str:
     if rule is None:
         return ""

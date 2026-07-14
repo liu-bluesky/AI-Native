@@ -369,6 +369,8 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "external_agent_type": "codex_cli",
     "local_connector_id": "",
     "connector_workspace_path": "",
+    "skill_directory": "",
+    "rule_directory": "",
     "connector_sandbox_mode": "workspace-write",
     "connector_sandbox_mode_explicit": False,
     "selected_employee_id": "",
@@ -4843,6 +4845,8 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["connector_sandbox_mode_explicit"] = sandbox_mode_explicit
     settings["local_connector_id"] = str(source.get("local_connector_id", settings["local_connector_id"]) or "").strip()
     settings["connector_workspace_path"] = str(source.get("connector_workspace_path", settings["connector_workspace_path"]) or "").strip()
+    settings["skill_directory"] = str(source.get("skill_directory", settings["skill_directory"]) or "").strip()[:2000]
+    settings["rule_directory"] = str(source.get("rule_directory", settings["rule_directory"]) or "").strip()[:2000]
     settings["selected_employee_id"] = str(source.get("selected_employee_id", settings["selected_employee_id"]) or "").strip()
     settings["selected_employee_ids"] = _to_unique_string_list(source.get("selected_employee_ids"), max_items=200, max_item_len=120)
     if not settings["selected_employee_ids"] and settings["selected_employee_id"]:
@@ -5698,6 +5702,7 @@ def _project_chat_employee_candidates(project_id: str) -> list[dict[str, Any]]:
                 "enabled": bool(item.get("enabled", True)),
                 "skills": list(item.get("skills") or []),
                 "skill_names": list(item.get("skill_names") or []),
+                "skill_bindings": list(item.get("skill_bindings") or []),
                 "rule_bindings": list(item.get("rule_bindings") or []),
                 "tone": str(item.get("tone") or ""),
                 "verbosity": str(item.get("verbosity") or ""),
@@ -6010,7 +6015,7 @@ def _project_tool_display_name(tool_name: str) -> str:
 
 
 def _build_project_related_mcp_modules(project_id: str) -> list[dict[str, Any]]:
-    from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+    from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools
 
     project = project_store.get(project_id)
     project_workspace_path = str(getattr(project, "workspace_path", "") or "").strip()
@@ -6021,7 +6026,7 @@ def _build_project_related_mcp_modules(project_id: str) -> list[dict[str, Any]]:
         if str(item.get("id") or "")
     }
     modules: list[dict[str, Any]] = []
-    available_tools = list_project_proxy_tools_runtime(project_id, "") + build_project_host_command_tools(
+    available_tools = list_project_proxy_tools(project_id, "") + build_project_host_command_tools(
         project_workspace_path
     )
     for tool in available_tools:
@@ -6230,7 +6235,7 @@ def _collect_runtime_tools(
     tool_priority: list[str] | None,
     project_workspace_path: str = "",
 ) -> list[dict[str, Any]]:
-    from services.mcp.dynamic_mcp_runtime import list_project_external_tools_runtime, list_project_proxy_tools_runtime
+    from services.mcp.dynamic_mcp_runtime import list_project_external_tools_runtime, list_project_proxy_tools
 
     project_tools = collect_project_runtime_tools_via_registry(
         project_id,
@@ -6238,7 +6243,7 @@ def _collect_runtime_tools(
         enabled_tool_names=enabled_tool_names,
         explicit_tool_filter=explicit_tool_filter,
         tool_priority=tool_priority,
-        list_internal_tools=lambda current_project_id: list_project_proxy_tools_runtime(
+        list_internal_tools=lambda current_project_id: list_project_proxy_tools(
             current_project_id,
             "",
         ),
@@ -6293,6 +6298,8 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
         "connector_workspace_path": req.connector_workspace_path,
         "connector_sandbox_mode": req.connector_sandbox_mode,
         "connector_sandbox_mode_explicit": req.connector_sandbox_mode_explicit,
+        "skill_directory": req.skill_directory,
+        "rule_directory": req.rule_directory,
         "selected_employee_id": req.employee_id,
         "selected_employee_ids": req.employee_ids,
         "employee_coordination_mode": req.employee_coordination_mode,
@@ -6365,6 +6372,75 @@ def _build_skill_resource_prompt_block(skill_resource_directory: str) -> str:
         "\n如果当前模式无法直接访问该目录，请先明确说明限制，再给出下一步操作建议。"
         "\n除非用户明确要求，不要把该目录中的技能自动导入系统。"
     )
+
+
+def _build_runtime_directory_prompt_block(
+    skill_directory: str,
+    rule_directory: str,
+) -> str:
+    skill_path = _normalize_skill_resource_directory(skill_directory)
+    rule_path = _normalize_skill_resource_directory(rule_directory)
+    if not skill_path and not rule_path:
+        return ""
+    lines = ["当前对话已配置桌面智能体本地能力目录："]
+    if skill_path:
+        lines.append(f"- 技能目录：`{skill_path}`。优先读取其中的 SKILL.md、manifest、模板和脚本。")
+    if rule_path:
+        lines.append(f"- 规则目录：`{rule_path}`。优先读取其中与当前任务相关的规则正文。")
+    lines.extend(
+        [
+            "目录只表示允许优先检索的本地来源；仍需遵守当前工作区和沙箱权限。",
+            "不要仅凭目录名臆造技能或规则；访问失败时明确报告具体路径和原因。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_project_employee_catalog_prompt(
+    employee_candidates: list[dict[str, Any]] | None,
+    selected_employee_ids: set[str] | None = None,
+) -> str:
+    employees = [
+        item
+        for item in (employee_candidates or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+    selected_ids = {str(item or "").strip() for item in (selected_employee_ids or set()) if str(item or "").strip()}
+    lines = [
+        f"当前项目绑定智能体目录（权威总数：{len(employees)} 个）。",
+        "此目录来自项目绑定关系，是回答‘当前项目绑定几个/哪些智能体’时的唯一事实来源。",
+        "selected_employee_ids / selected_employee_id 只表示当前对话手动选择的执行智能体，不代表项目绑定总数；项目 user_members / user_count 表示登录用户成员，也不是智能体。",
+    ]
+    if not employees:
+        lines.append("- 当前项目未绑定任何智能体。")
+        return "\n".join(lines)
+    lines.append("即使对话设置未手动选择智能体，也必须把这些智能体作为项目可用能力候选；结合目标、技能和规则自主选择，不要声称无法获取项目智能体。")
+    for employee in employees:
+        employee_id = str(employee.get("id") or "").strip()
+        employee_name = str(employee.get("name") or employee_id).strip() or employee_id
+        selected_label = "，当前已选" if employee_id in selected_ids else ""
+        lines.append(
+            f"- {employee_name} (`{employee_id}`{selected_label})："
+            f"目标={str(employee.get('goal') or employee.get('description') or '-').strip() or '-'}"
+        )
+        skill_bindings = [item for item in (employee.get("skill_bindings") or []) if isinstance(item, dict)]
+        if skill_bindings:
+            lines.append("  绑定技能：")
+            for skill in skill_bindings[:20]:
+                skill_id = str(skill.get("id") or "").strip()
+                skill_name = str(skill.get("name") or skill_id).strip() or skill_id
+                description = _summarize_prompt_text(skill.get("description"), limit=300) or "暂无描述"
+                lines.append(f"  - {skill_name} (`{skill_id}`)：{description}")
+        rule_bindings = [item for item in (employee.get("rule_bindings") or []) if isinstance(item, dict)]
+        if rule_bindings:
+            lines.append("  绑定规则：")
+            for rule in rule_bindings[:30]:
+                rule_id = str(rule.get("id") or "").strip()
+                title = str(rule.get("title") or rule_id).strip() or rule_id
+                domain = str(rule.get("domain") or "").strip() or "未分类"
+                content = _summarize_prompt_text(rule.get("content"), limit=700) or "正文为空"
+                lines.append(f"  - {title} (`{rule_id}` / {domain})：{content}")
+    return "\n".join(lines)
 
 
 def _summarize_prompt_values(
@@ -6975,6 +7051,7 @@ def _build_project_chat_messages(
     images: list[str] | None = None,
     selected_employee: dict[str, Any] | None = None,
     selected_employees: list[dict[str, Any]] | None = None,
+    employee_candidates: list[dict[str, Any]] | None = None,
     tools: list[dict] | None = None,
     custom_system_prompt: str | None = None,
     history_limit: int = 20,
@@ -6982,6 +7059,8 @@ def _build_project_chat_messages(
     prefer_conclusion_first: bool = True,
     workspace_path: str = "",
     skill_resource_directory: str = "",
+    skill_directory: str = "",
+    rule_directory: str = "",
     employee_coordination_mode: str = "auto",
     source_context: dict[str, str] | None = None,
     task_tree_prompt: str = "",
@@ -7038,6 +7117,16 @@ def _build_project_chat_messages(
             lines.append(f"员工默认工作流：{_summarize_prompt_values(workflow)}")
         selected_employee_prompt = "\n".join(lines)
 
+    selected_employee_ids = {
+        str(item.get("id") or "").strip()
+        for item in (selected_employees or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    project_employee_catalog_prompt = _build_project_employee_catalog_prompt(
+        employee_candidates,
+        selected_employee_ids,
+    )
+
     workflow_skill_bindings = _resolve_project_workflow_skill_bindings(project)
     workflow_skill_prompt = ""
     if workflow_skill_bindings:
@@ -7067,12 +7156,14 @@ def _build_project_chat_messages(
         base_prompt,
         project_prompt,
         ui_rule_prompt,
+        project_employee_catalog_prompt,
         selected_employee_prompt,
         workflow_skill_prompt,
         collaboration_prompt,
         order_hint,
         style_hint,
         _build_skill_resource_prompt_block(skill_resource_directory),
+        _build_runtime_directory_prompt_block(skill_directory, rule_directory),
         build_capability_routing_prompt(tools),
         _build_url_fetch_prompt(user_message, tools),
         _build_host_command_execution_prompt(user_message, tools),
@@ -8229,6 +8320,8 @@ def _build_global_chat_messages(
     answer_style: str = "concise",
     prefer_conclusion_first: bool = True,
     skill_resource_directory: str = "",
+    skill_directory: str = "",
+    rule_directory: str = "",
     chat_surface: str = "main-chat",
     runtime_snapshot: dict[str, Any] | None = None,
     assistant_workflow_state: dict[str, Any] | None = None,
@@ -8262,12 +8355,17 @@ def _build_global_chat_messages(
         prefer_conclusion_first=prefer_conclusion_first,
     )
     skill_resource_prompt = _build_skill_resource_prompt_block(skill_resource_directory)
+    runtime_directory_prompt = _build_runtime_directory_prompt_block(
+        skill_directory,
+        rule_directory,
+    )
     system_prompt = join_prompt_sections(
         base_prompt,
         "当前模式：通用对话（未选择项目）。",
         order_hint,
         style_hint,
         skill_resource_prompt,
+        runtime_directory_prompt,
         build_assistant_workflow_prompt(assistant_workflow_state),
         build_capability_routing_prompt(tools),
     )
@@ -10986,6 +11084,8 @@ def _build_project_chat_ai_request_context_payload(
         "chat_surface": str(getattr(runtime_context, "chat_surface", "") or "").strip(),
         "workspace_path": str(getattr(runtime_context, "workspace_path", "") or "").strip(),
         "host_workspace_path": str(getattr(runtime_context, "host_workspace_path", "") or "").strip(),
+        "skill_directory": str(getattr(runtime_context, "skill_directory", "") or "").strip(),
+        "rule_directory": str(getattr(runtime_context, "rule_directory", "") or "").strip(),
         "messages": messages,
         "tools": tools,
         "tool_count": len(tools),
@@ -12325,6 +12425,29 @@ async def get_query_mcp_runtime(
     }
 
 
+@router.get("/{project_id}/mcp-runtime/catalog")
+async def get_project_mcp_runtime_catalog(
+    project_id: str,
+    server_id: str = Query("", description="逻辑 MCP Server ID；留空仅返回服务目录"),
+    auth_payload: dict = Depends(require_auth),
+):
+    """读取桌面单一 MCP Runtime 的真实服务目录和按服务工具索引。"""
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    from services.mcp.dynamic_mcp_runtime import get_project_runtime_mcp_catalog_runtime
+
+    result = await get_project_runtime_mcp_catalog_runtime(project_id, server_id)
+    if not bool(result.get("ok", False)):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": str(result.get("code") or "mcp.server_not_found"),
+                "message": str(result.get("message") or "MCP server not found"),
+            },
+        )
+    return result
+
+
 @router.post("/chat/global/voice-output/system-speech")
 async def play_global_assistant_system_speech(
     req: GlobalAssistantSpeechReq,
@@ -13378,6 +13501,8 @@ async def ws_global_assistant_chat(websocket: WebSocket):
                     runtime_settings.get("prefer_conclusion_first", True)
                 ),
                 skill_resource_directory=req.skill_resource_directory,
+                skill_directory=req.skill_directory,
+                rule_directory=req.rule_directory,
                 chat_surface=req.chat_surface,
                 runtime_snapshot=runtime_snapshot,
                 assistant_workflow_state=assistant_workflow_state,
@@ -13388,6 +13513,8 @@ async def ws_global_assistant_chat(websocket: WebSocket):
                 username=username,
                 chat_session_id=chat_session_id,
                 skill_resource_directory=req.skill_resource_directory,
+                skill_directory=req.skill_directory,
+                rule_directory=req.rule_directory,
                 chat_surface=req.chat_surface,
                 history=req.history,
                 images=normalized_images,
@@ -13622,6 +13749,8 @@ async def chat_without_project(
             runtime_settings.get("prefer_conclusion_first", True)
         ),
         skill_resource_directory=req.skill_resource_directory,
+        skill_directory=req.skill_directory,
+        rule_directory=req.rule_directory,
         chat_surface=req.chat_surface,
         runtime_snapshot=runtime_snapshot,
         assistant_workflow_state=assistant_workflow_state,
@@ -13632,6 +13761,8 @@ async def chat_without_project(
         username=_current_username(auth_payload),
         chat_session_id=str(req.chat_session_id or "").strip(),
         skill_resource_directory=req.skill_resource_directory,
+        skill_directory=req.skill_directory,
+        rule_directory=req.rule_directory,
         chat_surface=req.chat_surface,
         history=req.history,
         images=normalized_images,
@@ -16601,7 +16732,7 @@ async def list_project_studio_model_sources(
 @router.post("/{project_id}/smart-query")
 async def smart_query_project(project_id: str, request: dict, auth_payload: dict = Depends(require_auth)):
     """AI 智能查询端点：自动决策调用数据库或工具"""
-    from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+    from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools
     from services.providers.llm_provider_service import get_llm_provider_service
     from starlette.concurrency import run_in_threadpool
     import json
@@ -16627,9 +16758,9 @@ async def smart_query_project(project_id: str, request: dict, auth_payload: dict
     provider_id = provider.get("id", "")
     model_name = provider.get("default_model", "")
 
-    from services.mcp.dynamic_mcp_runtime import invoke_project_tool_runtime, list_project_external_tools_runtime, list_project_proxy_tools_runtime
+    from services.mcp.dynamic_mcp_runtime import invoke_project_skill_tool, list_project_external_tools_runtime, list_project_proxy_tools
 
-    tools = list_project_proxy_tools_runtime(project_id, "") + list_project_external_tools_runtime(project_id)
+    tools = list_project_proxy_tools(project_id, "") + list_project_external_tools_runtime(project_id)
     decision = await ai_decide_action(llm_service, provider_id, model_name, user_message, project_id, tools)
 
     if not decision or decision.get("action") == "chat":
@@ -16643,7 +16774,7 @@ async def smart_query_project(project_id: str, request: dict, auth_payload: dict
 
     if action == "call_tool":
         tool_result = await run_in_threadpool(
-            invoke_project_tool_runtime, project_id, decision.get("tool", ""), "", decision.get("args", {}), "{}", 60
+            invoke_project_skill_tool, project_id, decision.get("tool", ""), "", decision.get("args", {}), "{}", 60
         )
         return {"status": "ok", "action": "call_tool", "result": tool_result, "reason": decision.get("reason")}
 
@@ -22348,6 +22479,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 project, effective_user_message, req.history, normalized_images,
                 selected_employee=selected_employee,
                 selected_employees=selected_employees,
+                employee_candidates=candidates,
                 tools=tools,
                 custom_system_prompt=_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")),
                 history_limit=int(runtime_settings.get("history_limit") or 20),
@@ -22355,6 +22487,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 prefer_conclusion_first=bool(runtime_settings.get("prefer_conclusion_first", True)),
                 workspace_path=effective_workspace_path,
                 skill_resource_directory=req.skill_resource_directory,
+                skill_directory=req.skill_directory or str(runtime_settings.get("skill_directory") or ""),
+                rule_directory=req.rule_directory or str(runtime_settings.get("rule_directory") or ""),
                 employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
                 source_context=source_context,
                 task_tree_prompt=task_tree_prompt,
@@ -22369,6 +22503,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 workspace_path=effective_workspace_path,
                 host_workspace_path=str(project.workspace_path or "").strip(),
                 skill_resource_directory=req.skill_resource_directory,
+                skill_directory=req.skill_directory or str(runtime_settings.get("skill_directory") or ""),
+                rule_directory=req.rule_directory or str(runtime_settings.get("rule_directory") or ""),
                 chat_surface=chat_surface,
                 history=req.history,
                 images=normalized_images,
@@ -23597,6 +23733,7 @@ async def stream_project_chat(
         normalized_images,
         selected_employee=selected_employee,
         selected_employees=selected_employees,
+        employee_candidates=candidates,
         tools=tools,
         custom_system_prompt=_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")),
         history_limit=int(runtime_settings.get("history_limit") or 20),
@@ -23604,6 +23741,8 @@ async def stream_project_chat(
         prefer_conclusion_first=bool(runtime_settings.get("prefer_conclusion_first", True)),
         workspace_path=effective_workspace_path,
         skill_resource_directory=req.skill_resource_directory,
+        skill_directory=req.skill_directory or str(runtime_settings.get("skill_directory") or ""),
+        rule_directory=req.rule_directory or str(runtime_settings.get("rule_directory") or ""),
         employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
         source_context=source_context,
         task_tree_prompt=task_tree_prompt,
@@ -23618,6 +23757,8 @@ async def stream_project_chat(
         workspace_path=effective_workspace_path,
         host_workspace_path=str(project.workspace_path or "").strip(),
         skill_resource_directory=req.skill_resource_directory,
+        skill_directory=req.skill_directory or str(runtime_settings.get("skill_directory") or ""),
+        rule_directory=req.rule_directory or str(runtime_settings.get("rule_directory") or ""),
         chat_surface=chat_surface,
         history=req.history,
         images=normalized_images,

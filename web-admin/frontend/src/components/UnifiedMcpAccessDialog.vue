@@ -144,7 +144,7 @@ const fallbackHttpRuntimeUrl = computed(() => buildRuntimeUrl(`/mcp/query/mcp?${
 const sseRuntimeUrl = computed(() => runtimeAccess.value.sseUrl || fallbackSseRuntimeUrl.value)
 const httpRuntimeUrl = computed(() => runtimeAccess.value.httpUrl || fallbackHttpRuntimeUrl.value)
 const queryCenterDescription = computed(() => {
-  return `统一查询 MCP 入口（server 名：${QUERY_CENTER_SERVER_NAME}），提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、本地运行轨迹和交付报告能力。注意：description 只是接入说明；真正绑定靠 URL 参数提供的默认上下文，以及 MCP 方法 bind_project_context 写入当前会话绑定。`
+  return `统一查询 MCP 入口（server 名：${QUERY_CENTER_SERVER_NAME}），提供项目/智能体/规则查询、任务分析、上下文聚合、执行规划、任务树推进、本地运行轨迹和交付报告能力。注意：description 只是接入说明；真正绑定靠 URL 参数提供的默认上下文，以及 MCP 方法 bind_project_context 写入当前会话绑定。`
 })
 
 function getFallbackCliProfile(profileKey = 'codex') {
@@ -170,7 +170,7 @@ function buildFallbackCliPrompt(profileKey = 'codex') {
     '强制接入步骤：',
     `1. 先读取 \`query://usage-guide\`；当前客户端是 ${profile.label}，再读取对应画像 \`${profile.resource}\`。`,
     '1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和对应 client profile，禁止反复调用 `list_mcp_resources`。',
-    '1.2 对“有几个员工 / 有哪些员工 / 有哪些工具 / 有哪些规则”这类简单查询，且 `project_id` 已明确时，直接调用对应业务工具（如 `list_project_members(project_id=...)`、`list_project_proxy_tools(...)`），不要为了满足 bootstrap 机械列资源目录。',
+    '1.2 对“有几个智能体 / 有哪些智能体 / 有哪些工具 / 有哪些规则”这类简单查询，且 `project_id` 已明确时，直接调用对应业务工具（如 `list_project_members(project_id=...)`、`list_project_proxy_tools(...)`），不要为了满足 bootstrap 机械列资源目录。',
     '2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用；canonical session 状态只使用 `active-sessions/<chat_session_id>.json` 与 `session-history/<project_id>__<chat_session_id>.json`。',
     '3. 再检查 `.ai-employee/skills/query-mcp-workflow/` 是否已存在；缺失时先从系统技能库同步或创建到当前工作区，已存在则直接复用。',
     '4. 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md`、`manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。',
@@ -213,7 +213,7 @@ function buildFallbackCliPrompt(profileKey = 'codex') {
     '',
     '回答要求：',
     '- 先基于 MCP 查询结果和本地技能内容回答，不要把猜测写成事实。',
-    '- 若信息来自 MCP，尽量保留对应的项目 / 员工 / 规则 ID，方便追溯。',
+    '- 若信息来自 MCP，尽量保留对应的项目 / 智能体 / 规则 ID，方便追溯。',
     '- 若引用技能内容，优先注明技能 ID、包路径或本地目录位置，方便追溯。',
   )
 

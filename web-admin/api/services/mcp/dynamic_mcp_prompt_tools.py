@@ -121,7 +121,7 @@ def project_prompt_tool_descriptors(employee_id: str = "") -> list[dict[str, Any
     ]
 
 
-def get_query_mcp_cli_prompt_preview_runtime(
+def get_query_mcp_cli_prompt_preview(
     project_id: str = "",
     chat_session_id: str = "",
     clarity_threshold: int = 3,
@@ -156,7 +156,7 @@ def get_query_mcp_cli_prompt_preview_runtime(
     }
 
 
-def sync_query_mcp_cli_prompt_to_local_file_runtime(
+def sync_query_mcp_cli_prompt_to_local_file(
     project_id: str = "",
     chat_session_id: str = "",
     workspace_path: str = "",
@@ -171,7 +171,7 @@ def sync_query_mcp_cli_prompt_to_local_file_runtime(
         _normalize_text(client_profile, 80)
         or _infer_client_profile_from_target_file(target_value)
     )
-    preview = get_query_mcp_cli_prompt_preview_runtime(
+    preview = get_query_mcp_cli_prompt_preview(
         project_id=project_id,
         chat_session_id=chat_session_id,
         clarity_threshold=clarity_threshold,

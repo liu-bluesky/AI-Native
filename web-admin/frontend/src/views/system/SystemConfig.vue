@@ -55,7 +55,7 @@
           <template #label>
             <span class="system-config-tab-label">
               <span class="system-config-tab-label__title">默认项</span>
-              <span class="system-config-tab-label__meta">系统开关与员工规则</span>
+              <span class="system-config-tab-label__meta">系统开关与智能体规则</span>
             </span>
           </template>
         </el-tab-pane>
@@ -148,9 +148,9 @@
 
               <div class="switch-card">
                 <div>
-                  <div class="switch-title">员工手册旧开关</div>
+                  <div class="switch-title">智能体手册旧开关</div>
                   <div class="switch-desc">
-                    兼容保留字段，当前员工使用手册已改为直接读取内容，不再调用大模型。
+                    兼容保留字段，当前智能体使用手册已改为直接读取内容，不再调用大模型。
                   </div>
                 </div>
                 <el-switch v-model="form.enable_employee_manual_generation" />
@@ -203,7 +203,7 @@
           <div class="panel-head">
             <div>
               <p class="panel-kicker">Employees</p>
-              <h3>AI 员工规则策略</h3>
+              <h3>AI 智能体规则策略</h3>
               <p>把自动生成规则的开关、来源和内部策略提示词收拢到同一块。</p>
             </div>
           </div>
@@ -211,9 +211,9 @@
           <el-form label-position="top" class="switch-form">
             <div class="switch-card employee-rule-config-card">
               <div>
-                <div class="switch-title">AI 员工规则自动生成</div>
+                <div class="switch-title">AI 智能体规则自动生成</div>
                 <div class="switch-desc">
-                  创建 AI 员工时，系统会基于系统级 MCP 规则源自动补全规则草稿，再落地为本地规则并绑定给员工；对话页不再展示规则来源选择。
+                  创建 AI 智能体时，系统会基于系统级 MCP 规则源自动补全规则草稿，再落地为本地规则并绑定给智能体；对话页不再展示规则来源选择。
                 </div>
               </div>
               <el-switch
@@ -229,7 +229,7 @@
                   :max="6"
                 />
                 <div class="field-desc">
-                  每次创建员工最多补全多少条规则草稿。
+                  每次创建智能体最多补全多少条规则草稿。
                 </div>
               </el-form-item>
 
@@ -258,7 +258,7 @@
                 type="textarea"
                 :rows="6"
                 resize="vertical"
-                placeholder="用于约束系统在员工创建时优先生成哪类规则。"
+                placeholder="用于约束系统在智能体创建时优先生成哪类规则。"
               />
               <div class="field-desc">
                 这是后台自动生成规则时使用的内部策略提示词，不直接展示给终端用户。
@@ -675,7 +675,7 @@
             <div>
               <p class="panel-kicker">Discovery</p>
               <h3>外部技能网站目录</h3>
-              <p>创建 AI 员工时，这些站点会展示在“外部技能候选”区域。</p>
+              <p>创建 AI 智能体时，这些站点会展示在“外部技能候选”区域。</p>
             </div>
             <div class="panel-actions">
               <el-button @click="addEmployeeExternalSkillSite">新增站点</el-button>
@@ -1493,7 +1493,7 @@ const DEFAULT_SKILL_REGISTRY_SOURCES = {
 const DEFAULT_BOT_PLATFORM_CONNECTORS = [];
 const DEFAULT_PUBLIC_CONTACT_CHANNELS = [];
 const DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT =
-  "基于员工职责、目标、技能建议和 prompts.chat MCP 相关能力，为员工自动补全 1 到 3 条可直接落地的执行规则。优先生成问题排查、输出规范、风险控制、技术选型相关规则；规则内容必须具体、可执行、可绑定。";
+  "基于智能体职责、目标、技能建议和 prompts.chat MCP 相关能力，为智能体自动补全 1 到 3 条可直接落地的执行规则。优先生成问题排查、输出规范、风险控制、技术选型相关规则；规则内容必须具体、可执行、可绑定。";
 const DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT = `桌面本地智能体工作流：计划先行 · 选项驱动
 
 当收到用户需求时，默认按以下流程处理：
@@ -1533,7 +1533,7 @@ const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MC
 强制接入步骤：
 1. 先读取 \`query://usage-guide\`；再按当前客户端读取对应画像：Codex 读 \`query://client-profile/codex\`，Hermes 读 \`query://client-profile/hermes\`，Claude Code 读 \`query://client-profile/claude-code\`。
 1.1 \`list_mcp_resources\` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 \`read_mcp_resource\` 读取 \`query://usage-guide\` 和当前客户端对应的 \`query://client-profile/...\`，禁止反复调用 \`list_mcp_resources\`。
-1.2 对“有几个员工 / 有哪些员工 / 有哪些工具 / 有哪些规则”这类简单查询，且 \`project_id\` 已明确时，直接调用对应业务工具（如 \`list_project_members(project_id=...)\`、\`list_project_proxy_tools(...)\`），不要为了满足 bootstrap 机械列资源目录。
+1.2 对“有几个智能体 / 有哪些智能体 / 有哪些工具 / 有哪些规则”这类简单查询，且 \`project_id\` 已明确时，直接调用对应业务工具（如 \`list_project_members(project_id=...)\`、\`list_project_proxy_tools(...)\`），不要为了满足 bootstrap 机械列资源目录。
 2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 \`.ai-employee/\`，至少确保 \`.ai-employee/skills/\`、\`.ai-employee/query-mcp/active-sessions/\`、\`.ai-employee/query-mcp/session-history/\` 与 \`.ai-employee/requirements/<project_id>/\` 可用；canonical session 状态只使用 \`active-sessions/<chat_session_id>.json\` 与 \`session-history/<project_id>__<chat_session_id>.json\`。
 3. 再检查 \`.ai-employee/skills/query-mcp-workflow/\` 是否已存在；缺失时先通过 MCP 从服务端技能库同步或创建到当前工作区，已存在则直接复用，禁止重复创建。
 4. 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 \`.ai-employee/skills/query-mcp-workflow/\`；核心文件优先读取本地副本中的 \`SKILL.md\` 与 \`manifest.json\`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 \`mcp-skills/knowledge/skills/query-mcp-workflow.json\` 与 \`mcp-skills/knowledge/skill-packages/query-mcp-workflow/\` 作为回源比对位置。
@@ -1565,19 +1565,19 @@ const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MC
 
 回答要求：
 - 先基于 MCP 查询结果和本地技能内容回答，不要把猜测写成事实。
-- 若信息来自 MCP，尽量保留对应的项目 / 员工 / 规则 ID，方便追溯。
+- 若信息来自 MCP，尽量保留对应的项目 / 智能体 / 规则 ID，方便追溯。
 - 若引用技能内容，优先注明技能 ID、包路径或本地目录位置，方便追溯。
 - 若入口文件或宿主系统还有额外约束，优先遵守宿主入口文件约定。`;
 const DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = `# Unified Query MCP
 
 - 统一入口路径: /mcp/query
-- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、本地运行轨迹、需求记录查询和交付报告能力。
+- 目标: 提供项目/智能体/规则查询、任务分析、上下文聚合、执行规划、任务树推进、本地运行轨迹、需求记录查询和交付报告能力。
 - 推荐工具: start_project_workflow / bind_project_context / record_requirement / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / build_delivery_report / generate_release_note_entry / save_project_memory
 
 ## 最少执行规则
 1. 先读取 query://usage-guide；再按当前客户端读取对应 client profile：Codex 读 query://client-profile/codex，Hermes 读 query://client-profile/hermes，Claude Code 读 query://client-profile/claude-code。
 1.0.1 \`list_mcp_resources\` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 read_mcp_resource 读取 query://usage-guide 和对应 client profile，禁止反复调用 list_mcp_resources。
-1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些员工、工具或规则，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree 等对应工具，不要为了 bootstrap 机械列资源目录。
+1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些智能体、工具或规则，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree 等对应工具，不要为了 bootstrap 机械列资源目录。
 1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。
 1.2 统一查询工作流默认先检查项目本地 \`.ai-employee/skills/query-mcp-workflow/\`；若不存在，再从系统技能库同步或创建到本地；已存在则直接复用，禁止重复创建。
 1.3 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 \`.ai-employee/skills/query-mcp-workflow/\`；优先读取本地副本中的 \`SKILL.md\` 与 \`manifest.json\`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 \`mcp-skills/knowledge/skills/query-mcp-workflow.json\` 与 \`mcp-skills/knowledge/skill-packages/query-mcp-workflow/\` 作为回源比对位置。
@@ -1591,8 +1591,8 @@ const DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = `# Unified Query MCP
 4.4 requirement 对象只记录需求内容和必要定位字段；不要把 \`workflow_skill\`、\`task_tree\`、\`current_task_node\`、\`task_branches\`、\`history\`、项目智能体上下文等过程结构写入需求记录。
 5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。
 6. 仅在缺少明确的 project_id / employee_id / rule_id，或需要跨项目检索时，再调用 search_ids(keyword="<用户原始问题>")；已明确当前项目且在项目内执行时，可直接 get_manual_content、start_project_workflow 或进入本地实现。
-7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。
-7.0 项目型问题优先使用项目绑定员工、规则和技能；先判断项目内现成能力能否闭环，只有项目能力不足时才自行补足。
+7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、智能体、规则 ID。
+7.0 项目型问题优先使用项目绑定智能体、规则和技能；先判断项目内现成能力能否闭环，只有项目能力不足时才自行补足。
 7.0.1 每次新请求进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文；不要只看规则标题，也不要把无关规则机械带入当前问题。
 7.0.2 实现型任务先在项目本地推进：先完成本地分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树、交付结论与记忆；详细执行轨迹留在本地 runtime。
 7.0.3 {{clarity_threshold_line}}

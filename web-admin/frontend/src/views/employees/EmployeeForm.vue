@@ -25,9 +25,9 @@
             v-model="form.description"
             type="textarea"
             :rows="3"
-            placeholder="描述这个员工擅长什么、在什么场景下使用"
+            placeholder="描述这个智能体擅长什么、在什么场景下使用"
           />
-          <div class="field-hint">用于团队识别员工职责，不填也可创建。</div>
+          <div class="field-hint">用于团队识别智能体职责，不填也可创建。</div>
         </el-form-item>
         <el-form-item label="核心目标">
           <el-input
@@ -37,7 +37,7 @@
             placeholder="例如：优先把模糊需求收敛成可执行方案，并给出风险与边界。"
           />
           <div class="field-hint">
-            定义该员工判断任务和输出结果时最优先追求的目标。
+            定义该智能体判断任务和输出结果时最优先追求的目标。
           </div>
         </el-form-item>
         <ResourceShareSettings :form="form" />
@@ -63,7 +63,7 @@
               :value="s.id"
             />
           </el-select>
-          <div class="field-hint">技能决定该员工可调用的能力。</div>
+          <div class="field-hint">技能决定该智能体可调用的能力。</div>
           <div class="field-hint">
             当前已选 {{ form.skills.length }} 项，共 {{ availableSkills.length }} 项可选。
           </div>
@@ -278,7 +278,7 @@
 
         <el-form-item label="默认工作流">
           <div class="field-hint style-hint-desc">
-            定义该员工处理任务时优先遵循的步骤顺序。
+            定义该智能体处理任务时优先遵循的步骤顺序。
           </div>
           <div class="style-preset-row">
             <el-tag
@@ -326,7 +326,7 @@
             placeholder="例如：遇到项目上下文、规则、MCP、真实配置时优先查工具，不要凭空假设。"
           />
           <div class="field-hint">
-            用来约束员工何时主动调用技能、规则或 MCP 工具。
+            用来约束智能体何时主动调用技能、规则或 MCP 工具。
           </div>
         </el-form-item>
 
@@ -337,7 +337,7 @@
         <el-form-item label="反馈升级">
           <el-switch v-model="form.feedback_upgrade_enabled" />
           <div class="field-hint">
-            开启后会在员工 MCP 中暴露反馈闭环工具（提交反馈、反思、审核、发布、回滚）。
+            开启后会在智能体 MCP 中暴露反馈闭环工具（提交反馈、反思、审核、发布、回滚）。
           </div>
         </el-form-item>
 
@@ -475,14 +475,14 @@ const route = useRoute();
 const router = useRouter();
 
 const isEdit = computed(() => Boolean(route.params.id));
-const pageTitle = computed(() => (isEdit.value ? "编辑 AI 员工" : "创建 AI 员工"));
+const pageTitle = computed(() => (isEdit.value ? "编辑 AI 智能体" : "创建 AI 智能体"));
 const pageHint = computed(() =>
   isEdit.value
     ? "按 3 步完成修改：基础信息、能力绑定、人设与进化。"
     : "按 3 步完成配置：基础信息、能力绑定、人设与进化。"
 );
 const previewTitle = computed(() => (isEdit.value ? "修改预览" : "创建预览"));
-const submitLabel = computed(() => (isEdit.value ? "保存修改" : "创建 AI 员工"));
+const submitLabel = computed(() => (isEdit.value ? "保存修改" : "创建 AI 智能体"));
 
 const formRef = ref(null);
 const pageLoading = ref(false);
@@ -516,7 +516,7 @@ const form = reactive({
 });
 
 const rules = {
-  name: [{ required: true, message: "请输入员工名称", trigger: "blur" }],
+  name: [{ required: true, message: "请输入智能体名称", trigger: "blur" }],
 };
 
 const styleHintPresets = [
@@ -844,11 +844,11 @@ async function handleSubmit() {
     if (isEdit.value) {
       const employeeId = String(route.params.id || "");
       await api.put(`/employees/${employeeId}`, payload);
-      ElMessage.success("员工已保存");
+      ElMessage.success("智能体已保存");
       router.push(`/employees/${employeeId}`);
     } else {
       const { employee } = await api.post("/employees", payload);
-      ElMessage.success(`员工「${employee.name}」创建成功`);
+      ElMessage.success(`智能体「${employee.name}」创建成功`);
       router.push("/employees");
     }
   } catch (e) {
@@ -862,7 +862,7 @@ onMounted(async () => {
   pageLoading.value = true;
   try {
     if (!isEdit.value && !canCreateEmployee()) {
-      ElMessage.warning("当前角色没有创建员工权限");
+      ElMessage.warning("当前角色没有创建智能体权限");
       await router.replace("/employees");
       return;
     }
@@ -872,7 +872,7 @@ onMounted(async () => {
     }
     await fetchSelectionOptions();
   } catch {
-    ElMessage.error(isEdit.value ? "加载员工数据失败" : "加载技能/规则选项失败");
+    ElMessage.error(isEdit.value ? "加载智能体数据失败" : "加载技能/规则选项失败");
   } finally {
     pageLoading.value = false;
   }

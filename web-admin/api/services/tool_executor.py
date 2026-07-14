@@ -488,10 +488,10 @@ class ToolExecutor:
                 args,
                 workspace_path=self._host_workspace_path or "",
             )
-        from services.mcp.dynamic_mcp_runtime import invoke_project_tool_runtime
+        from services.mcp.dynamic_mcp_runtime import invoke_project_skill_tool
         from starlette.concurrency import run_in_threadpool
         result = await run_in_threadpool(
-            invoke_project_tool_runtime,
+            invoke_project_skill_tool,
             project_id=self._project_id,
             tool_name=tool_name,
             employee_id=self._employee_id,

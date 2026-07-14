@@ -7,4 +7,5 @@ pub mod deploy;
 pub mod file;
 pub mod mcp;
 pub mod network;
+pub mod process;
 pub mod projects;

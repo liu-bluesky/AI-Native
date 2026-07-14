@@ -7,7 +7,7 @@
       <el-radio value="all_users">所有人</el-radio>
     </el-radio-group>
     <div class="hint">
-      你创建的数据默认仅自己可见。共享员工后，该员工绑定的规则和技能会自动对相同范围可见。
+      你创建的数据默认仅自己可见。共享智能体后，该智能体绑定的规则和技能会自动对相同范围可见。
     </div>
   </el-form-item>
 

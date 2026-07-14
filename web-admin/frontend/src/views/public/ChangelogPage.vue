@@ -8,7 +8,7 @@
       <button type="button" class="updates-brand" @click="router.push('/intro')">
         <span class="updates-brand__mark">AI</span>
         <span class="updates-brand__body">
-          <span class="updates-brand__name">AI 员工工厂</span>
+          <span class="updates-brand__name">AI 智能体工厂</span>
           <span class="updates-brand__meta">产品变更记录</span>
         </span>
       </button>
@@ -310,7 +310,7 @@ async function fetchPublicChangelog() {
 }
 
 onMounted(() => {
-  document.title = 'AI 员工工厂 | 更新日志'
+  document.title = 'AI 智能体工厂 | 更新日志'
   fetchPublicChangelog()
 })
 </script>

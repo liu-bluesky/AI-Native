@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="确认创建 AI 员工"
+    title="确认创建 AI 智能体"
     width="min(880px, calc(100vw - 32px))"
     destroy-on-close
     class="employee-draft-create-dialog"
@@ -15,7 +15,7 @@
     >
       <div class="employee-draft-dialog__summary">
         <div class="employee-draft-dialog__title">
-          {{ payload.name || "未命名员工" }}
+          {{ payload.name || "未命名智能体" }}
         </div>
         <div
           v-if="payload.description"
@@ -116,7 +116,7 @@
           </el-tag>
         </div>
         <div class="employee-draft-dialog__section-hint">
-          规则不再由当前页面手动选择。创建时系统会按后台配置自动补全规则草稿，再落地并绑定到当前员工。
+          规则不再由当前页面手动选择。创建时系统会按后台配置自动补全规则草稿，再落地并绑定到当前智能体。
         </div>
         <div class="employee-draft-dialog__grid">
           <div class="employee-draft-dialog__panel">
@@ -153,7 +153,7 @@
             <div class="employee-draft-dialog__empty">
               {{
                 autoRuleGenerationEnabled
-                  ? "系统会结合员工描述、已选技能和系统规则源自动补全规则。"
+                  ? "系统会结合智能体描述、已选技能和系统规则源自动补全规则。"
                   : "当前系统配置已关闭自动补规则，仅使用已匹配规则和已有规则草稿。"
               }}
             </div>
@@ -164,7 +164,7 @@
       <div class="employee-draft-dialog__section">
         <div class="employee-draft-dialog__section-title">创建策略</div>
         <div class="employee-draft-dialog__section-hint">
-          员工技能仍以草稿内容和系统自动补齐为准。规则来源不在这里选择，而是由系统按后台配置自动生成。
+          智能体技能仍以草稿内容和系统自动补齐为准。规则来源不在这里选择，而是由系统按后台配置自动生成。
         </div>
         <div class="employee-draft-dialog__switches">
           <el-switch
@@ -183,7 +183,7 @@
             v-model="addToProject"
             inline-prompt
             active-text="加入当前项目"
-            inactive-text="仅创建员工"
+            inactive-text="仅创建智能体"
             :disabled="!canAddToProject"
           />
         </div>

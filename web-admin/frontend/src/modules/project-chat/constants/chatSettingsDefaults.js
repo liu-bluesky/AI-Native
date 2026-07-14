@@ -17,6 +17,8 @@ export const CHAT_SETTINGS_DEFAULTS = {
   external_agent_type: "codex_cli",
   local_connector_id: "",
   connector_workspace_path: "",
+  skill_directory: "",
+  rule_directory: "",
   connector_sandbox_mode: "workspace-write",
   connector_sandbox_mode_explicit: false,
   selected_employee_id: "",

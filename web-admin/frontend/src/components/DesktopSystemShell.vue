@@ -314,7 +314,7 @@ const props = defineProps({
   },
   brandName: {
     type: String,
-    default: "AI 员工工厂",
+    default: "AI 智能体工厂",
   },
   brandMeta: {
     type: String,

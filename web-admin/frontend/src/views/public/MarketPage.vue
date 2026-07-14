@@ -8,8 +8,8 @@
       <button type="button" class="market-nav__brand" @click="router.push('/intro')">
         <span class="market-nav__mark">AI</span>
         <span class="market-nav__body">
-          <span class="market-nav__name">AI 员工工厂</span>
-          <span class="market-nav__meta">技能、员工与规则市场</span>
+          <span class="market-nav__name">AI 智能体工厂</span>
+          <span class="market-nav__meta">技能、智能体与规则市场</span>
         </span>
       </button>
 
@@ -179,7 +179,7 @@
 
                 <div class="market-card__meta" v-else>
                   <span>{{ item.domain }}</span>
-                  <span>{{ item.bound_employee_count }} 名员工绑定</span>
+                  <span>{{ item.bound_employee_count }} 名智能体绑定</span>
                 </div>
 
                 <div class="market-card__chips" v-if="section.key === 'cli_plugins' && item.tags?.length">
@@ -219,7 +219,7 @@
     <AuthDialog
       v-model="showAuthDialog"
       title="登录后进入能力市场"
-      description="市场目录统一承载技能、员工和规则，后续其他入口也可直接复用这套登录注册能力。"
+      description="市场目录统一承载技能、智能体和规则，后续其他入口也可直接复用这套登录注册能力。"
       @success="fetchCatalog"
     />
 
@@ -262,7 +262,7 @@ const summaryItems = computed(() => {
   return [
     { label: 'CLI 插件', value: String(meta.cli_plugin_count || 0).padStart(2, '0') },
     { label: '技能', value: String(meta.skill_count || 0).padStart(2, '0') },
-    { label: '员工', value: String(meta.employee_count || 0).padStart(2, '0') },
+    { label: '智能体', value: String(meta.employee_count || 0).padStart(2, '0') },
     { label: '规则', value: String(meta.rule_count || 0).padStart(2, '0') },
   ]
 })
@@ -285,7 +285,7 @@ const marketSections = computed(() => [
   {
     key: 'employees',
     eyebrow: 'Employee',
-    title: '员工市场',
+    title: '智能体市场',
     label: 'Employee',
     items: catalog.employees,
   },
@@ -316,7 +316,7 @@ const marketTabs = computed(() => [
   },
   {
     key: 'employees',
-    label: '员工',
+    label: '智能体',
     count: catalog.employees.length,
   },
   {
@@ -417,7 +417,7 @@ async function fetchCatalog() {
 }
 
 onMounted(async () => {
-  document.title = 'AI 员工工厂 | 能力市场'
+  document.title = 'AI 智能体工厂 | 能力市场'
   await fetchCatalog()
 })
 </script>

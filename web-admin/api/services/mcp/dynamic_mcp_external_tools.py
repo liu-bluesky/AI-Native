@@ -381,6 +381,38 @@ def list_project_external_tools_runtime(project_id: str) -> list[dict]:
     return tools
 
 
+def list_project_external_server_catalog_runtime(project_id: str) -> list[dict]:
+    tool_counts: dict[str, int] = {}
+    for item in list_project_external_tools_runtime(project_id):
+        module_id = str(item.get("module_id") or "").strip()
+        if module_id:
+            tool_counts[module_id] = tool_counts.get(module_id, 0) + 1
+    servers: list[dict] = []
+    for module in _list_visible_external_mcp_modules(project_id):
+        get_value = (
+            (lambda key, default="": module.get(key, default))
+            if isinstance(module, dict)
+            else (lambda key, default="": getattr(module, key, default))
+        )
+        server_id = str(get_value("id") or "").strip()
+        if not server_id:
+            continue
+        tool_count = tool_counts.get(server_id, 0)
+        servers.append(
+            {
+                "server_id": server_id,
+                "display_name": str(get_value("name") or server_id).strip(),
+                "description": str(get_value("description") or "").strip(),
+                "domain": "integrations",
+                "source": str(get_value("source_type") or "user-configured").strip(),
+                "enabled": bool(get_value("enabled", True)),
+                "health": "available" if tool_count > 0 else "unavailable",
+                "tool_count": tool_count,
+            }
+        )
+    return servers
+
+
 def resolve_external_tool_spec(project_id: str, tool_name: str) -> tuple[dict | None, str]:
     normalized_tool_name = str(tool_name or "").strip()
     if not normalized_tool_name:
@@ -391,7 +423,7 @@ def resolve_external_tool_spec(project_id: str, tool_name: str) -> tuple[dict | 
     return None, f"External tool not found: {normalized_tool_name}"
 
 
-def invoke_external_mcp_tool_runtime(
+def invoke_external_mcp_tool(
     project_id: str,
     tool_name: str,
     args: dict | None = None,

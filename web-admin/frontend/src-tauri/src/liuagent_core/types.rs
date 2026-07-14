@@ -570,6 +570,32 @@ pub struct LocalChatResult {
     pub error: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalPermissionReplyResult {
+    pub ok: bool,
+    pub decision: String,
+    pub request_id: String,
+    pub tool_name: String,
+    pub reasoning: String,
+    pub error_code: String,
+    pub error: String,
+}
+
+impl LocalPermissionReplyResult {
+    pub fn failed(error: ToolError) -> Self {
+        Self {
+            ok: false,
+            decision: "not_an_approval".to_string(),
+            request_id: String::new(),
+            tool_name: String::new(),
+            reasoning: String::new(),
+            error_code: error.code,
+            error: error.message,
+        }
+    }
+}
+
 impl LocalChatResult {
     pub fn failed(chat_session_id: String, error: ToolError) -> Self {
         let error_code = error.code;
@@ -1003,12 +1029,10 @@ fn is_recoverable_tool_error(error_code: &str) -> bool {
     matches!(
         error_code,
         "tool.schema_invalid"
-            | "tool.not_found"
             | "web_search.unconfigured"
             | "web_extract.unconfigured"
             | "tool.disabled"
             | "mcp.config_missing"
-            | "mcp.server_not_found"
             | "mcp.config_invalid"
             | "mcp.failed"
     )

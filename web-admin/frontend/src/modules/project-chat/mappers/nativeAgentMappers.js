@@ -265,7 +265,7 @@ export function buildNativeExternalAgentCommandPreview(snapshot) {
     const value = String(arg || "");
     if (
       value.includes("用户本次任务：") ||
-      value.includes("你正在 AI 员工工厂桌面端中作为Runner")
+      value.includes("你正在 AI 智能体工厂桌面端中作为Runner")
     ) {
       return "<task-prompt>";
     }

@@ -111,14 +111,16 @@ def employee_rule_summary(employee, limit: int = 50) -> list[dict[str, str]]:
                 "id": rid,
                 "title": str(getattr(rule, "title", "") or "").strip(),
                 "domain": str(getattr(rule, "domain", "") or "").strip(),
+                "content": str(getattr(rule, "content", "") or "").strip(),
             }
         )
     return rule_bindings
 
 
-def _employee_skill_summary(employee) -> tuple[list[str], list[str]]:
+def _employee_skill_summary(employee) -> tuple[list[str], list[str], list[dict[str, str]]]:
     skill_ids: list[str] = []
     skill_names: list[str] = []
+    skill_bindings: list[dict[str, str]] = []
     seen: set[str] = set()
     for item in getattr(employee, "skills", []) or []:
         skill_id = str(item or "").strip()
@@ -129,9 +131,20 @@ def _employee_skill_summary(employee) -> tuple[list[str], list[str]]:
         skill = skill_store.get(skill_id)
         skill_name = str(getattr(skill, "name", "") or "").strip() or skill_id
         skill_names.append(skill_name)
+        skill_bindings.append(
+            {
+                "id": skill_id,
+                "name": skill_name,
+                "description": str(getattr(skill, "description", "") or "").strip(),
+            }
+        )
     if not skill_names:
         skill_names = list(skill_ids)
-    return skill_ids, skill_names
+        skill_bindings = [
+            {"id": skill_id, "name": skill_id, "description": ""}
+            for skill_id in skill_ids
+        ]
+    return skill_ids, skill_names, skill_bindings
 
 
 def _serialize_project_member_profile(
@@ -156,6 +169,7 @@ def _serialize_project_member_profile(
             "joined_at": str(getattr(member, "joined_at", "") or ""),
             "skills": [],
             "skill_names": [],
+            "skill_bindings": [],
             "rule_bindings": [],
             "tone": "",
             "verbosity": "",
@@ -169,7 +183,7 @@ def _serialize_project_member_profile(
 
     resolved_employee_id = str(getattr(employee, "id", "") or employee_id).strip()
     employee_name = str(getattr(employee, "name", "") or "").strip()
-    skill_ids, skill_names = _employee_skill_summary(employee)
+    skill_ids, skill_names, skill_bindings = _employee_skill_summary(employee)
     rule_bindings = employee_rule_summary(employee, limit=rule_limit)
     return {
         "project_id": project_id,
@@ -184,6 +198,7 @@ def _serialize_project_member_profile(
         "joined_at": str(getattr(member, "joined_at", "") or ""),
         "skills": skill_ids,
         "skill_names": skill_names,
+        "skill_bindings": skill_bindings,
         "rule_bindings": rule_bindings,
         "tone": str(getattr(employee, "tone", "") or ""),
         "verbosity": str(getattr(employee, "verbosity", "") or ""),
@@ -224,7 +239,7 @@ def list_project_member_profiles_runtime(
     return profiles
 
 
-def query_project_members_runtime(project_id: str) -> dict:
+def query_project_members(project_id: str) -> dict:
     project = project_store.get(project_id)
     if project is None:
         return {"error": f"项目 {project_id} 不存在"}
@@ -242,7 +257,7 @@ def query_project_members_runtime(project_id: str) -> dict:
     }
 
 
-def query_project_rules_runtime(project_id: str, keyword: str = "", employee_id: str = "") -> list[dict]:
+def query_project_rules(project_id: str, keyword: str = "", employee_id: str = "") -> list[dict]:
     project = project_store.get(project_id)
     if project is None:
         return []

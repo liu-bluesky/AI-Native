@@ -5,7 +5,7 @@
         <div class="init-brand">
           <div class="init-brand__mark">AI</div>
           <div>
-            <div class="init-brand__name">AI 员工工厂</div>
+            <div class="init-brand__name">AI 智能体工厂</div>
             <div class="init-brand__meta">Docker 首次初始化</div>
           </div>
         </div>
@@ -26,7 +26,7 @@
             </div>
             <div class="init-hero__item">
               <div class="init-hero__item-name">基础入口</div>
-              <div class="init-hero__item-text">完成登录、项目、员工和能力管理的起始配置。</div>
+              <div class="init-hero__item-text">完成登录、项目、智能体和能力管理的起始配置。</div>
             </div>
             <div class="init-hero__item">
               <div class="init-hero__item-name">后续流程</div>

@@ -86,5 +86,5 @@ export const ROLE_LABEL_MAP = {
   user: "普通用户",
 };
 export const SETTINGS_GUIDE_REASON_MAP = {
-  chat: "先把项目、执行员工、模型和工具预算收束到同一轮上下文里。",
+  chat: "先把项目、执行智能体、模型和工具预算收束到同一轮上下文里。",
 };

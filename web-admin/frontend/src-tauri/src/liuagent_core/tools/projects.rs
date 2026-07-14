@@ -78,6 +78,22 @@ pub fn get_project(arguments: &Value) -> Result<(Value, String), ToolError> {
     let timeout_ms = number_arg(arguments, "timeout_ms", 30_000, 1_000, 120_000) as u64;
     let endpoint = project_detail_url(&api_base_url, &project_id)?;
     let body = backend_get_json(endpoint, &backend_token, timeout_ms, "读取项目详情失败")?;
+    let members_endpoint = project_members_url(&api_base_url, &project_id)?;
+    let members_body = backend_get_json(
+        members_endpoint,
+        &backend_token,
+        timeout_ms,
+        "读取项目绑定智能体失败",
+    )?;
+    let bound_agents = members_body
+        .get("members")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let active_bound_agent_count = bound_agents
+        .iter()
+        .filter(|item| item.get("enabled").and_then(Value::as_bool).unwrap_or(true))
+        .count();
     let project_name = body
         .get("project")
         .and_then(|project| project.get("name"))
@@ -89,6 +105,10 @@ pub fn get_project(arguments: &Value) -> Result<(Value, String), ToolError> {
     Ok((
         json!({
             "project_id": project_id,
+            "bound_agent_count": bound_agents.len(),
+            "active_bound_agent_count": active_bound_agent_count,
+            "bound_agents": bound_agents,
+            "agent_binding_note": "selected_employee_ids 为空表示当前对话自动分配，不表示项目未绑定智能体。",
             "response": body,
         }),
         format!("已读取项目详情：{project_name}"),
@@ -173,6 +193,13 @@ fn project_detail_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolE
     )
 }
 
+fn project_members_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
+    backend_url(
+        api_base_url,
+        format!("projects/{}/members", url_path_escape(project_id)).as_str(),
+    )
+}
+
 fn backend_url(api_base_url: &str, path: &str) -> Result<Url, ToolError> {
     let base = Url::parse(api_base_url.trim()).map_err(|err| {
         ToolError::new(
@@ -214,4 +241,70 @@ fn url_path_escape(value: &str) -> String {
             _ => format!("%{byte:02X}").chars().collect(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn get_project_includes_bound_agents_from_members_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for expected_path in ["/projects/proj-657fe77f", "/projects/proj-657fe77f/members"] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut buffer = [0_u8; 4096];
+                let read = stream.read(&mut buffer).unwrap();
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                assert!(request.starts_with(&format!("GET {expected_path} ")));
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer test-token"));
+
+                let body = if expected_path.ends_with("/members") {
+                    json!({
+                        "members": [{
+                            "project_id": "proj-657fe77f",
+                            "employee_id": "emp-18b9cdfa",
+                            "employee_name": "前端架构与跨端攻坚专家",
+                            "enabled": true
+                        }]
+                    })
+                } else {
+                    json!({"project": {"id": "proj-657fe77f", "name": "南京嘉华"}})
+                }
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+
+        let arguments = json!({
+            "project_id": "proj-657fe77f",
+            "_backend_api_base_url": format!("http://{address}"),
+            "_backend_token": "test-token"
+        });
+        let (result, summary) = get_project(&arguments).unwrap();
+        server.join().unwrap();
+
+        assert_eq!(result["bound_agent_count"], 1);
+        assert_eq!(result["active_bound_agent_count"], 1);
+        assert_eq!(result["bound_agents"][0]["employee_id"], "emp-18b9cdfa");
+        assert!(result["agent_binding_note"]
+            .as_str()
+            .unwrap()
+            .contains("自动分配"));
+        assert_eq!(summary, "已读取项目详情：南京嘉华");
+    }
 }

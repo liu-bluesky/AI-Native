@@ -12,7 +12,7 @@ export async function fetchEmployeeDraftCatalog() {
 }
 
 export function createEmployeeFromDraft(payload = {}) {
-  // 员工草稿创建会触发技能/规则补齐，页面负责提交前的表单和匹配状态。
+  // 智能体草稿创建会触发技能/规则补齐，页面负责提交前的表单和匹配状态。
   return api.post("/employees/create-from-draft", payload);
 }
 

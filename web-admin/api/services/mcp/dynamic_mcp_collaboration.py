@@ -8,9 +8,9 @@ from typing import Any, Callable
 
 from core.deps import project_store
 from services.mcp.dynamic_mcp_context import (
-    get_project_detail_runtime,
-    get_project_employee_detail_runtime,
-    search_project_context_runtime,
+    get_project_detail,
+    get_project_employee_detail,
+    search_project_context,
 )
 from services.chat.project_chat_task_tree import (
     complete_task_tree_node_tool_payload,
@@ -22,16 +22,16 @@ from services.chat.project_chat_task_tree import (
 from services.mcp.dynamic_mcp_external_tools import list_project_external_tools_runtime
 from services.mcp.dynamic_mcp_profiles import (
     list_project_member_profiles_runtime,
-    query_project_members_runtime,
-    query_project_rules_runtime,
+    query_project_members,
+    query_project_rules,
 )
 from services.mcp.dynamic_mcp_prompt_tools import (
     PROMPT_PREVIEW_TOOL_NAME,
     PROMPT_SYNC_TOOL_NAME,
-    get_query_mcp_cli_prompt_preview_runtime,
-    sync_query_mcp_cli_prompt_to_local_file_runtime,
+    get_query_mcp_cli_prompt_preview,
+    sync_query_mcp_cli_prompt_to_local_file,
 )
-from services.mcp.dynamic_mcp_skill_proxies import list_project_proxy_tools_runtime
+from services.mcp.dynamic_mcp_skill_proxies import list_project_skill_proxy_tools
 
 COLLABORATION_TOOL_NAME = "execute_project_collaboration"
 LIST_PROJECT_DEPLOY_ARTIFACTS_TOOL_NAME = "list_project_deploy_artifacts"
@@ -639,7 +639,7 @@ def invoke_project_builtin_tool(
             return {"error": err}
         keyword = str(payload.get("keyword") or "").strip()
         target_employee_id = str(payload.get("employee_id") or employee_id_value).strip()
-        result = query_project_rules_runtime(
+        result = query_project_rules(
             project_id=project_id,
             keyword=keyword,
             employee_id=target_employee_id,
@@ -652,7 +652,7 @@ def invoke_project_builtin_tool(
         }
 
     if normalized_tool_name == "query_project_members":
-        result = query_project_members_runtime(project_id)
+        result = query_project_members(project_id)
         if isinstance(result, dict):
             return {
                 "tool_name": "query_project_members",
@@ -673,7 +673,7 @@ def invoke_project_builtin_tool(
         keyword_value = str(payload.get("keyword") or "").strip()
         target_employee_id = str(payload.get("employee_id") or employee_id_value).strip()
         limit_value = payload.get("limit", 20)
-        result = search_project_context_runtime(
+        result = search_project_context(
             project_id=project_id,
             scope=scope_value,
             keyword=keyword_value,
@@ -687,7 +687,7 @@ def invoke_project_builtin_tool(
         }
 
     if normalized_tool_name == "get_project_detail":
-        result = get_project_detail_runtime(project_id)
+        result = get_project_detail(project_id)
         return {
             "tool_name": "get_project_detail",
             "employee_id": employee_id_value,
@@ -699,7 +699,7 @@ def invoke_project_builtin_tool(
         if payload is None:
             return {"error": err}
         target_employee_id = str(payload.get("employee_id") or employee_id_value).strip()
-        result = get_project_employee_detail_runtime(project_id, target_employee_id)
+        result = get_project_employee_detail(project_id, target_employee_id)
         return {
             "tool_name": "get_project_employee_detail",
             "employee_id": target_employee_id,
@@ -750,7 +750,7 @@ def invoke_project_builtin_tool(
         payload, err = parse_object_args(args=args, args_json=args_json)
         if payload is None:
             return {"error": err}
-        result = get_query_mcp_cli_prompt_preview_runtime(
+        result = get_query_mcp_cli_prompt_preview(
             project_id=project_id,
             chat_session_id=str(payload.get("chat_session_id") or chat_session_id).strip(),
             clarity_threshold=payload.get("clarity_threshold", 3),
@@ -765,7 +765,7 @@ def invoke_project_builtin_tool(
         payload, err = parse_object_args(args=args, args_json=args_json)
         if payload is None:
             return {"error": err}
-        result = sync_query_mcp_cli_prompt_to_local_file_runtime(
+        result = sync_query_mcp_cli_prompt_to_local_file(
             project_id=project_id,
             chat_session_id=str(payload.get("chat_session_id") or chat_session_id).strip(),
             workspace_path=str(payload.get("workspace_path") or "").strip(),
@@ -1175,7 +1175,7 @@ def _map_tool_args(
     return mapped, ""
 
 
-def execute_project_collaboration_runtime(
+def execute_project_collaboration(
     project_id: str,
     task: str,
     *,
@@ -1215,7 +1215,7 @@ def execute_project_collaboration_runtime(
 
     project_tools = [
         item
-        for item in list_project_proxy_tools_runtime(project_id, "")
+        for item in list_project_skill_proxy_tools(project_id, "")
         if str(item.get("tool_name") or "").strip() != COLLABORATION_TOOL_NAME
     ]
     external_tools = list_project_external_tools_runtime(project_id) if include_external_tools else []

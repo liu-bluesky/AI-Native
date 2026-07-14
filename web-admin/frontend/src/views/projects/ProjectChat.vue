@@ -1251,12 +1251,12 @@
                           <div class="message-employee-draft__head">
                             <div>
                               <div class="message-employee-draft__eyebrow">
-                                AI 员工草稿
+                                AI 智能体草稿
                               </div>
                               <div class="message-employee-draft__title">
                                 {{
                                   getEmployeeDraftCard(item).name ||
-                                  "未命名员工"
+                                  "未命名智能体"
                                 }}
                               </div>
                             </div>
@@ -1342,7 +1342,7 @@
                               :disabled="Boolean(item.employeeDraftCreatedName)"
                               @click="createEmployeeFromDraft(item)"
                             >
-                              手动创建员工
+                              手动创建智能体
                             </el-button>
                             <span
                               v-if="item.employeeDraftCreatedName"
@@ -2193,14 +2193,14 @@
                   <section
                     v-show="
                       activeSettingsModule === 'execution' &&
-                      settingsModuleMatches('执行 员工 协作 模式 历史 消息 本轮 仅回答', 'project')
+                      settingsModuleMatches('执行 智能体 协作 模式 历史 消息 本轮 仅回答', 'project')
                     "
                     class="settings-module-section"
                   >
                     <div class="settings-module-section__head">
                       <div>
                         <strong>执行策略</strong>
-                        <span>控制本轮对话如何分配员工、使用历史和选择工具边界。</span>
+                        <span>控制本轮对话如何分配智能体、使用历史和选择工具边界。</span>
                       </div>
                     </div>
                     <article class="settings-module-row">
@@ -2208,7 +2208,7 @@
                         <el-icon><CollectionTag /></el-icon>
                       </div>
                       <div class="settings-module-row__main">
-                        <strong>执行员工</strong>
+                        <strong>执行智能体</strong>
                         <span>{{ selectedEmployeeSummary }}</span>
                       </div>
                       <div class="settings-module-row__control">
@@ -2238,7 +2238,7 @@
                       </div>
                       <div class="settings-module-row__main">
                         <strong>协作模式</strong>
-                        <span>决定员工如何分工；当前对话统一使用系统模型执行。</span>
+                        <span>决定智能体如何分工；当前对话统一使用系统模型执行。</span>
                       </div>
                       <div class="settings-module-row__control">
                         <el-select
@@ -2249,6 +2249,64 @@
                           <el-option label="自动协作" value="auto" />
                           <el-option label="手动模式" value="manual" />
                         </el-select>
+                      </div>
+                    </article>
+                    <article class="settings-module-row">
+                      <div class="settings-module-row__icon">
+                        <el-icon><FolderOpened /></el-icon>
+                      </div>
+                      <div class="settings-module-row__main">
+                        <strong>技能目录</strong>
+                        <span>桌面智能体会优先从该目录读取 SKILL.md、模板和脚本。</span>
+                      </div>
+                      <div class="settings-module-row__control">
+                        <el-input
+                          v-model="projectChatSettings.skill_directory"
+                          clearable
+                          placeholder="例如 /workspace/.ai-employee/skills"
+                          :disabled="!selectedProjectId"
+                        >
+                          <template #append>
+                            <el-button
+                              :loading="skillDirectoryPicking"
+                              :disabled="
+                                !selectedProjectId || ruleDirectoryPicking
+                              "
+                              @click="pickChatRuntimeDirectory('skill')"
+                            >
+                              选择目录
+                            </el-button>
+                          </template>
+                        </el-input>
+                      </div>
+                    </article>
+                    <article class="settings-module-row">
+                      <div class="settings-module-row__icon">
+                        <el-icon><Document /></el-icon>
+                      </div>
+                      <div class="settings-module-row__main">
+                        <strong>规则目录</strong>
+                        <span>桌面智能体会按当前任务从该目录加载相关规则正文。</span>
+                      </div>
+                      <div class="settings-module-row__control">
+                        <el-input
+                          v-model="projectChatSettings.rule_directory"
+                          clearable
+                          placeholder="例如 /workspace/.ai-employee/rules"
+                          :disabled="!selectedProjectId"
+                        >
+                          <template #append>
+                            <el-button
+                              :loading="ruleDirectoryPicking"
+                              :disabled="
+                                !selectedProjectId || skillDirectoryPicking
+                              "
+                              @click="pickChatRuntimeDirectory('rule')"
+                            >
+                              选择目录
+                            </el-button>
+                          </template>
+                        </el-input>
                       </div>
                     </article>
                     <article class="settings-module-row">
@@ -2647,7 +2705,7 @@
 
 <script setup>
 // ============================================================
-// ProjectChat.vue — AI 员工工厂项目聊天主页面（路由编排页）
+// ProjectChat.vue — AI 智能体工厂项目聊天主页面（路由编排页）
 // 职责：路由参数读取、模块级 composable 初始化、跨模块事件编排
 // 业务逻辑已迁入 src/modules/project-chat/ 下各 composable/service/mapper
 // CSS 通过 15 个 scoped 外部文件加载（src/modules/project-chat/styles/）
@@ -2687,6 +2745,7 @@ import { useProjectChatSettings } from "@/modules/project-chat/composables/usePr
 import { useProjectChatTerminal } from "@/modules/project-chat/composables/useProjectChatTerminal.js";
 import { useProjectChatTransport } from "@/modules/project-chat/composables/useProjectChatTransport.js";
 import api from "@/utils/api.js";
+import { fetchProjectMcpRuntimeCatalog } from "@/modules/project-chat/services/projectChatMcpRuntimeApi.js";
 // ============================================================
 // 权限、认证、字典、项目
 // ============================================================
@@ -2704,6 +2763,8 @@ import {
   CollectionTag,
   EditPen,
   Files,
+  FolderOpened,
+  Document,
   RefreshRight,
   InfoFilled,
   View,
@@ -2775,6 +2836,7 @@ import {
   startNativeBotLocalChat,
   startNativeFeishuLocalBotListener,
   startNativeLiuAgentLocalChat,
+  classifyNativeLiuAgentPermissionReply,
   stopNativeFeishuLocalBotListener,
   replyNativeFeishuBotMessage,
   downloadNativeFeishuMessageResource,
@@ -3080,6 +3142,8 @@ const modelProviderSyncing = ref(false);
 const pendingLocalOutboxCount = ref(0);
 const localOutboxSyncing = ref(false);
 const projectWorkspaceSaving = ref(false);
+const skillDirectoryPicking = ref(false);
+const ruleDirectoryPicking = ref(false);
 const autoSaveState = ref("idle");
 const autoSaveUpdatedAt = ref("");
 const projectSettingsHydrating = ref(false);
@@ -3242,10 +3306,10 @@ const settingsModuleNavItems = [
   {
     id: "execution",
     label: "执行策略",
-    desc: "员工、协作、历史",
+    desc: "智能体、协作、历史",
     meta: "项目",
     scope: "project",
-    keywords: "执行 员工 协作 模式 历史 消息 本轮 仅回答",
+    keywords: "执行 智能体 协作 模式 历史 消息 本轮 仅回答",
   },
   {
     id: "generation",
@@ -3436,7 +3500,10 @@ function parseGlobalMcpConfig() {
 }
 
 function syncEffectiveMcpConfig() {
-  effectiveMcpConfig.value = mergeMcpConfigs(globalMcpConfig.value, projectMcpConfig.value);
+  effectiveMcpConfig.value = mergeMcpConfigs(
+    globalMcpConfig.value,
+    projectMcpConfig.value,
+  );
 }
 
 async function reloadLocalMcpConfig(projectId = selectedProjectId.value) {
@@ -7135,7 +7202,7 @@ function buildNativeExternalAgentTaskPrompt({
   const normalizedAttachmentNames = normalizeStringList(attachmentNames, 20);
   const normalizedSlashCommandKind = String(slashCommandKind || "").trim();
   return [
-    "你正在 AI 员工工厂桌面端中作为Runner 执行当前用户请求。",
+    "你正在 AI 智能体工厂桌面端中作为Runner 执行当前用户请求。",
     "",
     "执行上下文：",
     `- 项目：${currentProjectLabel.value || projectId || "未选择项目"}`,
@@ -7143,7 +7210,7 @@ function buildNativeExternalAgentTaskPrompt({
     `- chat_session_id：${activeChatSessionId || "unknown"}`,
     `- 本机工作区：${workspacePath || "未配置"}`,
     `- Runner：${agentLabel || externalAgentDisplayLabel.value || "Runner"}`,
-    `- 选中员工：${employeeText}`,
+    `- 选中智能体：${employeeText}`,
     `- slash command：${normalizedSlashCommandKind || "无"}`,
     `- 附件：${normalizedAttachmentNames.join("、") || "无"}`,
     "",
@@ -8539,7 +8606,7 @@ const chatTourSteps = computed(() => [
         ? "先判断是否切到项目上下文"
         : "当前先用通用对话",
     description: hasSelectedProject.value
-      ? "当前项目已选中，后续提问、附件、员工和工具都会优先围绕这个项目组织。"
+      ? "当前项目已选中，后续提问、附件、智能体和工具都会优先围绕这个项目组织。"
       : hasAccessibleProjects.value
         ? "如果问题依赖项目规则、成员或素材，先切到对应项目；纯泛化问题可以先直接开始。"
         : "当前账号没有可访问项目时，也能先做通用对话，不会卡在项目选择上。",
@@ -8556,7 +8623,7 @@ const chatTourSteps = computed(() => [
   {
     title: "需要收束结果时进入设置中心",
     description:
-      "当你要调整执行员工、AI 入口文件、模型参数或工具预算时，从这里进入设置中心。那里会按你当前角色只展示真正可用的菜单。",
+      "当你要调整执行智能体、AI 入口文件、模型参数或工具预算时，从这里进入设置中心。那里会按你当前角色只展示真正可用的菜单。",
     target: () => resolveTourTarget(chatSettingsButtonRef),
     placement: "left",
   },
@@ -8603,16 +8670,16 @@ const selectedEmployeeSummary = computed(() => {
   const total = Array.isArray(projectEmployees.value)
     ? projectEmployees.value.length
     : 0;
-  if (!total) return "暂无员工";
-  if (!selectedCount) return `自动分配 (${total} 名可用员工)`;
+  if (!total) return "暂无智能体";
+  if (!selectedCount) return `自动分配 (${total} 名可用智能体)`;
   if (selectedCount === 1) {
     const selectedId = String(selectedEmployeeIds.value[0] || "").trim();
     const matched = (projectEmployees.value || []).find(
       (item) => String(item.id || "").trim() === selectedId,
     );
-    return String(matched?.name || selectedId || "1 名员工");
+    return String(matched?.name || selectedId || "1 名智能体");
   }
-  return `${selectedCount} 名员工`;
+  return `${selectedCount} 名智能体`;
 });
 const currentModelSummary = computed(() => {
   const provider = String(
@@ -9028,7 +9095,7 @@ const emptyStateTitle = computed(() => "启动本地运行窗口");
 const emptyStateText = computed(() =>
   hasSelectedProject.value
     ? "当前入口复用系统已配置的大模型 Provider，不使用 Ollama；需要执行命令、读写文件或调用飞书时，会通过本机运行环境和审批流程推进。"
-    : "选择项目后可带入项目工作区、员工、规则和工具；模型仍使用系统供应商配置，本地窗口只负责执行和权限边界。",
+    : "选择项目后可带入项目工作区、智能体、规则和工具；模型仍使用系统供应商配置，本地窗口只负责执行和权限边界。",
 );
 
 const composerPlaceholder = computed(() =>
@@ -9387,9 +9454,14 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
       payload?.next_action || payload?.nextAction || "",
       260,
     );
+    const argumentsPreview = compactLocalLiuAgentInline(
+      payload?.arguments_preview || payload?.argumentsPreview || "",
+      1200,
+    );
     return [
       currentFocus || summary,
       currentFocus && summary && summary !== currentFocus ? `  - ${summary}` : "",
+      argumentsPreview ? `  - 调用参数：${argumentsPreview}` : "",
       nextAction ? `  - 完成后：${nextAction}` : "",
     ]
       .filter(Boolean)
@@ -9438,14 +9510,25 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
     const count = Number(payload?.tool_count || payload?.toolCount || 0) || 0;
     const progress = index > 0 && count > 0 ? ` ${index}/${count}` : "";
     const summary = compactLocalLiuAgentInline(payload?.summary || "", 260);
-    const argumentsPreview = compactLocalLiuAgentInline(
-      payload?.arguments_preview || payload?.argumentsPreview || "",
+    const modelArgumentsPreview = compactLocalLiuAgentInline(
+      formatToolModelArgumentsPreview(payload),
       1200,
     );
+    const resolvedArgumentsPreview = compactLocalLiuAgentInline(
+      formatToolArgumentsPreview(payload),
+      1200,
+    );
+    const hasRuntimeInjection =
+      modelArgumentsPreview &&
+      resolvedArgumentsPreview &&
+      modelArgumentsPreview !== resolvedArgumentsPreview;
     return [
       subject ? `正在${subject}${progress}` : `正在调用工具${progress}`,
       summary ? `  - ${summary}` : "",
-      argumentsPreview ? `  - 参数：${argumentsPreview}` : "",
+      modelArgumentsPreview ? `  - 模型参数：${modelArgumentsPreview}` : "",
+      resolvedArgumentsPreview
+        ? `  - ${hasRuntimeInjection ? "Runtime 完整参数" : "调用参数"}：${resolvedArgumentsPreview}`
+        : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -9496,7 +9579,15 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
     const summary = String(payload?.summary || "").trim();
     const currentFocus = String(payload?.current_focus || payload?.currentFocus || "").trim();
     const nextAction = String(payload?.next_action || payload?.nextAction || "").trim();
-    return [currentFocus || summary, nextAction ? `下一步：${nextAction}` : ""]
+    const argumentsPreview = compactLocalLiuAgentInline(
+      payload?.arguments_preview || payload?.argumentsPreview || "",
+      360,
+    );
+    return [
+      currentFocus || summary,
+      argumentsPreview ? `参数：${argumentsPreview}` : "",
+      nextAction ? `下一步：${nextAction}` : "",
+    ]
       .filter(Boolean)
       .join(" · ");
   }
@@ -11489,6 +11580,10 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
       modelRuntime,
       aiEntryFile: String(projectAiEntryFile.value || "").trim(),
       mcpConfig: effectiveMcpConfig.value,
+      backendContext: {
+        apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
+        token: getStoredToken(),
+      },
     };
     const normalizedPermissionRequest = {
       ...permissionRequest,
@@ -12511,12 +12606,12 @@ const composerAssistActions = computed(() => {
   actions.push({
     id: "employee_create",
     icon: "employee",
-    label: "创建员工",
-    shortDesc: "描述职责，自动创建员工",
+    label: "创建智能体",
+    shortDesc: "描述职责，自动创建智能体",
     activeText:
-      "本轮会优先调用系统能力检索与已接入 MCP 能力，完善技能和规则建议，并在返回草稿后自动创建员工。",
+      "本轮会优先调用系统能力检索与已接入 MCP 能力，完善技能和规则建议，并在返回草稿后自动创建智能体。",
     seedText:
-      "我要创建一个新员工，主要负责【在这里补充角色职责】。请优先结合系统能力库和已接入的 MCP 能力，整理出合适的技能、规则和工作方式建议，并输出成可直接创建的员工草稿，系统会在你输出后自动创建员工并绑定相关能力。",
+      "我要创建一个新智能体，主要负责【在这里补充角色职责】。请优先结合系统能力库和已接入的 MCP 能力，整理出合适的技能、规则和工作方式建议，并输出成可直接创建的智能体草稿，系统会在你输出后自动创建智能体并绑定相关能力。",
     toolNames: [
       toolMap.search_skills,
       toolMap.get_skill,
@@ -12526,7 +12621,7 @@ const composerAssistActions = computed(() => {
     ].filter(Boolean),
     promptOnly: true,
     instruction:
-      "请先调用当前可用的系统能力检索工具和 MCP 能力，补全最合适的技能、规则建议与工作流，再把用户需求整理成一个可直接创建的 AI 员工草稿；输出先给简短说明，最后必须附带一个严格 JSON 的 ```employee-draft``` 代码块。若从 prompts.chat 或其他外部能力中提炼出可直接落地的规则，请写入 rule_drafts 数组（title、domain、content，可选 source_label、source_url）；系统会据此创建本地规则并绑定到员工身上。",
+      "请先调用当前可用的系统能力检索工具和 MCP 能力，补全最合适的技能、规则建议与工作流，再把用户需求整理成一个可直接创建的 AI 智能体草稿；输出先给简短说明，最后必须附带一个严格 JSON 的 ```employee-draft``` 代码块。若从 prompts.chat 或其他外部能力中提炼出可直接落地的规则，请写入 rule_drafts 数组（title、domain、content，可选 source_label、source_url）；系统会据此创建本地规则并绑定到智能体身上。",
   });
   if (toolMap.search_prompts || toolMap.get_prompt) {
     actions.push({
@@ -12598,7 +12693,7 @@ const composerSlashCommands = computed(() => {
       command: SYSTEM_MCP_COMMAND,
       aliases: SYSTEM_MCP_COMMAND_ALIASES,
       label: "系统 MCP",
-      description: "读取当前项目上下文、配置、提示词、规则、任务树和需求记录。",
+      description: "查看 Runtime MCP 服务目录；输入 /mcp <server_id> 查看该服务工具。",
       assistActionId: "",
       seedText: `${SYSTEM_MCP_COMMAND}`,
     },
@@ -12618,7 +12713,7 @@ const composerSlashCommands = computed(() => {
       command: AGENT_COMMAND,
       aliases: AGENT_COMMAND_ALIASES,
       label: "智能体",
-      description: "查看当前项目绑定的员工和桌面智能体信息。",
+      description: "查看当前项目绑定的智能体和桌面智能体信息。",
       assistActionId: "",
       seedText: `${AGENT_COMMAND}`,
     },
@@ -14246,6 +14341,12 @@ function normalizeProjectChatSettings(raw) {
       source.connector_workspace_path ||
         CHAT_SETTINGS_DEFAULTS.connector_workspace_path,
     ).trim(),
+    skill_directory: String(
+      source.skill_directory || CHAT_SETTINGS_DEFAULTS.skill_directory,
+    ).trim(),
+    rule_directory: String(
+      source.rule_directory || CHAT_SETTINGS_DEFAULTS.rule_directory,
+    ).trim(),
     selected_employee_ids: selectedEmployeeIds,
     employee_coordination_mode:
       coordinationMode === "manual" ? "manual" : "auto",
@@ -14450,7 +14551,7 @@ const canSend = computed(() => {
     );
   }
   if (currentChatSessionLocalLiuAgentWaitingPermission.value) {
-    return false;
+    return Boolean(String(draftText.value || "").trim());
   }
   if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
     return false;
@@ -14491,7 +14592,7 @@ const isProjectOptionalEmployeeCreate = computed(
 
 const isComposerDisabled = computed(() => {
   if (isTerminalInteractionMode.value) return false;
-  if (currentChatSessionLocalLiuAgentWaitingPermission.value) return true;
+  if (currentChatSessionLocalLiuAgentWaitingPermission.value) return false;
   if (isProjectOptionalEmployeeCreate.value) return false;
   if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
     return true;
@@ -20018,6 +20119,12 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
     skill_resource_directory: String(
       skillResourceDirectoryResolved.value || "",
     ).trim(),
+    skill_directory: String(
+      projectChatSettings.value.skill_directory || "",
+    ).trim(),
+    rule_directory: String(
+      projectChatSettings.value.rule_directory || "",
+    ).trim(),
     employee_ids: normalizeStringList(selectedEmployeeIds.value || []),
     employee_id:
       normalizeStringList(selectedEmployeeIds.value || []).length === 1
@@ -20349,6 +20456,96 @@ async function submitCurrentLocalLiuAgentPermissionAction(actionKey) {
   } finally {
     localLiuAgentPermissionSubmitting.value = false;
   }
+}
+
+async function submitCurrentLocalLiuAgentPermissionReplyIfNeeded(text = "") {
+  const pending = currentLocalLiuAgentPendingPermission.value;
+  const content = String(text || "").trim();
+  if (!pending || !content) return false;
+
+  const row = localLiuAgentPendingPermissionRow(pending);
+  if (row) {
+    appendMessageProcessLog(row, {
+      text: `正在由当前模型理解授权回复：${content}`,
+      level: "info",
+    });
+  }
+
+  localLiuAgentPermissionSubmitting.value = true;
+  let classification;
+  try {
+    const fallbackPayload = {
+      projectId: selectedProjectId.value,
+      chatSessionId:
+        pending.activeChatSessionId || currentChatSessionId.value,
+      workspacePath:
+        pending.localChatPayload?.workspacePath ||
+        pending.workspacePath ||
+        localLiuAgentWorkspacePath(),
+      providerId: selectedProviderId.value || defaultProviderId.value || "",
+      modelName: selectedModelName.value || defaultModelName.value || "",
+      systemPrompt: buildLocalLiuAgentSystemPrompt(),
+      systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
+      temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
+      modelRuntime: await buildLocalLiuAgentModelRuntime(),
+      mcpConfig: effectiveMcpConfig.value,
+      backendContext: {
+        apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
+        token: getStoredToken(),
+      },
+    };
+    classification = await classifyNativeLiuAgentPermissionReply({
+      ...fallbackPayload,
+      ...(pending.localChatPayload || {}),
+      message: content,
+      permissionDecision: null,
+    });
+  } finally {
+    localLiuAgentPermissionSubmitting.value = false;
+  }
+
+  if (!classification?.ok) {
+    ElMessage.error(classification?.error || "模型未能判断当前授权意图");
+    return true;
+  }
+  const decision = String(classification?.decision || "").trim();
+  if (decision === "not_an_approval") {
+    if (row) {
+      appendMessageProcessLog(row, {
+        text:
+          String(classification?.reasoning || "").trim() ||
+          "当前回复不是对待授权操作的明确批准或拒绝",
+        level: "warning",
+      });
+    }
+    ElMessage.warning("当前回复未被模型判断为明确的批准或拒绝，待授权操作保持暂停");
+    return true;
+  }
+  const actionKey =
+    decision === "approve_once"
+      ? "local_liuagent_allow_once"
+      : decision === "deny"
+        ? "local_liuagent_deny"
+        : "";
+  if (!actionKey) {
+    ElMessage.error("模型返回了不支持的授权决定");
+    return true;
+  }
+  if (row) {
+    appendMessageProcessLog(row, {
+      text: [
+        `模型判断授权意图：${decision}`,
+        String(classification?.reasoning || "").trim(),
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      level: decision === "deny" ? "warning" : "info",
+    });
+  }
+  resetDraft();
+  await submitCurrentLocalLiuAgentPermissionAction(actionKey);
+  scrollToBottom();
+  return true;
 }
 
 async function submitLocalLiuAgentBackgroundJobAction(operation, actionKey) {
@@ -21222,9 +21419,32 @@ function toolProgressLabel(eventData, toolName) {
 }
 
 function formatToolArgumentsPreview(eventData) {
+  const resolved = eventData?.resolved_arguments;
+  if (resolved && typeof resolved === "object" && !Array.isArray(resolved)) {
+    try {
+      return JSON.stringify(resolved);
+    } catch {
+      // Continue with the runtime-provided preview.
+    }
+  }
   const preview = String(eventData?.arguments_preview || "").trim();
-  if (!preview) return "";
   return preview.replace(/\s+/g, " ").trim();
+}
+
+function formatToolModelArgumentsPreview(eventData) {
+  const modelArguments = eventData?.model_arguments;
+  if (
+    modelArguments &&
+    typeof modelArguments === "object" &&
+    !Array.isArray(modelArguments)
+  ) {
+    try {
+      return JSON.stringify(modelArguments);
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 function eventArgumentsObject(eventData) {
@@ -23250,25 +23470,19 @@ function isSystemMcpToolListPrompt(prompt) {
   );
 }
 
-function formatSystemMcpToolItem(item = {}, index = 0) {
-  const toolName = String(item?.tool_name || "").trim();
-  const name = String(item?.name || item?.remote_tool_name || toolName).trim();
-  const moduleName = String(item?.module_name || "").trim();
-  const remoteToolName = String(item?.remote_tool_name || "").trim();
-  const employeeName = String(item?.employee_name || "").trim();
-  const skillId = String(item?.skill_id || "").trim();
-  const moduleType = String(item?.module_type || "").trim();
+function formatRuntimeMcpToolItem(item = {}, index = 0) {
+  const name = String(item?.name || "").trim();
+  const canonicalToolId = String(item?.canonical_tool_id || "").trim();
+  const serverId = String(item?.server_id || "").trim();
+  const domain = String(item?.domain || "").trim();
   const description = String(item?.description || "").trim();
   const meta = [
-    toolName ? `tool=${toolName}` : "",
-    remoteToolName && remoteToolName !== toolName ? `remote=${remoteToolName}` : "",
-    moduleName ? `module=${moduleName}` : "",
-    employeeName ? `employee=${employeeName}` : "",
-    skillId ? `skill=${skillId}` : "",
-    moduleType ? `type=${moduleType}` : "",
+    serverId ? `server_id=${serverId}` : "",
+    domain ? `domain=${domain}` : "",
+    canonicalToolId ? `canonical=${canonicalToolId}` : "",
   ].filter(Boolean);
   return [
-    `${index + 1}. ${name || toolName || "未命名工具"}`,
+    `${index + 1}. ${name || "未命名工具"}`,
     meta.length ? `   ${meta.join(" · ")}` : "",
     description ? `   ${description}` : "",
   ]
@@ -23276,32 +23490,54 @@ function formatSystemMcpToolItem(item = {}, index = 0) {
     .join("\n");
 }
 
-function buildSystemMcpToolListContent() {
-  const projectTools = projectToolModules.value || [];
-  const externalTools = runtimeExternalTools.value || [];
-  const enabledToolNames = normalizeStringList(selectedProjectToolNames.value || [], 200);
+function formatRuntimeMcpServerItem(item = {}, index = 0) {
+  const serverId = String(item?.server_id || "").trim();
+  const displayName = String(item?.display_name || serverId).trim();
+  const domain = String(item?.domain || "").trim();
+  const source = String(item?.source || "").trim();
+  const health = String(item?.health || "unknown").trim();
+  const toolCount = Number(item?.tool_count || 0);
+  const description = String(item?.description || "").trim();
+  return [
+    `${index + 1}. ${displayName || serverId || "未命名服务"}`,
+    `   server_id=${serverId || "-"} · domain=${domain || "-"} · source=${source || "-"} · health=${health} · tools=${toolCount}`,
+    description ? `   ${description}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildSystemMcpToolListContent(catalog = {}) {
+  const servers = Array.isArray(catalog?.servers) ? catalog.servers : [];
+  const tools = Array.isArray(catalog?.tools) ? catalog.tools : [];
+  const selectedServerId = String(catalog?.selected_server_id || "").trim();
   const lines = [
-    `结论：当前项目可用工具共 ${projectTools.length + externalTools.length} 个，其中项目工具 ${projectTools.length} 个，外部 MCP 工具 ${externalTools.length} 个。`,
+    "物理 MCP 连接：runtime",
+    `入口：${String(catalog?.endpoint || "").trim() || "/mcp/runtime/mcp"}`,
+    `逻辑服务：${Number(catalog?.server_count || servers.length)} 个 · 已注册工具：${Number(catalog?.tool_count || 0)} 个`,
   ];
-  if (enabledToolNames.length) {
-    lines.push(`当前已勾选启用：${enabledToolNames.join("、")}`);
-  }
   lines.push("");
-  lines.push("项目工具：");
-  if (projectTools.length) {
-    lines.push(...projectTools.map(formatSystemMcpToolItem));
+  lines.push("Server Catalog：");
+  if (servers.length) {
+    lines.push(...servers.map(formatRuntimeMcpServerItem));
   } else {
-    lines.push("- 暂无项目工具。");
+    lines.push("- 暂无逻辑 MCP 服务。");
+  }
+  if (selectedServerId) {
+    lines.push("");
+    lines.push(`Tool Index · ${selectedServerId}：`);
+    lines.push(
+      ...(tools.length
+        ? tools.map(formatRuntimeMcpToolItem)
+        : ["- 该服务当前没有可用工具。"]),
+    );
   }
   lines.push("");
-  lines.push("外部 MCP 工具：");
-  if (externalTools.length) {
-    lines.push(...externalTools.map(formatSystemMcpToolItem));
-  } else {
-    lines.push("- 暂无外部 MCP 工具。");
-  }
-  lines.push("");
-  lines.push("说明：以上内容来自项目配置 API 已加载的系统 MCP/项目工具数据，没有经过本机 MCP registry，也没有调用大模型。");
+  lines.push(
+    selectedServerId
+      ? "说明：工具索引来自桌面 Runtime 实际注册结果。"
+      : "查看工具：输入 /mcp <server_id>，例如 /mcp system。",
+  );
   return lines.join("\n");
 }
 
@@ -23337,7 +23573,7 @@ function formatProjectEmployeeItem(item = {}, index = 0) {
   );
   const domains = normalizeStringList(item?.rule_domains || item?.domains || [], 8);
   return [
-    `${index + 1}. ${name || "未命名员工"}`,
+    `${index + 1}. ${name || "未命名智能体"}`,
     [employeeId ? `ID=${employeeId}` : "", role ? `角色=${role}` : ""]
       .filter(Boolean)
       .join(" · "),
@@ -23382,11 +23618,16 @@ function buildBoundAgentContent() {
   const agentTypes = Array.isArray(externalAgentInfo.value?.agent_types)
     ? externalAgentInfo.value.agent_types
     : [];
-  const lines = [`当前项目绑定员工 ${employees.length} 个。`, "", "项目员工："];
+  const lines = [
+    `当前项目绑定智能体 ${employees.length} 个。`,
+    "这是项目绑定关系的权威数量；对话设置中的已选智能体只表示本轮执行选择。",
+    "",
+    "项目智能体：",
+  ];
   lines.push(
     ...(employees.length
       ? employees.map(formatProjectEmployeeItem)
-      : ["- 暂无项目员工。"]),
+      : ["- 暂无项目智能体。"]),
   );
   lines.push("");
   lines.push("桌面智能体：");
@@ -23427,9 +23668,11 @@ function buildBoundRuleContent() {
   return lines.join("\n");
 }
 
-function buildDirectProjectBindingContent(kind) {
+function buildDirectProjectBindingContent(kind, runtimeMcpCatalog = null) {
   const normalizedKind = String(kind || "").trim();
-  if (normalizedKind === "system_mcp") return buildSystemMcpToolListContent();
+  if (normalizedKind === "system_mcp") {
+    return buildSystemMcpToolListContent(runtimeMcpCatalog || {});
+  }
   if (normalizedKind === "skill") return buildBoundSkillContent();
   if (normalizedKind === "agent") return buildBoundAgentContent();
   if (normalizedKind === "rule") return buildBoundRuleContent();
@@ -23589,7 +23832,30 @@ async function handleDirectProjectBindingSlashCommand(
 ) {
   const kind = String(slashCommand?.entry?.kind || "").trim();
   if (!["system_mcp", "skill", "agent", "rule"].includes(kind)) return false;
-  if (!projectToolModules.value.length && !runtimeExternalTools.value.length) {
+  let runtimeMcpCatalog = null;
+  if (kind === "system_mcp") {
+    const serverId = String(slashCommand?.prompt || "").trim();
+    try {
+      runtimeMcpCatalog = await fetchProjectMcpRuntimeCatalog(
+        selectedProjectId.value,
+        serverId,
+      );
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      const message = String(
+        detail?.message || error?.message || "读取 Runtime MCP 服务目录失败",
+      ).trim();
+      runtimeMcpCatalog = {
+        endpoint: `/mcp/runtime/mcp?project_id=${encodeURIComponent(selectedProjectId.value)}`,
+        servers: [],
+        tools: [],
+        server_count: 0,
+        tool_count: 0,
+        selected_server_id: serverId,
+      };
+      runtimeMcpCatalog.error = message;
+    }
+  } else if (!projectToolModules.value.length && !runtimeExternalTools.value.length) {
     await fetchProvidersByProject(selectedProjectId.value);
   }
   const userMessage = {
@@ -23606,7 +23872,9 @@ async function handleDirectProjectBindingSlashCommand(
   const assistantMessage = {
     id: createLocalMessageId(),
     role: "assistant",
-    content: buildDirectProjectBindingContent(kind),
+    content: runtimeMcpCatalog?.error
+      ? `Runtime MCP 查询失败：${runtimeMcpCatalog.error}`
+      : buildDirectProjectBindingContent(kind, runtimeMcpCatalog),
     images: [],
     videos: [],
     attachments: [],
@@ -23628,7 +23896,8 @@ async function handleDirectProjectBindingSlashCommand(
     surface: chatSurface.value,
     slash_command: kind,
     direct_response: true,
-    direct_response_kind: "project_binding_lookup",
+    direct_response_kind:
+      kind === "system_mcp" ? "runtime_mcp_catalog" : "project_binding_lookup",
   };
   void persistDirectProjectChatMessage({
     chatSessionId: activeChatSessionId,
@@ -23754,12 +24023,12 @@ function buildEmployeeDraftAssistContext() {
     ruleLines.length ? ruleLines.join("\n") : "- 暂无本地规则",
     "",
     "输出要求：",
-    "- 先用 3 到 6 行说明你推荐这个员工的定位。",
+    "- 先用 3 到 6 行说明你推荐这个智能体的定位。",
     "- 最后必须追加一个 ```employee-draft``` 代码块，内容是严格 JSON，不要写注释。",
     "- JSON 至少包含：name、description、goal、skills、rule_domains、style_hints、default_workflow、tool_usage_policy、memory_scope、memory_retention_days。",
     "- skills 字段里优先放技能 ID；如果拿不准，可放技能名称或关键词。",
     "- rule_domains 优先输出领域名；rule_titles 可补充你认为最关键的规则标题。",
-    "- 如果从外部提示词或技能模板中提炼出了可直接落地的员工规则，请额外输出 rule_drafts 数组；每项包含 title、domain、content，可选 source_label、source_url。",
+    "- 如果从外部提示词或技能模板中提炼出了可直接落地的智能体规则，请额外输出 rule_drafts 数组；每项包含 title、domain、content，可选 source_label、source_url。",
   ]
     .filter(Boolean)
     .join("\n");
@@ -24191,7 +24460,7 @@ async function openEmployeeDraftCreateDialog(item, payload) {
 async function createEmployeeFromDraft(item) {
   const rawDraft = extractEmployeeDraftPayload(item?.content || "");
   if (!rawDraft) {
-    ElMessage.warning("当前消息里没有可创建的员工草稿");
+    ElMessage.warning("当前消息里没有可创建的智能体草稿");
     return;
   }
   try {
@@ -25213,7 +25482,7 @@ function moduleTypeLabel(moduleType) {
     builtin_tool: "系统工具",
     project_skill_tool: "项目技能",
     project_mcp_service: "项目服务",
-    employee_mcp_service: "员工服务",
+    employee_mcp_service: "智能体服务",
     skill_mcp_service: "技能服务",
     rule_mcp_service: "规则服务",
     external_mcp_service: "外部服务",
@@ -25242,7 +25511,7 @@ function moduleMetaText(item) {
     item?.endpoint_http || item?.endpoint_sse || "",
   ).trim();
   const projectScope = String(item?.project_id || "").trim();
-  if (employeeName) parts.push(`员工: ${employeeName}`);
+  if (employeeName) parts.push(`智能体: ${employeeName}`);
   if (toolName) parts.push(`工具: ${toolName}`);
   if (endpoint) parts.push(`入口: ${endpoint}`);
   if (projectScope) parts.push(`范围: 项目(${projectScope})`);
@@ -25846,12 +26115,12 @@ async function handleQuickCreateEmployee(payload) {
     }
     ElMessage.success(
       payload.add_to_current_project && projectId
-        ? `员工「${employee.name || employeeId}」已创建并加入当前项目${createdParts.length ? `，自动补齐${createdParts.join("、")}` : ""}`
-        : `员工「${employee.name || employeeId}」创建成功${createdParts.length ? `，自动补齐${createdParts.join("、")}` : ""}`,
+        ? `智能体「${employee.name || employeeId}」已创建并加入当前项目${createdParts.length ? `，自动补齐${createdParts.join("、")}` : ""}`
+        : `智能体「${employee.name || employeeId}」创建成功${createdParts.length ? `，自动补齐${createdParts.join("、")}` : ""}`,
     );
     return employee;
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "创建员工失败");
+    ElMessage.error(err?.detail || err?.message || "创建智能体失败");
     throw err;
   } finally {
     employeeCreateSubmitting.value = false;
@@ -28346,6 +28615,45 @@ async function promptProjectWorkspacePath() {
   }
 }
 
+async function pickChatRuntimeDirectory(kind) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+
+  const isSkillDirectory = kind === "skill";
+  const pickingState = isSkillDirectory
+    ? skillDirectoryPicking
+    : ruleDirectoryPicking;
+  const settingKey = isSkillDirectory ? "skill_directory" : "rule_directory";
+  const directoryLabel = isSkillDirectory ? "技能目录" : "规则目录";
+  const initialPath = String(
+    projectChatSettings.value[settingKey] ||
+      resolveNativeRuntimeWorkspacePath() ||
+      "",
+  ).trim();
+
+  pickingState.value = true;
+  try {
+    const pickedPath = await pickWorkspaceDirectory(initialPath, {
+      title: `选择${directoryLabel} · ${String(currentProjectLabel.value || "").trim() || "AI 对话中心"}`,
+      placeholder: isSkillDirectory
+        ? "/workspace/.ai-employee/skills"
+        : "/workspace/.ai-employee/rules",
+    });
+    const normalizedPath = String(pickedPath || "").trim();
+    if (!normalizedPath) {
+      return;
+    }
+    projectChatSettings.value[settingKey] = normalizedPath;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || `选择${directoryLabel}失败`);
+  } finally {
+    pickingState.value = false;
+  }
+}
+
 async function promptProjectWorkspaceDirectory() {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) {
@@ -28760,6 +29068,12 @@ async function sendProjectChatRequest({
     connector_sandbox_mode_explicit: true,
     skill_resource_directory: String(
       skillResourceDirectoryResolved.value || "",
+    ).trim(),
+    skill_directory: String(
+      projectChatSettings.value.skill_directory || "",
+    ).trim(),
+    rule_directory: String(
+      projectChatSettings.value.rule_directory || "",
     ).trim(),
     message: finalUserPrompt,
     employee_ids: employeeIds,
@@ -29529,7 +29843,7 @@ async function stopGeneration() {
 async function generateEmployeeDraftWithoutProject() {
   const text = String(draftText.value || "").trim();
   if (!text) {
-    ElMessage.warning("请先描述你要创建的员工");
+    ElMessage.warning("请先描述你要创建的智能体");
     return;
   }
   const userMessage = {
@@ -29602,10 +29916,10 @@ async function generateEmployeeDraftWithoutProject() {
         temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
       ),
       system_prompt:
-        "你是 AI 员工架构师。请根据用户需求和现有技能、规则目录生成员工草稿。先给一句简短说明，最后必须附带严格 JSON 的 ```employee-draft``` 代码块；如果能明确整理出可直接落地的员工规则，请输出 rule_drafts 数组，每项包含 title、domain、content。",
+        "你是 AI 智能体架构师。请根据用户需求和现有技能、规则目录生成智能体草稿。先给一句简短说明，最后必须附带严格 JSON 的 ```employee-draft``` 代码块；如果能明确整理出可直接落地的智能体规则，请输出 rule_drafts 数组，每项包含 title、domain、content。",
     });
     messages.value[assistantIndex].content = String(
-      response?.content || "未生成员工草稿。",
+      response?.content || "未生成智能体草稿。",
     ).trim();
     await autoCreateEmployeeFromDraftMessage(messages.value[assistantIndex], {
       resetAssist: true,
@@ -29613,7 +29927,7 @@ async function generateEmployeeDraftWithoutProject() {
   } catch (err) {
     messages.value[assistantIndex].content =
       `请求失败：${err?.message || "未知错误"}`;
-    ElMessage.error(err?.detail || err?.message || "生成员工草稿失败");
+    ElMessage.error(err?.detail || err?.message || "生成智能体草稿失败");
   } finally {
     finishMessageExecutionTiming(messages.value[assistantIndex]);
     chatLoading.value = false;
@@ -29691,6 +30005,12 @@ async function sendGlobalChatWithoutProject() {
       skill_resource_directory: String(
         skillResourceDirectoryResolved.value || "",
       ).trim(),
+      skill_directory: String(
+        projectChatSettings.value.skill_directory || "",
+      ).trim(),
+      rule_directory: String(
+        projectChatSettings.value.rule_directory || "",
+      ).trim(),
       answer_style: String(
         projectChatSettings.value.answer_style ||
           CHAT_SETTINGS_DEFAULTS.answer_style,
@@ -29756,6 +30076,14 @@ async function doSend(options = {}) {
     }
     await sendTerminalMirrorInput();
     scrollToBottom();
+    return;
+  }
+
+  if (currentChatSessionLocalLiuAgentWaitingPermission.value) {
+    if (await submitCurrentLocalLiuAgentPermissionReplyIfNeeded(draftText.value)) {
+      return;
+    }
+    ElMessage.warning("当前正在等待本机授权，请回复确认、取消，或使用授权卡片按钮");
     return;
   }
 

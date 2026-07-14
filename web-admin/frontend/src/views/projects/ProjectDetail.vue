@@ -120,7 +120,7 @@
                 </template>
                 <el-alert
                   class="section-alert"
-                  title="项目聊天会优先注入这里绑定的 UI 规则，优先级高于员工个人规则。"
+                  title="项目聊天会优先注入这里绑定的 UI 规则，优先级高于智能体个人规则。"
                   type="info"
                   :closable="false"
                   show-icon
@@ -580,10 +580,10 @@
                 <el-table :data="pagedMembers" stripe class="section-table">
                   <el-table-column
                     prop="employee_id"
-                    label="员工 ID"
+                    label="智能体 ID"
                     width="150"
                   />
-                  <el-table-column label="员工名称" width="180">
+                  <el-table-column label="智能体名称" width="180">
                     <template #default="{ row }">
                       <el-button
                         text
@@ -603,7 +603,7 @@
                       }}</el-tag>
                     </template>
                   </el-table-column>
-                  <el-table-column label="员工 MCP" width="120">
+                  <el-table-column label="智能体 MCP" width="120">
                     <template #default="{ row }">
                       <el-tag
                         :type="row.employee_mcp_enabled ? 'success' : 'warning'"
@@ -731,7 +731,7 @@
                       v-model="memoryFilters.employeeId"
                       clearable
                       filterable
-                      placeholder="全部员工"
+                      placeholder="全部智能体"
                     >
                       <el-option
                         v-for="item in members"
@@ -985,14 +985,14 @@
 
       <el-dialog v-model="showAddDialog" title="添加项目成员" width="520px">
         <el-form :model="addForm" label-width="100px">
-          <el-form-item label="员工" required>
+          <el-form-item label="智能体" required>
             <el-select
               v-model="addForm.employee_ids"
               multiple
               collapse-tags
               collapse-tags-tooltip
               filterable
-              placeholder="请选择员工（可多选）"
+              placeholder="请选择智能体（可多选）"
               style="width: 100%"
             >
               <el-option
@@ -6017,8 +6017,8 @@ function escapeCsvField(value) {
 
 function buildMemoryExportCsv(rows) {
   const headers = [
-    "员工",
-    "员工ID",
+    "智能体",
+    "智能体ID",
     "类型",
     "内容",
     "重要度",
@@ -6448,7 +6448,7 @@ function openAddMember() {
 function openEmployeeDetail(row) {
   const employeeId = String(row?.employee_id || "").trim();
   if (!employeeId) {
-    ElMessage.warning("当前员工 ID 无效");
+    ElMessage.warning("当前智能体 ID 无效");
     return;
   }
   void router.push(`/employees/${employeeId}`);
@@ -7209,14 +7209,14 @@ async function addMember() {
     ),
   ];
   if (!selected.length) {
-    ElMessage.warning("请选择员工");
+    ElMessage.warning("请选择智能体");
     return;
   }
   const existingSet = memberIdSet.value;
   const toAdd = selected.filter((id) => !existingSet.has(id));
   const skipped = selected.filter((id) => existingSet.has(id));
   if (!toAdd.length) {
-    ElMessage.warning("所选员工都已添加，无需重复添加");
+    ElMessage.warning("所选智能体都已添加，无需重复添加");
     return;
   }
   saving.value = true;

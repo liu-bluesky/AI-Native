@@ -160,7 +160,7 @@ const props = defineProps({
   },
   description: {
     type: String,
-    default: '技能、员工和规则统一进入一个目录。登录后继续浏览与接入。',
+    default: '技能、智能体和规则统一进入一个目录。登录后继续浏览与接入。',
   },
   successPath: {
     type: String,
@@ -168,7 +168,7 @@ const props = defineProps({
   },
   highlights: {
     type: Array,
-    default: () => ['技能目录', '员工模板', '规则标准'],
+    default: () => ['技能目录', '智能体模板', '规则标准'],
   },
 })
 

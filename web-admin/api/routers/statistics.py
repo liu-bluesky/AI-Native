@@ -1313,15 +1313,6 @@ def _build_live_activity_overview(raw_live_activity: dict, *, project_id: str = 
     }
 
 
-def _coerce_latest_token(*values: object) -> str:
-    latest = ""
-    for value in values:
-        token = _normalize_text(value, 40)
-        if token >= latest:
-            latest = token
-    return latest
-
-
 @router.get("/overview")
 async def statistics_overview(
     days: int = Query(7, description="统计时间窗口（天）"),

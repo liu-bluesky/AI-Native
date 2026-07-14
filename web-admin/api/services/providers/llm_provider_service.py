@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 import time
-from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 from urllib.parse import urlparse
@@ -15,10 +14,6 @@ from starlette.concurrency import run_in_threadpool
 from core.config import get_settings
 from services.catalogs.llm_model_type_catalog import DEFAULT_MODEL_TYPE, get_model_type_meta, normalize_model_type
 from stores.postgres.llm_provider_store import LlmProviderStorePostgres
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 class LlmProviderConnectionTestError(RuntimeError):

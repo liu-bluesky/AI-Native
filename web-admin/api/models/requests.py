@@ -439,6 +439,8 @@ class ProjectChatReq(BaseModel):
     connector_sandbox_mode: str | None = None
     connector_sandbox_mode_explicit: bool | None = None
     skill_resource_directory: str = ""
+    skill_directory: str = ""
+    rule_directory: str = ""
     employee_id: str = ""
     employee_ids: list[str] = []
     employee_coordination_mode: str | None = None

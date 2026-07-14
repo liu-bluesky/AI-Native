@@ -284,6 +284,25 @@ async fn liuagent_start_local_chat(
 }
 
 #[tauri::command]
+async fn liuagent_classify_permission_reply(
+    request: liuagent_core::LocalChatRequest,
+) -> liuagent_core::LocalPermissionReplyResult {
+    match tauri::async_runtime::spawn_blocking(move || {
+        liuagent_core::classify_local_permission_reply(request)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            liuagent_core::LocalPermissionReplyResult::failed(liuagent_core::ToolError::new(
+                "runtime.join_failed",
+                format!("permission reply classifier worker failed: {error}"),
+            ))
+        }
+    }
+}
+
+#[tauri::command]
 async fn bot_start_local_chat(
     app: tauri::AppHandle,
     request: bot::BotChatRequest,
@@ -1731,6 +1750,7 @@ fn main() {
             liuagent_execute_tool,
             liuagent_upload_provider_file,
             liuagent_start_local_chat,
+            liuagent_classify_permission_reply,
             bot_start_local_chat,
             bot_start_feishu_local_listener,
             bot_stop_feishu_local_listener,

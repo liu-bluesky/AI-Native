@@ -30,8 +30,8 @@
             :value="item.value"
           />
         </el-select>
-        <el-select v-model="filters.employeeId" clearable filterable placeholder="筛选员工">
-          <el-option label="全部员工" value="" />
+        <el-select v-model="filters.employeeId" clearable filterable placeholder="筛选智能体">
+          <el-option label="全部智能体" value="" />
           <el-option
             v-for="item in employeeOptions"
             :key="item.value"

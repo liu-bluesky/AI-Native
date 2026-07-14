@@ -9,9 +9,9 @@ from services.mcp.dynamic_mcp_profiles import (
     employee_rule_summary,
     list_project_member_profiles_runtime,
     project_ui_rule_summary,
-    query_project_rules_runtime,
+    query_project_rules,
 )
-from services.mcp.dynamic_mcp_skill_proxies import list_project_proxy_tools_runtime
+from services.mcp.dynamic_mcp_skill_proxies import list_project_skill_proxy_tools
 from stores.mcp_bridge import rule_store, skill_store
 
 _DEPLOY_SECRET_KEY_PARTS = (
@@ -55,7 +55,7 @@ def _serialize_employee_detail_runtime(employee) -> dict:
     return payload
 
 
-def get_project_detail_runtime(project_id: str) -> dict:
+def get_project_detail(project_id: str) -> dict:
     project = project_store.get(project_id)
     if project is None:
         return {"error": f"项目 {project_id} 不存在"}
@@ -66,6 +66,17 @@ def get_project_detail_runtime(project_id: str) -> dict:
     payload["deploy_settings"] = _redact_deploy_settings_for_runtime(payload.get("deploy_settings") or {})
     payload["members"] = [asdict(item) for item in members]
     payload["user_members"] = [asdict(item) for item in user_members]
+    payload["agents"] = payload["members"]
+    payload["agent_count"] = len(members)
+    payload["active_agent_count"] = sum(1 for item in members if bool(getattr(item, "enabled", True)))
+    payload["bound_agents"] = payload["agents"]
+    payload["bound_agent_count"] = payload["agent_count"]
+    payload["active_bound_agent_count"] = payload["active_agent_count"]
+    payload["agent_binding_semantics"] = {
+        "authoritative_fields": ["bound_agents", "bound_agent_count", "active_bound_agent_count"],
+        "selection_fields": ["chat_settings.selected_employee_ids", "chat_settings.selected_employee_id"],
+        "note": "对话选择字段为空表示自动分配，不表示项目未绑定智能体。",
+    }
     payload["member_count"] = len(members)
     payload["active_member_count"] = sum(1 for item in members if bool(getattr(item, "enabled", True)))
     payload["user_count"] = len(user_members)
@@ -107,7 +118,7 @@ def get_project_detail_runtime(project_id: str) -> dict:
     return payload
 
 
-def get_project_employee_detail_runtime(project_id: str, employee_id: str) -> dict:
+def get_project_employee_detail(project_id: str, employee_id: str) -> dict:
     project = project_store.get(project_id)
     if project is None:
         return {"error": f"项目 {project_id} 不存在"}
@@ -158,7 +169,7 @@ def query_project_mcp_modules_runtime(project_id: str, keyword: str = "", limit:
         return False
 
     project_related: list[dict] = []
-    for item in list_project_proxy_tools_runtime(project_id, ""):
+    for item in list_project_skill_proxy_tools(project_id, ""):
         tool_name = str(item.get("tool_name") or "").strip()
         if not tool_name:
             continue
@@ -292,7 +303,7 @@ def query_project_mcp_modules_runtime(project_id: str, keyword: str = "", limit:
     }
 
 
-def search_project_context_runtime(
+def search_project_context(
     project_id: str,
     scope: str = "all",
     keyword: str = "",
@@ -401,7 +412,7 @@ def search_project_context_runtime(
         result["members_total"] = len(filtered_profiles)
 
     if scope_value in {"all", "rules"}:
-        rules = query_project_rules_runtime(project_id, keyword=keyword_value, employee_id=employee_id_value)
+        rules = query_project_rules(project_id, keyword=keyword_value, employee_id=employee_id_value)
         result["rules"] = rules[:limit_value]
         result["rules_total"] = len(rules)
 

@@ -55,16 +55,6 @@ _DEFAULT_USER_ACTION_MARKERS = (
     "授权",
     "登录",
 )
-_DEFAULT_UNAUTHENTICATED_MARKERS = (
-    "no user logged in",
-    "not logged in",
-    "not authenticated",
-    "unauthenticated",
-    "login required",
-    "auth required",
-)
-
-
 def get_cli_plugin_user_runtime_dirs(
     plugin_id: str,
     owner_username: str,

@@ -4,7 +4,7 @@
       <div class="loading-brand">
         <div class="loading-brand__mark">AI</div>
         <div>
-          <div class="loading-brand__name">AI 员工工厂</div>
+          <div class="loading-brand__name">AI 智能体工厂</div>
           <div class="loading-brand__meta">正在检查系统状态</div>
         </div>
       </div>

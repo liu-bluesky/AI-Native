@@ -244,8 +244,12 @@ def resolve_project_proxy_tool_spec(
     return matched[0], ""
 
 
-def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> list[dict]:
-    scoped_proxy_specs, employee_proxy_specs = build_project_proxy_specs(project_id)
+def serialize_project_skill_proxy_tools(
+    scoped_proxy_specs: dict[str, dict],
+    employee_proxy_specs: dict[str, dict[str, dict]],
+    employee_id: str = "",
+) -> list[dict]:
+    """Serialize already-resolved skill proxy specs into tool descriptors."""
     employee_id_value = str(employee_id or "").strip()
     tools: list[dict] = []
     if employee_id_value:
@@ -284,3 +288,13 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
                 }
             )
     return tools
+
+
+def list_project_skill_proxy_tools(project_id: str, employee_id: str = "") -> list[dict]:
+    """List only employee-bound skill proxy tools for a project."""
+    scoped_proxy_specs, employee_proxy_specs = build_project_proxy_specs(project_id)
+    return serialize_project_skill_proxy_tools(
+        scoped_proxy_specs,
+        employee_proxy_specs,
+        employee_id,
+    )

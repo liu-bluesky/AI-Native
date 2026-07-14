@@ -36,6 +36,7 @@ const TAURI_COMMAND_NAMES = {
   liuagentExecuteTool: "liuagent_execute_tool",
   liuagentUploadProviderFile: "liuagent_upload_provider_file",
   liuagentStartLocalChat: "liuagent_start_local_chat",
+  liuagentClassifyPermissionReply: "liuagent_classify_permission_reply",
   botStartLocalChat: "bot_start_local_chat",
   botStartFeishuLocalListener: "bot_start_feishu_local_listener",
   botStopFeishuLocalListener: "bot_stop_feishu_local_listener",
@@ -472,6 +473,43 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
         ok: false,
         errorCode: "native_bridge.unavailable",
         error: "native liuAgent local chat runtime is unavailable",
+      };
+}
+
+export async function classifyNativeLiuAgentPermissionReply(request = {}) {
+  const projectId = String(request?.projectId || request?.project_id || "").trim();
+  const chatSessionId = String(
+    request?.chatSessionId || request?.chat_session_id || "",
+  ).trim();
+  const workspacePath = String(
+    request?.workspacePath || request?.workspace_path || "",
+  ).trim();
+  const message = String(request?.message || "").trim();
+  if (!projectId || !chatSessionId || !workspacePath || !message) {
+    return {
+      ok: false,
+      decision: "not_an_approval",
+      errorCode: "tool.schema_invalid",
+      error: "projectId, chatSessionId, workspacePath and message are required",
+    };
+  }
+  const result = await invokeNativeDesktopBridge("liuagentClassifyPermissionReply", {
+    request: {
+      ...request,
+      projectId,
+      chatSessionId,
+      workspacePath,
+      message,
+      permissionDecision: null,
+    },
+  });
+  return result && typeof result === "object"
+    ? result
+    : {
+        ok: false,
+        decision: "not_an_approval",
+        errorCode: "native_bridge.unavailable",
+        error: "native permission reply classifier is unavailable",
       };
 }
 

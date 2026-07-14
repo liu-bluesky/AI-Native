@@ -10,6 +10,8 @@ from urllib.parse import parse_qs
 
 from fastapi.responses import JSONResponse, Response
 
+from core.auth import decode_token
+
 from services.mcp.dynamic_mcp_audit import (
     create_tracking_receive,
     create_tracking_send,
@@ -330,6 +332,27 @@ def _resolve_request_auth(scope: dict[str, Any], usage_store, session_keys: dict
     is_streamable = path.rstrip("/").endswith("/mcp")
     is_messages = path.rstrip("/").endswith("/messages") or "/messages/" in path
 
+    headers = {
+        key.decode("latin-1").lower(): value.decode("latin-1")
+        for key, value in scope.get("headers", [])
+    }
+    authorization = str(headers.get("authorization") or "").strip()
+    if authorization.lower().startswith("bearer "):
+        login_payload = decode_token(authorization[7:].strip())
+        if login_payload is not None:
+            return {
+                "path": path,
+                "method": method,
+                "query": qs,
+                "api_key": "",
+                "developer_name": str(login_payload.get("sub") or "").strip(),
+                "key_owner_username": str(login_payload.get("sub") or "").strip(),
+                "login_payload": login_payload,
+                "is_sse": is_sse,
+                "is_streamable": is_streamable,
+                "is_messages": is_messages,
+            }, None
+
     if is_sse or is_streamable:
         if not api_key:
             return None, JSONResponse(
@@ -355,6 +378,7 @@ def _resolve_request_auth(scope: dict[str, Any], usage_store, session_keys: dict
         "api_key": api_key,
         "developer_name": developer_name,
         "key_owner_username": _resolve_key_owner_username(usage_store, api_key),
+        "login_payload": None,
         "is_sse": is_sse,
         "is_streamable": is_streamable,
         "is_messages": is_messages,
@@ -437,6 +461,25 @@ class ProjectMcpProxyApp:
             await auth_error(scope, receive, send)
             return
         assert auth_state is not None
+
+        login_payload = auth_state.get("login_payload")
+        if login_payload is not None:
+            username = str(login_payload.get("sub") or "").strip()
+            role_ids = {
+                str(value or "").strip().lower()
+                for value in [login_payload.get("role"), *(login_payload.get("roles") or [])]
+                if str(value or "").strip()
+            }
+            project_creator = str(getattr(project, "created_by", "") or "").strip()
+            user_member = self._project_store.get_user_member(project_id, username)
+            if (
+                not role_ids.intersection({"admin", "super_admin", "administrator"})
+                and username != project_creator
+                and (user_member is None or not bool(getattr(user_member, "enabled", True)))
+            ):
+                response = JSONResponse({"detail": "Project access denied."}, status_code=403)
+                await response(scope, receive, send)
+                return
 
         api_key = auth_state["api_key"]
         developer_name = auth_state["developer_name"]
@@ -569,6 +612,38 @@ class ProjectMcpProxyApp:
             replace_path_suffix=self._replace_path_suffix,
         )
         await self._project_apps[project_id](downstream_scope, tracking_receive, tracking_send)
+
+
+class RuntimeMcpProxyApp:
+    """Single physical desktop MCP entrypoint bound to an explicit project context."""
+
+    def __init__(self, project_proxy_app: ProjectMcpProxyApp) -> None:
+        self._project_proxy_app = project_proxy_app
+
+    async def __call__(self, scope, receive, send):
+        path = str(scope.get("path", ""))
+        if _is_well_known_probe(path):
+            response = Response(status_code=204)
+            await response(scope, receive, send)
+            return
+        query = parse_qs(scope.get("query_string", b"").decode())
+        project_id = _normalize_text((query.get("project_id") or [""])[0], 120)
+        if not project_id.startswith("proj-"):
+            response = JSONResponse(
+                {
+                    "detail": "Runtime MCP requires an explicit project_id query parameter.",
+                    "code": "mcp.project_context_missing",
+                },
+                status_code=400,
+            )
+            await response(scope, receive, send)
+            return
+        routed_scope = dict(scope)
+        routed_scope["path_params"] = {
+            **dict(scope.get("path_params") or {}),
+            "project_id": project_id,
+        }
+        await self._project_proxy_app(routed_scope, receive, send)
 
 
 class EmployeeMcpProxyApp:

@@ -460,19 +460,6 @@ def _build_template_candidate_groups(
     return groups
 
 
-def _coarse_template_bucket_key(template: AgentTemplate) -> str:
-    domains = _normalize_text_list(template.rule_domains, limit=2, item_limit=80)
-    if domains:
-        return f"domain:{'|'.join(item.lower() for item in domains)}"
-    path = _normalize_text(template.relative_path, limit=400).strip("/")
-    if path:
-        first = path.split("/", 1)[0].strip().lower()
-        if first:
-            return f"path:{first}"
-    language = _normalize_text(template.language, limit=40).lower() or "unknown"
-    return f"lang:{language}"
-
-
 def _extract_json_payload(text: str) -> dict[str, Any]:
     raw = str(text or "").strip()
     if not raw:
@@ -485,65 +472,6 @@ def _extract_json_payload(text: str) -> dict[str, Any]:
     if start < 0 or end <= start:
         raise ValueError("LLM did not return a JSON object")
     return json.loads(raw[start : end + 1])
-
-
-def _extract_text_segments(value: Any) -> list[str]:
-    parts: list[str] = []
-    if isinstance(value, str):
-        text = value.strip()
-        if text:
-            parts.append(text)
-        return parts
-    if isinstance(value, list):
-        for item in value:
-            parts.extend(_extract_text_segments(item))
-        return parts
-    if isinstance(value, dict):
-        if isinstance(value.get("text"), str):
-            parts.extend(_extract_text_segments(value.get("text")))
-        if isinstance(value.get("content"), list):
-            for item in value.get("content") or []:
-                if isinstance(item, dict):
-                    parts.extend(_extract_text_segments(item.get("text") or item.get("content") or item.get("value")))
-        for key in ("content", "message", "result", "delta", "completion", "value"):
-            if key in value:
-                parts.extend(_extract_text_segments(value.get(key)))
-        return parts
-    return parts
-
-
-def _extract_text_payload(value: Any) -> str:
-    seen: set[str] = set()
-    parts: list[str] = []
-    for item in _extract_text_segments(value):
-        if item in seen:
-            continue
-        seen.add(item)
-        parts.append(item)
-    return "\n".join(parts).strip()
-
-
-def _compute_incremental_text(previous: str, current: str) -> tuple[str, str]:
-    prev = str(previous or "")
-    curr = str(current or "")
-    if not curr:
-        return prev, ""
-    if prev and curr.startswith(prev):
-        return curr, curr[len(prev) :]
-    if curr == prev:
-        return prev, ""
-    return curr, curr
-
-
-def _connector_online(item: Any) -> bool:
-    raw = str(getattr(item, "last_seen_at", "") or "").strip()
-    if not raw:
-        return False
-    try:
-        last_seen = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    return (_now_utc() - last_seen).total_seconds() <= 90
 
 
 def _build_template_compare_prompt(templates: list[AgentTemplate]) -> str:

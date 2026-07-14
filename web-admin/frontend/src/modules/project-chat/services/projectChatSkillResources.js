@@ -157,7 +157,7 @@ function inferChineseSkillSummary(raw) {
   const description = String(raw?.description || "").trim();
   const joined = `${name} ${slug} ${description}`.toLowerCase();
   if (joined.includes("ui") || joined.includes("interface")) {
-    return "适合界面审美、排版层级、交互一致性和设计系统类员工。";
+    return "适合界面审美、排版层级、交互一致性和设计系统类智能体。";
   }
   if (
     joined.includes("css") ||

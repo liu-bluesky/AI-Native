@@ -673,6 +673,138 @@ def test_project_mcp_proxy_tracks_runtime_presence(monkeypatch):
     assert sent_messages[-1]["type"] == "http.response.body"
 
 
+def _run_project_mcp_proxy_with_login_token(monkeypatch, *, username: str, role: str, user_member=None):
+    import asyncio
+
+    from core.auth import create_token
+    from services.mcp import dynamic_mcp_proxy_apps as proxy_apps
+
+    class _UsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            _ = api_key
+            return ""
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            _ = args, kwargs
+
+    class _ProjectStore:
+        @staticmethod
+        def get(project_id: str):
+            if project_id != "proj-1":
+                return None
+            return SimpleNamespace(
+                id="proj-1",
+                name="项目一",
+                mcp_enabled=True,
+                created_by="project-owner",
+                updated_at="2026-07-13T00:00:00+00:00",
+            )
+
+        @staticmethod
+        def get_user_member(project_id: str, member_username: str):
+            if project_id == "proj-1" and member_username == username:
+                return user_member
+            return None
+
+        @staticmethod
+        def list_members(project_id: str):
+            _ = project_id
+            return []
+
+    class _EmployeeStore:
+        @staticmethod
+        def get(employee_id: str):
+            _ = employee_id
+            return None
+
+    class _DummyTransportApp:
+        async def __call__(self, scope, receive, send):
+            _ = scope, receive
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    monkeypatch.setattr(proxy_apps, "_touch_project_mcp_presence", lambda **kwargs: None)
+
+    app = proxy_apps.ProjectMcpProxyApp(
+        project_store=_ProjectStore(),
+        employee_store=_EmployeeStore(),
+        usage_store=_UsageStore(),
+        current_api_key_ctx=SimpleNamespace(set=lambda value: value),
+        current_developer_name_ctx=SimpleNamespace(set=lambda value: value),
+        session_keys={},
+        session_contexts={},
+        project_apps={},
+        project_app_signatures={},
+        create_project_mcp=lambda project_id: _DummyTransportApp(),
+        list_visible_external_mcp_modules=lambda project_id: [],
+        replace_path_suffix=lambda path, old, new: path.replace(old, new),
+        dual_transport_app_type=_DummyTransportApp,
+        project_mcp_app_rev="test-rev",
+    )
+    token = create_token(username, role=role)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp/projects/proj-1/mcp",
+        "query_string": b"",
+        "headers": [(b"authorization", f"Bearer {token}".encode("latin-1"))],
+        "client": ("127.0.0.1", 8080),
+        "path_params": {"project_id": "proj-1"},
+    }
+    sent_messages = []
+
+    async def _receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def _send(message):
+        sent_messages.append(message)
+
+    asyncio.run(app(scope, _receive, _send))
+    response_start = next(message for message in sent_messages if message["type"] == "http.response.start")
+    response_body = b"".join(
+        message.get("body", b"")
+        for message in sent_messages
+        if message["type"] == "http.response.body"
+    )
+    return response_start["status"], response_body
+
+
+def test_project_mcp_proxy_accepts_desktop_admin_login_token(monkeypatch):
+    status, body = _run_project_mcp_proxy_with_login_token(
+        monkeypatch,
+        username="admin-user",
+        role="admin",
+    )
+
+    assert status == 200
+    assert body == b"ok"
+
+
+def test_project_mcp_proxy_accepts_enabled_project_user_member_login_token(monkeypatch):
+    status, body = _run_project_mcp_proxy_with_login_token(
+        monkeypatch,
+        username="project-member",
+        role="user",
+        user_member=SimpleNamespace(enabled=True),
+    )
+
+    assert status == 200
+    assert body == b"ok"
+
+
+def test_project_mcp_proxy_rejects_login_user_without_project_access(monkeypatch):
+    status, body = _run_project_mcp_proxy_with_login_token(
+        monkeypatch,
+        username="unrelated-user",
+        role="user",
+    )
+
+    assert status == 403
+    assert b"Project access denied" in body
+
+
 def test_system_mcp_activity_lists_multiple_endpoint_types(tmp_path, monkeypatch):
     client, _, project_mcp_presence_service = _build_project_mcp_monitor_client(
         tmp_path,

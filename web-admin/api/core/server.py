@@ -47,6 +47,7 @@ from services.mcp.dynamic_mcp_runtime import (
     project_mcp_proxy_app,
     query_mcp_proxy_app,
     rule_mcp_proxy_app,
+    runtime_mcp_proxy_app,
     skill_mcp_proxy_app,
 )
 from services.projects.project_experience_summary_service import (
@@ -132,6 +133,7 @@ def create_app() -> FastAPI:
     app.mount("/mcp/rules/{rule_id}", rule_mcp_proxy_app)
     app.mount("/mcp/skills/{skill_id}", skill_mcp_proxy_app)
     app.mount("/mcp/query", query_mcp_proxy_app)
+    app.mount("/mcp/runtime", runtime_mcp_proxy_app)
     app.mount("/mcp/projects/{project_id}", project_mcp_proxy_app)
     app.mount("/mcp/employees/{employee_id}", employee_mcp_proxy_app)
 

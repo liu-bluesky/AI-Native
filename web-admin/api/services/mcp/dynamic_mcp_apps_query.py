@@ -31,19 +31,19 @@ from services.mcp.query_mcp_project_state import (
     upsert_query_mcp_requirement_record,
 )
 from services.mcp.dynamic_mcp_context import (
-    get_project_detail_runtime,
-    get_project_employee_detail_runtime,
+    get_project_detail as _get_project_detail,
+    get_project_employee_detail as _get_project_employee_detail,
 )
 from services.mcp.dynamic_mcp_profiles import (
     employee_rule_summary,
     list_project_member_profiles_runtime,
     project_ui_rule_summary,
-    query_project_rules_runtime,
+    query_project_rules,
     query_rules_by_employee,
 )
 from services.mcp.dynamic_mcp_prompt_tools import (
-    get_query_mcp_cli_prompt_preview_runtime,
-    sync_query_mcp_cli_prompt_to_local_file_runtime,
+    get_query_mcp_cli_prompt_preview as _get_query_mcp_cli_prompt_preview,
+    sync_query_mcp_cli_prompt_to_local_file as _sync_query_mcp_cli_prompt_to_local_file,
 )
 from stores.mcp_bridge import (
     Classification,
@@ -236,7 +236,7 @@ def _build_project_lookup(
     include_members: bool,
     include_rules: bool,
 ) -> dict:
-    payload = get_project_detail_runtime(project_id)
+    payload = _get_project_detail(project_id)
     if payload.get("error"):
         return payload
 
@@ -253,7 +253,7 @@ def _build_project_lookup(
         )
 
     if include_rules:
-        payload["rules_detail"] = query_project_rules_runtime(project_id)
+        payload["rules_detail"] = query_project_rules(project_id)
 
     return payload
 
@@ -370,7 +370,7 @@ def _search_rules(keyword: str, project_id: str, employee_id: str, limit: int) -
     matches: list[dict] = []
     seen_ids: set[str] = set()
     if project_id:
-        candidates = query_project_rules_runtime(project_id, keyword=keyword, employee_id=employee_id)
+        candidates = query_project_rules(project_id, keyword=keyword, employee_id=employee_id)
         for rule in candidates:
             rule_id = str(rule.get("id") or "").strip()
             if not rule_id or rule_id in seen_ids:
@@ -780,7 +780,7 @@ def _rank_project_members(project_id: str, task: str, limit: int) -> list[dict]:
 
 
 def _rank_project_rules(project_id: str, task: str, employee_id: str, limit: int) -> list[dict]:
-    rules = query_project_rules_runtime(project_id, keyword="", employee_id=employee_id)
+    rules = query_project_rules(project_id, keyword="", employee_id=employee_id)
     scored: list[tuple[int, dict]] = []
     for item in rules:
         score = _score_text_match(task, item.get("title"), item.get("domain"), item.get("content"))
@@ -802,9 +802,9 @@ def _rank_project_rules(project_id: str, task: str, employee_id: str, limit: int
 
 
 def _rank_project_tools(project_id: str, task: str, employee_id: str, limit: int) -> list[dict]:
-    from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+    from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools
 
-    tools = list_project_proxy_tools_runtime(project_id, employee_id)
+    tools = list_project_proxy_tools(project_id, employee_id)
     scored: list[tuple[int, dict]] = []
     for item in tools:
         score = _score_text_match(
@@ -893,7 +893,7 @@ def _resolve_relevant_context_payload(task: str, project_id: str = "", employee_
     if project_id_value:
         payload["project"] = {
             "id": project_id_value,
-            "summary": get_project_detail_runtime(project_id_value),
+            "summary": _get_project_detail(project_id_value),
         }
         payload["matched_members"] = _rank_project_members(project_id_value, task_value, limit_value)
         payload["matched_rules"] = _rank_project_rules(
@@ -972,9 +972,11 @@ def _generate_execution_plan_payload(
     except (TypeError, ValueError):
         step_limit = 6
     if project_id_value:
-        from services.mcp.dynamic_mcp_collaboration import execute_project_collaboration_runtime
+        from services.mcp.dynamic_mcp_collaboration import execute_project_collaboration
 
-        result = execute_project_collaboration_runtime(
+        from services.mcp.dynamic_mcp_collaboration import execute_project_collaboration as execute_project_collaboration_service
+
+        result = execute_project_collaboration_service(
             project_id=project_id_value,
             task=task_value,
             employee_ids=[employee_id_value] if employee_id_value else [],
@@ -1064,7 +1066,7 @@ def _normalize_workspace_path(project_id: str = "", workspace_path: str = "") ->
     project_id_value = _normalize_text(project_id)
     if not project_id_value:
         return ""
-    payload = get_project_detail_runtime(project_id_value)
+    payload = _get_project_detail(project_id_value)
     if payload.get("error"):
         return ""
     settings = payload.get("chat_settings") or {}
@@ -1081,7 +1083,7 @@ def _normalize_sandbox_mode(project_id: str = "", sandbox_mode: str = "") -> str
     project_id_value = _normalize_text(project_id)
     if not project_id_value:
         return "workspace-write"
-    payload = get_project_detail_runtime(project_id_value)
+    payload = _get_project_detail(project_id_value)
     if payload.get("error"):
         return "workspace-write"
     settings = payload.get("chat_settings") or {}
@@ -1093,7 +1095,7 @@ def _project_high_risk_confirm(project_id: str) -> bool:
     project_id_value = _normalize_text(project_id)
     if not project_id_value:
         return True
-    payload = get_project_detail_runtime(project_id_value)
+    payload = _get_project_detail(project_id_value)
     if payload.get("error"):
         return True
     settings = payload.get("chat_settings") or {}
@@ -1301,9 +1303,9 @@ def _is_known_project_tool(project_id: str, tool_name: str, employee_id: str = "
         return False
     if tool_name_value in _QUERY_TOOL_NAMES or tool_name_value.startswith("local_connector_"):
         return True
-    from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+    from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools
 
-    for item in list_project_proxy_tools_runtime(project_id_value, _normalize_text(employee_id)):
+    for item in list_project_proxy_tools(project_id_value, _normalize_text(employee_id)):
         if _normalize_text(item.get("tool_name")) == tool_name_value:
             return True
     return False
@@ -4459,7 +4461,7 @@ def create_query_mcp(
             result["links"]["rule_mcp_path"] = f"/mcp/rules/{rule_id_value}"
 
         if project_id_value and employee_id_value:
-            result["relation"] = get_project_employee_detail_runtime(
+            result["relation"] = _get_project_employee_detail(
                 project_id_value,
                 employee_id_value,
             )
@@ -4491,6 +4493,7 @@ def create_query_mcp(
         return build_query_client_profile_text("generic-cli")
 
     # Removed: server-side deploy artifact upload. Desktop direct deploy is the only deploy path.
+    @mcp.tool()
     def get_query_mcp_cli_prompt_preview(
         project_id: str = "",
         chat_session_id: str = "",
@@ -4539,7 +4542,7 @@ def create_query_mcp(
         client_profile: str = "",
     ) -> dict:
         """把服务器渲染出的 runtime.cli_prompt 写入当前项目工作区内的目标文件。"""
-        return sync_query_mcp_cli_prompt_to_local_file_runtime(
+        return _sync_query_mcp_cli_prompt_to_local_file(
             project_id=_resolve_query_project_id(project_id),
             chat_session_id=_resolve_query_chat_session_id(chat_session_id),
             workspace_path=workspace_path,
@@ -6203,12 +6206,12 @@ def create_query_mcp(
             include_missing=False,
             rule_limit=30,
         )
-        rules = query_project_rules_runtime(project_id_value)
+        rules = query_project_rules(project_id_value)
         ui_rules = project_ui_rule_summary(project_id_value, limit=30)
         experience_rules = _resolve_project_experience_rule_bindings(project)
-        from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+        from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools
 
-        proxy_tools = list_project_proxy_tools_runtime(project_id_value, "")
+        proxy_tools = list_project_proxy_tools(project_id_value, "")
         return {
             "project_id": project_id_value,
             "project_name": str(getattr(project, "name", "") or ""),
@@ -6254,9 +6257,9 @@ def create_query_mcp(
         project = project_store.get(project_id_value)
         if project is None:
             return {"error": f"Project {project_id_value} not found"}
-        from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+        from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools
 
-        items = list_project_proxy_tools_runtime(project_id_value, employee_id_value)
+        items = list_project_proxy_tools(project_id_value, employee_id_value)
         return {
             "project_id": project_id_value,
             "employee_id": employee_id_value,
@@ -6286,10 +6289,10 @@ def create_query_mcp(
         project = project_store.get(project_id_value)
         if project is None:
             return {"error": f"Project {project_id_value} not found"}
-        from services.mcp.dynamic_mcp_runtime import invoke_project_skill_tool_runtime
+        from services.mcp.dynamic_mcp_runtime import invoke_project_skill_tool as invoke_project_skill_tool_service
         resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
 
-        result = invoke_project_skill_tool_runtime(
+        result = invoke_project_skill_tool_service(
             project_id=project_id_value,
             tool_name=tool_name_value,
             employee_id=employee_id_value,
@@ -6335,10 +6338,12 @@ def create_query_mcp(
         project = project_store.get(project_id_value)
         if project is None:
             return {"error": f"Project {project_id_value} not found"}
-        from services.mcp.dynamic_mcp_runtime import execute_project_collaboration_runtime
+        from services.mcp.dynamic_mcp_runtime import execute_project_collaboration
         resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
 
-        result = execute_project_collaboration_runtime(
+        from services.mcp.dynamic_mcp_collaboration import execute_project_collaboration as execute_project_collaboration_service
+
+        result = execute_project_collaboration_service(
             project_id=project_id_value,
             task=task_value,
             username=resolved_username,

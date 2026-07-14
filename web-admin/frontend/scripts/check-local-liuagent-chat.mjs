@@ -15,6 +15,10 @@ const fileTools = readFileSync(
   resolve(rootDir, "src-tauri/src/liuagent_core/tools/file.rs"),
   "utf8",
 );
+const processTools = readFileSync(
+  resolve(rootDir, "src-tauri/src/liuagent_core/tools/process.rs"),
+  "utf8",
+);
 const gateway = readFileSync(
   resolve(rootDir, "src-tauri/src/liuagent_core/gateway.rs"),
   "utf8",
@@ -58,6 +62,18 @@ assert.match(
   tauriMain,
   /liuagent_start_local_chat/,
   "liuagent_start_local_chat must be registered in the invoke handler",
+);
+
+assert.match(
+  tauriMain,
+  /async fn liuagent_classify_permission_reply\([\s\S]*classify_local_permission_reply\(request\)/,
+  "Tauri must expose the model-backed Runtime permission reply classifier",
+);
+
+assert.match(
+  tauriMain,
+  /liuagent_start_local_chat,[\s\S]*liuagent_classify_permission_reply,/,
+  "the permission reply classifier must be registered in the Tauri invoke handler",
 );
 
 assert.match(
@@ -900,6 +916,42 @@ assert.match(
   projectChatResponsiveCss,
   /\.chat-layout \.chat-messages \{[\s\S]*flex: 1 1 auto;[\s\S]*min-height: 0;[\s\S]*overflow-y: auto;/,
   "chat messages must be the scrolling region inside the constrained layout",
+);
+
+assert.match(
+  processTools,
+  /"kill" => \{[\s\S]*require_approval\([\s\S]*"command\.process\.kill"[\s\S]*process_kill\(&session\)/,
+  "process kill must freeze the exact tool call behind the Runtime permission gate",
+);
+
+assert.match(
+  runtime,
+  /禁止模型先用自然语言询问‘是否确认’[\s\S]*只恢复原 tool_call_id、工具名和完整参数/,
+  "the model prompt must delegate confirmations to the Runtime instead of conversational re-confirmation",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /function localLiuAgentPermissionReplyAction|normalizeLocalLiuAgentPermissionReply|确认关闭[\s\S]*local_liuagent_allow_once/,
+  "permission intent must not be classified by a frontend phrase list or regular expression",
+);
+
+assert.match(
+  runtime,
+  /pub fn classify_local_permission_reply\([\s\S]*你是桌面 Runtime 的授权意图分类器[\s\S]*"approve" => "approve_once"[\s\S]*"deny" => "deny"/,
+  "the configured model must classify approval intent against the frozen Runtime action",
+);
+
+assert.match(
+  bridge,
+  /classifyNativeLiuAgentPermissionReply[\s\S]*liuagentClassifyPermissionReply/,
+  "the desktop bridge must expose the Runtime permission intent classifier",
+);
+
+assert.match(
+  projectChat,
+  /currentChatSessionLocalLiuAgentWaitingPermission\.value[\s\S]*submitCurrentLocalLiuAgentPermissionReplyIfNeeded\(draftText\.value\)/,
+  "pending permission replies must be consumed before creating a new model request",
 );
 
 console.log("local liuAgent chat checks passed");

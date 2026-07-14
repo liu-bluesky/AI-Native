@@ -22,6 +22,312 @@ use crate::liuagent_core::workspace::{resolve_workspace_child, resolve_workspace
 const MCP_TIMEOUT_MS: u64 = 10_000;
 const MAX_MCP_OUTPUT_CHARS: usize = 120_000;
 
+#[derive(Debug, Clone)]
+pub struct DiscoveredMcpTool {
+    /// Physical registry connection used by the desktop host.
+    pub server: String,
+    /// Logical capability server advertised by the runtime catalog.
+    pub server_id: String,
+    pub canonical_tool_id: String,
+    pub domain: String,
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+    pub annotations: McpToolAnnotations,
+}
+
+impl DiscoveredMcpTool {
+    fn from_wire_tool(physical_server: &str, tool: &Value) -> Result<Self, ToolError> {
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if name.is_empty() {
+            return Err(ToolError::new(
+                "mcp.config_invalid",
+                format!("MCP server {physical_server} returned a tool without name"),
+            ));
+        }
+        let input_schema = tool
+            .get("inputSchema")
+            .or_else(|| tool.get("input_schema"))
+            .cloned()
+            .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+        if !input_schema.is_object() {
+            return Err(ToolError::new(
+                "mcp.config_invalid",
+                format!("MCP tool {physical_server}/{name} returned an invalid input schema"),
+            ));
+        }
+        let metadata = tool.get("_meta").or_else(|| tool.get("meta"));
+        let inferred_integration = name.starts_with("external__")
+            || name.starts_with("system_mcp__")
+            || metadata
+                .and_then(|value| value.get("domain"))
+                .and_then(Value::as_str)
+                == Some("integrations");
+        let domain = metadata
+            .and_then(|value| value.get("domain"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| matches!(*value, "system" | "integrations"))
+            .unwrap_or(if inferred_integration {
+                "integrations"
+            } else {
+                "system"
+            })
+            .to_string();
+        let inferred_server_id = integration_server_id_from_tool_name(name);
+        let server_id = metadata
+            .and_then(|value| value.get("server_id").or_else(|| value.get("serverId")))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(if domain == "integrations" {
+                inferred_server_id.as_deref().unwrap_or("integrations")
+            } else {
+                "system"
+            })
+            .to_string();
+        let canonical_tool_id = metadata
+            .and_then(|value| {
+                value
+                    .get("canonical_tool_id")
+                    .or_else(|| value.get("canonicalToolId"))
+            })
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{domain}.{server_id}.{name}"));
+        Ok(Self {
+            server: physical_server.to_string(),
+            server_id,
+            canonical_tool_id,
+            domain,
+            name: name.to_string(),
+            description: tool
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            input_schema,
+            annotations: McpToolAnnotations::from_value(tool.get("annotations")),
+        })
+    }
+}
+
+fn integration_server_id_from_tool_name(name: &str) -> Option<String> {
+    let mut parts = name.split("__");
+    let prefix = parts.next()?;
+    if !matches!(prefix, "external" | "system_mcp") {
+        return None;
+    }
+    parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpToolAnnotations {
+    pub read_only: Option<bool>,
+    pub destructive: Option<bool>,
+    pub idempotent: Option<bool>,
+    pub open_world: Option<bool>,
+}
+
+impl McpToolAnnotations {
+    fn from_value(value: Option<&Value>) -> Self {
+        let bool_value = |camel_case: &str, snake_case: &str| {
+            value.and_then(|annotations| {
+                annotations
+                    .get(camel_case)
+                    .or_else(|| annotations.get(snake_case))
+                    .and_then(Value::as_bool)
+            })
+        };
+        Self {
+            read_only: bool_value("readOnlyHint", "read_only_hint"),
+            destructive: bool_value("destructiveHint", "destructive_hint"),
+            idempotent: bool_value("idempotentHint", "idempotent_hint"),
+            open_world: bool_value("openWorldHint", "open_world_hint"),
+        }
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only == Some(true) && self.destructive != Some(true)
+    }
+}
+
+pub fn discover_mcp_tools(
+    workspace_path: &str,
+    mcp_config: &Value,
+    backend_api_base_url: &str,
+    backend_token: &str,
+) -> Result<Vec<DiscoveredMcpTool>, ToolError> {
+    let arguments = json!({
+        "_mcp_config": mcp_config,
+        "_backend_api_base_url": backend_api_base_url,
+        "_backend_token": backend_token,
+    });
+    let root = resolve_workspace_root(workspace_path)?;
+    let config = read_registry_config(&root, &arguments)?;
+    let mut discovered = Vec::new();
+    for (server, _) in server_entries(&config)? {
+        let response = invoke_mcp_method(
+            workspace_path,
+            &arguments,
+            &server,
+            "tools/list",
+            json!({}),
+            MCP_TIMEOUT_MS,
+        )?;
+        for tool in response
+            .get("tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            discovered.push(DiscoveredMcpTool::from_wire_tool(&server, tool)?);
+        }
+    }
+    Ok(discovered)
+}
+
+pub fn select_mcp_tools_for_goal(
+    discovered: Vec<DiscoveredMcpTool>,
+    user_goal: &str,
+    max_tools: usize,
+) -> Vec<DiscoveredMcpTool> {
+    let max_tools = max_tools.clamp(1, 24);
+    let goal = user_goal.trim().to_lowercase();
+    let goal_terms = search_terms(&goal);
+    let mut scored = discovered
+        .into_iter()
+        .map(|tool| {
+            let haystack = format!(
+                "{} {} {} {} {}",
+                tool.name, tool.description, tool.server_id, tool.domain, tool.canonical_tool_id
+            )
+            .to_lowercase();
+            let mut score = goal_terms
+                .iter()
+                .filter(|term| haystack.contains(term.as_str()))
+                .count() as i32
+                * 10;
+            for (intent_terms, tool_terms) in intent_tool_aliases() {
+                if intent_terms.iter().any(|term| goal.contains(term))
+                    && tool_terms.iter().any(|term| haystack.contains(term))
+                {
+                    score += 30;
+                }
+            }
+            if tool.annotations.is_read_only() {
+                score += 1;
+            }
+            (score, tool)
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left.canonical_tool_id.cmp(&right.canonical_tool_id))
+    });
+    let top_score = scored.first().map(|(score, _)| *score).unwrap_or(0);
+    let has_positive = top_score > 1;
+    let mut selected = Vec::new();
+    for (score, tool) in scored {
+        if selected.len() >= max_tools {
+            break;
+        }
+        if has_positive && score < top_score {
+            continue;
+        }
+        selected.push(tool);
+    }
+    selected
+}
+
+fn search_terms(value: &str) -> Vec<String> {
+    value
+        .split(|character: char| {
+            character.is_whitespace()
+                || matches!(
+                    character,
+                    ',' | '.'
+                        | ':'
+                        | ';'
+                        | '/'
+                        | '\\'
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | '，'
+                        | '。'
+                        | '：'
+                        | '；'
+                        | '、'
+                        | '（'
+                        | '）'
+                )
+        })
+        .map(str::trim)
+        .filter(|term| term.chars().count() >= 2)
+        .map(str::to_string)
+        .collect()
+}
+
+fn intent_tool_aliases() -> Vec<(&'static [&'static str], &'static [&'static str])> {
+    vec![
+        (
+            &["mcp", "服务", "server", "可用工具", "工具目录"],
+            &["list_runtime_mcp_servers"],
+        ),
+        (
+            &["智能体", "员工", "成员", "agent", "employee", "member"],
+            &["member", "employee"],
+        ),
+        (&["项目", "project"], &["project"]),
+        (&["规则", "rule"], &["rule"]),
+        (&["技能", "skill"], &["skill"]),
+        (&["任务树", "计划", "task", "plan"], &["task_tree", "plan"]),
+        (&["记忆", "memory"], &["memory"]),
+        (
+            &["飞书", "github", "jira", "数据库", "database"],
+            &["external__", "system_mcp__"],
+        ),
+    ]
+}
+
+#[cfg(test)]
+fn unique_mcp_tool_route(
+    discovered: Vec<DiscoveredMcpTool>,
+    tool_name: &str,
+) -> Result<Option<DiscoveredMcpTool>, ToolError> {
+    let matches = discovered
+        .into_iter()
+        .filter(|tool| tool.name == tool_name.trim())
+        .collect::<Vec<_>>();
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.into_iter().next()),
+        _ => Err(ToolError::new(
+            "mcp.config_invalid",
+            format!(
+                "MCP tool name conflict: {} is exposed by multiple servers",
+                tool_name.trim()
+            ),
+        )),
+    }
+}
+
 pub fn list_mcp_tools(
     workspace_path: &str,
     arguments: &Value,
@@ -137,24 +443,32 @@ pub fn call_mcp_tool(
 ) -> Result<(Value, String), ToolError> {
     let server = required_string_arg(arguments, "server")?;
     let tool = required_string_arg(arguments, "tool")?;
+    let route = resolve_mcp_tool_on_server(workspace_path, arguments, &server, &tool)?;
+    call_routed_mcp_tool(
+        tool_call_id,
+        workspace_path,
+        arguments,
+        &route,
+        permission_decision,
+    )
+}
+
+pub fn call_routed_mcp_tool(
+    tool_call_id: &str,
+    workspace_path: &str,
+    arguments: &Value,
+    route: &DiscoveredMcpTool,
+    permission_decision: Option<&PermissionDecisionInput>,
+) -> Result<(Value, String), ToolError> {
+    let server = route.server.trim();
+    let tool = route.name.trim();
     let tool_arguments = arguments
         .get("arguments")
         .filter(|value| value.is_object())
         .cloned()
         .unwrap_or_else(|| json!({}));
-    require_approval(
-        tool_call_id,
-        "mcp.call",
-        "medium",
-        "project",
-        &format!("调用 MCP 工具：{server}/{tool}"),
-        json!({
-            "server": server,
-            "tool": tool,
-            "arguments_summary": summarize_json_value(&tool_arguments)
-        }),
-        permission_decision,
-    )?;
+    validate_mcp_tool_arguments(route, &tool_arguments)?;
+    require_mcp_tool_approval(tool_call_id, route, &tool_arguments, permission_decision)?;
     let response = invoke_mcp_method(
         workspace_path,
         arguments,
@@ -188,6 +502,127 @@ pub fn call_mcp_tool(
         }),
         format!("MCP 工具调用完成：{tool}"),
     ))
+}
+
+fn validate_mcp_tool_arguments(
+    route: &DiscoveredMcpTool,
+    arguments: &Value,
+) -> Result<(), ToolError> {
+    let required = route
+        .input_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for field in required.iter().filter_map(Value::as_str) {
+        if arguments.get(field).is_none() {
+            return Err(ToolError::new(
+                "tool.schema_invalid",
+                format!(
+                    "MCP tool {} is missing required argument: {field}",
+                    route.canonical_tool_id
+                ),
+            ));
+        }
+    }
+    let properties = route
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object);
+    if let (Some(properties), Some(arguments)) = (properties, arguments.as_object()) {
+        for (field, value) in arguments {
+            let Some(schema) = properties.get(field) else {
+                continue;
+            };
+            let expected_type = schema.get("type").and_then(Value::as_str).unwrap_or("");
+            let valid = match expected_type {
+                "string" => value.is_string(),
+                "object" => value.is_object(),
+                "array" => value.is_array(),
+                "boolean" => value.is_boolean(),
+                "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+                "number" => value.is_number(),
+                _ => true,
+            };
+            if !valid {
+                return Err(ToolError::new(
+                    "tool.schema_invalid",
+                    format!(
+                        "MCP tool {} argument {field} must be {expected_type}",
+                        route.canonical_tool_id
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_mcp_tool_on_server(
+    workspace_path: &str,
+    arguments: &Value,
+    server: &str,
+    tool_name: &str,
+) -> Result<DiscoveredMcpTool, ToolError> {
+    let response = invoke_mcp_method(
+        workspace_path,
+        arguments,
+        server,
+        "tools/list",
+        json!({}),
+        MCP_TIMEOUT_MS,
+    )?;
+    let tool = response
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some(tool_name.trim()))
+        .ok_or_else(|| {
+            ToolError::new(
+                "mcp.tool_not_found",
+                format!(
+                    "MCP tool not exposed by server {server}: {}",
+                    tool_name.trim()
+                ),
+            )
+        })?;
+    DiscoveredMcpTool::from_wire_tool(server.trim(), tool)
+}
+
+fn require_mcp_tool_approval(
+    tool_call_id: &str,
+    route: &DiscoveredMcpTool,
+    tool_arguments: &Value,
+    permission_decision: Option<&PermissionDecisionInput>,
+) -> Result<(), ToolError> {
+    if route.annotations.is_read_only() {
+        return Ok(());
+    }
+    let risk = if route.annotations.destructive == Some(true) {
+        "high"
+    } else {
+        "medium"
+    };
+    require_approval(
+        tool_call_id,
+        "mcp.call",
+        risk,
+        "project",
+        &format!("调用 MCP 工具：{}/{}", route.server, route.name),
+        json!({
+            "server": route.server,
+            "tool": route.name,
+            "annotations": {
+                "readOnlyHint": route.annotations.read_only,
+                "destructiveHint": route.annotations.destructive,
+                "idempotentHint": route.annotations.idempotent,
+                "openWorldHint": route.annotations.open_world,
+            },
+            "arguments_summary": summarize_json_value(tool_arguments)
+        }),
+        permission_decision,
+    )
 }
 
 fn invoke_mcp_method(
@@ -352,6 +787,27 @@ fn resolve_server_config(
         .unwrap_or("line-json")
         .trim()
         .to_ascii_lowercase();
+    let mut headers = parse_config_headers(&value)?;
+    let desktop_auth = value
+        .get("desktopAuth")
+        .or_else(|| value.get("desktop_auth"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if desktop_auth {
+        let token = arguments
+            .get("_backend_token")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if token.is_empty() {
+            return Err(ToolError::new(
+                "mcp.config_invalid",
+                format!("desktop-auth MCP server {name} requires backend login context"),
+            ));
+        }
+        headers.retain(|(key, _)| !key.eq_ignore_ascii_case("authorization"));
+        headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+    }
     Ok(ServerConfig {
         name,
         transport,
@@ -360,7 +816,7 @@ fn resolve_server_config(
         cwd,
         framing,
         url,
-        headers: parse_config_headers(&value)?,
+        headers,
     })
 }
 
@@ -971,5 +1427,277 @@ mod tests {
             resolve_server_config(&config, "query", &json!({})).expect("resolve http server");
         assert_eq!(server.transport, McpTransport::Sse);
         assert_eq!(server.url, "http://127.0.0.1:8000/mcp/query/sse");
+    }
+
+    #[test]
+    fn rejects_unknown_server_without_guessing() {
+        let config = json!({
+            "mcpServers": {
+                "runtime": {
+                    "type": "http",
+                    "url": "http://127.0.0.1:8000/mcp/runtime/mcp",
+                    "enabled": true
+                }
+            }
+        });
+        let error = resolve_server_config(&config, "default", &json!({})).unwrap_err();
+        assert_eq!(error.code, "mcp.server_not_found");
+        assert!(error.message.contains("default"));
+    }
+
+    #[test]
+    fn desktop_auth_server_uses_backend_login_token() {
+        let config = json!({
+            "mcpServers": {
+                "runtime": {
+                    "type": "http",
+                    "url": "/mcp/runtime/mcp?project_id=proj-657fe77f",
+                    "desktopAuth": true,
+                    "enabled": true
+                }
+            }
+        });
+        let server = resolve_server_config(
+            &config,
+            "runtime",
+            &json!({
+                "_backend_api_base_url": "http://127.0.0.1:8000/api",
+                "_backend_token": "login-token"
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            server.url,
+            "http://127.0.0.1:8000/mcp/runtime/mcp?project_id=proj-657fe77f"
+        );
+        assert!(server.headers.iter().any(|(key, value)| {
+            key.eq_ignore_ascii_case("authorization") && value == "Bearer login-token"
+        }));
+    }
+
+    #[test]
+    fn desktop_auth_server_requires_backend_login_token() {
+        let config = json!({
+            "mcpServers": {
+                "runtime": {
+                    "type": "http",
+                    "url": "/mcp/runtime/mcp?project_id=proj-657fe77f",
+                    "desktopAuth": true
+                }
+            }
+        });
+        let error = resolve_server_config(
+            &config,
+            "runtime",
+            &json!({"_backend_api_base_url": "http://127.0.0.1:8000/api"}),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("requires backend login context"));
+    }
+
+    #[test]
+    fn resolves_unique_dynamic_tool_route() {
+        let route = unique_mcp_tool_route(
+            vec![DiscoveredMcpTool {
+                server: "runtime".to_string(),
+                server_id: "system".to_string(),
+                canonical_tool_id: "system.system.get_project_employee_detail".to_string(),
+                domain: "system".to_string(),
+                name: "get_project_employee_detail".to_string(),
+                description: "detail".to_string(),
+                input_schema: json!({"type": "object"}),
+                annotations: McpToolAnnotations::default(),
+            }],
+            "get_project_employee_detail",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(route.server, "runtime");
+    }
+
+    #[test]
+    fn rejects_dynamic_tool_name_conflict() {
+        let tools = ["system-a", "system-b"]
+            .into_iter()
+            .map(|server_id| DiscoveredMcpTool {
+                server: "runtime".to_string(),
+                server_id: server_id.to_string(),
+                canonical_tool_id: format!("system.{server_id}.query_project_members"),
+                domain: "system".to_string(),
+                name: "query_project_members".to_string(),
+                description: String::new(),
+                input_schema: json!({"type": "object"}),
+                annotations: McpToolAnnotations::default(),
+            })
+            .collect();
+        let error = unique_mcp_tool_route(tools, "query_project_members").unwrap_err();
+        assert_eq!(error.code, "mcp.config_invalid");
+        assert!(error.message.contains("multiple servers"));
+    }
+
+    #[test]
+    fn parses_standard_mcp_tool_annotations() {
+        let annotations = McpToolAnnotations::from_value(Some(&json!({
+            "readOnlyHint": true,
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": false
+        })));
+        assert!(annotations.is_read_only());
+        assert_eq!(annotations.idempotent, Some(true));
+        assert_eq!(annotations.open_world, Some(false));
+    }
+
+    #[test]
+    fn read_only_dynamic_mcp_tool_does_not_require_approval() {
+        let route = DiscoveredMcpTool {
+            server: "runtime".to_string(),
+            server_id: "system".to_string(),
+            canonical_tool_id: "system.system.get_project_manual".to_string(),
+            domain: "system".to_string(),
+            name: "get_project_manual".to_string(),
+            description: "manual".to_string(),
+            input_schema: json!({"type": "object"}),
+            annotations: McpToolAnnotations {
+                read_only: Some(true),
+                destructive: Some(false),
+                idempotent: Some(true),
+                open_world: Some(false),
+            },
+        };
+        require_mcp_tool_approval("call-manual", &route, &json!({}), None).unwrap();
+    }
+
+    #[test]
+    fn mutating_dynamic_mcp_tool_still_requires_approval() {
+        let route = DiscoveredMcpTool {
+            server: "runtime".to_string(),
+            server_id: "system".to_string(),
+            canonical_tool_id: "system.system.save_project_memory".to_string(),
+            domain: "system".to_string(),
+            name: "save_project_memory".to_string(),
+            description: "save".to_string(),
+            input_schema: json!({"type": "object"}),
+            annotations: McpToolAnnotations {
+                read_only: Some(false),
+                destructive: Some(false),
+                idempotent: Some(false),
+                open_world: Some(false),
+            },
+        };
+        let error = require_mcp_tool_approval("call-save", &route, &json!({}), None).unwrap_err();
+        assert_eq!(error.code, "permission.required");
+        assert!(error.message.contains("mcp.call"));
+    }
+
+    #[test]
+    fn wire_tool_uses_runtime_catalog_identity() {
+        let tool = DiscoveredMcpTool::from_wire_tool(
+            "runtime",
+            &json!({
+                "name": "query_project_members",
+                "description": "members",
+                "inputSchema": {"type": "object"},
+                "_meta": {
+                    "domain": "system",
+                    "server_id": "system",
+                    "canonical_tool_id": "system.system.query_project_members"
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(tool.server, "runtime");
+        assert_eq!(tool.server_id, "system");
+        assert_eq!(
+            tool.canonical_tool_id,
+            "system.system.query_project_members"
+        );
+    }
+
+    #[test]
+    fn external_tool_keeps_independent_server_identity() {
+        let tool = DiscoveredMcpTool::from_wire_tool(
+            "runtime",
+            &json!({
+                "name": "external__feishu_prod__send_message",
+                "description": "send",
+                "inputSchema": {"type": "object"}
+            }),
+        )
+        .unwrap();
+        assert_eq!(tool.domain, "integrations");
+        assert_eq!(tool.server_id, "feishu_prod");
+        assert_eq!(
+            tool.canonical_tool_id,
+            "integrations.feishu_prod.external__feishu_prod__send_message"
+        );
+    }
+
+    #[test]
+    fn validates_required_mcp_arguments_before_call() {
+        let route = DiscoveredMcpTool {
+            server: "runtime".to_string(),
+            server_id: "system".to_string(),
+            canonical_tool_id: "system.system.get_project_employee_detail".to_string(),
+            domain: "system".to_string(),
+            name: "get_project_employee_detail".to_string(),
+            description: "detail".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"employee_id": {"type": "string"}},
+                "required": ["employee_id"]
+            }),
+            annotations: McpToolAnnotations::default(),
+        };
+        let missing = validate_mcp_tool_arguments(&route, &json!({})).unwrap_err();
+        assert_eq!(missing.code, "tool.schema_invalid");
+        let wrong_type =
+            validate_mcp_tool_arguments(&route, &json!({"employee_id": 123})).unwrap_err();
+        assert_eq!(wrong_type.code, "tool.schema_invalid");
+        validate_mcp_tool_arguments(&route, &json!({"employee_id": "emp-1"})).unwrap();
+    }
+
+    #[test]
+    fn selects_only_goal_relevant_tools() {
+        let tools = [
+            ("query_project_members", "查询项目成员"),
+            ("query_project_rules", "查询项目规则"),
+            ("save_project_memory", "保存项目记忆"),
+        ]
+        .into_iter()
+        .map(|(name, description)| DiscoveredMcpTool {
+            server: "runtime".to_string(),
+            server_id: "system".to_string(),
+            canonical_tool_id: format!("system.system.{name}"),
+            domain: "system".to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            input_schema: json!({"type": "object"}),
+            annotations: McpToolAnnotations::default(),
+        })
+        .collect();
+        let selected = select_mcp_tools_for_goal(tools, "当前项目绑定几个智能体", 8);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].name, "query_project_members");
+    }
+
+    #[test]
+    fn selects_server_catalog_for_mcp_service_question() {
+        let tools = ["list_runtime_mcp_servers", "query_project_members"]
+            .into_iter()
+            .map(|name| DiscoveredMcpTool {
+                server: "runtime".to_string(),
+                server_id: "system".to_string(),
+                canonical_tool_id: format!("system.system.{name}"),
+                domain: "system".to_string(),
+                name: name.to_string(),
+                description: name.to_string(),
+                input_schema: json!({"type": "object"}),
+                annotations: McpToolAnnotations::default(),
+            })
+            .collect();
+        let selected = select_mcp_tools_for_goal(tools, "当前可用 MCP 服务有哪些", 8);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].name, "list_runtime_mcp_servers");
     }
 }

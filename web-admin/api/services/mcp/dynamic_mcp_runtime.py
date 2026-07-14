@@ -6,7 +6,6 @@ from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import timedelta
 import json
-import os
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -20,22 +19,25 @@ from services.mcp.dynamic_mcp_apps_basic import (
     create_skill_mcp as _create_skill_mcp,
 )
 from services.mcp.dynamic_mcp_apps_employee import create_employee_mcp as _create_employee_mcp_impl
-from services.mcp.dynamic_mcp_apps_project import create_project_mcp as _create_project_mcp_impl
+from services.mcp.dynamic_mcp_apps_project import (
+    build_project_mcp_server as _build_project_mcp_server_impl,
+    create_project_mcp as _create_project_mcp_impl,
+)
 from services.mcp.dynamic_mcp_apps_query import create_query_mcp as _create_query_mcp_impl
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from services.mcp.dynamic_mcp_context import (
-    get_project_detail_runtime,
-    get_project_employee_detail_runtime,
+    get_project_detail,
+    get_project_employee_detail,
     query_project_mcp_modules_runtime,
-    search_project_context_runtime,
+    search_project_context,
 )
 from services.mcp.dynamic_mcp_collaboration import (
     COLLABORATION_TOOL_NAME,
     attach_task_tree_context,
     collaboration_tool_descriptor,
     ensure_project_execution_task_tree,
-    execute_project_collaboration_runtime,
+    execute_project_collaboration,
     extract_execution_task_text,
     invoke_project_builtin_tool,
     parse_object_args,
@@ -43,21 +45,23 @@ from services.mcp.dynamic_mcp_collaboration import (
 )
 from services.mcp.dynamic_mcp_external_tools import (
     _list_visible_external_mcp_modules,
-    invoke_external_mcp_tool_runtime,
+    invoke_external_mcp_tool,
+    list_project_external_server_catalog_runtime,
     list_project_external_tools_runtime,
     resolve_external_tool_spec as _resolve_external_tool_spec,
 )
 from services.mcp.dynamic_mcp_profiles import (
     employee_rule_summary as _employee_rule_summary,
     list_project_member_profiles_runtime,
-    query_project_members_runtime,
-    query_project_rules_runtime,
+    query_project_members,
+    query_project_rules,
     query_rules_by_employee as _query_rules_by_employee,
 )
 from services.mcp.dynamic_mcp_prompt_tools import project_prompt_tool_descriptors
 from services.mcp.dynamic_mcp_skill_proxies import (
     build_project_proxy_specs as _shared_build_project_proxy_specs,
     resolve_project_proxy_tool_spec as _shared_resolve_project_proxy_tool_spec,
+    serialize_project_skill_proxy_tools,
 )
 from services.mcp.dynamic_mcp_transports import (
     DualTransportMcpApp as _DualTransportMcpApp,
@@ -75,7 +79,11 @@ from services.mcp.dynamic_mcp_audit import (
     save_auto_query_memory as _save_auto_query_memory,
     save_auto_user_question_memory as _save_auto_user_question_memory,
 )
-from services.mcp.dynamic_mcp_proxy_apps import EmployeeMcpProxyApp, ProjectMcpProxyApp
+from services.mcp.dynamic_mcp_proxy_apps import (
+    EmployeeMcpProxyApp,
+    ProjectMcpProxyApp,
+    RuntimeMcpProxyApp,
+)
 from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp, _resolve_key_owner_username, _resolve_project_context
 from services.mcp.project_mcp_presence import touch_project_mcp_presence as _touch_project_mcp_presence
 from stores.mcp_bridge import (
@@ -120,8 +128,6 @@ _current_mcp_session_id: ContextVar[str] = ContextVar("_current_mcp_session_id",
 _EMPLOYEE_MCP_APP_REV = "2026-03-04-sse-post-bridge"
 _PROJECT_MCP_APP_REV = "2026-03-05-project-mcp-v1"
 _PROJECT_ROOT = get_project_root()
-_FASTMCP_HOST = os.environ.get("FASTMCP_HOST", "0.0.0.0")
-
 # 启动时加载底层安全策略（不可运行时修改，需重启生效）
 _SYSTEM_POLICY_PATH = Path(__file__).resolve().parents[1] / "system-policy.md"
 _SYSTEM_POLICY = _SYSTEM_POLICY_PATH.read_text(encoding="utf-8") if _SYSTEM_POLICY_PATH.exists() else ""
@@ -143,57 +149,6 @@ def _resolve_runtime_task_tree_context(
     return resolved_username, resolved_chat_session_id
 
 
-def invoke_project_tool_runtime(
-    project_id: str,
-    tool_name: str,
-    employee_id: str = "",
-    username: str = "",
-    chat_session_id: str = "",
-    args: dict | None = None,
-    args_json: str = "{}",
-    timeout_sec: int = 30,
-) -> dict:
-    resolved_username, resolved_chat_session_id = _resolve_runtime_task_tree_context(
-        username=username,
-        chat_session_id=chat_session_id,
-    )
-    spec, _ = _resolve_external_tool_spec(project_id, tool_name)
-    if spec is not None:
-        task_tree_payload = ensure_project_execution_task_tree(
-            project_id=project_id,
-            username=resolved_username,
-            chat_session_id=resolved_chat_session_id,
-            root_goal=extract_execution_task_text(
-                tool_name,
-                args=args,
-                args_json=args_json,
-            ),
-        )
-        result = invoke_external_mcp_tool_runtime(
-            project_id=project_id,
-            tool_name=tool_name,
-            args=args,
-            args_json=args_json,
-            timeout_sec=timeout_sec,
-        )
-        return attach_task_tree_context(
-            result,
-            task_tree_payload=task_tree_payload,
-            username=resolved_username,
-            chat_session_id=resolved_chat_session_id,
-        )
-    return invoke_project_skill_tool_runtime(
-        project_id=project_id,
-        tool_name=tool_name,
-        employee_id=employee_id,
-        username=resolved_username,
-        chat_session_id=resolved_chat_session_id,
-        args=args,
-        args_json=args_json,
-        timeout_sec=timeout_sec,
-    )
-
-
 def _build_project_proxy_specs(project_id: str) -> tuple[dict[str, dict], dict[str, dict[str, dict]]]:
     return _shared_build_project_proxy_specs(project_id)
 
@@ -206,46 +161,15 @@ def _resolve_project_proxy_tool_spec(
     return _shared_resolve_project_proxy_tool_spec(project_id, tool_name, employee_id)
 
 
-def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> list[dict]:
-    """列出项目技能代理工具，供非 MCP 路径（如聊天路由）复用。"""
+def list_project_proxy_tools(project_id: str, employee_id: str = "") -> list[dict]:
+    """Return the canonical project tool catalog used by every MCP entrypoint."""
     employee_id_value = str(employee_id or "").strip()
     scoped_proxy_specs, employee_proxy_specs = _build_project_proxy_specs(project_id)
-    tools: list[dict] = []
-    if employee_id_value:
-        specs = employee_proxy_specs.get(employee_id_value, {})
-        for base_tool_name, spec in sorted(specs.items()):
-            tools.append(
-                {
-                    "tool_name": base_tool_name,
-                    "employee_id": spec["employee_id"],
-                    "base_tool_name": spec["base_tool_name"],
-                    "scoped_tool_name": spec["scoped_tool_name"],
-                    "skill_id": spec["skill_id"],
-                    "skill_name": spec["skill_name"],
-                    "entry_name": spec["entry_name"],
-                    "runtime": spec.get("runtime", spec["script_type"]),
-                    "script_type": spec["script_type"],
-                    "description": spec["description"],
-                    "parameters_schema": spec.get("parameters_schema", {}),
-                }
-            )
-    else:
-        for scoped_tool_name, spec in sorted(scoped_proxy_specs.items()):
-            tools.append(
-                {
-                    "tool_name": scoped_tool_name,
-                    "employee_id": spec["employee_id"],
-                    "base_tool_name": spec["base_tool_name"],
-                    "scoped_tool_name": spec["scoped_tool_name"],
-                    "skill_id": spec["skill_id"],
-                    "skill_name": spec["skill_name"],
-                    "entry_name": spec["entry_name"],
-                    "runtime": spec.get("runtime", spec["script_type"]),
-                    "script_type": spec["script_type"],
-                    "description": spec["description"],
-                    "parameters_schema": spec.get("parameters_schema", {}),
-                }
-            )
+    tools = serialize_project_skill_proxy_tools(
+        scoped_proxy_specs,
+        employee_proxy_specs,
+        employee_id_value,
+    )
 
     existing_names = {str(item.get("tool_name") or "") for item in tools}
     if "query_project_rules" not in existing_names:
@@ -499,7 +423,7 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
     return tools
 
 
-def invoke_project_skill_tool_runtime(
+def invoke_project_skill_tool(
     project_id: str,
     tool_name: str,
     employee_id: str = "",
@@ -509,7 +433,7 @@ def invoke_project_skill_tool_runtime(
     args_json: str = "{}",
     timeout_sec: int = 30,
 ) -> dict:
-    """执行项目成员技能脚本，供非 MCP 路径（如聊天路由）复用。"""
+    """Canonical project tool executor shared by Project MCP, Query MCP and desktop runtime."""
     normalized_tool_name = str(tool_name or "").strip()
     employee_id_value = str(employee_id or "").strip()
     resolved_username, resolved_chat_session_id = _resolve_runtime_task_tree_context(
@@ -545,7 +469,7 @@ def invoke_project_skill_tool_runtime(
         payload, err = parse_object_args(args=args, args_json=args_json)
         if payload is None:
             return {"error": err}
-        return execute_project_collaboration_runtime(
+        return execute_project_collaboration(
             project_id=project_id,
             task=str(payload.get("task") or "").strip(),
             username=resolved_username,
@@ -556,7 +480,33 @@ def invoke_project_skill_tool_runtime(
             auto_execute=bool(payload.get("auto_execute", True)),
             include_external_tools=bool(payload.get("include_external_tools", True)),
             timeout_sec=timeout_sec,
-            invoke_tool=invoke_project_tool_runtime,
+            invoke_tool=invoke_project_skill_tool,
+        )
+
+    external_spec, _ = _resolve_external_tool_spec(project_id, normalized_tool_name)
+    if external_spec is not None:
+        task_tree_payload = ensure_project_execution_task_tree(
+            project_id=project_id,
+            username=resolved_username,
+            chat_session_id=resolved_chat_session_id,
+            root_goal=extract_execution_task_text(
+                normalized_tool_name,
+                args=args,
+                args_json=args_json,
+            ),
+        )
+        result = invoke_external_mcp_tool(
+            project_id=project_id,
+            tool_name=normalized_tool_name,
+            args=args,
+            args_json=args_json,
+            timeout_sec=timeout_sec,
+        )
+        return attach_task_tree_context(
+            result,
+            task_tree_payload=task_tree_payload,
+            username=resolved_username,
+            chat_session_id=resolved_chat_session_id,
         )
 
     spec, err = _resolve_project_proxy_tool_spec(project_id, tool_name, employee_id)
@@ -624,7 +574,101 @@ def _create_project_mcp(project_id: str):
         current_mcp_session_id_ctx=_current_mcp_session_id,
         project_root=_PROJECT_ROOT,
         recall_limit=_RECALL_EMPLOYEE_MEMORY_LIMIT,
+        list_project_tools_fn=list_project_proxy_tools,
+        invoke_project_tool_fn=invoke_project_skill_tool,
     )
+
+
+async def get_project_runtime_mcp_catalog_runtime(
+    project_id: str,
+    server_id: str = "",
+) -> dict:
+    """返回桌面 Runtime 实际注册的逻辑服务目录和工具索引。"""
+    normalized_server_id = str(server_id or "").strip()
+    mcp = _build_project_mcp_server_impl(
+        project_id,
+        current_api_key_ctx=_current_api_key,
+        current_developer_name_ctx=_current_developer_name,
+        current_key_owner_username_ctx=_current_key_owner_username,
+        current_mcp_session_id_ctx=_current_mcp_session_id,
+        project_root=_PROJECT_ROOT,
+        recall_limit=_RECALL_EMPLOYEE_MEMORY_LIMIT,
+        list_project_tools_fn=list_project_proxy_tools,
+        invoke_project_tool_fn=invoke_project_skill_tool,
+    )
+    registered_tools = await mcp.list_tools()
+    tool_index: list[dict] = []
+    tool_counts: dict[str, int] = {}
+    for tool in registered_tools:
+        payload = tool.model_dump(by_alias=True)
+        metadata = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        domain = str(metadata.get("domain") or "system").strip() or "system"
+        logical_server_id = str(metadata.get("server_id") or "system").strip() or "system"
+        name = str(payload.get("name") or "").strip()
+        canonical_tool_id = str(metadata.get("canonical_tool_id") or "").strip()
+        if not canonical_tool_id:
+            canonical_tool_id = f"{domain}.{logical_server_id}.{name}"
+        tool_counts[logical_server_id] = tool_counts.get(logical_server_id, 0) + 1
+        tool_index.append(
+            {
+                "name": name,
+                "description": str(payload.get("description") or "").strip(),
+                "domain": domain,
+                "server_id": logical_server_id,
+                "canonical_tool_id": canonical_tool_id,
+                "input_schema": payload.get("inputSchema") or {"type": "object"},
+                "annotations": payload.get("annotations") or {},
+            }
+        )
+
+    servers = [
+        {
+            "server_id": "system",
+            "display_name": "系统能力",
+            "description": "访问当前系统的项目、智能体、规则、技能、任务树、工作会话和协作能力。",
+            "domain": "system",
+            "source": "builtin",
+            "enabled": True,
+            "health": "available",
+            "tool_count": tool_counts.get("system", 0),
+        }
+    ]
+    for item in list_project_external_server_catalog_runtime(project_id):
+        resolved = dict(item)
+        logical_server_id = str(resolved.get("server_id") or "").strip()
+        resolved["tool_count"] = tool_counts.get(logical_server_id, 0)
+        resolved["health"] = "available" if resolved["tool_count"] > 0 else "unavailable"
+        servers.append(resolved)
+
+    known_server_ids = {str(item.get("server_id") or "").strip() for item in servers}
+    if normalized_server_id and normalized_server_id not in known_server_ids:
+        return {
+            "ok": False,
+            "code": "mcp.server_not_found",
+            "message": f"MCP server not found: {normalized_server_id}",
+            "physical_server": "runtime",
+            "servers": servers,
+            "tools": [],
+        }
+
+    selected_tools = (
+        [item for item in tool_index if item["server_id"] == normalized_server_id]
+        if normalized_server_id
+        else []
+    )
+    selected_tools.sort(key=lambda item: (item["server_id"], item["canonical_tool_id"]))
+    return {
+        "ok": True,
+        "mode": "runtime-v1",
+        "physical_server": "runtime",
+        "endpoint": f"/mcp/runtime/mcp?project_id={project_id}",
+        "project_id": project_id,
+        "selected_server_id": normalized_server_id,
+        "server_count": len(servers),
+        "tool_count": len(tool_index),
+        "servers": servers,
+        "tools": selected_tools,
+    }
 
 
 def _create_query_mcp():
@@ -869,6 +913,8 @@ project_mcp_proxy_app = ProjectMcpProxyApp(
     dual_transport_app_type=_DualTransportMcpApp,
     project_mcp_app_rev=_PROJECT_MCP_APP_REV,
 )
+
+runtime_mcp_proxy_app = RuntimeMcpProxyApp(project_mcp_proxy_app)
 
 employee_mcp_proxy_app = EmployeeMcpProxyApp(
     employee_store=employee_store,

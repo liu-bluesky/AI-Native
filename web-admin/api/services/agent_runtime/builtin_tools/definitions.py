@@ -158,7 +158,10 @@ def _list_mcp_tools_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
-            "server": {"type": "string", "description": "指定 MCP server 名"},
+            "server": {
+                "type": "string",
+                "description": "可选；省略时列出全部已配置 MCP server。仅填写 tools/list 已返回的真实 server 名，禁止猜测 default、project 等名称。",
+            },
         },
     }
 
@@ -281,7 +284,7 @@ BUILTIN_TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "list_mcp_tools": {
         "name": "list_mcp_tools",
-        "description": "列出可用的 MCP 工具",
+        "description": "列出实际已配置的 MCP server 和工具。询问当前有哪些 MCP 时省略 server，一次列出整个 registry；禁止猜测 server 名。",
         "input_schema": _list_mcp_tools_schema(),
         "action": "mcp.list",
         "risk": "low",

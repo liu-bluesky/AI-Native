@@ -42,6 +42,13 @@ function agentRuntimeToolNameFromPayload(payload = {}) {
 }
 
 function agentRuntimeToolArgsFromPayload(payload = {}) {
+  const resolvedArgs =
+    payload?.resolved_arguments &&
+    typeof payload.resolved_arguments === "object" &&
+    !Array.isArray(payload.resolved_arguments)
+      ? payload.resolved_arguments
+      : null;
+  if (resolvedArgs) return resolvedArgs;
   const directArgs =
     payload?.args &&
     typeof payload.args === "object" &&
@@ -62,6 +69,17 @@ function agentRuntimeToolArgsFromPayload(payload = {}) {
   } catch (_error) {
     return {};
   }
+}
+
+function agentRuntimeModelToolArgsFromPayload(payload = {}) {
+  const modelArgs =
+    payload?.model_arguments &&
+    typeof payload.model_arguments === "object" &&
+    !Array.isArray(payload.model_arguments)
+      ? payload.model_arguments
+      : null;
+  if (modelArgs) return modelArgs;
+  return agentRuntimeToolArgsFromPayload(payload);
 }
 
 function parseJsonObjectText(value) {
@@ -141,6 +159,7 @@ function agentRuntimeObservationPreview(payload = {}) {
 function formatAgentRuntimeToolCallTranscript(payload = {}) {
   const toolName = agentRuntimeToolNameFromPayload(payload) || "tool";
   const args = agentRuntimeToolArgsFromPayload(payload);
+  const modelArgs = agentRuntimeModelToolArgsFromPayload(payload);
   const command = String(args?.command || "").trim();
   if (toolName === "project_host_run_command" && command) {
     const cwd = String(args?.cwd || "").trim();
@@ -149,14 +168,25 @@ function formatAgentRuntimeToolCallTranscript(payload = {}) {
       text: cwd ? `Ran ${command}\n  └ cwd=${cwd}` : `Ran ${command}`,
     };
   }
-  const argsPreview = Object.keys(args).length
+  const resolvedPreview = Object.keys(args).length
     ? compactAgentRuntimeJson(args, 260)
     : "";
+  const modelPreview = Object.keys(modelArgs).length
+    ? compactAgentRuntimeJson(modelArgs, 260)
+    : "";
+  const hasRuntimeInjection =
+    modelPreview && resolvedPreview && modelPreview !== resolvedPreview;
   return {
     level: "info",
-    text: argsPreview
-      ? `Called ${toolName}(${argsPreview})`
-      : `Called ${toolName}`,
+    text: [
+      `Called ${toolName}`,
+      modelPreview ? `  ├ Model arguments: ${modelPreview}` : "",
+      resolvedPreview
+        ? `  ${hasRuntimeInjection ? "└ Resolved arguments" : "└ Arguments"}: ${resolvedPreview}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
   };
 }
 
@@ -185,7 +215,14 @@ export function formatAgentRuntimeEventSummary(eventData = {}) {
   }
   if (eventType === "tool_call_started") {
     const toolName = String(payload?.tool_name || "").trim();
-    return toolName ? `开始调用工具：${toolName}` : "开始调用工具";
+    const args = agentRuntimeToolArgsFromPayload(payload);
+    const argsPreview = Object.keys(args).length
+      ? compactAgentRuntimeJson(args, 260)
+      : "";
+    if (!toolName) return argsPreview ? `开始调用工具(${argsPreview})` : "开始调用工具";
+    return argsPreview
+      ? `开始调用工具：${toolName}(${argsPreview})`
+      : `开始调用工具：${toolName}`;
   }
   if (eventType === "permission_decision") {
     const decision =

@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="toolbar">
-      <h3>AI 员工列表</h3>
+      <h3>AI 智能体列表</h3>
       <div class="toolbar-actions">
         <el-button
           v-if="canCreateEmployeeEntry"
@@ -13,7 +13,7 @@
           v-if="canCreateEmployeeEntry"
           type="primary"
           @click="$router.push('/employees/create')"
-          >创建员工</el-button
+          >创建智能体</el-button
         >
       </div>
     </div>
@@ -22,7 +22,7 @@
       type="info"
       :closable="false"
       show-icon
-      title="功能说明：反馈=提交/反思/发布（需开启反馈升级）；记忆=查看与检索员工记忆（含自动写入的用户提问）；同步=查看同步事件。"
+      title="功能说明：反馈=提交/反思/发布（需开启反馈升级）；记忆=查看与检索智能体记忆（含自动写入的用户提问）；同步=查看同步事件。"
     />
     <el-table :data="employees" v-loading="loading" stripe class="employee-table">
       <el-table-column prop="id" label="ID" width="140" />
@@ -317,9 +317,9 @@
         <div class="template-import-hero">
           <div class="template-import-hero__copy">
             <div class="template-import-hero__eyebrow">Employee Import</div>
-            <div class="template-import-hero__title">从 Agent 模板导入员工</div>
+            <div class="template-import-hero__title">从 Agent 模板导入智能体</div>
             <div class="template-import-hero__text">
-              直接读取 Git 仓库或本地目录中的 Markdown agent 文件，映射成员工草稿后再创建到员工列表。
+              直接读取 Git 仓库或本地目录中的 Markdown agent 文件，映射成智能体草稿后再创建到智能体列表。
             </div>
           </div>
           <div class="template-import-hero__actions">
@@ -495,7 +495,7 @@
                       已勾选 {{ selectedImportedTemplateCount }} 个草稿
                     </div>
                     <div class="template-import-preview__selected-hint">
-                      点击“详情”查看导入后的完整员工字段。
+                      点击“详情”查看导入后的完整智能体字段。
                     </div>
                   </div>
                   <div class="template-import-preview__selected-list">
@@ -677,12 +677,12 @@ const loading = ref(false);
 const showMcpConfig = ref(false);
 const mcpTab = ref("sse");
 const currentEmployee = ref(null);
-const mcpDialogTitle = ref("员工 MCP 接入");
+const mcpDialogTitle = ref("智能体 MCP 接入");
 const mcpDialogDesc = ref(
-  "将该员工配置挂载到 AI 编辑器后，模型即可按员工配置读取技能、规则和记忆。",
+  "将该智能体配置挂载到 AI 编辑器后，模型即可按智能体配置读取技能、规则和记忆。",
 );
 const showConfigTestDialog = ref(false);
-const testDialogTitle = ref("员工配置测试");
+const testDialogTitle = ref("智能体配置测试");
 const testLoading = ref(false);
 const testTargetEmployee = ref(null);
 const testResult = ref(null);
@@ -759,8 +759,8 @@ const selectedImportedTemplateCount = computed(
   () => selectedImportedDraftEntries.value.length,
 );
 const templateImportSubmitText = computed(() => {
-  if (!selectedImportedTemplateCount.value) return "创建到员工列表";
-  return `创建到员工列表（${selectedImportedTemplateCount.value}）`;
+  if (!selectedImportedTemplateCount.value) return "创建到智能体列表";
+  return `创建到智能体列表（${selectedImportedTemplateCount.value}）`;
 });
 const templateImportStatusText = computed(() => {
   if (templateImportLoading.value) return "正在扫描模板...";
@@ -1085,8 +1085,8 @@ async function confirmTemplateImport() {
       } catch (e) {
         failedEntries.push({
           id: entry.id,
-          name: entry.draft.name || entry.name || "员工",
-          detail: e.detail || "创建员工失败",
+          name: entry.draft.name || entry.name || "智能体",
+          detail: e.detail || "创建智能体失败",
         });
       }
     }
@@ -1094,7 +1094,7 @@ async function confirmTemplateImport() {
       await fetchList();
     }
     if (!failedEntries.length) {
-      ElMessage.success(`已创建 ${createdNames.length} 个员工`);
+      ElMessage.success(`已创建 ${createdNames.length} 个智能体`);
       showTemplateImportDialog.value = false;
       return;
     }
@@ -1103,13 +1103,13 @@ async function confirmTemplateImport() {
       failedEntries[0]?.id || importedTemplates.value[0]?.id || "";
     if (createdNames.length) {
       ElMessage.warning(
-        `已创建 ${createdNames.length} 个员工，仍有 ${failedEntries.length} 个导入失败`,
+        `已创建 ${createdNames.length} 个智能体，仍有 ${failedEntries.length} 个导入失败`,
       );
       return;
     }
     ElMessage.error(`${failedEntries[0].name} 导入失败：${failedEntries[0].detail}`);
   } catch (e) {
-    ElMessage.error(e.detail || "创建员工失败");
+    ElMessage.error(e.detail || "创建智能体失败");
   } finally {
     templateImportCreating.value = false;
   }
@@ -1120,7 +1120,7 @@ async function handleDelete(row) {
     ElMessage.warning(getOwnershipDeniedMessage(row, "删除"));
     return;
   }
-  await ElMessageBox.confirm(`确定删除员工「${row.name}」？`, "确认");
+  await ElMessageBox.confirm(`确定删除智能体「${row.name}」？`, "确认");
   try {
     await api.delete(`/employees/${row.id}`);
     ElMessage.success("已删除");
@@ -1133,7 +1133,7 @@ async function handleDelete(row) {
 function showEmployeeMcpConfig(row) {
   currentEmployee.value = row;
   mcpTab.value = "sse";
-  mcpDialogTitle.value = `员工接入: ${row.name}`;
+  mcpDialogTitle.value = `智能体接入: ${row.name}`;
   showMcpConfig.value = true;
 }
 
@@ -1145,7 +1145,7 @@ async function enableEmployeeMcp(row) {
   try {
     loading.value = true;
     await api.put(`/employees/${row.id}`, { mcp_enabled: true });
-    ElMessage.success("已开启员工 MCP 服务");
+    ElMessage.success("已开启智能体 MCP 服务");
     await fetchList();
     const updated = employees.value.find((item) => item.id === row.id) || row;
     showEmployeeMcpConfig(updated);
@@ -1162,13 +1162,13 @@ async function disableEmployeeMcp(row) {
     return;
   }
   await ElMessageBox.confirm(
-    `确定关闭员工「${row.name}」的 MCP 服务？`,
+    `确定关闭智能体「${row.name}」的 MCP 服务？`,
     "确认",
   );
   try {
     loading.value = true;
     await api.put(`/employees/${row.id}`, { mcp_enabled: false });
-    ElMessage.success("已关闭员工 MCP 服务");
+    ElMessage.success("已关闭智能体 MCP 服务");
     await fetchList();
     if (currentEmployee.value?.id === row.id) {
       showMcpConfig.value = false;
@@ -1204,7 +1204,7 @@ async function disableFeedbackUpgrade(row) {
     return;
   }
   await ElMessageBox.confirm(
-    `确定关闭员工「${row.name}」的反馈升级模块？`,
+    `确定关闭智能体「${row.name}」的反馈升级模块？`,
     "确认",
   );
   try {

@@ -1,7 +1,7 @@
 <template>
   <div v-loading="loading">
     <div class="toolbar">
-      <h3>员工详情: {{ emp.name }}</h3>
+      <h3>智能体详情: {{ emp.name }}</h3>
       <div>
         <el-button
           v-if="canUpdateEmployeeEntry"
@@ -70,7 +70,7 @@
     <div v-if="displayStyleHints.length" class="style-hint-panel">
       <div class="style-hint-head">
         <el-tag size="small" type="info">共 {{ displayStyleHints.length }} 条</el-tag>
-        <span class="style-hint-desc">用于约束该员工的回答表达方式，不是业务规则。</span>
+        <span class="style-hint-desc">用于约束该智能体的回答表达方式，不是业务规则。</span>
       </div>
       <div class="style-hint-list">
         <div v-for="(h, i) in displayStyleHints" :key="`${h}-${i}`" class="style-hint-item">
@@ -160,7 +160,7 @@ async function handleDelete() {
     ElMessage.warning(getOwnershipDeniedMessage(emp, '删除'))
     return
   }
-  await ElMessageBox.confirm(`确定删除员工「${emp.name}」？`, '确认')
+  await ElMessageBox.confirm(`确定删除智能体「${emp.name}」？`, '确认')
   try {
     await api.delete(`/employees/${route.params.id}`)
     ElMessage.success('已删除')

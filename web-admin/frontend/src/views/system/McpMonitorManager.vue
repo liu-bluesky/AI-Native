@@ -5,7 +5,7 @@
         <div class="settings-hero__eyebrow">MCP Monitor</div>
         <h1 class="settings-hero__title">系统 MCP 在线开发监控</h1>
         <p class="settings-hero__summary">
-          仅超级管理员可见。这里监控的是系统提供的 MCP 入口运行态，包括项目、员工、技能、规则和统一查询 MCP，
+          仅超级管理员可见。这里监控的是系统提供的 MCP 入口运行态，包括项目、智能体、技能、规则和统一查询 MCP，
           用最近请求窗口判断当前哪些入口正在被接入和使用。
         </p>
         <div class="settings-hero__meta">
@@ -36,7 +36,7 @@
         <el-select v-model="filters.endpointType" placeholder="入口类型">
           <el-option label="全部类型" value="all" />
           <el-option label="项目" value="project" />
-          <el-option label="员工" value="employee" />
+          <el-option label="智能体" value="employee" />
           <el-option label="技能" value="skill" />
           <el-option label="规则" value="rule" />
           <el-option label="统一查询" value="query" />
@@ -270,7 +270,7 @@ async function refresh() {
 function endpointTypeLabel(value) {
   const normalized = String(value || '').trim().toLowerCase()
   if (normalized === 'project') return '项目'
-  if (normalized === 'employee') return '员工'
+  if (normalized === 'employee') return '智能体'
   if (normalized === 'skill') return '技能'
   if (normalized === 'rule') return '规则'
   if (normalized === 'query') return '统一查询'

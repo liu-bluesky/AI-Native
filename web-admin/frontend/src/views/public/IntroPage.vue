@@ -8,7 +8,7 @@
       <button type="button" class="site-brand" @click="scrollToSection('hero')">
         <span class="site-brand__mark">AI</span>
         <span class="site-brand__body">
-          <span class="site-brand__name">AI 员工工厂</span>
+          <span class="site-brand__name">AI 智能体工厂</span>
           <span class="site-brand__meta">对话、生成、沉淀，进入同一项目</span>
         </span>
       </button>
@@ -232,9 +232,9 @@
       <section id="market" class="content-section market-section" data-reveal>
         <div class="section-heading section-heading--center">
           <div class="section-heading__eyebrow">Market</div>
-          <h2 class="section-heading__title">技能、员工、规则进入同一市场。</h2>
+          <h2 class="section-heading__title">技能、智能体、规则进入同一市场。</h2>
           <p class="section-heading__text">
-            先看能力结构，再决定接入路径。市场页统一承载技能目录、员工模板与规则标准。
+            先看能力结构，再决定接入路径。市场页统一承载技能目录、智能体模板与规则标准。
           </p>
         </div>
 
@@ -310,7 +310,7 @@
         <div class="section-heading section-heading--center">
           <div class="section-heading__eyebrow">Start</div>
           <div class="cta-section__title">从一个项目开始。</div>
-          <div class="cta-section__text">创建项目后，AI 员工即可进入生产流程。</div>
+          <div class="cta-section__text">创建项目后，AI 智能体即可进入生产流程。</div>
         </div>
 
         <div class="cta-section__actions">
@@ -625,7 +625,7 @@ const lifecycleItems = [
   {
     index: '02',
     label: 'Compose',
-    title: 'AI 员工接力。',
+    title: 'AI 智能体接力。',
     text: '对话、图片、视频和规则在同一上下文里推进。',
   },
   {
@@ -674,14 +674,14 @@ const marketHighlights = [
   },
   {
     label: 'Employee',
-    title: '员工市场。',
-    text: '把员工能力、目标和技能组合放进同一个入口，快速识别谁适合当前任务。',
+    title: '智能体市场。',
+    text: '把智能体能力、目标和技能组合放进同一个入口，快速识别谁适合当前任务。',
     chips: ['目标清晰', '模板化', '协作视角'],
   },
   {
     label: 'Rule',
     title: '规则市场。',
-    text: '把规则从后台配置升级成可浏览标准，让技能和员工在进入项目前先对齐边界。',
+    text: '把规则从后台配置升级成可浏览标准，让技能和智能体在进入项目前先对齐边界。',
     chips: ['标准化', '可追溯', '可约束'],
   },
 ]
@@ -855,7 +855,7 @@ function setupRevealObserver() {
 }
 
 onMounted(async () => {
-  document.title = 'AI 员工工厂 | 官网首页'
+  document.title = 'AI 智能体工厂 | 官网首页'
   await fetchPublicContactChannels()
   await nextTick()
   setupRevealObserver()

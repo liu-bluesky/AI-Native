@@ -443,13 +443,13 @@ class TestToolExecutorIntegration:
 
         captured: dict[str, object] = {}
 
-        def fake_invoke_project_tool_runtime(**kwargs):
+        def fake_invoke_project_skill_tool(**kwargs):
             captured.update(kwargs)
             return {"ok": True, "source": "mcp-runtime"}
 
         monkeypatch.setattr(
-            "services.mcp.dynamic_mcp_runtime.invoke_project_tool_runtime",
-            fake_invoke_project_tool_runtime,
+            "services.mcp.dynamic_mcp_runtime.invoke_project_skill_tool",
+            fake_invoke_project_skill_tool,
         )
 
         executor = ToolExecutor(

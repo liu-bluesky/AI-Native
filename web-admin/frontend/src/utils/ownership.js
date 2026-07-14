@@ -42,7 +42,7 @@ export function formatRecordVisibility(record) {
     ? record.shared_via_employees.filter((item) => item?.id)
     : [];
   if (sharedViaEmployees.length) {
-    return `通过员工共享(${sharedViaEmployees.length})`;
+    return `通过智能体共享(${sharedViaEmployees.length})`;
   }
   return "仅自己";
 }

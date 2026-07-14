@@ -85,7 +85,7 @@
         <el-descriptions-item label="状态">
           <el-tag :type="statusTag(bug.status)" size="small">{{ bug.status }}</el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="员工 ID">{{ bug.employee_id }}</el-descriptions-item>
+        <el-descriptions-item label="智能体 ID">{{ bug.employee_id }}</el-descriptions-item>
         <el-descriptions-item label="分类">{{ formatCategory(bug.category) }}</el-descriptions-item>
         <el-descriptions-item label="严重级别">
           <el-tag :type="severityTag(bug.severity)" size="small">{{ bug.severity }}</el-tag>
@@ -568,7 +568,7 @@ async function fetchReflectionConfig() {
 
 async function saveReflectionConfig() {
   if (!String(employeeId.value || '').trim()) {
-    ElMessage.warning('缺少员工 ID，无法保存反思配置')
+    ElMessage.warning('缺少智能体 ID，无法保存反思配置')
     return
   }
   if (!String(reflectionForm.provider_id || '').trim()) {

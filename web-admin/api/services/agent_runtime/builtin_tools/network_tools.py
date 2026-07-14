@@ -21,9 +21,6 @@ from services.agent_runtime.builtin_tools.workspace import (
     resolve_workspace_path,
 )
 
-# 禁止自动携带的敏感请求头（用户显式传入的会保留，但不从环境注入）
-_SENSITIVE_HEADER_PREFIXES = ("authorization", "cookie", "x-api-key", "x-auth")
-
 _MAX_RESPONSE_CHARS = 20000
 
 

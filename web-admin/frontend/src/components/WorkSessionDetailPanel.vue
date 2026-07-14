@@ -34,7 +34,7 @@
         <strong>{{ session.session_id || "-" }}</strong>
       </div>
       <div class="work-session-detail-card">
-        <span>员工</span>
+        <span>智能体</span>
         <strong>{{ session.employee_name || session.employee_id || "-" }}</strong>
       </div>
       <div class="work-session-detail-card">

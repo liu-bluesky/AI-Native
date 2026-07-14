@@ -33,7 +33,7 @@
         >
           批量删除
         </el-button>
-        <el-button plain @click="goToEmployees">员工列表</el-button>
+        <el-button plain @click="goToEmployees">智能体列表</el-button>
         <el-button
           plain
           :loading="translatingTemplateNames"
@@ -67,7 +67,7 @@
       type="info"
       :closable="false"
       show-icon
-      title="模板库保存的是行业智能体/角色模板，不直接等同于平台里的员工实例。"
+      title="模板库保存的是行业智能体/角色模板，不直接等同于平台里的智能体实例。"
     />
 
     <el-table

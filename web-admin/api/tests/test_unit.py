@@ -43,13 +43,13 @@ async def test_tool_executor_injects_task_tree_context(monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def fake_invoke_project_tool_runtime(**kwargs):
+    def fake_invoke_project_skill_tool(**kwargs):
         captured.update(kwargs)
         return {"ok": True}
 
     monkeypatch.setattr(
-        "services.mcp.dynamic_mcp_runtime.invoke_project_tool_runtime",
-        fake_invoke_project_tool_runtime,
+        "services.mcp.dynamic_mcp_runtime.invoke_project_skill_tool",
+        fake_invoke_project_skill_tool,
     )
 
     executor = ToolExecutor(
@@ -6384,7 +6384,7 @@ def test_query_mcp_save_project_memory_without_employee_id_stays_single_shared(m
         )(),
     )
     monkeypatch.setattr(query_mcp_svc, "list_project_member_profiles_runtime", lambda *args, **kwargs: [])
-    monkeypatch.setattr(query_mcp_svc, "query_project_rules_runtime", lambda *args, **kwargs: [])
+    monkeypatch.setattr(query_mcp_svc, "query_project_rules", lambda *args, **kwargs: [])
     monkeypatch.setattr(query_mcp_svc, "project_ui_rule_summary", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         query_mcp_svc,
@@ -7873,11 +7873,18 @@ def test_project_detail_runtime_includes_full_config_and_member_lists(tmp_path, 
     monkeypatch.setattr(context_svc, "employee_store", employee_store)
     monkeypatch.setattr(context_svc, "project_store", project_store)
 
-    project_detail = context_svc.get_project_detail_runtime("proj-1")
-    employee_detail = context_svc.get_project_employee_detail_runtime("proj-1", "emp-1")
+    project_detail = context_svc.get_project_detail("proj-1")
+    employee_detail = context_svc.get_project_employee_detail("proj-1", "emp-1")
 
     assert project_detail["id"] == "proj-1"
     assert project_detail["chat_settings"]["auto_use_tools"] is False
+    assert project_detail["agent_count"] == 1
+    assert project_detail["active_agent_count"] == 1
+    assert project_detail["agents"][0]["employee_id"] == "emp-1"
+    assert project_detail["bound_agent_count"] == 1
+    assert project_detail["active_bound_agent_count"] == 1
+    assert project_detail["bound_agents"][0]["employee_id"] == "emp-1"
+    assert "为空表示自动分配" in project_detail["agent_binding_semantics"]["note"]
     assert project_detail["member_count"] == 1
     assert project_detail["user_count"] == 1
     assert project_detail["members"][0]["employee_id"] == "emp-1"
@@ -7925,7 +7932,7 @@ def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(mo
 
     tool_names = {
         item["tool_name"]
-        for item in runtime_svc.list_project_proxy_tools_runtime("proj-test", "")
+        for item in runtime_svc.list_project_proxy_tools("proj-test", "")
     }
 
     monkeypatch.setattr(
@@ -7945,7 +7952,7 @@ def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(mo
     )
     monkeypatch.setattr(
         runtime_svc,
-        "execute_project_collaboration_runtime",
+        "execute_project_collaboration",
         lambda **kwargs: {
             "tool_name": "execute_project_collaboration",
             "task": kwargs["task"],
@@ -7953,13 +7960,13 @@ def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(mo
         },
     )
 
-    project_result = runtime_svc.invoke_project_skill_tool_runtime("proj-test", "get_project_detail")
-    employee_result = runtime_svc.invoke_project_skill_tool_runtime(
+    project_result = runtime_svc.invoke_project_skill_tool("proj-test", "get_project_detail")
+    employee_result = runtime_svc.invoke_project_skill_tool(
         "proj-test",
         "get_project_employee_detail",
         args={"employee_id": "emp-9"},
     )
-    collaboration_result = runtime_svc.invoke_project_skill_tool_runtime(
+    collaboration_result = runtime_svc.invoke_project_skill_tool(
         "proj-test",
         "execute_project_collaboration",
         args={"task": "实现一个新页面"},
@@ -8063,7 +8070,7 @@ def test_project_collaboration_runtime_selects_members_and_executes_safe_tools(m
     )
     monkeypatch.setattr(
         collab_svc,
-        "list_project_proxy_tools_runtime",
+        "list_project_skill_proxy_tools",
         lambda project_id, employee_id="": [
             {
                 "tool_name": "emp_ui__skill_vue__page",
@@ -8097,7 +8104,7 @@ def test_project_collaboration_runtime_selects_members_and_executes_safe_tools(m
         captured_calls.append(kwargs)
         return {"status": "ok", "tool_name": kwargs["tool_name"]}
 
-    result = collab_svc.execute_project_collaboration_runtime(
+    result = collab_svc.execute_project_collaboration(
         "proj-1",
         "请实现一个新的前端页面并整理方案",
         invoke_tool=fake_invoke,
@@ -8148,7 +8155,7 @@ def test_project_collaboration_runtime_prefers_external_executor_and_stops_after
     )
     monkeypatch.setattr(
         collab_svc,
-        "list_project_proxy_tools_runtime",
+        "list_project_skill_proxy_tools",
         lambda project_id, employee_id="": [
             {
                 "tool_name": "emp_ui__skill_vue__page",
@@ -8203,7 +8210,7 @@ def test_project_collaboration_runtime_prefers_external_executor_and_stops_after
         captured_calls.append(kwargs)
         return {"status": "ok", "tool_name": kwargs["tool_name"]}
 
-    result = collab_svc.execute_project_collaboration_runtime(
+    result = collab_svc.execute_project_collaboration(
         "proj-1",
         "请修复前端页面样式并同步调整接口交互",
         max_tool_calls=8,
@@ -8258,7 +8265,7 @@ def test_project_collaboration_runtime_syncs_task_tree_during_execution(monkeypa
     )
     monkeypatch.setattr(
         collab_svc,
-        "list_project_proxy_tools_runtime",
+        "list_project_skill_proxy_tools",
         lambda project_id, employee_id="": [
             {
                 "tool_name": "emp_ui__skill_vue__page",
@@ -8407,7 +8414,7 @@ def test_project_collaboration_runtime_syncs_task_tree_during_execution(monkeypa
         event_order.append(("invoke", kwargs["tool_name"]))
         return {"status": "ok", "tool_name": kwargs["tool_name"]}
 
-    result = collab_svc.execute_project_collaboration_runtime(
+    result = collab_svc.execute_project_collaboration(
         "proj-1",
         "请修复前端页面样式并同步调整接口交互",
         username="tester",
@@ -8440,9 +8447,11 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     captured: dict = {}
 
     class FakeMcp:
-        def tool(self, name=None, description=None):
+        def tool(self, name=None, description=None, annotations=None, **_kwargs):
             def decorator(fn):
                 registered_tools[name or fn.__name__] = fn
+                if annotations is not None:
+                    setattr(fn, "_test_tool_annotations", annotations)
                 return fn
 
             return decorator
@@ -8522,7 +8531,7 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     monkeypatch.setattr(project_mcp_svc, "_execute_skill_proxy", fake_execute)
     monkeypatch.setattr(
         project_mcp_svc,
-        "execute_project_collaboration_runtime",
+        "_execute_project_collaboration",
         lambda **kwargs: {
             "tool_name": "execute_project_collaboration",
             "task": kwargs["task"],
@@ -8562,6 +8571,14 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
         current_developer_name_ctx=FakeCtx("tester"),
         project_root=tmp_path,
         recall_limit=20,
+        list_project_tools_fn=lambda _project_id, _employee_id="": [
+            {
+                "tool_name": spec["scoped_tool_name"],
+                "employee_id": spec["employee_id"],
+                "skill_id": spec["skill_id"],
+            }
+        ],
+        invoke_project_tool_fn=lambda **_kwargs: {"status": "ok"},
     )
 
     result = registered_tools[spec["scoped_tool_name"]](args={"sql": "show tables"}, timeout_sec=15)
@@ -8594,16 +8611,23 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     assert experience_result["items"][0]["id"] == "rule-exp"
     assert "list_project_deploy_artifacts" in registered_tools
     assert "get_project_deploy_options" not in registered_tools
-    assert "list_project_deploy_artifacts" not in registered_tools
     assert "push_project_deploy_artifact" not in registered_tools
     assert "deploy_project_deploy_artifact" not in registered_tools
     assert "get_project_deploy_upload_status" not in registered_tools
     proxy_tools = registered_tools["list_project_proxy_tools"]()
     proxy_tool_names = {item["tool_name"] for item in proxy_tools}
-    assert "push_project_deploy_artifact" in proxy_tool_names
-    assert "deploy_project_deploy_artifact" in proxy_tool_names
+    assert proxy_tool_names == {spec["scoped_tool_name"]}
     assert "get_query_mcp_cli_prompt_preview" in registered_tools
     assert "sync_query_mcp_cli_prompt_to_local_file" in registered_tools
+
+
+def test_project_mcp_permission_annotations_are_explicit():
+    from services.mcp import dynamic_mcp_apps_project as project_mcp_svc
+
+    assert project_mcp_svc._READ_ONLY_TOOL.readOnlyHint is True
+    assert project_mcp_svc._READ_ONLY_TOOL.destructiveHint is False
+    assert project_mcp_svc._MUTATING_TOOL.readOnlyHint is False
+    assert project_mcp_svc._OPEN_WORLD_TOOL.openWorldHint is True
 
 
 from stores.json.ftp_credential_store import FtpCredential as _TestFtpCredential
@@ -13444,7 +13468,7 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     )
     monkeypatch.setattr(
         query_mcp_svc,
-        "query_project_rules_runtime",
+        "query_project_rules",
         lambda project_id, keyword="", employee_id="": [{"id": "rule-1"}] if project_id == "proj-1" else [],
     )
     monkeypatch.setattr(
@@ -13543,15 +13567,15 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     import types
 
     runtime_module = types.SimpleNamespace(
-        list_project_proxy_tools_runtime=lambda project_id, employee_id="": [
+        list_project_proxy_tools=lambda project_id, employee_id="": [
             {"tool_name": "skill_db__query_db", "employee_id": "emp-1"}
         ] if project_id == "proj-1" else [],
-        invoke_project_skill_tool_runtime=lambda **kwargs: {
+        invoke_project_skill_tool=lambda **kwargs: {
             "tool_name": kwargs["tool_name"],
             "employee_id": kwargs["employee_id"] or "emp-1",
             "status": "ok",
         },
-        execute_project_collaboration_runtime=lambda **kwargs: {
+        execute_project_collaboration=lambda **kwargs: {
             "tool_name": "execute_project_collaboration",
             "task": kwargs["task"],
             "selected_employee_ids": kwargs["employee_ids"] or ["emp-1"],
@@ -15962,7 +15986,7 @@ def _configure_query_mcp_standard_project_chain_env(monkeypatch):
     )
     monkeypatch.setattr(
         query_mcp_svc,
-        "get_project_detail_runtime",
+        "get_project_detail",
         lambda project_id: {
             "id": "proj-1",
             "name": "项目一",
@@ -15994,7 +16018,7 @@ def _configure_query_mcp_standard_project_chain_env(monkeypatch):
     )
     monkeypatch.setattr(
         query_mcp_svc,
-        "query_project_rules_runtime",
+        "query_project_rules",
         lambda project_id, keyword="", employee_id="": [
             {
                 "id": "rule-mcp",
@@ -16026,7 +16050,7 @@ def _configure_query_mcp_standard_project_chain_env(monkeypatch):
     )
 
     runtime_module = types.SimpleNamespace(
-        list_project_proxy_tools_runtime=lambda project_id, employee_id="": [
+        list_project_proxy_tools=lambda project_id, employee_id="": [
             {
                 "tool_name": "skill_query__upgrade_mcp",
                 "employee_id": "emp-1",
@@ -16037,12 +16061,12 @@ def _configure_query_mcp_standard_project_chain_env(monkeypatch):
         ]
         if project_id == "proj-1"
         else [],
-        invoke_project_skill_tool_runtime=lambda **kwargs: {
+        invoke_project_skill_tool=lambda **kwargs: {
             "tool_name": kwargs["tool_name"],
             "employee_id": kwargs["employee_id"] or "emp-1",
             "status": "ok",
         },
-        execute_project_collaboration_runtime=lambda **kwargs: {
+        execute_project_collaboration=lambda **kwargs: {
             "tool_name": "execute_project_collaboration",
             "task": kwargs["task"],
             "selected_employee_ids": kwargs["employee_ids"] or ["emp-1"],
@@ -16057,7 +16081,7 @@ def _configure_query_mcp_standard_project_chain_env(monkeypatch):
         },
     )
     collaboration_module = types.SimpleNamespace(
-        execute_project_collaboration_runtime=lambda **kwargs: {
+        execute_project_collaboration=lambda **kwargs: {
             "selected_employee_ids": kwargs["employee_ids"] or ["emp-1"],
             "selected_members": [{"employee_id": "emp-1", "name": "员工一"}],
             "candidate_tools": [{"tool_name": "skill_query__upgrade_mcp", "employee_id": "emp-1"}],
@@ -16794,7 +16818,7 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
     )
     monkeypatch.setattr(
         query_mcp_svc,
-        "get_project_detail_runtime",
+        "get_project_detail",
         lambda project_id: {
             "id": "proj-1",
             "name": "项目一",
@@ -16811,7 +16835,7 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
     )
     monkeypatch.setattr(
         query_mcp_svc,
-        "get_project_employee_detail_runtime",
+        "get_project_employee_detail",
         lambda project_id, employee_id: {
             "project_id": project_id,
             "employee_id": employee_id,
@@ -16835,7 +16859,7 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
     )
     monkeypatch.setattr(
         query_mcp_svc,
-        "query_project_rules_runtime",
+        "query_project_rules",
         lambda project_id, keyword="", employee_id="": [
             {
                 "id": "rule-mcp",
@@ -16904,7 +16928,7 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
     monkeypatch.setattr(query_mcp_svc, "work_session_store", DummyWorkSessionStore())
 
     runtime_module = types.SimpleNamespace(
-        list_project_proxy_tools_runtime=lambda project_id, employee_id="": [
+        list_project_proxy_tools=lambda project_id, employee_id="": [
             {
                 "tool_name": "skill_query__upgrade_mcp",
                 "employee_id": "emp-1",
@@ -16915,12 +16939,12 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
         ]
         if project_id == "proj-1"
         else [],
-        invoke_project_skill_tool_runtime=lambda **kwargs: {
+        invoke_project_skill_tool=lambda **kwargs: {
             "tool_name": kwargs["tool_name"],
             "employee_id": kwargs["employee_id"] or "emp-1",
             "status": "ok",
         },
-        execute_project_collaboration_runtime=lambda **kwargs: {
+        execute_project_collaboration=lambda **kwargs: {
             "tool_name": "execute_project_collaboration",
             "task": kwargs["task"],
             "selected_employee_ids": kwargs["employee_ids"] or ["emp-1"],
@@ -16935,7 +16959,7 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
         },
     )
     collaboration_module = types.SimpleNamespace(
-        execute_project_collaboration_runtime=lambda **kwargs: {
+        execute_project_collaboration=lambda **kwargs: {
             "selected_employee_ids": kwargs["employee_ids"] or ["emp-1"],
             "selected_members": [{"employee_id": "emp-1", "name": "员工一"}],
             "candidate_tools": [{"tool_name": "skill_query__upgrade_mcp", "employee_id": "emp-1"}],
@@ -19048,7 +19072,7 @@ def test_query_mcp_get_requirement_history_ignores_isolated_user_question_memory
     assert result["matched_requirement"] == {}
 
 
-def test_query_project_rules_runtime_includes_project_ui_rules(monkeypatch):
+def test_query_project_rules_includes_project_ui_rules(monkeypatch):
     from services.mcp import dynamic_mcp_profiles as profiles_svc
 
     class DummyProject:
@@ -19108,7 +19132,7 @@ def test_query_project_rules_runtime_includes_project_ui_rules(monkeypatch):
         lambda rule: {"id": rule.id, "title": rule.title, "domain": rule.domain, "content": rule.content},
     )
 
-    results = profiles_svc.query_project_rules_runtime("proj-1")
+    results = profiles_svc.query_project_rules("proj-1")
 
     assert [item["id"] for item in results] == ["rule-ui", "rule-emp"]
     assert results[0]["binding_scope"] == "project_ui"
@@ -19391,6 +19415,8 @@ def test_public_project_chat_settings_preserves_connector_configuration():
             "connector_sandbox_mode": "workspace-write",
             "local_connector_id": "connector-1",
             "connector_workspace_path": "/tmp/workspace",
+            "skill_directory": "/tmp/workspace/.ai-employee/skills",
+            "rule_directory": "/tmp/workspace/.ai-employee/rules",
         }
     )
 
@@ -19398,6 +19424,93 @@ def test_public_project_chat_settings_preserves_connector_configuration():
     assert settings["connector_sandbox_mode"] == "workspace-write"
     assert settings["local_connector_id"] == "connector-1"
     assert settings["connector_workspace_path"] == "/tmp/workspace"
+    assert settings["skill_directory"] == "/tmp/workspace/.ai-employee/skills"
+    assert settings["rule_directory"] == "/tmp/workspace/.ai-employee/rules"
+
+
+def test_build_project_chat_messages_includes_project_employee_capability_catalog(monkeypatch):
+    from types import SimpleNamespace
+
+    from routers.projects import _build_project_chat_messages
+    from services.runtime import prompt_assembler
+    from stores.json.project_store import ProjectConfig
+    from stores.json.system_config_store import SystemConfig
+
+    monkeypatch.setattr(
+        prompt_assembler,
+        "system_config_store",
+        SimpleNamespace(get_global=lambda: SystemConfig()),
+    )
+
+    project = ProjectConfig(id="proj-1", name="项目一", description="测试项目")
+    employee_candidates = [
+        {
+            "id": "emp-1",
+            "name": "桌面开发员工",
+            "goal": "负责桌面功能实现",
+            "skill_bindings": [
+                {"id": "skill-1", "name": "桌面开发", "description": "实现 Tauri 桌面能力"}
+            ],
+            "rule_bindings": [
+                {
+                    "id": "rule-1",
+                    "title": "桌面安全规则",
+                    "domain": "desktop",
+                    "content": "本地目录访问必须受工作区权限约束。",
+                }
+            ],
+        }
+    ]
+
+    messages = _build_project_chat_messages(
+        project,
+        "实现桌面能力",
+        [],
+        employee_candidates=employee_candidates,
+        skill_directory="/workspace/.ai-employee/skills",
+        rule_directory="/workspace/.ai-employee/rules",
+    )
+    system_prompt = str(messages[0]["content"])
+
+    assert "当前项目绑定智能体目录（权威总数：1 个）" in system_prompt
+    assert "selected_employee_ids / selected_employee_id 只表示当前对话手动选择" in system_prompt
+    assert "桌面开发员工 (`emp-1`)" in system_prompt
+    assert "桌面开发 (`skill-1`)" in system_prompt
+    assert "实现 Tauri 桌面能力" in system_prompt
+    assert "桌面安全规则 (`rule-1` / desktop)" in system_prompt
+    assert "本地目录访问必须受工作区权限约束" in system_prompt
+    assert "技能目录：`/workspace/.ai-employee/skills`" in system_prompt
+    assert "规则目录：`/workspace/.ai-employee/rules`" in system_prompt
+
+
+def test_build_project_chat_messages_explicitly_reports_zero_bound_agents(monkeypatch):
+    from types import SimpleNamespace
+
+    from routers.projects import _build_project_chat_messages
+    from services.runtime import prompt_assembler
+    from stores.json.project_store import ProjectConfig
+    from stores.json.system_config_store import SystemConfig
+
+    monkeypatch.setattr(
+        prompt_assembler,
+        "system_config_store",
+        SimpleNamespace(get_global=lambda: SystemConfig()),
+    )
+
+    project = ProjectConfig(id="proj-1", name="项目一", description="测试项目")
+    messages = _build_project_chat_messages(
+        project,
+        "当前项目绑定几个智能体",
+        [],
+        employee_candidates=[],
+        selected_employees=[{"id": "stale-employee-id", "name": "已失效智能体"}],
+    )
+    system_prompt = str(messages[0]["content"])
+
+    assert "当前项目绑定智能体目录（权威总数：0 个）" in system_prompt
+    assert "当前项目未绑定任何智能体" in system_prompt
+    assert "不代表项目绑定总数" in system_prompt
+    assert "user_members / user_count" in system_prompt
 
 
 def test_update_project_chat_settings_normalizes_persisted_external_agent_mode(tmp_path, monkeypatch):
@@ -19732,7 +19845,7 @@ def test_collect_runtime_tools_includes_project_host_command(monkeypatch):
     from services.connectors.project_host_command_service import PROJECT_HOST_RUN_COMMAND_TOOL_NAME
 
     monkeypatch.setattr(
-        "services.mcp.dynamic_mcp_runtime.list_project_proxy_tools_runtime",
+        "services.mcp.dynamic_mcp_runtime.list_project_proxy_tools",
         lambda project_id, employee_id: [],
     )
     monkeypatch.setattr(

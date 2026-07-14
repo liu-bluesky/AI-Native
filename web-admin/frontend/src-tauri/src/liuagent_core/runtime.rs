@@ -10,7 +10,9 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -36,6 +38,9 @@ use super::state::{
     write_runtime_artifacts, RuntimeArtifactPaths, RuntimePersistenceInput,
 };
 use super::tools::command::classify_command_risk;
+use super::tools::mcp::{
+    call_routed_mcp_tool, discover_mcp_tools, select_mcp_tools_for_goal, DiscoveredMcpTool,
+};
 use super::tools::network::{web_extract_configured, web_search_configured};
 use super::types::{
     AgentInvocationRequest, AgentInvocationResult, AgentRunAttachmentRoute,
@@ -1458,7 +1463,7 @@ fn tool_lifecycle_node_kind(tool_name: &str) -> &'static str {
         "read_file" => "file_read",
         "list_files" | "search_text" => "file_search",
         "write_file" | "apply_patch" | "delete_file" => "file_edit",
-        "run_command" | "check_command_risk" => "command",
+        "run_command" | "process" | "check_command_risk" => "command",
         "web_search" | "web_extract" | "http_get" => "network",
         "call_mcp_tool" | "list_mcp_tools" | "read_mcp_resource" => "mcp_call",
         _ => "tool",
@@ -3535,10 +3540,7 @@ fn has_deploy_upload_without_confirmed_success(
 ) -> bool {
     tool_results.iter().any(|result| {
         result.ok
-            && matches!(
-                result.name.trim(),
-                "deploy_workspace_files_to_target"
-            )
+            && matches!(result.name.trim(), "deploy_workspace_files_to_target")
             && !deploy_upload_confirmed_success(result)
     })
 }
@@ -3566,11 +3568,7 @@ fn latest_deploy_upload_summary(
         .iter()
         .rev()
         .find(|result| {
-            result.ok
-                && matches!(
-                    result.name.trim(),
-                    "deploy_workspace_files_to_target"
-                )
+            result.ok && matches!(result.name.trim(), "deploy_workspace_files_to_target")
         })
         .map(|result| result.summary.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -3680,6 +3678,123 @@ struct ReplayedPermissionTool {
     tool: PlannedLocalTool,
     result: super::types::ToolExecutionResult,
     reasoning_content: String,
+}
+
+struct PendingPermissionContext {
+    request_id: String,
+    tool: PlannedLocalTool,
+    permission_request: Value,
+}
+
+pub fn classify_local_permission_reply(
+    request: LocalChatRequest,
+) -> super::types::LocalPermissionReplyResult {
+    let project_id = match required_non_empty(&request.project_id, "projectId") {
+        Ok(value) => value,
+        Err(error) => return super::types::LocalPermissionReplyResult::failed(error),
+    };
+    let chat_session_id = match required_non_empty(&request.chat_session_id, "chatSessionId") {
+        Ok(value) => value,
+        Err(error) => return super::types::LocalPermissionReplyResult::failed(error),
+    };
+    let user_reply = match required_non_empty(&request.message, "message") {
+        Ok(value) => value,
+        Err(error) => return super::types::LocalPermissionReplyResult::failed(error),
+    };
+    let workspace_root = match resolve_workspace_root(&request.workspace_path) {
+        Ok(value) => value,
+        Err(error) => return super::types::LocalPermissionReplyResult::failed(error),
+    };
+    let Some(pending) =
+        recover_pending_permission_context(&workspace_root, &project_id, &chat_session_id)
+    else {
+        return super::types::LocalPermissionReplyResult::failed(ToolError::new(
+            "permission.not_pending",
+            "当前会话没有等待处理的 Runtime 授权请求",
+        ));
+    };
+
+    let mut model_request = build_model_request_with_history(&request, &user_reply, &[]);
+    model_request.messages = vec![
+        RuntimeModelMessage::simple(
+            "system",
+            [
+                "你是桌面 Runtime 的授权意图分类器，不是任务执行智能体。",
+                "根据待授权工具和用户当前回复判断用户是否批准或拒绝这一项准确操作。",
+                "只输出一个 JSON 对象，格式为 {\"decision\":\"approve|deny|not_an_approval\",\"reason\":\"简短原因\"}。",
+                "approve：用户明确同意执行当前待授权操作；deny：用户明确拒绝或取消当前操作；not_an_approval：用户在提问、修改目标、表达不确定、指向其他对象或没有明确决定。",
+                "不要调用工具，不要回答用户问题，不要根据关键词机械匹配；必须结合工具名、完整参数、目标描述和用户回复理解指代关系。",
+            ]
+            .join("\n"),
+        ),
+        RuntimeModelMessage::simple(
+            "user",
+            serde_json::to_string_pretty(&json!({
+                "pending_approval": {
+                    "request_id": pending.request_id.as_str(),
+                    "tool_name": pending.tool.name.as_str(),
+                    "tool_call_id": pending.tool.tool_call_id.as_str(),
+                    "arguments": &pending.tool.arguments,
+                    "summary": pending.tool.summary.as_str(),
+                    "permission_request": &pending.permission_request,
+                },
+                "user_reply": user_reply,
+            }))
+            .unwrap_or_default(),
+        ),
+    ];
+    model_request.task_goal = None;
+    model_request.task_tree = None;
+    let model_result = run_model_step(&model_request);
+    if !model_result.ok {
+        return super::types::LocalPermissionReplyResult::failed(ToolError::new(
+            "permission.intent_model_failed",
+            model_result.error,
+        ));
+    }
+    if !model_result.tool_calls.is_empty() {
+        return super::types::LocalPermissionReplyResult::failed(ToolError::new(
+            "permission.intent_protocol_invalid",
+            "授权意图分类器不得调用工具",
+        ));
+    }
+    let Some(parsed) = parse_permission_reply_classification(&model_result.content) else {
+        return super::types::LocalPermissionReplyResult::failed(ToolError::new(
+            "permission.intent_protocol_invalid",
+            "授权意图分类器未返回有效 JSON",
+        ));
+    };
+    let decision = parsed["decision"].as_str().unwrap_or("not_an_approval");
+    let decision = match decision {
+        "approve" => "approve_once",
+        "deny" => "deny",
+        _ => "not_an_approval",
+    };
+    super::types::LocalPermissionReplyResult {
+        ok: true,
+        decision: decision.to_string(),
+        request_id: pending.request_id,
+        tool_name: pending.tool.name,
+        reasoning: parsed["reason"].as_str().unwrap_or_default().to_string(),
+        error_code: String::new(),
+        error: String::new(),
+    }
+}
+
+fn parse_permission_reply_classification(content: &str) -> Option<Value> {
+    let trimmed = content.trim();
+    let candidate = if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        trimmed
+    } else {
+        let start = trimmed.find('{')?;
+        let end = trimmed.rfind('}')?;
+        trimmed.get(start..=end)?
+    };
+    let parsed = serde_json::from_str::<Value>(candidate).ok()?;
+    match parsed["decision"].as_str().unwrap_or_default() {
+        "approve" | "deny" | "not_an_approval" => Some(parsed),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3861,44 +3976,19 @@ fn recover_pending_permission_tool(
     if request_id.is_empty() {
         return None;
     }
-    let state = recover_runtime_state(workspace_root, project_id, chat_session_id).ok()?;
-    if state["run_state"]["status"].as_str().unwrap_or_default() != "waiting_approval" {
+    let pending = recover_pending_permission_context(workspace_root, project_id, chat_session_id)?;
+    if pending.request_id != request_id {
         return None;
     }
-    let tool_call_id = state["tool_results"]
-        .as_array()?
-        .iter()
-        .find_map(|result| {
-            let error_code = value_str_any(result, &["errorCode", "error_code"]);
-            if error_code != "permission.required" {
-                return None;
-            }
-            let result_request_id = value_str_any(
-                &result["content"]["permissionRequest"],
-                &["requestId", "request_id"],
-            );
-            if result_request_id != request_id {
-                return None;
-            }
-            let tool_call_id = value_str_any(result, &["toolCallId", "tool_call_id"]);
-            if tool_call_id.is_empty() {
-                None
-            } else {
-                Some(tool_call_id)
-            }
-        })?;
-    let tool = state["model_runtime"]["agent_loop"]["planned_tools"]
-        .as_array()?
-        .iter()
-        .find(|tool| value_str_any(tool, &["tool_call_id", "toolCallId"]) == tool_call_id)
-        .and_then(|tool| serde_json::from_value::<PlannedLocalTool>(tool.clone()).ok())?;
+    let state = recover_runtime_state(workspace_root, project_id, chat_session_id).ok()?;
     let reasoning_content = state["model_runtime"]["agent_loop"]["model_steps"]
         .as_array()
         .and_then(|steps| {
             steps.iter().find_map(|step| {
                 let has_tool_call = step["tool_calls"].as_array().is_some_and(|tools| {
                     tools.iter().any(|tool| {
-                        value_str_any(tool, &["tool_call_id", "toolCallId"]) == tool_call_id
+                        value_str_any(tool, &["tool_call_id", "toolCallId"])
+                            == pending.tool.tool_call_id
                     })
                 });
                 if has_tool_call {
@@ -3911,8 +4001,52 @@ fn recover_pending_permission_tool(
                 }
             })
         })
-        .filter(|value| !value.trim().is_empty())?;
-    Some((tool, reasoning_content))
+        .unwrap_or_default();
+    Some((pending.tool, reasoning_content))
+}
+
+fn recover_pending_permission_context(
+    workspace_root: &PathBuf,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Option<PendingPermissionContext> {
+    let state = recover_runtime_state(workspace_root, project_id, chat_session_id).ok()?;
+    if state["run_state"]["status"].as_str().unwrap_or_default() != "waiting_approval" {
+        return None;
+    }
+    let (request_id, tool_call_id, permission_request) = state["tool_results"]
+        .as_array()?
+        .iter()
+        .find_map(|result| {
+        let error_code = value_str_any(result, &["errorCode", "error_code"]);
+        if error_code != "permission.required" {
+            return None;
+        }
+        let result_request_id = value_str_any(
+            &result["content"]["permissionRequest"],
+            &["requestId", "request_id"],
+        );
+        let tool_call_id = value_str_any(result, &["toolCallId", "tool_call_id"]);
+        if result_request_id.is_empty() || tool_call_id.is_empty() {
+            None
+        } else {
+            Some((
+                result_request_id,
+                tool_call_id,
+                result["content"]["permissionRequest"].clone(),
+            ))
+        }
+    })?;
+    let tool = state["model_runtime"]["agent_loop"]["planned_tools"]
+        .as_array()?
+        .iter()
+        .find(|tool| value_str_any(tool, &["tool_call_id", "toolCallId"]) == tool_call_id)
+        .and_then(|tool| serde_json::from_value::<PlannedLocalTool>(tool.clone()).ok())?;
+    Some(PendingPermissionContext {
+        request_id,
+        tool,
+        permission_request,
+    })
 }
 
 fn value_str_any(value: &Value, keys: &[&str]) -> String {
@@ -4136,6 +4270,9 @@ fn run_agent_loop_with(
     model_runner: &dyn Fn(&ModelStepRequest) -> ModelStepResult,
     tool_runner: &dyn Fn(ToolExecutionRequest) -> super::types::ToolExecutionResult,
 ) -> AgentLoopResult {
+    let mut hydrated_request = base_request.clone();
+    hydrate_mcp_tool_snapshot(&mut hydrated_request);
+    let base_request = &hydrated_request;
     let mut messages = base_request.messages.clone();
     let mut model_steps = Vec::new();
     let mut model_input_snapshots = Vec::new();
@@ -4390,6 +4527,67 @@ fn run_agent_loop_with(
                 drift_result
             } else if tool.name.trim() == "run_command" {
                 execute_tool_with_command_output_sink(tool_request, Some(&command_stream_sink))
+            } else if !builtin_tool_definitions()
+                .iter()
+                .any(|definition| definition.name == tool.name.trim())
+            {
+                let backend_api_base_url = request
+                    .backend_context
+                    .as_ref()
+                    .map(|context| context.api_base_url.as_str())
+                    .unwrap_or("");
+                match request
+                    .selected_mcp_tools
+                    .iter()
+                    .find(|route| route.name == tool.name.trim())
+                    .cloned()
+                {
+                    Some(route) => {
+                        let mut routed_arguments = json!({
+                            "server": route.server.clone(),
+                            "tool": route.name.clone(),
+                            "arguments": tool.arguments,
+                            "_mcp_config": request.mcp_config,
+                            "_backend_api_base_url": backend_api_base_url,
+                        });
+                        if let Some(context) = request.backend_context.as_ref() {
+                            routed_arguments["_backend_token"] = json!(context.token.trim());
+                        }
+                        call_routed_mcp_tool(
+                            &tool.tool_call_id,
+                            &request.workspace_path,
+                            &routed_arguments,
+                            &route,
+                            effective_permission_decision.as_ref(),
+                        )
+                        .map(|(content, summary)| {
+                            super::types::ToolExecutionResult::ok(
+                                tool.tool_call_id.clone(),
+                                tool.name.clone(),
+                                content,
+                                summary,
+                            )
+                        })
+                        .unwrap_or_else(|error| {
+                            super::types::ToolExecutionResult::failed(
+                                tool.tool_call_id.clone(),
+                                tool.name.clone(),
+                                error,
+                            )
+                        })
+                    }
+                    None => super::types::ToolExecutionResult::failed(
+                        tool.tool_call_id.clone(),
+                        tool.name.clone(),
+                        ToolError::new(
+                            "mcp.tool_not_found",
+                            format!(
+                                "MCP tool is not present in the current runtime catalog: {}",
+                                tool.name.trim()
+                            ),
+                        ),
+                    ),
+                }
             } else {
                 tool_runner(tool_request)
             };
@@ -4436,6 +4634,7 @@ fn run_agent_loop_with(
 
             let attempt = build_agent_loop_attempt(&tool, &result, attempts.len() + 1);
             let no_signal = tool_result_status(&result) == "no_signal";
+            let terminal_failure = is_terminal_mcp_catalog_failure(&result);
             let repeated_failure = !attempt.failure_signature.is_empty()
                 && attempts.iter().any(|item: &AgentLoopAttempt| {
                     item.status == "failed"
@@ -4461,6 +4660,21 @@ fn run_agent_loop_with(
             tool_results.push(result);
             if no_signal {
                 stopped_reason = "tool_no_signal".to_string();
+                return finalize_agent_loop_result(
+                    model_steps,
+                    model_input_snapshots,
+                    planned_tools,
+                    tool_results,
+                    candidate_solutions,
+                    attempts,
+                    last_acceptance_gate,
+                    model_plan_tree,
+                    stopped_reason,
+                    awaiting_permission,
+                );
+            }
+            if terminal_failure {
+                stopped_reason = "terminal_tool_failure".to_string();
                 return finalize_agent_loop_result(
                     model_steps,
                     model_input_snapshots,
@@ -4504,6 +4718,21 @@ fn run_agent_loop_with(
         stopped_reason,
         awaiting_permission,
     )
+}
+
+fn is_terminal_mcp_catalog_failure(result: &super::types::ToolExecutionResult) -> bool {
+    if result.ok {
+        return false;
+    }
+    if matches!(
+        result.error_code.as_str(),
+        "mcp.server_not_found" | "mcp.tool_not_found"
+    ) {
+        return true;
+    }
+    result.error_code == "tool.disabled"
+        && result.content.get("recovery_scope").and_then(Value::as_str)
+            == Some("mcp_host_internal_tool_not_callable")
 }
 
 fn is_tauri_bot_local_chat_request(request: &ModelStepRequest) -> bool {
@@ -4608,7 +4837,7 @@ fn emit_progress_update_event(
         return;
     }
     let current_focus = summary.clone();
-    let planned_tool_previews = progress_update_tool_previews(planned_tools);
+    let planned_tool_previews = progress_update_tool_previews(planned_tools, request);
     let arguments_preview = planned_tool_previews
         .iter()
         .take(3)
@@ -4682,16 +4911,22 @@ fn looks_like_tool_operation_plan(content: &str) -> bool {
     operation_count >= 2 || normalized.contains("另有") && normalized.contains("工具调用")
 }
 
-fn progress_update_tool_previews(planned_tools: &[PlannedLocalTool]) -> Vec<Value> {
+fn progress_update_tool_previews(
+    planned_tools: &[PlannedLocalTool],
+    request: &ModelStepRequest,
+) -> Vec<Value> {
     planned_tools
         .iter()
         .map(|tool| {
-            let arguments_preview = format_tool_arguments_preview(&tool.arguments, 2_000);
+            let resolved_arguments = resolved_tool_arguments_for_display(tool, Some(request));
+            let arguments_preview = format_tool_arguments_preview(&resolved_arguments, 2_000);
             json!({
                 "tool_call_id": tool.tool_call_id.as_str(),
                 "name": tool.name.as_str(),
                 "summary": tool.summary.as_str(),
-                "arguments": summarize_tool_arguments(&tool.arguments),
+                "arguments": summarize_tool_arguments(&resolved_arguments),
+                "model_arguments": summarize_tool_arguments(&tool.arguments),
+                "resolved_arguments": summarize_tool_arguments(&resolved_arguments),
                 "arguments_preview": arguments_preview,
             })
         })
@@ -4806,6 +5041,15 @@ fn describe_planned_tool_intent(tool: &PlannedLocalTool) -> String {
                 format!("运行 `{}` 验证当前实现", truncate_inline(&cmd, 120))
             }
         }
+        "process" => {
+            let action = argument_string(&tool.arguments, "action").unwrap_or_default();
+            let session_id = argument_string(&tool.arguments, "session_id").unwrap_or_default();
+            if session_id.trim().is_empty() {
+                format!("管理后台进程：{}", action.trim())
+            } else {
+                format!("管理后台进程 {}：{}", session_id.trim(), action.trim())
+            }
+        }
         "web_search" => {
             let query = argument_string(&tool.arguments, "query").unwrap_or_default();
             if query.trim().is_empty() {
@@ -4865,6 +5109,7 @@ fn tool_arguments_with_backend_context(
                     "_backend_api_base_url".to_string(),
                     json!(context.api_base_url.trim()),
                 );
+                object.insert("_backend_token".to_string(), json!(context.token.trim()));
             }
         }
         return arguments;
@@ -4989,7 +5234,8 @@ fn emit_tool_call_started_event(
     request: Option<&ModelStepRequest>,
 ) {
     if let Some(sink) = event_sink {
-        let arguments_preview = format_tool_arguments_preview(&tool.arguments, 500);
+        let resolved_arguments = resolved_tool_arguments_for_display(tool, request);
+        let arguments_preview = format_tool_arguments_preview(&resolved_arguments, 500);
         sink(tool_call_started_event(
             format!(
                 "evt_{}_tool_{}_started",
@@ -5005,7 +5251,23 @@ fn emit_tool_call_started_event(
                 "tool_index": tool_index,
                 "tool_count": tool_count,
                 "arguments": &tool.arguments,
+                "model_arguments": &tool.arguments,
+                "resolved_arguments": resolved_arguments,
                 "arguments_preview": arguments_preview,
+                "runtime_context": request
+                    .and_then(|item| {
+                        item.selected_mcp_tools
+                            .iter()
+                            .find(|route| route.name == tool.name.trim())
+                            .map(|route| json!({
+                                "project_id": item.project_id,
+                                "physical_server": route.server,
+                                "server_id": route.server_id,
+                                "domain": route.domain,
+                                "canonical_tool_id": route.canonical_tool_id,
+                            }))
+                    })
+                    .unwrap_or_else(|| json!({})),
                 "task_goal": request.and_then(|item| item.task_goal.as_ref()),
                 "current_task_node": request
                     .and_then(|item| item.task_tree.as_ref())
@@ -5016,6 +5278,32 @@ fn emit_tool_call_started_event(
             epoch_millis(),
         ));
     }
+}
+
+fn resolved_tool_arguments_for_display(
+    tool: &PlannedLocalTool,
+    request: Option<&ModelStepRequest>,
+) -> Value {
+    let mut resolved = tool.arguments.clone();
+    let Some(request) = request else {
+        return resolved;
+    };
+    let is_runtime_mcp_tool = request
+        .selected_mcp_tools
+        .iter()
+        .any(|route| route.name == tool.name.trim());
+    if !is_runtime_mcp_tool || request.project_id.trim().is_empty() {
+        return resolved;
+    }
+    if !resolved.is_object() {
+        resolved = json!({"arguments": resolved});
+    }
+    if let Some(object) = resolved.as_object_mut() {
+        object
+            .entry("project_id".to_string())
+            .or_insert_with(|| json!(request.project_id.trim()));
+    }
+    resolved
 }
 
 fn emit_command_started_for_tool(
@@ -5091,6 +5379,13 @@ fn emit_command_result_events(
         .get("streamed")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let background_running = result.ok
+        && result.content.get("status").and_then(Value::as_str) == Some("running")
+        && result
+            .content
+            .get("session_id")
+            .and_then(Value::as_str)
+            .is_some();
     if !streamed && !stdout.trim().is_empty() {
         emit_command_output_chunk(
             sink,
@@ -5117,7 +5412,24 @@ fn emit_command_result_events(
             None,
         );
     }
-    if result.ok && stdout.trim().is_empty() && stderr.trim().is_empty() {
+    if background_running {
+        let session_id = result
+            .content
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        emit_command_output_chunk(
+            sink,
+            runtime_session_id,
+            chat_session_id,
+            tool,
+            &cmd,
+            "status",
+            &format!("后台进程已启动，session_id={session_id}"),
+            false,
+            None,
+        );
+    } else if result.ok && stdout.trim().is_empty() && stderr.trim().is_empty() {
         emit_command_output_chunk(
             sink,
             runtime_session_id,
@@ -5130,6 +5442,11 @@ fn emit_command_result_events(
             None,
         );
     }
+    let command_status = if background_running {
+        "running".to_string()
+    } else {
+        tool_result_status(result)
+    };
     sink(command_finished_event(
         format!(
             "evt_{}_command_{}_finished",
@@ -5144,9 +5461,11 @@ fn emit_command_result_events(
             "cmd": cmd,
             "cwd": cwd,
             "ok": result.ok,
-            "status": tool_result_status(result),
-            "terminal": result.content.get("terminal").and_then(Value::as_bool).unwrap_or(result.ok || result.error_code != "tool.timeout"),
+            "status": command_status,
+            "terminal": result.content.get("terminal").and_then(Value::as_bool).unwrap_or(!background_running && (result.ok || result.error_code != "tool.timeout")),
             "requires_judgement": result.content.get("requires_judgement").and_then(Value::as_bool).unwrap_or(false),
+            "session_id": result.content.get("session_id").and_then(Value::as_str),
+            "pid": result.content.get("pid").and_then(Value::as_u64),
             "exit_code": result.content.get("exit_code").and_then(Value::as_i64),
             "duration_ms": result.content.get("duration_ms").and_then(Value::as_u64),
             "summary": result.summary.as_str(),
@@ -5488,6 +5807,7 @@ fn tool_candidate_score(tool_name: &str, failed_count: i32) -> i32 {
         "web_search" => 78,
         "web_extract" => 76,
         "run_command" => 68,
+        "process" => 67,
         "write_file" | "apply_patch" => 62,
         "download_file" => 58,
         "list_mcp_tools" => 56,
@@ -5513,7 +5833,7 @@ fn tool_verifiability(tool_name: &str) -> &'static str {
     match tool_name.trim() {
         "delete_file" | "write_file" | "apply_patch" | "download_file" => "strong",
         "read_file" | "list_files" | "search_files" | "get_file_info" | "run_command"
-        | "web_search" | "web_extract" => "direct",
+        | "process" | "web_search" | "web_extract" => "direct",
         _ => "manual",
     }
 }
@@ -5534,6 +5854,7 @@ fn tool_verification_plan(tool_name: &str) -> Vec<String> {
             "若正文为空或相关性不足，回到搜索结果重新选择来源".to_string(),
         ],
         "run_command" => vec!["检查退出码、stdout/stderr 与用户目标".to_string()],
+        "process" => vec!["检查进程状态、session_id、输出与目标动作是否一致".to_string()],
         _ => vec!["检查工具结果 ok 与 summary".to_string()],
     }
 }
@@ -6084,6 +6405,10 @@ fn disabled_tool_result(
     request: &ModelStepRequest,
 ) -> Option<super::types::ToolExecutionResult> {
     let reason = tool_disabled_reason(&tool.name, request, ToolAvailabilityOverrides::default())?;
+    let internal_mcp_wrapper = matches!(
+        tool.name.trim(),
+        "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool"
+    );
     Some(super::types::ToolExecutionResult {
         tool_result_id: format!("result_{}", tool.tool_call_id),
         tool_call_id: tool.tool_call_id.clone(),
@@ -6091,9 +6416,13 @@ fn disabled_tool_result(
         ok: false,
         content: json!({
             "status": "disabled",
-            "terminal": false,
-            "recoverable": true,
-            "recovery_scope": "tool_disabled_by_configuration",
+            "terminal": internal_mcp_wrapper,
+            "recoverable": !internal_mcp_wrapper,
+            "recovery_scope": if internal_mcp_wrapper {
+                "mcp_host_internal_tool_not_callable"
+            } else {
+                "tool_disabled_by_configuration"
+            },
             "tool_name": tool.name,
             "reason": reason,
         }),
@@ -6667,12 +6996,14 @@ fn effective_permission_decision(
     incoming_decision: Option<&super::types::PermissionDecisionInput>,
     cache: &SessionPermissionCache,
 ) -> Option<super::types::PermissionDecisionInput> {
-    let action = permission_action_for_tool(&tool.name)?;
-    let expected_request_id = permission_request_id(&tool.tool_call_id, action);
     if let Some(decision) = incoming_decision {
         if is_full_access_decision(decision) {
             return Some(decision.clone());
         }
+    }
+    let action = permission_action_for_tool(tool)?;
+    let expected_request_id = permission_request_id(&tool.tool_call_id, action);
+    if let Some(decision) = incoming_decision {
         let decision_value = decision.decision.trim();
         let grant_scope = decision.grant_scope.as_deref().unwrap_or("").trim();
         let request_matches = decision
@@ -6738,7 +7069,7 @@ fn record_session_permission_grant(
     ) {
         return;
     }
-    let Some(action) = permission_action_for_tool(&tool.name) else {
+    let Some(action) = permission_action_for_tool(tool) else {
         return;
     };
     let expected_request_id = permission_request_id(&tool.tool_call_id, action);
@@ -6775,11 +7106,14 @@ fn record_session_permission_grant(
     let _ = write_session_permission_cache(workspace_root, chat_session_id, cache);
 }
 
-fn permission_action_for_tool(tool_name: &str) -> Option<&'static str> {
-    match tool_name.trim() {
+fn permission_action_for_tool(tool: &PlannedLocalTool) -> Option<&'static str> {
+    match tool.name.trim() {
         "write_file" | "apply_patch" => Some("file.write"),
         "delete_file" => Some("file.delete"),
         "run_command" => Some("command.run"),
+        "process" if tool.arguments["action"].as_str().unwrap_or_default() == "kill" => {
+            Some("command.process.kill")
+        }
         "http_post" => Some("network.write"),
         "download_file" => Some("network.read"),
         "deploy_workspace_files_to_target" => Some("deploy.direct.upload"),
@@ -6987,11 +7321,9 @@ fn is_recoverable_tool_failure(
     matches!(
         result.error_code.as_str(),
         "tool.schema_invalid"
-            | "tool.not_found"
             | "web_search.unconfigured"
             | "web_extract.unconfigured"
             | "mcp.config_missing"
-            | "mcp.server_not_found"
             | "mcp.config_invalid"
             | "mcp.failed"
     )
@@ -7108,10 +7440,19 @@ fn tool_recovery_instruction(
     }
     if matches!(
         result.error_code.as_str(),
-        "mcp.server_not_found" | "mcp.config_invalid" | "mcp.failed"
+        "mcp.config_invalid" | "mcp.failed"
     ) {
         return format!(
             "MCP 工具调用失败：{}。请判断该 MCP 是否是当前任务硬依赖；不是硬依赖时降级继续，硬依赖时明确配置或服务阻塞。",
+            result.error
+        );
+    }
+    if matches!(
+        result.error_code.as_str(),
+        "tool.not_found" | "mcp.server_not_found" | "mcp.tool_not_found"
+    ) {
+        return format!(
+            "工具目录拒绝了不存在的调用：{}。该错误不可重试；不要猜测、拼接或替换工具/服务名称。",
             result.error
         );
     }
@@ -7310,6 +7651,9 @@ struct ModelStepRequest {
     user_message: String,
     ai_entry_file: String,
     mcp_config: Value,
+    selected_mcp_tools: Vec<DiscoveredMcpTool>,
+    mcp_catalog_version: String,
+    mcp_discovery_error: String,
     backend_context: Option<LocalBackendContext>,
     messages: Vec<RuntimeModelMessage>,
     task_goal: Option<TaskGoal>,
@@ -7332,6 +7676,9 @@ impl ModelStepRequest {
             user_message: self.user_message.clone(),
             ai_entry_file: self.ai_entry_file.clone(),
             mcp_config: self.mcp_config.clone(),
+            selected_mcp_tools: self.selected_mcp_tools.clone(),
+            mcp_catalog_version: self.mcp_catalog_version.clone(),
+            mcp_discovery_error: self.mcp_discovery_error.clone(),
             backend_context: self.backend_context.clone(),
             messages,
             task_goal: self.task_goal.clone(),
@@ -7788,6 +8135,7 @@ fn build_model_request_with_history(
     user_message: &str,
     history: &[LocalChatMessage],
 ) -> ModelStepRequest {
+    let effective_mcp_config = desktop_runtime_mcp_config(request);
     let runtime = request
         .model_runtime
         .clone()
@@ -7837,6 +8185,19 @@ fn build_model_request_with_history(
             "- 禁止使用‘正在确认现有实现’‘正在推进当前问题’‘完成后继续验证’等固定模板或阶段套话。",
             "- 如果准备执行的内容与原始需求不一致，先在进度中明确修正后的理解，再决定是否继续调用工具。",
             "- 没有新的目标相关信息时不要输出进度文字，直接调用工具。",
+        ]
+        .join("\n"),
+    ));
+    messages.push(RuntimeModelMessage::simple(
+        "system",
+        [
+            "桌面智能体工具路由契约：",
+            "- 当用户已经明确要求执行某个操作时，直接发出参数完整的工具调用；如果该操作需要授权，由 Runtime 权限门冻结并展示准确工具与参数，禁止模型先用自然语言询问‘是否确认’或自行设计确认流程。",
+            "- Runtime 返回 permission.required 后立即停止本轮工具规划并等待结构化授权；授权续跑时只恢复原 tool_call_id、工具名和完整参数，不得改写为 shell 命令、重新猜测目标或再次询问用户确认。",
+            "- 涉及当前项目的真实配置、绑定关系或成员事实时，不得根据聊天设置或历史文本推断，必须调用项目工具。",
+            "- 查询项目详情、项目绑定几个智能体或绑定哪些智能体时，调用 get_project，并以 bound_agent_count、active_bound_agent_count、bound_agents 为唯一事实源。",
+            "- selected_employee_id / selected_employee_ids 仅表示本轮对话的手动选择；为空表示自动分配，不表示项目没有绑定智能体。",
+            "- 工具调用失败时报告实际错误，不得编造项目事实或改用非权威字段回答。",
         ]
         .join("\n"),
     ));
@@ -7914,12 +8275,87 @@ fn build_model_request_with_history(
             .map(str::trim)
             .unwrap_or("")
             .to_string(),
-        mcp_config: request.mcp_config.clone(),
+        mcp_config: effective_mcp_config,
+        selected_mcp_tools: Vec::new(),
+        mcp_catalog_version: String::new(),
+        mcp_discovery_error: String::new(),
         backend_context: request.backend_context.clone(),
         messages,
         task_goal: None,
         task_tree: None,
     }
+}
+
+fn desktop_runtime_mcp_config(request: &LocalChatRequest) -> Value {
+    let project_id = request.project_id.trim();
+    let has_desktop_login = request
+        .backend_context
+        .as_ref()
+        .map(|context| !context.api_base_url.trim().is_empty() && !context.token.trim().is_empty())
+        .unwrap_or(false);
+    if !project_id.starts_with("proj-") || !has_desktop_login {
+        return json!({"mcpServers": {}});
+    }
+
+    json!({
+        "mode": "runtime-v1",
+        "mcpServers": {
+            "runtime": {
+            "type": "http",
+            "url": format!("/mcp/runtime/mcp?project_id={project_id}"),
+            "enabled": true,
+            "desktopAuth": true,
+            "builtin": true,
+            "description": "系统管理的桌面 MCP Runtime。包含 system 能力域与当前项目可见的 integrations 服务目录。"
+            }
+        }
+    })
+}
+
+fn hydrate_mcp_tool_snapshot(request: &mut ModelStepRequest) {
+    if !request.selected_mcp_tools.is_empty()
+        || !request.mcp_catalog_version.is_empty()
+        || !request.mcp_discovery_error.is_empty()
+        || !mcp_registry_configured(&request.workspace_path, &request.mcp_config)
+    {
+        return;
+    }
+    let backend_api_base_url = request
+        .backend_context
+        .as_ref()
+        .map(|context| context.api_base_url.as_str())
+        .unwrap_or("");
+    let backend_token = request
+        .backend_context
+        .as_ref()
+        .map(|context| context.token.as_str())
+        .unwrap_or("");
+    match discover_mcp_tools(
+        &request.workspace_path,
+        &request.mcp_config,
+        backend_api_base_url,
+        backend_token,
+    ) {
+        Ok(discovered) => {
+            let selected = select_mcp_tools_for_goal(discovered, &request.user_message, 12);
+            request.mcp_catalog_version = mcp_catalog_version(&selected);
+            request.selected_mcp_tools = selected;
+        }
+        Err(error) => {
+            request.mcp_discovery_error = format!("{}: {}", error.code, error.message);
+        }
+    }
+}
+
+fn mcp_catalog_version(tools: &[DiscoveredMcpTool]) -> String {
+    let mut hasher = DefaultHasher::new();
+    for tool in tools {
+        tool.canonical_tool_id.hash(&mut hasher);
+        serde_json::to_string(&tool.input_schema)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+    }
+    format!("mcp-catalog-v1-{:016x}", hasher.finish())
 }
 
 fn build_desktop_local_context_message(request: &LocalChatRequest) -> Option<RuntimeModelMessage> {
@@ -8264,8 +8700,14 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
         headers.insert(AUTHORIZATION, auth_value);
     }
 
-    let request_body =
-        build_openai_compatible_request_body(request, normalized_model_name, is_ollama_compatible);
+    let request_body = match build_openai_compatible_request_body(
+        request,
+        normalized_model_name,
+        is_ollama_compatible,
+    ) {
+        Ok(value) => value,
+        Err(error) => return ModelStepResult::failed(request, "mcp.discovery_failed", error),
+    };
 
     let client = match Client::builder()
         .connect_timeout(Duration::from_millis(15_000))
@@ -8398,11 +8840,10 @@ fn tool_disabled_reason(
                     .to_string()
             })
         }
-        "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool" => {
-            (!mcp_registry_configured(&request.workspace_path, &request.mcp_config)).then(|| {
-                "MCP tools are disabled because no MCP server is explicitly enabled".to_string()
-            })
-        }
+        "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool" => Some(
+            "MCP host management tools are internal and are not exposed to the ordinary model"
+                .to_string(),
+        ),
         "list_projects" | "get_project" => {
             let has_backend_context = request
                 .backend_context
@@ -8486,8 +8927,14 @@ fn tool_definitions_for_request_with_web_search_config(
         .collect()
 }
 
-fn openai_compatible_tool_schemas(request: &ModelStepRequest) -> Vec<Value> {
-    tool_definitions_for_request(request)
+fn openai_compatible_tool_schemas(request: &ModelStepRequest) -> Result<Vec<Value>, String> {
+    if !request.mcp_discovery_error.is_empty() {
+        return Err(format!(
+            "MCP tool discovery failed: {}",
+            request.mcp_discovery_error
+        ));
+    }
+    let mut schemas = tool_definitions_for_request(request)
         .into_iter()
         .map(|definition| {
             json!({
@@ -8499,25 +8946,50 @@ fn openai_compatible_tool_schemas(request: &ModelStepRequest) -> Vec<Value> {
                 }
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let mut names = schemas
+        .iter()
+        .filter_map(|schema| schema.pointer("/function/name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<std::collections::HashSet<_>>();
+    if mcp_registry_configured(&request.workspace_path, &request.mcp_config) {
+        for tool in request.selected_mcp_tools.iter().cloned() {
+            if !names.insert(tool.name.clone()) {
+                return Err(format!(
+                    "MCP tool name conflict with existing tool: {}",
+                    tool.name
+                ));
+            }
+            schemas.push(json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": format!(
+                        "[MCP {} / {}] {}",
+                        tool.server_id, tool.canonical_tool_id, tool.description
+                    ),
+                    "parameters": tool.input_schema,
+                }
+            }));
+        }
+    }
+    Ok(schemas)
 }
 
 fn build_openai_compatible_request_body(
     request: &ModelStepRequest,
     normalized_model_name: &str,
-    is_ollama_compatible: bool,
-) -> Value {
+    _is_ollama_compatible: bool,
+) -> Result<Value, String> {
     let mut request_body = json!({
         "model": normalized_model_name,
         "temperature": request.temperature,
         "stream": true,
         "messages": request.messages.iter().map(openai_compatible_message_payload).collect::<Vec<_>>()
     });
-    if !is_ollama_compatible {
-        request_body["tools"] = json!(openai_compatible_tool_schemas(request));
-        request_body["tool_choice"] = json!("auto");
-    }
-    request_body
+    request_body["tools"] = json!(openai_compatible_tool_schemas(request)?);
+    request_body["tool_choice"] = json!("auto");
+    Ok(request_body)
 }
 
 fn parse_openai_compatible_json_response(
@@ -8586,7 +9058,7 @@ fn parse_openai_compatible_streaming_reader<R: BufRead>(
                 reasoning_content.push_str(&value);
             }
             if let Some(calls) = message.tool_calls {
-                merge_openai_tool_call_chunks(&mut tool_chunks, calls);
+                merge_openai_tool_call_chunks(&mut tool_chunks, calls)?;
             }
         }
     }
@@ -8597,7 +9069,7 @@ fn parse_openai_compatible_streaming_reader<R: BufRead>(
 fn merge_openai_tool_call_chunks(
     target: &mut Vec<OpenAiCompatibleToolCall>,
     chunks: Vec<OpenAiCompatibleToolCall>,
-) {
+) -> Result<(), String> {
     for chunk in chunks {
         let index = chunk.index.unwrap_or(target.len());
         while target.len() <= index {
@@ -8621,8 +9093,15 @@ fn merge_openai_tool_call_chunks(
                         arguments: None,
                     });
             if let Some(name) = function.name {
-                let existing = current_function.name.get_or_insert_with(String::new);
-                existing.push_str(&name);
+                let name = name.trim();
+                if !name.is_empty() {
+                    if current_function.name.is_some() {
+                        return Err(format!(
+                            "model stream protocol error: tool_calls[{index}].function.name was emitted more than once"
+                        ));
+                    }
+                    current_function.name = Some(name.to_string());
+                }
             }
             if let Some(arguments) = function.arguments {
                 let piece = stringify_model_content(Some(arguments)).unwrap_or_default();
@@ -8641,6 +9120,7 @@ fn merge_openai_tool_call_chunks(
             }
         }
     }
+    Ok(())
 }
 
 fn openai_compatible_message_payload(message: &RuntimeModelMessage) -> Value {
@@ -9266,7 +9746,7 @@ mod tests {
         }))
         .unwrap();
         let model_request = build_model_request(&request, &request.message);
-        let tools = openai_compatible_tool_schemas(&model_request);
+        let tools = openai_compatible_tool_schemas(&model_request).unwrap();
 
         assert!(tools
             .iter()
@@ -11116,7 +11596,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_allows_recoverable_mcp_config_error_before_pausing() {
+    fn agent_loop_stops_repeated_internal_mcp_wrapper_calls() {
         let dir =
             std::env::temp_dir().join(format!("liuagent_loop_recoverable_mcp_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
@@ -11134,7 +11614,7 @@ mod tests {
                     "model call after MCP failure must receive a tool observation"
                 );
             }
-            if index < 2 {
+            if index == 0 {
                 return test_model_result(
                     "",
                     vec![PlannedLocalTool {
@@ -11175,12 +11655,30 @@ mod tests {
             &tool_runner,
         );
 
-        assert!(result.ok(), "{}", result.error());
-        assert_eq!(result.stopped_reason, "no_tool_calls");
-        assert_eq!(model_call_count.get(), 3);
-        assert_eq!(result.tool_results.len(), 2);
-        assert_eq!(result.tool_results[0].content["recoverable"], true);
+        assert_eq!(model_call_count.get(), 1);
+        assert_eq!(result.tool_results.len(), 1);
+        assert_eq!(result.tool_results[0].error_code, "tool.disabled");
+        assert_eq!(result.stopped_reason, "terminal_tool_failure");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn nonexistent_mcp_server_and_tool_errors_are_terminal() {
+        for code in ["mcp.server_not_found", "mcp.tool_not_found"] {
+            let result = super::super::types::ToolExecutionResult::failed(
+                "call-mcp-missing".to_string(),
+                "missing_mcp_tool".to_string(),
+                ToolError::new(code, "missing"),
+            );
+            assert!(is_terminal_mcp_catalog_failure(&result));
+            assert!(!is_recoverable_tool_failure(&result, false));
+        }
+        let local_file_missing = super::super::types::ToolExecutionResult::failed(
+            "call-read-missing".to_string(),
+            "read_file".to_string(),
+            ToolError::new("tool.not_found", "file not found"),
+        );
+        assert!(!is_terminal_mcp_catalog_failure(&local_file_missing));
     }
 
     #[test]
@@ -11307,7 +11805,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_definitions_include_mcp_tools_when_any_server_enabled() {
+    fn tool_definitions_hide_mcp_host_wrappers_even_when_runtime_enabled() {
         let mut request = test_model_request("列出 MCP 工具");
         request.mcp_config = json!({
             "mcpServers": {
@@ -11327,8 +11825,322 @@ mod tests {
         let tools = tool_definitions_for_request_with_web_search_config(&request, false, false);
 
         for name in ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"] {
-            assert!(tools.iter().any(|tool| tool.name == name));
+            assert!(!tools.iter().any(|tool| tool.name == name));
         }
+    }
+
+    #[test]
+    fn selected_mcp_tool_snapshot_is_stable_and_limits_model_schemas() {
+        let mut request = test_model_request("查询当前项目绑定的智能体");
+        request.mcp_config = json!({
+            "mcpServers": {
+                "runtime": {
+                    "type": "http",
+                    "url": "http://127.0.0.1:8000/mcp/runtime/mcp?project_id=proj-test",
+                    "enabled": true
+                }
+            }
+        });
+        let selected = DiscoveredMcpTool {
+            server: "runtime".to_string(),
+            server_id: "system".to_string(),
+            canonical_tool_id: "system.system.list_project_members".to_string(),
+            domain: "system".to_string(),
+            name: "list_project_members".to_string(),
+            description: "列出当前项目绑定的智能体".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"project_id": {"type": "string"}},
+                "required": ["project_id"]
+            }),
+            annotations: Default::default(),
+        };
+        request.mcp_catalog_version = mcp_catalog_version(std::slice::from_ref(&selected));
+        request.selected_mcp_tools = vec![selected.clone()];
+
+        let first_version = request.mcp_catalog_version.clone();
+        let schemas = openai_compatible_tool_schemas(&request).expect("selected schemas");
+        let names = schemas
+            .iter()
+            .filter_map(|schema| schema.pointer("/function/name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            first_version,
+            mcp_catalog_version(std::slice::from_ref(&selected))
+        );
+        assert!(names.contains(&"list_project_members"));
+        assert!(!names.contains(&"get_project_employee_detail"));
+    }
+
+    #[test]
+    fn runtime_mcp_display_arguments_include_bound_project_context() {
+        let mut request = test_model_request("查询项目规则");
+        request.project_id = "proj-cc47efb1".to_string();
+        request.selected_mcp_tools = vec![DiscoveredMcpTool {
+            server: "runtime".to_string(),
+            server_id: "system".to_string(),
+            canonical_tool_id: "system.system.query_project_rules".to_string(),
+            domain: "system".to_string(),
+            name: "query_project_rules".to_string(),
+            description: "查询项目规则".to_string(),
+            input_schema: json!({"type": "object"}),
+            annotations: Default::default(),
+        }];
+        let tool = PlannedLocalTool {
+            tool_call_id: "call-query-rules".to_string(),
+            name: "query_project_rules".to_string(),
+            arguments: json!({"keyword": "", "employee_id": ""}),
+            summary: "查询项目规则".to_string(),
+        };
+
+        let resolved = resolved_tool_arguments_for_display(&tool, Some(&request));
+
+        assert_eq!(resolved["project_id"], "proj-cc47efb1");
+        assert_eq!(resolved["keyword"], "");
+        assert_eq!(resolved["employee_id"], "");
+        assert!(tool.arguments.get("project_id").is_none());
+    }
+
+    #[test]
+    fn runtime_mcp_tool_event_exposes_model_and_resolved_arguments() {
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+        let mut request = test_model_request("查询项目规则");
+        request.project_id = "proj-cc47efb1".to_string();
+        request.selected_mcp_tools = vec![DiscoveredMcpTool {
+            server: "runtime".to_string(),
+            server_id: "system".to_string(),
+            canonical_tool_id: "system.system.query_project_rules".to_string(),
+            domain: "system".to_string(),
+            name: "query_project_rules".to_string(),
+            description: "查询项目规则".to_string(),
+            input_schema: json!({"type": "object"}),
+            annotations: Default::default(),
+        }];
+        let tool = PlannedLocalTool {
+            tool_call_id: "call-query-rules-event".to_string(),
+            name: "query_project_rules".to_string(),
+            arguments: json!({"keyword": "css", "employee_id": ""}),
+            summary: "查询项目规则".to_string(),
+        };
+
+        emit_tool_call_started_event(
+            Some(&sink),
+            "runtime-test",
+            "chat-test",
+            &tool,
+            1,
+            1,
+            Some(&request),
+        );
+
+        let events = events.borrow();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["payload"]["model_arguments"]["keyword"], "css");
+        assert!(events[0]["payload"]["model_arguments"]
+            .get("project_id")
+            .is_none());
+        assert_eq!(
+            events[0]["payload"]["resolved_arguments"]["project_id"],
+            "proj-cc47efb1"
+        );
+        assert!(events[0]["payload"]["arguments_preview"]
+            .as_str()
+            .unwrap()
+            .contains("proj-cc47efb1"));
+    }
+
+    #[test]
+    fn progress_update_uses_runtime_resolved_arguments() {
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+        let mut request = test_model_request("查询项目规则");
+        request.project_id = "proj-cc47efb1".to_string();
+        request.selected_mcp_tools = vec![DiscoveredMcpTool {
+            server: "runtime".to_string(),
+            server_id: "system".to_string(),
+            canonical_tool_id: "system.system.query_project_rules".to_string(),
+            domain: "system".to_string(),
+            name: "query_project_rules".to_string(),
+            description: "查询项目规则".to_string(),
+            input_schema: json!({"type": "object"}),
+            annotations: Default::default(),
+        }];
+        let result = test_model_result("我会查询项目规则。", Vec::new());
+        let planned_tools = vec![PlannedLocalTool {
+            tool_call_id: "call-query-rules-progress".to_string(),
+            name: "query_project_rules".to_string(),
+            arguments: json!({"keyword": "css", "employee_id": ""}),
+            summary: "查询项目规则".to_string(),
+        }];
+
+        emit_progress_update_event(
+            Some(&sink),
+            "runtime-test",
+            "chat-test",
+            1,
+            &result,
+            &planned_tools,
+            &request,
+        );
+
+        let events = events.borrow();
+        assert_eq!(
+            events[0]["payload"]["planned_tools"][0]["model_arguments"]["keyword"],
+            "css"
+        );
+        assert_eq!(
+            events[0]["payload"]["planned_tools"][0]["resolved_arguments"]["project_id"],
+            "proj-cc47efb1"
+        );
+        assert!(events[0]["payload"]["arguments_preview"]
+            .as_str()
+            .unwrap()
+            .contains("proj-cc47efb1"));
+    }
+
+    #[test]
+    fn unselected_mcp_tool_is_rejected_without_local_fallback() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_unselected_mcp_tool_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut request = test_model_request("查询当前项目绑定的智能体");
+        request.mcp_config = json!({
+            "mcpServers": {
+                "runtime": {
+                    "type": "http",
+                    "url": "http://127.0.0.1:8000/mcp/runtime/mcp?project_id=proj-test",
+                    "enabled": true
+                }
+            }
+        });
+        request.selected_mcp_tools = vec![DiscoveredMcpTool {
+            server: "runtime".to_string(),
+            server_id: "system".to_string(),
+            canonical_tool_id: "system.system.list_project_members".to_string(),
+            domain: "system".to_string(),
+            name: "list_project_members".to_string(),
+            description: "列出当前项目绑定的智能体".to_string(),
+            input_schema: json!({"type": "object"}),
+            annotations: Default::default(),
+        }];
+        request.mcp_catalog_version = mcp_catalog_version(&request.selected_mcp_tools);
+        let model_runner = |_request: &ModelStepRequest| {
+            test_model_result(
+                "",
+                vec![PlannedLocalTool {
+                    tool_call_id: "call-unselected".to_string(),
+                    name: "get_project_employee_detail".to_string(),
+                    arguments: json!({"employee_id": "emp-test"}),
+                    summary: "调用未选择的 MCP 工具".to_string(),
+                }],
+            )
+        };
+        let local_runner_called = Cell::new(false);
+        let tool_runner = |tool_request: ToolExecutionRequest| {
+            local_runner_called.set(true);
+            crate::liuagent_core::types::ToolExecutionResult::failed(
+                tool_request.tool_call_id.unwrap_or_default(),
+                tool_request.name,
+                ToolError::new("unexpected.local_fallback", "must not run"),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-unselected-mcp-tool",
+            "runtime-unselected-mcp-tool",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(!local_runner_called.get());
+        assert_eq!(result.tool_results.len(), 1);
+        assert_eq!(result.tool_results[0].error_code, "mcp.tool_not_found");
+        assert_eq!(result.stopped_reason, "terminal_tool_failure");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn full_access_decision_survives_dynamic_mcp_tool_name() {
+        let tool = PlannedLocalTool {
+            tool_call_id: "call-project-manual".to_string(),
+            name: "get_project_manual".to_string(),
+            arguments: json!({}),
+            summary: "读取项目手册".to_string(),
+        };
+        let decision = crate::liuagent_core::types::PermissionDecisionInput {
+            request_id: None,
+            decision: "approve_session".to_string(),
+            grant_scope: Some("session_full_access".to_string()),
+            comment: None,
+        };
+        let cache = SessionPermissionCache::empty("chat-full-access-dynamic-mcp");
+
+        let effective = effective_permission_decision(&tool, Some(&decision), &cache)
+            .expect("full access must reach dynamic MCP routing");
+
+        assert!(is_full_access_decision(&effective));
+    }
+
+    #[test]
+    fn process_kill_permission_decision_matches_exact_pending_action() {
+        let tool = PlannedLocalTool {
+            tool_call_id: "call-process-kill-permission".to_string(),
+            name: "process".to_string(),
+            arguments: json!({
+                "action": "kill",
+                "session_id": "proc-test"
+            }),
+            summary: "终止后台进程".to_string(),
+        };
+        let decision = crate::liuagent_core::types::PermissionDecisionInput {
+            request_id: Some("perm_call-process-kill-permission_command_process_kill".to_string()),
+            decision: "approve_once".to_string(),
+            grant_scope: Some("once".to_string()),
+            comment: None,
+        };
+        let cache = SessionPermissionCache::empty("chat-process-kill-permission");
+
+        let effective = effective_permission_decision(&tool, Some(&decision), &cache)
+            .expect("process kill approval must reach the frozen tool call");
+
+        assert_eq!(effective.request_id, decision.request_id);
+
+        let poll_tool = PlannedLocalTool {
+            arguments: json!({
+                "action": "poll",
+                "session_id": "proc-test"
+            }),
+            ..tool
+        };
+        assert!(effective_permission_decision(&poll_tool, Some(&decision), &cache).is_none());
+    }
+
+    #[test]
+    fn permission_reply_classifier_parses_only_structured_model_decisions() {
+        let approved = parse_permission_reply_classification(
+            "```json\n{\"decision\":\"approve\",\"reason\":\"用户明确同意当前操作\"}\n```",
+        )
+        .expect("approved classification");
+        assert_eq!(approved["decision"], "approve");
+
+        let denied = parse_permission_reply_classification(
+            "{\"decision\":\"deny\",\"reason\":\"用户取消当前操作\"}",
+        )
+        .expect("denied classification");
+        assert_eq!(denied["decision"], "deny");
+
+        assert!(parse_permission_reply_classification("确认关闭").is_none());
+        assert!(parse_permission_reply_classification(
+            "{\"decision\":\"maybe\",\"reason\":\"不确定\"}"
+        )
+        .is_none());
     }
 
     #[test]
@@ -11707,7 +12519,7 @@ mod tests {
                 "agent_loop": {
                     "model_steps": [
                         {
-                            "reasoning_content": "先创建空文件，再等待用户授权写入。",
+                            "reasoning_content": "",
                             "tool_calls": [planned_tool.clone()]
                         }
                     ],
@@ -11765,10 +12577,7 @@ mod tests {
         .expect("pending tool should replay");
 
         assert!(replayed.result.ok, "{}", replayed.result.error);
-        assert_eq!(
-            replayed.reasoning_content,
-            "先创建空文件，再等待用户授权写入。"
-        );
+        assert!(replayed.reasoning_content.is_empty());
         assert_eq!(
             fs::read_to_string(dir.join("approved.txt")).unwrap(),
             "approved"
@@ -11837,6 +12646,55 @@ mod tests {
             .unwrap();
         assert_eq!(finished["payload"]["exit_code"], 0);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn background_run_command_event_keeps_process_running_and_exposes_session() {
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_background_event".to_string(),
+            name: "run_command".to_string(),
+            arguments: json!({"cmd": "npm run dev", "background": true}),
+            summary: "标准模型工具调用：run_command".to_string(),
+        };
+        let result = super::super::types::ToolExecutionResult::ok(
+            "call_background_event".to_string(),
+            "run_command".to_string(),
+            json!({
+                "status": "running",
+                "session_id": "proc_test",
+                "pid": 1234,
+                "cwd": "."
+            }),
+            "后台进程已启动".to_string(),
+        );
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+
+        emit_command_result_events(
+            Some(&sink),
+            "runtime-background-event",
+            "chat-background-event",
+            &tool,
+            &result,
+        );
+
+        let events = events.borrow();
+        let status_chunk = events
+            .iter()
+            .find(|event| event["type"] == "command_output_chunk")
+            .unwrap();
+        assert!(status_chunk["payload"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("session_id=proc_test"));
+        let finished = events
+            .iter()
+            .find(|event| event["type"] == "command_finished")
+            .unwrap();
+        assert_eq!(finished["payload"]["status"], "running");
+        assert_eq!(finished["payload"]["terminal"], false);
+        assert_eq!(finished["payload"]["session_id"], "proc_test");
+        assert_eq!(finished["payload"]["pid"], 1234);
     }
 
     #[test]
@@ -12581,7 +13439,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_model_runtime_allows_ollama_without_api_key_and_omits_tools() {
+    fn direct_model_runtime_allows_ollama_without_api_key_and_includes_tools() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
@@ -12616,8 +13474,8 @@ mod tests {
             let request = String::from_utf8_lossy(&request_bytes);
             assert!(request.starts_with("POST /v1/chat/completions "));
             assert!(!request.to_ascii_lowercase().contains("authorization:"));
-            assert!(!request.contains("\"tools\""));
-            assert!(!request.contains("\"tool_choice\""));
+            assert!(request.contains("\"tools\""));
+            assert!(request.contains("\"tool_choice\""));
 
             let body = json!({
                 "choices": [
@@ -12654,7 +13512,7 @@ mod tests {
     fn direct_model_runtime_streams_openai_compatible_response() {
         let model_request = test_model_request("读取 register.html");
         let request_body =
-            build_openai_compatible_request_body(&model_request, "test-model", false);
+            build_openai_compatible_request_body(&model_request, "test-model", false).unwrap();
         assert_eq!(request_body["stream"], true);
         assert!(request_body["tools"]
             .as_array()
@@ -12671,7 +13529,7 @@ mod tests {
                             "id": "call_read_register",
                             "type": "function",
                             "function": {
-                                "name": "read_",
+                                "name": "read_file",
                                 "arguments": "{\"path\":\"register"
                             }
                         }]
@@ -12686,7 +13544,6 @@ mod tests {
                         "tool_calls": [{
                             "index": 0,
                             "function": {
-                                "name": "file",
                                 "arguments": ".html\",\"start_line\":1}"
                             }
                         }]
@@ -12713,6 +13570,24 @@ mod tests {
         assert_eq!(tool_calls[0].name, "read_file");
         assert_eq!(tool_calls[0].arguments["path"], "register.html");
         assert_eq!(tool_calls[0].arguments["start_line"], 1);
+    }
+
+    #[test]
+    fn streamed_tool_name_rejects_repeated_name_field() {
+        let chunks = [
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"get_project","arguments":"{"}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"get_project","arguments":"}"}}]}}]}),
+        ];
+        let mut stream_body = chunks
+            .into_iter()
+            .map(|chunk| format!("data: {}\n\n", chunk))
+            .collect::<String>();
+        stream_body.push_str("data: [DONE]\n\n");
+
+        let error =
+            parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
+                .unwrap_err();
+        assert!(error.contains("function.name was emitted more than once"));
     }
 
     #[test]
@@ -13008,6 +13883,107 @@ mod tests {
         assert_eq!(execution_args["_backend_token"], "secret-token");
         assert!(execution_args.get("project_id").is_none());
         assert!(tool.arguments.get("_backend_token").is_none());
+    }
+
+    #[test]
+    fn desktop_project_request_mounts_single_runtime_mcp() {
+        let mut request = LocalChatRequest::default();
+        request.project_id = "proj-657fe77f".to_string();
+        request.workspace_path = ".".to_string();
+        request.message = "查询项目成员".to_string();
+        request.mcp_config = json!({"mcpServers": {}});
+        request.backend_context = Some(LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "login-token".to_string(),
+        });
+
+        let model_request = build_model_request(&request, "查询项目成员");
+
+        assert_eq!(
+            model_request.mcp_config["mcpServers"]["runtime"]["url"],
+            "/mcp/runtime/mcp?project_id=proj-657fe77f"
+        );
+        assert_eq!(
+            model_request.mcp_config["mcpServers"]["runtime"]["desktopAuth"],
+            true
+        );
+        assert_eq!(
+            model_request.mcp_config["mcpServers"]
+                .as_object()
+                .map(|items| items.len()),
+            Some(1)
+        );
+        assert!(mcp_registry_configured(
+            &model_request.workspace_path,
+            &model_request.mcp_config
+        ));
+    }
+
+    #[test]
+    fn desktop_project_request_does_not_mount_external_servers_directly() {
+        let mut request = LocalChatRequest::default();
+        request.project_id = "proj-657fe77f".to_string();
+        request.workspace_path = ".".to_string();
+        request.message = "查询项目成员".to_string();
+        request.mcp_config = json!({
+            "mcpServers": {
+                "external-docs": {
+                    "type": "http",
+                    "url": "https://example.com/mcp",
+                    "enabled": true
+                }
+            }
+        });
+        request.backend_context = Some(LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "login-token".to_string(),
+        });
+
+        let config = desktop_runtime_mcp_config(&request);
+
+        assert!(config["mcpServers"].get("external-docs").is_none());
+        assert_eq!(
+            config["mcpServers"]["runtime"]["url"],
+            "/mcp/runtime/mcp?project_id=proj-657fe77f"
+        );
+    }
+
+    #[test]
+    fn internal_mcp_host_execution_receives_runtime_config_and_desktop_login_token() {
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_project_mcp".to_string(),
+            name: "call_mcp_tool".to_string(),
+            arguments: json!({
+                "server": "runtime",
+                "tool": "get_project_employee_detail",
+                "arguments": {"employee_id": "emp-18b9cdfa"}
+            }),
+            summary: "query project employee".to_string(),
+        };
+        let backend_context = LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "login-token".to_string(),
+        };
+        let mcp_config = json!({
+            "mcpServers": {
+                "runtime": {
+                    "type": "http",
+                    "url": "/mcp/runtime/mcp?project_id=proj-657fe77f",
+                    "desktopAuth": true
+                }
+            }
+        });
+
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            "proj-657fe77f",
+            Some(&backend_context),
+            &mcp_config,
+            tool.arguments.clone(),
+        );
+
+        assert_eq!(execution_args["_backend_token"], "login-token");
+        assert_eq!(execution_args["_mcp_config"], mcp_config);
     }
 
     #[test]
@@ -13927,6 +14903,9 @@ mod tests {
             user_message: user_message.to_string(),
             ai_entry_file: String::new(),
             mcp_config: json!({}),
+            selected_mcp_tools: Vec::new(),
+            mcp_catalog_version: String::new(),
+            mcp_discovery_error: String::new(),
             backend_context: None,
             messages: vec![RuntimeModelMessage::simple(
                 "user",

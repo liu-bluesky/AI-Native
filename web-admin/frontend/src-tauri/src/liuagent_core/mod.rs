@@ -19,6 +19,7 @@ mod workspace;
 
 pub use definitions::builtin_tool_definitions;
 pub use gateway::prepare_agent_invocation;
+pub use runtime::classify_local_permission_reply;
 pub use runtime::{
     ack_local_runtime_outbox, cancel_local_runtime_job, cleanup_local_offline_cache,
     list_local_runtime_events, list_local_runtime_outbox, load_local_offline_cache,
@@ -31,11 +32,11 @@ pub use tools::network::{
 pub use types::{
     AgentInvocationRequest, AgentInvocationResult, LocalBackendContext, LocalChatAttachment,
     LocalChatMessage, LocalChatPromptPart, LocalChatRequest, LocalChatResult,
-    LocalModelRuntimeConfig, LocalRuntimeEventsRequest, LocalRuntimeEventsResult,
-    LocalRuntimeJobRequest, LocalRuntimeJobResult, LocalRuntimeOutboxAckRequest,
-    LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest,
-    LocalRuntimeRecoveryResult, OfflineCacheCleanupRequest, OfflineCacheLoadRequest,
-    OfflineCacheResult, OfflineCacheSaveRequest, PermissionDecisionInput,
+    LocalModelRuntimeConfig, LocalPermissionReplyResult, LocalRuntimeEventsRequest,
+    LocalRuntimeEventsResult, LocalRuntimeJobRequest, LocalRuntimeJobResult,
+    LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult,
+    LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult, OfflineCacheCleanupRequest,
+    OfflineCacheLoadRequest, OfflineCacheResult, OfflineCacheSaveRequest, PermissionDecisionInput,
     ProviderFileUploadRequest, ProviderFileUploadResult, ToolDefinition, ToolError,
     ToolExecutionRequest, ToolExecutionResult,
 };
@@ -45,6 +46,7 @@ use tools::deploy::{deploy_workspace_files_to_target, get_project_deploy_options
 use tools::file::{apply_patch, delete_file, list_files, read_file, search_text, write_file};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
 use tools::network::{download_file, http_get, http_post, web_extract, web_search};
+use tools::process::process_tool;
 use tools::projects::{get_project, list_projects};
 pub fn execute_tool(request: ToolExecutionRequest) -> ToolExecutionResult {
     execute_tool_with_command_output_sink(request, None)
@@ -94,6 +96,12 @@ pub(crate) fn execute_tool_with_command_output_sink(
             command_output_sink,
         ),
         "run_command" => run_command(
+            &tool_call_id,
+            &request.workspace_path,
+            &request.arguments,
+            request.permission_decision.as_ref(),
+        ),
+        "process" => process_tool(
             &tool_call_id,
             &request.workspace_path,
             &request.arguments,
@@ -190,10 +198,24 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 21);
+        assert_eq!(tools.len(), 19);
         assert!(tools.iter().any(|item| item.name == "read_file"));
         assert!(tools.iter().any(|item| item.name == "delete_file"));
         assert!(tools.iter().any(|item| item.name == "run_command"));
+        assert!(tools.iter().any(|item| item.name == "process"));
+        let run_command = tools
+            .iter()
+            .find(|item| item.name == "run_command")
+            .unwrap();
+        assert_eq!(
+            run_command.input_schema["properties"]["background"]["type"],
+            "boolean"
+        );
+        let process = tools.iter().find(|item| item.name == "process").unwrap();
+        assert_eq!(
+            process.input_schema["properties"]["action"]["enum"],
+            json!(["list", "poll", "log", "wait", "kill", "write", "submit", "close"])
+        );
         assert!(tools.iter().any(|item| item.name == "web_search"));
         assert!(tools.iter().any(|item| item.name == "web_extract"));
         assert!(tools.iter().any(|item| item.name == "list_projects"));
@@ -204,15 +226,16 @@ mod tests {
         assert!(tools
             .iter()
             .any(|item| item.name == "deploy_workspace_files_to_target"));
-        assert!(tools.iter().any(|item| item.name == "call_mcp_tool"));
+        for name in ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"] {
+            assert!(!tools.iter().any(|item| item.name == name));
+        }
     }
 
     #[test]
-    fn mcp_builtin_tools_are_described_as_unified_registry_tools() {
+    fn mcp_host_wrappers_are_not_public_builtin_tools() {
         let tools = builtin_tool_definitions();
         for name in ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"] {
-            let tool = tools.iter().find(|item| item.name == name).unwrap();
-            assert!(tool.description.contains("统一 MCP registry"));
+            assert!(!tools.iter().any(|item| item.name == name));
         }
     }
 
@@ -332,6 +355,158 @@ mod tests {
 
         assert!(!result.ok);
         assert_eq!(result.error_code, "tool.timeout");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn background_process_supports_all_session_actions() {
+        let dir = test_workspace("process_actions");
+        let start = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_start".to_string()),
+            name: "run_command".to_string(),
+            arguments: json!({
+                "cmd": "printf 'ready\\n'; read value; printf 'got:%s\\n' \"$value\"",
+                "background": true
+            }),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: Some(types::PermissionDecisionInput {
+                request_id: Some("perm_call_process_start_command_run".to_string()),
+                decision: "approve_once".to_string(),
+                grant_scope: Some("once".to_string()),
+                comment: None,
+            }),
+        });
+        assert!(start.ok, "{}", start.error);
+        assert_eq!(start.content["status"], "running");
+        let session_id = start.content["session_id"].as_str().unwrap().to_string();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let listed = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_list".to_string()),
+            name: "process".to_string(),
+            arguments: json!({"action": "list"}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+        assert!(listed.ok, "{}", listed.error);
+        assert!(listed.content["processes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["session_id"] == session_id));
+
+        let polled = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_poll".to_string()),
+            name: "process".to_string(),
+            arguments: json!({"action": "poll", "session_id": session_id}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+        assert!(polled.ok, "{}", polled.error);
+        assert!(polled.content["output"].as_str().unwrap().contains("ready"));
+
+        let wrote = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_write".to_string()),
+            name: "process".to_string(),
+            arguments: json!({"action": "write", "session_id": session_id, "data": "hello"}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+        assert!(wrote.ok, "{}", wrote.error);
+
+        let submitted = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_submit".to_string()),
+            name: "process".to_string(),
+            arguments: json!({"action": "submit", "session_id": session_id, "data": ""}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+        assert!(submitted.ok, "{}", submitted.error);
+
+        let closed = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_close".to_string()),
+            name: "process".to_string(),
+            arguments: json!({"action": "close", "session_id": session_id}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+        assert!(closed.ok, "{}", closed.error);
+
+        let waited = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_wait".to_string()),
+            name: "process".to_string(),
+            arguments: json!({"action": "wait", "session_id": session_id, "timeout_ms": 3000}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+        assert!(waited.ok, "{}", waited.error);
+        assert_eq!(waited.content["status"], "exited");
+        assert!(waited.content["output_preview"]
+            .as_str()
+            .unwrap()
+            .contains("got:hello"));
+
+        let logged = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_log".to_string()),
+            name: "process".to_string(),
+            arguments: json!({"action": "log", "session_id": session_id, "limit": 20}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+        assert!(logged.ok, "{}", logged.error);
+        assert!(logged.content["output"]
+            .as_str()
+            .unwrap()
+            .contains("got:hello"));
+
+        let kill_start = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_kill_start".to_string()),
+            name: "run_command".to_string(),
+            arguments: json!({"cmd": "sleep 10", "background": true}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: Some(types::PermissionDecisionInput {
+                request_id: Some("perm_call_process_kill_start_command_run".to_string()),
+                decision: "approve_once".to_string(),
+                grant_scope: Some("once".to_string()),
+                comment: None,
+            }),
+        });
+        assert!(kill_start.ok, "{}", kill_start.error);
+        let kill_session_id = kill_start.content["session_id"].as_str().unwrap();
+        let pending_kill = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_kill".to_string()),
+            name: "process".to_string(),
+            arguments: json!({"action": "kill", "session_id": kill_session_id}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+        assert!(!pending_kill.ok);
+        assert_eq!(pending_kill.error_code, "permission.required");
+        assert_eq!(
+            pending_kill.content["permissionRequest"]["requestId"],
+            "perm_call_process_kill_command_process_kill"
+        );
+        assert_eq!(
+            pending_kill.content["permissionRequest"]["preview"]["session_id"],
+            kill_session_id
+        );
+
+        let killed = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_process_kill".to_string()),
+            name: "process".to_string(),
+            arguments: json!({"action": "kill", "session_id": kill_session_id}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: Some(types::PermissionDecisionInput {
+                request_id: Some("perm_call_process_kill_command_process_kill".to_string()),
+                decision: "approve_once".to_string(),
+                grant_scope: Some("once".to_string()),
+                comment: None,
+            }),
+        });
+        assert!(killed.ok, "{}", killed.error);
+        assert_eq!(killed.content["status"], "killed");
+
+        tools::process::clear_process_registry_for_tests();
         let _ = std::fs::remove_dir_all(dir);
     }
 

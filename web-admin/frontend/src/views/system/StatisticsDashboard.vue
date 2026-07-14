@@ -128,7 +128,7 @@
             <div class="panel-card__eyebrow">AI Employee Usage</div>
             <h2 class="panel-card__title">入口 / 智能体 / 开发中账户统计</h2>
           </div>
-          <div class="panel-card__tag">真实员工和入口流量分开看</div>
+          <div class="panel-card__tag">真实智能体和入口流量分开看</div>
         </div>
         <div class="activity-judgement">
           <strong>{{ activityJudgement.title }}</strong>
@@ -178,7 +178,7 @@
         <el-empty
           v-else
           :description="Number(data?.usage?.summary?.query_scope_events || 0) > 0
-            ? '当前只有 query 入口流量，尚未稳定归因到真实 AI 员工'
+            ? '当前只有 query 入口流量，尚未稳定归因到真实 AI 智能体'
             : '当前窗口内暂无入口、智能体或开发者活跃数据'"
         />
       </article>
@@ -537,7 +537,7 @@ const activityStatCards = computed(() => [
     value: agentActivityItems.value[0]?.employee_name || agentActivityItems.value[0]?.employee_id || "暂无",
     hint: agentActivityItems.value[0]
       ? `活跃分 ${agentActivityItems.value[0].activity_score || 0}`
-      : "真实 AI 员工调用不足",
+      : "真实 AI 智能体调用不足",
   },
   {
     label: "主账户",
