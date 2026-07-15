@@ -313,6 +313,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 
 import api from "@/utils/api.js";
 import { formatRelativeDateTime } from "@/utils/date.js";
+import { runDesktopAgentTextTask } from "@/utils/desktop-agent-runtime.js";
 import { fetchAllVisibleProjects } from "@/utils/projects.js";
 
 const activeTab = ref("templates");
@@ -1014,29 +1015,21 @@ async function summarizeWithAi(draftText, projects = []) {
   const projectNames = (Array.isArray(projects) ? projects : [])
     .map((project) => String(project?.name || project?.id || "").trim())
     .filter(Boolean);
-  const payload = await api.post("/projects/chat/global", {
+  return runDesktopAgentTextTask({
+    projectId: String(projects?.[0]?.id || "project-work-log").trim(),
+    chatSessionId: `work-log-${Date.now()}`,
     message: buildAiPrompt(draftText, projects),
-    chat_session_id: `work-log-${Date.now()}`,
-    chat_mode: "system",
-    chat_surface: "project-work-log",
-    source_context: {
-      source_type: "project_work_log_generation",
-      allowed_project_names: projectNames,
-      strict_source_only: true,
-      disable_runtime_snapshot: true,
-    },
-    route_path: "/work-logs",
-    route_title: "项目工作日志",
     history: [],
     temperature: 0.2,
-    auto_use_tools: false,
-    enabled_project_tool_names: [],
-    answer_style: "concise",
-    prefer_conclusion_first: true,
-    provider_id: selectedModel.providerId || undefined,
-    model_name: selectedModel.modelName || undefined,
+    providerId: selectedModel.providerId,
+    modelName: selectedModel.modelName,
+    systemPrompt: [
+      "你是项目工作日志整理助手。",
+      "只能根据用户消息中提供的项目记录生成结果，不调用文件、命令、网络或 MCP 工具。",
+      `允许出现的项目名称：${projectNames.join("、") || "未指定"}。`,
+      "严格遵循用户给出的输出模板，不输出项目 ID、文件路径、接口路径或内部执行信息。",
+    ].join("\n"),
   });
-  return String(payload?.content || "").trim();
 }
 
 function stripProjectIds(text) {

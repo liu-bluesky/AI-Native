@@ -1,7 +1,118 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 
 import pytest
+
+
+def test_stale_run_reconciler_interrupts_stale_recoverable_runs(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.v2.stale_run_reconciler import (
+        AgentRuntimeStaleRunReconciler,
+    )
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    current_time = datetime(2026, 7, 15, 3, 0, tzinfo=timezone.utc)
+
+    stale_running = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-running",
+        session_id="session-running",
+        user_goal="继续运行",
+        metadata={"runtime_checkpoint": {"phase": "before_model"}},
+    )
+    stale_running.status = "running"
+    state_store.save(stale_running)
+    stale_running.updated_at = (current_time - timedelta(minutes=10)).isoformat()
+    state_store._path_for(stale_running.run_id).write_text(
+        json.dumps(stale_running.to_dict(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    stale_retry = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-retry",
+        session_id="session-retry",
+        user_goal="等待重试",
+    )
+    stale_retry.status = "retry_wait"
+    state_store.save(stale_retry)
+    stale_retry.updated_at = (current_time - timedelta(minutes=8)).isoformat()
+    state_store._path_for(stale_retry.run_id).write_text(
+        json.dumps(stale_retry.to_dict(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    reconciled = AgentRuntimeStaleRunReconciler(
+        state_store=state_store,
+        event_log=event_log,
+        stale_after_seconds=300,
+    ).reconcile(now=current_time)
+
+    assert {task_run.run_id for task_run in reconciled} == {
+        stale_running.run_id,
+        stale_retry.run_id,
+    }
+    loaded_running = state_store.load(stale_running.run_id)
+    assert loaded_running is not None
+    assert loaded_running.status == "interrupted"
+    assert loaded_running.metadata["runtime_checkpoint"] == {"phase": "before_model"}
+    assert loaded_running.events[-1]["type"] == "stale_run_interrupted"
+    assert loaded_running.events[-1]["payload"]["prior_status"] == "running"
+    assert event_log.list_events(stale_running.run_id)[-1].event_type == "stale_run_interrupted"
+
+
+def test_stale_run_reconciler_ignores_fresh_and_waiting_runs(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.v2.stale_run_reconciler import (
+        AgentRuntimeStaleRunReconciler,
+    )
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    current_time = datetime(2026, 7, 15, 3, 0, tzinfo=timezone.utc)
+    fresh_running = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-fresh",
+        session_id="session-fresh",
+        user_goal="仍在运行",
+    )
+    fresh_running.status = "running"
+    state_store.save(fresh_running)
+    fresh_running.updated_at = (current_time - timedelta(minutes=1)).isoformat()
+    state_store._path_for(fresh_running.run_id).write_text(
+        json.dumps(fresh_running.to_dict(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    waiting_user = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-waiting",
+        session_id="session-waiting",
+        user_goal="等待用户",
+    )
+    waiting_user.status = "waiting_user"
+    state_store.save(waiting_user)
+    waiting_user.updated_at = (current_time - timedelta(hours=1)).isoformat()
+    state_store._path_for(waiting_user.run_id).write_text(
+        json.dumps(waiting_user.to_dict(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    reconciled = AgentRuntimeStaleRunReconciler(
+        state_store=state_store,
+        event_log=RuntimeEventLog(tmp_path / "events"),
+        stale_after_seconds=300,
+    ).reconcile(now=current_time)
+
+    assert reconciled == []
+    assert state_store.load(fresh_running.run_id).status == "running"
+    assert state_store.load(waiting_user.run_id).status == "waiting_user"
 
 
 def test_agent_runtime_v2_normalizes_delegate_mode_to_query_engine(tmp_path):
@@ -47,6 +158,8 @@ def test_agent_runtime_v2_normalizes_delegate_mode_to_query_engine(tmp_path):
     assert chunks[1]["mode"] == "query_engine"
     assert chunks[-1]["type"] == "done"
     assert chunks[-1]["content"] == "ok"
+    assert chunks[-1]["run_id"] == chunks[-1]["agent_runtime"]["run_id"]
+    assert chunks[-1]["runtime_status"] == chunks[-1]["agent_runtime"]["status"]
     files = list((tmp_path / "runs").glob("run_*.json"))
     assert len(files) == 1
     payload = files[0].read_text(encoding="utf-8")
@@ -1307,11 +1420,11 @@ async def test_query_engine_fails_when_tool_succeeds_but_model_never_answers(tmp
         goal_covered=True,
     )
 
-    assert result.task_run.status == "failed"
-    assert result.final_content == ""
+    assert result.task_run.status == "interrupted"
+    assert "达到最大模型处理轮次" in result.final_content
     assert result.completion_decision is not None
-    assert result.completion_decision.action == "fail"
-    assert "missing_final_response_after_tool" in result.completion_decision.reasons
+    assert result.completion_decision.action == "blocked"
+    assert "loop_budget_exceeded" in result.completion_decision.reasons
     assert result.observations[0].status == "succeeded"
 
 
@@ -1873,10 +1986,11 @@ async def test_query_engine_does_not_complete_harmony_tool_call_leak(tmp_path):
 
     events = event_log.list_events(task_run.run_id)
 
-    assert result.task_run.status == "failed"
+    assert result.task_run.status == "interrupted"
     assert result.completion_decision is not None
-    assert result.completion_decision.action == "fail"
-    assert result.final_content == ""
+    assert result.completion_decision.action == "blocked"
+    assert "loop_budget_exceeded" in result.completion_decision.reasons
+    assert "达到最大模型处理轮次" in result.final_content
     assert any(
         item.event_type == "completion_decision"
         and item.payload["reasons"] == ["protocol_leak_retry"]
@@ -2069,11 +2183,12 @@ async def test_llm_step_returns_structured_error_when_stream_raises_dns_error():
 
 
 @pytest.mark.asyncio
-async def test_query_engine_returns_llm_error_content_when_stream_raises(tmp_path):
+async def test_query_engine_preserves_checkpoint_when_llm_retries_are_exhausted(tmp_path):
     from services.agent_runtime.core.event_log import RuntimeEventLog
     from services.agent_runtime.v2.llm_step import LLMStep
     from services.agent_runtime.v2.query_engine import QueryEngine
     from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.retry_policy import RuntimeRetryPolicy
     from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FailingLLM:
@@ -2096,6 +2211,7 @@ async def test_query_engine_returns_llm_error_content_when_stream_raises(tmp_pat
         state_store=state_store,
         event_log=event_log,
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        retry_policy=RuntimeRetryPolicy(max_attempts=1, base_delay_seconds=0),
     )
 
     result = await engine.run(
@@ -2108,12 +2224,335 @@ async def test_query_engine_returns_llm_error_content_when_stream_raises(tmp_pat
         max_tokens=256,
     )
 
-    assert result.task_run.status == "failed"
+    assert result.task_run.status == "interrupted"
     assert result.completion_decision is not None
-    assert result.completion_decision.action == "fail"
-    assert "llm_error" in result.completion_decision.reasons
+    assert result.completion_decision.action == "blocked"
+    assert "llm_retry_exhausted" in result.completion_decision.reasons
     assert "模型服务地址无法解析" in result.final_content
-    assert "query_engine_failed" in [event["type"] for event in result.task_run.events]
+    assert result.task_run.metadata["runtime_checkpoint"]["phase"] == "llm_retry_exhausted"
+    events = [event["type"] for event in result.task_run.events]
+    assert "query_engine_retry_scheduled" in events
+    assert "query_engine_interrupted" in events
+
+
+@pytest.mark.asyncio
+async def test_query_engine_retries_transient_llm_error_then_completes(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.retry_policy import RuntimeRetryPolicy
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FlakyLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("provider request timed out")
+            yield {"content": "恢复成功"}
+
+    llm = _FlakyLLM()
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="继续任务",
+    )
+    result = await QueryEngine(
+        llm_step=LLMStep(llm),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        retry_policy=RuntimeRetryPolicy(max_attempts=2, base_delay_seconds=0),
+    ).run(
+        task_run,
+        messages=[{"role": "user", "content": "继续任务"}],
+        tools=[],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        task_tree_verified=True,
+        goal_covered=True,
+    )
+
+    assert llm.calls == 2
+    assert result.task_run.status == "completed"
+    assert result.final_content == "恢复成功"
+    event_types = [event["type"] for event in result.task_run.events]
+    assert "query_engine_retry_scheduled" in event_types
+    assert "query_engine_retry_started" in event_types
+
+
+@pytest.mark.asyncio
+async def test_query_engine_pauses_before_model_when_cancel_requested(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _UnusedLLM:
+        async def chat_completion_stream(self, **kwargs):
+            raise AssertionError("model must not run after pause")
+            yield {}
+
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+    state_store = TaskRunStore(tmp_path / "runs")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="暂停任务",
+    )
+    result = await QueryEngine(
+        llm_step=LLMStep(_UnusedLLM()),
+        state_store=state_store,
+        event_log=RuntimeEventLog(tmp_path / "events"),
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+    ).run(
+        task_run,
+        messages=[{"role": "user", "content": "暂停任务"}],
+        tools=[],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        cancel_event=cancel_event,
+    )
+
+    assert result.task_run.status == "paused"
+    assert result.task_run.metadata["runtime_checkpoint"]["phase"] == "paused_before_model"
+    assert "可以从当前检查点继续" in result.final_content
+
+
+@pytest.mark.asyncio
+async def test_query_engine_interrupts_when_loop_budget_is_exceeded(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _NeverFinishesLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {"content": "仍在处理中"}
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="完成任务",
+    )
+    result = await QueryEngine(
+        llm_step=LLMStep(_NeverFinishesLLM()),
+        state_store=state_store,
+        event_log=RuntimeEventLog(tmp_path / "events"),
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=2,
+    ).run(
+        task_run,
+        messages=[{"role": "user", "content": "完成任务"}],
+        tools=[],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        task_tree_verified=False,
+        goal_covered=False,
+    )
+
+    assert result.model_steps == 2
+    assert result.task_run.status == "interrupted"
+    assert result.completion_decision is not None
+    assert "loop_budget_exceeded" in result.completion_decision.reasons
+    assert result.task_run.metadata["runtime_checkpoint"]["phase"] == "loop_budget_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_operation_resume_continues_paused_run_from_checkpoint(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.operation_resume import OperationResumeCoordinator
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _ResumeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            assert kwargs["messages"][-1]["content"] == "继续任务"
+            yield {"content": "续跑完成"}
+
+    class _ToolExecutor:
+        async def execute_parallel(self, tool_calls, timeout=None):
+            raise AssertionError("no tools expected")
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    transcript_store = TranscriptStore(tmp_path / "transcripts")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="继续任务",
+        metadata={
+            "runtime_checkpoint": {
+                "phase": "paused_before_model",
+                "messages": [{"role": "user", "content": "继续任务"}],
+                "step_index": 0,
+                "total_tool_calls": 0,
+                "llm_retry_attempts": 0,
+            }
+        },
+    )
+    state_store.append_event(task_run, "started", {}, status="running")
+    state_store.append_event(task_run, "paused", {}, status="paused")
+
+    result = await OperationResumeCoordinator(
+        state_store=state_store,
+        transcript_store=transcript_store,
+        event_log=event_log,
+    ).resume_checkpoint(
+        run_id=task_run.run_id,
+        tool_executor=_ToolExecutor(),
+        llm_service=_ResumeLLM(),
+        tools=[],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+    )
+
+    assert result.resumed is True
+    assert result.status == "completed"
+    assert result.continuation is not None
+    assert result.continuation.final_content == "续跑完成"
+    assert "checkpoint_resume_started" in [
+        event.event_type for event in event_log.list_events(task_run.run_id)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_operation_resume_does_not_repeat_inflight_tool(tmp_path):
+    from services.agent_runtime.v2.operation_resume import OperationResumeCoordinator
+    from services.agent_runtime.core.state_store import TaskRunStore
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="运行工具",
+        metadata={
+            "runtime_checkpoint": {
+                "phase": "tool_execution_in_flight",
+                "messages": [{"role": "user", "content": "运行工具"}],
+            }
+        },
+    )
+    state_store.append_event(task_run, "started", {}, status="running")
+    state_store.append_event(task_run, "interrupted", {}, status="interrupted")
+
+    result = await OperationResumeCoordinator(
+        state_store=state_store,
+    ).resume_checkpoint(
+        run_id=task_run.run_id,
+        tool_executor=object(),
+        llm_service=object(),
+        tools=[],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        project_id="proj-1",
+        username="tester",
+    )
+
+    assert result.resumed is False
+    assert result.reason == "tool_result_reconciliation_required"
+    assert state_store.load(task_run.run_id).status == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_resume_service_continues_recoverable_run(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.operation_resume import OperationResumeCoordinator
+    from services.agent_runtime.v2.resume_service import (
+        AgentRuntimeResumeRequest,
+        AgentRuntimeResumeService,
+    )
+    from services.agent_runtime.v2.run_inspector import AgentRuntimeInspector
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _ResumeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {"content": "服务续跑完成"}
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    transcript_store = TranscriptStore(tmp_path / "transcripts")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="继续服务任务",
+        metadata={
+            "employee_id": "emp-1",
+            "resume_context": {
+                "provider_id": "provider-1",
+                "model_name": "model-1",
+                "temperature": 0.1,
+                "max_tokens": 128,
+                "tools": [],
+            },
+            "runtime_checkpoint": {
+                "phase": "paused_before_model",
+                "messages": [{"role": "user", "content": "继续服务任务"}],
+                "step_index": 0,
+                "total_tool_calls": 0,
+                "llm_retry_attempts": 0,
+            },
+        },
+    )
+    state_store.append_event(task_run, "started", {}, status="running")
+    state_store.append_event(task_run, "paused", {}, status="paused")
+    service = AgentRuntimeResumeService(
+        inspector=AgentRuntimeInspector(
+            state_store=state_store,
+            event_log=event_log,
+            transcript_store=transcript_store,
+        ),
+        coordinator=OperationResumeCoordinator(
+            state_store=state_store,
+            event_log=event_log,
+            transcript_store=transcript_store,
+        ),
+        resolve_llm_service=lambda context: asyncio.sleep(0, result=_ResumeLLM()),
+    )
+
+    result = await service.resume_run(
+        AgentRuntimeResumeRequest(
+            project_id="proj-1",
+            username="tester",
+            run_id=task_run.run_id,
+            chat_session_id="chat-1",
+        )
+    )
+
+    assert result.resumed is True
+    assert result.status == "completed"
+    assert result.continuation is not None
+    assert result.continuation.final_content == "服务续跑完成"
 
 
 def test_query_engine_blocks_when_permission_rule_denies(tmp_path):

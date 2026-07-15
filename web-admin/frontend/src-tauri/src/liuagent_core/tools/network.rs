@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::liuagent_core::args::{bool_arg, number_arg, required_string_arg};
+use crate::liuagent_core::paths::{desktop_runtime_root, ensure_desktop_runtime_migrated};
 use crate::liuagent_core::permission::require_approval;
 use crate::liuagent_core::types::{PermissionDecisionInput, ToolError};
 use crate::liuagent_core::workspace::{
@@ -206,7 +207,7 @@ fn web_search_unconfigured_result(query: &str) -> (Value, String) {
             "recoverable": true,
             "recovery_scope": "configure_search_backend_or_use_http_get",
             "required_config": [
-                ".ai-employee/agent-runtime-v2/web-tools/config.json",
+                ".ai-employee/desktop-agent-runtime/web-tools/config.json",
                 "backend/search.backend = managed|firecrawl|parallel|tavily|exa",
                 "LIUAGENT_WEB_BACKEND",
                 "AI_EMPLOYEE_WEB_BACKEND",
@@ -219,9 +220,9 @@ fn web_search_unconfigured_result(query: &str) -> (Value, String) {
                 "TAVILY_API_KEY",
                 "EXA_API_KEY"
             ],
-            "message": "web_search is not configured; enable a backend in .ai-employee/agent-runtime-v2/web-tools/config.json or set WEB_BACKEND together with provider credentials, or use http_get for known URLs"
+            "message": "web_search is not configured; enable a backend in .ai-employee/desktop-agent-runtime/web-tools/config.json or set WEB_BACKEND together with provider credentials, or use http_get for known URLs"
         }),
-        format!("web_search 未配置，无法直接搜索：{query}；需在 .ai-employee/agent-runtime-v2/web-tools/config.json 启用 backend=managed/firecrawl/parallel/tavily/exa 并保留对应配置，或对已知 URL 改用 http_get。"),
+        format!("web_search 未配置，无法直接搜索：{query}；需在 .ai-employee/desktop-agent-runtime/web-tools/config.json 启用 backend=managed/firecrawl/parallel/tavily/exa 并保留对应配置，或对已知 URL 改用 http_get。"),
     )
 }
 
@@ -236,7 +237,7 @@ fn web_extract_unconfigured_result(urls: &[Url]) -> (Value, String) {
             "recoverable": true,
             "recovery_scope": "configure_extract_backend_or_use_http_get",
             "required_config": [
-                ".ai-employee/agent-runtime-v2/web-tools/config.json",
+                ".ai-employee/desktop-agent-runtime/web-tools/config.json",
                 "backend/extract.backend = managed|firecrawl|parallel|tavily|exa",
                 "LIUAGENT_WEB_BACKEND",
                 "AI_EMPLOYEE_WEB_BACKEND",
@@ -249,10 +250,10 @@ fn web_extract_unconfigured_result(urls: &[Url]) -> (Value, String) {
                 "TAVILY_API_KEY",
                 "EXA_API_KEY"
             ],
-            "message": "web_extract is not configured; enable a backend in .ai-employee/agent-runtime-v2/web-tools/config.json or set WEB_BACKEND together with provider credentials, or use http_get for known URLs"
+            "message": "web_extract is not configured; enable a backend in .ai-employee/desktop-agent-runtime/web-tools/config.json or set WEB_BACKEND together with provider credentials, or use http_get for known URLs"
         }),
         format!(
-            "web_extract 未配置，无法抽取 {} 个 URL；需在 .ai-employee/agent-runtime-v2/web-tools/config.json 启用 backend=managed/firecrawl/parallel/tavily/exa 并保留对应配置，或对已知 URL 改用 http_get。",
+            "web_extract 未配置，无法抽取 {} 个 URL；需在 .ai-employee/desktop-agent-runtime/web-tools/config.json 启用 backend=managed/firecrawl/parallel/tavily/exa 并保留对应配置，或对已知 URL 改用 http_get。",
             urls.len()
         ),
     )
@@ -524,7 +525,7 @@ fn resolve_web_search_backend_from_values(
 
     Err(ToolError::new(
         "web_search.unconfigured",
-        "web_search is not configured; enable a web backend in .ai-employee/agent-runtime-v2/web-tools/config.json or set LIUAGENT_WEB_BACKEND/AI_EMPLOYEE_WEB_BACKEND/WEB_BACKEND together with provider credentials",
+        "web_search is not configured; enable a web backend in .ai-employee/desktop-agent-runtime/web-tools/config.json or set LIUAGENT_WEB_BACKEND/AI_EMPLOYEE_WEB_BACKEND/WEB_BACKEND together with provider credentials",
     ))
 }
 
@@ -688,7 +689,7 @@ fn resolve_web_extract_backend_from_values(
 
     Err(ToolError::new(
         "web_extract.unconfigured",
-        "web_extract is not configured; enable a web backend in .ai-employee/agent-runtime-v2/web-tools/config.json or set LIUAGENT_WEB_BACKEND/AI_EMPLOYEE_WEB_BACKEND/WEB_BACKEND together with provider credentials",
+        "web_extract is not configured; enable a web backend in .ai-employee/desktop-agent-runtime/web-tools/config.json or set LIUAGENT_WEB_BACKEND/AI_EMPLOYEE_WEB_BACKEND/WEB_BACKEND together with provider credentials",
     ))
 }
 
@@ -798,6 +799,20 @@ struct WebToolConfig {
 
 fn load_web_tool_config(workspace_path: &str) -> Result<WebToolConfig, ToolError> {
     let root = resolve_workspace_root(workspace_path)?;
+    ensure_desktop_runtime_migrated(&root).map_err(|err| {
+        ToolError::new(
+            "desktop_runtime.migration_failed",
+            format!("migrate project desktop runtime config failed: {err}"),
+        )
+    })?;
+    if let Some(home) = env::var_os("HOME") {
+        ensure_desktop_runtime_migrated(Path::new(&home)).map_err(|err| {
+            ToolError::new(
+                "desktop_runtime.migration_failed",
+                format!("migrate global desktop runtime config failed: {err}"),
+            )
+        })?;
+    }
     load_web_tool_config_from_paths(
         global_web_tool_config_path().as_deref(),
         &project_web_tool_config_path(&root),
@@ -856,18 +871,14 @@ fn read_optional_web_tool_config(scope: &str, path: &Path) -> Result<Option<Valu
 
 pub fn global_web_tool_config_path() -> Option<PathBuf> {
     env::var_os("HOME").map(|home| {
-        PathBuf::from(home)
-            .join(".ai-employee")
-            .join("agent-runtime-v2")
+        desktop_runtime_root(Path::new(&home))
             .join("web-tools")
             .join("config.json")
     })
 }
 
 pub fn project_web_tool_config_path(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join(".ai-employee")
-        .join("agent-runtime-v2")
+    desktop_runtime_root(workspace_root)
         .join("web-tools")
         .join("config.json")
 }
@@ -2110,15 +2121,16 @@ mod tests {
     fn missing_local_web_tool_config_does_not_create_template_or_enable_tools() {
         let dir = temp_workspace("missing_config_template");
         let config_path = project_web_tool_config_path(&dir);
-        let workspace = dir.to_string_lossy().to_string();
+        let config = load_web_tool_config_from_paths(None, &config_path).unwrap();
 
-        let result = resolve_web_search_backend(&workspace);
+        let search_result = resolve_web_search_backend_from_config(&config);
+        let extract_result = resolve_web_extract_backend_from_config(&config);
 
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code, "web_search.unconfigured");
+        assert!(search_result.is_err());
+        assert_eq!(search_result.unwrap_err().code, "web_search.unconfigured");
+        assert!(extract_result.is_err());
+        assert_eq!(extract_result.unwrap_err().code, "web_extract.unconfigured");
         assert!(!config_path.exists());
-        assert!(!web_search_configured(&workspace));
-        assert!(!web_extract_configured(&workspace));
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -69,6 +69,16 @@ impl Default for LocalChatRequest {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalChatPauseRequest {
+    pub project_id: String,
+    pub chat_session_id: String,
+    pub workspace_path: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalBackendContext {

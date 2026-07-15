@@ -642,15 +642,15 @@ export function formatBotConnectorConfig(value) {
 }
 
 export function globalWebToolsConfigPathLabel() {
-  return "~/.ai-employee/agent-runtime-v2/web-tools/config.json";
+  return "~/.ai-employee/desktop-agent-runtime/web-tools/config.json";
 }
 
 export function projectWebToolsConfigPathLabel() {
-  return ".ai-employee/agent-runtime-v2/web-tools/config.json";
+  return ".ai-employee/desktop-agent-runtime/web-tools/config.json";
 }
 
 export function globalBotConnectorConfigPathLabel() {
-  return "~/.ai-employee/agent-runtime-v2/bots/connectors.json";
+  return "~/.ai-employee/desktop-agent-runtime/bots/connectors.json";
 }
 
 const mcpConfigEditor = createJsonConfigEditor({

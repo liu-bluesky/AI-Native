@@ -242,85 +242,42 @@ struct FeishuBotRuntimeContext {
 }
 
 fn global_bot_connector_config_path() -> Result<PathBuf, String> {
-    env::var_os("HOME")
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".ai-employee")
-                .join("agent-runtime-v2")
-                .join("bots")
-                .join("connectors.json")
-        })
-        .ok_or_else(|| "缺少 HOME，无法定位全局机器人连接器配置文件".to_string())
+    Ok(global_bot_runtime_dir()?.join("connectors.json"))
 }
 
 fn global_bot_listener_context_path() -> Result<PathBuf, String> {
-    env::var_os("HOME")
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".ai-employee")
-                .join("agent-runtime-v2")
-                .join("bots")
-                .join("listener-contexts.json")
-        })
-        .ok_or_else(|| "缺少 HOME，无法定位全局机器人监听上下文文件".to_string())
+    Ok(global_bot_runtime_dir()?.join("listener-contexts.json"))
 }
 
 fn global_bot_listener_log_path() -> Option<PathBuf> {
-    env::var_os("HOME").map(|home| {
-        PathBuf::from(home)
-            .join(".ai-employee")
-            .join("agent-runtime-v2")
-            .join("bots")
-            .join("feishu-listener.jsonl")
-    })
+    global_bot_runtime_dir()
+        .ok()
+        .map(|path| path.join("feishu-listener.jsonl"))
 }
 
 fn global_bot_conversation_dir() -> Result<PathBuf, String> {
-    env::var_os("HOME")
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".ai-employee")
-                .join("agent-runtime-v2")
-                .join("bots")
-                .join("conversations")
-        })
-        .ok_or_else(|| "缺少 HOME，无法定位全局机器人会话历史目录".to_string())
+    Ok(global_bot_runtime_dir()?.join("conversations"))
 }
 
 fn global_bot_project_binding_dir() -> Result<PathBuf, String> {
-    env::var_os("HOME")
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".ai-employee")
-                .join("agent-runtime-v2")
-                .join("bots")
-                .join("project-bindings")
-        })
-        .ok_or_else(|| "缺少 HOME，无法定位全局机器人项目绑定目录".to_string())
+    Ok(global_bot_runtime_dir()?.join("project-bindings"))
 }
 
 fn global_bot_pending_approval_dir() -> Result<PathBuf, String> {
-    env::var_os("HOME")
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".ai-employee")
-                .join("agent-runtime-v2")
-                .join("bots")
-                .join("pending-approvals")
-        })
-        .ok_or_else(|| "缺少 HOME，无法定位全局机器人授权确认目录".to_string())
+    Ok(global_bot_runtime_dir()?.join("pending-approvals"))
 }
 
 fn global_bot_full_access_grant_dir() -> Result<PathBuf, String> {
-    env::var_os("HOME")
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".ai-employee")
-                .join("agent-runtime-v2")
-                .join("bots")
-                .join("full-access-grants")
-        })
-        .ok_or_else(|| "缺少 HOME，无法定位全局机器人完全授权目录".to_string())
+    Ok(global_bot_runtime_dir()?.join("full-access-grants"))
+}
+
+fn global_bot_runtime_dir() -> Result<PathBuf, String> {
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "缺少 HOME，无法定位全局机器人运行目录".to_string())?;
+    crate::liuagent_core::ensure_desktop_runtime_migrated(&home)
+        .map_err(|err| format!("迁移旧桌面机器人运行数据失败：{err}"))?;
+    Ok(crate::liuagent_core::desktop_runtime_root(&home).join("bots"))
 }
 
 fn append_listener_log(payload: Value) {

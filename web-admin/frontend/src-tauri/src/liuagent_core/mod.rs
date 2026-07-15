@@ -8,6 +8,7 @@ mod args;
 mod audit;
 mod definitions;
 mod gateway;
+mod paths;
 mod permission;
 mod planning;
 mod runtime;
@@ -19,29 +20,33 @@ mod workspace;
 
 pub use definitions::builtin_tool_definitions;
 pub use gateway::prepare_agent_invocation;
+pub use paths::{desktop_runtime_root, ensure_desktop_runtime_migrated};
 pub use runtime::classify_local_permission_reply;
 pub use runtime::{
     ack_local_runtime_outbox, cancel_local_runtime_job, cleanup_local_offline_cache,
     list_local_runtime_events, list_local_runtime_outbox, load_local_offline_cache,
     recover_local_runtime_state, refresh_local_runtime_job, save_local_offline_cache,
 };
-pub use runtime::{start_local_chat_with_event_sink, upload_provider_file};
+pub use runtime::{
+    prepare_local_chat_run, request_local_chat_pause, start_local_chat_with_event_sink,
+    upload_provider_file,
+};
 pub use tools::network::{
     global_web_tool_config_path, project_web_tool_config_path, WEB_TOOL_CONFIG_TEMPLATE,
 };
 pub use types::{
     AgentInvocationRequest, AgentInvocationResult, LocalBackendContext, LocalChatAttachment,
-    LocalChatMessage, LocalChatPromptPart, LocalChatRequest, LocalChatResult,
-    LocalModelRuntimeConfig, LocalPermissionReplyResult, LocalRuntimeEventsRequest,
-    LocalRuntimeEventsResult, LocalRuntimeJobRequest, LocalRuntimeJobResult,
-    LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult,
-    LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult, OfflineCacheCleanupRequest,
-    OfflineCacheLoadRequest, OfflineCacheResult, OfflineCacheSaveRequest, PermissionDecisionInput,
-    ProviderFileUploadRequest, ProviderFileUploadResult, ToolDefinition, ToolError,
-    ToolExecutionRequest, ToolExecutionResult,
+    LocalChatMessage, LocalChatPauseRequest, LocalChatPromptPart, LocalChatRequest,
+    LocalChatResult, LocalModelRuntimeConfig, LocalPermissionReplyResult,
+    LocalRuntimeEventsRequest, LocalRuntimeEventsResult, LocalRuntimeJobRequest,
+    LocalRuntimeJobResult, LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest,
+    LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult,
+    OfflineCacheCleanupRequest, OfflineCacheLoadRequest, OfflineCacheResult,
+    OfflineCacheSaveRequest, PermissionDecisionInput, ProviderFileUploadRequest,
+    ProviderFileUploadResult, ToolDefinition, ToolError, ToolExecutionRequest, ToolExecutionResult,
 };
 
-use tools::command::{check_command_risk, run_command, run_command_with_output_sink};
+use tools::command::{check_command_risk, run_command, run_command_with_output_sink_and_cancel};
 use tools::deploy::{deploy_workspace_files_to_target, get_project_deploy_options};
 use tools::file::{apply_patch, delete_file, list_files, read_file, search_text, write_file};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
@@ -55,6 +60,14 @@ pub fn execute_tool(request: ToolExecutionRequest) -> ToolExecutionResult {
 pub(crate) fn execute_tool_with_command_output_sink(
     request: ToolExecutionRequest,
     command_output_sink: Option<&dyn Fn(&str, &str)>,
+) -> ToolExecutionResult {
+    execute_tool_with_command_output_sink_and_cancel(request, command_output_sink, None)
+}
+
+pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
+    request: ToolExecutionRequest,
+    command_output_sink: Option<&dyn Fn(&str, &str)>,
+    cancel_check: Option<&dyn Fn() -> bool>,
 ) -> ToolExecutionResult {
     let tool_call_id = normalized_tool_call_id(request.tool_call_id);
     let name = request.name.trim().to_string();
@@ -88,13 +101,16 @@ pub(crate) fn execute_tool_with_command_output_sink(
             request.permission_decision.as_ref(),
         ),
         "check_command_risk" => check_command_risk(&request.workspace_path, &request.arguments),
-        "run_command" if command_output_sink.is_some() => run_command_with_output_sink(
-            &tool_call_id,
-            &request.workspace_path,
-            &request.arguments,
-            request.permission_decision.as_ref(),
-            command_output_sink,
-        ),
+        "run_command" if command_output_sink.is_some() || cancel_check.is_some() => {
+            run_command_with_output_sink_and_cancel(
+                &tool_call_id,
+                &request.workspace_path,
+                &request.arguments,
+                request.permission_decision.as_ref(),
+                command_output_sink,
+                cancel_check,
+            )
+        }
         "run_command" => run_command(
             &tool_call_id,
             &request.workspace_path,

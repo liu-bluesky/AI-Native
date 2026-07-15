@@ -58,6 +58,134 @@ class OperationResumeCoordinator:
         self._event_log = event_log or RuntimeEventLog()
         self._permission_policy = permission_policy or PermissionPolicy()
 
+    async def resume_checkpoint(
+        self,
+        *,
+        run_id: str,
+        tool_executor: Any,
+        llm_service: Any,
+        tools: list[dict[str, Any]],
+        provider_id: str,
+        model_name: str,
+        temperature: float,
+        max_tokens: int | None = None,
+        project_id: str = "",
+        username: str = "",
+        chat_session_id: str = "",
+        workspace_trusted: bool = True,
+    ) -> ResumeOperationResult:
+        task_run = self._state_store.load(run_id)
+        if task_run is None:
+            return ResumeOperationResult(
+                run_id=run_id,
+                status="not_found",
+                resumed=False,
+                reason="task_run_not_found",
+            )
+        if project_id and task_run.project_id != project_id:
+            return ResumeOperationResult(
+                run_id=run_id,
+                status=task_run.status,
+                resumed=False,
+                reason="task_run_not_found",
+            )
+        if username and task_run.username != username:
+            return ResumeOperationResult(
+                run_id=run_id,
+                status=task_run.status,
+                resumed=False,
+                reason="task_run_not_found",
+            )
+        if task_run.status not in {"paused", "interrupted", "retry_wait"}:
+            return ResumeOperationResult(
+                run_id=run_id,
+                status=task_run.status,
+                resumed=False,
+                reason="task_run_not_recoverable",
+            )
+        checkpoint = (
+            dict(task_run.metadata.get("runtime_checkpoint") or {})
+            if isinstance(task_run.metadata.get("runtime_checkpoint"), dict)
+            else {}
+        )
+        checkpoint_phase = str(checkpoint.get("phase") or "").strip()
+        if checkpoint_phase == "tool_execution_in_flight":
+            return ResumeOperationResult(
+                run_id=run_id,
+                status=task_run.status,
+                resumed=False,
+                reason="tool_result_reconciliation_required",
+            )
+        messages = [
+            dict(item)
+            for item in (checkpoint.get("messages") or [])
+            if isinstance(item, dict)
+        ]
+        if not messages:
+            return ResumeOperationResult(
+                run_id=run_id,
+                status=task_run.status,
+                resumed=False,
+                reason="runtime_checkpoint_missing",
+            )
+        if llm_service is None:
+            return ResumeOperationResult(
+                run_id=run_id,
+                status=task_run.status,
+                resumed=False,
+                reason="llm_service_missing",
+            )
+        task_run = self._state_store.append_event(
+            task_run,
+            "checkpoint_resume_started",
+            {"checkpoint_phase": checkpoint_phase},
+            status="running",
+        )
+        self._event_log.append(
+            task_run.run_id,
+            "checkpoint_resume_started",
+            {"checkpoint_phase": checkpoint_phase},
+        )
+        continuation = await QueryEngine(
+            llm_step=LLMStep(llm_service),
+            tool_runner=ToolExecutionRunner(
+                tool_executor,
+                event_log=self._event_log,
+                permission_policy=self._permission_policy,
+                project_id=project_id or task_run.project_id,
+                username=username or task_run.username,
+                chat_session_id=chat_session_id or task_run.chat_session_id,
+                workspace_trusted=workspace_trusted,
+            ),
+            state_store=self._state_store,
+            transcript_store=self._transcript_store,
+            event_log=self._event_log,
+        ).run(
+            task_run,
+            messages=messages,
+            tools=tools,
+            provider_id=provider_id,
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            task_tree_verified=True,
+            goal_covered=True,
+        )
+        self._event_log.append(
+            task_run.run_id,
+            "checkpoint_resume_completed",
+            {
+                "status": continuation.task_run.status,
+                "checkpoint_phase": checkpoint_phase,
+            },
+        )
+        return ResumeOperationResult(
+            run_id=task_run.run_id,
+            status=continuation.task_run.status,
+            resumed=True,
+            continuation=continuation,
+        )
+
     async def resume_permission_action(
         self,
         *,

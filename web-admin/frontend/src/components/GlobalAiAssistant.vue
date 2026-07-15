@@ -533,7 +533,10 @@ import {
 import {
   getNativeRuntimeInfo,
   hasNativeDesktopBridge,
+  pauseNativeLiuAgentLocalChat,
+  recoverNativeLiuAgentRuntimeState,
   startNativeLiuAgentLocalChat,
+  subscribeNativeLiuAgentRuntimeEvents,
 } from "@/utils/native-desktop-bridge.js";
 import { buildApiBaseUrl, resolveServerOrigin } from "@/utils/server-profile.js";
 import { createGlobalAssistantWsClient } from "@/utils/ws-chat.js";
@@ -597,6 +600,8 @@ const loading = ref(false);
 const errorText = ref("");
 const wsClient = ref(null);
 const wsConnected = ref(false);
+let nativeLiuAgentRuntimeEventUnlisten = null;
+const seenNativeLiuAgentRuntimeEventIds = new Set();
 const panelOpen = ref(resolveInitialPanelOpen());
 const panelFullscreen = ref(false);
 const assistantPanelSize = ref(loadStoredAssistantPanelSize());
@@ -2935,7 +2940,34 @@ async function runGlobalAssistantLocalChat({
     message: "本地智能体正在调用模型和工具...",
   });
   const systemPrompt = buildGlobalAssistantLocalSystemPrompt();
-  const result = await startNativeLiuAgentLocalChat({
+  let recoveryContext = "";
+  if (history.length) {
+    try {
+      const recovery = await recoverNativeLiuAgentRuntimeState({
+        projectId: GLOBAL_ASSISTANT_LOCAL_PROJECT_ID,
+        chatSessionId: sessionId,
+        workspacePath,
+      });
+      if (recovery?.ok && recovery?.state && typeof recovery.state === "object") {
+        const snapshot = JSON.stringify(
+          {
+            run_state: recovery.state?.run_state || {},
+            current_state: recovery.state?.current_state || {},
+            resume_judgement: recovery.state?.resume_judgement || {},
+          },
+          null,
+          2,
+        );
+        recoveryContext = [
+          "这是同一桌面会话的本地恢复快照。继续前先核对状态，禁止重复执行已经成功的副作用操作。",
+          snapshot.length > 6000 ? `${snapshot.slice(0, 6000)}\n（已截断）` : snapshot,
+        ].join("\n\n");
+      }
+    } catch (error) {
+      console.warn("recover global assistant desktop runtime failed", error);
+    }
+  }
+  const baseRequest = {
     projectId: GLOBAL_ASSISTANT_LOCAL_PROJECT_ID,
     chatSessionId: sessionId,
     messageId: userMessage.id,
@@ -2952,6 +2984,15 @@ async function runGlobalAssistantLocalChat({
         priority: 100,
         content: systemPrompt,
       },
+      ...(recoveryContext
+        ? [
+            {
+              source: "global-assistant-recovery",
+              priority: 95,
+              content: recoveryContext,
+            },
+          ]
+        : []),
     ],
     temperature: modelRuntime.temperature,
     modelRuntime,
@@ -2959,8 +3000,40 @@ async function runGlobalAssistantLocalChat({
       apiBaseUrl: buildDesktopBackendApiBaseUrl(),
       token: getStoredToken(),
     },
-  });
+  };
+  let result = null;
+  let nextRequest = baseRequest;
+  for (let approvalIndex = 0; approvalIndex < 6; approvalIndex += 1) {
+    result = await startNativeLiuAgentLocalChat(nextRequest);
+    const permissionRequest = globalAssistantPermissionRequestFromResult(result);
+    if (!permissionRequest) break;
+    const decision = await requestGlobalAssistantPermissionDecision(permissionRequest);
+    nextRequest = {
+      ...baseRequest,
+      message: globalAssistantPermissionContinuationMessage(text, permissionRequest, decision),
+      permissionDecision: {
+        requestId: String(
+          permissionRequest?.requestId || permissionRequest?.request_id || "",
+        ).trim(),
+        decision,
+        grantScope: decision === "approve_once" ? "once" : "none",
+        comment: "global-assistant-desktop-runtime",
+      },
+    };
+  }
   if (!result?.ok) {
+    const errorCode = String(result?.errorCode || result?.error_code || "").trim();
+    if (["runtime.paused", "runtime.interrupted"].includes(errorCode)) {
+      await handleSocketMessage({
+        type: "paused",
+        request_id: requestId,
+        message:
+          errorCode === "runtime.interrupted"
+            ? "连接中断，当前工作节点已保存，可继续执行。"
+            : "任务已暂停，当前工作节点已保存，可继续执行。",
+      });
+      return;
+    }
     await handleSocketMessage({
       type: "error",
       request_id: requestId,
@@ -2975,6 +3048,150 @@ async function runGlobalAssistantLocalChat({
       globalAssistantLocalContentFromResult(result) ||
       "本地智能体已完成执行，但没有返回最终回答，请检查本轮执行过程。",
   });
+}
+
+function globalAssistantRuntimeEventPayload(event = {}) {
+  return event?.payload && typeof event.payload === "object" ? event.payload : {};
+}
+
+function globalAssistantPermissionRequestFromResult(result = {}) {
+  const events = Array.isArray(result?.runtimeEvents)
+    ? result.runtimeEvents
+    : Array.isArray(result?.runtime_events)
+      ? result.runtime_events
+      : [];
+  for (const event of events) {
+    if (String(event?.type || "").trim() !== "approval_required") continue;
+    const payload = globalAssistantRuntimeEventPayload(event);
+    const requestId = String(payload?.requestId || payload?.request_id || "").trim();
+    if (requestId) return { ...payload, requestId };
+  }
+  const toolResults = Array.isArray(result?.toolResults)
+    ? result.toolResults
+    : Array.isArray(result?.tool_results)
+      ? result.tool_results
+      : [];
+  for (const toolResult of toolResults) {
+    const permissionRequest = toolResult?.content?.permissionRequest;
+    if (permissionRequest && typeof permissionRequest === "object") {
+      return {
+        ...permissionRequest,
+        toolName: String(toolResult?.name || "").trim(),
+      };
+    }
+  }
+  return null;
+}
+
+function globalAssistantPermissionContinuationMessage(text, permissionRequest, decision) {
+  const approved = decision === "approve_once";
+  return [
+    String(text || "").trim(),
+    "[桌面本地工具授权续跑]",
+    approved ? "用户已批准刚才等待确认的本地工具请求。" : "用户已拒绝刚才等待确认的本地工具请求。",
+    `工具：${String(permissionRequest?.toolName || permissionRequest?.tool_name || permissionRequest?.action || "unknown").trim()}`,
+    "继续当前任务，但不得重复执行已经成功的副作用操作。",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function requestGlobalAssistantPermissionDecision(permissionRequest = {}) {
+  const preview =
+    permissionRequest?.preview && typeof permissionRequest.preview === "object"
+      ? permissionRequest.preview
+      : {};
+  const detail = [
+    `工具：${String(permissionRequest?.toolName || permissionRequest?.tool_name || permissionRequest?.action || "本地工具").trim()}`,
+    String(permissionRequest?.reason || "").trim(),
+    String(preview?.cmd || preview?.command || preview?.path || "").trim(),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  try {
+    await ElMessageBox.confirm(detail || "桌面智能体请求执行本地工具", "本机授权确认", {
+      confirmButtonText: "允许一次",
+      cancelButtonText: "拒绝",
+      type: "warning",
+      distinguishCancelAndClose: true,
+    });
+    return "approve_once";
+  } catch {
+    return "deny";
+  }
+}
+
+function activeGlobalAssistantPendingForSession(chatSessionId) {
+  const normalized = String(chatSessionId || "").trim();
+  if (!normalized) return null;
+  for (const [requestId, pending] of pendingRequests.entries()) {
+    if (String(pending?.sessionId || "").trim() === normalized) {
+      return { requestId, pending };
+    }
+  }
+  return null;
+}
+
+function handleNativeGlobalAssistantRuntimeEvent(event = {}) {
+  const eventId = String(event?.event_id || event?.eventId || "").trim();
+  if (eventId && seenNativeLiuAgentRuntimeEventIds.has(eventId)) return;
+  if (eventId) {
+    seenNativeLiuAgentRuntimeEventIds.add(eventId);
+    if (seenNativeLiuAgentRuntimeEventIds.size > 500) {
+      seenNativeLiuAgentRuntimeEventIds.delete(
+        seenNativeLiuAgentRuntimeEventIds.values().next().value,
+      );
+    }
+  }
+  const chatSessionId = String(
+    event?.chat_session_id || event?.chatSessionId || "",
+  ).trim();
+  const active = activeGlobalAssistantPendingForSession(chatSessionId);
+  if (!active) return;
+  const index = findMessageIndex(active.pending?.assistantMessageId);
+  if (index < 0) return;
+  const row = messages.value[index];
+  const type = String(event?.type || "").trim();
+  const payload = globalAssistantRuntimeEventPayload(event);
+  let status = "桌面智能体正在执行...";
+  if (type === "model_call_started") status = "桌面模型正在思考...";
+  if (type === "tool_call_started") {
+    status = `正在调用本地工具：${String(payload?.tool_name || payload?.toolName || "tool").trim()}`;
+  }
+  if (type === "command_started") status = "正在执行本机命令...";
+  if (type === "approval_required") status = "等待本机授权确认...";
+  if (type === "progress_update") {
+    status = String(payload?.message || payload?.summary || status).trim();
+  }
+  if (type === "message" && String(payload?.role || "").trim() === "assistant") {
+    messages.value[index] = {
+      ...row,
+      content: String(payload?.content || row.content || "").trim(),
+      status: "正在整理最终回答...",
+      isStreaming: true,
+    };
+  } else {
+    messages.value[index] = { ...row, status, isStreaming: true };
+  }
+  scrollToBottom();
+}
+
+async function startNativeGlobalAssistantRuntimeSubscription() {
+  if (nativeLiuAgentRuntimeEventUnlisten || !hasNativeDesktopBridge()) return;
+  nativeLiuAgentRuntimeEventUnlisten = await subscribeNativeLiuAgentRuntimeEvents(
+    handleNativeGlobalAssistantRuntimeEvent,
+  );
+}
+
+function stopNativeGlobalAssistantRuntimeSubscription() {
+  const unlisten = nativeLiuAgentRuntimeEventUnlisten;
+  nativeLiuAgentRuntimeEventUnlisten = null;
+  if (typeof unlisten === "function") {
+    try {
+      unlisten();
+    } catch {}
+  }
+  seenNativeLiuAgentRuntimeEventIds.clear();
 }
 
 function scrollToBottom() {
@@ -3312,14 +3529,31 @@ function getActivePendingRequest() {
   };
 }
 
-function stopCurrentReply() {
+async function stopCurrentReply() {
   const active = getActivePendingRequest();
   if (!active?.requestId) {
     ElMessage.warning("当前没有可停止的回复");
     return;
   }
   if (active.pending?.transport === "local") {
-    ElMessage.warning("桌面本地智能体暂不支持中止当前回复");
+    const chatSessionId = String(active.pending?.sessionId || "").trim();
+    const workspacePath = await resolveGlobalAssistantLocalWorkspacePath();
+    const paused = await pauseNativeLiuAgentLocalChat({
+      projectId: GLOBAL_ASSISTANT_LOCAL_PROJECT_ID,
+      chatSessionId,
+      workspacePath,
+      reason: "manual_pause",
+    });
+    if (!paused) {
+      ElMessage.warning("桌面智能体未接受暂停请求");
+      return;
+    }
+    await handleSocketMessage({
+      type: "paused",
+      request_id: active.requestId,
+      message: "任务已暂停，当前工作节点已保留，可继续执行。",
+    });
+    ElMessage.info("桌面智能体已暂停");
     return;
   }
   if (!wsClient.value?.isOpen?.()) {
@@ -3464,6 +3698,21 @@ async function handleSocketMessage(eventData) {
       syncPendingRequestUiState();
       scrollToBottom();
     }
+    return;
+  }
+
+  if (eventType === "paused") {
+    messages.value[index] = {
+      ...row,
+      status:
+        String(eventData?.message || "任务已暂停，可继续执行。").trim() ||
+        "任务已暂停，可继续执行。",
+      isStreaming: false,
+    };
+    pending.resolve(messages.value[index]);
+    pendingRequests.delete(requestId);
+    syncPendingRequestUiState();
+    scrollToBottom();
     return;
   }
 
@@ -5351,6 +5600,7 @@ onMounted(() => {
   window.addEventListener("storage", handleSystemConfigStorageUpdated);
   if (!shouldRender.value) return;
   ensureAssistantBrowserBridgeInstalled();
+  void startNativeGlobalAssistantRuntimeSubscription();
   selectedVoiceInputDeviceId.value = normalizeVoiceInputSelectionValue(
     loadStoredVoiceInputDeviceId(),
   );
@@ -5376,6 +5626,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  stopNativeGlobalAssistantRuntimeSubscription();
   window.removeEventListener(
     SYSTEM_CONFIG_UPDATED_EVENT,
     handleSystemConfigUpdated,

@@ -109,6 +109,6 @@ class TaskRunStore:
         status: str | None = None,
     ) -> TaskRun:
         if status is not None:
-            task_run.status = str(status or "").strip() or task_run.status
+            task_run.transition_to(status)
         task_run.append_event(event_type, payload)
         return self.save(task_run)

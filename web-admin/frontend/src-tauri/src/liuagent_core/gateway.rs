@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::definitions::builtin_tool_definitions;
+use super::paths::{desktop_runtime_root, ensure_desktop_runtime_migrated};
 use super::types::{
     AgentInvocationRequest, AgentInvocationResult, AgentRuntimeSessionSummary,
     ProjectContextBundleSummary, PromptBundleSummary, RequirementSessionSummary, ToolError,
@@ -32,6 +33,12 @@ pub fn prepare_agent_invocation_inner(
     let chat_session_id = required_non_empty(&request.chat_session_id, "chatSessionId")?;
     let user_message = required_non_empty(&request.user_message, "userMessage")?;
     let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    ensure_desktop_runtime_migrated(&workspace_root).map_err(|err| {
+        ToolError::new(
+            "desktop_runtime.migration_failed",
+            format!("migrate legacy desktop runtime state failed: {err}"),
+        )
+    })?;
     let source = normalized_optional(request.source.as_deref(), "project_chat");
     let adapter_kind = normalized_optional(request.adapter_kind.as_deref(), "desktop");
     let invocation_id = normalized_optional(
@@ -45,9 +52,7 @@ pub fn prepare_agent_invocation_inner(
     let requirement_id = format!("req_{}", sanitize_path_segment(&chat_session_id));
     let runtime_session_id = format!("runtime_{}", epoch_millis());
     let requirement_path = requirement_record_path(&workspace_root, &project_id, &chat_session_id);
-    let state_path = workspace_root
-        .join(".ai-employee")
-        .join("agent-runtime-v2")
+    let state_path = desktop_runtime_root(&workspace_root)
         .join("task-runs")
         .join(format!(
             "{}.json",

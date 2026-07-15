@@ -22,8 +22,8 @@ class AgentRuntimeResumeRequest:
     project_id: str
     username: str
     run_id: str
-    call_id: str
-    tool_name: str
+    call_id: str = ""
+    tool_name: str = ""
     chat_session_id: str = ""
     employee_id: str = ""
     role_ids: list[str] | None = None
@@ -44,6 +44,84 @@ class AgentRuntimeResumeService:
         self._coordinator = coordinator or OperationResumeCoordinator()
         self._resolve_local_connector = resolve_local_connector
         self._resolve_llm_service = resolve_llm_service
+
+    async def resume_run(
+        self,
+        request: AgentRuntimeResumeRequest,
+    ) -> ResumeOperationResult:
+        snapshot = self._inspector.get_run_snapshot(request.run_id)
+        if snapshot is None:
+            return ResumeOperationResult(
+                run_id=request.run_id,
+                status="not_found",
+                resumed=False,
+                reason="task_run_not_found",
+            )
+        run = dict(snapshot.get("run") or {})
+        if run.get("project_id") != request.project_id or run.get("username") != request.username:
+            return ResumeOperationResult(
+                run_id=request.run_id,
+                status=str(run.get("status") or "not_found"),
+                resumed=False,
+                reason="task_run_not_found",
+            )
+        metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
+        resume_context = (
+            dict(metadata.get("resume_context") or {})
+            if isinstance(metadata.get("resume_context"), dict)
+            else {}
+        )
+        tools = self._resume_tools(resume_context, request.tool_name)
+        tool_names = self._tool_names(tools)
+        connector = None
+        connector_id = str(resume_context.get("local_connector_id") or "").strip()
+        if connector_id and self._resolve_local_connector is not None:
+            connector = self._resolve_local_connector(connector_id)
+        llm_service = None
+        if self._resolve_llm_service is not None:
+            llm_service = await self._resolve_llm_service(resume_context)
+        chat_session_id = (
+            str(request.chat_session_id or "").strip()
+            or str(run.get("chat_session_id") or "").strip()
+        )
+        employee_id = (
+            str(request.employee_id or "").strip()
+            or str(metadata.get("employee_id") or "").strip()
+        )
+        tool_executor = ToolExecutor(
+            request.project_id,
+            employee_id=employee_id,
+            username=request.username,
+            chat_session_id=chat_session_id,
+            role_ids=list(request.role_ids or []),
+            allowed_tool_names=tool_names,
+            local_connector=connector,
+            local_connector_workspace_path=str(
+                resume_context.get("local_connector_workspace_path") or ""
+            ).strip(),
+            host_workspace_path=(
+                str(resume_context.get("host_workspace_path") or "").strip()
+                or str(request.project_workspace_path or "").strip()
+            ),
+            local_connector_sandbox_mode=str(
+                resume_context.get("local_connector_sandbox_mode") or "workspace-write"
+            ).strip()
+            or "workspace-write",
+        )
+        return await self._coordinator.resume_checkpoint(
+            run_id=request.run_id,
+            tool_executor=tool_executor,
+            llm_service=llm_service,
+            tools=tools,
+            provider_id=str(resume_context.get("provider_id") or "").strip(),
+            model_name=str(resume_context.get("model_name") or "").strip(),
+            temperature=self._coerce_float(resume_context.get("temperature"), 0.2),
+            max_tokens=self._coerce_optional_int(resume_context.get("max_tokens")),
+            project_id=request.project_id,
+            username=request.username,
+            chat_session_id=chat_session_id,
+            workspace_trusted=request.workspace_trusted,
+        )
 
     async def resume_permission_tool_call(
         self,
@@ -239,3 +317,11 @@ class AgentRuntimeResumeService:
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    def _coerce_optional_int(self, value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None

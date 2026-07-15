@@ -534,6 +534,10 @@ class AgentRuntimeV2PermissionActionReq(BaseModel):
     assistant_message_id: str = ""
 
 
+class AgentRuntimeV2ResumeReq(BaseModel):
+    chat_session_id: str = ""
+
+
 class AgentRuntimeV2WorkspaceTrustReq(BaseModel):
     workspace_path: str = ""
     trusted: bool = True

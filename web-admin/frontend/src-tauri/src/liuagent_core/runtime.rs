@@ -10,12 +10,14 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{mpsc, Mutex, OnceLock};
+use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,6 +28,7 @@ use super::adapters::protocol::{
 };
 use super::audit::build_tool_audit_logs;
 use super::definitions::builtin_tool_definitions;
+use super::paths::{desktop_runtime_root, ensure_desktop_runtime_migrated};
 use super::permission::{
     cached_session_grant_comment, is_full_access_decision, permission_request_id,
 };
@@ -34,8 +37,9 @@ use super::state::recover_runtime_session;
 use super::state::{
     append_runtime_event, cleanup_synced_offline_cache, delete_runtime_outbox_entries,
     list_runtime_events as read_runtime_events, list_runtime_outbox as read_runtime_outbox,
-    load_offline_cache_record, recover_runtime_state, save_offline_cache_record,
-    write_runtime_artifacts, RuntimeArtifactPaths, RuntimePersistenceInput,
+    load_offline_cache_record, pause_runtime_checkpoint, recover_runtime_state,
+    save_offline_cache_record, write_runtime_artifacts, RuntimeArtifactPaths,
+    RuntimePersistenceInput,
 };
 use super::tools::command::classify_command_risk;
 use super::tools::mcp::{
@@ -47,12 +51,12 @@ use super::types::{
     AgentRunAttachmentSummary, AgentRunContext, AgentRunHistoryContext,
     AgentRunHistoryMessageSummary, AgentRunProjectContext, AgentRunRuntimeContext,
     AgentRunUserRequest, ClarityAssessment, LocalBackendContext, LocalChatAttachment,
-    LocalChatMessage, LocalChatRequest, LocalChatResult, LocalModelRuntimeConfig,
-    LocalRuntimeEventsRequest, LocalRuntimeEventsResult, LocalRuntimeJobRequest,
-    LocalRuntimeJobResult, LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest,
-    LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult,
-    MemoryWritePlan, MemoryWritePlanItem, ModelCompatibilityProfile, Observation,
-    OfflineCacheCleanupRequest, OfflineCacheLoadRequest, OfflineCacheResult,
+    LocalChatMessage, LocalChatPauseRequest, LocalChatRequest, LocalChatResult,
+    LocalModelRuntimeConfig, LocalRuntimeEventsRequest, LocalRuntimeEventsResult,
+    LocalRuntimeJobRequest, LocalRuntimeJobResult, LocalRuntimeOutboxAckRequest,
+    LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest,
+    LocalRuntimeRecoveryResult, MemoryWritePlan, MemoryWritePlanItem, ModelCompatibilityProfile,
+    Observation, OfflineCacheCleanupRequest, OfflineCacheLoadRequest, OfflineCacheResult,
     OfflineCacheSaveRequest, PlanNode, PlanState, PromptStack, PromptStackItem,
     ProviderFileUploadRequest, ProviderFileUploadResult, RetryDecision, RunState,
     RuntimeSchedulerState, TaskGoal, ToolBatchState, ToolError, ToolExecutionRequest,
@@ -61,7 +65,8 @@ use super::types::{
 use super::workspace::resolve_workspace_root;
 use super::workspace::{resolve_workspace_child, workspace_relative_path};
 use super::{
-    execute_tool, execute_tool_with_command_output_sink, normalized_tool_call_id,
+    execute_tool, execute_tool_with_command_output_sink,
+    execute_tool_with_command_output_sink_and_cancel, normalized_tool_call_id,
     prepare_agent_invocation,
 };
 
@@ -69,20 +74,111 @@ const REQUIREMENT_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_MODEL_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_MAX_VERIFICATION_REPROMPTS: usize = 1;
 const DEFAULT_MAX_ACCEPTANCE_GATE_REPROMPTS: usize = 1;
-const MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS: usize = 5;
+const MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS: usize = 1;
 const PERMISSION_CACHE_VERSION: u32 = 1;
 const TOOL_OBSERVATION_TEXT_PREVIEW_CHARS: usize = 6_000;
 const TOOL_OBSERVATION_MATCH_PREVIEW_CHARS: usize = 500;
 const TOOL_OBSERVATION_MAX_ARRAY_ITEMS: usize = 80;
 const TOOL_OBSERVATION_MAX_DEPTH: usize = 6;
 
+static LOCAL_CHAT_PAUSE_REQUESTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn local_chat_pause_requests() -> &'static Mutex<HashSet<String>> {
+    LOCAL_CHAT_PAUSE_REQUESTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub fn request_local_chat_pause(request: LocalChatPauseRequest) -> bool {
+    let normalized = request.chat_session_id.trim();
+    if normalized.is_empty() {
+        return false;
+    }
+    let accepted = local_chat_pause_requests()
+        .lock()
+        .map(|mut requests| requests.insert(normalized.to_string()))
+        .unwrap_or(false);
+    if !accepted {
+        return false;
+    }
+    let workspace_root = match resolve_runtime_workspace_root(&request.workspace_path) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("manual_pause");
+    pause_runtime_checkpoint(
+        &workspace_root,
+        request.project_id.trim(),
+        normalized,
+        reason,
+    )
+    .is_ok()
+}
+
+fn clear_local_chat_pause(chat_session_id: &str) {
+    if let Ok(mut requests) = local_chat_pause_requests().lock() {
+        requests.remove(chat_session_id.trim());
+    }
+}
+
+pub fn prepare_local_chat_run(chat_session_id: &str) {
+    clear_local_chat_pause(chat_session_id);
+}
+
+fn local_chat_pause_requested(chat_session_id: &str) -> bool {
+    local_chat_pause_requests()
+        .lock()
+        .map(|requests| requests.contains(chat_session_id.trim()))
+        .unwrap_or(false)
+}
+
+fn is_runtime_pause_reason(reason: &str) -> bool {
+    matches!(reason, "manual_pause" | "runtime_interrupted")
+}
+
+fn is_model_transport_interruption(result: &ModelStepResult) -> bool {
+    matches!(
+        result.error_code.as_str(),
+        "model.connection_timeout" | "model.request_failed"
+    )
+}
+
+fn is_network_tool_interruption(
+    tool: &PlannedLocalTool,
+    result: &super::types::ToolExecutionResult,
+) -> bool {
+    !result.ok
+        && result.error_code == "tool.execution_failed"
+        && matches!(
+            tool.name.trim(),
+            "http_get"
+                | "http_post"
+                | "download_file"
+                | "web_search"
+                | "web_extract"
+                | "list_projects"
+                | "get_project"
+                | "get_project_deploy_options"
+                | "deploy_workspace_files_to_target"
+                | "list_mcp_tools"
+                | "read_mcp_resource"
+                | "call_mcp_tool"
+        )
+}
+
 #[cfg(test)]
 pub fn start_local_chat(request: LocalChatRequest) -> LocalChatResult {
     let chat_session_id = request.chat_session_id.trim().to_string();
-    match start_local_chat_inner(request, None) {
+    clear_local_chat_pause(&chat_session_id);
+    let result = match start_local_chat_inner(request, None) {
         Ok(result) => result,
-        Err(error) => LocalChatResult::failed(chat_session_id, error),
-    }
+        Err(error) => LocalChatResult::failed(chat_session_id.clone(), error),
+    };
+    clear_local_chat_pause(&chat_session_id);
+    result
 }
 
 pub fn start_local_chat_with_event_sink<F>(
@@ -93,10 +189,12 @@ where
     F: Fn(Value),
 {
     let chat_session_id = request.chat_session_id.trim().to_string();
-    match start_local_chat_inner(request, Some(&event_sink)) {
+    let result = match start_local_chat_inner(request, Some(&event_sink)) {
         Ok(result) => result,
-        Err(error) => LocalChatResult::failed(chat_session_id, error),
-    }
+        Err(error) => LocalChatResult::failed(chat_session_id.clone(), error),
+    };
+    clear_local_chat_pause(&chat_session_id);
+    result
 }
 
 pub fn recover_local_runtime_state(
@@ -197,7 +295,7 @@ fn recover_local_runtime_state_inner(
 ) -> Result<LocalRuntimeRecoveryResult, ToolError> {
     let project_id = required_non_empty(&request.project_id, "projectId")?;
     let chat_session_id = required_non_empty(&request.chat_session_id, "chatSessionId")?;
-    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     let (mut state, runtime_events) =
         recover_runtime_session(&workspace_root, &project_id, &chat_session_id)?;
     let background_jobs = collect_runtime_background_jobs(&state);
@@ -256,12 +354,12 @@ fn collect_runtime_background_jobs(state: &Value) -> Value {
 }
 
 fn refresh_local_runtime_job_inner(request: &LocalRuntimeJobRequest) -> Result<Value, ToolError> {
-    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     read_command_job_state_for_workspace(&workspace_root, &request.state_path)
 }
 
 fn cancel_local_runtime_job_inner(request: &LocalRuntimeJobRequest) -> Result<Value, ToolError> {
-    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     let state_path = resolve_command_job_state_path(&workspace_root, &request.state_path)?;
     let mut job = read_command_job_state_path(&state_path)?;
     let status = job
@@ -441,11 +539,20 @@ fn build_resume_judgement(state: &Value, background_jobs: &Value) -> Value {
             .map(|status| status == "failed")
             .unwrap_or(false)
     });
+    let run_status = state["run_state"]["status"].as_str().unwrap_or("");
+    let checkpoint_ready = state["run_state"]["checkpoint_ready"]
+        .as_bool()
+        .unwrap_or(false);
+    let recoverable = state["run_state"]["recoverable"].as_bool().unwrap_or(false);
     let status = state["current_state"]["verification_report"]["overall_status"]
         .as_str()
         .or_else(|| state["current_state"]["verification_report"]["status"].as_str())
         .unwrap_or("");
-    let decision = if has_running {
+    let decision = if run_status == "paused"
+        || (run_status == "running" && checkpoint_ready && recoverable && !has_running)
+    {
+        "resume_from_checkpoint"
+    } else if has_running {
         "continue_waiting"
     } else if has_succeeded {
         "ask_ai_to_verify_completion"
@@ -464,6 +571,7 @@ fn build_resume_judgement(state: &Value, background_jobs: &Value) -> Value {
         "has_succeeded_job": has_succeeded,
         "has_failed_job": has_failed,
         "next_actions": match decision {
+            "resume_from_checkpoint" => vec!["inspect_checkpoint", "verify_prior_tool_results", "continue_agent_loop"],
             "continue_waiting" => vec!["refresh_job_status", "continue_waiting", "cancel_job"],
             "ask_ai_to_verify_completion" => vec!["read_job_logs", "verify_goal", "continue_agent_loop"],
             "ask_ai_to_inspect_failure" => vec!["read_job_logs", "diagnose_failure", "propose_retry_or_fix"],
@@ -474,7 +582,7 @@ fn build_resume_judgement(state: &Value, background_jobs: &Value) -> Value {
 }
 
 fn save_local_offline_cache_inner(request: &OfflineCacheSaveRequest) -> Result<Value, ToolError> {
-    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     save_offline_cache_record(
         &workspace_root,
         &request.cache_kind,
@@ -486,7 +594,7 @@ fn save_local_offline_cache_inner(request: &OfflineCacheSaveRequest) -> Result<V
 }
 
 fn load_local_offline_cache_inner(request: &OfflineCacheLoadRequest) -> Result<Value, ToolError> {
-    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     load_offline_cache_record(
         &workspace_root,
         &request.cache_kind,
@@ -501,7 +609,7 @@ fn cleanup_local_offline_cache_inner(
 ) -> Result<Value, ToolError> {
     let project_id = required_non_empty(&request.project_id, "projectId")?;
     let chat_session_id = required_non_empty(&request.chat_session_id, "chatSessionId")?;
-    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     cleanup_synced_offline_cache(
         &workspace_root,
         &project_id,
@@ -516,7 +624,7 @@ fn list_local_runtime_events_inner(
 ) -> Result<LocalRuntimeEventsResult, ToolError> {
     let project_id = required_non_empty(&request.project_id, "projectId")?;
     let chat_session_id = required_non_empty(&request.chat_session_id, "chatSessionId")?;
-    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     let events = read_runtime_events(
         &workspace_root,
         &project_id,
@@ -540,7 +648,7 @@ fn list_local_runtime_outbox_inner(
     request: &LocalRuntimeOutboxRequest,
 ) -> Result<LocalRuntimeOutboxResult, ToolError> {
     let project_id = required_non_empty(&request.project_id, "projectId")?;
-    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     let chat_session_id = request
         .chat_session_id
         .as_deref()
@@ -576,7 +684,7 @@ fn ack_local_runtime_outbox_inner(
 ) -> Result<LocalRuntimeOutboxResult, ToolError> {
     let project_id = required_non_empty(&request.project_id, "projectId")?;
     let chat_session_id = required_non_empty(&request.chat_session_id, "chatSessionId")?;
-    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     let deleted_count = delete_runtime_outbox_entries(
         &workspace_root,
         &project_id,
@@ -603,19 +711,49 @@ fn start_local_chat_inner(
     let project_id = required_non_empty(&request.project_id, "projectId")?;
     let chat_session_id = required_non_empty(&request.chat_session_id, "chatSessionId")?;
     let user_message = required_non_empty(&request.message, "message")?;
-    let workspace_root = resolve_workspace_root(&request.workspace_path)?;
+    let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     let session_id = format!("local_{}", epoch_millis());
 
     let gateway_result = prepare_local_chat_invocation(&request, &user_message)?;
     let user_message_id = normalized_id(request.message_id.as_deref(), "local_user");
     let assistant_message_id =
         normalized_id(request.assistant_message_id.as_deref(), "local_assistant");
+    let started_at = epoch_millis();
+    if request.permission_decision.is_none() && !local_chat_pause_requested(&chat_session_id) {
+        append_runtime_event(
+            &workspace_root,
+            &project_id,
+            &chat_session_id,
+            &json!({
+                "event_id": format!("evt_{session_id}_runtime_started"),
+                "runtime_session_id": session_id,
+                "session_id": session_id,
+                "run_id": session_id,
+                "chat_session_id": chat_session_id,
+                "type": "runtime_started",
+                "payload": {
+                    "status": "running",
+                    "current_work_node": {
+                        "kind": "runtime",
+                        "title": "初始化桌面智能体运行",
+                        "status": "running"
+                    },
+                    "user_message_id": user_message_id,
+                    "assistant_message_id": assistant_message_id,
+                    "created_at_epoch_ms": started_at
+                },
+                "created_at_epoch_ms": started_at
+            }),
+        )?;
+    }
     let base_model_request = build_model_request_with_history(&request, &user_message, &[]);
+    let context_model_runner =
+        |request: &ModelStepRequest| run_model_step_interruptible(&chat_session_id, request);
     let relevant_context = extract_relevant_conversation_context(
         &base_model_request,
         &request.history,
         &user_message,
-        &run_model_step,
+        &context_model_runner,
     );
     let mut model_request = build_model_request_with_history(&request, &user_message, &[]);
     if !relevant_context.trim().is_empty() {
@@ -656,14 +794,18 @@ fn start_local_chat_inner(
         }
     };
     let runtime_event_sink: Option<&dyn Fn(Value)> = Some(&collecting_event_sink);
-    let replayed_permission_tool = replay_pending_permission_tool_if_available(
-        &workspace_root,
-        &project_id,
-        &chat_session_id,
-        &session_id,
-        &request,
-        runtime_event_sink,
-    );
+    let replayed_permission_tool = if local_chat_pause_requested(&chat_session_id) {
+        None
+    } else {
+        replay_pending_permission_tool_if_available(
+            &workspace_root,
+            &project_id,
+            &chat_session_id,
+            &session_id,
+            &request,
+            runtime_event_sink,
+        )
+    };
     if let Some(replayed) = replayed_permission_tool.as_ref() {
         let mut messages = model_request.messages.clone();
         messages.push(RuntimeModelMessage::assistant_tool_call(
@@ -691,6 +833,14 @@ fn start_local_chat_inner(
         agent_loop.planned_tools.insert(0, replayed.tool);
         agent_loop.tool_results.insert(0, replayed.result);
     }
+    if agent_loop.stopped_reason == "runtime_interrupted" {
+        pause_runtime_checkpoint(
+            &workspace_root,
+            &project_id,
+            &chat_session_id,
+            "network_interruption",
+        )?;
+    }
     let model_result = agent_loop.final_model_result();
     let planned_tools = agent_loop.planned_tools.clone();
     let tool_results = agent_loop.tool_results.clone();
@@ -712,7 +862,9 @@ fn start_local_chat_inner(
     );
     let assistant_content = response_format.assistant_content.clone();
     let operations = build_operations(&session_id, &agent_loop);
-    let run_status = if awaiting_permission {
+    let run_status = if is_runtime_pause_reason(&agent_loop.stopped_reason) {
+        "paused"
+    } else if awaiting_permission {
         "waiting_approval"
     } else if run_ok {
         "completed"
@@ -880,7 +1032,11 @@ fn start_local_chat_inner(
     );
     write_requirement_record(&requirement_path, requirement_record)?;
 
-    let result_error_code = if awaiting_permission {
+    let result_error_code = if agent_loop.stopped_reason == "manual_pause" {
+        "runtime.paused".to_string()
+    } else if agent_loop.stopped_reason == "runtime_interrupted" {
+        "runtime.interrupted".to_string()
+    } else if awaiting_permission {
         "permission.required".to_string()
     } else if run_ok {
         String::new()
@@ -893,7 +1049,11 @@ fn start_local_chat_inner(
     } else {
         "model.unavailable".to_string()
     };
-    let result_error = if run_ok {
+    let result_error = if agent_loop.stopped_reason == "manual_pause" {
+        "桌面智能体已暂停，当前节点已写入本地 checkpoint".to_string()
+    } else if agent_loop.stopped_reason == "runtime_interrupted" {
+        "桌面智能体因网络或模型连接中断，当前节点已写入本地 checkpoint".to_string()
+    } else if run_ok {
         String::new()
     } else if !agent_loop.error().is_empty() {
         agent_loop.error()
@@ -904,7 +1064,11 @@ fn start_local_chat_inner(
     } else {
         model_result.summary.clone()
     };
-    let result_summary = if awaiting_permission {
+    let result_summary = if agent_loop.stopped_reason == "manual_pause" {
+        "桌面端本地对话已暂停，可从 checkpoint 继续".to_string()
+    } else if agent_loop.stopped_reason == "runtime_interrupted" {
+        "桌面端本地对话已因连接中断暂停，可从 checkpoint 继续".to_string()
+    } else if awaiting_permission {
         "桌面端本地对话等待用户授权".to_string()
     } else if run_ok {
         if tool_results.is_empty() {
@@ -2567,6 +2731,14 @@ fn route_failure(
     let (route, failure_type, reason, retry_allowed, exit_condition) = if run_status == "completed"
     {
         ("none", "none", "本轮已完成，无需重试。", false, "已完成。")
+    } else if is_runtime_pause_reason(&agent_loop.stopped_reason) {
+        (
+            "checkpoint",
+            agent_loop.stopped_reason.as_str(),
+            "运行已停止调度，并由本地状态函数保存当前工作节点和 checkpoint。",
+            true,
+            "读取 checkpoint 并核对已完成工具结果后继续。",
+        )
     } else if waiting_for == Some("approval") {
         (
             "draft",
@@ -3701,7 +3873,7 @@ pub fn classify_local_permission_reply(
         Ok(value) => value,
         Err(error) => return super::types::LocalPermissionReplyResult::failed(error),
     };
-    let workspace_root = match resolve_workspace_root(&request.workspace_path) {
+    let workspace_root = match resolve_runtime_workspace_root(&request.workspace_path) {
         Ok(value) => value,
         Err(error) => return super::types::LocalPermissionReplyResult::failed(error),
     };
@@ -4108,7 +4280,11 @@ impl AgentLoopResult {
             return false;
         }
         match self.stopped_reason.as_str() {
-            "repeated_failure" | "verification_failed" | "tool_no_signal" => return false,
+            "manual_pause"
+            | "runtime_interrupted"
+            | "repeated_failure"
+            | "verification_failed"
+            | "tool_no_signal" => return false,
             _ => {}
         }
         let final_result = self.final_model_result();
@@ -4117,6 +4293,8 @@ impl AgentLoopResult {
 
     fn error_code(&self) -> String {
         match self.stopped_reason.as_str() {
+            "manual_pause" => "runtime.paused".to_string(),
+            "runtime_interrupted" => "runtime.interrupted".to_string(),
             "repeated_failure" => "agent_loop.repeated_failure".to_string(),
             "verification_failed" => "agent_loop.verification_failed".to_string(),
             "tool_no_signal" => "agent_loop.no_signal".to_string(),
@@ -4126,6 +4304,10 @@ impl AgentLoopResult {
 
     fn error(&self) -> String {
         match self.stopped_reason.as_str() {
+            "manual_pause" => "desktop local agent paused and checkpointed locally".to_string(),
+            "runtime_interrupted" => {
+                "desktop local agent interrupted and checkpointed locally".to_string()
+            }
             "repeated_failure" => {
                 "agent loop repeated the same failed strategy and failure signature".to_string()
             }
@@ -4246,6 +4428,8 @@ fn run_agent_loop(
     permission_decision: Option<super::types::PermissionDecisionInput>,
     event_sink: Option<&dyn Fn(Value)>,
 ) -> AgentLoopResult {
+    let interruptible_model_runner =
+        |request: &ModelStepRequest| run_model_step_interruptible(run_key, request);
     run_agent_loop_with(
         run_key,
         runtime_session_id,
@@ -4254,9 +4438,45 @@ fn run_agent_loop(
         workspace_root,
         permission_decision,
         event_sink,
-        &run_model_step,
+        &interruptible_model_runner,
         &execute_tool,
     )
+}
+
+fn run_model_step_interruptible(run_key: &str, request: &ModelStepRequest) -> ModelStepResult {
+    if local_chat_pause_requested(run_key) {
+        return ModelStepResult::failed(
+            request,
+            "runtime.paused",
+            "desktop local runtime paused before model request",
+        );
+    }
+    let request_for_worker = request.clone();
+    let request_for_pause = request.clone();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(run_model_step(&request_for_worker));
+    });
+    loop {
+        match receiver.recv_timeout(Duration::from_millis(25)) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) if local_chat_pause_requested(run_key) => {
+                return ModelStepResult::failed(
+                    &request_for_pause,
+                    "runtime.paused",
+                    "desktop local runtime paused while model request was in flight",
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return ModelStepResult::failed(
+                    &request_for_pause,
+                    "model.request_failed",
+                    "model request worker exited without a result",
+                )
+            }
+        }
+    }
 }
 
 fn run_agent_loop_with(
@@ -4291,7 +4511,11 @@ fn run_agent_loop_with(
     let stopped_reason: String;
     let mut awaiting_permission = false;
 
-    loop {
+    'agent_loop: loop {
+        if local_chat_pause_requested(run_key) {
+            stopped_reason = "manual_pause".to_string();
+            break;
+        }
         let request = base_request.with_messages(messages.clone());
         let model_step_index = model_steps.len() + 1;
         model_input_snapshots.push(build_task_processing_snapshot(
@@ -4346,8 +4570,17 @@ fn run_agent_loop_with(
             &request,
         );
 
+        if local_chat_pause_requested(run_key) {
+            stopped_reason = "manual_pause".to_string();
+            break;
+        }
+
         if !model_result.ok {
-            stopped_reason = "model_failed".to_string();
+            stopped_reason = if is_model_transport_interruption(&model_result) {
+                "runtime_interrupted".to_string()
+            } else {
+                "model_failed".to_string()
+            };
             break;
         }
         let has_plan_tools = !plan_tools.is_empty();
@@ -4455,6 +4688,10 @@ fn run_agent_loop_with(
         let block_mutating_batch = !batch_schema_failures.is_empty();
         let planned_tool_count = current_planned_tools.len();
         for (tool_index, tool) in current_planned_tools.into_iter().enumerate() {
+            if local_chat_pause_requested(run_key) {
+                stopped_reason = "manual_pause".to_string();
+                break 'agent_loop;
+            }
             let mut candidate =
                 build_agent_loop_candidate(&tool, candidate_solutions.len() + 1, &attempts);
             candidate.status = "selected".to_string();
@@ -4526,7 +4763,11 @@ fn run_agent_loop_with(
             } else if let Some(drift_result) = drift_check_tool_result(&tool, &request) {
                 drift_result
             } else if tool.name.trim() == "run_command" {
-                execute_tool_with_command_output_sink(tool_request, Some(&command_stream_sink))
+                execute_tool_with_command_output_sink_and_cancel(
+                    tool_request,
+                    Some(&command_stream_sink),
+                    Some(&|| local_chat_pause_requested(run_key)),
+                )
             } else if !builtin_tool_definitions()
                 .iter()
                 .any(|definition| definition.name == tool.name.trim())
@@ -4593,6 +4834,20 @@ fn run_agent_loop_with(
             };
             emit_command_result_events(event_sink, runtime_session_id, run_key, &tool, &result);
             emit_tool_result_event(event_sink, runtime_session_id, run_key, &tool, &result);
+            if local_chat_pause_requested(run_key) {
+                candidate.status = "paused".to_string();
+                candidate_solutions.push(candidate);
+                tool_results.push(result);
+                stopped_reason = "manual_pause".to_string();
+                break 'agent_loop;
+            }
+            if is_network_tool_interruption(&tool, &result) {
+                candidate.status = "paused".to_string();
+                candidate_solutions.push(candidate);
+                tool_results.push(result);
+                stopped_reason = "runtime_interrupted".to_string();
+                break 'agent_loop;
+            }
             let permission_denied = is_permission_denied_decision(permission_decision.as_ref())
                 && result.error_code == "permission.required";
             if result.error_code == "permission.required" && !permission_denied {
@@ -5698,6 +5953,11 @@ fn build_agent_loop_verification(
             summary: "相同方案和失败签名重复出现，暂停自动循环。".to_string(),
             evidence: unresolved_failure_evidence(attempts),
         },
+        "manual_pause" | "runtime_interrupted" => AgentLoopVerification {
+            status: "paused".to_string(),
+            summary: "Runtime 已停止后续调度并保存当前工作节点。".to_string(),
+            evidence: vec![format!("stopped_reason={stopped_reason}")],
+        },
         "model_failed" => AgentLoopVerification {
             status: final_step
                 .map(|step| step.status.clone())
@@ -6404,7 +6664,15 @@ fn disabled_tool_result(
     tool: &PlannedLocalTool,
     request: &ModelStepRequest,
 ) -> Option<super::types::ToolExecutionResult> {
-    let reason = tool_disabled_reason(&tool.name, request, ToolAvailabilityOverrides::default())?;
+    disabled_tool_result_with_overrides(tool, request, ToolAvailabilityOverrides::default())
+}
+
+fn disabled_tool_result_with_overrides(
+    tool: &PlannedLocalTool,
+    request: &ModelStepRequest,
+    overrides: ToolAvailabilityOverrides,
+) -> Option<super::types::ToolExecutionResult> {
+    let reason = tool_disabled_reason(&tool.name, request, overrides)?;
     let internal_mcp_wrapper = matches!(
         tool.name.trim(),
         "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool"
@@ -7168,11 +7436,20 @@ fn write_session_permission_cache(
 }
 
 fn session_permission_cache_path(workspace_root: &PathBuf, chat_session_id: &str) -> PathBuf {
-    workspace_root
-        .join(".ai-employee")
-        .join("agent-runtime-v2")
+    desktop_runtime_root(workspace_root)
         .join("permissions")
         .join(format!("{}.json", sanitize_path_segment(chat_session_id)))
+}
+
+fn resolve_runtime_workspace_root(workspace_path: &str) -> Result<PathBuf, ToolError> {
+    let workspace_root = resolve_workspace_root(workspace_path)?;
+    ensure_desktop_runtime_migrated(&workspace_root).map_err(|err| {
+        ToolError::new(
+            "desktop_runtime.migration_failed",
+            format!("migrate legacy desktop runtime state failed: {err}"),
+        )
+    })?;
+    Ok(workspace_root)
 }
 
 fn tool_observation_content(
@@ -7639,6 +7916,7 @@ fn build_operations(session_id: &str, agent_loop: &AgentLoopResult) -> Value {
 #[derive(Debug, Clone)]
 struct ModelStepRequest {
     project_id: String,
+    run_key: String,
     workspace_path: String,
     mode: String,
     provider_id: String,
@@ -7664,6 +7942,7 @@ impl ModelStepRequest {
     fn with_messages(&self, messages: Vec<RuntimeModelMessage>) -> Self {
         Self {
             project_id: self.project_id.clone(),
+            run_key: self.run_key.clone(),
             workspace_path: self.workspace_path.clone(),
             mode: self.mode.clone(),
             provider_id: self.provider_id.clone(),
@@ -8252,6 +8531,7 @@ fn build_model_request_with_history(
 
     ModelStepRequest {
         project_id: request.project_id.trim().to_string(),
+        run_key: request.chat_session_id.trim().to_string(),
         workspace_path: request.workspace_path.trim().to_string(),
         mode,
         provider_id,
@@ -8411,6 +8691,9 @@ fn extract_relevant_conversation_context(
     user_message: &str,
     model_runner: &dyn Fn(&ModelStepRequest) -> ModelStepResult,
 ) -> String {
+    if local_chat_pause_requested(&base_request.run_key) {
+        return String::new();
+    }
     let conversation_history = history
         .iter()
         .enumerate()
@@ -8452,6 +8735,9 @@ fn extract_relevant_conversation_context(
         ),
     ];
     let context_request = base_request.with_messages(context_messages);
+    if local_chat_pause_requested(&context_request.run_key) {
+        return String::new();
+    }
     let result = model_runner(&context_request);
     if !result.ok || !result.tool_calls.is_empty() {
         return String::new();
@@ -8609,6 +8895,13 @@ fn format_attachment_size(size: u64) -> String {
 }
 
 fn run_model_step(request: &ModelStepRequest) -> ModelStepResult {
+    if local_chat_pause_requested(&request.run_key) {
+        return ModelStepResult::failed(
+            request,
+            "runtime.paused",
+            "desktop local runtime paused before model request",
+        );
+    }
     match request.mode.as_str() {
         "direct-openai-compatible" => run_openai_compatible_model_step(request),
         "backend-gateway" => {
@@ -8649,6 +8942,13 @@ fn is_ollama_compatible_runtime(request: &ModelStepRequest) -> bool {
 }
 
 fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResult {
+    if local_chat_pause_requested(&request.run_key) {
+        return ModelStepResult::failed(
+            request,
+            "runtime.paused",
+            "desktop local runtime paused before model request",
+        );
+    }
     if request.base_url.trim().is_empty() {
         return ModelStepResult::skipped(
             request,
@@ -8726,6 +9026,12 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
     };
     let response: Response =
         match send_model_request_with_timeout_retry(MODEL_CONNECTION_TIMEOUT_MAX_ATTEMPTS, || {
+            if local_chat_pause_requested(&request.run_key) {
+                return Err(ModelRequestError {
+                    kind: ModelRequestErrorKind::Request,
+                    message: "runtime paused before model request".to_string(),
+                });
+            }
             client
                 .post(endpoint.clone())
                 .headers(headers.clone())
@@ -8743,6 +9049,13 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
             Ok(value) => value,
             Err(error) => return ModelStepResult::failed(request, error.code, error.message),
         };
+    if local_chat_pause_requested(&request.run_key) {
+        return ModelStepResult::failed(
+            request,
+            "runtime.paused",
+            "desktop local runtime paused while model request was in flight",
+        );
+    }
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
         let headers = response.headers().clone();
@@ -8769,12 +9082,12 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
         .map(|value| value.to_ascii_lowercase().contains("text/event-stream"))
         .unwrap_or(false);
     let (content, reasoning_content, tool_calls) = if is_streaming_response {
-        match parse_openai_compatible_streaming_response(response, &request.provider_id) {
+        match parse_openai_compatible_streaming_response(response, &request.run_key) {
             Ok(value) => value,
             Err(err) => return ModelStepResult::failed(request, "model.response_invalid", err),
         }
     } else {
-        match parse_openai_compatible_json_response(response, &request.provider_id) {
+        match parse_openai_compatible_json_response(response, &request.run_key) {
             Ok(value) => value,
             Err(err) => return ModelStepResult::failed(request, "model.response_invalid", err),
         }
@@ -9033,6 +9346,9 @@ fn parse_openai_compatible_streaming_reader<R: BufRead>(
     let mut reasoning_content = String::new();
     let mut tool_chunks: Vec<OpenAiCompatibleToolCall> = Vec::new();
     for line in reader.lines() {
+        if local_chat_pause_requested(run_key) {
+            return Err("runtime paused while reading model stream".to_string());
+        }
         let line = line.map_err(|err| format!("model stream read failed: {err}"))?;
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with(':') {
@@ -10376,11 +10692,9 @@ mod tests {
             task_snapshot["context_package"]["task_goal"]["goalId"],
             requirement["task_goal"]["goalId"]
         );
-        assert!(
-            task_snapshot["context_package"]["current_task_node"]["node_id"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("node-analyze")
+        assert_eq!(
+            task_snapshot["context_package"]["current_task_node"]["node_id"],
+            requirement["current_task_node"]["node_id"]
         );
         assert!(requirement["actions_taken"]["model_steps"].is_array());
         assert_eq!(
@@ -12153,7 +12467,15 @@ mod tests {
             summary: "伪造关闭状态下的 web_search 调用".to_string(),
         };
 
-        let result = disabled_tool_result(&tool, &request).expect("disabled result");
+        let result = disabled_tool_result_with_overrides(
+            &tool,
+            &request,
+            ToolAvailabilityOverrides {
+                web_search_configured: Some(false),
+                web_extract_configured: None,
+            },
+        )
+        .expect("disabled result");
 
         assert_eq!(result.error_code, "tool.disabled");
         assert_eq!(result.content["status"], "disabled");
@@ -13722,7 +14044,7 @@ mod tests {
     }
 
     #[test]
-    fn model_timeout_retries_five_attempts_then_fails() {
+    fn model_timeout_does_not_issue_a_second_model_request() {
         let attempts = Cell::new(0usize);
 
         let result: Result<(), ModelRequestRetryFailure> =
@@ -13735,10 +14057,81 @@ mod tests {
             });
 
         let error = result.expect_err("timeout should fail after max attempts");
-        assert_eq!(attempts.get(), 5);
-        assert_eq!(error.attempts, 5);
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(error.attempts, 1);
         assert_eq!(error.code, "model.connection_timeout");
-        assert!(error.message.contains("已尝试 5 次"));
+        assert!(error.message.contains("已尝试 1 次"));
+    }
+
+    #[test]
+    fn model_transport_failure_pauses_loop_without_followup_calls() {
+        let request = test_model_request("网络中断后暂停");
+        let model_calls = Cell::new(0usize);
+        let model_runner = |request: &ModelStepRequest| {
+            model_calls.set(model_calls.get() + 1);
+            ModelStepResult::failed(request, "model.request_failed", "network disconnected")
+        };
+        let tool_runner =
+            |_request: ToolExecutionRequest| panic!("interrupted loop must not execute tools");
+
+        let result = run_agent_loop_with(
+            "chat-network-interruption-test",
+            "runtime-network-interruption-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &PathBuf::from("."),
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert_eq!(model_calls.get(), 1);
+        assert_eq!(result.stopped_reason, "runtime_interrupted");
+        assert_eq!(result.error_code(), "runtime.interrupted");
+        assert!(!result.ok());
+    }
+
+    #[test]
+    fn network_tool_failure_pauses_loop_without_another_model_call() {
+        let request = test_model_request("读取网络数据");
+        let model_calls = Cell::new(0usize);
+        let model_runner = |_request: &ModelStepRequest| {
+            model_calls.set(model_calls.get() + 1);
+            test_model_result(
+                "",
+                vec![PlannedLocalTool {
+                    tool_call_id: "call-http-get".to_string(),
+                    name: "http_get".to_string(),
+                    arguments: json!({"url": "https://example.com"}),
+                    summary: "读取网络数据".to_string(),
+                }],
+            )
+        };
+        let tool_runner = |request: ToolExecutionRequest| {
+            super::super::types::ToolExecutionResult::failed(
+                request.tool_call_id.unwrap_or_default(),
+                request.name,
+                ToolError::new("tool.execution_failed", "network disconnected"),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-network-tool-interruption-test",
+            "runtime-network-tool-interruption-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &PathBuf::from("."),
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert_eq!(model_calls.get(), 1);
+        assert_eq!(result.stopped_reason, "runtime_interrupted");
+        assert_eq!(result.error_code(), "runtime.interrupted");
+        assert_eq!(result.tool_results.len(), 1);
     }
 
     #[test]
@@ -14891,6 +15284,7 @@ mod tests {
     fn test_model_request(user_message: &str) -> ModelStepRequest {
         ModelStepRequest {
             project_id: "proj-test".to_string(),
+            run_key: "chat-test".to_string(),
             workspace_path: ".".to_string(),
             mode: "direct-openai-compatible".to_string(),
             provider_id: "test-provider".to_string(),
@@ -15423,10 +15817,14 @@ mod tests {
             .iter()
             .filter(|message| message.role == "system")
             .collect::<Vec<_>>();
-        assert_eq!(system_messages.len(), 3);
+        assert_eq!(system_messages.len(), 5);
         assert!(system_messages[0].content.contains("project_id：proj-test"));
-        assert_eq!(system_messages[1].content, "项目提示");
-        assert_eq!(system_messages[2].content, "全局提示");
+        assert!(system_messages[1].content.contains("执行计划工具规则"));
+        assert!(system_messages[2]
+            .content
+            .contains("桌面智能体工具路由契约"));
+        assert_eq!(system_messages[3].content, "项目提示");
+        assert_eq!(system_messages[4].content, "全局提示");
 
         let prompt_stack = resolve_prompt_stack(&request, &model_request);
         assert_eq!(prompt_stack.items.len(), 2);
@@ -15969,6 +16367,118 @@ mod tests {
                 .unwrap_or_default(),
             ""
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pause_request_stops_agent_loop_before_next_model_step() {
+        let chat_session_id = "chat-manual-pause-test";
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_manual_pause_checkpoint_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        append_runtime_event(
+            &dir,
+            "proj-test",
+            chat_session_id,
+            &json!({
+                "event_id": "evt_pause_test_started",
+                "runtime_session_id": "runtime-manual-pause-test",
+                "chat_session_id": chat_session_id,
+                "type": "model_call_started",
+                "payload": {"index": 1, "status": "running"},
+                "created_at_epoch_ms": epoch_millis()
+            }),
+        )
+        .unwrap();
+        let request = test_model_request("暂停后继续任务");
+        assert!(request_local_chat_pause(LocalChatPauseRequest {
+            project_id: "proj-test".to_string(),
+            chat_session_id: chat_session_id.to_string(),
+            workspace_path: dir.to_string_lossy().to_string(),
+            reason: Some("manual_pause".to_string()),
+        }));
+        let model_calls = Cell::new(0usize);
+        let model_runner = |_request: &ModelStepRequest| {
+            model_calls.set(model_calls.get() + 1);
+            test_model_result("不应调用模型", Vec::new())
+        };
+        let tool_runner =
+            |_request: ToolExecutionRequest| panic!("paused loop must not execute tools");
+
+        let result = run_agent_loop_with(
+            chat_session_id,
+            "runtime-manual-pause-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &PathBuf::from("."),
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        clear_local_chat_pause(chat_session_id);
+        assert_eq!(model_calls.get(), 0);
+        assert_eq!(result.stopped_reason, "manual_pause");
+        assert_eq!(result.error_code(), "runtime.paused");
+        assert!(!result.ok());
+        let recovered = recover_runtime_state(&dir, "proj-test", chat_session_id).unwrap();
+        assert_eq!(recovered["run_state"]["status"], "paused");
+        assert_eq!(recovered["run_state"]["checkpoint_ready"], true);
+        assert_eq!(recovered["run_state"]["recoverable"], true);
+        assert_eq!(
+            recovered["run_state"]["current_work_node"]["kind"],
+            "model_call_started"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pause_interrupts_waiting_model_result_and_discards_late_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_http_request(&mut stream);
+            thread::sleep(Duration::from_millis(800));
+            let body = json!({
+                "choices": [{"message": {"role": "assistant", "content": "late"}}]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        let dir = std::env::temp_dir().join(format!("liuagent_interrupt_model_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let chat_session_id = "chat-interrupt-model-test";
+        let mut request = test_model_request("暂停正在等待的模型请求");
+        request.run_key = chat_session_id.to_string();
+        request.base_url = format!("http://{address}/v1");
+        request.timeout_ms = 5_000;
+        let pause_dir = dir.clone();
+        let pauser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            request_local_chat_pause(LocalChatPauseRequest {
+                project_id: "proj-test".to_string(),
+                chat_session_id: chat_session_id.to_string(),
+                workspace_path: pause_dir.to_string_lossy().to_string(),
+                reason: Some("manual_pause".to_string()),
+            })
+        });
+
+        let started = std::time::Instant::now();
+        let result = run_model_step_interruptible(chat_session_id, &request);
+        assert!(pauser.join().unwrap());
+        assert_eq!(result.error_code, "runtime.paused");
+        assert!(started.elapsed() < Duration::from_millis(600));
+        clear_local_chat_pause(chat_session_id);
+        server.join().unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 

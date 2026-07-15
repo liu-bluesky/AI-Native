@@ -8,6 +8,63 @@ from typing import Any
 from uuid import uuid4
 
 
+TASK_RUN_STATUSES = frozenset(
+    {
+        "created",
+        "running",
+        "retry_wait",
+        "paused",
+        "interrupted",
+        "waiting_user",
+        "waiting_background",
+        "verifying",
+        "blocked",
+        "failed",
+        "completed",
+        "cancelled",
+    }
+)
+
+RECOVERABLE_TASK_RUN_STATUSES = frozenset({"retry_wait", "paused", "interrupted"})
+
+TASK_RUN_STATUS_TRANSITIONS = {
+    "created": {
+        "running",
+        "retry_wait",
+        "paused",
+        "interrupted",
+        "waiting_user",
+        "waiting_background",
+        "verifying",
+        "cancelled",
+        "blocked",
+        "failed",
+    },
+    "running": {
+        "retry_wait",
+        "paused",
+        "interrupted",
+        "waiting_user",
+        "waiting_background",
+        "verifying",
+        "blocked",
+        "failed",
+        "completed",
+        "cancelled",
+    },
+    "retry_wait": {"running", "paused", "interrupted", "failed", "cancelled"},
+    "paused": {"running", "cancelled"},
+    "interrupted": {"running", "blocked", "failed", "cancelled"},
+    "waiting_user": {"running", "blocked", "failed", "cancelled"},
+    "waiting_background": {"running", "blocked", "failed", "cancelled"},
+    "verifying": {"running", "blocked", "failed", "completed", "cancelled"},
+    "blocked": {"running", "cancelled"},
+    "failed": {"running", "cancelled"},
+    "completed": set(),
+    "cancelled": set(),
+}
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -62,6 +119,19 @@ class TaskRun:
         self.events.append(event)
         self.updated_at = utc_now_iso()
         return event
+
+    def transition_to(self, status: str) -> None:
+        next_status = str(status or "").strip()
+        if not next_status or next_status == self.status:
+            return
+        if next_status not in TASK_RUN_STATUSES:
+            raise ValueError(f"unknown task run status: {next_status}")
+        allowed = TASK_RUN_STATUS_TRANSITIONS.get(self.status, set())
+        if next_status not in allowed:
+            raise ValueError(
+                f"invalid task run status transition: {self.status} -> {next_status}"
+            )
+        self.status = next_status
 
     def to_dict(self) -> dict[str, Any]:
         return {

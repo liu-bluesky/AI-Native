@@ -43,14 +43,38 @@ assert.match(
 
 assert.match(
   source,
-  /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?title: "本轮任务已取消"[\s\S]*?phase: "completed"[\s\S]*?terminal_task: true,[\s\S]*?resumable: false,/,
-  "paused local task cards must become terminal and non-resumable",
+  /async function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?await pauseNativeLiuAgentLocalChat\(\{[\s\S]*?projectId:[\s\S]*?chatSessionId,[\s\S]*?workspacePath:[\s\S]*?reason: "manual_pause"[\s\S]*?pauseOpenMessageOperations\(row\);[\s\S]*?summary: "任务已暂停，可以继续执行"[\s\S]*?phase: "blocked"[\s\S]*?local_liuagent_recoverable: "true"[\s\S]*?local_liuagent_resuming: "false"/,
+  "pausing a local task must synchronously checkpoint and expose recovery without a safe-boundary wait",
+);
+
+assert.doesNotMatch(
+  source,
+  /async function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?clearLocalLiuAgentPendingPermissionsForChatSession/,
+  "pausing must preserve pending permission state instead of converting it into another business action",
 );
 
 assert.match(
   source,
-  /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?status: "cancelled",[\s\S]*?rootGoal:[\s\S]*?String\(run\.rootGoal \|\| ""\)\.trim\(\)/,
-  "pausing a local task must preserve its original goal and write cancelled status",
+  /async function pauseLocalLiuAgentPendingPermissionsForChatSession[\s\S]*?pauseNativeLiuAgentLocalChat\(\{[\s\S]*?reason: "manual_pause"[\s\S]*?pauseOpenMessageOperations\(row\)[\s\S]*?preserveVisibleContent: true/,
+  "pausing while waiting for permission must preserve the authorization node without executing another decision",
+);
+
+assert.doesNotMatch(
+  source,
+  /async function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?row\.content\s*=/,
+  "pausing a local task must not overwrite assistant content or execution details",
+);
+
+assert.match(
+  source,
+  /function pauseOpenMessageOperations\(row\)[\s\S]*?phase: "blocked"[\s\S]*?paused: true/,
+  "open execution operations must be preserved and marked paused",
+);
+
+assert.match(
+  source,
+  /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?status: "paused",[\s\S]*?rootGoal:[\s\S]*?String\(run\.rootGoal \|\| ""\)\.trim\(\)/,
+  "pausing a local task must preserve its original goal and write paused status",
 );
 
 assert.doesNotMatch(
@@ -62,7 +86,55 @@ assert.doesNotMatch(
 assert.match(
   source,
   /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?queuedFollowupMessages\.value = \[\];[\s\S]*?activeFollowupAssistantMessageId = "";/,
-  "pausing a local task must detach queued followups from the cancelled card",
+  "pausing a local task must detach queued followups from the paused card",
+);
+
+assert.match(
+  source,
+  /if \(activeRun\.cancelled\) \{[\s\S]*?summary: "任务已暂停，可以继续执行"[\s\S]*?phase: "blocked"[\s\S]*?local_liuagent_recoverable: "true"[\s\S]*?local_liuagent_resuming: "false"/,
+  "the local task card must remain recoverable when the paused worker returns",
+);
+
+assert.match(
+  source,
+  /\["runtime\.paused", "runtime\.interrupted"\]\.includes\(runtimePauseCode\)[\s\S]*?checkpoint_ready: true,[\s\S]*?recoverable: true/,
+  "manual and network interruptions must share the same local checkpoint recovery path",
+);
+
+assert.match(
+  source,
+  /key: "local_liuagent_resume"[\s\S]*?label: "继续执行"[\s\S]*?hasNativeDesktopBridge\(\)/,
+  "continue execution must remain a desktop-only operation",
+);
+
+assert.match(
+  source,
+  /async function submitLocalLiuAgentResume\(operation\)[\s\S]*?sendLocalLiuAgentChatRequest\(\{[\s\S]*?persistUserMessage: false,[\s\S]*?resumeFromCheckpoint: true,/,
+  "checkpoint resume must explicitly enter the dedicated resume display mode",
+);
+
+assert.match(
+  source,
+  /if \(!resumeFromCheckpoint\) \{[\s\S]*?"本轮目标"[\s\S]*?桌面端本地智能体/,
+  "checkpoint resume must not append the original task header again",
+);
+
+assert.match(
+  source,
+  /resumeFromCheckpoint[\s\S]*?"已恢复 checkpoint，正在继续当前任务"[\s\S]*?"继续执行\\n  - 已读取本地 checkpoint\\n  - 正在从暂停节点继续推理\\n  - 已有执行详情保持不变"/,
+  "checkpoint resume must use recovery-specific progress instead of new-task startup copy",
+);
+
+assert.match(
+  source,
+  /function pickLocalLiuAgentRecoverableOperation\(row\)[\s\S]*?local_liuagent_recoverable[\s\S]*?operationActionButtons\(operation\)\.length > 0[\s\S]*?function messageFooterActionOperation\(row\)[\s\S]*?pickLocalLiuAgentRecoverableOperation\(row\)/,
+  "desktop recovery must be promoted to the always-visible message footer action area",
+);
+
+assert.match(
+  source,
+  /if \(activeRun\.cancelled\) \{[\s\S]*?preserveVisibleContent: true,[\s\S]*?checkpoint_ready: true,[\s\S]*?recoverable: true/,
+  "checkpoint completion must persist the preserved execution trace as recoverable",
 );
 
 assert.doesNotMatch(

@@ -238,6 +238,7 @@ async fn liuagent_start_local_chat(
     request: liuagent_core::LocalChatRequest,
 ) -> liuagent_core::LocalChatResult {
     let chat_session_id = request.chat_session_id.trim().to_string();
+    liuagent_core::prepare_local_chat_run(&chat_session_id);
     let live_events = Arc::new(Mutex::new(Vec::new()));
     let live_events_for_worker = Arc::clone(&live_events);
     match tauri::async_runtime::spawn_blocking(move || {
@@ -281,6 +282,11 @@ async fn liuagent_start_local_chat(
             ),
         ),
     }
+}
+
+#[tauri::command]
+fn liuagent_pause_local_chat(request: liuagent_core::LocalChatPauseRequest) -> bool {
+    liuagent_core::request_local_chat_pause(request)
 }
 
 #[tauri::command]
@@ -1362,25 +1368,32 @@ fn project_mcp_config_path(workspace_path: &str) -> Result<PathBuf, String> {
 }
 
 fn global_web_tools_config_path() -> Result<PathBuf, String> {
+    ensure_global_desktop_runtime_migrated()?;
     liuagent_core::global_web_tool_config_path()
         .ok_or_else(|| "缺少 HOME，无法定位全局 web-tools 配置文件".to_string())
 }
 
 fn project_web_tools_config_path(workspace_path: &str) -> Result<PathBuf, String> {
     let root = resolve_workspace_root(workspace_path)?;
+    liuagent_core::ensure_desktop_runtime_migrated(&root)
+        .map_err(|err| format!("迁移旧桌面 Runtime 项目配置失败：{err}"))?;
     Ok(liuagent_core::project_web_tool_config_path(&root))
 }
 
 fn global_bot_connector_config_path() -> Result<PathBuf, String> {
-    std::env::var_os("HOME")
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".ai-employee")
-                .join("agent-runtime-v2")
-                .join("bots")
-                .join("connectors.json")
-        })
-        .ok_or_else(|| "缺少 HOME，无法定位全局机器人连接器配置文件".to_string())
+    let home = ensure_global_desktop_runtime_migrated()?;
+    Ok(liuagent_core::desktop_runtime_root(&home)
+        .join("bots")
+        .join("connectors.json"))
+}
+
+fn ensure_global_desktop_runtime_migrated() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "缺少 HOME，无法定位全局桌面 Runtime".to_string())?;
+    liuagent_core::ensure_desktop_runtime_migrated(&home)
+        .map_err(|err| format!("迁移旧全局桌面 Runtime 数据失败：{err}"))?;
+    Ok(home)
 }
 
 fn default_global_mcp_config() -> Value {
@@ -1750,6 +1763,7 @@ fn main() {
             liuagent_execute_tool,
             liuagent_upload_provider_file,
             liuagent_start_local_chat,
+            liuagent_pause_local_chat,
             liuagent_classify_permission_reply,
             bot_start_local_chat,
             bot_start_feishu_local_listener,

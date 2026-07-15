@@ -168,6 +168,7 @@ from services.operation_wait_task_service import (
 )
 from models.requests import (
     AgentRuntimeV2PermissionActionReq,
+    AgentRuntimeV2ResumeReq,
     AgentRuntimeV2WorkspaceTrustReq,
     ProjectAiEntryFileUpdateReq,
     ProjectExperienceRuleConsolidateReq,
@@ -410,6 +411,19 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "video_duration_seconds": 5,
     "video_motion_strength": "medium",
 }
+
+_BACKEND_AGENT_RUNTIME_MIGRATED_ERROR_CODE = "backend_agent_runtime.migrated_to_desktop"
+
+
+def _backend_agent_runtime_new_runs_enabled() -> bool:
+    return bool(get_settings().backend_agent_runtime_new_runs_enabled)
+
+
+def _backend_agent_runtime_migrated_message(surface: str) -> str:
+    return (
+        f"{surface} 的后端智能体新运行已停用；请使用 Tauri 桌面智能体。"
+        "历史运行记录、权限记录和恢复接口仍保留用于观察期兼容。"
+    )
 
 _EXTERNAL_AGENT_TYPE_CATALOG: dict[str, dict[str, str]] = {
     "codex_cli": {
@@ -13573,6 +13587,16 @@ async def ws_global_assistant_chat(websocket: WebSocket):
                 _GLOBAL_ASSISTANT_STORE_PROJECT_ID,
                 "",
             )
+            if not _backend_agent_runtime_new_runs_enabled():
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "request_id": request_id,
+                        "error_code": _BACKEND_AGENT_RUNTIME_MIGRATED_ERROR_CODE,
+                        "message": _backend_agent_runtime_migrated_message("全局助手"),
+                    }
+                )
+                return
             orchestrator = build_agent_orchestrator(
                 llm_service_runtime,
                 conv_manager,
@@ -13798,6 +13822,14 @@ async def chat_without_project(
             _GLOBAL_ASSISTANT_STORE_PROJECT_ID,
             "",
         )
+        if not _backend_agent_runtime_new_runs_enabled():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": _BACKEND_AGENT_RUNTIME_MIGRATED_ERROR_CODE,
+                    "message": _backend_agent_runtime_migrated_message("全局助手"),
+                },
+            )
         orchestrator = build_agent_orchestrator(
             llm_service_runtime,
             conv_manager,
@@ -13823,6 +13855,8 @@ async def chat_without_project(
                 stream_error = str(chunk_data.get("message") or "Global chat failed").strip()
         if stream_error:
             raise HTTPException(500, stream_error)
+    except HTTPException:
+        raise
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
@@ -20809,6 +20843,45 @@ async def get_project_agent_runtime_v2_run(
     return snapshot
 
 
+@router.post("/{project_id}/agent-runtime-v2/runs/{run_id}/resume")
+async def resume_project_agent_runtime_v2_run(
+    project_id: str,
+    run_id: str,
+    req: AgentRuntimeV2ResumeReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    project = _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    snapshot = AgentRuntimeInspector().get_run_snapshot(run_id)
+    if snapshot is None:
+        raise HTTPException(404, "agent runtime run not found")
+    run = dict(snapshot.get("run") or {})
+    if run.get("project_id") != project_id or run.get("username") != username:
+        raise HTTPException(404, "agent runtime run not found")
+    resume_result = await _build_agent_runtime_resume_service(
+        auth_payload,
+    ).resume_run(
+        AgentRuntimeResumeRequest(
+            project_id=project_id,
+            username=username,
+            run_id=run_id,
+            chat_session_id=(
+                str(req.chat_session_id or "").strip()
+                or str(run.get("chat_session_id") or "").strip()
+            ),
+            role_ids=get_auth_role_ids(auth_payload),
+            project_workspace_path=str(
+                getattr(project, "workspace_path", "") or ""
+            ).strip(),
+            workspace_trusted=True,
+        )
+    )
+    if not resume_result.resumed and resume_result.reason == "task_run_not_recoverable":
+        raise HTTPException(409, resume_result.reason)
+    return resume_result.to_dict()
+
+
 @router.post("/{project_id}/agent-runtime-v2/permission-actions")
 async def apply_project_agent_runtime_v2_permission_action(
     project_id: str,
@@ -22588,6 +22661,16 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             redis_client = await get_redis_client()
             conv_manager = ConversationManager(redis_client)
             session_id = await conv_manager.create_session(project_id, employee_id_val)
+            if not _backend_agent_runtime_new_runs_enabled():
+                await _send_project_chat_event(
+                    {
+                        "type": "error",
+                        "request_id": request_id,
+                        "error_code": _BACKEND_AGENT_RUNTIME_MIGRATED_ERROR_CODE,
+                        "message": _backend_agent_runtime_migrated_message("项目聊天"),
+                    }
+                )
+                return
             orchestrator = build_agent_orchestrator(
                 llm_service,
                 conv_manager,
@@ -23832,6 +23915,17 @@ async def stream_project_chat(
             redis_client = await get_redis_client()
             conv_manager = ConversationManager(redis_client)
             session_id = await conv_manager.create_session(project_id, employee_id_val)
+            if not _backend_agent_runtime_new_runs_enabled():
+                yield _sse_payload(
+                    "message",
+                    {
+                        "type": "error",
+                        "request_id": sse_request_id,
+                        "error_code": _BACKEND_AGENT_RUNTIME_MIGRATED_ERROR_CODE,
+                        "message": _backend_agent_runtime_migrated_message("项目聊天"),
+                    },
+                )
+                return
             orchestrator = build_agent_orchestrator(
                 llm_service_runtime,
                 conv_manager,

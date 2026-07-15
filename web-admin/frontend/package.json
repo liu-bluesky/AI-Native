@@ -10,6 +10,7 @@
     "check:file-size": "node ./scripts/check-file-size.mjs",
     "test:chat-transport": "node ./scripts/check-project-chat-transport.mjs",
     "test:local-liuagent-chat": "node ./scripts/check-local-liuagent-chat.mjs",
+    "test:desktop-agent-migration": "node ./scripts/check-desktop-agent-migration.mjs",
     "test:local-bot-runtime": "node ./scripts/check-local-bot-runtime.mjs",
     "test:liuagent-gateway-design": "node ./scripts/check-liuagent-gateway-design.mjs",
     "test:pause-state": "node ./scripts/check-project-chat-pause-state.mjs",

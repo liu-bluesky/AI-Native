@@ -36,6 +36,7 @@ const TAURI_COMMAND_NAMES = {
   liuagentExecuteTool: "liuagent_execute_tool",
   liuagentUploadProviderFile: "liuagent_upload_provider_file",
   liuagentStartLocalChat: "liuagent_start_local_chat",
+  liuagentPauseLocalChat: "liuagent_pause_local_chat",
   liuagentClassifyPermissionReply: "liuagent_classify_permission_reply",
   botStartLocalChat: "bot_start_local_chat",
   botStartFeishuLocalListener: "bot_start_feishu_local_listener",
@@ -474,6 +475,29 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
         errorCode: "native_bridge.unavailable",
         error: "native liuAgent local chat runtime is unavailable",
       };
+}
+
+export async function pauseNativeLiuAgentLocalChat(request = {}) {
+  const normalizedRequest =
+    request && typeof request === "object" ? request : { chatSessionId: request };
+  const normalizedChatSessionId = String(
+    normalizedRequest?.chatSessionId || normalizedRequest?.chat_session_id || "",
+  ).trim();
+  if (!normalizedChatSessionId) return false;
+  return Boolean(
+    await invokeNativeDesktopBridge("liuagentPauseLocalChat", {
+      request: {
+        projectId: String(
+          normalizedRequest?.projectId || normalizedRequest?.project_id || "",
+        ).trim(),
+        chatSessionId: normalizedChatSessionId,
+        workspacePath: String(
+          normalizedRequest?.workspacePath || normalizedRequest?.workspace_path || "",
+        ).trim(),
+        reason: String(normalizedRequest?.reason || "manual_pause").trim(),
+      },
+    }),
+  );
 }
 
 export async function classifyNativeLiuAgentPermissionReply(request = {}) {

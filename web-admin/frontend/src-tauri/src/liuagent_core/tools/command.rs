@@ -71,6 +71,24 @@ pub fn run_command_with_output_sink(
     permission_decision: Option<&PermissionDecisionInput>,
     output_sink: Option<&dyn Fn(&str, &str)>,
 ) -> Result<(Value, String), ToolError> {
+    run_command_with_output_sink_and_cancel(
+        tool_call_id,
+        workspace_path,
+        arguments,
+        permission_decision,
+        output_sink,
+        None,
+    )
+}
+
+pub fn run_command_with_output_sink_and_cancel(
+    tool_call_id: &str,
+    workspace_path: &str,
+    arguments: &Value,
+    permission_decision: Option<&PermissionDecisionInput>,
+    output_sink: Option<&dyn Fn(&str, &str)>,
+    cancel_check: Option<&dyn Fn() -> bool>,
+) -> Result<(Value, String), ToolError> {
     let root = resolve_workspace_root(workspace_path)?;
     let cmd = required_string_arg(arguments, "cmd")?;
     let cwd_arg = string_arg(arguments, "cwd", ".");
@@ -121,8 +139,15 @@ pub fn run_command_with_output_sink(
         return Ok((content, summary));
     }
 
-    let (mut content, summary) =
-        run_shell_command(&root, &cwd, &cmd, timeout_ms, max_output_chars, output_sink)?;
+    let (mut content, summary) = run_shell_command(
+        &root,
+        &cwd,
+        &cmd,
+        timeout_ms,
+        max_output_chars,
+        output_sink,
+        cancel_check,
+    )?;
     if let Some(object) = content.as_object_mut() {
         object.insert("cmd".to_string(), json!(cmd));
     }
@@ -204,6 +229,7 @@ fn run_shell_command(
     timeout_ms: u64,
     max_output_chars: usize,
     output_sink: Option<&dyn Fn(&str, &str)>,
+    cancel_check: Option<&dyn Fn() -> bool>,
 ) -> Result<(Value, String), ToolError> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
     let started = Instant::now();
@@ -241,6 +267,7 @@ fn run_shell_command(
     let mut stderr_truncated = false;
     let mut exit_code: Option<i32> = None;
     let mut timed_out = false;
+    let mut cancelled = false;
     let mut channel_closed = false;
     let mut last_heartbeat = started;
 
@@ -267,6 +294,17 @@ fn run_shell_command(
         }
 
         if exit_code.is_some() {
+            continue;
+        }
+        if cancel_check.is_some_and(|check| check()) {
+            terminate_child_process_group(&mut child);
+            thread::sleep(Duration::from_millis(100));
+            if child.try_wait().ok().flatten().is_none() {
+                force_kill_child_process_group(&mut child);
+            }
+            let _ = child.wait();
+            exit_code = Some(-1);
+            cancelled = true;
             continue;
         }
         if let Some(sink) = output_sink {
@@ -319,6 +357,12 @@ fn run_shell_command(
         return Err(ToolError::new(
             "tool.timeout",
             format!("command timed out after {timeout_ms}ms"),
+        ));
+    }
+    if cancelled {
+        return Err(ToolError::new(
+            "runtime.paused",
+            "command stopped because the desktop runtime was paused",
         ));
     }
 
@@ -382,6 +426,27 @@ fn append_truncated_chunk(output: &mut String, chunk: &str, max_chars: usize) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreground_command_stops_when_runtime_is_paused() {
+        let root = std::env::temp_dir().join(format!(
+            "liuagent_command_pause_{}",
+            crate::liuagent_core::gateway::epoch_millis()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let error = run_shell_command(
+            &root,
+            &root,
+            "sleep 5",
+            10_000,
+            10_000,
+            None,
+            Some(&|| true),
+        )
+        .expect_err("paused runtime must stop the foreground command");
+        assert_eq!(error.code, "runtime.paused");
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn command_timeout_accepts_hour_level_values() {

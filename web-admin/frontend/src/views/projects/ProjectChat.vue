@@ -1468,6 +1468,14 @@
               >
                 会话授权
               </el-button>
+              <el-button
+                size="small"
+                type="primary"
+                :loading="localLiuAgentPermissionSubmitting"
+                @click="submitCurrentLocalLiuAgentPermissionAction('local_liuagent_allow_always')"
+              >
+                信任工作区
+              </el-button>
             </div>
           </div>
           <section
@@ -2815,6 +2823,7 @@ import {
   listNativeLiuAgentRuntimeOutbox,
   listNativeRunnerPermissionDecisions,
   listNativeWorkspaceFiles,
+  pauseNativeLiuAgentLocalChat,
   prepareNativeExternalAgentLaunch,
   prepareNativeWorkspaceFileWrite,
   previewNativeWorkspaceDiff,
@@ -2897,7 +2906,6 @@ import {
 } from "@/modules/project-chat/services/projectChatSkillResources.js";
 import {
   submitAgentRuntimePermissionActionRequest,
-  trustAgentRuntimeWorkspaceRequest,
 } from "@/modules/project-chat/services/projectChatAgentRuntimeApi.js";
 import {
   createEmployeeFromDraft as createEmployeeFromDraftRequest,
@@ -3106,6 +3114,8 @@ const EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS = {
 
 // 开放未选择项目时的通用对话模式，复用现有 sendGlobalChatWithoutProject 逻辑。
 const ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT = true;
+const GLOBAL_PROJECT_CHAT_LOCAL_PROJECT_ID = "global-assistant";
+const GLOBAL_PROJECT_CHAT_LOCAL_SESSION_ID = "project-chat-global-local";
 const PROJECT_CREATED_EVENT = "project-created";
 function formatRoleLabel(roleId) {
   const normalized = String(roleId || "")
@@ -3338,8 +3348,8 @@ const globalWebToolsConfig = ref({});
 const projectWebToolsConfig = ref({});
 const globalWebToolsConfigText = ref(formatWebToolsConfig({}));
 const projectWebToolsConfigText = ref(formatWebToolsConfig({}));
-const globalWebToolsConfigPath = ref("~/.ai-employee/agent-runtime-v2/web-tools/config.json");
-const projectWebToolsConfigPath = ref(".ai-employee/agent-runtime-v2/web-tools/config.json");
+const globalWebToolsConfigPath = ref("~/.ai-employee/desktop-agent-runtime/web-tools/config.json");
+const projectWebToolsConfigPath = ref(".ai-employee/desktop-agent-runtime/web-tools/config.json");
 const globalWebToolsConfigSaving = ref(false);
 const projectWebToolsConfigSaving = ref(false);
 const webToolsConfigScope = ref("project");
@@ -3544,19 +3554,19 @@ async function reloadLocalWebToolsConfig(projectId = selectedProjectId.value) {
     globalWebToolsConfigText.value = String(globalFile?.content || formatWebToolsConfig({}));
     globalWebToolsConfig.value = globalFile?.config || {};
     globalWebToolsConfigPath.value = String(
-      globalFile?.path || "~/.ai-employee/agent-runtime-v2/web-tools/config.json",
+      globalFile?.path || "~/.ai-employee/desktop-agent-runtime/web-tools/config.json",
     ).trim();
   } catch (err) {
     globalWebToolsConfigText.value = formatWebToolsConfig({});
     globalWebToolsConfig.value = {};
-    globalWebToolsConfigPath.value = "~/.ai-employee/agent-runtime-v2/web-tools/config.json";
+    globalWebToolsConfigPath.value = "~/.ai-employee/desktop-agent-runtime/web-tools/config.json";
     ElMessage.error(err?.message || "读取全局 web-tools 配置文件失败");
   }
   if (!normalizedProjectId || !workspacePath) {
     projectWebToolsConfigText.value = formatWebToolsConfig({});
     projectWebToolsConfig.value = {};
     effectiveWebToolsConfig.value = mergeWebToolsConfigs(globalWebToolsConfig.value, {});
-    projectWebToolsConfigPath.value = ".ai-employee/agent-runtime-v2/web-tools/config.json";
+    projectWebToolsConfigPath.value = ".ai-employee/desktop-agent-runtime/web-tools/config.json";
     return;
   }
   try {
@@ -3569,13 +3579,13 @@ async function reloadLocalWebToolsConfig(projectId = selectedProjectId.value) {
       projectWebToolsConfig.value,
     );
     projectWebToolsConfigPath.value = String(
-      projectFile?.path || ".ai-employee/agent-runtime-v2/web-tools/config.json",
+      projectFile?.path || ".ai-employee/desktop-agent-runtime/web-tools/config.json",
     ).trim();
   } catch (err) {
     projectWebToolsConfigText.value = formatWebToolsConfig({});
     projectWebToolsConfig.value = {};
     effectiveWebToolsConfig.value = mergeWebToolsConfigs(globalWebToolsConfig.value, {});
-    projectWebToolsConfigPath.value = ".ai-employee/agent-runtime-v2/web-tools/config.json";
+    projectWebToolsConfigPath.value = ".ai-employee/desktop-agent-runtime/web-tools/config.json";
     ElMessage.error(err?.message || "读取项目 web-tools 配置文件失败");
   }
 }
@@ -3879,7 +3889,7 @@ async function saveGlobalWebToolsConfig() {
     globalWebToolsConfigText.value = String(result?.content || formatWebToolsConfig(parsed));
     globalWebToolsConfig.value = result?.config || parsed;
     globalWebToolsConfigPath.value = String(
-      result?.path || "~/.ai-employee/agent-runtime-v2/web-tools/config.json",
+      result?.path || "~/.ai-employee/desktop-agent-runtime/web-tools/config.json",
     ).trim();
     syncEffectiveWebToolsConfig();
     ElMessage.success("全局 web-tools 配置文件已保存");
@@ -3917,7 +3927,7 @@ async function saveProjectWebToolsConfig() {
     projectWebToolsConfigText.value = String(result?.content || formatWebToolsConfig(parsed));
     projectWebToolsConfig.value = result?.config || parsed;
     projectWebToolsConfigPath.value = String(
-      result?.path || ".ai-employee/agent-runtime-v2/web-tools/config.json",
+      result?.path || ".ai-employee/desktop-agent-runtime/web-tools/config.json",
     ).trim();
     await reloadLocalWebToolsConfig(projectId);
     ElMessage.success("项目 web-tools 配置文件已保存");
@@ -4446,6 +4456,8 @@ const localLiuAgentPendingPermissions = new Map();
 const localLiuAgentPendingPermissionVersion = ref(0);
 const localLiuAgentPermissionSubmitting = ref(false);
 const LOCAL_LIUAGENT_AUTH_LEVEL_STORAGE_KEY = "local_liuagent_auth_level";
+const LOCAL_LIUAGENT_TRUSTED_WORKSPACES_STORAGE_KEY =
+  "local_liuagent_trusted_workspaces";
 const localLiuAgentAuthLevel = ref(readLocalLiuAgentAuthLevel());
 const localLiuAgentActiveRuns = new Map();
 const localLiuAgentSeenRuntimeEventIds = new Set();
@@ -4477,8 +4489,53 @@ function setLocalLiuAgentAuthLevel(value) {
   }
 }
 
-function localLiuAgentFullAccessEnabled() {
-  return localLiuAgentAuthLevel.value === "full_access";
+function normalizeLocalLiuAgentTrustedWorkspacePath(value) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function readLocalLiuAgentTrustedWorkspaces() {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(
+      window.localStorage?.getItem(LOCAL_LIUAGENT_TRUSTED_WORKSPACES_STORAGE_KEY) ||
+        "[]",
+    );
+    return Array.isArray(parsed)
+      ? parsed
+          .map((item) => normalizeLocalLiuAgentTrustedWorkspacePath(item))
+          .filter(Boolean)
+      : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
+function trustLocalLiuAgentWorkspace(workspacePath) {
+  const normalized = normalizeLocalLiuAgentTrustedWorkspacePath(workspacePath);
+  if (!normalized || typeof window === "undefined") return false;
+  const trusted = new Set(readLocalLiuAgentTrustedWorkspaces());
+  trusted.add(normalized);
+  window.localStorage?.setItem(
+    LOCAL_LIUAGENT_TRUSTED_WORKSPACES_STORAGE_KEY,
+    JSON.stringify([...trusted]),
+  );
+  return true;
+}
+
+function localLiuAgentWorkspaceTrusted(workspacePath) {
+  const normalized = normalizeLocalLiuAgentTrustedWorkspacePath(workspacePath);
+  return Boolean(normalized && readLocalLiuAgentTrustedWorkspaces().includes(normalized));
+}
+
+function localLiuAgentFullAccessEnabled(workspacePath = "") {
+  return (
+    localLiuAgentAuthLevel.value === "full_access" ||
+    localLiuAgentWorkspaceTrusted(workspacePath || localLiuAgentWorkspacePath())
+  );
 }
 
 const localLiuAgentAuthLevelModel = computed({
@@ -9187,6 +9244,33 @@ function completeFinishedMessageOperations(row, summary = "本轮执行已结束
   return changed;
 }
 
+function pauseOpenMessageOperations(row) {
+  if (!row || !Array.isArray(row.operations) || !row.operations.length) {
+    return false;
+  }
+  let changed = false;
+  row.operations = row.operations.map((operation) => {
+    const phase = normalizeOperationPhase(
+      operation?.phase || operation?.status,
+    );
+    if (!["running", "pending"].includes(phase)) return operation;
+    changed = true;
+    return {
+      ...operation,
+      phase: "blocked",
+      actionType: "none",
+      updatedAt: nowText(),
+      meta: {
+        ...(operation?.meta && typeof operation.meta === "object"
+          ? operation.meta
+          : {}),
+        paused: true,
+      },
+    };
+  });
+  return changed;
+}
+
 function isLiveTerminalOperation(operation) {
   const kind = String(operation?.kind || "")
     .trim()
@@ -10668,16 +10752,18 @@ async function enrichLocalBotRunnerRequest(request = {}, workspacePath = "") {
     normalizedRequest.modelRuntime =
       await buildLocalBotRunnerModelRuntime(normalizedRequest);
   }
-  if (!normalizedRequest.permissionDecision && !normalizedRequest.permission_decision) {
-    normalizedRequest.permissionDecision = localLiuAgentFullAccessEnabled()
-      ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
-      : null;
-  }
   normalizedRequest.workspacePath = localBotRunnerString(
     normalizedRequest.workspacePath,
     normalizedRequest.workspace_path,
     workspacePath,
   );
+  if (!normalizedRequest.permissionDecision && !normalizedRequest.permission_decision) {
+    normalizedRequest.permissionDecision = localLiuAgentFullAccessEnabled(
+      normalizedRequest.workspacePath,
+    )
+      ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
+      : null;
+  }
   return normalizedRequest;
 }
 
@@ -11265,7 +11351,7 @@ async function syncLocalFeishuBotListeners() {
           apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
           token: getStoredToken(),
         },
-        permissionDecision: localLiuAgentFullAccessEnabled()
+        permissionDecision: localLiuAgentFullAccessEnabled(workspacePath)
           ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
           : null,
       });
@@ -11400,6 +11486,7 @@ function localLiuAgentResumeJudgementLabel(decision) {
   const normalized = String(decision || "")
     .trim()
     .toLowerCase();
+  if (normalized === "resume_from_checkpoint") return "任务已暂停，可以从本地 checkpoint 继续执行";
   if (normalized === "continue_waiting") return "任务还在进行中，可以继续等待或刷新状态";
   if (normalized === "ask_ai_to_verify_completion") return "命令已结束，需要让 AI 根据产物和日志确认是否完成目标";
   if (normalized === "ask_ai_to_inspect_failure") return "命令失败，需要让 AI 读取日志判断失败原因";
@@ -11528,9 +11615,9 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
     .trim()
     .toLowerCase();
   if (
-    !["waiting_approval", "failed"].includes(status) &&
+    !["waiting_approval", "failed", "paused"].includes(status) &&
     !backgroundJobs.length &&
-    !["continue_waiting", "ask_ai_to_verify_completion", "ask_ai_to_inspect_failure", "ask_ai_to_judge"].includes(
+    !["resume_from_checkpoint", "continue_waiting", "ask_ai_to_verify_completion", "ask_ai_to_inspect_failure", "ask_ai_to_judge"].includes(
       resumeDecision,
     )
   )
@@ -11609,7 +11696,7 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
       text: "已恢复上次待授权的本地 liuAgent 会话",
       level: "warning",
     });
-  } else if (status === "failed") {
+  } else if (["failed", "paused"].includes(status)) {
     const hasNoSignal =
       resumeDecision === "continue_waiting" ||
       resumeDecision === "ask_ai_to_judge" ||
@@ -11619,31 +11706,45 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
             .trim()
             .toLowerCase() === "running",
       );
+    const userMessage = localLiuAgentUserMessageFromRuntimeEvents(
+      localLiuAgentRuntimeEventsFromResult(result),
+    );
     upsertMessageOperation(row, {
       operationId: `local-agent:${row.id}`,
       kind: "request",
       title: "桌面本地 Agent Runtime",
-      summary: hasNoSignal
-        ? "已恢复上次暂无信号的本地会话"
-        : "已恢复上次失败的本地会话",
+      summary:
+        status === "paused"
+          ? "已恢复上次暂停的本地会话"
+          : hasNoSignal
+            ? "已恢复上次暂无信号的本地会话"
+            : "已恢复上次失败的本地会话",
       detail:
         localLiuAgentResumeJudgementLabel(resumeDecision) ||
         String(result?.summary || result?.error || "").trim(),
-      phase: hasNoSignal ? "blocked" : "failed",
+      phase: status === "paused" || hasNoSignal ? "blocked" : "failed",
       actionType: "none",
       meta: {
         local_liuagent_operation: "true",
+        local_liuagent_recoverable: "true",
+        local_liuagent_resuming: "false",
         source: "tauri_liuagent_local_chat",
+        project_id: activeProjectId,
         chat_session_id: activeChatSessionId,
+        user_message_id: String(userMessage?.messageId || "").trim(),
+        root_goal: String(userMessage?.content || "").trim(),
         cwd: workspacePath,
         resume_judgement: resumeJudgement,
+        recovery_reason: status === "paused" ? "manual_pause" : "runtime_failure",
       },
     });
     row.content =
       String(row.content || "").trim() ||
-      (hasNoSignal
-        ? "已恢复上次暂无信号的本地 liuAgent 会话。当前不能直接判断失败，请刷新后台任务状态或让 AI 继续检查。"
-        : "已恢复上次失败的本地 liuAgent 会话，请检查执行过程后重新发送。");
+      (status === "paused"
+        ? "已恢复上次暂停的本地 liuAgent 会话，可以从 checkpoint 继续执行。"
+        : hasNoSignal
+          ? "已恢复上次暂无信号的本地 liuAgent 会话。当前不能直接判断失败，请刷新后台任务状态或让 AI 继续检查。"
+          : "已恢复上次失败的本地 liuAgent 会话，可以检查恢复状态后继续执行。");
   } else if (backgroundJobs.length) {
     const label = localLiuAgentResumeJudgementLabel(resumeDecision);
     if (label) {
@@ -17657,6 +17758,59 @@ async function clearLocalLiuAgentPendingPermissionsForChatSession(
   return true;
 }
 
+async function pauseLocalLiuAgentPendingPermissionsForChatSession(
+  chatSessionId = currentChatSessionId.value,
+) {
+  const pendingItems = localLiuAgentPendingPermissionsForChatSession(chatSessionId);
+  if (!pendingItems.length) return false;
+  const workspacePath = String(
+    pendingItems[0]?.localChatPayload?.workspacePath || localLiuAgentWorkspacePath(),
+  ).trim();
+  const paused = await pauseNativeLiuAgentLocalChat({
+    projectId: selectedProjectId.value,
+    chatSessionId,
+    workspacePath,
+    reason: "manual_pause",
+  });
+  if (!paused) return false;
+  for (const pending of pendingItems) {
+    const requestId = String(pending?.requestId || "").trim();
+    const row = localLiuAgentPendingPermissionRow(pending);
+    if (requestId) {
+      localLiuAgentPendingPermissions.delete(requestId);
+    }
+    if (!row) continue;
+    pauseOpenMessageOperations(row);
+    appendMessageProcessLog(row, {
+      level: "warning",
+      text: "任务已暂停，待授权节点和执行详情已保留。",
+      autoExpand: true,
+    });
+    row.processExpanded = true;
+    await persistLocalLiuAgentAssistantState({
+      projectId: selectedProjectId.value,
+      chatSessionId,
+      assistantMessage: row,
+      fallbackContent: LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      preserveVisibleContent: true,
+      workspacePath,
+      sourceContext: {
+        ...(pending?.sourceContext || {}),
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
+        recovery_reason: "manual_pause",
+      },
+    });
+  }
+  localLiuAgentPendingPermissionVersion.value += 1;
+  syncChatLoadingWithCurrentSession();
+  scrollToBottom();
+  return true;
+}
+
 function localLiuAgentRiskLabel(risk = "") {
   const normalized = String(risk || "").trim().toLowerCase();
   if (normalized === "high") return "高风险";
@@ -17914,7 +18068,7 @@ async function executeLocalLiuAgentToolWithPermission(task, workspacePath, row =
     name: task.toolName,
     arguments: task.toolArgs,
     workspacePath,
-    permissionDecision: localLiuAgentFullAccessEnabled()
+    permissionDecision: localLiuAgentFullAccessEnabled(workspacePath)
       ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
       : null,
   });
@@ -18738,10 +18892,25 @@ function operationPrimaryActionLabel(operation) {
   return buttons.length ? buttons[0].label : "";
 }
 
-function messageFooterActionOperation(row) {
-  return pickAwaitingInteractionOperation(row, {
-    allowTerminal: false,
+function pickLocalLiuAgentRecoverableOperation(row) {
+  return [...messageOperations(row)].reverse().find((operation) => {
+    const meta =
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
+    if (String(meta.local_liuagent_recoverable || "").trim() !== "true") {
+      return false;
+    }
+    return operationActionButtons(operation).length > 0;
   });
+}
+
+function messageFooterActionOperation(row) {
+  return (
+    pickAwaitingInteractionOperation(row, {
+      allowTerminal: false,
+    }) || pickLocalLiuAgentRecoverableOperation(row)
+  );
 }
 
 function messageFooterInteractionOperation(row) {
@@ -20256,6 +20425,11 @@ function operationActionButtons(operation) {
   const actionType = normalizeOperationActionType(operation?.actionType);
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  if (String(meta.local_liuagent_recoverable || "").trim() === "true") {
+    if (!hasNativeDesktopBridge()) return [];
+    if (String(meta.local_liuagent_resuming || "").trim() === "true") return [];
+    return [{ key: "local_liuagent_resume", label: "继续执行" }];
+  }
   if (String(meta.local_liuagent_background_job || "").trim() === "true") {
     const status = String(meta.status || meta.job?.status || "")
       .trim()
@@ -20287,6 +20461,7 @@ function operationActionButtons(operation) {
       return [
         { key: "local_liuagent_allow_once", label: "本次授权" },
         { key: "local_liuagent_allow_session", label: "会话授权" },
+        { key: "local_liuagent_allow_always", label: "信任工作区" },
         { key: "local_liuagent_deny", label: "拒绝", type: "danger" },
       ];
     }
@@ -20323,9 +20498,14 @@ async function handleOperationAction(operation, actionKey) {
   const actionType = normalizeOperationActionType(operation?.actionType);
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  if (normalizedActionKey === "local_liuagent_resume") {
+    await submitLocalLiuAgentResume(operation);
+    return;
+  }
   if (
     normalizedActionKey === "local_liuagent_allow_once" ||
     normalizedActionKey === "local_liuagent_allow_session" ||
+    normalizedActionKey === "local_liuagent_allow_always" ||
     normalizedActionKey === "local_liuagent_deny"
   ) {
     await submitLocalLiuAgentPermissionAction(operation, normalizedActionKey);
@@ -20612,6 +20792,156 @@ async function submitLocalLiuAgentBackgroundJobAction(operation, actionKey) {
   }
 }
 
+const LOCAL_LIUAGENT_PAUSE_SUMMARY = "任务已暂停，执行详情已保留，可继续执行。";
+
+function localLiuAgentResumeStateSnapshot(result = {}) {
+  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  const snapshot = {
+    run_state: state?.run_state || {},
+    current_state: state?.current_state || {},
+    tool_results: Array.isArray(state?.tool_results) ? state.tool_results : [],
+    operations: Array.isArray(state?.operations) ? state.operations : [],
+    background_jobs: Array.isArray(state?.background_jobs)
+      ? state.background_jobs
+      : [],
+    resume_judgement: state?.resume_judgement || {},
+  };
+  const serialized = JSON.stringify(snapshot, null, 2);
+  return serialized.length > 12000
+    ? `${serialized.slice(0, 12000)}\n（恢复快照已截断）`
+    : serialized;
+}
+
+async function submitLocalLiuAgentResume(operation) {
+  if (!hasNativeDesktopBridge()) {
+    ElMessage.warning("继续执行仅在桌面智能体中可用");
+    return;
+  }
+  const operationMatch = findMessageOperationById(
+    operation?.id || operation?.operationId,
+  );
+  const row = operationMatch?.row || null;
+  const currentOperation = operationMatch?.operation || operation;
+  const meta =
+    currentOperation?.meta && typeof currentOperation.meta === "object"
+      ? currentOperation.meta
+      : {};
+  const projectId = String(
+    meta.project_id || selectedProjectId.value || "",
+  ).trim();
+  const chatSessionId = String(
+    meta.chat_session_id || currentChatSessionId.value || "",
+  ).trim();
+  const workspacePath = String(
+    meta.cwd || localLiuAgentWorkspacePath() || "",
+  ).trim();
+  if (!row || !projectId || !chatSessionId || !workspacePath) {
+    ElMessage.warning("缺少桌面运行恢复上下文，无法继续");
+    return;
+  }
+  if (localLiuAgentActiveRunForChatSession(chatSessionId)) {
+    ElMessage.warning("桌面智能体仍在运行，请等待当前步骤结束");
+    return;
+  }
+  upsertMessageOperation(row, {
+    ...currentOperation,
+    summary: "正在读取 checkpoint 并继续执行",
+    detail: "恢复时会核对已完成工具结果，避免重复执行成功的副作用操作。",
+    phase: "running",
+    actionType: "none",
+    meta: {
+      ...meta,
+      local_liuagent_recoverable: "true",
+      local_liuagent_resuming: "true",
+    },
+  });
+  row.processExpanded = true;
+  let recovery = null;
+  try {
+    recovery = await recoverNativeLiuAgentRuntimeState({
+      projectId,
+      chatSessionId,
+      workspacePath,
+    });
+  } catch (error) {
+    console.warn("recover local liuAgent state before resume failed", error);
+  }
+  const userMessageId = String(meta.user_message_id || "").trim();
+  const originalUserMessage =
+    messages.value.find(
+      (item) =>
+        item?.role === "user" &&
+        userMessageId &&
+        String(item?.id || "").trim() === userMessageId,
+    ) ||
+    [...messages.value]
+      .slice(0, Math.max(0, messages.value.indexOf(row)))
+      .reverse()
+      .find((item) => item?.role === "user") || {
+      id: userMessageId || `local-resume-user:${row.id}`,
+      role: "user",
+      content: String(meta.root_goal || "继续未完成任务").trim(),
+      time: nowText(),
+    };
+  const rootGoal = String(
+    meta.root_goal || originalUserMessage?.content || "继续未完成任务",
+  ).trim();
+  const recoverySnapshot = recovery?.ok
+    ? localLiuAgentResumeStateSnapshot(recovery)
+    : "未读取到本地 checkpoint；请根据对话历史继续，并先核对已有结果。";
+  const continuationPrompt = [
+    "继续执行刚才未完成的桌面智能体任务。",
+    `原始目标：${rootGoal}`,
+    "先检查恢复快照和对话历史，再决定下一步。",
+    "不得重复执行已经成功的写文件、删除、命令或外部写入操作；若中断前工具结果不确定，先读取状态或验证结果，不要直接重放。",
+    `上次界面结果：${String(row.content || "").trim() || "无"}`,
+    `恢复快照：\n${recoverySnapshot}`,
+  ].join("\n\n");
+  try {
+    const result = await sendLocalLiuAgentChatRequest({
+      projectId,
+      activeChatSessionId: chatSessionId,
+      userMessage: originalUserMessage,
+      assistantMessage: row,
+      finalUserPrompt: continuationPrompt,
+      historyRows: toHistoryRows(
+        messages.value.filter((item) => item !== row),
+        historyLimit.value,
+      ),
+      displayUserMessageContent: rootGoal,
+      sourceContext: {
+        chat_mode: "system",
+        surface: chatSurface.value,
+        resumed_from_checkpoint: Boolean(recovery?.ok),
+        recovery_reason: String(meta.recovery_reason || "runtime_failure").trim(),
+      },
+      persistUserMessage: false,
+      resumeFromCheckpoint: true,
+    });
+    if (result?.cancelled) {
+      ElMessage.info("任务已暂停，checkpoint 就绪后可再次继续");
+    } else if (result?.ok) {
+      ElMessage.success("桌面智能体已继续并完成");
+    } else {
+      ElMessage.warning("继续执行仍未完成，可检查原因后再次尝试");
+    }
+  } catch (err) {
+    upsertMessageOperation(row, {
+      ...currentOperation,
+      summary: "继续执行失败，可重试",
+      detail: String(err?.detail || err?.message || "桌面恢复运行失败").trim(),
+      phase: "blocked",
+      actionType: "none",
+      meta: {
+        ...meta,
+        local_liuagent_recoverable: "true",
+        local_liuagent_resuming: "false",
+      },
+    });
+    ElMessage.error(err?.detail || err?.message || "桌面继续执行失败");
+  }
+}
+
 async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
@@ -20633,8 +20963,18 @@ async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
   }
 
   const denied = actionKey === "local_liuagent_deny";
-  const allowSession = actionKey === "local_liuagent_allow_session";
-  const fullAccess = allowSession && localLiuAgentFullAccessEnabled();
+  const allowAlways = actionKey === "local_liuagent_allow_always";
+  const allowSession =
+    actionKey === "local_liuagent_allow_session" || allowAlways;
+  const workspacePath = String(
+    pending?.workspacePath || pending?.localChatPayload?.workspacePath || meta.cwd || "",
+  ).trim();
+  if (allowAlways && !trustLocalLiuAgentWorkspace(workspacePath)) {
+    ElMessage.warning("缺少本地工作区路径，无法保存工作区信任");
+    return;
+  }
+  const fullAccess =
+    allowAlways || (allowSession && localLiuAgentFullAccessEnabled(workspacePath));
   deleteLocalLiuAgentPendingPermission(requestId);
   removeLocalLiuAgentPermissionOperation(row, requestId);
   if (denied) {
@@ -20650,7 +20990,9 @@ async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
 
   appendMessageProcessLog(row, {
     text: fullAccess
-      ? "已启用完全访问，正在继续执行"
+      ? allowAlways
+        ? "已信任当前工作区，正在继续执行"
+        : "已启用完全访问，正在继续执行"
       : allowSession
         ? "已允许本会话，正在继续执行"
         : "已允许一次，正在继续执行",
@@ -21355,27 +21697,21 @@ function applyAgentRuntimeOperationResumeResult(eventData = {}) {
 }
 
 async function trustAgentRuntimeWorkspace() {
-  const projectId = String(selectedProjectId.value || "").trim();
   const workspacePath = String(
     agentRuntimeWorkspaceTrustPath.value || "",
   ).trim();
-  if (!projectId || !workspacePath) {
+  if (!workspacePath) {
     ElMessage.warning("缺少工作区路径");
     return;
   }
   workspaceTrustSaving.value = true;
   try {
-    await trustAgentRuntimeWorkspaceRequest(projectId, {
-      workspace_path: workspacePath,
-      trusted: true,
-      metadata: {
-        chat_session_id: String(currentChatSessionId.value || "").trim(),
-        source: "project-chat",
-      },
-    });
-    ElMessage.success("已信任当前工作区");
+    if (!trustLocalLiuAgentWorkspace(workspacePath)) {
+      throw new Error("保存本地工作区信任失败");
+    }
+    ElMessage.success("桌面智能体已信任当前工作区");
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "信任工作区失败");
+    ElMessage.error(err?.message || "信任工作区失败");
   } finally {
     workspaceTrustSaving.value = false;
   }
@@ -23806,19 +24142,26 @@ async function persistLocalLiuAgentAssistantState({
   chatSessionId,
   assistantMessage,
   fallbackContent,
+  preserveVisibleContent = false,
   workspacePath = "",
   sourceContext = {},
 }) {
   const row = assistantMessage;
   if (!row) return null;
-  const content = String(row.content || "").trim() || String(fallbackContent || "").trim();
+  const visibleContent = String(row.content || "").trim();
+  const content = visibleContent || String(fallbackContent || "").trim();
   if (!content) return null;
-  row.content = content;
   row.time = String(row.time || "").trim() || nowText();
+  const persistedMessage = preserveVisibleContent
+    ? { ...row, content }
+    : row;
+  if (!preserveVisibleContent) {
+    row.content = content;
+  }
   return persistLocalLiuAgentChatMessage({
     projectId,
     chatSessionId,
-    message: row,
+    message: persistedMessage,
     role: "assistant",
     workspacePath,
     sourceContext,
@@ -29178,8 +29521,13 @@ async function sendLocalLiuAgentChatRequest({
   displayUserMessageContent = "",
   sourceContext = {},
   attachments = [],
+  persistUserMessage = true,
+  resumeFromCheckpoint = false,
+  workspacePath: requestedWorkspacePath = "",
 }) {
-  const workspacePath = localLiuAgentWorkspacePath();
+  const workspacePath = String(
+    requestedWorkspacePath || localLiuAgentWorkspacePath(),
+  ).trim();
   if (!hasNativeDesktopBridge()) {
     throw new Error("桌面端本地 liuAgent Runtime 不可用");
   }
@@ -29190,7 +29538,9 @@ async function sendLocalLiuAgentChatRequest({
     operationId: `local-agent:${assistantMessage.id}`,
     kind: "request",
     title: "桌面本地 Agent Runtime",
-    summary: "启动桌面本地 Agent Runtime，等待模型计算",
+    summary: resumeFromCheckpoint
+      ? "从 checkpoint 继续执行，等待本地模型事件"
+      : "启动桌面本地 Agent Runtime，等待模型计算",
     detail: "",
     phase: "running",
     actionType: "none",
@@ -29199,19 +29549,22 @@ async function sendLocalLiuAgentChatRequest({
       source: "tauri_liuagent_local_chat",
       chat_session_id: activeChatSessionId,
       cwd: workspacePath,
+      resumed_from_checkpoint: resumeFromCheckpoint ? "true" : "false",
     },
   });
-  appendMessageProcessLog(assistantMessage, {
-    text: [
-      "本轮目标",
-      `  - ${displayUserMessageContent || finalUserPrompt}`,
-      `  - 工作区：${workspacePath}`,
-      "  - 执行方式：桌面端本地智能体",
-    ]
-      .filter(Boolean)
-      .join("\n"),
-    level: "info",
-  });
+  if (!resumeFromCheckpoint) {
+    appendMessageProcessLog(assistantMessage, {
+      text: [
+        "本轮目标",
+        `  - ${displayUserMessageContent || finalUserPrompt}`,
+        `  - 工作区：${workspacePath}`,
+        "  - 执行方式：桌面端本地智能体",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      level: "info",
+    });
+  }
   await upsertProjectChatRequirementRecord({
     chatSessionId: activeChatSessionId,
     status: "in_progress",
@@ -29225,16 +29578,18 @@ async function sendLocalLiuAgentChatRequest({
       workspace_path: workspacePath,
     },
   });
-  const persistedUserMessage = await persistLocalLiuAgentChatMessage({
-    projectId,
-    chatSessionId: activeChatSessionId,
-    message: userMessage,
-    role: "user",
-    workspacePath,
-    sourceContext,
-  });
-  if (persistedUserMessage) {
-    userMessage.historyPersisted = true;
+  if (persistUserMessage) {
+    const persistedUserMessage = await persistLocalLiuAgentChatMessage({
+      projectId,
+      chatSessionId: activeChatSessionId,
+      message: userMessage,
+      role: "user",
+      workspacePath,
+      sourceContext,
+    });
+    if (persistedUserMessage) {
+      userMessage.historyPersisted = true;
+    }
   }
   const modelRuntime = await buildLocalLiuAgentModelRuntime();
   await saveLocalLiuAgentRuntimeConfigOfflineCache({
@@ -29263,7 +29618,7 @@ async function sendLocalLiuAgentChatRequest({
       apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
       token: getStoredToken(),
     },
-    permissionDecision: localLiuAgentFullAccessEnabled()
+    permissionDecision: localLiuAgentFullAccessEnabled(workspacePath)
       ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
       : null,
   };
@@ -29297,8 +29652,12 @@ async function sendLocalLiuAgentChatRequest({
     operationId: `local-agent-running:${assistantMessage.id}`,
     kind: "request",
     title: "桌面本地 Agent Runtime",
-    summary: "等待本地模型调用事件",
-    detail: "模型步骤、工具调用、命令执行、文件读写和授权等待会作为运行轨迹继续追加。",
+    summary: resumeFromCheckpoint
+      ? "已恢复 checkpoint，正在继续当前任务"
+      : "等待本地模型调用事件",
+    detail: resumeFromCheckpoint
+      ? "已有执行详情保持不变；Runtime 会从暂停节点继续追加新的模型和工具事件。"
+      : "模型步骤、工具调用、命令执行、文件读写和授权等待会作为运行轨迹继续追加。",
     phase: "running",
     actionType: "none",
     meta: {
@@ -29307,10 +29666,13 @@ async function sendLocalLiuAgentChatRequest({
       source: "tauri_liuagent_local_chat",
       chat_session_id: activeChatSessionId,
       cwd: workspacePath,
+      resumed_from_checkpoint: resumeFromCheckpoint ? "true" : "false",
     },
   });
   appendMessageProcessLog(assistantMessage, {
-    text: "开始执行\n  - 正在创建本地模型请求\n  - 后续会按“理解目标、规划工具、执行工具、整理结果”展示进度",
+    text: resumeFromCheckpoint
+      ? "继续执行\n  - 已读取本地 checkpoint\n  - 正在从暂停节点继续推理\n  - 已有执行详情保持不变"
+      : "开始执行\n  - 正在创建本地模型请求\n  - 后续会按“理解目标、规划工具、执行工具、整理结果”展示进度",
     level: "info",
     autoExpand: true,
   });
@@ -29328,6 +29690,72 @@ async function sendLocalLiuAgentChatRequest({
   if (activeRun.cancelled) {
     deleteLocalLiuAgentActiveRun(activeChatSessionId);
     syncChatLoadingWithCurrentSession();
+    upsertMessageOperation(assistantMessage, {
+      operationId: `local-agent:${assistantMessage.id}`,
+      kind: "request",
+      title: "桌面本地 Agent Runtime",
+      summary: "任务已暂停，可以继续执行",
+      detail: "Runtime 已停止后续模型和工具调度，并直接记录当前工作节点；继续时会先核对 checkpoint。",
+      phase: "blocked",
+      actionType: "none",
+      meta: {
+        local_liuagent_operation: "true",
+        local_liuagent_recoverable: "true",
+        local_liuagent_resuming: "false",
+        source: "tauri_liuagent_local_chat",
+        project_id: projectId,
+        chat_session_id: activeChatSessionId,
+        user_message_id: userMessage.id,
+        root_goal: displayUserMessageContent || finalUserPrompt,
+        cwd: workspacePath,
+        recovery_reason: "manual_pause",
+      },
+    });
+    appendMessageProcessLog(assistantMessage, {
+      text: "本地运行已暂停，当前工作节点和 checkpoint 已保留",
+      level: "warning",
+      autoExpand: true,
+    });
+    await persistLocalLiuAgentAssistantState({
+      projectId,
+      chatSessionId: activeChatSessionId,
+      assistantMessage,
+      fallbackContent: LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      preserveVisibleContent: true,
+      workspacePath,
+      sourceContext: {
+        ...sourceContext,
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
+        ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
+      },
+    });
+    await upsertProjectChatRequirementRecord({
+      chatSessionId: activeChatSessionId,
+      status: "paused",
+      rootGoal: displayUserMessageContent || finalUserPrompt,
+      messageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      resultSummary:
+        String(assistantMessage.content || "").trim() ||
+        LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      verificationResult: "桌面 Runtime 已写入 checkpoint，执行轨迹已保留，可继续执行。",
+      source: "desktop_local_agent",
+      sourceContext: {
+        ...sourceContext,
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
+        ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
+      },
+    });
+    rememberChatSessionMessages(projectId, activeChatSessionId, messages.value);
+    schedulePersistChatRuntime();
     return { cancelled: true };
   }
   applyLocalLiuAgentRuntimeEvents(assistantMessage, result, {
@@ -29339,6 +29767,97 @@ async function sendLocalLiuAgentChatRequest({
     chatSessionId: activeChatSessionId,
     workspacePath,
   });
+  const runtimePauseCode = String(
+    result?.errorCode || result?.error_code || "",
+  ).trim();
+  if (["runtime.paused", "runtime.interrupted"].includes(runtimePauseCode)) {
+    const recoveryReason =
+      runtimePauseCode === "runtime.interrupted"
+        ? "network_interruption"
+        : "manual_pause";
+    pauseOpenMessageOperations(assistantMessage);
+    upsertMessageOperation(assistantMessage, {
+      operationId: `local-agent:${assistantMessage.id}`,
+      kind: "request",
+      title: "桌面本地 Agent Runtime",
+      summary:
+        runtimePauseCode === "runtime.interrupted"
+          ? "连接中断，任务已暂停"
+          : "任务已暂停，可以继续执行",
+      detail: "当前工作节点和已产生的执行事件已写入本地 checkpoint。",
+      phase: "blocked",
+      actionType: "none",
+      meta: {
+        local_liuagent_operation: "true",
+        local_liuagent_recoverable: "true",
+        local_liuagent_resuming: "false",
+        source: "tauri_liuagent_local_chat",
+        project_id: projectId,
+        chat_session_id: activeChatSessionId,
+        user_message_id: userMessage.id,
+        root_goal: displayUserMessageContent || finalUserPrompt,
+        session_id: String(result?.sessionId || result?.session_id || "").trim(),
+        cwd: workspacePath,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
+        recovery_reason: recoveryReason,
+      },
+    });
+    appendMessageProcessLog(assistantMessage, {
+      text:
+        runtimePauseCode === "runtime.interrupted"
+          ? "模型或网络连接中断；Runtime 未继续调度，当前节点已保存"
+          : LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      level: "warning",
+      autoExpand: true,
+    });
+    await persistLocalLiuAgentAssistantState({
+      projectId,
+      chatSessionId: activeChatSessionId,
+      assistantMessage,
+      fallbackContent: LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      preserveVisibleContent: true,
+      workspacePath,
+      sourceContext: {
+        ...sourceContext,
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
+        recovery_reason: recoveryReason,
+        ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
+      },
+    });
+    await upsertProjectChatRequirementRecord({
+      chatSessionId: activeChatSessionId,
+      status: "paused",
+      rootGoal: displayUserMessageContent || finalUserPrompt,
+      messageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      resultSummary:
+        String(assistantMessage.content || "").trim() ||
+        LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      verificationResult: "Runtime 已停止调度并直接保存当前工作节点。",
+      source: "desktop_local_agent",
+      sourceContext: {
+        ...sourceContext,
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
+        recovery_reason: recoveryReason,
+        ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
+      },
+    });
+    deleteLocalLiuAgentActiveRun(activeChatSessionId);
+    syncChatLoadingWithCurrentSession();
+    rememberChatSessionMessages(projectId, activeChatSessionId, messages.value);
+    schedulePersistChatRuntime();
+    return result;
+  }
   const localPermissionRequest = localLiuAgentPermissionRequestFromChatResult(result);
   if (localPermissionRequest) {
     const requestId = String(localPermissionRequest?.requestId || "").trim();
@@ -29472,8 +29991,13 @@ async function sendLocalLiuAgentChatRequest({
     actionType: "none",
     meta: {
       local_liuagent_operation: "true",
+      local_liuagent_recoverable: ok ? "false" : "true",
+      local_liuagent_resuming: "false",
       source: "tauri_liuagent_local_chat",
+      project_id: projectId,
       chat_session_id: activeChatSessionId,
+      user_message_id: userMessage.id,
+      root_goal: displayUserMessageContent || finalUserPrompt,
       session_id: String(result?.sessionId || result?.session_id || "").trim(),
       requirement_record_path: String(
         result?.requirementRecordPath || result?.requirement_record_path || "",
@@ -29714,37 +30238,47 @@ async function cancelActiveLocalLiuAgentRun() {
   const chatSessionId = String(currentChatSessionId.value || "").trim();
   const run = localLiuAgentActiveRunForChatSession(chatSessionId);
   if (!run || run.cancelled) return false;
+  const paused = await pauseNativeLiuAgentLocalChat({
+    projectId: run.projectId || selectedProjectId.value,
+    chatSessionId,
+    workspacePath: String(run.workspacePath || "").trim(),
+    reason: "manual_pause",
+  });
+  if (!paused) return false;
   run.cancelled = true;
   deleteLocalLiuAgentActiveRun(chatSessionId);
-  await clearLocalLiuAgentPendingPermissionsForChatSession(chatSessionId);
   const row = localLiuAgentActiveRunRow(run);
-  const message = "已停止本地智能体执行。";
+  const message = LOCAL_LIUAGENT_PAUSE_SUMMARY;
   if (row) {
     row.displayMode = "";
-    row.content = String(row.content || "").trim() || message;
     row.time = nowText();
     applyLocalLiuAgentRuntimeTiming(row, {
       startedAt: run.startedAt,
       endedAt: Date.now(),
     });
-    completeFinishedMessageOperations(row, message);
-    closeOpenAgentRuntimeOperationsForCompletedTurn(row, message);
+    pauseOpenMessageOperations(row);
     upsertMessageOperation(row, {
-      operationId: `local-agent-cancelled:${row.id}`,
+      operationId: `local-agent:${row.id}`,
       kind: "request",
-      title: "本轮任务已取消",
-      summary: message,
-      detail: "前端已停止等待本轮本地运行结果；底层 Tauri 任务可能仍会短暂收尾，返回后不会覆盖当前消息。",
-      phase: "completed",
+      title: "桌面本地 Agent Runtime",
+      summary: "任务已暂停，可以继续执行",
+      detail: "已停止新的模型请求和工具调度；当前工作节点由桌面 Runtime 直接写入 checkpoint。",
+      phase: "blocked",
       actionType: "none",
       meta: {
         local_liuagent_operation: "true",
+        local_liuagent_recoverable: "true",
+        local_liuagent_resuming: "false",
         source: "tauri_liuagent_local_chat",
+        project_id: run.projectId || selectedProjectId.value,
         chat_session_id: chatSessionId,
+        user_message_id: String(run.userMessageId || "").trim(),
+        root_goal: String(run.rootGoal || "").trim(),
         cwd: String(run.workspacePath || "").trim(),
-        cancelled: true,
-        terminal_task: true,
-        resumable: false,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
+        recovery_reason: "manual_pause",
       },
     });
     appendMessageProcessLog(row, {
@@ -29758,19 +30292,22 @@ async function cancelActiveLocalLiuAgentRun() {
       chatSessionId,
       assistantMessage: row,
       fallbackContent: message,
+      preserveVisibleContent: true,
       workspacePath: String(run.workspacePath || "").trim(),
       sourceContext: {
         chat_mode: "system",
         surface: chatSurface.value,
         runtime: "tauri",
         workspace_path: String(run.workspacePath || "").trim(),
-        cancelled: true,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
         ...localLiuAgentRuntimeTimingSourceContext(row),
       },
     });
     void upsertProjectChatRequirementRecord({
       chatSessionId,
-      status: "cancelled",
+      status: "paused",
       rootGoal:
         String(run.rootGoal || "").trim() ||
         String(row.content || "").trim() ||
@@ -29783,7 +30320,9 @@ async function cancelActiveLocalLiuAgentRun() {
       sourceContext: {
         runtime: "tauri",
         workspace_path: String(run.workspacePath || "").trim(),
-        cancelled: true,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
         ...localLiuAgentRuntimeTimingSourceContext(row),
       },
     });
@@ -29809,11 +30348,11 @@ function closeIdleChatWsAfterFastCancel() {
 
 async function stopGeneration() {
   if (await cancelActiveLocalLiuAgentRun()) {
-    ElMessage.info("已停止本地智能体执行");
+    ElMessage.info("本地智能体已暂停，当前工作节点已保存");
     return;
   }
-  if (await clearLocalLiuAgentPendingPermissionsForChatSession()) {
-    ElMessage.info("已取消待授权操作");
+  if (await pauseLocalLiuAgentPendingPermissionsForChatSession()) {
+    ElMessage.info("任务已暂停，待授权节点已保存");
     return;
   }
   const currentRequestId = getActiveRequestId();
@@ -29983,53 +30522,48 @@ async function sendGlobalChatWithoutProject() {
   messages.value.push(assistantMessage);
   applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
 
-  const assistantIndex = messages.value.length - 1;
   chatLoading.value = true;
+  startWorkingStatusTimer(assistantMessage.id, GLOBAL_PROJECT_CHAT_LOCAL_SESSION_ID);
   resetDraft();
   scrollToBottom();
 
   try {
-    const response = await api.post("/projects/chat/global", {
-      message: appendModelGenerationInstruction(text),
-      history,
-      provider_id: String(
-        selectedProviderId.value || defaultProviderId.value || "",
-      ).trim(),
-      model_name: String(
-        selectedModelName.value || defaultModelName.value || "",
-      ).trim(),
-      temperature: Number(
-        temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
-      ),
-      system_prompt: "",
-      skill_resource_directory: String(
-        skillResourceDirectoryResolved.value || "",
-      ).trim(),
-      skill_directory: String(
-        projectChatSettings.value.skill_directory || "",
-      ).trim(),
-      rule_directory: String(
-        projectChatSettings.value.rule_directory || "",
-      ).trim(),
-      answer_style: String(
-        projectChatSettings.value.answer_style ||
-          CHAT_SETTINGS_DEFAULTS.answer_style,
-      ).trim(),
-      prefer_conclusion_first: Boolean(
-        projectChatSettings.value.prefer_conclusion_first ??
-        CHAT_SETTINGS_DEFAULTS.prefer_conclusion_first,
-      ),
-    });
-    messages.value[assistantIndex].content = String(
-      response?.content || "未返回有效内容。",
+    if (!hasNativeDesktopBridge()) {
+      throw new Error("无项目通用对话仅支持桌面智能体");
+    }
+    const runtimeInfo = await getNativeRuntimeInfo();
+    const workspacePath = String(
+      runtimeInfo?.defaultWorkspacePath ||
+        runtimeInfo?.default_workspace_path ||
+        runtimeInfo?.installDir ||
+        runtimeInfo?.install_dir ||
+        "",
     ).trim();
+    if (!workspacePath) {
+      throw new Error("桌面端未返回默认工作区路径");
+    }
+    await sendLocalLiuAgentChatRequest({
+      projectId: GLOBAL_PROJECT_CHAT_LOCAL_PROJECT_ID,
+      activeChatSessionId: GLOBAL_PROJECT_CHAT_LOCAL_SESSION_ID,
+      userMessage,
+      assistantMessage,
+      finalUserPrompt: appendModelGenerationInstruction(text),
+      historyRows: history,
+      displayUserMessageContent: text,
+      workspacePath,
+      persistUserMessage: false,
+      sourceContext: {
+        chat_mode: "system",
+        surface: "global-local-runner",
+        source_type: "project_chat_without_project",
+      },
+    });
   } catch (err) {
-    messages.value[assistantIndex].content =
-      `请求失败：${err?.message || "未知错误"}`;
-    ElMessage.error(err?.detail || err?.message || "通用对话失败");
+    assistantMessage.content = `请求失败：${err?.message || "未知错误"}`;
+    ElMessage.error(err?.message || "桌面通用对话失败");
   } finally {
-    finishMessageExecutionTiming(messages.value[assistantIndex]);
-    chatLoading.value = false;
+    finishMessageExecutionTiming(assistantMessage);
+    syncChatLoadingWithCurrentSession();
     scrollToBottom();
   }
 }
@@ -30434,9 +30968,15 @@ async function doSend(options = {}) {
       actionType: "none",
       meta: {
         local_liuagent_operation: "true",
+        local_liuagent_recoverable: "true",
+        local_liuagent_resuming: "false",
         source: "tauri_liuagent_local_chat",
+        project_id: selectedProjectId.value,
         chat_session_id: activeChatSessionId,
+        user_message_id: userMessage.id,
+        root_goal: displayUserMessageContent || finalUserPrompt,
         cwd: localLiuAgentWorkspacePath(),
+        recovery_reason: "runtime_start_failed",
       },
     });
     appendMessageProcessLog(assistantMessage, {

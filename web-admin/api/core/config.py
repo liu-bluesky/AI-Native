@@ -133,6 +133,9 @@ class Settings:
     # 工具
     tool_timeout: int
     max_tool_retries: int
+    backend_agent_runtime_new_runs_enabled: bool
+    agent_runtime_stale_run_recovery_enabled: bool
+    agent_runtime_stale_run_seconds: int
     project_experience_summary_worker_enabled: bool
     project_experience_summary_worker_poll_seconds: int
     feishu_bot_long_connection_worker_enabled: bool
@@ -186,6 +189,17 @@ def get_settings() -> Settings:
         compression_threshold=int(_get_env("COMPRESSION_THRESHOLD", "15")),
         tool_timeout=int(_get_env("TOOL_TIMEOUT", "60")),
         max_tool_retries=int(_get_env("MAX_TOOL_RETRIES", "3")),
+        backend_agent_runtime_new_runs_enabled=_env_bool(
+            "BACKEND_AGENT_RUNTIME_NEW_RUNS_ENABLED",
+            False,
+        ),
+        agent_runtime_stale_run_recovery_enabled=_env_bool(
+            "AGENT_RUNTIME_STALE_RUN_RECOVERY_ENABLED",
+            True,
+        ),
+        agent_runtime_stale_run_seconds=int(
+            _get_env("AGENT_RUNTIME_STALE_RUN_SECONDS", "300")
+        ),
         project_experience_summary_worker_enabled=_env_bool(
             "PROJECT_EXPERIENCE_SUMMARY_WORKER_ENABLED",
             True,

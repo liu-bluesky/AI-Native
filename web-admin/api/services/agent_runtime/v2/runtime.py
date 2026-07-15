@@ -213,6 +213,7 @@ class AgentTaskRuntime:
         provider_id: str,
         model_name: str,
         temperature: float,
+        max_tokens: int | None,
         role_ids: list[str] | None,
         local_connector: Any | None,
         local_connector_workspace_path: str,
@@ -251,6 +252,7 @@ class AgentTaskRuntime:
             "provider_id": str(provider_id or "").strip(),
             "model_name": str(model_name or "").strip(),
             "temperature": float(temperature),
+            "max_tokens": int(max_tokens) if max_tokens is not None else None,
             "tools": tool_pool.openai_tools(),
             "tool_pool": tool_pool.summary(),
             "role_ids": [
@@ -281,6 +283,7 @@ class AgentTaskRuntime:
         project_id: str,
         employee_id: str,
         cancel_event: asyncio.Event,
+        max_tokens: int | None = None,
         username: str = "",
         chat_session_id: str = "",
         role_ids: list[str] | None = None,
@@ -322,6 +325,7 @@ class AgentTaskRuntime:
                     provider_id=provider_id,
                     model_name=model_name,
                     temperature=temperature,
+                    max_tokens=max_tokens,
                     role_ids=role_ids,
                     local_connector=local_connector,
                     local_connector_workspace_path=local_connector_workspace_path,
@@ -374,6 +378,7 @@ class AgentTaskRuntime:
             provider_id=provider_id,
             model_name=model_name,
             temperature=temperature,
+            max_tokens=max_tokens,
             project_id=project_id,
             employee_id=employee_id,
             username=username,
@@ -386,6 +391,7 @@ class AgentTaskRuntime:
             local_connector_sandbox_mode=local_connector_sandbox_mode,
             global_assistant_bridge_handler=global_assistant_bridge_handler,
             assistant_workflow=assistant_workflow,
+            cancel_event=cancel_event,
         ):
             yield item
 
@@ -399,6 +405,7 @@ class AgentTaskRuntime:
         provider_id: str,
         model_name: str,
         temperature: float,
+        max_tokens: int | None,
         project_id: str,
         employee_id: str,
         username: str,
@@ -411,6 +418,7 @@ class AgentTaskRuntime:
         local_connector_sandbox_mode: str,
         global_assistant_bridge_handler: Any | None,
         assistant_workflow: dict[str, Any] | None,
+        cancel_event: asyncio.Event,
     ) -> AsyncGenerator[dict, None]:
         llm_service = self._resolve_llm_service()
         if llm_service is None:
@@ -491,6 +499,8 @@ class AgentTaskRuntime:
             provider_id=provider_id,
             model_name=model_name,
             temperature=temperature,
+            max_tokens=max_tokens,
+            cancel_event=cancel_event,
             **completion_gate,
         )
         yield {
@@ -509,6 +519,8 @@ class AgentTaskRuntime:
         done_payload = {
             "type": "done",
             "content": result.final_content,
+            "run_id": result.task_run.run_id,
+            "runtime_status": result.task_run.status,
             "agent_runtime": result.to_dict(),
             "tool_pool": tool_pool.summary(),
         }
@@ -555,6 +567,18 @@ class AgentTaskRuntime:
             done_payload["guard_message"] = (
                 result.final_content or "运行任务已暂停，等待处理阻塞项。"
             )
+        elif str(result.task_run.status or "").strip() in {
+            "paused",
+            "interrupted",
+            "retry_wait",
+        }:
+            recoverable_reason = self._query_engine_blocked_reason(result)
+            done_payload["completed_reason"] = recoverable_reason
+            done_payload["guard_reason"] = recoverable_reason
+            done_payload["guard_message"] = (
+                result.final_content or "运行任务已保存检查点，可以继续执行。"
+            )
+            done_payload["recoverable"] = True
         yield done_payload
 
     def _query_engine_waiting_reason(self, result: QueryEngineResult) -> str:

@@ -5,12 +5,20 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use super::adapters::protocol::{
     approval_required_event, message_event, state_changed_event, tool_result_event,
 };
 use super::gateway::{epoch_millis, sanitize_path_segment};
+use super::paths::desktop_runtime_root;
 use super::types::{ToolError, ToolExecutionResult};
+
+static RUNTIME_STATE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn runtime_state_write_lock() -> &'static Mutex<()> {
+    RUNTIME_STATE_WRITE_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +62,9 @@ pub struct RuntimePersistenceInput<'a> {
 pub fn write_runtime_artifacts(
     input: RuntimePersistenceInput<'_>,
 ) -> Result<RuntimeArtifactPaths, ToolError> {
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
     let paths = runtime_artifact_paths(
         input.workspace_root,
         input.project_id,
@@ -137,13 +148,30 @@ pub fn write_runtime_artifacts(
             "context": input.agent_run_context.clone()
         });
     }
+    let mut persisted_run_state = merge_runtime_run_state(run_state, pending_permissions);
+    let interruption_reason = input
+        .retry_decision
+        .get("failure_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if input.run_status == "paused" {
+        if let Some(run_state_object) = persisted_run_state.as_object_mut() {
+            run_state_object.insert("paused".to_string(), json!(true));
+            run_state_object.insert("checkpoint_ready".to_string(), json!(true));
+            run_state_object.insert("recoverable".to_string(), json!(true));
+            run_state_object.insert(
+                "interruption_reason".to_string(),
+                json!(interruption_reason),
+            );
+        }
+    }
     let state = json!({
         "record_type": "liuagent-runtime-session-state",
         "version": 1,
         "project_id": input.project_id,
         "chat_session_id": input.chat_session_id,
         "session_id": input.session_id,
-        "run_state": merge_runtime_run_state(run_state, pending_permissions),
+        "run_state": persisted_run_state,
         "model_runtime": model_runtime,
         "current_state": {
             "status": input.run_status,
@@ -179,6 +207,9 @@ pub fn write_runtime_artifacts(
             "session_id": input.session_id,
             "state_path": paths.state_path.to_string_lossy(),
             "latest_status": input.run_status,
+            "checkpoint_ready": input.run_status == "paused",
+            "recoverable": input.run_status == "paused",
+            "interruption_reason": interruption_reason,
             "state": state,
             "created_at_epoch_ms": now
         }),
@@ -195,6 +226,8 @@ pub fn write_runtime_artifacts(
             "session_id": input.session_id,
             "runtime_state_path": paths.state_path.to_string_lossy(),
             "latest_status": input.run_status,
+            "checkpoint_ready": input.run_status == "paused",
+            "recoverable": input.run_status == "paused",
             "updated_at_epoch_ms": now
         }),
     )?;
@@ -208,6 +241,8 @@ pub fn write_runtime_artifacts(
             "session_id": input.session_id,
             "runtime_state_path": paths.state_path.to_string_lossy(),
             "latest_status": input.run_status,
+            "checkpoint_ready": input.run_status == "paused",
+            "recoverable": input.run_status == "paused",
             "updated_at_epoch_ms": now
         }),
     )?;
@@ -287,9 +322,280 @@ pub fn append_runtime_event(
     chat_session_id: &str,
     event: &Value,
 ) -> Result<(), ToolError> {
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
     let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
     ensure_parent(&paths.transcript_path)?;
-    append_jsonl(&paths.transcript_path, &[event.clone()])
+    append_jsonl(&paths.transcript_path, &[event.clone()])?;
+    persist_runtime_event_checkpoint(&paths, project_id, chat_session_id, event, None)
+}
+
+pub fn pause_runtime_checkpoint(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    reason: &str,
+) -> Result<(), ToolError> {
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    ensure_parent(&paths.transcript_path)?;
+    let latest_event = if paths.transcript_path.exists() {
+        read_jsonl(&paths.transcript_path)?
+            .into_iter()
+            .last()
+            .unwrap_or_else(|| json!({}))
+    } else {
+        json!({})
+    };
+    let runtime_session_id = runtime_event_session_id(&latest_event).to_string();
+    let current_work_node = current_work_node_from_event(&latest_event);
+    let now = epoch_millis();
+    let pause_event = json!({
+        "event_id": format!("evt_{}_paused_{}", sanitize_path_segment(&runtime_session_id), now),
+        "runtime_session_id": runtime_session_id,
+        "session_id": runtime_session_id,
+        "run_id": runtime_session_id,
+        "chat_session_id": chat_session_id,
+        "type": "runtime_paused",
+        "payload": {
+            "status": "paused",
+            "reason": reason,
+            "checkpoint_ready": true,
+            "recoverable": true,
+            "current_work_node": current_work_node,
+            "created_at_epoch_ms": now
+        },
+        "created_at_epoch_ms": now
+    });
+    append_jsonl(&paths.transcript_path, &[pause_event.clone()])?;
+    persist_runtime_event_checkpoint(
+        &paths,
+        project_id,
+        chat_session_id,
+        &pause_event,
+        Some(reason),
+    )
+}
+
+fn persist_runtime_event_checkpoint(
+    paths: &RuntimeArtifactPathBufs,
+    project_id: &str,
+    chat_session_id: &str,
+    event: &Value,
+    interruption_reason: Option<&str>,
+) -> Result<(), ToolError> {
+    ensure_parent(&paths.state_path)?;
+    ensure_parent(&paths.checkpoint_path)?;
+    ensure_parent(&paths.active_session_path)?;
+    ensure_parent(&paths.session_history_path)?;
+    let now = epoch_millis();
+    let session_id = runtime_event_session_id(event);
+    let mut state = read_json_or_default(&paths.state_path, json!({}))?;
+    let previous_session_id = state
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let same_session = !session_id.is_empty() && session_id == previous_session_id;
+    let previous_status = state
+        .get("run_state")
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let paused = interruption_reason.is_some() || (same_session && previous_status == "paused");
+    let status = if paused { "paused" } else { "running" };
+    let reason = interruption_reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            state
+                .get("run_state")
+                .and_then(|value| value.get("interruption_reason"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("")
+        .to_string();
+    let current_work_node = event
+        .get("payload")
+        .and_then(|payload| payload.get("current_work_node"))
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(|| current_work_node_from_event(event));
+    let event_id = event.get("event_id").and_then(Value::as_str).unwrap_or("");
+    let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
+    let state_object = state.as_object_mut().ok_or_else(|| {
+        ToolError::new("state.invalid", "runtime state root must be a JSON object")
+    })?;
+    state_object.insert(
+        "record_type".to_string(),
+        json!("liuagent-runtime-session-state"),
+    );
+    state_object.insert("version".to_string(), json!(1));
+    state_object.insert("project_id".to_string(), json!(project_id));
+    state_object.insert("chat_session_id".to_string(), json!(chat_session_id));
+    if !session_id.is_empty() {
+        state_object.insert("session_id".to_string(), json!(session_id));
+    }
+    let mut run_state = state_object
+        .get("run_state")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let run_state_object = run_state.as_object_mut().ok_or_else(|| {
+        ToolError::new("state.invalid", "runtime run_state must be a JSON object")
+    })?;
+    run_state_object.insert("version".to_string(), json!("run-state/v1"));
+    run_state_object.insert("status".to_string(), json!(status));
+    run_state_object.insert("paused".to_string(), json!(paused));
+    run_state_object.insert("checkpoint_ready".to_string(), json!(true));
+    run_state_object.insert("recoverable".to_string(), json!(true));
+    run_state_object.insert("interruption_reason".to_string(), json!(reason));
+    run_state_object.insert("latest_event_id".to_string(), json!(event_id));
+    run_state_object.insert("latest_event_type".to_string(), json!(event_type));
+    run_state_object.insert("current_work_node".to_string(), current_work_node.clone());
+    if event_type == "tool_call_started" {
+        let tool_call_id = event
+            .get("payload")
+            .and_then(|payload| payload.get("tool_call_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        run_state_object.insert(
+            "pending_tool_call_ids".to_string(),
+            if tool_call_id.is_empty() {
+                json!([])
+            } else {
+                json!([tool_call_id])
+            },
+        );
+    } else if event_type == "tool_result" {
+        run_state_object.insert("pending_tool_call_ids".to_string(), json!([]));
+    }
+    run_state_object.insert("updated_at_epoch_ms".to_string(), json!(now));
+    state_object.insert("run_state".to_string(), run_state);
+    let mut current_state = state_object
+        .get("current_state")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let current_state_object = current_state.as_object_mut().ok_or_else(|| {
+        ToolError::new(
+            "state.invalid",
+            "runtime current_state must be a JSON object",
+        )
+    })?;
+    current_state_object.insert("status".to_string(), json!(status));
+    current_state_object.insert("paused".to_string(), json!(paused));
+    current_state_object.insert("checkpoint_ready".to_string(), json!(true));
+    current_state_object.insert("recoverable".to_string(), json!(true));
+    current_state_object.insert("interruption_reason".to_string(), json!(reason));
+    current_state_object.insert("current_work_node".to_string(), current_work_node);
+    current_state_object.insert("latest_runtime_event".to_string(), event.clone());
+    current_state_object.insert("updated_at_epoch_ms".to_string(), json!(now));
+    state_object.insert("current_state".to_string(), current_state);
+    if event_type == "tool_result" {
+        append_unique_runtime_payload(
+            state_object,
+            "tool_results",
+            event.get("payload").cloned().unwrap_or_else(|| json!({})),
+            "tool_result_id",
+        );
+    } else if event_type == "model_step" {
+        append_unique_runtime_payload(
+            state_object,
+            "model_steps",
+            event.get("payload").cloned().unwrap_or_else(|| json!({})),
+            "index",
+        );
+    }
+    state_object.insert("updated_at_epoch_ms".to_string(), json!(now));
+    atomic_write_json(&paths.state_path, &state)?;
+    atomic_write_json(
+        &paths.checkpoint_path,
+        &json!({
+            "record_type": "liuagent-runtime-checkpoint",
+            "version": 2,
+            "project_id": project_id,
+            "chat_session_id": chat_session_id,
+            "session_id": session_id,
+            "state_path": paths.state_path.to_string_lossy(),
+            "latest_status": status,
+            "checkpoint_ready": true,
+            "recoverable": true,
+            "interruption_reason": reason,
+            "latest_event_id": event_id,
+            "latest_event_type": event_type,
+            "state": state,
+            "created_at_epoch_ms": now
+        }),
+    )?;
+    let session_index = json!({
+        "record_type": "query-mcp-active-session",
+        "version": 1,
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "session_id": session_id,
+        "runtime_state_path": paths.state_path.to_string_lossy(),
+        "latest_status": status,
+        "checkpoint_ready": true,
+        "recoverable": true,
+        "updated_at_epoch_ms": now
+    });
+    atomic_write_json(&paths.active_session_path, &session_index)?;
+    atomic_write_json(
+        &paths.session_history_path,
+        &json!({
+            "record_type": "query-mcp-session-history",
+            "version": 1,
+            "project_id": project_id,
+            "chat_session_id": chat_session_id,
+            "session_id": session_id,
+            "runtime_state_path": paths.state_path.to_string_lossy(),
+            "latest_status": status,
+            "checkpoint_ready": true,
+            "recoverable": true,
+            "updated_at_epoch_ms": now
+        }),
+    )
+}
+
+fn current_work_node_from_event(event: &Value) -> Value {
+    let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
+    if let Some(node) = payload
+        .get("current_task_node")
+        .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+    {
+        return node.clone();
+    }
+    json!({
+        "kind": event.get("type").and_then(Value::as_str).unwrap_or("runtime"),
+        "event_id": event.get("event_id").and_then(Value::as_str).unwrap_or(""),
+        "model_step_index": payload.get("index").cloned().unwrap_or(Value::Null),
+        "tool_call_id": payload.get("tool_call_id").cloned().unwrap_or(Value::Null),
+        "tool_name": payload.get("tool_name").cloned().unwrap_or(Value::Null),
+        "status": payload.get("status").cloned().unwrap_or_else(|| json!("running"))
+    })
+}
+
+fn append_unique_runtime_payload(
+    state_object: &mut serde_json::Map<String, Value>,
+    field: &str,
+    payload: Value,
+    identity_field: &str,
+) {
+    let mut items = state_object
+        .get(field)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let identity = payload.get(identity_field).cloned().unwrap_or(Value::Null);
+    let duplicate = !identity.is_null()
+        && items
+            .iter()
+            .any(|item| item.get(identity_field) == Some(&identity));
+    if !duplicate {
+        items.push(payload);
+    }
+    state_object.insert(field.to_string(), Value::Array(items));
 }
 
 fn compact_json_string(value: &Value) -> String {
@@ -696,9 +1002,7 @@ fn required_cache_id<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a
 }
 
 fn offline_project_index_path(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join(".ai-employee")
-        .join("agent-runtime-v2")
+    desktop_runtime_root(workspace_root)
         .join("project-cache")
         .join("index.json")
 }
@@ -708,9 +1012,7 @@ fn offline_session_cache_path(
     project_id: &str,
     chat_session_id: &str,
 ) -> PathBuf {
-    workspace_root
-        .join(".ai-employee")
-        .join("agent-runtime-v2")
+    desktop_runtime_root(workspace_root)
         .join("session-cache")
         .join(format!(
             "{}__{}.json",
@@ -720,18 +1022,13 @@ fn offline_session_cache_path(
 }
 
 fn offline_runtime_config_path(workspace_root: &Path, provider_id: &str) -> PathBuf {
-    workspace_root
-        .join(".ai-employee")
-        .join("agent-runtime-v2")
+    desktop_runtime_root(workspace_root)
         .join("runtime-config")
         .join(format!("{}.json", sanitize_path_segment(provider_id)))
 }
 
 fn offline_maintenance_log_path(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join(".ai-employee")
-        .join("agent-runtime-v2")
-        .join("maintenance.jsonl")
+    desktop_runtime_root(workspace_root).join("maintenance.jsonl")
 }
 
 fn runtime_artifact_paths(
@@ -741,9 +1038,7 @@ fn runtime_artifact_paths(
 ) -> RuntimeArtifactPathBufs {
     let safe_project_id = sanitize_path_segment(project_id);
     let safe_chat_session_id = sanitize_path_segment(chat_session_id);
-    let session_dir = workspace_root
-        .join(".ai-employee")
-        .join("agent-runtime-v2")
+    let session_dir = desktop_runtime_root(workspace_root)
         .join("sessions")
         .join(&safe_chat_session_id);
     RuntimeArtifactPathBufs {
@@ -907,6 +1202,38 @@ fn write_json(path: &Path, value: &Value) -> Result<(), ToolError> {
         .map_err(|err| ToolError::new("state.write_failed", format!("write state failed: {err}")))
 }
 
+fn atomic_write_json(path: &Path, value: &Value) -> Result<(), ToolError> {
+    ensure_parent(path)?;
+    let raw = serde_json::to_string_pretty(value).map_err(|err| {
+        ToolError::new(
+            "state.write_failed",
+            format!("serialize state failed: {err}"),
+        )
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("runtime-state.json");
+    let temporary_path = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        epoch_millis()
+    ));
+    fs::write(&temporary_path, raw).map_err(|err| {
+        ToolError::new(
+            "state.write_failed",
+            format!("write temporary state failed: {err}"),
+        )
+    })?;
+    fs::rename(&temporary_path, path).map_err(|err| {
+        let _ = fs::remove_file(&temporary_path);
+        ToolError::new(
+            "state.write_failed",
+            format!("replace runtime state failed: {err}"),
+        )
+    })
+}
+
 fn read_json_or_default(path: &Path, default_value: Value) -> Result<Value, ToolError> {
     if !path.exists() {
         return Ok(default_value);
@@ -997,6 +1324,57 @@ fn read_jsonl(path: &Path) -> Result<Vec<Value>, ToolError> {
 mod tests {
     use super::*;
     use crate::liuagent_core::types::ToolExecutionResult;
+
+    #[test]
+    fn runtime_events_roll_checkpoint_and_pause_freezes_latest_node() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_event_checkpoint_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        append_runtime_event(
+            &dir,
+            "proj-test",
+            "chat-event-checkpoint",
+            &json!({
+                "event_id": "evt_model_started",
+                "runtime_session_id": "session-event-checkpoint",
+                "chat_session_id": "chat-event-checkpoint",
+                "type": "model_call_started",
+                "payload": {
+                    "index": 2,
+                    "status": "running",
+                    "current_task_node": {
+                        "id": "node-2",
+                        "title": "执行第二个节点",
+                        "status": "in_progress"
+                    }
+                },
+                "created_at_epoch_ms": epoch_millis()
+            }),
+        )
+        .unwrap();
+
+        let running = recover_runtime_state(&dir, "proj-test", "chat-event-checkpoint").unwrap();
+        assert_eq!(running["run_state"]["status"], "running");
+        assert_eq!(running["run_state"]["checkpoint_ready"], true);
+        assert_eq!(running["run_state"]["current_work_node"]["id"], "node-2");
+
+        pause_runtime_checkpoint(
+            &dir,
+            "proj-test",
+            "chat-event-checkpoint",
+            "network_interruption",
+        )
+        .unwrap();
+        let paused = recover_runtime_state(&dir, "proj-test", "chat-event-checkpoint").unwrap();
+        assert_eq!(paused["run_state"]["status"], "paused");
+        assert_eq!(paused["run_state"]["recoverable"], true);
+        assert_eq!(
+            paused["run_state"]["interruption_reason"],
+            "network_interruption"
+        );
+        assert_eq!(paused["run_state"]["current_work_node"]["id"], "node-2");
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn writes_recoverable_waiting_approval_state() {

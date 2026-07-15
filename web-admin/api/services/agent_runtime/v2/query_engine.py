@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +20,7 @@ from services.agent_runtime.shared.model_output_normalizer import (
     ModelOutputNormalizationResult,
     normalize_model_output,
 )
+from services.agent_runtime.shared.retry_policy import RuntimeRetryPolicy
 from services.agent_runtime.shared.tool_results import ToolObservation
 from services.agent_runtime.core.transcript_store import TranscriptStore
 from services.agent_runtime.shared.verification_policy import (
@@ -72,6 +74,8 @@ class QueryEngine:
         event_log: RuntimeEventLog | None = None,
         completion_policy: CompletionPolicy | None = None,
         verification_policy: VerificationPolicy | None = None,
+        retry_policy: RuntimeRetryPolicy | None = None,
+        max_model_steps: int = 20,
     ):
         self._llm_step = llm_step
         self._tool_runner = tool_runner
@@ -80,6 +84,8 @@ class QueryEngine:
         self._event_log = event_log or RuntimeEventLog()
         self._completion_policy = completion_policy or CompletionPolicy()
         self._verification_policy = verification_policy or VerificationPolicy()
+        self._retry_policy = retry_policy or RuntimeRetryPolicy()
+        self._max_model_steps = max(1, int(max_model_steps))
 
     async def run(
         self,
@@ -94,6 +100,7 @@ class QueryEngine:
         verification_evidence: list[VerificationEvidence] | None = None,
         task_tree_verified: bool = False,
         goal_covered: bool = False,
+        cancel_event: asyncio.Event | None = None,
     ) -> QueryEngineResult:
         task_run = self._state_store.append_event(
             task_run,
@@ -114,17 +121,96 @@ class QueryEngine:
         tool_round_completed = False
         step_index = 0
         total_tool_calls = 0
+        llm_retry_attempts = 0
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                latest_decision = CompletionDecision("blocked", ["manual_pause"])
+                self._record_completion_decision(task_run.run_id, latest_decision)
+                self._save_checkpoint(
+                    task_run,
+                    phase="paused_before_model",
+                    messages=working_messages,
+                    step_index=step_index,
+                    total_tool_calls=total_tool_calls,
+                    llm_retry_attempts=llm_retry_attempts,
+                )
+                task_run = self._state_store.append_event(
+                    task_run,
+                    "query_engine_paused",
+                    {"reason": "manual_pause"},
+                    status="paused",
+                )
+                final_content = "任务已暂停，可以从当前检查点继续。"
+                break
+            if step_index >= self._max_model_steps:
+                latest_decision = CompletionDecision("blocked", ["loop_budget_exceeded"])
+                self._record_completion_decision(task_run.run_id, latest_decision)
+                self._save_checkpoint(
+                    task_run,
+                    phase="loop_budget_exceeded",
+                    messages=working_messages,
+                    step_index=step_index,
+                    total_tool_calls=total_tool_calls,
+                    llm_retry_attempts=llm_retry_attempts,
+                )
+                task_run = self._state_store.append_event(
+                    task_run,
+                    "query_engine_interrupted",
+                    {
+                        "reason": "loop_budget_exceeded",
+                        "max_model_steps": self._max_model_steps,
+                    },
+                    status="interrupted",
+                )
+                final_content = (
+                    f"达到最大模型处理轮次（{self._max_model_steps}），"
+                    "任务已安全中断，可从检查点继续。"
+                )
+                break
             step_index += 1
             model_steps = step_index
-            llm_result = await self._llm_step.run(
-                provider_id=provider_id,
-                model_name=model_name,
+            self._save_checkpoint(
+                task_run,
+                phase="before_model",
                 messages=working_messages,
-                tools=tools,
-                temperature=temperature,
-                max_tokens=max_tokens,
+                step_index=step_index,
+                total_tool_calls=total_tool_calls,
+                llm_retry_attempts=llm_retry_attempts,
             )
+            try:
+                llm_result = await self._llm_step.run(
+                    provider_id=provider_id,
+                    model_name=model_name,
+                    messages=working_messages,
+                    tools=tools,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except asyncio.CancelledError:
+                latest_decision = CompletionDecision("blocked", ["manual_pause"])
+                self._record_completion_decision(task_run.run_id, latest_decision)
+                self._save_checkpoint(
+                    task_run,
+                    phase="paused_during_model",
+                    messages=working_messages,
+                    step_index=step_index,
+                    total_tool_calls=total_tool_calls,
+                    llm_retry_attempts=llm_retry_attempts,
+                )
+                task_run = self._state_store.append_event(
+                    task_run,
+                    "query_engine_paused",
+                    {"reason": "manual_pause", "phase": "model"},
+                    status="paused",
+                )
+                return QueryEngineResult(
+                    task_run=task_run,
+                    final_content="任务已暂停，可以从当前检查点继续。",
+                    completion_decision=latest_decision,
+                    observations=observations,
+                    model_steps=step_index,
+                    total_tool_calls=total_tool_calls,
+                )
             normalization = self._normalize_llm_result(
                 llm_result,
                 tools=tools,
@@ -160,6 +246,95 @@ class QueryEngine:
             )
             if llm_result.error:
                 error_message = self._llm_error_message(llm_result.error)
+                retry_decision = self._retry_policy.classify_llm_error(llm_result.error)
+                if (
+                    retry_decision.retryable
+                    and llm_retry_attempts < self._retry_policy.max_attempts
+                ):
+                    llm_retry_attempts += 1
+                    retry_delay = self._retry_policy.delay_seconds(llm_retry_attempts)
+                    latest_decision = CompletionDecision(
+                        "retry_model",
+                        [retry_decision.reason],
+                    )
+                    self._record_completion_decision(task_run.run_id, latest_decision)
+                    self._save_checkpoint(
+                        task_run,
+                        phase="llm_retry_wait",
+                        messages=working_messages,
+                        step_index=step_index,
+                        total_tool_calls=total_tool_calls,
+                        llm_retry_attempts=llm_retry_attempts,
+                        extra={
+                            "error_signature": retry_decision.signature,
+                            "retry_reason": retry_decision.reason,
+                        },
+                    )
+                    task_run = self._state_store.append_event(
+                        task_run,
+                        "query_engine_retry_scheduled",
+                        {
+                            "attempt": llm_retry_attempts,
+                            "max_attempts": self._retry_policy.max_attempts,
+                            "delay_seconds": retry_delay,
+                            "reason": retry_decision.reason,
+                            "error_signature": retry_decision.signature,
+                        },
+                        status="retry_wait",
+                    )
+                    if retry_delay > 0:
+                        await asyncio.sleep(retry_delay)
+                    task_run = self._state_store.append_event(
+                        task_run,
+                        "query_engine_retry_started",
+                        {
+                            "attempt": llm_retry_attempts,
+                            "reason": retry_decision.reason,
+                        },
+                        status="running",
+                    )
+                    continue
+                if retry_decision.retryable:
+                    latest_decision = CompletionDecision(
+                        "blocked",
+                        ["llm_retry_exhausted", retry_decision.reason],
+                    )
+                    self._record_completion_decision(task_run.run_id, latest_decision)
+                    self._save_checkpoint(
+                        task_run,
+                        phase="llm_retry_exhausted",
+                        messages=working_messages,
+                        step_index=step_index,
+                        total_tool_calls=total_tool_calls,
+                        llm_retry_attempts=llm_retry_attempts,
+                        extra={
+                            "error_signature": retry_decision.signature,
+                            "retry_reason": retry_decision.reason,
+                        },
+                    )
+                    task_run = self._state_store.append_event(
+                        task_run,
+                        "query_engine_interrupted",
+                        {
+                            "error": llm_result.error,
+                            "reason": "llm_retry_exhausted",
+                            "retry_reason": retry_decision.reason,
+                            "attempts": llm_retry_attempts,
+                            "error_signature": retry_decision.signature,
+                        },
+                        status="interrupted",
+                    )
+                    return QueryEngineResult(
+                        task_run=task_run,
+                        final_content=(
+                            f"模型服务暂时不可用，已重试 {llm_retry_attempts} 次。"
+                            f"任务已保留检查点，可稍后继续。错误：{error_message}"
+                        ),
+                        completion_decision=latest_decision,
+                        observations=observations,
+                        model_steps=step_index,
+                        total_tool_calls=total_tool_calls,
+                    )
                 latest_decision = CompletionDecision("fail", ["llm_error"])
                 self._record_completion_decision(task_run.run_id, latest_decision)
                 task_run = self._state_store.append_event(
@@ -176,6 +351,7 @@ class QueryEngine:
                     model_steps=step_index,
                     total_tool_calls=total_tool_calls,
                 )
+            llm_retry_attempts = 0
             if llm_result.tool_calls:
                 next_tool_call_count = len(llm_result.tool_calls)
                 if self._tool_runner is None:
@@ -199,13 +375,74 @@ class QueryEngine:
                         ],
                     }
                 )
-                records = await self._tool_runner.execute(
-                    run_id=task_run.run_id,
-                    tool_calls=llm_result.tool_calls,
+                self._save_checkpoint(
+                    task_run,
+                    phase="tool_execution_in_flight",
+                    messages=working_messages,
+                    step_index=step_index,
+                    total_tool_calls=total_tool_calls,
+                    llm_retry_attempts=llm_retry_attempts,
+                    extra={
+                        "pending_tool_calls": [
+                            item.to_dict() for item in llm_result.tool_calls
+                        ]
+                    },
                 )
+                try:
+                    records = await self._tool_runner.execute(
+                        run_id=task_run.run_id,
+                        tool_calls=llm_result.tool_calls,
+                    )
+                except asyncio.CancelledError:
+                    latest_decision = CompletionDecision(
+                        "blocked",
+                        ["tool_result_reconciliation_required"],
+                    )
+                    self._record_completion_decision(task_run.run_id, latest_decision)
+                    self._save_checkpoint(
+                        task_run,
+                        phase="tool_execution_in_flight",
+                        messages=working_messages,
+                        step_index=step_index,
+                        total_tool_calls=total_tool_calls,
+                        llm_retry_attempts=llm_retry_attempts,
+                        extra={
+                            "pending_tool_calls": [
+                                item.to_dict() for item in llm_result.tool_calls
+                            ]
+                        },
+                    )
+                    task_run = self._state_store.append_event(
+                        task_run,
+                        "query_engine_interrupted",
+                        {
+                            "reason": "tool_result_reconciliation_required",
+                            "phase": "tool_execution",
+                        },
+                        status="interrupted",
+                    )
+                    return QueryEngineResult(
+                        task_run=task_run,
+                        final_content=(
+                            "工具执行期间收到暂停请求。为避免重复执行，"
+                            "需要先确认工具结果后再继续。"
+                        ),
+                        completion_decision=latest_decision,
+                        observations=observations,
+                        model_steps=step_index,
+                        total_tool_calls=total_tool_calls,
+                    )
                 tool_round_completed = True
                 observations.extend([item.observation for item in records])
                 self._append_tool_messages(working_messages, records)
+                self._save_checkpoint(
+                    task_run,
+                    phase="after_tool",
+                    messages=working_messages,
+                    step_index=step_index,
+                    total_tool_calls=total_tool_calls,
+                    llm_retry_attempts=llm_retry_attempts,
+                )
                 self._event_log.append(
                     task_run.run_id,
                     "tool_round_completed",
@@ -317,6 +554,33 @@ class QueryEngine:
             observations=observations,
             model_steps=model_steps,
             total_tool_calls=total_tool_calls,
+        )
+
+    def _save_checkpoint(
+        self,
+        task_run: TaskRun,
+        *,
+        phase: str,
+        messages: list[dict[str, Any]],
+        step_index: int,
+        total_tool_calls: int,
+        llm_retry_attempts: int,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        checkpoint = {
+            "phase": str(phase or "").strip(),
+            "messages": list(messages or []),
+            "step_index": int(step_index),
+            "total_tool_calls": int(total_tool_calls),
+            "llm_retry_attempts": int(llm_retry_attempts),
+        }
+        checkpoint.update(dict(extra or {}))
+        task_run.metadata["runtime_checkpoint"] = checkpoint
+        self._state_store.save(task_run)
+        self._transcript_store.append(
+            task_run.run_id,
+            "runtime_checkpoint",
+            checkpoint,
         )
 
     def _normalize_llm_result(

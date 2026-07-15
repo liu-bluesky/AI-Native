@@ -65,3 +65,21 @@ removed.
 - `integrations/gateway.py`: adapter boundary for routing CLI, project chat,
   local connector, and platform messages into one runtime input shape.
 - `v2/delegation.py`: subagent/delegation planning boundary for v2.
+
+## Recovery Contract
+
+- Recoverable run states are `paused`, `interrupted`, and `retry_wait`.
+- The query engine writes `metadata.runtime_checkpoint` before model calls and
+  around tool execution boundaries.
+- Transient model failures use bounded exponential retry. Exhausted retry and
+  loop budgets transition to `interrupted` instead of losing the run context.
+- A tool interrupted while in flight is not executed again automatically. The
+  run reports `tool_result_reconciliation_required` until its result is known.
+- Resume a recoverable run with
+  `POST /projects/{project_id}/agent-runtime-v2/runs/{run_id}/resume`. Resume
+  keeps the original `run_id`, project chat session, transcript, and event log.
+- API startup reconciles stale `running` and `retry_wait` runs to `interrupted`
+  so they become explicitly recoverable after a process restart. Configure it
+  with `AGENT_RUNTIME_STALE_RUN_RECOVERY_ENABLED` (default `true`) and
+  `AGENT_RUNTIME_STALE_RUN_SECONDS` (default `300`). Waiting-user and terminal
+  states are never changed by this startup scan.
