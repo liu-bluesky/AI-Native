@@ -207,7 +207,10 @@ from models.requests import (
     WorkspaceDirectoryPickReq,
     WorkspaceFilePickReq,
 )
-from stores.json.system_config_store import normalize_query_mcp_bootstrap_prompt_template
+from stores.json.system_config_store import (
+    normalize_query_mcp_bootstrap_prompt_template,
+    normalize_query_mcp_prompt_layout,
+)
 from stores.json.project_chat_store import ProjectChatMessage
 from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChatTaskSession
 from stores.json.project_requirement_record_store import ProjectRequirementRecord
@@ -12200,7 +12203,7 @@ def _focus_query_mcp_cli_prompt_on_profile(rendered: str, client_profile: str) -
         )
     if _QUERY_MCP_CLI_PROMPT_LEGACY_SHARED_STEP1 in result:
         result = result.replace(_QUERY_MCP_CLI_PROMPT_LEGACY_SHARED_STEP1, focused_step1, 1)
-    return result
+    return normalize_query_mcp_prompt_layout(result)
 
 
 def _build_query_mcp_cli_prompt(
@@ -12275,15 +12278,22 @@ def _build_query_mcp_cli_prompt(
             and "{{project_context_block}}" not in template
             and "默认项目:" not in rendered
         ):
-            rendered = "\n".join(
-                [
-                    rendered.rstrip(),
-                    "",
+            context_lines = [*project_context_block.splitlines(), chat_session_block]
+            if "当前接入上下文：" in rendered:
+                rendered = rendered.replace(
                     "当前接入上下文：",
-                    *project_context_block.splitlines(),
-                    chat_session_block,
-                ]
-            ).strip()
+                    "\n".join(["当前接入上下文：", *context_lines]),
+                    1,
+                )
+            else:
+                rendered = "\n".join(
+                    [
+                        rendered.rstrip(),
+                        "",
+                        "当前接入上下文：",
+                        *context_lines,
+                    ]
+                ).strip()
         return _focus_query_mcp_cli_prompt_on_profile(rendered, normalized_client_profile)
     sections = [
         "你已接入统一查询 MCP。",

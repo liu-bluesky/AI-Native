@@ -404,10 +404,41 @@ _LEGACY_CLIENT_DEPLOY_ARTIFACT_PROFILE_LINES = [
 ]
 
 
+def normalize_query_mcp_prompt_layout(value: object) -> str:
+    """Normalize shared Query MCP prompt whitespace before rendering or persistence."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized_lines: list[str] = []
+    previous_blank = False
+    for raw_line in text.split("\n"):
+        line = raw_line.rstrip()
+        if not line.strip():
+            if normalized_lines and not previous_blank:
+                normalized_lines.append("")
+            previous_blank = True
+            continue
+        normalized_lines.append(line)
+        previous_blank = False
+    return "\n".join(normalized_lines).strip()
+
+
+def _normalize_query_mcp_bootstrap_context_headings(value: object) -> str:
+    normalized_lines: list[str] = []
+    context_heading_seen = False
+    for line in normalize_query_mcp_prompt_layout(value).splitlines():
+        if line.strip() in {"当前接入上下文", "当前接入上下文："}:
+            if context_heading_seen:
+                continue
+            normalized_lines.append("当前接入上下文：")
+            context_heading_seen = True
+            continue
+        normalized_lines.append(line)
+    return normalize_query_mcp_prompt_layout("\n".join(normalized_lines))
+
+
 def normalize_query_mcp_client_profile_template(template: str) -> str:
-    normalized = str(template or "").strip()
+    normalized = normalize_query_mcp_prompt_layout(template)
     if not normalized:
-        return DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE
+        return normalize_query_mcp_prompt_layout(DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE)
     if "{{focus_lines}}" in normalized:
         return normalized
 
@@ -442,15 +473,13 @@ def normalize_query_mcp_client_profile_template(template: str) -> str:
         )
         lines[insert_at:insert_at] = _CLIENT_DEPLOY_ARTIFACT_PROFILE_LINES
         upgraded = "\n".join(lines)
-    return upgraded
+    return normalize_query_mcp_prompt_layout(upgraded)
 
 
 def normalize_query_mcp_desktop_agent_profile_template(template: str) -> str:
-    normalized = str(template or "").strip()
+    normalized = normalize_query_mcp_prompt_layout(template)
     if not normalized:
-        return DEFAULT_QUERY_MCP_DESKTOP_AGENT_PROFILE_TEMPLATE
-    if "{{focus_lines}}" in normalized:
-        return normalized
+        return normalize_query_mcp_prompt_layout(DEFAULT_QUERY_MCP_DESKTOP_AGENT_PROFILE_TEMPLATE)
     return normalized
 
 
@@ -470,11 +499,15 @@ def _looks_like_legacy_bootstrap_template(template: str) -> bool:
 
 
 def normalize_query_mcp_bootstrap_prompt_template(template: str) -> str:
-    normalized = str(template or "").strip()
+    normalized = _normalize_query_mcp_bootstrap_context_headings(template)
     if not normalized:
-        return DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE
+        return _normalize_query_mcp_bootstrap_context_headings(
+            DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE
+        )
     if _looks_like_legacy_bootstrap_template(normalized):
-        return DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE
+        return _normalize_query_mcp_bootstrap_context_headings(
+            DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE
+        )
     upgraded = _normalize_bootstrap_client_profile_resource_lines(_normalize_query_mcp_active_state_contract(
         normalized.replace(_LEGACY_SEARCH_IDS_LINE, _UPDATED_SEARCH_IDS_LINE)
         .replace(_LEGACY_QUERY_MCP_SKILL_SOURCE_LINE, _UPDATED_QUERY_MCP_SKILL_SOURCE_LINE)
@@ -580,13 +613,39 @@ def normalize_query_mcp_bootstrap_prompt_template(template: str) -> str:
             f"{_DEPLOY_ARTIFACT_CONTRACT_BOOTSTRAP_BLOCK}\n\n当前接入上下文：",
             1,
         )
-    return upgraded
+    return _normalize_query_mcp_bootstrap_context_headings(upgraded)
+
+
+def _normalize_query_mcp_usage_guide_bootstrap_lines(value: object) -> str:
+    normalized_lines: list[str] = []
+    inserted = False
+    for line in normalize_query_mcp_prompt_layout(value).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("1. 先读取 query://usage-guide；"):
+            continue
+        if stripped.startswith("1.0.1 `list_mcp_resources`"):
+            continue
+        if stripped.startswith("1.0.2 简单查询直达业务工具："):
+            continue
+        normalized_lines.append(line)
+        if stripped == "## 最少执行规则":
+            normalized_lines.extend(
+                [
+                    _CLIENT_PROFILE_GUIDE_LINE,
+                    _RESOURCE_DISCOVERY_GUARD_GUIDE_LINE,
+                    _SIMPLE_QUERY_DIRECT_GUIDE_LINE,
+                ]
+            )
+            inserted = True
+    if not inserted:
+        return normalize_query_mcp_prompt_layout(value)
+    return normalize_query_mcp_prompt_layout("\n".join(normalized_lines))
 
 
 def normalize_query_mcp_usage_guide_template(template: str) -> str:
-    normalized = str(template or "").strip()
+    normalized = normalize_query_mcp_prompt_layout(template)
     if not normalized:
-        return DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE
+        return normalize_query_mcp_prompt_layout(DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE)
     upgraded = _normalize_query_mcp_active_state_contract(
         normalized.replace(_LEGACY_SEARCH_IDS_LINE_GUIDE, _UPDATED_SEARCH_IDS_LINE_GUIDE).replace(
             _LEGACY_QUERY_MCP_SKILL_SOURCE_LINE_GUIDE,
@@ -648,7 +707,9 @@ def normalize_query_mcp_usage_guide_template(template: str) -> str:
             "11. 如用户在“已完成”后发现问题，必须重新起一轮修复计划，并继续回写轨迹与验证；不得直接覆盖上一轮结论。\n"
             f"{_ROOT_CAUSE_RULE_GUIDE_LINE}",
         )
-    return upgraded
+    return _normalize_query_mcp_usage_guide_bootstrap_lines(upgraded)
+
+
 DEFAULT_CHAT_STYLE_HINTS = {
     "concise": {
         "style_hint": "输出风格：简洁，避免冗长。",

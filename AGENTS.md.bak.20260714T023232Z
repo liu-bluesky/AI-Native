@@ -29,9 +29,47 @@
 19. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。
 20. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 当前接入上下文：
 - 默认项目: `proj-cc47efb1`
 - 建议把 URL 默认上下文里的 `project_id` 固定为 `proj-cc47efb1`。
 - 涉及当前项目时，若项目和对象已明确，可直接 `get_manual_content(project_id="proj-cc47efb1")` 或进入 `start_project_workflow(...)`；仅在缺少 ID 或需要跨项目定位时，再调用 `search_ids(keyword="<用户原始问题>", project_id="proj-cc47efb1")`。
 - 若要创建或续接当前项目任务树，优先显式调用 `bind_project_context(project_id="proj-cc47efb1", chat_session_id="<聊天会话ID>", root_goal="<用户原始问题>")`。
-- 当前页面已有 `chat_session_id=cli-codex-prompt-whitespace-fix-20260714-a1`；仅在明确要续接当前任务树时复用，否则新开的并行 CLI 应重新生成自己的 `chat_session_id`。
+- 当前页面已有 `chat_session_id=chat-session-b571d8f4-d79-clean-deploy`；仅在明确要续接当前任务树时复用，否则新开的并行 CLI 应重新生成自己的 `chat_session_id`。
+- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。
+- requirement 本地对象与 query-mcp canonical 状态要同时维护；不要只写 session 文件而缺失 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，但 requirement 文件只记录需求内容。
+- 如果自动 bootstrap 把状态写到了别的服务子目录，不能把它当成当前仓库根目录已初始化；入口提示词必须以当前 CLI 工作区为准重新核对。
+- 若当前还没有 `session_id`，调用 `start_work_session` 后也要立刻持久化；中断恢复顺序固定为 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`。
+- 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要在项目工作区写入分叉会话状态文件。
+
+回答要求：
+- 先基于 MCP 查询结果回答，不要把猜测写成事实。
+- 若信息来自 MCP，尽量保留对应的项目 / 员工 / 规则 ID，方便追溯。
+- 若入口文件或宿主系统还有额外约束，优先遵守宿主入口文件约定。

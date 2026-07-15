@@ -62,6 +62,7 @@ from stores.json.project_requirement_record_store import ProjectRequirementRecor
 from stores.json.system_config_store import (
     normalize_query_mcp_desktop_agent_profile_template,
     normalize_query_mcp_client_profile_template,
+    normalize_query_mcp_prompt_layout,
     normalize_query_mcp_usage_guide_template,
 )
 
@@ -1143,10 +1144,10 @@ def _lark_auth_instruction_lines() -> tuple[str, str]:
 
 
 def _render_query_prompt_template(template: str, variables: dict[str, str]) -> str:
-    rendered = str(template or "").strip()
+    rendered = normalize_query_mcp_prompt_layout(template)
     for key, value in variables.items():
         rendered = rendered.replace(f"{{{{{key}}}}}", str(value or ""))
-    return rendered.strip()
+    return normalize_query_mcp_prompt_layout(rendered)
 
 
 def _path_scope_payload(path: str, project_id: str = "", workspace_path: str = "", sandbox_mode: str = "") -> dict:

@@ -36,6 +36,10 @@ from stores.json.system_config_store import (
     normalize_chat_style_hints,
     normalize_query_mcp_public_base_url,
     normalize_query_mcp_clarity_confirm_threshold,
+    normalize_query_mcp_bootstrap_prompt_template,
+    normalize_query_mcp_usage_guide_template,
+    normalize_query_mcp_client_profile_template,
+    normalize_query_mcp_desktop_agent_profile_template,
     normalize_dictionaries,
     normalize_skill_registry_sources,
 )
@@ -877,22 +881,30 @@ async def patch_system_config(
 
     if "query_mcp_bootstrap_prompt_template" in updates:
         updates["query_mcp_bootstrap_prompt_template"] = (
-            str(updates["query_mcp_bootstrap_prompt_template"] or "").strip()[:24000]
+            normalize_query_mcp_bootstrap_prompt_template(
+                updates["query_mcp_bootstrap_prompt_template"] or ""
+            )[:24000]
         )
 
     if "query_mcp_usage_guide_template" in updates:
         updates["query_mcp_usage_guide_template"] = (
-            str(updates["query_mcp_usage_guide_template"] or "").strip()[:32000]
+            normalize_query_mcp_usage_guide_template(
+                updates["query_mcp_usage_guide_template"] or ""
+            )[:32000]
         )
 
     if "query_mcp_client_profile_template" in updates:
         updates["query_mcp_client_profile_template"] = (
-            str(updates["query_mcp_client_profile_template"] or "").strip()[:12000]
+            normalize_query_mcp_client_profile_template(
+                updates["query_mcp_client_profile_template"] or ""
+            )[:12000]
         )
 
     if "query_mcp_desktop_agent_profile_template" in updates:
         updates["query_mcp_desktop_agent_profile_template"] = (
-            str(updates["query_mcp_desktop_agent_profile_template"] or "").strip()[:12000]
+            normalize_query_mcp_desktop_agent_profile_template(
+                updates["query_mcp_desktop_agent_profile_template"] or ""
+            )[:12000]
         )
 
     if "chat_style_hints" in updates:

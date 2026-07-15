@@ -500,6 +500,58 @@ def test_query_mcp_runtime_upgrades_legacy_clarity_confirmation_lines(tmp_path, 
     assert "覆盖当前项目根目录提示词文件" in cli_prompt
 
 
+def test_query_mcp_system_config_and_runtime_collapse_corrupted_prompt_whitespace(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.system_config_store import (
+        DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE,
+        DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE,
+    )
+
+    client, _, _ = _build_project_mcp_monitor_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+    dirty_bootstrap = DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE.replace(
+        "当前接入上下文：",
+        ("\n" * 10000) + "当前接入上下文\n\n当前接入上下文：",
+    )
+    dirty_usage_guide = DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE.replace(
+        "## 任务树与绑定约束",
+        ("\n" * 10000) + "## 任务树与绑定约束",
+    )
+
+    patch_response = client.patch(
+        "/api/system-config",
+        json={
+            "query_mcp_bootstrap_prompt_template": dirty_bootstrap,
+            "query_mcp_usage_guide_template": dirty_usage_guide,
+        },
+    )
+
+    assert patch_response.status_code == 200
+    config = patch_response.json()["config"]
+    assert "\n\n\n" not in config["query_mcp_bootstrap_prompt_template"]
+    assert "\n\n\n" not in config["query_mcp_usage_guide_template"]
+    assert config["query_mcp_bootstrap_prompt_template"].count("当前接入上下文：") == 1
+    assert config["query_mcp_usage_guide_template"].count(
+        "1. 先读取 query://usage-guide；"
+    ) == 1
+
+    response = client.get(
+        "/api/projects/query-mcp/runtime",
+        params={"project_id": "proj-1", "chat_session_id": "chat-session-1"},
+    )
+
+    assert response.status_code == 200
+    cli_prompt = response.json()["runtime"]["cli_prompt"]
+    assert "\n\n\n" not in cli_prompt
+    assert cli_prompt.count("当前接入上下文：") == 1
+    assert "默认项目: `proj-1`" in cli_prompt
+
+
 def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():
     expected_local_marker = ".ai-employee/skills/query-mcp-workflow/"
     expected_source_marker = "mcp-skills/knowledge/skills/query-mcp-workflow.json"

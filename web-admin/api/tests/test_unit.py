@@ -17526,6 +17526,101 @@ def test_query_mcp_claude_cli_prompt_uses_only_claude_profile(monkeypatch):
     assert "start_project_workflow" in prompt
 
 
+def test_query_mcp_prompt_layout_normalizes_corrupted_shared_templates():
+    from stores.json.system_config_store import (
+        DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE,
+        DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE,
+        normalize_query_mcp_bootstrap_prompt_template,
+        normalize_query_mcp_usage_guide_template,
+    )
+
+    dirty_bootstrap = DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE.replace(
+        "当前接入上下文：",
+        ("\n" * 10000) + "当前接入上下文\n\n当前接入上下文：",
+    )
+    dirty_usage_guide = DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE.replace(
+        "## 任务树与绑定约束",
+        ("\n" * 10000) + "## 任务树与绑定约束",
+    )
+
+    bootstrap = normalize_query_mcp_bootstrap_prompt_template(dirty_bootstrap)
+    usage_guide = normalize_query_mcp_usage_guide_template(dirty_usage_guide)
+
+    assert "\n\n\n" not in bootstrap
+    assert "\n\n\n" not in usage_guide
+    assert bootstrap.count("当前接入上下文：") == 1
+    assert "\n当前接入上下文\n" not in bootstrap
+    assert usage_guide.count("1. 先读取 query://usage-guide；") == 1
+    assert usage_guide.count("1.0.1 `list_mcp_resources`") == 1
+    assert usage_guide.count("1.0.2 简单查询直达业务工具：") == 1
+
+
+def test_query_mcp_cli_prompts_normalize_corrupted_shared_template_for_all_profiles(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.system_config_store import DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE
+
+    dirty_template = DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE.replace(
+        "当前接入上下文：",
+        ("\n" * 10000) + "当前接入上下文\n\n当前接入上下文：",
+    )
+    config = type(
+        "DirtyPromptConfig",
+        (),
+        {"query_mcp_bootstrap_prompt_template": dirty_template},
+    )()
+    monkeypatch.setattr(projects_router.system_config_store, "get_global", lambda: config)
+
+    expected_profiles = {
+        "codex": "query://client-profile/codex",
+        "hermes": "query://client-profile/hermes",
+        "claude-code": "query://client-profile/claude-code",
+        "generic-cli": "query://client-profile/generic-cli",
+    }
+    for client_profile, resource_uri in expected_profiles.items():
+        prompt = projects_router._build_query_mcp_cli_prompt(
+            project_id="proj-1",
+            chat_session_id="chat-1",
+            client_profile=client_profile,
+        )
+
+        assert "\n\n\n" not in prompt
+        assert prompt.count("当前接入上下文：") == 1
+        assert "- 默认项目: `proj-1`" in prompt
+        assert "chat_session_id=chat-1" in prompt
+        assert resource_uri in prompt
+
+
+def test_query_mcp_cli_prompt_reuses_existing_context_heading_without_placeholders(monkeypatch):
+    from routers import projects as projects_router
+
+    template = """你已接入统一查询 MCP。
+
+强制接入步骤：
+1. 先读取 `query://usage-guide`。
+
+当前接入上下文
+
+回答要求：
+- 基于 MCP 结果回答。"""
+    config = type(
+        "LegacyPromptConfig",
+        (),
+        {"query_mcp_bootstrap_prompt_template": template},
+    )()
+    monkeypatch.setattr(projects_router.system_config_store, "get_global", lambda: config)
+
+    prompt = projects_router._build_query_mcp_cli_prompt(
+        project_id="proj-1",
+        chat_session_id="chat-1",
+        client_profile="codex",
+    )
+
+    assert "\n\n\n" not in prompt
+    assert prompt.count("当前接入上下文：") == 1
+    assert "- 默认项目: `proj-1`" in prompt
+    assert "chat_session_id=chat-1" in prompt
+
+
 def test_query_mcp_start_project_workflow_blocks_when_required_inputs_missing(monkeypatch):
     registered_tools, _registered_resources, _saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
 
