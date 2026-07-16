@@ -1081,6 +1081,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn write_file_rejects_symlink_escape_with_missing_child_directory() {
+        use std::os::unix::fs::symlink;
+
+        let dir = test_workspace("write_symlink_escape");
+        let outside = test_workspace("write_symlink_outside");
+        symlink(&outside, dir.join("linked-outside")).expect("create workspace symlink");
+
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_write_symlink_escape".to_string()),
+            name: "write_file".to_string(),
+            arguments: json!({
+                "path": "linked-outside/new/file.txt",
+                "content": "bad"
+            }),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: Some(types::PermissionDecisionInput {
+                request_id: None,
+                decision: "approve_once".to_string(),
+                grant_scope: Some("once".to_string()),
+                comment: None,
+            }),
+        });
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "workspace.out_of_scope");
+        assert!(!outside.join("new/file.txt").exists());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
     #[test]
     fn apply_patch_requires_permission_before_writing() {
         let dir = test_workspace("patch_permission");

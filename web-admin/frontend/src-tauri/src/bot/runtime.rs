@@ -80,6 +80,7 @@ pub fn build_local_chat_request(request: BotChatRequest) -> LocalChatRequest {
         ),
         backend_context: request.backend_context,
         permission_decision: request.permission_decision,
+        resume_from_checkpoint: false,
     }
 }
 

@@ -130,11 +130,7 @@
             class="inline-alert"
           />
 
-          <el-form
-            v-show="activeTab === 'mcp-config'"
-            label-position="top"
-            class="switch-form"
-          >
+          <el-form label-position="top" class="switch-form">
             <div class="switch-list">
               <div class="switch-card">
                 <div>
@@ -184,16 +180,16 @@
               </div>
             </el-form-item>
 
-            <el-form-item label="桌面智能体提示词全局">
+            <el-form-item label="桌面运行环境全局提示词">
               <el-input
                 v-model="form.desktop_agent_global_prompt"
                 type="textarea"
                 :rows="12"
                 resize="vertical"
-                placeholder="用于追加到桌面本地智能体的系统提示词；留空则不追加全局提示词。"
+                placeholder="用于追加到桌面本地聊天的系统提示词；留空则不追加全局提示词。"
               />
               <div class="field-desc">
-                项目聊天启用桌面本地智能体时，会把这里的内容追加到项目 system prompt 后面。
+                桌面项目聊天会把这里的内容追加到 system prompt 后面。
               </div>
             </el-form-item>
           </el-form>

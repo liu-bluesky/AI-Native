@@ -94,6 +94,24 @@
   color: #9ca3af;
 }
 
+.message-answer-id {
+  padding: 3px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.86);
+  color: #64748b;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.message-answer-id:hover {
+  border-color: color-mix(in srgb, var(--el-color-primary) 35%, transparent);
+  background: color-mix(in srgb, var(--el-color-primary) 7%, white);
+  color: var(--el-color-primary);
+}
+
 .message-bubble {
   padding: 20px 22px;
   border-radius: 24px;

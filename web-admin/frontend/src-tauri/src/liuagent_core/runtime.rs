@@ -139,13 +139,6 @@ fn is_runtime_pause_reason(reason: &str) -> bool {
     matches!(reason, "manual_pause" | "runtime_interrupted")
 }
 
-fn is_model_transport_interruption(result: &ModelStepResult) -> bool {
-    matches!(
-        result.error_code.as_str(),
-        "model.connection_timeout" | "model.request_failed"
-    )
-}
-
 fn is_network_tool_interruption(
     tool: &PlannedLocalTool,
     result: &super::types::ToolExecutionResult,
@@ -718,43 +711,107 @@ fn start_local_chat_inner(
     let user_message_id = normalized_id(request.message_id.as_deref(), "local_user");
     let assistant_message_id =
         normalized_id(request.assistant_message_id.as_deref(), "local_assistant");
+    let answer_id = format!("ans_{assistant_message_id}");
     let started_at = epoch_millis();
+    let collected_runtime_events = RefCell::new(Vec::<Value>::new());
+    let collecting_event_sink = |event: Value| {
+        collected_runtime_events.borrow_mut().push(event.clone());
+        let _ = append_runtime_event(&workspace_root, &project_id, &chat_session_id, &event);
+        if let Some(sink) = event_sink {
+            sink(event);
+        }
+    };
+    let runtime_event_sink: Option<&dyn Fn(Value)> = Some(&collecting_event_sink);
     if request.permission_decision.is_none() && !local_chat_pause_requested(&chat_session_id) {
+        let runtime_started_event = json!({
+            "event_id": format!("evt_{session_id}_runtime_started"),
+            "runtime_session_id": session_id.as_str(),
+            "session_id": session_id.as_str(),
+            "run_id": session_id.as_str(),
+            "chat_session_id": chat_session_id.as_str(),
+            "type": "runtime_started",
+            "payload": {
+                "status": "running",
+                "current_work_node": {
+                    "kind": "runtime",
+                    "title": "初始化桌面智能体运行",
+                    "status": "running"
+                },
+                "user_message_id": user_message_id,
+                "assistant_message_id": assistant_message_id,
+                "created_at_epoch_ms": started_at
+            },
+            "created_at_epoch_ms": started_at
+        });
         append_runtime_event(
             &workspace_root,
             &project_id,
             &chat_session_id,
-            &json!({
-                "event_id": format!("evt_{session_id}_runtime_started"),
-                "runtime_session_id": session_id,
-                "session_id": session_id,
-                "run_id": session_id,
-                "chat_session_id": chat_session_id,
-                "type": "runtime_started",
-                "payload": {
-                    "status": "running",
-                    "current_work_node": {
-                        "kind": "runtime",
-                        "title": "初始化桌面智能体运行",
-                        "status": "running"
-                    },
-                    "user_message_id": user_message_id,
-                    "assistant_message_id": assistant_message_id,
-                    "created_at_epoch_ms": started_at
-                },
-                "created_at_epoch_ms": started_at
-            }),
+            &runtime_started_event,
         )?;
+        collected_runtime_events
+            .borrow_mut()
+            .push(runtime_started_event.clone());
+        if let Some(sink) = event_sink {
+            sink(runtime_started_event);
+        }
     }
     let base_model_request = build_model_request_with_history(&request, &user_message, &[]);
     let context_model_runner =
         |request: &ModelStepRequest| run_model_step_interruptible(&chat_session_id, request);
-    let relevant_context = extract_relevant_conversation_context(
-        &base_model_request,
-        &request.history,
-        &user_message,
-        &context_model_runner,
-    );
+    let has_context_history = request.history.iter().any(|message| {
+        !should_exclude_history_message_from_model_context(message)
+            && !message.content.trim().is_empty()
+    });
+    let relevant_context = if request.resume_from_checkpoint {
+        collecting_event_sink(progress_update_event(
+            format!("evt_{session_id}_checkpoint_resume_started"),
+            &session_id,
+            &chat_session_id,
+            json!({
+                "summary": "已读取本地 checkpoint，正在继续未完成任务",
+                "current_focus": "从暂停节点恢复模型与工具调度",
+                "next_action": "继续追加新的模型步骤和工具执行事件",
+                "created_at_epoch_ms": epoch_millis(),
+            }),
+            epoch_millis(),
+        ));
+        String::new()
+    } else if has_context_history {
+        collecting_event_sink(progress_update_event(
+            format!("evt_{session_id}_context_preparation_started"),
+            &session_id,
+            &chat_session_id,
+            json!({
+                "summary": "正在整理与当前任务相关的对话上下文",
+                "current_focus": "提炼本轮执行需要的历史信息",
+                "next_action": "完成后进入正式模型与工具调度",
+                "created_at_epoch_ms": epoch_millis(),
+            }),
+            epoch_millis(),
+        ));
+        let context = extract_relevant_conversation_context(
+            &base_model_request,
+            &request.history,
+            &user_message,
+            &context_model_runner,
+        );
+        collecting_event_sink(progress_update_event(
+            format!("evt_{session_id}_context_preparation_completed"),
+            &session_id,
+            &chat_session_id,
+            json!({
+                "summary": "相关对话上下文已整理，正在启动任务执行",
+                "current_focus": "准备正式模型请求",
+                "next_action": "进入模型推理与工具执行",
+                "created_at_epoch_ms": epoch_millis(),
+            }),
+            epoch_millis(),
+        ));
+        context
+    } else {
+        String::new()
+    };
     let mut model_request = build_model_request_with_history(&request, &user_message, &[]);
     if !relevant_context.trim().is_empty() {
         model_request.messages.insert(
@@ -785,15 +842,6 @@ fn start_local_chat_inner(
         &model_request,
         &prompt_stack,
     );
-    let collected_runtime_events = RefCell::new(Vec::<Value>::new());
-    let collecting_event_sink = |event: Value| {
-        collected_runtime_events.borrow_mut().push(event.clone());
-        let _ = append_runtime_event(&workspace_root, &project_id, &chat_session_id, &event);
-        if let Some(sink) = event_sink {
-            sink(event);
-        }
-    };
-    let runtime_event_sink: Option<&dyn Fn(Value)> = Some(&collecting_event_sink);
     let replayed_permission_tool = if local_chat_pause_requested(&chat_session_id) {
         None
     } else {
@@ -1093,6 +1141,7 @@ fn start_local_chat_inner(
         plan_status: String::new(),
         session_id,
         chat_session_id,
+        answer_id,
         requirement_record_path: requirement_path.to_string_lossy().to_string(),
         gateway_result: Some(gateway_result),
         assistant_content,
@@ -2464,6 +2513,7 @@ fn prompt_stack_from_model_request(model_request: &ModelStepRequest) -> PromptSt
         mcp_config: json!({}),
         backend_context: None,
         permission_decision: None,
+        resume_from_checkpoint: false,
     };
     resolve_prompt_stack(&request, model_request)
 }
@@ -2795,14 +2845,6 @@ fn route_tool_failure(
             "权限门阻止了副作用工具执行。",
             false,
             "等待用户授权或拒绝。",
-        )
-    } else if code.contains("drift_detected") {
-        (
-            "plan",
-            "goal_drift_detected",
-            "副作用工具目标偏离本轮 TaskGoal，需要回到当前目标范围重新规划。",
-            repeated_attempts < 2,
-            "工具目标回到 TaskGoal 范围内并验证通过，重复偏离后 blocked。",
         )
     } else if code.contains("not_found") || result.summary.contains("不存在") {
         (
@@ -4538,8 +4580,6 @@ fn run_agent_loop_with(
                 .map(|tool| {
                     compile_planned_tool_arguments(repair_planned_tool_arguments(
                         tool,
-                        &messages,
-                        Some(&model_result),
                         workspace_root,
                     ))
                 })
@@ -4575,12 +4615,8 @@ fn run_agent_loop_with(
             break;
         }
 
-        if !model_result.ok {
-            stopped_reason = if is_model_transport_interruption(&model_result) {
-                "runtime_interrupted".to_string()
-            } else {
-                "model_failed".to_string()
-            };
+        if !model_result.ok && model_result.status == "failed" {
+            stopped_reason = "runtime_interrupted".to_string();
             break;
         }
         let has_plan_tools = !plan_tools.is_empty();
@@ -4760,8 +4796,6 @@ fn run_agent_loop_with(
                     })
             } else if let Some(schema_result) = preflight_tool_schema_result(&tool) {
                 schema_result
-            } else if let Some(drift_result) = drift_check_tool_result(&tool, &request) {
-                drift_result
             } else if tool.name.trim() == "run_command" {
                 execute_tool_with_command_output_sink_and_cancel(
                     tool_request,
@@ -6495,27 +6529,8 @@ fn dedupe_strings(items: &mut Vec<String>) {
 
 fn repair_planned_tool_arguments(
     mut tool: PlannedLocalTool,
-    messages: &[RuntimeModelMessage],
-    model_result: Option<&ModelStepResult>,
     workspace_root: &PathBuf,
 ) -> PlannedLocalTool {
-    if tool.name.trim() == "write_file"
-        && argument_string(&tool.arguments, "path").is_none()
-        && argument_string(&tool.arguments, "content").is_some()
-    {
-        if let Some(path) = infer_target_path_from_model_result(model_result)
-            .or_else(|| infer_recent_target_path(messages))
-        {
-            if let Some(object) = tool.arguments.as_object_mut() {
-                object.insert("path".to_string(), json!(path.clone()));
-                tool.summary = if tool.summary.trim().is_empty() {
-                    format!("自动补全 write_file path={path}")
-                } else {
-                    format!("{}；自动补全 path={path}", tool.summary.trim())
-                };
-            }
-        }
-    }
     if tool.name.trim() == "search_text" {
         repair_search_text_file_path(&mut tool, workspace_root);
     }
@@ -6807,73 +6822,10 @@ fn tool_schema_invalid_result(
     }
 }
 
-fn drift_check_tool_result(
-    tool: &PlannedLocalTool,
-    request: &ModelStepRequest,
-) -> Option<super::types::ToolExecutionResult> {
-    if !is_side_effect_tool(&tool.name) || tool.name.trim() == "run_command" {
-        return None;
-    }
-    let task_goal = request.task_goal.as_ref()?;
-    let requested_targets = extract_file_path_candidates(&task_goal.user_request);
-    if requested_targets.is_empty() {
-        return None;
-    }
-    let tool_target = tool_target_path(tool)?;
-    let normalized_tool_target = normalize_scope_path(&tool_target);
-    let in_scope = requested_targets
-        .iter()
-        .map(|target| normalize_scope_path(target))
-        .any(|target| paths_share_scope(&target, &normalized_tool_target));
-    if in_scope {
-        return None;
-    }
-    let expected = requested_targets.join(", ");
-    let summary = format!(
-        "DriftCheck 阻止了偏离目标的副作用工具：本轮目标路径为 {expected}，但工具试图修改 {tool_target}。"
-    );
-    Some(super::types::ToolExecutionResult {
-        tool_result_id: format!("result_{}", tool.tool_call_id),
-        tool_call_id: tool.tool_call_id.clone(),
-        name: tool.name.clone(),
-        ok: false,
-        content: json!({
-            "driftCheck": {
-                "status": "blocked",
-                "expectedTargets": requested_targets,
-                "actualTarget": tool_target,
-                "taskGoal": task_goal,
-            }
-        }),
-        summary: summary.clone(),
-        error_code: "agent_loop.drift_detected".to_string(),
-        error: summary,
-    })
-}
-
 fn tool_target_path(tool: &PlannedLocalTool) -> Option<String> {
     argument_string(&tool.arguments, "path")
         .or_else(|| argument_string(&tool.arguments, "target"))
         .or_else(|| argument_string(&tool.arguments, "file"))
-}
-
-fn normalize_scope_path(path: &str) -> String {
-    path.trim()
-        .trim_start_matches("./")
-        .trim_matches('/')
-        .split('/')
-        .filter(|segment| !segment.is_empty() && *segment != ".")
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn paths_share_scope(expected: &str, actual: &str) -> bool {
-    if expected.is_empty() || actual.is_empty() {
-        return false;
-    }
-    expected == actual
-        || actual.starts_with(&format!("{expected}/"))
-        || expected.starts_with(&format!("{actual}/"))
 }
 
 fn argument_string(arguments: &Value, key: &str) -> Option<String> {
@@ -6896,31 +6848,6 @@ fn infer_recent_target_path(messages: &[RuntimeModelMessage]) -> Option<String> 
         }
     }
     None
-}
-
-fn infer_target_path_from_model_result(model_result: Option<&ModelStepResult>) -> Option<String> {
-    let model_result = model_result?;
-    let mut texts = Vec::new();
-    if !model_result.summary.trim().is_empty() {
-        texts.push(model_result.summary.as_str());
-    }
-    if !model_result.content.trim().is_empty() {
-        texts.push(model_result.content.as_str());
-    }
-    if !model_result.reasoning_content.trim().is_empty() {
-        texts.push(model_result.reasoning_content.as_str());
-    }
-    for text in texts {
-        if let Some(candidate) = infer_target_path_from_text(text) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn infer_target_path_from_text(text: &str) -> Option<String> {
-    let candidates = extract_file_path_candidates(text);
-    candidates.last().cloned()
 }
 
 fn extract_file_path_candidates(text: &str) -> Vec<String> {
@@ -8470,7 +8397,7 @@ fn build_model_request_with_history(
     messages.push(RuntimeModelMessage::simple(
         "system",
         [
-            "桌面智能体工具路由契约：",
+            "桌面运行环境工具路由契约：",
             "- 当用户已经明确要求执行某个操作时，直接发出参数完整的工具调用；如果该操作需要授权，由 Runtime 权限门冻结并展示准确工具与参数，禁止模型先用自然语言询问‘是否确认’或自行设计确认流程。",
             "- Runtime 返回 permission.required 后立即停止本轮工具规划并等待结构化授权；授权续跑时只恢复原 tool_call_id、工具名和完整参数，不得改写为 shell 命令、重新猜测目标或再次询问用户确认。",
             "- 涉及当前项目的真实配置、绑定关系或成员事实时，不得根据聊天设置或历史文本推断，必须调用项目工具。",
@@ -8646,7 +8573,7 @@ fn build_desktop_local_context_message(request: &LocalChatRequest) -> Option<Run
         return None;
     }
     let content = [
-        "桌面端本地智能体当前会话上下文：".to_string(),
+        "桌面运行环境当前会话上下文：".to_string(),
         format!(
             "- project_id：{}",
             if project_id.is_empty() {
@@ -10151,62 +10078,6 @@ mod tests {
     }
 
     #[test]
-    fn repairs_write_file_path_from_latest_user_message() {
-        let workspace_root = std::env::temp_dir();
-        let messages = vec![RuntimeModelMessage::simple(
-            "user",
-            "浅色渐变商务风（南京嘉华运营平台）。 register.html这俩",
-        )];
-        let repaired = repair_planned_tool_arguments(
-            PlannedLocalTool {
-                tool_call_id: "call_write_register".to_string(),
-                name: "write_file".to_string(),
-                arguments: json!({"content": "<!doctype html><html></html>"}),
-                summary: "标准模型工具调用：write_file".to_string(),
-            },
-            &messages,
-            None,
-            &workspace_root,
-        );
-        assert_eq!(repaired.arguments["path"], "register.html");
-        assert!(repaired.summary.contains("自动补全 path=register.html"));
-    }
-
-    #[test]
-    fn repairs_write_file_path_from_current_model_output() {
-        let workspace_root = std::env::temp_dir();
-        let messages = vec![RuntimeModelMessage::simple("user", "确认开始执行")];
-        let model_result = ModelStepResult {
-            ok: true,
-            mode: "mock".to_string(),
-            provider_id: "test".to_string(),
-            model_name: "test-model".to_string(),
-            status: "completed".to_string(),
-            content: "将新增 index.html 作为官网首页，并链接到现有登录和注册页面。".to_string(),
-            reasoning_content: String::new(),
-            tool_calls: Vec::new(),
-            allow_compat_text_tool_call: false,
-            compat_text_tool_call_detected: false,
-            summary: "写入新文件，产出实现结果".to_string(),
-            error_code: String::new(),
-            error: String::new(),
-        };
-        let repaired = repair_planned_tool_arguments(
-            PlannedLocalTool {
-                tool_call_id: "call_write_index".to_string(),
-                name: "write_file".to_string(),
-                arguments: json!({"content": "<!doctype html><html></html>"}),
-                summary: "标准模型工具调用：write_file".to_string(),
-            },
-            &messages,
-            Some(&model_result),
-            &workspace_root,
-        );
-        assert_eq!(repaired.arguments["path"], "index.html");
-        assert!(repaired.summary.contains("自动补全 path=index.html"));
-    }
-
-    #[test]
     fn repairs_search_text_file_path_to_directory_and_glob() {
         let dir = std::env::temp_dir().join(format!("liuagent_search_repair_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
@@ -10219,8 +10090,6 @@ mod tests {
                 arguments: json!({"path": "register.html", "query": "<form"}),
                 summary: "标准模型工具调用：search_text".to_string(),
             },
-            &[],
-            None,
             &workspace_root,
         );
 
@@ -10228,6 +10097,23 @@ mod tests {
         assert_eq!(repaired.arguments["glob"], "register.html");
         assert!(repaired.summary.contains("自动修正 search_text"));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn write_file_path_is_not_inferred_from_natural_language() {
+        let workspace_root = std::env::temp_dir();
+        let tool = repair_planned_tool_arguments(
+            PlannedLocalTool {
+                tool_call_id: "call_write_without_path".to_string(),
+                name: "write_file".to_string(),
+                arguments: json!({"content": "<!doctype html><html></html>"}),
+                summary: "标准模型工具调用：write_file".to_string(),
+            },
+            &workspace_root,
+        );
+
+        assert!(tool.arguments.get("path").is_none());
+        assert!(!tool.summary.contains("自动补全"));
     }
 
     #[test]
@@ -10536,76 +10422,6 @@ mod tests {
     }
 
     #[test]
-    fn drift_check_blocks_side_effect_outside_explicit_target() {
-        let mut request = test_model_request("修改 src/main.rs 并验证");
-        let task_goal = build_task_goal("drift-test", "修改 src/main.rs 并验证", &request);
-        request.task_goal = Some(task_goal.clone());
-        request.task_tree = Some(planning::TaskTree::without_plan("drift-test", &task_goal));
-        let tool = PlannedLocalTool {
-            tool_call_id: "call_write_other".to_string(),
-            name: "write_file".to_string(),
-            arguments: json!({"path": "src/other.rs", "content": "changed"}),
-            summary: "write other".to_string(),
-        };
-
-        let result = drift_check_tool_result(&tool, &request).expect("drift result");
-
-        assert!(!result.ok);
-        assert_eq!(result.error_code, "agent_loop.drift_detected");
-        assert_eq!(result.content["driftCheck"]["actualTarget"], "src/other.rs");
-    }
-
-    #[test]
-    fn drift_check_allows_side_effect_within_explicit_target() {
-        let mut request = test_model_request("修改 src/main.rs 并验证");
-        let task_goal = build_task_goal("drift-test", "修改 src/main.rs 并验证", &request);
-        request.task_goal = Some(task_goal);
-        let tool = PlannedLocalTool {
-            tool_call_id: "call_write_target".to_string(),
-            name: "write_file".to_string(),
-            arguments: json!({"path": "src/main.rs", "content": "changed"}),
-            summary: "write target".to_string(),
-        };
-
-        assert!(drift_check_tool_result(&tool, &request).is_none());
-    }
-
-    #[test]
-    fn drift_check_allows_unicode_file_path_with_directory() {
-        let mut request = test_model_request("那你写到 docs/改造vue3.md 文件里面");
-        let task_goal =
-            build_task_goal("drift-test", "那你写到 docs/改造vue3.md 文件里面", &request);
-        request.task_goal = Some(task_goal);
-        let tool = PlannedLocalTool {
-            tool_call_id: "call_write_unicode".to_string(),
-            name: "write_file".to_string(),
-            arguments: json!({"path": "docs/改造vue3.md", "content": "changed"}),
-            summary: "write unicode path".to_string(),
-        };
-
-        assert!(drift_check_tool_result(&tool, &request).is_none());
-    }
-
-    #[test]
-    fn drift_check_allows_spaced_unicode_file_path_with_directory() {
-        let mut request = test_model_request("那你写到 docs/ 改造 vue3 .md 文件里面");
-        let task_goal = build_task_goal(
-            "drift-test",
-            "那你写到 docs/ 改造 vue3 .md 文件里面",
-            &request,
-        );
-        request.task_goal = Some(task_goal);
-        let tool = PlannedLocalTool {
-            tool_call_id: "call_write_spaced_unicode".to_string(),
-            name: "write_file".to_string(),
-            arguments: json!({"path": "docs/改造vue3.md", "content": "changed"}),
-            summary: "write spaced unicode path".to_string(),
-        };
-
-        assert!(drift_check_tool_result(&tool, &request).is_none());
-    }
-
-    #[test]
     fn local_chat_writes_requirement_and_tool_summary() {
         let dir = std::env::temp_dir().join(format!("liuagent_local_chat_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
@@ -10630,6 +10446,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            resume_from_checkpoint: false,
         });
 
         assert!(result.ok, "{}", result.error);
@@ -10769,6 +10586,73 @@ mod tests {
             .runtime_events
             .iter()
             .any(|event| event["type"] == "model_step"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checkpoint_resume_emits_live_progress_before_model_execution() {
+        let dir = std::env::temp_dir().join(format!("liuagent_resume_live_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let events = RefCell::new(Vec::<Value>::new());
+
+        let result = start_local_chat_with_event_sink(
+            LocalChatRequest {
+                project_id: "proj-resume-live".to_string(),
+                chat_session_id: "chat-resume-live".to_string(),
+                message_id: Some("msg-user-resume".to_string()),
+                assistant_message_id: Some("msg-assistant-resume".to_string()),
+                message: "继续执行未完成任务".to_string(),
+                workspace_path: dir.to_string_lossy().to_string(),
+                history: vec![LocalChatMessage {
+                    role: "user".to_string(),
+                    content: "中断前的历史任务".to_string(),
+                    reasoning_content: None,
+                    source_kind: None,
+                    diagnostic: None,
+                    visibility: None,
+                }],
+                provider_id: None,
+                model_name: None,
+                system_prompt: None,
+                system_prompt_parts: Vec::new(),
+                temperature: None,
+                model_runtime: None,
+                ai_entry_file: None,
+                attachments: Vec::new(),
+                mcp_config: json!({}),
+                backend_context: None,
+                permission_decision: None,
+                resume_from_checkpoint: true,
+            },
+            |event| events.borrow_mut().push(event),
+        );
+
+        assert!(result.ok, "{}", result.error);
+        let events = events.borrow();
+        assert_eq!(
+            events.first().and_then(|event| event["type"].as_str()),
+            Some("runtime_started")
+        );
+        let resume_index = events
+            .iter()
+            .position(|event| {
+                event["event_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("checkpoint_resume_started")
+            })
+            .expect("checkpoint resume progress must be emitted live");
+        let model_index = events
+            .iter()
+            .position(|event| event["type"] == "model_call_started")
+            .expect("model execution must start after resume progress");
+        assert!(resume_index < model_index);
+        assert!(events.iter().all(|event| {
+            !event["event_id"]
+                .as_str()
+                .unwrap_or("")
+                .contains("context_preparation")
+        }));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -12893,6 +12777,7 @@ mod tests {
                     grant_scope: Some("once".to_string()),
                     comment: None,
                 }),
+                resume_from_checkpoint: false,
             },
             Some(&sink),
         )
@@ -13589,7 +13474,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_can_write_after_many_reads() {
+    fn agent_loop_can_write_after_many_reads_with_natural_language_slash() {
         let dir = std::env::temp_dir().join(format!(
             "liuagent_loop_many_reads_then_write_{}",
             epoch_millis()
@@ -13599,7 +13484,9 @@ mod tests {
         fs::create_dir_all(dir.join("dashboard")).unwrap();
         fs::write(dir.join("login/index.html"), "<html>login</html>").unwrap();
         fs::write(dir.join("dashboard/index.html"), "<html>dashboard</html>").unwrap();
-        let request = test_model_request("创建登录页");
+        let request = test_model_request(
+            "缺少登录页啊，你用产品智能体规划一下然后开发。未登录时直接发起登录/授权流程。",
+        );
         let model_call_count = Cell::new(0);
         let model_runner = |_request: &ModelStepRequest| {
             let index = model_call_count.get();
@@ -13709,6 +13596,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            resume_from_checkpoint: false,
         });
 
         assert!(result.ok, "{}", result.error);
@@ -13750,6 +13638,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            resume_from_checkpoint: false,
         };
         let model_request = build_model_request(&request, "你好");
         let result = run_model_step(&model_request);
@@ -13960,6 +13849,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            resume_from_checkpoint: false,
         };
         let model_request = build_model_request(&request, "请分析附件");
         let user_message = model_request.messages.last().unwrap();
@@ -14010,6 +13900,7 @@ mod tests {
             }],
             mcp_config: json!({}),
             permission_decision: None,
+            resume_from_checkpoint: false,
         };
         let model_request = build_model_request(&request, "请分析附件");
         let user_message = model_request.messages.last().unwrap();
@@ -14090,6 +13981,92 @@ mod tests {
         assert_eq!(result.stopped_reason, "runtime_interrupted");
         assert_eq!(result.error_code(), "runtime.interrupted");
         assert!(!result.ok());
+    }
+
+    #[test]
+    fn model_request_failure_pauses_loop_for_checkpoint_resume() {
+        let request = test_model_request("模型请求失败后自动恢复");
+        let model_calls = Cell::new(0usize);
+        let model_runner = |request: &ModelStepRequest| {
+            model_calls.set(model_calls.get() + 1);
+            ModelStepResult::failed(
+                request,
+                "model.request_failed",
+                "model gateway returned HTTP 429; retry-after=2",
+            )
+        };
+        let tool_runner =
+            |_request: ToolExecutionRequest| panic!("interrupted loop must not execute tools");
+
+        let result = run_agent_loop_with(
+            "chat-model-request-interruption-test",
+            "runtime-model-request-interruption-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &PathBuf::from("."),
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert_eq!(model_calls.get(), 1);
+        assert_eq!(result.stopped_reason, "runtime_interrupted");
+        assert_eq!(result.error_code(), "runtime.interrupted");
+    }
+
+    #[test]
+    fn model_http_401_uses_the_same_checkpoint_resume_rule() {
+        let request = test_model_request("认证失败后按统一标准恢复");
+        let model_runner = |request: &ModelStepRequest| {
+            ModelStepResult::failed(
+                request,
+                "model.request_failed",
+                "model gateway returned HTTP 401",
+            )
+        };
+        let tool_runner =
+            |_request: ToolExecutionRequest| panic!("failed model call must not execute tools");
+
+        let result = run_agent_loop_with(
+            "chat-http-401-failure-test",
+            "runtime-http-401-failure-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &PathBuf::from("."),
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert_eq!(result.stopped_reason, "runtime_interrupted");
+        assert_eq!(result.error_code(), "runtime.interrupted");
+    }
+
+    #[test]
+    fn arbitrary_model_failure_code_uses_the_same_checkpoint_resume_rule() {
+        let request = test_model_request("未知模型失败后按统一标准恢复");
+        let model_runner = |request: &ModelStepRequest| {
+            ModelStepResult::failed(request, "model.unclassified_failure", "arbitrary failure")
+        };
+        let tool_runner =
+            |_request: ToolExecutionRequest| panic!("interrupted loop must not execute tools");
+
+        let result = run_agent_loop_with(
+            "chat-arbitrary-model-failure-test",
+            "runtime-arbitrary-model-failure-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &PathBuf::from("."),
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert_eq!(result.stopped_reason, "runtime_interrupted");
+        assert_eq!(result.error_code(), "runtime.interrupted");
     }
 
     #[test]
@@ -15116,6 +15093,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            resume_from_checkpoint: false,
         };
 
         let server = thread::spawn(move || {
@@ -15241,6 +15219,7 @@ mod tests {
                 grant_scope: Some("once".to_string()),
                 comment: None,
             }),
+            resume_from_checkpoint: false,
         });
 
         server.join().unwrap();
@@ -15725,8 +15704,7 @@ mod tests {
             .messages
             .iter()
             .find(|message| {
-                message.role == "system"
-                    && message.content.contains("桌面端本地智能体当前会话上下文")
+                message.role == "system" && message.content.contains("桌面运行环境当前会话上下文")
             })
             .expect("desktop project context system message");
 
@@ -15738,6 +15716,38 @@ mod tests {
             .content
             .contains("workspace_path：/tmp/workspace"));
         assert_eq!(model_request.project_id, "proj-visible");
+    }
+
+    #[test]
+    fn build_model_request_keeps_routing_alias_out_of_system_messages() {
+        let request = serde_json::from_value::<LocalChatRequest>(json!({
+            "projectId": "proj-test",
+            "chatSessionId": "chat-model-identity",
+            "message": "你跟 GPT-5.4 相比如何",
+            "workspacePath": ".",
+            "modelRuntime": {
+                "mode": "openai_compatible",
+                "providerId": "custom-provider-label",
+                "modelName": "user-alias-gpt-999"
+            }
+        }))
+        .unwrap();
+
+        let model_request = build_model_request(&request, "你跟 GPT-5.4 相比如何");
+        let system_messages = model_request
+            .messages
+            .iter()
+            .filter(|message| message.role == "system")
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(model_request.model_name, "user-alias-gpt-999");
+        assert!(!system_messages
+            .iter()
+            .any(|content| content.contains("user-alias-gpt-999")));
+        assert!(!system_messages
+            .iter()
+            .any(|content| content.contains("custom-provider-label")));
     }
 
     #[test]
@@ -15822,7 +15832,7 @@ mod tests {
         assert!(system_messages[1].content.contains("执行计划工具规则"));
         assert!(system_messages[2]
             .content
-            .contains("桌面智能体工具路由契约"));
+            .contains("桌面运行环境工具路由契约"));
         assert_eq!(system_messages[3].content, "项目提示");
         assert_eq!(system_messages[4].content, "全局提示");
 
@@ -16348,6 +16358,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            resume_from_checkpoint: false,
         });
 
         assert!(result.ok, "{}", result.error);
@@ -16506,6 +16517,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            resume_from_checkpoint: false,
         });
 
         assert!(result.ok, "{}", result.error);

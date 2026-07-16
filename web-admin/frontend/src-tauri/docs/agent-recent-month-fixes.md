@@ -81,7 +81,7 @@
 
 - `write_file` schema 明确 `path` 和 `content` 必填，并在描述中给出示例。
 - Agent Loop 在执行前预检查写文件参数，缺内容时不执行写入。
-- 能从用户消息或模型输出中修复目标路径。
+- `write_file` 缺少 `path` 时返回 schema 错误，由模型重新生成完整结构化工具参数；Runtime 不再从自然语言猜测路径。
 - 对批量写文件，任一写入参数无效时阻断整批有副作用操作。
 - 当模型把 JSON 对象误当作内容时，支持编译为字符串内容；但非 JSON 的结构化内容仍保持严格。
 - 对文件修改后的最终回复增加失败提示，避免 agent 声称已完成但文件未真正变更。
@@ -89,8 +89,6 @@
 主要验证用例：
 
 - `agent_loop_preflights_write_file_missing_content_before_execution`
-- `repairs_write_file_path_from_latest_user_message`
-- `repairs_write_file_path_from_current_model_output`
 - `agent_loop_compiles_json_object_content_for_batched_write_files`
 - `agent_loop_keeps_non_json_write_file_structured_content_strict`
 - `agent_loop_blocks_mutating_batch_when_one_write_file_schema_is_invalid`

@@ -23,6 +23,14 @@ const composerComponentPath = resolve(
 const tauriMainPath = resolve(scriptDir, "../src-tauri/src/main.rs");
 const apiProjectsPath = resolve(scriptDir, "../../api/routers/projects.py");
 const source = readFileSync(componentPath, "utf8");
+const restoreLocalLiuAgentRuntimeStateSource =
+  source.match(
+    /async function restoreLocalLiuAgentRuntimeState[\s\S]*?\n}\n\nfunction hasLiveTerminalOperation/,
+  )?.[0] || "";
+const applyLocalLiuAgentModelStepFailureSource =
+  source.match(
+    /function applyLocalLiuAgentModelStepFailure[\s\S]*?\n}\n\nfunction shouldUpsertLocalLiuAgentRuntimeOperation/,
+  )?.[0] || "";
 const pendingRequestsSource = readFileSync(pendingRequestsComposablePath, "utf8");
 const terminalSource = readFileSync(terminalComposablePath, "utf8");
 const composerSource = readFileSync(composerComponentPath, "utf8");
@@ -97,8 +105,14 @@ assert.match(
 
 assert.match(
   source,
-  /\["runtime\.paused", "runtime\.interrupted"\]\.includes\(runtimePauseCode\)[\s\S]*?checkpoint_ready: true,[\s\S]*?recoverable: true/,
-  "manual and network interruptions must share the same local checkpoint recovery path",
+  /if \(runtimePauseCode === "runtime\.paused"\) \{[\s\S]*?checkpoint_ready: true,[\s\S]*?recoverable: true/,
+  "manual pause must keep the explicit checkpoint recovery path",
+);
+
+assert.doesNotMatch(
+  source,
+  /\["runtime\.paused", "runtime\.interrupted"\]\.includes\(runtimePauseCode\)/,
+  "runtime interruptions must not return through the manual pause branch",
 );
 
 assert.match(
@@ -109,8 +123,98 @@ assert.match(
 
 assert.match(
   source,
-  /async function submitLocalLiuAgentResume\(operation\)[\s\S]*?sendLocalLiuAgentChatRequest\(\{[\s\S]*?persistUserMessage: false,[\s\S]*?resumeFromCheckpoint: true,/,
+  /async function submitLocalLiuAgentResume\(operation, options = \{\}\)[\s\S]*?sendLocalLiuAgentChatRequest\(\{[\s\S]*?persistUserMessage: false,[\s\S]*?resumeFromCheckpoint: true,/,
   "checkpoint resume must explicitly enter the dedicated resume display mode",
+);
+
+assert.match(
+  source,
+  /const LOCAL_LIUAGENT_RECOVERY_PLACEHOLDERS = new Set\([\s\S]*?function isLocalLiuAgentRecoveryPlaceholderContent\(value\)[\s\S]*?function clearLocalLiuAgentRecoveryPlaceholderContent\(row\)[\s\S]*?row\.content = "";/,
+  "recovery status copy must be recognized and cleared instead of treated as assistant content",
+);
+
+assert.match(
+  source,
+  /async function restoreLocalLiuAgentRuntimeState[\s\S]*?clearLocalLiuAgentRecoveryPlaceholderContent\(row\);/,
+  "runtime restoration must clear placeholders persisted by older versions",
+);
+
+assert.doesNotMatch(
+  restoreLocalLiuAgentRuntimeStateSource,
+  /已恢复上次暂停的本地 liuAgent 会话，可以从 checkpoint 继续执行。/,
+  "runtime restoration must not write recovery status into assistant content",
+);
+
+assert.match(
+  source,
+  /async function submitLocalLiuAgentResume\(operation, options = \{\}\)[\s\S]*?const previousVisibleContent = isLocalLiuAgentRecoveryPlaceholderContent\(row\.content\)[\s\S]*?clearLocalLiuAgentRecoveryPlaceholderContent\(row\);[\s\S]*?`上次有效结果：\$\{previousVisibleContent \|\| "无"\}`/,
+  "checkpoint resume must exclude recovery placeholders from model context",
+);
+
+assert.match(
+  source,
+  /const continuationPrompt = \[[\s\S]*?这不是让你回复恢复状态说明[\s\S]*?必须继续调用必要工具并推进原始目标[\s\S]*?需要用户授权或输入[\s\S]*?无法自行解决的阻塞/,
+  "checkpoint resume must require real tool execution instead of a recovery-status reply",
+);
+
+assert.match(
+  source,
+  /async function sendLocalLiuAgentChatRequest\([\s\S]*?if \(resumeFromCheckpoint\) \{[\s\S]*?clearLocalLiuAgentRecoveryPlaceholderContent\(assistantMessage\);[\s\S]*?upsertMessageOperation/,
+  "the local runtime request must defensively clear stale recovery content before resuming",
+);
+
+assert.doesNotMatch(
+  applyLocalLiuAgentModelStepFailureSource,
+  /row\.content\s*=/,
+  "a failed model step must remain runtime progress instead of becoming final assistant content",
+);
+
+assert.match(
+  source,
+  /function isLocalLiuAgentRecoverableModelStepFailure\(payload = \{\}\) \{[\s\S]*?payload\?\.ok === false &&[\s\S]*?payload\?\.status[\s\S]*?=== "failed";[\s\S]*?if \(!isLocalLiuAgentRecoverableModelStepFailure\(payload\)\) return false;[\s\S]*?模型步骤中断，正在准备从 checkpoint 恢复[\s\S]*?const phase = "running"/,
+  "all failed model steps must use one checkpoint recovery standard",
+);
+
+assert.doesNotMatch(
+  applyLocalLiuAgentModelStepFailureSource,
+  /408|425|429|500|502|503|504|network disconnected|connection refused|connection reset/,
+  "model-step recovery must not classify HTTP statuses or network error text",
+);
+
+assert.match(
+  source,
+  /const LOCAL_LIUAGENT_AUTO_RESUME_MAX_RETRIES = 3;[\s\S]*?function localLiuAgentAutoResumeDelayMs[\s\S]*?retry-after[\s\S]*?function scheduleLocalLiuAgentAutomaticResume/,
+  "runtime interruptions must use bounded checkpoint auto-resume with retry-after support",
+);
+
+assert.match(
+  source,
+  /const shouldAutoResume =[\s\S]*?runtimeErrorCode === "runtime\.interrupted"[\s\S]*?autoResumeRetryNumber < LOCAL_LIUAGENT_AUTO_RESUME_MAX_RETRIES/,
+  "only recoverable runtime interruptions within the retry budget may auto-resume",
+);
+
+assert.match(
+  source,
+  /if \(!assistantMessage\.content && !ok && !shouldAutoResume\) \{[\s\S]*?assistantMessage\.content = `执行失败：\$\{String\(result\?\.error/,
+  "retry exhaustion must render a final visible failure answer",
+);
+
+assert.match(
+  source,
+  /if \(!ok && !shouldAutoResume\) \{[\s\S]*?showManualCloseErrorDialog/,
+  "temporary interruptions must not open a terminal failure dialog before automatic recovery is exhausted",
+);
+
+assert.match(
+  source,
+  /shouldAutoResume[\s\S]*?连接暂时中断，[\s\S]*?秒后自动继续[\s\S]*?scheduleLocalLiuAgentAutomaticResume\(\{/,
+  "the message operation must report scheduled recovery and actually invoke checkpoint resume",
+);
+
+assert.match(
+  source,
+  /status: ok \? "done" : shouldAutoResume \? "in_progress" : "blocked"/,
+  "requirements and offline state must remain in progress while automatic recovery is pending",
 );
 
 assert.match(

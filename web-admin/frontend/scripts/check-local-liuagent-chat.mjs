@@ -11,6 +11,10 @@ const runtime = readFileSync(
   resolve(rootDir, "src-tauri/src/liuagent_core/runtime.rs"),
   "utf8",
 );
+const types = readFileSync(
+  resolve(rootDir, "src-tauri/src/liuagent_core/types.rs"),
+  "utf8",
+);
 const fileTools = readFileSync(
   resolve(rootDir, "src-tauri/src/liuagent_core/tools/file.rs"),
   "utf8",
@@ -31,6 +35,10 @@ const messageMappers = readFileSync(
 );
 const projectChatResponsiveCss = readFileSync(
   resolve(rootDir, "src/modules/project-chat/styles/project-chat-style-15.css"),
+  "utf8",
+);
+const projectChatHiddenMetaCss = readFileSync(
+  resolve(rootDir, "src/modules/project-chat/styles/project-chat-style-11.css"),
   "utf8",
 );
 const settingsCenterConfig = readFileSync(
@@ -287,6 +295,90 @@ assert.match(
 );
 
 assert.match(
+  types,
+  /pub struct LocalChatResult \{[\s\S]*?pub answer_id: String,/,
+  "local chat results must expose a stable answer ID",
+);
+
+assert.match(
+  runtime,
+  /let answer_id = format!\("ans_\{assistant_message_id\}"\);[\s\S]*?Ok\(LocalChatResult \{[\s\S]*?answer_id,/,
+  "the answer ID must be derived once from the stable assistant message ID",
+);
+
+assert.match(
+  projectChat,
+  /assistantMessage\.answerId = String\([\s\S]*?result\?\.answerId[\s\S]*?`ans_\$\{String\(assistantMessage\?\.id/,
+  "final local answers must retain the Rust answer ID with a stable message fallback",
+);
+
+assert.match(
+  projectChat,
+  /回答 ID：\{\{ messageAnswerId\(item\) \}\}[\s\S]*?async function copyMessageAnswerId\(item\)/,
+  "final assistant bubbles must display and copy the answer ID",
+);
+
+assert.match(
+  projectChatHiddenMetaCss,
+  /\.message-row\.is-user \.message-meta,[\s\S]*?\.message-row\.is-ai \.message-meta \{[\s\S]*?display: none;/,
+  "message metadata remains intentionally hidden in the compact chat layout",
+);
+
+assert.match(
+  projectChat,
+  /class="message-actions"[\s\S]*?class="message-answer-id"[\s\S]*?回答 ID：\{\{ messageAnswerId\(item\) \}\}/,
+  "the answer ID must render in the visible message action row instead of hidden metadata",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /class="message-meta"[\s\S]{0,900}class="message-answer-id"/,
+  "the answer ID must never be placed inside the hidden message metadata container",
+);
+
+assert.match(
+  projectChat,
+  /function primaryMessageProcessOperation\(row\) \{[\s\S]*?const latestOperations = operations\.slice\(\)\.reverse\(\);[\s\S]*?latestOperations\.find\([\s\S]*?=== "running"/,
+  "live progress titles must prefer the latest running runtime operation",
+);
+
+assert.match(
+  projectChat,
+  /function messageAnswerId\(item\) \{[\s\S]*?const explicitAnswerId =[\s\S]*?const messageId =[\s\S]*?const isActiveLocalRun =[\s\S]*?const isStreamingLastMessage =[\s\S]*?return messageId\.startsWith\("ans_"\) \? messageId : `ans_\$\{messageId\}`;/,
+  "historical final answers must derive a stable visible ID from their message ID",
+);
+
+assert.match(
+  projectChat,
+  /function ensureMessageAnswerId\(item\) \{[\s\S]*?item\.answerId = answerId;/,
+  "paused messages must have a helper that persists a stable answer ID",
+);
+
+assert.match(
+  projectChat,
+  /if \(activeRun\.cancelled\) \{[\s\S]*?ensureMessageAnswerId\(assistantMessage\);/,
+  "the cancelled-result pause path must persist an answer ID",
+);
+
+assert.match(
+  projectChat,
+  /if \(runtimePauseCode === "runtime\.paused"\) \{[\s\S]*?ensureMessageAnswerId\(assistantMessage\);/,
+  "the native paused-result path must persist an answer ID",
+);
+
+assert.match(
+  projectChat,
+  /async function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?if \(row\) \{[\s\S]*?ensureMessageAnswerId\(row\);/,
+  "the immediate manual pause path must persist an answer ID",
+);
+
+assert.match(
+  projectChat,
+  /function deleteLocalLiuAgentActiveRun\(chatSessionId = "", expectedRun = null\) \{[\s\S]*?localLiuAgentActiveRuns\.get\(normalizedChatSessionId\) !== expectedRun[\s\S]*?return false;[\s\S]*?if \(activeRun\.cancelled\) \{[\s\S]*?const replacementRun = localLiuAgentActiveRunForChatSession\(activeChatSessionId\);[\s\S]*?replacementRun !== activeRun[\s\S]*?return \{ cancelled: true, superseded: true \};/,
+  "a paused request finishing late must not delete or overwrite a newer resumed run",
+);
+
+assert.match(
   runtime,
   /"direct-openai-compatible"/,
   "desktop model runtime must reserve an OpenAI-compatible local direct mode",
@@ -308,6 +400,24 @@ assert.match(
   bridge,
   /export async function startNativeLiuAgentLocalChat/,
   "frontend bridge must export startNativeLiuAgentLocalChat",
+);
+
+assert.match(
+  bridge,
+  /resumeFromCheckpoint: Boolean\([\s\S]*?request\?\.resumeFromCheckpoint[\s\S]*?request\?\.resume_from_checkpoint/,
+  "frontend bridge must forward the checkpoint resume protocol flag",
+);
+
+assert.match(
+  runtime,
+  /let collected_runtime_events = RefCell::new[\s\S]*?let collecting_event_sink =[\s\S]*?let base_model_request = build_model_request_with_history[\s\S]*?if request\.resume_from_checkpoint[\s\S]*?checkpoint_resume_started[\s\S]*?String::new\(\)/,
+  "runtime must establish live event delivery before model preparation and skip duplicate context extraction on resume",
+);
+
+assert.match(
+  projectChat,
+  /sendLocalLiuAgentChatRequest\(\{[\s\S]*?persistUserMessage: false,[\s\S]*?resumeFromCheckpoint: true,[\s\S]*?workspacePath,/,
+  "checkpoint resume must keep using the workspace stored with the paused run",
 );
 
 assert.match(
@@ -734,8 +844,20 @@ assert.doesNotMatch(
 
 assert.match(
   projectChat,
-  /const showAgentWorkflowStatusStrip = computed\(\s*\(\) => false,\s*\);/,
-  "desktop local composer must not show global agent workflow failures above the input",
+  /const showAgentWorkflowStatusStrip = computed\(\(\) => \{[\s\S]*?!String\(selectedProjectId\.value \|\| ""\)\.trim\(\)[\s\S]*?agentWorkflowState\.value\?\.phase[\s\S]*?!== "idle";/,
+  "desktop local composer must show the workflow status strip for non-idle project execution states",
+);
+
+assert.match(
+  projectChat,
+  /const agentWorkflowState = computed\(\(\) => \{[\s\S]*?localLiuAgentPermissionSubmitting\.value[\s\S]*?title: "正在确认并继续执行"[\s\S]*?phase: "running"/,
+  "text confirmation replies must immediately expose a running workflow status while intent classification is in progress",
+);
+
+assert.match(
+  projectChat,
+  /const isCheckpointResumeRunning =[\s\S]*?local_liuagent_resuming[\s\S]*?if \(isCheckpointResumeRunning \|\| isLocalLiuAgentRunning\)[\s\S]*?title: isCheckpointResumeRunning[\s\S]*?"正在从暂停节点继续执行"/,
+  "checkpoint resume and active local runs must take priority over stale blocked workflow operations",
 );
 
 assert.match(
@@ -816,6 +938,48 @@ assert.match(
   "clearing a chat session timer must remove all per-run timer keys for that session",
 );
 
+assert.match(
+  projectChat,
+  /const composerPlanStateBySession = new Map\(\);/,
+  "composer plans must be isolated per project chat session",
+);
+
+assert.match(
+  projectChat,
+  /watch\(\[selectedProjectId, currentChatSessionId\],[\s\S]*applyComposerPlanStateForChatSession\(projectId, chatSessionId\)/,
+  "switching conversations must restore the selected session composer plan",
+);
+
+assert.match(
+  projectChat,
+  /function applyLiuAgentPlanEvent\([\s\S]*getComposerPlanState\(projectId, chatSessionId\)[\s\S]*rememberComposerPlanState\(projectId, chatSessionId, nextPlan, ownerId\)/,
+  "background plan events must update their own session instead of a global owner",
+);
+
+assert.match(
+  projectChat,
+  /function buildPersistedChatRuntimePayload\(\)[\s\S]*composer_plan: composerPlanState\.plan,[\s\S]*composer_plan_owner_id: composerPlanState\.ownerId/,
+  "persisted chat runtime must include the active session composer plan",
+);
+
+assert.match(
+  projectChat,
+  /function fetchChatHistory\([\s\S]*restoreComposerPlanStateFromRuntimePayload\(\s*projectId,\s*normalizedSessionId,\s*runtimePayload/,
+  "chat history restore must rebuild the session composer plan",
+);
+
+assert.match(
+  projectChat,
+  /function persistCurrentChatRuntimeBeforeSessionSwitch\([\s\S]*persistCurrentChatRuntimeNow\(activeProjectId, activeChatSessionId\)/,
+  "conversation switching must persist the previous session plan before replacing the active session",
+);
+
+assert.match(
+  projectChat,
+  /function restoreComposerPlanStateFromRuntimePayload\([\s\S]*persistedTimestamp > cachedTimestamp/,
+  "stale persisted plans must not overwrite newer background plan events",
+);
+
 assert.doesNotMatch(
   projectChat,
   /const showWorkingStatusBar = computed\(\(\) => \{[\s\S]*if \(isLocalRunnerSurface|isDesktopLocalSession\)/,
@@ -830,7 +994,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /deleteLocalLiuAgentActiveRun\(activeChatSessionId\);\s*syncChatLoadingWithCurrentSession\(\);\s*scrollToBottom\(\);\s*void \(async \(\) => \{[\s\S]*persistLocalLiuAgentFinalMessages/,
+  /deleteLocalLiuAgentActiveRun\(activeChatSessionId, activeRun\);\s*syncChatLoadingWithCurrentSession\(\);\s*scrollToBottom\(\);\s*void \(async \(\) => \{[\s\S]*persistLocalLiuAgentFinalMessages/,
   "local liuAgent must reveal the final answer before background persistence finishes",
 );
 

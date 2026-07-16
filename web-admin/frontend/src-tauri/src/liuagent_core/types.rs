@@ -42,6 +42,8 @@ pub struct LocalChatRequest {
     pub mcp_config: Value,
     pub backend_context: Option<LocalBackendContext>,
     pub permission_decision: Option<PermissionDecisionInput>,
+    #[serde(default)]
+    pub resume_from_checkpoint: bool,
 }
 
 impl Default for LocalChatRequest {
@@ -65,6 +67,7 @@ impl Default for LocalChatRequest {
             mcp_config: json!({}),
             backend_context: None,
             permission_decision: None,
+            resume_from_checkpoint: false,
         }
     }
 }
@@ -564,6 +567,7 @@ pub struct LocalChatResult {
     pub plan_status: String,
     pub session_id: String,
     pub chat_session_id: String,
+    pub answer_id: String,
     pub requirement_record_path: String,
     pub gateway_result: Option<AgentInvocationResult>,
     pub assistant_content: String,
@@ -615,6 +619,7 @@ impl LocalChatResult {
             plan_status: String::new(),
             session_id: String::new(),
             chat_session_id,
+            answer_id: String::new(),
             requirement_record_path: String::new(),
             gateway_result: None,
             assistant_content: String::new(),

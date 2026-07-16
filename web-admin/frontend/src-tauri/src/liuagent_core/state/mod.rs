@@ -7,9 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use super::adapters::protocol::{
-    approval_required_event, message_event, state_changed_event, tool_result_event,
-};
+use super::adapters::protocol::{message_event, state_changed_event};
 use super::gateway::{epoch_millis, sanitize_path_segment};
 use super::paths::desktop_runtime_root;
 use super::types::{ToolError, ToolExecutionResult};
@@ -651,12 +649,16 @@ pub fn list_runtime_events(
 ) -> Result<Vec<Value>, ToolError> {
     let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
     let events = read_jsonl(&paths.transcript_path)?;
-    let mut started = after_event_id
+    let normalized_after_event_id = after_event_id
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_none();
-    let mut selected = Vec::new();
+        .filter(|value| !value.is_empty());
     let limit = limit.clamp(1, 1000);
+    if normalized_after_event_id.is_none() {
+        let start = events.len().saturating_sub(limit);
+        return Ok(events.into_iter().skip(start).collect());
+    }
+    let mut started = false;
+    let mut selected = Vec::new();
     for event in events {
         if !started {
             let event_id = event
@@ -664,7 +666,7 @@ pub fn list_runtime_events(
                 .or_else(|| event.get("eventId"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            if Some(event_id) == after_event_id {
+            if Some(event_id) == normalized_after_event_id {
                 started = true;
             }
             continue;
@@ -1088,7 +1090,7 @@ fn build_transcript_events(input: &RuntimePersistenceInput<'_>, now: u128) -> Ve
                 .or_else(|| run_state.get("pending_tool_batch_id"))
         })
         .and_then(Value::as_str);
-    let mut events = vec![
+    vec![
         message_event(
             format!("evt_{}_user", input.session_id),
             input.session_id,
@@ -1107,52 +1109,19 @@ fn build_transcript_events(input: &RuntimePersistenceInput<'_>, now: u128) -> Ve
             input.assistant_content,
             now,
         ),
-    ];
-    for result in input
-        .tool_results
-        .iter()
-        .filter(|result| result.error_code == "permission.required")
-    {
-        if let Some(permission_request) = result.content.get("permissionRequest") {
-            events.push(approval_required_event(
-                format!(
-                    "evt_{}_approval_{}",
-                    input.session_id,
-                    sanitize_path_segment(&result.tool_call_id)
-                ),
-                input.session_id,
-                input.chat_session_id,
-                permission_request.clone(),
-                now,
-            ));
-        }
-    }
-    events.push(state_changed_event(
-        format!("evt_{}_state", input.session_id),
-        input.session_id,
-        input.chat_session_id,
-        "running",
-        input.run_status,
-        input.waiting_for,
-        pending_request_id,
-        &pending_tool_call_ids,
-        pending_tool_batch_id,
-        now,
-    ));
-    for result in input.tool_results {
-        events.push(tool_result_event(
-            format!(
-                "evt_{}_{}",
-                input.session_id,
-                sanitize_path_segment(&result.tool_result_id)
-            ),
+        state_changed_event(
+            format!("evt_{}_state", input.session_id),
             input.session_id,
             input.chat_session_id,
-            result,
+            "running",
+            input.run_status,
+            input.waiting_for,
+            pending_request_id,
+            &pending_tool_call_ids,
+            pending_tool_batch_id,
             now,
-        ));
-    }
-    events
+        ),
+    ]
 }
 
 fn filter_runtime_events_by_session(events: Vec<Value>, runtime_session_id: &str) -> Vec<Value> {
@@ -1446,12 +1415,10 @@ mod tests {
             .and_then(Value::as_array)
             .is_some());
         let transcript = fs::read_to_string(&paths.transcript_path).unwrap();
-        assert!(transcript.contains("\"type\":\"approval_required\""));
+        assert!(!transcript.contains("\"type\":\"approval_required\""));
         assert!(transcript.contains("\"type\":\"state_changed\""));
         let (_state, events) = recover_runtime_session(&dir, "proj-test", "chat-state").unwrap();
-        assert!(events
-            .iter()
-            .any(|event| event["type"] == "approval_required"));
+        assert!(events.iter().any(|event| event["type"] == "state_changed"));
         let listed_events = list_runtime_events(
             &dir,
             "proj-test",
@@ -1693,8 +1660,109 @@ mod tests {
         assert!(PathBuf::from(&paths.active_session_path).exists());
         assert!(PathBuf::from(&paths.session_history_path).exists());
         let transcript = fs::read_to_string(&paths.transcript_path).unwrap();
-        assert!(transcript.contains("\"type\":\"tool_result\""));
-        assert!(transcript.contains("\"tool_result_id\":\"result_call_missing\""));
+        assert!(!transcript.contains("\"type\":\"tool_result\""));
+        assert_eq!(
+            recovered["tool_results"][0]["toolResultId"],
+            "result_call_missing"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn runtime_event_polling_starts_from_tail_and_finalization_keeps_live_events_unique() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_runtime_event_tail_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        for index in 1..=5 {
+            append_runtime_event(
+                &dir,
+                "proj-test",
+                "chat-tail",
+                &json!({
+                    "event_id": format!("evt-tail-{index}"),
+                    "runtime_session_id": "session-tail",
+                    "chat_session_id": "chat-tail",
+                    "type": "progress_update",
+                    "payload": {"index": index},
+                    "created_at_epoch_ms": epoch_millis()
+                }),
+            )
+            .unwrap();
+        }
+
+        let tail = list_runtime_events(&dir, "proj-test", "chat-tail", None, 2).unwrap();
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0]["event_id"], "evt-tail-4");
+        assert_eq!(tail[1]["event_id"], "evt-tail-5");
+
+        let tool_result = ToolExecutionResult::ok(
+            "call-live".to_string(),
+            "read_file".to_string(),
+            json!({"path": "README.md"}),
+            "read README.md".to_string(),
+        );
+        let live_event_id = format!(
+            "evt_session-tail_{}",
+            sanitize_path_segment(&tool_result.tool_result_id)
+        );
+        append_runtime_event(
+            &dir,
+            "proj-test",
+            "chat-tail",
+            &json!({
+                "event_id": live_event_id,
+                "runtime_session_id": "session-tail",
+                "chat_session_id": "chat-tail",
+                "type": "tool_result",
+                "payload": {
+                    "tool_result_id": tool_result.tool_result_id,
+                    "tool_call_id": tool_result.tool_call_id,
+                    "tool_name": tool_result.name,
+                    "ok": tool_result.ok,
+                    "summary": tool_result.summary
+                },
+                "created_at_epoch_ms": epoch_millis()
+            }),
+        )
+        .unwrap();
+
+        write_runtime_artifacts(RuntimePersistenceInput {
+            workspace_root: &dir,
+            project_id: "proj-test",
+            chat_session_id: "chat-tail",
+            session_id: "session-tail",
+            user_message_id: "user-tail",
+            assistant_message_id: "assistant-tail",
+            user_message: "read file",
+            assistant_content: "done",
+            run_status: "completed",
+            waiting_for: None,
+            model_runtime: json!({"status": "completed"}),
+            agent_run_context: json!({"version": "agent-run-context/test"}),
+            observations: json!([]),
+            scheduler_state: json!({"version": "runtime-scheduler-state/test"}),
+            verification_report: json!({"overall_status": "passed"}),
+            task_goal: json!({"version": "task-goal/test", "goalId": "goal-tail"}),
+            clarity_assessment: json!({"version": "clarity-assessment/test"}),
+            plan_state: json!({"version": "plan-state/test"}),
+            retry_decision: json!({"version": "retry-decision/test"}),
+            memory_write_plan: json!({"version": "memory-write-plan/test"}),
+            tool_results: &[tool_result],
+            operations: json!([]),
+            audit_logs: &[],
+        })
+        .unwrap();
+
+        let events =
+            read_jsonl(&runtime_artifact_paths(&dir, "proj-test", "chat-tail").transcript_path)
+                .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event_id"] == live_event_id)
+                .count(),
+            1
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }
