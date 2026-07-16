@@ -135,7 +135,6 @@ Web-Admin API 内部挂载的 MCP proxy：
 | `assistant/` | 全局助手、能力路由、工作流状态和策略。 |
 | `chat/` | 项目聊天执行、实时订阅、任务树、工作流状态归档。 |
 | `mcp/` | 动态 MCP 工具、资源、代理、审计和项目状态。 |
-| `agent_runtime/` | Agent Runtime v2，详见内部 `README.md`。 |
 | `runtime/` | 运行时解析、工具注册、provider resolver、prompt assembler。 |
 | `connectors/` | 本地连接器、项目主机命令/终端、机器人连接器安装。 |
 | `plugins/` | CLI 插件市场、安装任务、profile。 |

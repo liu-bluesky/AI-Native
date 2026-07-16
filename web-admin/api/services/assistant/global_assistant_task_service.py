@@ -1095,6 +1095,70 @@ def _record_async_dynamic_action_result(
             _write_payload(payload)
 
 
+async def _run_dynamic_task_model_once(
+    *,
+    project: Any,
+    auth_payload: dict[str, Any],
+    prompt: str,
+    provider_id: str = "",
+    model_name: str = "",
+) -> str:
+    from models.requests import ProjectChatReq
+    from routers import projects as projects_router
+    from services.connectors.local_connector_service import chat_completion_via_connector
+
+    request_payload: dict[str, Any] = {
+        "message": prompt,
+        "system_prompt": "你只输出严格 JSON，不要 Markdown，不要解释。",
+        "temperature": 0.0,
+        "auto_use_tools": False,
+        "persist_history": False,
+        "task_tree_enabled": False,
+        "task_tree_auto_generate": False,
+    }
+    if str(provider_id or "").strip():
+        request_payload["provider_id"] = str(provider_id).strip()
+    if str(model_name or "").strip():
+        request_payload["model_name"] = str(model_name).strip()
+    request = ProjectChatReq(**request_payload)
+    runtime_settings = projects_router._resolve_chat_runtime_settings(request, project)
+    resolved_runtime = await projects_router._resolve_project_chat_runtime(runtime_settings, auth_payload)
+    messages = [
+        {"role": "system", "content": str(request.system_prompt or "")},
+        {"role": "user", "content": prompt},
+    ]
+    if resolved_runtime.provider_mode == "local_connector":
+        connector = projects_router._resolve_accessible_local_connector_for_llm(
+            resolved_runtime.connector_id,
+            auth_payload,
+        )
+        if connector is None:
+            raise RuntimeError("本地连接器不可用")
+        response = await chat_completion_via_connector(
+            connector,
+            model_name=resolved_runtime.model_name,
+            messages=messages,
+            temperature=0.0,
+            max_tokens=800,
+            timeout=45,
+        )
+    else:
+        llm_service = projects_router._resolve_chat_llm_service_runtime(
+            None,
+            resolved_runtime,
+            auth_payload,
+        )
+        response = await llm_service.chat_completion(
+            resolved_runtime.provider_id,
+            resolved_runtime.model_name,
+            messages,
+            temperature=0.0,
+            max_tokens=800,
+            timeout=45,
+        )
+    return str((response or {}).get("content") or "").strip()
+
+
 def _execute_dynamic_project_chat_action(
     task: dict[str, Any],
     action: dict[str, Any],
@@ -1104,9 +1168,7 @@ def _execute_dynamic_project_chat_action(
     source_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
-        from models.requests import ProjectChatReq
         from routers import projects as projects_router
-        from services.chat.project_chat_execution_service import run_project_chat_once
         from services.providers.system_speech_service import enqueue_system_speech
 
         project_id = str(task.get("project_id") or "").strip()
@@ -1115,7 +1177,8 @@ def _execute_dynamic_project_chat_action(
         auth_role_ids = get_auth_role_ids(auth_payload) or ["user"]
         if not project_id:
             return {"status": "failed", "message": "动态任务缺少 project_id", "dynamic_action_count": 0}
-        if projects_router.project_store.get(project_id) is None:
+        project = projects_router.project_store.get(project_id)
+        if project is None:
             return {"status": "failed", "message": f"项目不存在：{project_id}", "dynamic_action_count": 0}
 
         chat_session_id = _dynamic_task_chat_session_id(task)
@@ -1143,27 +1206,14 @@ def _execute_dynamic_project_chat_action(
             f"上下文：{json.dumps(source_context or {}, ensure_ascii=False)[:2000]}"
         )
         params = action.get("params") if isinstance(action.get("params"), dict) else {}
-        req = ProjectChatReq(
-            message=prompt,
-            chat_session_id=chat_session_id,
-            chat_surface="global-assistant-task",
-            source_context={"source_type": "global_assistant_task", "task_id": str(task.get("id") or "")},
-            system_prompt="你只输出严格 JSON，不要 Markdown，不要解释。",
-            temperature=0.0,
-            max_tokens=800,
-            auto_use_tools=False,
-            task_tree_enabled=False,
-            task_tree_auto_generate=False,
-        )
-        result = await run_project_chat_once(
-            project_id=project_id,
-            username=username,
-            req=req,
+        content = await _run_dynamic_task_model_once(
+            project=project,
             auth_payload=auth_payload,
-            save_memory_snapshot=False,
-            publish_realtime=False,
+            prompt=prompt,
+            provider_id=str(params.get("provider_id") or ""),
+            model_name=str(params.get("model_name") or ""),
         )
-        plan = _extract_json_object(result.content)
+        plan = _extract_json_object(content)
         dynamic_actions = _normalize_dynamic_actions(plan)
         if not dynamic_actions:
             return {

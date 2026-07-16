@@ -10,6 +10,51 @@ import requests
 from fastapi.testclient import TestClient
 
 
+def test_project_chat_history_persistence_context_disables_append():
+    from models.requests import ProjectChatReq
+    from routers import projects as projects_router
+
+    assert ProjectChatReq.model_validate({"persist_history": False}).persist_history is False
+    token = projects_router._PROJECT_CHAT_HISTORY_PERSIST_ENABLED.set(False)
+    try:
+        result = projects_router._append_chat_record(
+            project_id="proj-local",
+            username="tester",
+            role="user",
+            content="local only",
+            chat_session_id="local-session",
+        )
+        projects_router._save_project_chat_memory_snapshot(
+            project_id="proj-local",
+            user_message="local question",
+            answer="local answer",
+            chat_session_id="local-session",
+        )
+    finally:
+        projects_router._PROJECT_CHAT_HISTORY_PERSIST_ENABLED.reset(token)
+
+    assert result is None
+
+
+def test_project_chat_history_policy_wrapper_scopes_and_restores_context():
+    from routers import projects as projects_router
+
+    observed = []
+
+    async def handler(_payload):
+        observed.append(projects_router._project_chat_history_persist_enabled())
+
+    asyncio.run(
+        projects_router._run_project_chat_request_with_history_policy(
+            handler,
+            {"persist_history": False},
+        )
+    )
+
+    assert observed == [False]
+    assert projects_router._project_chat_history_persist_enabled() is True
+
+
 def _build_project_chat_runtime_test_client(tmp_path, monkeypatch, auth_payload):
     from core import config as core_config
     from core.deps import require_auth
@@ -156,6 +201,43 @@ def test_legacy_external_agent_task_routes_are_not_registered(tmp_path, monkeypa
         "/api/projects/proj-1/chat/external-agent/tasks/task-1/approval-requests",
         json={},
     ).status_code == 404
+
+
+def test_backend_agent_runtime_routes_return_gone(tmp_path, monkeypatch):
+    client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin", "roles": ["admin"]},
+    )
+    from stores.json.project_store import ProjectConfig
+
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    requests = [
+        client.get("/api/projects/proj-1/agent-runtime-v2/runs"),
+        client.get("/api/projects/proj-1/agent-runtime-v2/runs/run-1"),
+        client.post("/api/projects/proj-1/agent-runtime-v2/runs/run-1/resume"),
+        client.post(
+            "/api/projects/proj-1/agent-runtime-v2/permission-actions",
+            json={
+                "action": "deny",
+                "run_id": "run-1",
+                "call_id": "call-1",
+                "tool_name": "tool-1",
+            },
+        ),
+        client.get(
+            "/api/projects/proj-1/agent-runtime-v2/workspace-trust",
+            params={"workspace_path": "/tmp/workspace"},
+        ),
+        client.post(
+            "/api/projects/proj-1/agent-runtime-v2/workspace-trust",
+            json={"workspace_path": "/tmp/workspace", "trusted": True},
+        ),
+    ]
+
+    assert [response.status_code for response in requests] == [410] * 6
+    for response in requests:
+        assert response.json()["detail"]["code"] == "backend_agent_runtime.removed"
 
 
 def test_feishu_project_chat_session_id_isolates_group_and_private_messages():
@@ -2364,24 +2446,26 @@ def test_global_assistant_project_chat_action_uses_llm_dynamic_plan_for_repeated
     )
     store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
 
-    from services.chat import project_chat_execution_service, system_speech_service
+    from services.chat import system_speech_service
+    from services.assistant import global_assistant_task_service
     from services.assistant.global_assistant_task_service import execute_global_assistant_task, upsert_global_assistant_task
 
     chat_calls = []
     queued_calls = []
 
-    class FakeResult:
-        content = '{"actions":[{"type":"system_speech","text":"睡觉","repeat":3}],"summary":"已理解为播报睡觉三次"}'
-
-    async def fake_run_project_chat_once(**kwargs):
+    async def fake_run_dynamic_task_model_once(**kwargs):
         chat_calls.append(kwargs)
-        return FakeResult()
+        return '{"actions":[{"type":"system_speech","text":"睡觉","repeat":3}],"summary":"已理解为播报睡觉三次"}'
 
     async def fake_enqueue_system_speech(text, **kwargs):
         queued_calls.append({"text": text, **kwargs})
         return {"queued": True, "reason": "", "queue_size": len(queued_calls), "text_length": len(text)}
 
-    monkeypatch.setattr(project_chat_execution_service, "run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr(
+        global_assistant_task_service,
+        "_run_dynamic_task_model_once",
+        fake_run_dynamic_task_model_once,
+    )
     monkeypatch.setattr(system_speech_service, "enqueue_system_speech", fake_enqueue_system_speech)
 
     upsert_global_assistant_task(
@@ -2407,8 +2491,8 @@ def test_global_assistant_project_chat_action_uses_llm_dynamic_plan_for_repeated
 
     assert executed is not None
     assert chat_calls
-    assert "到时间提醒 睡觉 重复执行3次" in chat_calls[0]["req"].message
-    dynamic_session_id = chat_calls[0]["req"].chat_session_id
+    assert "到时间提醒 睡觉 重复执行3次" in chat_calls[0]["prompt"]
+    dynamic_session_id = "chat-session-global-task-task-dynamic-repeat-sleep"
     assert dynamic_session_id == "chat-session-global-task-task-dynamic-repeat-sleep"
     assert store_factory.project_chat_store.get_session("proj-1", "tester", dynamic_session_id) is not None
     assert [item.id for item in store_factory.project_chat_store.list_sessions("proj-1", "tester")] == [
@@ -2417,6 +2501,65 @@ def test_global_assistant_project_chat_action_uses_llm_dynamic_plan_for_repeated
     assert [item["text"] for item in queued_calls] == ["睡觉", "睡觉", "睡觉"]
     assert executed["latest_execution"]["action_results"][0]["status"] == "completed"
     assert executed["latest_execution"]["action_results"][0]["dynamic_action_count"] == 3
+
+
+def test_global_assistant_dynamic_model_call_is_one_shot_without_history_or_tools(monkeypatch):
+    from types import SimpleNamespace
+
+    from routers import projects as projects_router
+    from services.assistant import global_assistant_task_service
+
+    captured = {}
+
+    def fake_resolve_settings(request, project):
+        captured["request"] = request
+        captured["project"] = project
+        return {"provider_id": "provider-1", "model_name": "model-1"}
+
+    async def fake_resolve_runtime(runtime_settings, auth_payload):
+        captured["runtime_settings"] = runtime_settings
+        captured["auth_payload"] = auth_payload
+        return SimpleNamespace(
+            provider_mode="remote",
+            provider_id="provider-1",
+            model_name="model-1",
+            connector_id="",
+        )
+
+    class FakeLlmService:
+        async def chat_completion(self, provider_id, model_name, messages, **kwargs):
+            captured["completion"] = {
+                "provider_id": provider_id,
+                "model_name": model_name,
+                "messages": messages,
+                **kwargs,
+            }
+            return {"content": '{"actions":[],"summary":"ok"}'}
+
+    monkeypatch.setattr(projects_router, "_resolve_chat_runtime_settings", fake_resolve_settings)
+    monkeypatch.setattr(projects_router, "_resolve_project_chat_runtime", fake_resolve_runtime)
+    monkeypatch.setattr(
+        projects_router,
+        "_resolve_chat_llm_service_runtime",
+        lambda *_args, **_kwargs: FakeLlmService(),
+    )
+
+    project = SimpleNamespace(id="proj-1", chat_settings={})
+    content = asyncio.run(
+        global_assistant_task_service._run_dynamic_task_model_once(
+            project=project,
+            auth_payload={"sub": "tester", "roles": ["user"]},
+            prompt="return json",
+        )
+    )
+
+    assert content == '{"actions":[],"summary":"ok"}'
+    assert captured["request"].persist_history is False
+    assert captured["request"].auto_use_tools is False
+    assert captured["request"].task_tree_enabled is False
+    assert captured["completion"]["temperature"] == 0.0
+    assert captured["completion"]["max_tokens"] == 800
+    assert captured["completion"]["messages"][-1] == {"role": "user", "content": "return json"}
 
 
 def test_global_assistant_async_project_chat_action_finalizes_execution_history(tmp_path, monkeypatch):
@@ -2445,28 +2588,30 @@ def test_global_assistant_async_project_chat_action_finalizes_execution_history(
     )
     store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
 
-    from services.chat import project_chat_execution_service, system_speech_service
+    from services.chat import system_speech_service
+    from services.assistant import global_assistant_task_service
     from services.assistant.global_assistant_task_service import (
         execute_global_assistant_task,
         list_global_assistant_tasks,
         upsert_global_assistant_task,
     )
 
-    class FakeResult:
-        content = '{"actions":[{"type":"system_speech","text":"测试成功","repeat":2}],"summary":"播报两次"}'
-
     queued_calls = []
     model_calls = []
 
-    async def fake_run_project_chat_once(**kwargs):
+    async def fake_run_dynamic_task_model_once(**kwargs):
         model_calls.append(kwargs)
-        return FakeResult()
+        return '{"actions":[{"type":"system_speech","text":"测试成功","repeat":2}],"summary":"播报两次"}'
 
     async def fake_enqueue_system_speech(text, **kwargs):
         queued_calls.append({"text": text, **kwargs})
         return {"queued": True, "reason": "", "queue_size": len(queued_calls), "text_length": len(text)}
 
-    monkeypatch.setattr(project_chat_execution_service, "run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr(
+        global_assistant_task_service,
+        "_run_dynamic_task_model_once",
+        fake_run_dynamic_task_model_once,
+    )
     monkeypatch.setattr(system_speech_service, "enqueue_system_speech", fake_enqueue_system_speech)
 
     upsert_global_assistant_task(
@@ -2526,17 +2671,21 @@ def test_global_assistant_async_project_chat_failure_reactivates_schedule_for_re
     )
     store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
 
-    from services.chat import project_chat_execution_service
+    from services.assistant import global_assistant_task_service
     from services.assistant.global_assistant_task_service import (
         execute_global_assistant_task,
         list_global_assistant_tasks,
         upsert_global_assistant_task,
     )
 
-    async def fake_run_project_chat_once(**kwargs):
+    async def fake_run_dynamic_task_model_once(**kwargs):
         raise RuntimeError("llm unavailable")
 
-    monkeypatch.setattr(project_chat_execution_service, "run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr(
+        global_assistant_task_service,
+        "_run_dynamic_task_model_once",
+        fake_run_dynamic_task_model_once,
+    )
 
     upsert_global_assistant_task(
         username="tester",
@@ -5248,6 +5397,7 @@ def test_archive_workflow_state_service_builds_pending_state():
     assert context["archive_workflow"]["reply_content"] == reply
 
 
+@pytest.mark.skip(reason="backend project chat execution retired; desktop runtime owns chat execution")
 def test_run_project_chat_once_persists_pending_archive_workflow_state(tmp_path, monkeypatch):
     from core import config as core_config
     from services.chat.project_chat_execution_service import run_project_chat_once
@@ -5510,6 +5660,7 @@ def test_tool_intent_keeps_agent_runtime_wrapper_available():
     assert adjusted["agent_runtime_enabled"] is True
 
 
+@pytest.mark.skip(reason="backend project chat execution retired; desktop runtime owns chat execution")
 def test_run_project_chat_once_reuses_previous_confirmed_workflow_for_short_follow_up(tmp_path, monkeypatch):
     from core import config as core_config
     from services.chat.project_chat_execution_service import run_project_chat_once

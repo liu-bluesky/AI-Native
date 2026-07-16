@@ -12,16 +12,6 @@ export function chatRuntimeStorageKey(projectId, chatSessionId) {
   return `project_chat_runtime_${normalizedProjectId}_${normalizedChatSessionId}`;
 }
 
-export function chatRuntimeRemoteFingerprint(projectId, chatSessionId, payload) {
-  const key = chatRuntimeStorageKey(projectId, chatSessionId);
-  if (!key || !payload || typeof payload !== "object") return "";
-  try {
-    return `${key}:${JSON.stringify(payload)}`;
-  } catch (_error) {
-    return key;
-  }
-}
-
 export function isStorageQuotaExceededError(error) {
   const name = String(error?.name || "");
   const message = String(error?.message || "");
@@ -38,7 +28,7 @@ function truncateRuntimeStorageText(value, limit) {
   const text = String(value || "");
   const maxLength = Number(limit || 0);
   if (!maxLength || text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength)}\n\n[本地缓存已截断，完整内容请以服务端历史为准]`;
+  return `${text.slice(0, maxLength)}\n\n[本地存储空间不足，较早内容已截断]`;
 }
 
 function compactRuntimeStorageRecord(value, stringLimit = 800) {
@@ -181,28 +171,6 @@ function buildCompactChatRuntimePayloadForLocalStorage(
   };
 }
 
-function pruneOtherChatRuntimeStorage(projectId, keepKey) {
-  const normalizedProjectId = String(projectId || "").trim();
-  const normalizedKeepKey = String(keepKey || "").trim();
-  if (!normalizedProjectId || typeof window === "undefined") return 0;
-  const prefix = `project_chat_runtime_${normalizedProjectId}_`;
-  const keys = [];
-  try {
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = String(localStorage.key(index) || "").trim();
-      if (key.startsWith(prefix) && key !== normalizedKeepKey) {
-        keys.push(key);
-      }
-    }
-    for (const key of keys) {
-      localStorage.removeItem(key);
-    }
-  } catch (error) {
-    console.warn("prune chat runtime storage failed", error);
-  }
-  return keys.length;
-}
-
 export function readPersistedChatRuntime(projectId, chatSessionId) {
   if (typeof window === "undefined") return null;
   const key = chatRuntimeStorageKey(projectId, chatSessionId);
@@ -235,8 +203,6 @@ export function writePersistedChatRuntime(projectId, chatSessionId, payload) {
     }
   }
 
-  const normalizedProjectId = String(projectId || "").trim();
-  pruneOtherChatRuntimeStorage(normalizedProjectId, key);
   const compactPayloads = [
     buildCompactChatRuntimePayloadForLocalStorage(payload, {
       messageLimit: CHAT_RUNTIME_LOCAL_COMPACT_MESSAGE_LIMIT,

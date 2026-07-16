@@ -13,10 +13,13 @@ const desktopRuntime = read("src/utils/desktop-agent-runtime.js");
 const desktopRuntimePaths = read("src-tauri/src/liuagent_core/paths.rs");
 const backendConfig = read("../api/core/config.py");
 const backendProjects = read("../api/routers/projects.py");
+const backendOrchestratorFactory = read("../api/services/runtime/orchestrator_factory.py");
+const backendToolExecutor = read("../api/services/tool_executor.py");
 
-assert.ok(
+assert.equal(
   existsSync(resolve(rootDir, "../api/services/agent_runtime")),
-  "backend agent runtime must remain during the migration observation period",
+  false,
+  "backend agent runtime source must be removed after desktop migration",
 );
 
 assert.match(
@@ -115,15 +118,30 @@ assert.match(
   /copy_legacy_desktop_permission_files[\s\S]*metadata\.is_file\(\)/,
   "legacy permission migration must copy only desktop session files, not backend subdirectories",
 );
-assert.match(
+assert.doesNotMatch(
   backendConfig,
-  /BACKEND_AGENT_RUNTIME_NEW_RUNS_ENABLED[\s\S]*False/,
-  "backend agent runtime must reject new runs by default during observation",
+  /BACKEND_AGENT_RUNTIME_NEW_RUNS_ENABLED|AGENT_RUNTIME_STALE_RUN/,
+  "backend runtime feature flags must be removed",
 );
 assert.equal(
   (backendProjects.match(/_backend_agent_runtime_new_runs_enabled\(\)/g) || []).length,
   5,
-  "all four backend orchestrator entry points must use the migration gate",
+  "all four retired backend entry points must remain blocked",
+);
+assert.doesNotMatch(
+  backendOrchestratorFactory,
+  /services\.agent_runtime/,
+  "backend orchestrator boundary must not import removed runtime code",
+);
+assert.match(
+  backendOrchestratorFactory,
+  /BackendAgentRuntimeRetiredError/,
+  "backend orchestrator boundary must reject retired execution paths",
+);
+assert.doesNotMatch(
+  backendToolExecutor,
+  /agent_runtime\.builtin_tools|execute_builtin_tool|is_local_builtin_tool/,
+  "backend ToolExecutor must not retain Python builtin tool fallbacks",
 );
 
 console.log("desktop agent migration contract check passed");

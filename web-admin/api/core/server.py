@@ -61,11 +61,6 @@ from services.chat.project_chat_realtime_service import (
     start_project_chat_realtime_subscriber,
     stop_project_chat_realtime_subscriber,
 )
-from services.agent_runtime.v2.stale_run_reconciler import (
-    AgentRuntimeStaleRunReconciler,
-)
-
-
 def create_app() -> FastAPI:
     settings = get_settings()
 
@@ -75,14 +70,6 @@ def create_app() -> FastAPI:
             settings.core_store_backend == "postgres" or settings.usage_store_backend == "postgres"
         ):
             run_postgres_migrations(settings.database_url)
-        app.state.agent_runtime_stale_runs = []
-        if settings.agent_runtime_stale_run_recovery_enabled:
-            reconciler = AgentRuntimeStaleRunReconciler(
-                stale_after_seconds=settings.agent_runtime_stale_run_seconds,
-            )
-            app.state.agent_runtime_stale_runs = [
-                task_run.to_dict() for task_run in reconciler.reconcile()
-            ]
         experience_summary_worker = ProjectExperienceSummaryBackgroundService(
             project_store=project_store,
             project_experience_summary_store=project_experience_summary_store,

@@ -16,18 +16,6 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 
-def test_llm_step_formats_tools():
-    """测试 v2 LLM 工具格式化逻辑"""
-    from services.agent_runtime.v2.llm_step import LLMStep
-
-    tools = [{"tool_name": "test_tool", "description": "测试工具"}]
-    formatted = LLMStep(MagicMock())._format_tools(tools)
-
-    assert len(formatted) == 1
-    assert formatted[0]["type"] == "function"
-    assert formatted[0]["function"]["name"] == "test_tool"
-
-
 @pytest.mark.asyncio
 async def test_tool_executor_logic():
     """测试 ToolExecutor 逻辑"""

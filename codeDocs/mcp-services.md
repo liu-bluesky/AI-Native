@@ -219,16 +219,16 @@ Resources：
 
 `.ai-employee/query-mcp/active/<project_id>.json` 是历史遗留项目级指针，只允许只读恢复，禁止新写，也不能作为当前窗口状态。
 
-## 四、和 Agent Runtime v2 的关系
+## 四、和桌面智能体 Runtime 的关系
 
-MCP 工作流负责上下文、规则、任务树和状态闭环；Agent Runtime v2 负责真实执行型任务的运行时外壳。
+MCP 工作流负责上下文、规则、任务树和状态闭环；Tauri `liuagent_core` 负责真实执行型任务的模型循环、本机工具、权限与暂停恢复。
 
 相关路径：
 
-- `web-admin/api/services/agent_runtime/`
 - `web-admin/api/services/runtime/`
 - `web-admin/api/services/assistant/`
 - `web-admin/api/services/chat/`
+- `web-admin/frontend/src-tauri/src/liuagent_core/`
 
 常见链路：
 
@@ -238,7 +238,7 @@ MCP 工作流负责上下文、规则、任务树和状态闭环；Agent Runtime
   -> 能力路由
   -> /mcp/query 或项目/员工 MCP 聚合上下文
   -> requirement + 任务树绑定
-  -> Agent Runtime v2 / 本地连接器 / 项目工具执行
+  -> 桌面 liuagent Runtime / 本地连接器 / 项目工具执行
   -> 权限、信任、验证策略
   -> 工作事实、任务树完成、交付报告
 ```

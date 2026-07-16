@@ -445,6 +445,7 @@ class ProjectChatReq(BaseModel):
     employee_ids: list[str] = []
     employee_coordination_mode: str | None = None
     history: list[dict] = []
+    persist_history: bool = True
     provider_id: str = ""
     model_name: str = ""
     temperature: float = 0.2

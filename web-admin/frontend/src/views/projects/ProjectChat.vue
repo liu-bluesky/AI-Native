@@ -2994,8 +2994,6 @@ import {
   normalizeAiEntryFileForSave,
 } from "@/modules/project-chat/mappers/workspaceMappers.js";
 import {
-  chatRuntimeRemoteFingerprint,
-  chatRuntimeStorageKey,
   clearPersistedChatRuntime as clearLocalPersistedChatRuntime,
   readPersistedChatRuntime as readLocalPersistedChatRuntime,
   writePersistedChatRuntime as writeLocalPersistedChatRuntime,
@@ -3032,6 +3030,7 @@ import {
   readPreferredSkillResourceDirectory,
   readEffectiveMcpConfigFile,
   readGlobalWebToolsConfigFile,
+  readLocalChatSessions,
   readProjectWebToolsConfigFile,
   readSelectedProjectId,
   resolveCurrentUsername,
@@ -3041,6 +3040,7 @@ import {
   writePreferredSkillResourceDirectory,
   writeGlobalMcpConfigFile,
   writeGlobalWebToolsConfigFile,
+  writeLocalChatSessions,
   writeProjectMcpConfigFile,
   writeProjectWebToolsConfigFile,
   writeSelectedProjectId,
@@ -4442,10 +4442,7 @@ const aiEntryFileSaving = ref(false);
 const aiEntryFileCreating = ref(false);
 let terminalApprovalFallbackTimer = null;
 let chatRuntimePersistTimer = null;
-let chatRuntimeRemotePersistTimer = null;
 let externalAgentStatusRefreshTimer = null;
-let lastChatRuntimeRemotePersistKey = "";
-let lastChatRuntimeRemotePersistFingerprint = "";
 let terminalRestoreAttemptKey = "";
 let terminalStructuredInteractionRefreshPending = false;
 let externalAgentStatusRefreshKey = "";
@@ -7333,7 +7330,7 @@ function persistNativeExternalAgentRowsForSession(chatSessionId = "") {
       listNativeExternalAgentRuntimeSnapshotsForCurrentProject(),
   };
   writePersistedChatRuntime(projectId, normalizedChatSessionId, payload);
-  void persistChatRuntimeToServer(projectId, normalizedChatSessionId, payload);
+  syncLocalChatSessionMetadata(projectId, normalizedChatSessionId, rows);
 }
 
 function findNativeExternalAgentMessage(sessionId = "") {
@@ -7952,43 +7949,8 @@ async function persistNativeExternalAgentChatMessage(
       "",
   ).trim();
   if (!projectId || !normalizedChatSessionId || !message?.content) return null;
-  try {
-    const data = await api.post(
-      `/projects/${encodeURIComponent(projectId)}/chat/history/messages`,
-      {
-        chat_session_id: normalizedChatSessionId,
-        message_id: String(message.id || "").trim(),
-        role,
-        content: String(message.content || ""),
-        display_mode: String(message.displayMode || "").trim(),
-        source_context: {
-          source: "tauri_external_agent_runner",
-          runner_session_id: String(snapshot?.sessionId || "").trim(),
-          runner_agent_type: String(snapshot?.agentType || "").trim(),
-          runner_status: String(snapshot?.status || "").trim(),
-          runner_exit_code: snapshot?.exitCode ?? null,
-          agent_runtime_trace: {
-            operations: Array.isArray(message.operations)
-              ? message.operations.map((operation) => ({
-                  ...operation,
-                  meta: {
-                    ...(operation?.meta && typeof operation.meta === "object"
-                      ? operation.meta
-                      : {}),
-                    source: "tauri_external_agent_runner",
-                    hide_in_message_process: "true",
-                  },
-                }))
-              : [],
-          },
-        },
-      },
-    );
-    return data?.message || null;
-  } catch (err) {
-    console.warn("persist native external agent message failed", err);
-    return null;
-  }
+  persistRememberedChatSessionMessages(projectId, normalizedChatSessionId);
+  return { ...message, role };
 }
 
 async function persistNativeExternalAgentFinalMessages(
@@ -13027,44 +12989,6 @@ const IMPERATIVE_OPERATION_RE =
   /(帮我|替我|你来|请你|直接|现在|马上|代办|执行|运行|跑一下|登录一下|登陆一下|授权一下|检查一下|检测一下|处理一下|做一下)/i;
 const LARK_OPERATION_RE = /(lark-cli|飞书|feishu|\blark\b)/i;
 
-function rememberRemotePersistedChatRuntime(projectId, chatSessionId, payload) {
-  lastChatRuntimeRemotePersistKey = chatRuntimeStorageKey(
-    projectId,
-    chatSessionId,
-  );
-  lastChatRuntimeRemotePersistFingerprint = chatRuntimeRemoteFingerprint(
-    projectId,
-    chatSessionId,
-    payload,
-  );
-}
-
-function clearRemotePersistedChatRuntimeState(projectId, chatSessionId = "") {
-  const normalizedProjectId = String(projectId || "").trim();
-  const normalizedChatSessionId = String(chatSessionId || "").trim();
-  if (!normalizedProjectId) {
-    lastChatRuntimeRemotePersistKey = "";
-    lastChatRuntimeRemotePersistFingerprint = "";
-    return;
-  }
-  if (normalizedChatSessionId) {
-    const key = chatRuntimeStorageKey(
-      normalizedProjectId,
-      normalizedChatSessionId,
-    );
-    if (lastChatRuntimeRemotePersistKey === key) {
-      lastChatRuntimeRemotePersistKey = "";
-      lastChatRuntimeRemotePersistFingerprint = "";
-    }
-    return;
-  }
-  const prefix = `project_chat_runtime_${normalizedProjectId}_`;
-  if (lastChatRuntimeRemotePersistKey.startsWith(prefix)) {
-    lastChatRuntimeRemotePersistKey = "";
-    lastChatRuntimeRemotePersistFingerprint = "";
-  }
-}
-
 function chatSessionMessageCacheKey(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
@@ -13266,7 +13190,7 @@ function persistRememberedChatSessionMessages(projectId, chatSessionId) {
     ? buildPersistedChatRuntimePayload()
     : buildRuntimePayloadForRows(rows);
   writePersistedChatRuntime(projectId, chatSessionId, payload);
-  void persistChatRuntimeToServer(projectId, chatSessionId, payload);
+  syncLocalChatSessionMetadata(projectId, chatSessionId, rows);
 }
 
 function resolvePendingRequestRow(pending) {
@@ -13303,10 +13227,6 @@ function clearPersistedChatRuntime(projectId, chatSessionId = "") {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId) return;
-  clearRemotePersistedChatRuntimeState(
-    normalizedProjectId,
-    normalizedChatSessionId,
-  );
   clearLocalPersistedChatRuntime(normalizedProjectId, normalizedChatSessionId);
 }
 
@@ -13317,85 +13237,7 @@ async function fetchPersistedChatRuntime(projectId, chatSessionId) {
     normalizedProjectId,
     normalizedChatSessionId,
   );
-  if (!normalizedProjectId || !normalizedChatSessionId) {
-    return localPayload;
-  }
-  try {
-    const data = await api.get(
-      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/runtime`,
-      {
-        params: {
-          chat_session_id: normalizedChatSessionId,
-        },
-      },
-    );
-    const payload =
-      data?.snapshot?.payload && typeof data.snapshot.payload === "object"
-        ? data.snapshot.payload
-        : null;
-    if (payload) {
-      writePersistedChatRuntime(
-        normalizedProjectId,
-        normalizedChatSessionId,
-        payload,
-      );
-      rememberRemotePersistedChatRuntime(
-        normalizedProjectId,
-        normalizedChatSessionId,
-        payload,
-      );
-      return payload;
-    }
-  } catch (_error) {
-    // 服务端快照读取失败时保留本地兜底，不中断聊天恢复。
-  }
   return localPayload;
-}
-
-async function persistChatRuntimeToServer(projectId, chatSessionId, payload) {
-  const normalizedProjectId = String(projectId || "").trim();
-  const normalizedChatSessionId = String(chatSessionId || "").trim();
-  if (
-    !normalizedProjectId ||
-    !normalizedChatSessionId ||
-    !payload ||
-    typeof payload !== "object"
-  ) {
-    return;
-  }
-  const key = chatRuntimeStorageKey(
-    normalizedProjectId,
-    normalizedChatSessionId,
-  );
-  const fingerprint = chatRuntimeRemoteFingerprint(
-    normalizedProjectId,
-    normalizedChatSessionId,
-    payload,
-  );
-  if (
-    key &&
-    key === lastChatRuntimeRemotePersistKey &&
-    fingerprint &&
-    fingerprint === lastChatRuntimeRemotePersistFingerprint
-  ) {
-    return;
-  }
-  try {
-    await api.put(
-      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/runtime`,
-      {
-        chat_session_id: normalizedChatSessionId,
-        payload,
-      },
-    );
-    rememberRemotePersistedChatRuntime(
-      normalizedProjectId,
-      normalizedChatSessionId,
-      payload,
-    );
-  } catch (_error) {
-    // 服务端持久化失败时保留本地快照，避免阻塞当前交互。
-  }
 }
 
 function normalizeRuntimeMessageSnapshot(row) {
@@ -13883,10 +13725,10 @@ function persistCurrentChatRuntimeNow(projectId = "", chatSessionId = "") {
     normalizedChatSessionId,
     payload,
   );
-  void persistChatRuntimeToServer(
+  syncLocalChatSessionMetadata(
     normalizedProjectId,
     normalizedChatSessionId,
-    payload,
+    messages.value,
   );
 }
 
@@ -20282,6 +20124,7 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
     request_id: requestId,
     assistant_message_id: String(assistantMessage?.id || "").trim(),
     chat_session_id: activeChatSessionId,
+    persist_history: false,
     chat_mode: "system",
     chat_surface: chatSurface.value,
     source_context: normalizeChatSourceContext(currentChatSession.value || {}),
@@ -22691,32 +22534,11 @@ async function truncateConversationFromSource(source) {
   if (!source) return;
   const projectId = String(selectedProjectId.value || "").trim();
   const chatSessionId = String(currentChatSessionId.value || "").trim();
-  if (projectId && chatSessionId) {
-    const messageId = String(source.item?.id || "").trim();
-    if (!messageId) {
-      throw new Error("当前消息尚未保存完成，请稍后再试");
-    }
-    try {
-      await api.post(
-        `/projects/${encodeURIComponent(projectId)}/chat/history/truncate`,
-        {
-          chat_session_id: chatSessionId,
-          message_id: messageId,
-          fallback_user_content: String(source.item?.content || "").trim(),
-          fallback_user_turn_index: countUserMessagesBefore(source.index),
-        },
-      );
-    } catch (err) {
-      if (!isChatHistoryTruncateNotFound(err)) {
-        throw err;
-      }
-      applyReplaySourceTruncateLocally(source);
-      clearPersistedChatRuntime(projectId, chatSessionId);
-      rememberCurrentChatSessionMessages();
-      return;
-    }
-  }
   applyReplaySourceTruncateLocally(source);
+  if (projectId && chatSessionId) {
+    rememberCurrentChatSessionMessages();
+    persistCurrentChatRuntimeNow(projectId, chatSessionId);
+  }
 }
 
 async function deleteMessageAt(messageIndex) {
@@ -22748,29 +22570,11 @@ async function deleteMessageAt(messageIndex) {
   const projectId = String(selectedProjectId.value || "").trim();
   const chatSessionId = String(currentChatSessionId.value || "").trim();
   try {
-    await api.post(
-      `/projects/${encodeURIComponent(projectId)}/chat/history/truncate`,
-      {
-        chat_session_id: chatSessionId,
-        message_id: target.messageId,
-        fallback_user_content: String(target?.fallbackUserContent || "").trim(),
-        fallback_user_turn_index: Number.isInteger(
-          Number(target?.fallbackUserTurnIndex),
-        )
-          ? Number(target.fallbackUserTurnIndex)
-          : undefined,
-      },
-    );
     applyDeleteTargetLocally(target);
+    rememberCurrentChatSessionMessages();
+    persistCurrentChatRuntimeNow(projectId, chatSessionId);
     ElMessage.success(buildDeleteSuccessText(item));
   } catch (err) {
-    if (isChatHistoryTruncateNotFound(err)) {
-      applyDeleteTargetLocally(target);
-      clearPersistedChatRuntime(projectId, chatSessionId);
-      rememberCurrentChatSessionMessages();
-      ElMessage.success(buildDeleteSuccessText(item));
-      return;
-    }
     ElMessage.error(err?.detail || err?.message || buildDeleteErrorText(item));
   }
 }
@@ -24024,27 +23828,9 @@ async function persistDirectProjectChatMessage({
   const projectId = String(selectedProjectId.value || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!projectId || !normalizedChatSessionId || !message?.content) return null;
-  try {
-    const data = await api.post(
-      `/projects/${encodeURIComponent(projectId)}/chat/history/messages`,
-      {
-        chat_session_id: normalizedChatSessionId,
-        message_id: String(message.id || "").trim(),
-        role,
-        content: String(message.content || ""),
-        display_mode: String(message.displayMode || "").trim(),
-        source_context:
-          sourceContext && typeof sourceContext === "object" ? sourceContext : {},
-        attachments: Array.isArray(message.attachments) ? message.attachments : [],
-        images: Array.isArray(message.images) ? message.images : [],
-        videos: Array.isArray(message.videos) ? message.videos : [],
-      },
-    );
-    return data?.message || null;
-  } catch (err) {
-    console.warn("persist direct project chat message failed", err);
-    return null;
-  }
+  void sourceContext;
+  persistRememberedChatSessionMessages(projectId, normalizedChatSessionId);
+  return { ...message, role };
 }
 
 async function persistLocalLiuAgentChatMessage({
@@ -24062,45 +23848,13 @@ async function persistLocalLiuAgentChatMessage({
   if (!normalizedProjectId || !normalizedChatSessionId || !message?.content) {
     return null;
   }
-  try {
-    const data = await api.post(
-      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/history/messages`,
-      {
-        chat_session_id: normalizedChatSessionId,
-        message_id: String(message.id || "").trim(),
-        role,
-        content: String(message.content || ""),
-        display_mode: String(message.displayMode || "").trim(),
-        source_context: {
-          ...(sourceContext && typeof sourceContext === "object"
-            ? sourceContext
-            : {}),
-          source: "desktop_local_agent",
-          runtime: "tauri",
-          workspace_path: String(workspacePath || "").trim(),
-          agent_runtime_trace:
-            role === "assistant"
-              ? {
-                  operations: Array.isArray(message.operations)
-                    ? message.operations
-                    : [],
-                  process_log: Array.isArray(message.processLog)
-                    ? message.processLog
-                    : [],
-                  ...localLiuAgentRuntimeTimingSourceContext(message),
-                }
-              : undefined,
-        },
-        attachments: Array.isArray(message.attachments) ? message.attachments : [],
-        images: Array.isArray(message.images) ? message.images : [],
-        videos: Array.isArray(message.videos) ? message.videos : [],
-      },
-    );
-    return data?.message || null;
-  } catch (err) {
-    console.warn("persist local liuAgent chat message failed", err);
-    return null;
-  }
+  void workspacePath;
+  void sourceContext;
+  persistRememberedChatSessionMessages(
+    normalizedProjectId,
+    normalizedChatSessionId,
+  );
+  return { ...message, role };
 }
 
 async function persistLocalLiuAgentFinalMessages({
@@ -26666,10 +26420,48 @@ function normalizeVisibleChatSessions(rawSessions) {
 function setProjectChatSessionsCache(projectId, sessions) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
+  const normalizedSessions = Array.isArray(sessions) ? [...sessions] : [];
   projectChatSessionsById.value = {
     ...(projectChatSessionsById.value || {}),
-    [normalizedProjectId]: Array.isArray(sessions) ? [...sessions] : [],
+    [normalizedProjectId]: normalizedSessions,
   };
+  writeLocalChatSessions(normalizedProjectId, normalizedSessions);
+}
+
+function syncLocalChatSessionMetadata(projectId, chatSessionId, rows) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId || !normalizedSessionId) return;
+  const sourceSessions =
+    normalizedProjectId === String(selectedProjectId.value || "").trim()
+      ? chatSessions.value
+      : readLocalChatSessions(normalizedProjectId);
+  const current = (sourceSessions || []).find(
+    (item) => String(item?.id || "").trim() === normalizedSessionId,
+  );
+  if (!current) return;
+  const messageRows = Array.isArray(rows) ? rows : [];
+  const lastMessage = [...messageRows]
+    .reverse()
+    .find((item) => String(item?.content || "").trim());
+  const now = new Date().toISOString();
+  const nextSession = normalizeChatSession({
+    ...current,
+    message_count: messageRows.length,
+    preview: String(lastMessage?.content || "").trim().slice(0, 120),
+    updated_at: now,
+    last_message_at: lastMessage ? now : current.last_message_at || "",
+  });
+  const nextSessions = [
+    nextSession,
+    ...(sourceSessions || []).filter(
+      (item) => String(item?.id || "").trim() !== normalizedSessionId,
+    ),
+  ];
+  if (normalizedProjectId === String(selectedProjectId.value || "").trim()) {
+    chatSessions.value = nextSessions;
+  }
+  setProjectChatSessionsCache(normalizedProjectId, nextSessions);
 }
 
 function removeProjectChatSessionCacheItem(projectId, chatSessionId) {
@@ -26696,29 +26488,11 @@ async function loadProjectSessionsForSidebar(projectId, options = {}) {
   ) {
     return projectChatSessionsById.value[normalizedProjectId];
   }
-  projectChatSessionsLoadingById.value = {
-    ...(projectChatSessionsLoadingById.value || {}),
-    [normalizedProjectId]: true,
-  };
-  try {
-    const data = await api.get(
-      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/sessions`,
-      {
-        params: { limit: 50 },
-      },
-    );
-    const sessions = normalizeVisibleChatSessions(data.sessions || []);
-    setProjectChatSessionsCache(normalizedProjectId, sessions);
-    return sessions;
-  } catch (err) {
-    console.warn("load project sidebar sessions failed", err);
-    return [];
-  } finally {
-    projectChatSessionsLoadingById.value = {
-      ...(projectChatSessionsLoadingById.value || {}),
-      [normalizedProjectId]: false,
-    };
-  }
+  const sessions = normalizeVisibleChatSessions(
+    readLocalChatSessions(normalizedProjectId),
+  );
+  setProjectChatSessionsCache(normalizedProjectId, sessions);
+  return sessions;
 }
 
 function setGroupChatLiveStatus(eventData) {
@@ -26774,17 +26548,33 @@ async function fetchChatSessions(
   }
   chatSessionsLoading.value = true;
   try {
-    const data = await api.get(
-      `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
-      {
-        params: { limit: 50 },
-      },
-    );
-    chatSessions.value = normalizeVisibleChatSessions(data.sessions || []);
-    setProjectChatSessionsCache(projectId, chatSessions.value);
     const remembered =
       options.useRemembered === false ? "" : restoreChatSession(projectId);
     const preferred = String(preferredSessionId || "").trim() || remembered;
+    const storedSessions = readLocalChatSessions(projectId);
+    if (!storedSessions.length && preferred) {
+      const legacyRuntime = readPersistedChatRuntime(projectId, preferred);
+      if (legacyRuntime) {
+        const messageRows = Array.isArray(legacyRuntime.messages)
+          ? legacyRuntime.messages
+          : [];
+        const lastMessage = [...messageRows]
+          .reverse()
+          .find((item) => String(item?.content || "").trim());
+        storedSessions.push({
+          id: preferred,
+          title: "本地历史会话",
+          preview: String(lastMessage?.content || "").trim().slice(0, 120),
+          message_count: messageRows.length,
+          source: "desktop_local_storage_migration",
+          created_at: String(legacyRuntime.updated_at || ""),
+          updated_at: String(legacyRuntime.updated_at || ""),
+          last_message_at: String(legacyRuntime.updated_at || ""),
+        });
+      }
+    }
+    chatSessions.value = normalizeVisibleChatSessions(storedSessions);
+    setProjectChatSessionsCache(projectId, chatSessions.value);
     const excludedSessionIds = new Set(
       (Array.isArray(options.excludeSessionIds)
         ? options.excludeSessionIds
@@ -26831,30 +26621,20 @@ async function fetchChatSessions(
 async function refreshChatSessionListMetadata(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
-  try {
-    const data = await api.get(
-      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/sessions`,
-      {
-        params: { limit: 50 },
-      },
-    );
-    if (
-      normalizedProjectId !== String(selectedProjectId.value || "").trim()
-    ) {
-      return;
-    }
-    const nextSessions = normalizeVisibleChatSessions(data.sessions || []);
-    chatSessions.value = nextSessions;
-    setProjectChatSessionsCache(normalizedProjectId, nextSessions);
-    const currentId = String(currentChatSessionId.value || "").trim();
-    if (
-      currentId &&
-      nextSessions.some((item) => String(item?.id || "").trim() === currentId)
-    ) {
-      rememberChatSession(normalizedProjectId, currentId);
-    }
-  } catch (err) {
-    console.warn("refresh project chat sessions metadata failed", err);
+  if (normalizedProjectId !== String(selectedProjectId.value || "").trim()) {
+    return;
+  }
+  const nextSessions = normalizeVisibleChatSessions(
+    readLocalChatSessions(normalizedProjectId),
+  );
+  chatSessions.value = nextSessions;
+  setProjectChatSessionsCache(normalizedProjectId, nextSessions);
+  const currentId = String(currentChatSessionId.value || "").trim();
+  if (
+    currentId &&
+    nextSessions.some((item) => String(item?.id || "").trim() === currentId)
+  ) {
+    rememberChatSession(normalizedProjectId, currentId);
   }
 }
 
@@ -26934,20 +26714,16 @@ async function fetchChatHistory(
   const previousScrollHeight = Number(container?.scrollHeight || 0);
   const previousScrollTop = Number(container?.scrollTop || 0);
   try {
-    const [data, runtimePayload] = await Promise.all([
-      api.get(`/projects/${encodeURIComponent(projectId)}/chat/history`, {
-        params: {
-          limit,
-          offset,
-          chat_session_id: normalizedSessionId,
-        },
-      }),
-      append
-        ? Promise.resolve(null)
-        : fetchPersistedChatRuntime(projectId, normalizedSessionId),
-    ]);
-    const historyRows = (data.messages || []).map(mapHistoryMessage);
-    chatHistoryReachedEnd.value = historyRows.length < limit;
+    const runtimePayload = append
+      ? null
+      : await fetchPersistedChatRuntime(projectId, normalizedSessionId);
+    const persistedRows = Array.isArray(runtimePayload?.messages)
+      ? runtimePayload.messages
+      : [];
+    const historyRows = append
+      ? persistedRows.slice(Math.max(0, persistedRows.length - offset - limit))
+      : [];
+    chatHistoryReachedEnd.value = true;
     if (append) {
       messages.value = [...historyRows, ...messages.value];
     } else {
@@ -26962,7 +26738,7 @@ async function fetchChatHistory(
     rememberChatSessionMessages(projectId, normalizedSessionId, messages.value);
     chatHistoryLoadedCount.value = messages.value.length;
     rememberChatSession(projectId, normalizedSessionId);
-    await fetchChatTaskTree(projectId, normalizedSessionId, { silent: true });
+    void fetchChatTaskTree(projectId, normalizedSessionId, { silent: true });
     if (!append) {
       await restoreInteractiveChatRuntime(
         projectId,
@@ -27065,18 +26841,22 @@ async function createChatSession(options = {}) {
       options.sourceContext && typeof options.sourceContext === "object"
         ? options.sourceContext
         : {};
-    const body = {};
-    if (title) {
-      body.title = title;
-    }
-    if (Object.keys(sourceContext).length) {
-      body.source_context = sourceContext;
-    }
-    const data = await api.post(
-      `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
-      body,
-    );
-    const session = normalizeChatSession(data.session || {});
+    const now = new Date().toISOString();
+    const randomId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const session = normalizeChatSession({
+      id: `local-${randomId}`,
+      title: title || "新对话",
+      source_context: sourceContext,
+      source: "desktop_local_storage",
+      message_count: 0,
+      preview: "",
+      created_at: now,
+      updated_at: now,
+      last_message_at: "",
+    });
     if (!session.id) {
       throw new Error("创建会话失败");
     }
@@ -27117,17 +26897,21 @@ async function updateChatSession(chatSessionId, options = {}) {
     return null;
   }
   try {
-    const data = await api.patch(
-      `/projects/${encodeURIComponent(projectId)}/chat/sessions/${encodeURIComponent(normalizedSessionId)}`,
-      {
-        title: String(options.title || "").trim(),
-        source_context:
-          options.sourceContext && typeof options.sourceContext === "object"
-            ? options.sourceContext
-            : {},
-      },
+    const current = chatSessions.value.find(
+      (item) => String(item?.id || "").trim() === normalizedSessionId,
     );
-    const session = normalizeChatSession(data.session || {});
+    const session = normalizeChatSession({
+      ...(current || {}),
+      id: normalizedSessionId,
+      title:
+        String(options.title || "").trim() ||
+        String(current?.title || "新对话").trim(),
+      source_context:
+        options.sourceContext && typeof options.sourceContext === "object"
+          ? options.sourceContext
+          : current?.source_context || {},
+      updated_at: new Date().toISOString(),
+    });
     if (!session.id) {
       throw new Error("更新会话失败");
     }
@@ -27342,12 +27126,6 @@ async function deleteChatSession(payload) {
   }
   deletingChatSessionId.value = chatSessionId;
   try {
-    await api.delete(
-      `/projects/${encodeURIComponent(projectId)}/chat/history`,
-      {
-        params: { chat_session_id: chatSessionId },
-      },
-    );
     if (isSelectedProject) {
       chatSessions.value = chatSessions.value.filter(
         (item) => item.id !== chatSessionId,
@@ -27411,17 +27189,12 @@ async function clearMessages() {
     return;
   }
   try {
-    await api.delete(
-      `/projects/${encodeURIComponent(projectId)}/chat/history`,
-      {
-        params: { chat_session_id: chatSessionId },
-      },
-    );
     messages.value = [];
     chatHistoryLoadedCount.value = 0;
     chatSessions.value = chatSessions.value.filter(
       (item) => item.id !== chatSessionId,
     );
+    setProjectChatSessionsCache(projectId, chatSessions.value);
     clearPersistedChatRuntime(projectId, chatSessionId);
     forgetChatSessionMessages(projectId, chatSessionId);
     clearChatSessionMemory(projectId);
@@ -29394,6 +29167,7 @@ async function sendProjectChatRequest({
     chat_session_id: activeChatSessionId,
     request_kind:
       String(requestKind || "user_message").trim() || "user_message",
+    persist_history: false,
     chat_mode: requestChatMode,
     chat_surface: chatSurface.value,
     source_context: activeSessionSourceContext,
@@ -31328,12 +31102,7 @@ async function loadSelectedProjectConversation(projectId) {
       });
       return;
     }
-    const restoredTask =
-      routeChatSessionId || shouldCreateWindowSession
-        ? null
-        : await restoreOngoingTaskFromServer(normalizedProjectId, {
-            silent: true,
-          });
+    const restoredTask = null;
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
     let chatSessionId = await fetchChatSessions(
@@ -31378,12 +31147,19 @@ async function loadSelectedProjectConversation(projectId) {
     }
     await fetchChatHistory(normalizedProjectId, chatSessionId);
     void ensureWsClient(normalizedProjectId).catch(() => {});
-    if (restoredTask?.chatSessionId) {
-      setOngoingTaskRestoreNotice(
-        restoredTask.taskTree,
-        restoredTask.workSession,
-      );
-    }
+    void restoreOngoingTaskFromServer(normalizedProjectId, { silent: true })
+      .then((ongoingTask) => {
+        if (
+          ongoingTask?.chatSessionId ===
+          String(currentChatSessionId.value || "").trim()
+        ) {
+          setOngoingTaskRestoreNotice(
+            ongoingTask.taskTree,
+            ongoingTask.workSession,
+          );
+        }
+      })
+      .catch(() => {});
     await applyRouteMessageFocus();
     await applyProjectDeployDraftFromRoute();
   } finally {
@@ -31585,6 +31361,18 @@ onMounted(async () => {
     void hydrateNativeDesktopRuntimeInfo();
     void syncLocalFeishuBotListeners();
   }, 300);
+  const locallySelectedProjectId = readSelectedProjectId();
+  if (locallySelectedProjectId) {
+    selectedProjectId.value = locallySelectedProjectId;
+    const localChatSessionId = await fetchChatSessions(
+      locallySelectedProjectId,
+      restoreChatSession(locallySelectedProjectId),
+    );
+    if (localChatSessionId) {
+      await fetchChatHistory(locallySelectedProjectId, localChatSessionId);
+    }
+    loading.value = false;
+  }
   try {
     await Promise.all([
       fetchSystemConfig(),
@@ -31681,10 +31469,6 @@ onUnmounted(() => {
   if (chatRuntimePersistTimer !== null) {
     window.clearTimeout(chatRuntimePersistTimer);
     chatRuntimePersistTimer = null;
-  }
-  if (chatRuntimeRemotePersistTimer !== null) {
-    window.clearTimeout(chatRuntimeRemotePersistTimer);
-    chatRuntimeRemotePersistTimer = null;
   }
   cancelScheduledScrollToBottom();
   disconnectMessageListResizeObserver();

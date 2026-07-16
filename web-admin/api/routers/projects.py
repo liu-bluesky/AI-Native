@@ -20,6 +20,7 @@ import uuid
 import wave
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import asdict, replace
@@ -38,6 +39,28 @@ from services.conversation_manager import ConversationManager
 from core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
+_PROJECT_CHAT_HISTORY_PERSIST_ENABLED: ContextVar[bool] = ContextVar(
+    "project_chat_history_persist_enabled",
+    default=True,
+)
+
+
+def _project_chat_history_persist_enabled() -> bool:
+    return bool(_PROJECT_CHAT_HISTORY_PERSIST_ENABLED.get())
+
+
+async def _run_project_chat_request_with_history_policy(
+    handler: Any,
+    payload: dict[str, Any],
+) -> None:
+    persist_history = payload.get("persist_history", True) is not False
+    token = _PROJECT_CHAT_HISTORY_PERSIST_ENABLED.set(persist_history)
+    try:
+        await handler(payload)
+    finally:
+        _PROJECT_CHAT_HISTORY_PERSIST_ENABLED.reset(token)
+
+
 def project_deploy_ftp_client_factory(*args: Any, **kwargs: Any) -> Any:
     raise RuntimeError("server-side FTP deployment has been removed; use desktop direct deploy")
 
@@ -128,19 +151,6 @@ from services.runtime.prompt_assembler import (
 )
 from services.runtime.orchestrator_factory import build_agent_orchestrator
 from services.runtime.run_request_factory import build_orchestrator_run_kwargs
-from services.agent_runtime.v2.operation_resume import OperationResumeCoordinator
-from services.agent_runtime.v2.permission_actions import PermissionActionService
-from services.agent_runtime.v2.permission_store import (
-    normalize_permission_command,
-    permission_command_signature,
-)
-from services.agent_runtime.core.event_log import RuntimeEvent
-from services.agent_runtime.v2.event_stream import EventStream
-from services.agent_runtime.v2.resume_service import (
-    AgentRuntimeResumeRequest,
-    AgentRuntimeResumeService,
-)
-from services.agent_runtime.v2.run_inspector import AgentRuntimeInspector
 from services.runtime.tool_registry import (
     collect_project_runtime_tools as collect_project_runtime_tools_via_registry,
     filter_tools_by_employee_ids as filter_tools_by_employee_ids_via_registry,
@@ -168,7 +178,6 @@ from services.operation_wait_task_service import (
 )
 from models.requests import (
     AgentRuntimeV2PermissionActionReq,
-    AgentRuntimeV2ResumeReq,
     AgentRuntimeV2WorkspaceTrustReq,
     ProjectAiEntryFileUpdateReq,
     ProjectExperienceRuleConsolidateReq,
@@ -416,13 +425,22 @@ _BACKEND_AGENT_RUNTIME_MIGRATED_ERROR_CODE = "backend_agent_runtime.migrated_to_
 
 
 def _backend_agent_runtime_new_runs_enabled() -> bool:
-    return bool(get_settings().backend_agent_runtime_new_runs_enabled)
+    return False
 
 
 def _backend_agent_runtime_migrated_message(surface: str) -> str:
     return (
-        f"{surface} 的后端智能体新运行已停用；请使用 Tauri 桌面智能体。"
-        "历史运行记录、权限记录和恢复接口仍保留用于观察期兼容。"
+        f"{surface} 的后端智能体已移除；请使用 Tauri 桌面智能体。"
+    )
+
+
+def _raise_backend_agent_runtime_retired() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "backend_agent_runtime.removed",
+            "message": _backend_agent_runtime_migrated_message("该功能"),
+        },
     )
 
 _EXTERNAL_AGENT_TYPE_CATALOG: dict[str, dict[str, str]] = {
@@ -11024,6 +11042,8 @@ def _append_chat_record(
     videos: list[str] | None = None,
     source_context: dict[str, Any] | None = None,
 ) -> ProjectChatMessage | None:
+    if not _project_chat_history_persist_enabled():
+        return None
     text = str(content or "").strip()
     if not text:
         return None
@@ -11304,6 +11324,8 @@ def _save_project_chat_memory_snapshot(
     source: str = "project-chat",
     allow_requirement_record: bool = True,
 ) -> None:
+    if not _project_chat_history_persist_enabled():
+        return
     project = project_store.get(project_id)
     if project is None:
         return
@@ -20813,16 +20835,7 @@ async def list_project_agent_runtime_v2_runs(
     limit: int = 50,
     auth_payload: dict = Depends(require_auth),
 ):
-    _ensure_permission(auth_payload, "menu.ai.chat")
-    _ensure_project_access(project_id, auth_payload)
-    username = _current_username(auth_payload)
-    summaries = AgentRuntimeInspector().list_run_summaries(
-        project_id=project_id,
-        username=username,
-        chat_session_id=str(chat_session_id or "").strip(),
-        limit=limit,
-    )
-    return {"runs": summaries}
+    _raise_backend_agent_runtime_retired()
 
 
 @router.get("/{project_id}/agent-runtime-v2/runs/{run_id}")
@@ -20831,55 +20844,16 @@ async def get_project_agent_runtime_v2_run(
     run_id: str,
     auth_payload: dict = Depends(require_auth),
 ):
-    _ensure_permission(auth_payload, "menu.ai.chat")
-    _ensure_project_access(project_id, auth_payload)
-    username = _current_username(auth_payload)
-    snapshot = AgentRuntimeInspector().get_run_snapshot(run_id)
-    if snapshot is None:
-        raise HTTPException(404, "agent runtime run not found")
-    run = dict(snapshot.get("run") or {})
-    if run.get("project_id") != project_id or run.get("username") != username:
-        raise HTTPException(404, "agent runtime run not found")
-    return snapshot
+    _raise_backend_agent_runtime_retired()
 
 
 @router.post("/{project_id}/agent-runtime-v2/runs/{run_id}/resume")
 async def resume_project_agent_runtime_v2_run(
     project_id: str,
     run_id: str,
-    req: AgentRuntimeV2ResumeReq,
     auth_payload: dict = Depends(require_auth),
 ):
-    _ensure_permission(auth_payload, "menu.ai.chat")
-    project = _ensure_project_access(project_id, auth_payload)
-    username = _current_username(auth_payload)
-    snapshot = AgentRuntimeInspector().get_run_snapshot(run_id)
-    if snapshot is None:
-        raise HTTPException(404, "agent runtime run not found")
-    run = dict(snapshot.get("run") or {})
-    if run.get("project_id") != project_id or run.get("username") != username:
-        raise HTTPException(404, "agent runtime run not found")
-    resume_result = await _build_agent_runtime_resume_service(
-        auth_payload,
-    ).resume_run(
-        AgentRuntimeResumeRequest(
-            project_id=project_id,
-            username=username,
-            run_id=run_id,
-            chat_session_id=(
-                str(req.chat_session_id or "").strip()
-                or str(run.get("chat_session_id") or "").strip()
-            ),
-            role_ids=get_auth_role_ids(auth_payload),
-            project_workspace_path=str(
-                getattr(project, "workspace_path", "") or ""
-            ).strip(),
-            workspace_trusted=True,
-        )
-    )
-    if not resume_result.resumed and resume_result.reason == "task_run_not_recoverable":
-        raise HTTPException(409, resume_result.reason)
-    return resume_result.to_dict()
+    _raise_backend_agent_runtime_retired()
 
 
 @router.post("/{project_id}/agent-runtime-v2/permission-actions")
@@ -20888,6 +20862,7 @@ async def apply_project_agent_runtime_v2_permission_action(
     req: AgentRuntimeV2PermissionActionReq,
     auth_payload: dict = Depends(require_auth),
 ):
+    _raise_backend_agent_runtime_retired()
     _ensure_permission(auth_payload, "menu.ai.chat")
     _ensure_project_access(project_id, auth_payload)
     username = _current_username(auth_payload)
@@ -21018,6 +20993,7 @@ async def get_project_agent_runtime_v2_workspace_trust(
     workspace_path: str = "",
     auth_payload: dict = Depends(require_auth),
 ):
+    _raise_backend_agent_runtime_retired()
     _ensure_permission(auth_payload, "menu.ai.chat")
     _ensure_project_access(project_id, auth_payload)
     normalized_path = str(workspace_path or "").strip()
@@ -21033,6 +21009,7 @@ async def update_project_agent_runtime_v2_workspace_trust(
     req: AgentRuntimeV2WorkspaceTrustReq,
     auth_payload: dict = Depends(require_auth),
 ):
+    _raise_backend_agent_runtime_retired()
     _ensure_permission(auth_payload, "menu.ai.chat")
     _ensure_project_access(project_id, auth_payload)
     username = _current_username(auth_payload)
@@ -22062,11 +22039,15 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             source_context=source_context,
         )
         is_followup_replan = _is_project_chat_followup_replan(request_kind)
-        previous_messages = project_chat_store.list_messages(
-            project_id,
-            username,
-            limit=20,
-            chat_session_id=chat_session_id,
+        previous_messages = (
+            project_chat_store.list_messages(
+                project_id,
+                username,
+                limit=20,
+                chat_session_id=chat_session_id,
+            )
+            if req.persist_history
+            else []
         )
         previous_assistant_workflow_state = latest_assistant_workflow_state_from_messages(previous_messages)
         if not effective_user_message and attachment_names:
@@ -22813,7 +22794,11 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     reply_content=failed_answer,
                     is_error=True,
                 )
-                if is_followup_replan and assistant_message_id:
+                if (
+                    is_followup_replan
+                    and assistant_message_id
+                    and _project_chat_history_persist_enabled()
+                ):
                     project_chat_store.update_message(
                         project_id,
                         username,
@@ -22880,7 +22865,11 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     assistant_source_context,
                     ai_request_context_payload,
                 )
-                if is_followup_replan and assistant_message_id:
+                if (
+                    is_followup_replan
+                    and assistant_message_id
+                    and _project_chat_history_persist_enabled()
+                ):
                     project_chat_store.update_message(
                         project_id,
                         username,
@@ -23180,12 +23169,19 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         }
                     )
                     continue
-                task = asyncio.create_task(handle_request(interaction_payload))
+                task = asyncio.create_task(
+                    _run_project_chat_request_with_history_policy(
+                        handle_request,
+                        interaction_payload,
+                    )
+                )
                 if request_id:
                     active_tasks[request_id] = task
                 continue
 
-            task = asyncio.create_task(handle_request(payload))
+            task = asyncio.create_task(
+                _run_project_chat_request_with_history_policy(handle_request, payload)
+            )
             if request_id:
                 active_tasks[request_id] = task
 

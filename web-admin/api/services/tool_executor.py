@@ -478,16 +478,6 @@ class ToolExecutor:
             return await self._execute_project_host_terminal_tool(tool_name, args)
         if str(tool_name or "").strip().startswith("local_connector_"):
             return await self._execute_local_connector_tool(tool_name, args)
-        # 本地内置工具（文件/命令/网络）：list_files, read_file, run_command 等。
-        # MCP 委托型内置工具继续落到现有 MCP runtime。
-        from services.agent_runtime.builtin_tools import execute_builtin_tool
-        from services.agent_runtime.builtin_tools.definitions import is_local_builtin_tool
-        if is_local_builtin_tool(str(tool_name or "").strip()):
-            return await execute_builtin_tool(
-                str(tool_name or "").strip(),
-                args,
-                workspace_path=self._host_workspace_path or "",
-            )
         from services.mcp.dynamic_mcp_runtime import invoke_project_skill_tool
         from starlette.concurrency import run_in_threadpool
         result = await run_in_threadpool(

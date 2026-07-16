@@ -81,6 +81,10 @@ async def run_project_chat_once(
     memory_source: str = "project-chat",
     publish_realtime: bool = False,
 ) -> ProjectChatExecutionResult:
+    raise RuntimeError(
+        "Backend project chat execution has been removed; use the desktop liuagent runtime."
+    )
+
     from routers import projects as projects_router
     from services.providers.llm_provider_service import get_llm_provider_service
 
@@ -117,11 +121,15 @@ async def run_project_chat_once(
         source_context=source_context,
     )
     is_followup_replan = projects_router._is_project_chat_followup_replan(request_kind)
-    previous_messages = projects_router.project_chat_store.list_messages(
-        project_id,
-        username,
-        limit=20,
-        chat_session_id=chat_session_id,
+    previous_messages = (
+        projects_router.project_chat_store.list_messages(
+            project_id,
+            username,
+            limit=20,
+            chat_session_id=chat_session_id,
+        )
+        if req.persist_history
+        else []
     )
     previous_assistant_workflow_state = latest_assistant_workflow_state_from_messages(previous_messages)
     if not effective_user_message and attachment_names:
@@ -516,7 +524,11 @@ async def run_project_chat_once(
                 content,
                 assistant_workflow_state,
             )
-            if is_followup_replan and assistant_message_id:
+            if (
+                is_followup_replan
+                and assistant_message_id
+                and projects_router._project_chat_history_persist_enabled()
+            ):
                 assistant_record = projects_router.project_chat_store.update_message(
                     project_id,
                     username,
@@ -582,7 +594,11 @@ async def run_project_chat_once(
             assistant_source_context,
             projects_router._build_project_chat_pending_interaction(last_done_payload or {}),
         )
-        if is_followup_replan and assistant_message_id:
+        if (
+            is_followup_replan
+            and assistant_message_id
+            and projects_router._project_chat_history_persist_enabled()
+        ):
             assistant_record = projects_router.project_chat_store.update_message(
                 project_id,
                 username,
@@ -642,7 +658,11 @@ async def run_project_chat_once(
             content,
             assistant_workflow_state,
         )
-        if is_followup_replan and assistant_message_id:
+        if (
+            is_followup_replan
+            and assistant_message_id
+            and projects_router._project_chat_history_persist_enabled()
+        ):
             assistant_record = projects_router.project_chat_store.update_message(
                 project_id,
                 username,
