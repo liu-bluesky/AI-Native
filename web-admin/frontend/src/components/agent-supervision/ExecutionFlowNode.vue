@@ -2,6 +2,7 @@
   <article
     :class="[
       'execution-flow-node',
+      `kind-${data.nodeKind || 'stage'}`,
       `is-${data.visualType || 'observation'}`,
       `status-${data.status || 'completed'}`,
       selected ? 'is-selected' : '',
@@ -17,6 +18,10 @@
     <p>{{ data.summary }}</p>
     <footer>
       <span v-if="data.eventCount > 1">{{ data.eventCount }} 个原始事件</span>
+      <span v-if="data.modelStepIndex">第 {{ data.modelStepIndex }} 轮</span>
+      <span v-if="data.contextMessageCount">上下文 {{ data.contextMessageCount }} 条</span>
+      <span v-if="data.modelTotalTokens">实际 {{ data.modelTotalTokens }} Token</span>
+      <span v-else-if="data.contextInputTokens">预估 ≈ {{ data.contextInputTokens }} Token</span>
       <span v-if="data.durationLabel !== '—'">{{ data.durationLabel }}</span>
       <span v-if="data.toolName">{{ data.toolName }}</span>
     </footer>
@@ -59,6 +64,17 @@ defineProps({
   border-color: var(--node-accent);
   box-shadow: 0 16px 34px color-mix(in srgb, var(--node-accent) 18%, transparent);
   transform: translateY(-2px);
+}
+
+.execution-flow-node.kind-stage {
+  border-left-width: 7px;
+  background: linear-gradient(135deg, #fff, color-mix(in srgb, var(--node-accent) 7%, #fff));
+}
+
+.execution-flow-node.kind-cycle {
+  margin-left: 18px;
+  border-radius: 12px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
 }
 
 .execution-flow-node.is-request,

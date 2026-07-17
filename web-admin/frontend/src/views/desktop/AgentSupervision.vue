@@ -1,17 +1,5 @@
 <template>
   <div class="agent-supervision">
-    <header class="supervision-hero">
-      <div>
-        <div class="supervision-eyebrow">Local Agent Observability</div>
-        <h1>智能体监管</h1>
-        <p>通过回答 ID 复盘模型、工具、权限与最终回答的本地执行链路。</p>
-      </div>
-      <div class="local-only-badge">
-        <span class="local-only-badge__dot" />
-        仅查询桌面本地 SQLite
-      </div>
-    </header>
-
     <section class="supervision-search-card">
       <el-select
         v-model="projectId"
@@ -48,9 +36,6 @@
       <el-button type="primary" :loading="searching" @click="runSearch">
         搜索
       </el-button>
-      <el-button :icon="Refresh" :disabled="searching" @click="loadRecent">
-        最近回答
-      </el-button>
     </section>
 
     <el-alert
@@ -62,107 +47,24 @@
       :title="errorMessage"
     />
 
-    <main class="supervision-workspace">
-      <aside class="answer-list-panel">
-        <div class="panel-heading">
-          <div>
-            <span>回答记录</span>
-            <small>{{ answers.length }} 条</small>
-          </div>
-        </div>
-        <div v-if="searching" class="panel-loading">
-          <el-skeleton :rows="6" animated />
-        </div>
-        <el-empty
-          v-else-if="!answers.length"
-          description="本机监管库中暂无匹配回答"
-        />
-        <button
-          v-for="answer in answers"
-          v-else
-          :key="answer.answer_id"
-          type="button"
-          :class="[
-            'answer-list-item',
-            selectedAnswerId === answer.answer_id ? 'is-active' : '',
-          ]"
-          @click="selectAnswer(answer.answer_id)"
-        >
-          <span class="answer-list-item__topline">
-            <el-tag size="small" :type="statusTagType(answer.status)">
-              {{ statusLabel(answer.status) }}
-            </el-tag>
-            <time>{{ formatTimestamp(answer.started_at_epoch_ms, answer.updated_at) }}</time>
-          </span>
-          <strong>{{ answer.question_preview || "未记录用户问题" }}</strong>
-          <span>{{ answer.answer_preview || "暂无回答摘要" }}</span>
-          <code>{{ answer.answer_id }}</code>
-        </button>
-      </aside>
-
-      <section class="answer-detail-panel">
-        <div v-if="detailLoading" class="detail-loading">
-          <el-skeleton :rows="12" animated />
-        </div>
-        <el-empty
-          v-else-if="!detail"
-          description="选择回答后查看完整执行链路"
-        />
-        <template v-else>
-          <section class="answer-summary-card">
-            <div class="answer-summary-card__head">
+    <div v-if="detailLoading" class="detail-loading">
+      <el-skeleton :rows="12" animated />
+    </div>
+    <el-empty
+      v-else-if="!detail"
+      class="supervision-empty"
+      description="输入回答 ID 查看执行链路"
+    />
+    <section v-else class="execution-card">
+            <div class="model-title">
               <div>
-                <div class="answer-summary-card__label">回答 ID</div>
-                <h2>{{ detail.answer.answer_id }}</h2>
+                <small>当前模型</small>
+                <h2>{{ modelSummary.names || "未采集模型名称" }}</h2>
               </div>
-              <div class="answer-summary-actions">
-                <el-button text :icon="CopyDocument" @click="copyAnswerId">
-                  复制 ID
-                </el-button>
-                <el-button
-                  text
-                  :icon="ChatLineSquare"
-                  @click="openOriginalChat"
-                >
-                  返回原对话
-                </el-button>
-              </div>
+              <span>
+                供应商：{{ modelSummary.providers || "未采集供应商名称" }}
+              </span>
             </div>
-            <div class="answer-metrics">
-              <article>
-                <span>状态</span>
-                <strong>{{ statusLabel(detail.answer.status) }}</strong>
-              </article>
-              <article>
-                <span>总耗时</span>
-                <strong>{{ formatDuration(detail.answer.duration_ms) }}</strong>
-              </article>
-              <article>
-                <span>模型步骤</span>
-                <strong>{{ detail.run?.model_round_count || modelStepCount }}</strong>
-              </article>
-              <article>
-                <span>工具步骤</span>
-                <strong>{{ detail.run?.tool_call_count || toolStepCount }}</strong>
-              </article>
-              <article>
-                <span>执行节点</span>
-                <strong>{{ detail.steps.length }}</strong>
-              </article>
-            </div>
-            <div class="answer-text-grid">
-              <article>
-                <span>用户问题</span>
-                <p>{{ detail.answer.question_preview || "未记录" }}</p>
-              </article>
-              <article>
-                <span>最终回答</span>
-                <p>{{ detail.answer.answer_preview || "暂无回答内容" }}</p>
-              </article>
-            </div>
-          </section>
-
-          <section class="execution-card">
             <div class="panel-heading panel-heading--graph">
               <div>
                 <span>执行链路</span>
@@ -173,6 +75,40 @@
                   <i :style="{ background: item.color }" />{{ item.label }}
                 </span>
               </div>
+            </div>
+            <div class="token-overview">
+              <div class="token-overview__primary">
+                <span>{{ tokenSummary.totalLabel }}</span>
+                <strong>{{ tokenSummary.hasActual ? formatToken(tokenSummary.total) : "暂无" }}</strong>
+                <small v-if="tokenSummary.hasActual">
+                  模型供应商 usage 覆盖 {{ tokenSummary.actualRounds }} / {{ tokenSummary.modelRounds }} 轮
+                </small>
+                <small v-else>
+                  当前回答没有采集到模型供应商 usage，不使用预估值代替
+                </small>
+              </div>
+              <dl class="token-overview__breakdown">
+                <div>
+                  <dt>实际输入累计</dt>
+                  <dd>{{ tokenSummary.hasActual ? formatToken(tokenSummary.input) : "—" }}</dd>
+                </div>
+                <div>
+                  <dt>实际输出累计</dt>
+                  <dd>{{ tokenSummary.hasActual ? formatToken(tokenSummary.output) : "—" }}</dd>
+                </div>
+                <div>
+                  <dt>缓存命中累计</dt>
+                  <dd>{{ tokenSummary.hasActual ? formatToken(tokenSummary.cachedInput) : "—" }}</dd>
+                </div>
+                <div>
+                  <dt>推理 Token 累计</dt>
+                  <dd>{{ tokenSummary.hasActual ? formatToken(tokenSummary.reasoning) : "—" }}</dd>
+                </div>
+                <div>
+                  <dt>上下文输入累计（预估）</dt>
+                  <dd>{{ tokenSummary.estimatedContext ? `约 ${formatToken(tokenSummary.estimatedContext)}` : "—" }}</dd>
+                </div>
+              </dl>
             </div>
             <div v-if="detail.steps.length" class="execution-grid">
               <div class="execution-flow-shell">
@@ -242,7 +178,67 @@
                       <dt>耗时</dt>
                       <dd>{{ formatDuration(selectedStep.duration_ms) }}</dd>
                     </div>
+                    <div v-if="selectedStep.model_step_index">
+                      <dt>模型循环</dt>
+                      <dd>第 {{ selectedStep.model_step_index }} 轮</dd>
+                    </div>
+                    <div v-if="selectedStep.context_message_count">
+                      <dt>上下文消息</dt>
+                      <dd>{{ selectedStep.context_message_count }} 条</dd>
+                    </div>
+                    <div v-if="selectedStep.context_input_tokens">
+                      <dt>上下文 Token（预估）</dt>
+                      <dd>约 {{ selectedStep.context_input_tokens.toLocaleString() }}</dd>
+                    </div>
+                    <div v-if="selectedStep.model_input_tokens">
+                      <dt>实际输入 Token</dt>
+                      <dd>{{ selectedStep.model_input_tokens.toLocaleString() }}</dd>
+                    </div>
+                    <div v-if="selectedStep.model_output_tokens">
+                      <dt>实际输出 Token</dt>
+                      <dd>{{ selectedStep.model_output_tokens.toLocaleString() }}</dd>
+                    </div>
+                    <div v-if="selectedStep.model_total_tokens">
+                      <dt>实际总 Token</dt>
+                      <dd>{{ selectedStep.model_total_tokens.toLocaleString() }}</dd>
+                    </div>
+                    <div v-if="selectedStep.model_cached_input_tokens">
+                      <dt>缓存命中 Token</dt>
+                      <dd>{{ selectedStep.model_cached_input_tokens.toLocaleString() }}</dd>
+                    </div>
+                    <div v-if="selectedStep.model_reasoning_tokens">
+                      <dt>推理 Token</dt>
+                      <dd>{{ selectedStep.model_reasoning_tokens.toLocaleString() }}</dd>
+                    </div>
+                    <div v-if="selectedStep.model_token_source">
+                      <dt>Token 来源</dt>
+                      <dd>{{ tokenSourceLabel(selectedStep.model_token_source) }}</dd>
+                    </div>
                   </dl>
+                  <div v-if="selectedContextMessages.length" class="context-snapshot">
+                    <div class="context-snapshot__head">
+                      <span>本节点执行上下文</span>
+                      <small>每轮独立快照 · Token 为输入消息预估值</small>
+                    </div>
+                    <div class="context-message-list">
+                      <article
+                        v-for="(message, index) in selectedContextMessages"
+                        :key="`${selectedStep.step_id}-context-${index}`"
+                        class="context-message"
+                      >
+                        <header>
+                          <b>{{ contextRoleLabel(message.role) }}</b>
+                          <span v-if="message.tool_call_id">
+                            {{ message.tool_call_id }}
+                          </span>
+                          <span v-if="message.tool_call_count">
+                            {{ message.tool_call_count }} 个工具调用
+                          </span>
+                        </header>
+                        <pre>{{ message.content_preview || "（无文本内容）" }}</pre>
+                      </article>
+                    </div>
+                  </div>
                   <div v-if="selectedStep.summary" class="step-detail__section">
                     <span>摘要</span>
                     <p>{{ selectedStep.summary }}</p>
@@ -263,23 +259,14 @@
               class="execution-empty"
               description="该回答的本地运行快照尚未采集到执行步骤"
             />
-          </section>
-        </template>
-      </section>
-    </main>
+    </section>
   </div>
 </template>
 
 <script setup>
 import { computed, nextTick, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
-import {
-  ChatLineSquare,
-  CopyDocument,
-  Refresh,
-  Search,
-} from "@element-plus/icons-vue";
+import { Search } from "@element-plus/icons-vue";
 import { MarkerType, VueFlow } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import { Controls } from "@vue-flow/controls";
@@ -296,8 +283,8 @@ import {
   searchAgentSupervisionAnswers,
 } from "@/modules/agent-supervision/services/agentSupervisionStorage.js";
 import { buildExecutionFlow } from "@/modules/agent-supervision/utils/executionFlowLayout.js";
+import { fetchProjectChatProviders } from "@/modules/project-chat/services/projectChatSettingsApi.js";
 import { getStoredProjectContextId } from "@/utils/desktop-shell.js";
-import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import { fetchAllVisibleProjects } from "@/utils/projects.js";
 
 const route = useRoute();
@@ -307,12 +294,11 @@ const projectId = ref(
 );
 const searchQuery = ref(String(route.query.answer_id || "").trim());
 const projectOptions = ref([]);
+const providerNameById = ref(new Map());
 const projectsLoading = ref(false);
 const searching = ref(false);
 const detailLoading = ref(false);
-const answers = ref([]);
 const detail = ref(null);
-const selectedAnswerId = ref("");
 const selectedStep = ref(null);
 const selectedStageStepIds = ref([]);
 const flowNodes = ref([]);
@@ -337,20 +323,85 @@ const GRAPH_TYPES = {
 };
 
 const graphLegend = computed(() =>
-  ["request", "model_call", "tool_call", "permission", "final_answer"].map(
+  ["request", "context_build", "plan", "operation", "final_answer"].map(
     (type) => ({ type, ...GRAPH_TYPES[type] }),
   ),
-);
-const modelStepCount = computed(
-  () => detail.value?.steps?.filter((item) => item.step_type === "model_call").length || 0,
-);
-const toolStepCount = computed(
-  () => detail.value?.steps?.filter((item) => item.step_type === "tool_call").length || 0,
 );
 const selectedGroupSteps = computed(() => {
   if (!selectedStageStepIds.value.length) return selectedStep.value ? [selectedStep.value] : [];
   const stepIds = new Set(selectedStageStepIds.value);
   return (detail.value?.steps || []).filter((step) => stepIds.has(step.step_id));
+});
+const selectedContextMessages = computed(() => {
+  const snapshot = selectedStep.value?.context_snapshot;
+  if (!snapshot || typeof snapshot !== "object") return [];
+  if (Array.isArray(snapshot.messages_redacted)) return snapshot.messages_redacted;
+  if (Array.isArray(snapshot.messagesRedacted)) return snapshot.messagesRedacted;
+  return [];
+});
+const modelSummary = computed(() => {
+  const modelSteps = (detail.value?.steps || []).filter(
+    (step) => String(step?.step_type || "").trim() === "model_call",
+  );
+  const uniqueValues = (field) => [
+    ...new Set(
+      modelSteps
+        .map((step) => String(step?.[field] || "").trim())
+        .filter(Boolean),
+    ),
+  ];
+  const providerNames = [
+    ...new Set(
+      modelSteps
+        .map((step) => {
+          const storedName = String(step?.provider_name || "").trim();
+          if (storedName) return storedName;
+          const providerId = String(step?.provider_id || "").trim();
+          return providerId
+            ? String(providerNameById.value.get(providerId) || "").trim()
+            : "";
+        })
+        .filter(Boolean),
+    ),
+  ];
+  return {
+    names: uniqueValues("model_name").join(" / "),
+    providers: providerNames.join(" / "),
+  };
+});
+const tokenSummary = computed(() => {
+  const modelSteps = (detail.value?.steps || []).filter(
+    (step) => String(step?.step_type || "").trim() === "model_call",
+  );
+  const actualSteps = modelSteps.filter(
+    (step) => String(step?.model_token_source || "").trim() === "provider_response_usage",
+  );
+  const sum = (steps, field) =>
+    steps.reduce((total, step) => total + Math.max(0, Number(step?.[field] || 0)), 0);
+  const modelRounds = Math.max(
+    modelSteps.length,
+    Math.max(0, Number(detail.value?.run?.model_round_count || 0)),
+  );
+  const actualRounds = actualSteps.length;
+  const hasActual = actualRounds > 0;
+  const hasCompleteActual = hasActual && actualRounds === modelRounds;
+  return {
+    modelRounds,
+    actualRounds,
+    hasActual,
+    hasCompleteActual,
+    totalLabel: hasCompleteActual
+      ? "全链路实际 Token"
+      : hasActual
+        ? "已采集实际 Token（非全量）"
+        : "全链路实际 Token",
+    input: sum(actualSteps, "model_input_tokens"),
+    output: sum(actualSteps, "model_output_tokens"),
+    total: sum(actualSteps, "model_total_tokens"),
+    cachedInput: sum(actualSteps, "model_cached_input_tokens"),
+    reasoning: sum(actualSteps, "model_reasoning_tokens"),
+    estimatedContext: sum(modelSteps, "context_input_tokens"),
+  };
 });
 const defaultEdgeOptions = {
   type: "smoothstep",
@@ -383,6 +434,22 @@ function stepTypeLabel(type) {
   return GRAPH_TYPES[String(type || "").trim()]?.label || "执行步骤";
 }
 
+function tokenSourceLabel(source) {
+  return String(source || "").trim() === "provider_response_usage"
+    ? "模型供应商 usage"
+    : String(source || "").trim() || "未知";
+}
+
+function contextRoleLabel(role) {
+  return {
+    system: "系统",
+    developer: "开发者",
+    user: "用户",
+    assistant: "智能体",
+    tool: "工具结果",
+  }[String(role || "").trim()] || String(role || "未知角色");
+}
+
 function formatDuration(value) {
   const duration = Number(value || 0);
   if (!duration) return "—";
@@ -391,11 +458,8 @@ function formatDuration(value) {
   return `${Math.floor(duration / 60_000)} 分 ${Math.round((duration % 60_000) / 1000)} 秒`;
 }
 
-function formatTimestamp(epochMs, fallback = "") {
-  const timestamp = Number(epochMs || 0);
-  if (timestamp > 0) return new Date(timestamp).toLocaleString();
-  const parsed = Date.parse(String(fallback || ""));
-  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : "—";
+function formatToken(value) {
+  return Math.max(0, Number(value || 0)).toLocaleString();
 }
 
 function normalizeError(error, fallback) {
@@ -425,61 +489,80 @@ async function loadProjectOptions() {
   }
 }
 
+async function loadProviderNames(nextProjectId) {
+  const normalizedProjectId = String(nextProjectId || "").trim();
+  providerNameById.value = new Map();
+  if (!normalizedProjectId) return;
+  try {
+    const data = await fetchProjectChatProviders(normalizedProjectId, {
+      includeRuntimeExternalTools: false,
+    });
+    providerNameById.value = new Map(
+      (Array.isArray(data?.providers) ? data.providers : [])
+        .map((provider) => [
+          String(provider?.id || "").trim(),
+          String(provider?.name || "").trim(),
+        ])
+        .filter(([providerId, providerName]) => providerId && providerName),
+    );
+  } catch {
+    providerNameById.value = new Map();
+  }
+}
+
 async function handleProjectChange(nextProjectId) {
   resetExecutionFlow();
   projectId.value = String(nextProjectId || "").trim();
   searchQuery.value = "";
-  answers.value = [];
   detail.value = null;
-  selectedAnswerId.value = "";
   selectedStep.value = null;
   errorMessage.value = "";
+  await loadProviderNames(projectId.value);
   await router.replace({
     path: "/ai/supervision",
     query: projectId.value ? { project_id: projectId.value } : {},
   });
-  if (projectId.value) await loadRecent();
 }
 
 async function runSearch() {
   const normalizedProjectId = String(projectId.value || "").trim();
+  const normalizedAnswerId = String(searchQuery.value || "").trim();
   if (!normalizedProjectId) {
-    errorMessage.value = "请先填写项目 ID";
+    errorMessage.value = "请先选择项目";
+    return;
+  }
+  if (!normalizedAnswerId) {
+    errorMessage.value = "请输入回答 ID";
     return;
   }
   searching.value = true;
   errorMessage.value = "";
   try {
-    answers.value = await searchAgentSupervisionAnswers(
+    await loadProviderNames(normalizedProjectId);
+    const results = await searchAgentSupervisionAnswers(
       normalizedProjectId,
-      searchQuery.value,
-      100,
+      normalizedAnswerId,
+      20,
     );
-    const exact = answers.value.find(
+    const exact = results.find(
       (item) =>
-        item.answer_id === searchQuery.value ||
-        item.assistant_message_id === searchQuery.value,
+        item.answer_id === normalizedAnswerId ||
+        item.assistant_message_id === normalizedAnswerId,
     );
     if (exact) {
       await selectAnswer(exact.answer_id);
-    } else if (searchQuery.value && !answers.value.length) {
+    } else {
       detail.value = null;
-      selectedAnswerId.value = "";
       resetExecutionFlow();
+      errorMessage.value = "本机监管库中没有找到该回答 ID";
     }
   } catch (error) {
-    answers.value = [];
     detail.value = null;
     resetExecutionFlow();
     errorMessage.value = normalizeError(error, "读取桌面监管库失败");
   } finally {
     searching.value = false;
   }
-}
-
-async function loadRecent() {
-  searchQuery.value = "";
-  await runSearch();
 }
 
 async function selectAnswer(answerId) {
@@ -489,7 +572,6 @@ async function selectAnswer(answerId) {
   resetExecutionFlow();
   detailLoading.value = true;
   errorMessage.value = "";
-  selectedAnswerId.value = normalizedAnswerId;
   try {
     detail.value = await getAgentSupervisionAnswer(
       normalizedProjectId,
@@ -574,35 +656,11 @@ function miniMapNodeColor(node) {
   return GRAPH_TYPES[type]?.color || GRAPH_TYPES.observation.color;
 }
 
-async function copyAnswerId() {
-  const answerId = String(detail.value?.answer?.answer_id || "").trim();
-  if (!answerId) return;
-  await navigator.clipboard.writeText(answerId);
-  ElMessage.success("回答 ID 已复制");
-}
-
-function openOriginalChat() {
-  const answer = detail.value?.answer || {};
-  void openRouteInDesktop(
-    router,
-    {
-      path: "/ai/chat",
-      query: {
-        project_id: projectId.value,
-        chat_session_id: answer.chat_session_id,
-        message_id: answer.assistant_message_id,
-      },
-    },
-    { mode: "new-window", appId: "chat", title: "AI 对话" },
-  );
-}
-
 onMounted(async () => {
   await loadProjectOptions();
+  await loadProviderNames(projectId.value);
   if (searchQuery.value) {
     await runSearch();
-  } else if (projectId.value) {
-    await loadRecent();
   }
 });
 
@@ -619,63 +677,12 @@ onMounted(async () => {
     #f4f7fb;
 }
 
-.supervision-hero,
 .supervision-search-card,
-.supervision-workspace,
-.answer-summary-card,
-.execution-card {
-  max-width: 1680px;
-  margin-inline: auto;
-}
-
-.supervision-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 22px;
-}
-
-.supervision-eyebrow {
-  margin-bottom: 8px;
-  color: #2563eb;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.supervision-hero h1 {
-  margin: 0;
-  font-size: clamp(28px, 3vw, 42px);
-  line-height: 1.15;
-}
-
-.supervision-hero p {
-  margin: 10px 0 0;
-  color: #64748b;
-  font-size: 15px;
-}
-
-.local-only-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border: 1px solid rgba(22, 163, 74, 0.18);
-  border-radius: 999px;
-  color: #166534;
-  background: rgba(240, 253, 244, 0.92);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.local-only-badge__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.12);
+.execution-card,
+.supervision-alert,
+.detail-loading,
+.supervision-empty {
+  width: 100%;
 }
 
 .supervision-search-card {
@@ -712,33 +719,16 @@ onMounted(async () => {
 }
 
 .supervision-alert {
-  max-width: 1680px;
-  margin: 14px auto 0;
+  margin-top: 14px;
 }
 
-.supervision-workspace {
-  display: grid;
-  grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
-  gap: 18px;
-  margin-top: 18px;
-}
-
-.answer-list-panel,
-.answer-detail-panel {
-  min-height: 650px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.06);
-  overflow: hidden;
-}
-
-.answer-list-panel {
-  padding: 16px;
-}
-
-.answer-detail-panel {
-  padding: 18px;
+.supervision-empty,
+.detail-loading {
+  min-height: 420px;
+  margin-top: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .panel-heading {
@@ -762,151 +752,119 @@ onMounted(async () => {
   color: #94a3b8;
 }
 
-.answer-list-item {
-  width: 100%;
-  margin-bottom: 10px;
-  padding: 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  text-align: left;
-  background: #fff;
-  cursor: pointer;
-  transition: 180ms ease;
-}
-
-.answer-list-item:hover,
-.answer-list-item.is-active {
-  border-color: rgba(37, 99, 235, 0.45);
-  background: #f8fbff;
-  transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.09);
-}
-
-.answer-list-item__topline {
+.model-title {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #e2e8f0;
 }
 
-.answer-list-item time,
-.answer-list-item > span,
-.answer-list-item code {
+.model-title small {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-title h2 {
+  margin: 3px 0 0;
+  color: #0f172a;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.model-title > span {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.token-overview {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(560px, 2fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.token-overview__primary,
+.token-overview__breakdown {
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: #f8fbff;
+}
+
+.token-overview__primary {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 104px;
+  padding: 16px 18px;
+}
+
+.token-overview__primary span {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.token-overview__primary strong {
+  margin: 4px 0;
+  color: #1d4ed8;
+  font-size: 30px;
+  line-height: 1.1;
+}
+
+.token-overview__primary small {
+  color: #64748b;
+  line-height: 1.45;
+}
+
+.token-overview__breakdown {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(104px, 1fr));
+  margin: 0;
+  overflow: hidden;
+}
+
+.token-overview__breakdown > div {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  min-height: 104px;
+  padding: 14px;
+  border-left: 1px solid #dbeafe;
+}
+
+.token-overview__breakdown > div:first-child {
+  border-left: 0;
+}
+
+.token-overview__breakdown dt {
   color: #64748b;
   font-size: 12px;
 }
 
-.answer-list-item strong,
-.answer-list-item > span,
-.answer-list-item code {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.token-overview__breakdown dd {
+  margin: 0;
+  color: #0f172a;
+  font-size: 17px;
+  font-weight: 800;
 }
 
-.answer-list-item strong {
-  margin-bottom: 6px;
-  color: #1e293b;
-  white-space: nowrap;
-}
-
-.answer-list-item > span {
-  display: -webkit-box;
-  margin-bottom: 10px;
-  line-height: 1.5;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.answer-list-item code {
-  color: #2563eb;
-  white-space: nowrap;
-}
-
-.answer-summary-card,
 .execution-card {
   border: 1px solid #e2e8f0;
   border-radius: 18px;
   background: #fff;
 }
 
-.answer-summary-card {
-  padding: 20px;
-}
-
-.answer-summary-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.answer-summary-card__label {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.answer-summary-card h2 {
-  margin: 5px 0 0;
-  color: #1d4ed8;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 18px;
-  overflow-wrap: anywhere;
-}
-
-.answer-summary-actions {
-  display: flex;
-  flex-wrap: wrap;
-}
-
-.answer-metrics {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(100px, 1fr));
-  gap: 10px;
-  margin-top: 18px;
-}
-
-.answer-metrics article {
-  padding: 12px;
-  border-radius: 12px;
-  background: #f8fafc;
-}
-
-.answer-metrics span,
-.answer-text-grid span,
 .step-detail__section > span {
   display: block;
   margin-bottom: 5px;
   color: #64748b;
   font-size: 12px;
   font-weight: 700;
-}
-
-.answer-metrics strong {
-  color: #0f172a;
-  font-size: 18px;
-}
-
-.answer-text-grid {
-  display: grid;
-  grid-template-columns: 1fr 1.25fr;
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.answer-text-grid article {
-  padding: 14px;
-  border: 1px solid #edf2f7;
-  border-radius: 12px;
-}
-
-.answer-text-grid p {
-  margin: 0;
-  color: #334155;
-  line-height: 1.65;
-  white-space: pre-wrap;
 }
 
 .execution-card {
@@ -950,7 +908,7 @@ onMounted(async () => {
 
 .execution-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) 400px;
   min-height: 470px;
   border: 1px solid #e2e8f0;
   border-radius: 14px;
@@ -1107,6 +1065,79 @@ onMounted(async () => {
   overflow-wrap: anywhere;
 }
 
+.context-snapshot {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.context-snapshot__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.context-snapshot__head span {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.context-snapshot__head small {
+  max-width: 190px;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.context-message-list {
+  display: grid;
+  gap: 10px;
+  max-height: 480px;
+  overflow: auto;
+}
+
+.context-message {
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.context-message header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.context-message header b {
+  color: #2563eb;
+  font-size: 12px;
+}
+
+.context-message header span {
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: #64748b;
+  background: #e2e8f0;
+  font-size: 10px;
+}
+
+.context-message pre {
+  margin: 0;
+  color: #334155;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .step-detail__section {
   margin-top: 16px;
 }
@@ -1129,19 +1160,17 @@ onMounted(async () => {
   overflow: auto;
 }
 
-.panel-loading,
 .detail-loading {
   padding: 22px;
 }
 
 @media (max-width: 1100px) {
-  .supervision-workspace,
-  .execution-grid {
+  .token-overview {
     grid-template-columns: 1fr;
   }
 
-  .answer-list-panel {
-    min-height: auto;
+  .execution-grid {
+    grid-template-columns: 1fr;
   }
 
   .step-detail {
@@ -1161,7 +1190,6 @@ onMounted(async () => {
     padding: 16px;
   }
 
-  .supervision-hero,
   .supervision-search-card {
     align-items: stretch;
     flex-direction: column;
@@ -1172,9 +1200,28 @@ onMounted(async () => {
     width: 100%;
   }
 
-  .answer-metrics,
-  .answer-text-grid {
-    grid-template-columns: 1fr 1fr;
+  .model-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .token-overview__breakdown {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .token-overview__breakdown > div,
+  .token-overview__breakdown > div:first-child {
+    min-height: 82px;
+    border-top: 1px solid #dbeafe;
+    border-left: 0;
+  }
+
+  .token-overview__breakdown > div:nth-child(-n + 2) {
+    border-top: 0;
+  }
+
+  .token-overview__breakdown > div:nth-child(even) {
+    border-left: 1px solid #dbeafe;
   }
 }
 </style>

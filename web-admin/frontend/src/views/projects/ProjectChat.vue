@@ -10210,6 +10210,10 @@ function finishMessageExecutionTiming(row, endedAt = Date.now()) {
 
 function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
   if (!row) return;
+  const executionCycles = localLiuAgentExecutionCyclesFromResult(result);
+  if (executionCycles.length) {
+    row.agentExecutionCycles = executionCycles;
+  }
   const startedAt = normalizeLocalLiuAgentRuntimeEpochMs(context?.startedAt);
   for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
     if (!markLocalLiuAgentRuntimeEventSeen(event)) continue;
@@ -10265,6 +10269,91 @@ function localLiuAgentResultModelRuntime(result = {}) {
         ? result.model_result
         : {};
   return modelResult && typeof modelResult === "object" ? modelResult : {};
+}
+
+function localLiuAgentExecutionCyclesFromResult(result = {}) {
+  const modelRuntime = localLiuAgentResultModelRuntime(result);
+  const agentLoop =
+    modelRuntime?.agent_loop && typeof modelRuntime.agent_loop === "object"
+      ? modelRuntime.agent_loop
+      : modelRuntime?.agentLoop && typeof modelRuntime.agentLoop === "object"
+        ? modelRuntime.agentLoop
+        : {};
+  const snapshots = Array.isArray(agentLoop?.model_input_snapshots)
+    ? agentLoop.model_input_snapshots
+    : Array.isArray(agentLoop?.modelInputSnapshots)
+      ? agentLoop.modelInputSnapshots
+      : [];
+  const modelSteps = Array.isArray(agentLoop?.model_steps)
+    ? agentLoop.model_steps
+    : Array.isArray(agentLoop?.modelSteps)
+      ? agentLoop.modelSteps
+      : [];
+  const toolResults = Array.isArray(result?.toolResults)
+    ? result.toolResults
+    : Array.isArray(result?.tool_results)
+      ? result.tool_results
+      : [];
+  return snapshots.map((snapshot, index) => {
+    const modelStep = modelSteps[index] || {};
+    const providerId = String(
+      modelStep?.provider_id || modelStep?.providerId || "",
+    ).trim();
+    const providerName = String(
+      (providers.value || []).find(
+        (item) => String(item?.id || "").trim() === providerId,
+      )?.name || "",
+    ).trim();
+    const toolCalls = Array.isArray(modelStep?.tool_calls)
+      ? modelStep.tool_calls
+      : Array.isArray(modelStep?.toolCalls)
+        ? modelStep.toolCalls
+        : [];
+    const toolCallIds = new Set(
+      toolCalls
+        .map((tool) => String(tool?.tool_call_id || tool?.toolCallId || "").trim())
+        .filter(Boolean),
+    );
+    return {
+      cycleIndex: index + 1,
+      contextSnapshot: snapshot,
+      model: {
+        status: String(modelStep?.status || (modelStep?.ok === false ? "failed" : "completed")),
+        providerId,
+        providerName,
+        modelName: String(modelStep?.model_name || modelStep?.modelName || ""),
+        summary: String(modelStep?.summary || ""),
+        errorCode: String(modelStep?.error_code || modelStep?.errorCode || ""),
+        error: String(modelStep?.error || ""),
+        toolCallCount: toolCalls.length,
+        toolCallIds: Array.from(toolCallIds),
+        tokenUsage:
+          modelStep?.token_usage && typeof modelStep.token_usage === "object"
+            ? modelStep.token_usage
+            : modelStep?.tokenUsage && typeof modelStep.tokenUsage === "object"
+              ? modelStep.tokenUsage
+              : snapshot?.token_usage && typeof snapshot.token_usage === "object"
+                ? snapshot.token_usage
+                : snapshot?.tokenUsage && typeof snapshot.tokenUsage === "object"
+                  ? snapshot.tokenUsage
+                  : null,
+      },
+      tools: toolResults
+        .filter((tool) =>
+          toolCallIds.has(String(tool?.toolCallId || tool?.tool_call_id || "").trim()),
+        )
+        .map((tool) => ({
+          toolCallId: String(tool?.toolCallId || tool?.tool_call_id || ""),
+          toolResultId: String(tool?.toolResultId || tool?.tool_result_id || ""),
+          name: String(tool?.name || ""),
+          ok: tool?.ok !== false,
+          status: String(tool?.status || tool?.content?.status || ""),
+          summary: String(tool?.summary || ""),
+          errorCode: String(tool?.errorCode || tool?.error_code || ""),
+          error: String(tool?.error || ""),
+        })),
+    };
+  });
 }
 
 function localLiuAgentResultCurrentStateDelta(result = {}) {

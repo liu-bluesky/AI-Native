@@ -1592,6 +1592,8 @@ fn build_task_processing_snapshot(
 ) -> Value {
     let messages_raw = serde_json::to_string(&request.messages)
         .unwrap_or_else(|_| format!("{:?}", request.messages));
+    let input_char_count = messages_raw.chars().count();
+    let estimated_input_tokens = input_char_count.div_ceil(3);
     json!({
         "turn_id": format!("{session_id}-task-processing-{model_step_index}"),
         "message_id": format!("model-step-{model_step_index}"),
@@ -1602,6 +1604,10 @@ fn build_task_processing_snapshot(
         "mode": request.mode,
         "prompt_stack": prompt_stack,
         "input_summary": format!("任务处理循环第 {model_step_index} 次模型请求。"),
+        "message_count": request.messages.len(),
+        "input_char_count": input_char_count,
+        "estimated_input_tokens": estimated_input_tokens,
+        "token_source": "estimated_from_serialized_model_messages",
         "context_package": {
             "task_goal": request.task_goal.as_ref(),
             "task_tree": request.task_tree.as_ref(),
@@ -4574,6 +4580,13 @@ fn run_agent_loop_with(
             &request,
         );
         let model_result = model_runner(&request);
+        if let Some(snapshot) = model_input_snapshots.last_mut() {
+            snapshot["token_usage"] = model_result
+                .token_usage
+                .as_ref()
+                .map(|usage| json!(usage))
+                .unwrap_or(Value::Null);
+        }
         let all_planned_tools = rank_local_tool_candidates(
             plan_local_tools(run_key, &model_result)
                 .into_iter()
@@ -7894,6 +7907,24 @@ impl ModelStepRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct ModelTokenUsage {
+    input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: i64,
+    cached_input_tokens: i64,
+    reasoning_tokens: i64,
+    source: String,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedModelResponse {
+    content: String,
+    reasoning_content: String,
+    tool_calls: Vec<PlannedLocalTool>,
+    token_usage: Option<ModelTokenUsage>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct ModelStepResult {
     ok: bool,
     mode: String,
@@ -7903,6 +7934,7 @@ struct ModelStepResult {
     content: String,
     reasoning_content: String,
     tool_calls: Vec<PlannedLocalTool>,
+    token_usage: Option<ModelTokenUsage>,
     allow_compat_text_tool_call: bool,
     compat_text_tool_call_detected: bool,
     summary: String,
@@ -7921,6 +7953,7 @@ impl ModelStepResult {
             "reasoning_content": self.reasoning_content,
             "tool_calls": self.tool_calls.as_slice(),
             "tool_call_count": self.tool_calls.len(),
+            "token_usage": self.token_usage,
             "compat_text_tool_call_detected": self.compat_text_tool_call_detected,
             "summary": self.summary,
             "error_code": self.error_code,
@@ -7938,6 +7971,7 @@ impl ModelStepResult {
             content: String::new(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: summary.into(),
@@ -7961,6 +7995,7 @@ impl ModelStepResult {
             content: String::new(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: error.clone(),
@@ -7979,6 +8014,7 @@ impl ModelStepResult {
             content: String::new(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: "agent loop did not run any model step".to_string(),
@@ -8304,6 +8340,54 @@ fn model_gateway_http_error_message(
 #[derive(Debug, Deserialize)]
 struct OpenAiCompatibleResponse {
     choices: Option<Vec<OpenAiCompatibleChoice>>,
+    usage: Option<OpenAiCompatibleUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCompatibleUsage {
+    #[serde(alias = "input_tokens")]
+    prompt_tokens: Option<i64>,
+    #[serde(alias = "output_tokens")]
+    completion_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+    prompt_tokens_details: Option<OpenAiPromptTokenDetails>,
+    completion_tokens_details: Option<OpenAiCompletionTokenDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiPromptTokenDetails {
+    cached_tokens: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCompletionTokenDetails {
+    reasoning_tokens: Option<i64>,
+}
+
+impl OpenAiCompatibleUsage {
+    fn into_model_usage(self) -> ModelTokenUsage {
+        let input_tokens = self.prompt_tokens.unwrap_or_default().max(0);
+        let output_tokens = self.completion_tokens.unwrap_or_default().max(0);
+        ModelTokenUsage {
+            input_tokens,
+            output_tokens,
+            total_tokens: self
+                .total_tokens
+                .unwrap_or(input_tokens + output_tokens)
+                .max(0),
+            cached_input_tokens: self
+                .prompt_tokens_details
+                .and_then(|details| details.cached_tokens)
+                .unwrap_or_default()
+                .max(0),
+            reasoning_tokens: self
+                .completion_tokens_details
+                .and_then(|details| details.reasoning_tokens)
+                .unwrap_or_default()
+                .max(0),
+            source: "provider_response_usage".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -9008,7 +9092,7 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_ascii_lowercase().contains("text/event-stream"))
         .unwrap_or(false);
-    let (content, reasoning_content, tool_calls) = if is_streaming_response {
+    let parsed_response = if is_streaming_response {
         match parse_openai_compatible_streaming_response(response, &request.run_key) {
             Ok(value) => value,
             Err(err) => return ModelStepResult::failed(request, "model.response_invalid", err),
@@ -9019,7 +9103,7 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
             Err(err) => return ModelStepResult::failed(request, "model.response_invalid", err),
         }
     };
-    if content.trim().is_empty() && tool_calls.is_empty() {
+    if parsed_response.content.trim().is_empty() && parsed_response.tool_calls.is_empty() {
         return ModelStepResult::failed(
             request,
             "model.empty_response",
@@ -9027,7 +9111,7 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
         );
     }
     let compat_text_tool_call_detected =
-        parse_compat_text_tool_request(&request.provider_id, &content).is_some();
+        parse_compat_text_tool_request(&request.provider_id, &parsed_response.content).is_some();
     ModelStepResult {
         ok: true,
         mode: request.mode.clone(),
@@ -9038,11 +9122,12 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
             "模型已在桌面端本机调用：{} / {}，返回 {} 个工具调用",
             request.provider_id,
             normalized_model_name,
-            tool_calls.len()
+            parsed_response.tool_calls.len()
         ),
-        content,
-        reasoning_content,
-        tool_calls,
+        content: parsed_response.content,
+        reasoning_content: parsed_response.reasoning_content,
+        tool_calls: parsed_response.tool_calls,
+        token_usage: parsed_response.token_usage,
         allow_compat_text_tool_call: false,
         compat_text_tool_call_detected,
         error_code: String::new(),
@@ -9225,6 +9310,7 @@ fn build_openai_compatible_request_body(
         "model": normalized_model_name,
         "temperature": request.temperature,
         "stream": true,
+        "stream_options": {"include_usage": true},
         "messages": request.messages.iter().map(openai_compatible_message_payload).collect::<Vec<_>>()
     });
     request_body["tools"] = json!(openai_compatible_tool_schemas(request)?);
@@ -9235,10 +9321,11 @@ fn build_openai_compatible_request_body(
 fn parse_openai_compatible_json_response(
     response: Response,
     run_key: &str,
-) -> Result<(String, String, Vec<PlannedLocalTool>), String> {
+) -> Result<ParsedModelResponse, String> {
     let payload = response
         .json::<OpenAiCompatibleResponse>()
         .map_err(|err| format!("model response parse failed: {err}"))?;
+    let token_usage = payload.usage.map(OpenAiCompatibleUsage::into_model_usage);
     let message = payload
         .choices
         .and_then(|choices| choices.into_iter().next())
@@ -9254,13 +9341,18 @@ fn parse_openai_compatible_json_response(
     let tool_calls = message
         .and_then(|message| collect_openai_tool_calls(run_key, message.tool_calls))
         .unwrap_or_default();
-    Ok((content, reasoning_content, tool_calls))
+    Ok(ParsedModelResponse {
+        content,
+        reasoning_content,
+        tool_calls,
+        token_usage,
+    })
 }
 
 fn parse_openai_compatible_streaming_response(
     response: Response,
     run_key: &str,
-) -> Result<(String, String, Vec<PlannedLocalTool>), String> {
+) -> Result<ParsedModelResponse, String> {
     let reader = BufReader::new(response);
     parse_openai_compatible_streaming_reader(reader, run_key)
 }
@@ -9268,10 +9360,11 @@ fn parse_openai_compatible_streaming_response(
 fn parse_openai_compatible_streaming_reader<R: BufRead>(
     reader: R,
     run_key: &str,
-) -> Result<(String, String, Vec<PlannedLocalTool>), String> {
+) -> Result<ParsedModelResponse, String> {
     let mut content = String::new();
     let mut reasoning_content = String::new();
     let mut tool_chunks: Vec<OpenAiCompatibleToolCall> = Vec::new();
+    let mut token_usage = None;
     for line in reader.lines() {
         if local_chat_pause_requested(run_key) {
             return Err("runtime paused while reading model stream".to_string());
@@ -9289,6 +9382,9 @@ fn parse_openai_compatible_streaming_reader<R: BufRead>(
         }
         let payload = serde_json::from_str::<OpenAiCompatibleResponse>(data)
             .map_err(|err| format!("model stream chunk parse failed: {err}; chunk={data}"))?;
+        if let Some(usage) = payload.usage {
+            token_usage = Some(usage.into_model_usage());
+        }
         for choice in payload.choices.unwrap_or_default() {
             let message = choice.delta.or(choice.message);
             let Some(message) = message else {
@@ -9306,7 +9402,12 @@ fn parse_openai_compatible_streaming_reader<R: BufRead>(
         }
     }
     let tool_calls = collect_openai_tool_calls(run_key, Some(tool_chunks)).unwrap_or_default();
-    Ok((content, reasoning_content, tool_calls))
+    Ok(ParsedModelResponse {
+        content,
+        reasoning_content,
+        tool_calls,
+        token_usage,
+    })
 }
 
 fn merge_openai_tool_call_chunks(
@@ -10129,6 +10230,7 @@ mod tests {
             content: "我已经确认目标文件是 register.html，下一步读取 login.html。".to_string(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: "visible progress".to_string(),
@@ -10195,6 +10297,7 @@ mod tests {
             content: String::new(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: String::new(),
@@ -10236,6 +10339,7 @@ mod tests {
             content: "准备读取 src/styles/theme.css，定位实现需要参考的代码；读取 src/views/login/LoginView.vue，判断现有登录页能否复用或改造；另有 7 个工具调用".to_string(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: String::new(),
@@ -10284,6 +10388,7 @@ mod tests {
             content: "目标是创建 index.html；已确认写入内容仍限定在该文件，下一步生成文件以满足原始需求。".to_string(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: String::new(),
@@ -10382,6 +10487,7 @@ mod tests {
                     .to_string(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: String::new(),
@@ -10505,6 +10611,23 @@ mod tests {
             .find(|item| item["loop"] == "task_processing")
             .expect("task processing snapshot");
         assert_eq!(task_snapshot["prompt_stack"]["version"], "prompt-stack/v1");
+        assert!(task_snapshot["message_count"].as_u64().unwrap_or_default() > 0);
+        assert!(
+            task_snapshot["input_char_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert!(
+            task_snapshot["estimated_input_tokens"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert_eq!(
+            task_snapshot["token_source"],
+            "estimated_from_serialized_model_messages"
+        );
         assert_eq!(
             task_snapshot["context_package"]["task_goal"]["goalId"],
             requirement["task_goal"]["goalId"]
@@ -10675,6 +10798,7 @@ mod tests {
                 }),
                 summary: "标准模型工具调用：write_file".to_string(),
             }],
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: "standard tool call".to_string(),
@@ -10709,6 +10833,7 @@ mod tests {
             .to_string(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: true,
             summary: "legacy text tool call".to_string(),
@@ -13696,7 +13821,12 @@ mod tests {
                             "content": "ok"
                         }
                     }
-                ]
+                ],
+                "usage": {
+                    "prompt_tokens": 42,
+                    "completion_tokens": 8,
+                    "total_tokens": 50
+                }
             })
             .to_string();
             let response = format!(
@@ -13717,6 +13847,10 @@ mod tests {
 
         assert!(result.ok, "{}", result.error);
         assert_eq!(result.content, "ok");
+        let usage = result.token_usage.expect("json usage");
+        assert_eq!(usage.input_tokens, 42);
+        assert_eq!(usage.output_tokens, 8);
+        assert_eq!(usage.total_tokens, 50);
     }
 
     #[test]
@@ -13725,6 +13859,7 @@ mod tests {
         let request_body =
             build_openai_compatible_request_body(&model_request, "test-model", false).unwrap();
         assert_eq!(request_body["stream"], true);
+        assert_eq!(request_body["stream_options"]["include_usage"], true);
         assert!(request_body["tools"]
             .as_array()
             .is_some_and(|items| !items.is_empty()));
@@ -13746,6 +13881,16 @@ mod tests {
                         }]
                     }
                 }]
+            }),
+            json!({
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 30,
+                    "total_tokens": 150,
+                    "prompt_tokens_details": {"cached_tokens": 20},
+                    "completion_tokens_details": {"reasoning_tokens": 12}
+                }
             }),
             json!({
                 "choices": [{
@@ -13770,17 +13915,24 @@ mod tests {
         }
         stream_body.push_str("data: [DONE]\n\n");
 
-        let (content, reasoning_content, tool_calls) =
+        let parsed =
             parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
                 .unwrap();
 
-        assert_eq!(content, "准备读取");
-        assert_eq!(reasoning_content, "先读文件");
-        assert_eq!(tool_calls.len(), 1);
-        assert_eq!(tool_calls[0].tool_call_id, "call_read_register");
-        assert_eq!(tool_calls[0].name, "read_file");
-        assert_eq!(tool_calls[0].arguments["path"], "register.html");
-        assert_eq!(tool_calls[0].arguments["start_line"], 1);
+        assert_eq!(parsed.content, "准备读取");
+        assert_eq!(parsed.reasoning_content, "先读文件");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].tool_call_id, "call_read_register");
+        assert_eq!(parsed.tool_calls[0].name, "read_file");
+        assert_eq!(parsed.tool_calls[0].arguments["path"], "register.html");
+        assert_eq!(parsed.tool_calls[0].arguments["start_line"], 1);
+        let usage = parsed.token_usage.expect("stream usage");
+        assert_eq!(usage.input_tokens, 120);
+        assert_eq!(usage.output_tokens, 30);
+        assert_eq!(usage.total_tokens, 150);
+        assert_eq!(usage.cached_input_tokens, 20);
+        assert_eq!(usage.reasoning_tokens, 12);
+        assert_eq!(usage.source, "provider_response_usage");
     }
 
     #[test]
@@ -14771,6 +14923,7 @@ mod tests {
             content: content.to_string(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: String::new(),
@@ -15299,6 +15452,7 @@ mod tests {
             content: content.to_string(),
             reasoning_content: String::new(),
             tool_calls,
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: "test model result".to_string(),
@@ -16130,6 +16284,7 @@ mod tests {
             content: String::new(),
             reasoning_content: String::new(),
             tool_calls: Vec::new(),
+            token_usage: None,
             allow_compat_text_tool_call: false,
             compat_text_tool_call_detected: false,
             summary: "model failed".to_string(),
@@ -16203,6 +16358,7 @@ mod tests {
                 content: String::new(),
                 reasoning_content: String::new(),
                 tool_calls: vec![planned_tool.clone()],
+                token_usage: None,
                 allow_compat_text_tool_call: false,
                 compat_text_tool_call_detected: false,
                 summary: "planned tool".to_string(),

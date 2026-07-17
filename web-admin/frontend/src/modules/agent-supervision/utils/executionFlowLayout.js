@@ -1,8 +1,18 @@
 import ELK from "elkjs/lib/elk.bundled.js";
 
 const elk = new ELK();
-const NODE_WIDTH = 320;
-const NODE_HEIGHT = 150;
+const STAGE_NODE_WIDTH = 360;
+const STAGE_NODE_HEIGHT = 144;
+const CYCLE_NODE_WIDTH = 320;
+const CYCLE_NODE_HEIGHT = 156;
+
+const MAIN_STAGES = [
+  { key: "request", title: "请求输入", visualType: "request" },
+  { key: "context", title: "上下文构建", visualType: "context_build" },
+  { key: "plan", title: "规划与决策", visualType: "plan" },
+  { key: "execution", title: "执行循环", visualType: "operation" },
+  { key: "answer", title: "回答与结果", visualType: "final_answer" },
+];
 
 function normalizeText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -13,148 +23,173 @@ function truncate(value, maxLength = 120) {
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
 
-function groupDescriptor(step) {
-  const type = String(step?.step_type || "observation").trim();
-  const title = normalizeText(step?.title);
-  if (type === "observation") {
-    if (/本轮目标|开始执行|上下文|准备正式模型|提炼/.test(title)) {
-      return { key: "preparation", title: "输入与上下文准备", visualType: "context_build" };
-    }
-    return { key: "runtime-events", title: "运行事件与状态", visualType: "observation" };
-  }
-  if (type === "model_call") {
-    return { key: "model-call", title: "模型调用", visualType: "model_call" };
-  }
-  return {
-    key: `single:${step.step_id}`,
-    title: title || type,
-    visualType: type,
-  };
-}
-
 function aggregateStatus(steps) {
   if (steps.some((step) => step.status === "failed")) return "failed";
   if (steps.some((step) => step.status === "blocked")) return "blocked";
   if (steps.some((step) => step.status === "running")) return "running";
   if (steps.some((step) => step.status === "pending")) return "pending";
-  return steps.at(-1)?.status || "completed";
+  return steps.length ? steps.at(-1)?.status || "completed" : "completed";
 }
 
-function buildStages(steps) {
+function mainStageKey(step) {
+  const type = String(step?.step_type || "observation").trim();
+  const title = normalizeText(step?.title);
+  if (type === "request") return "request";
+  if (type === "context_build" || /上下文|提示词|prompt/i.test(title)) return "context";
+  if (type === "plan") return "plan";
+  if (type === "final_answer") return "answer";
+  return "execution";
+}
+
+function stageSummary(stage, steps, executionSteps) {
+  if (stage.key === "context") {
+    const contextualStep = [...steps, ...executionSteps].find(
+      (step) => Number(step?.context_message_count || 0) > 0,
+    );
+    if (contextualStep) {
+      const messages = Number(contextualStep.context_message_count || 0);
+      const tokens = Number(contextualStep.context_input_tokens || 0);
+      return `${messages} 条模型消息${tokens ? `，约 ${tokens.toLocaleString()} Token` : ""}`;
+    }
+  }
+  if (stage.key === "execution") {
+    const cycleCount = new Set(
+      executionSteps.map((step) => Number(step?.model_step_index || 0)).filter(Boolean),
+    ).size;
+    return cycleCount
+      ? `${cycleCount} 轮模型循环，${executionSteps.length} 个执行节点`
+      : executionSteps.length
+        ? `${executionSteps.length} 个执行节点`
+        : "未采集到执行循环";
+  }
+  const primaryStep = steps.at(-1);
+  return truncate(
+    primaryStep?.summary || primaryStep?.detail_preview || primaryStep?.title || "暂无独立记录",
+  );
+}
+
+function buildFlowNodes(steps) {
   const sortedSteps = [...steps].sort(
     (left, right) => Number(left.sort_order || 0) - Number(right.sort_order || 0),
   );
-  const groups = [];
-  for (const step of sortedSteps) {
-    const descriptor = groupDescriptor(step);
-    const previous = groups.at(-1);
-    if (previous && previous.key === descriptor.key && !descriptor.key.startsWith("single:")) {
-      previous.steps.push(step);
-      continue;
-    }
-    groups.push({ ...descriptor, steps: [step] });
-  }
-  return groups.map((group, index) => {
-    const primaryStep = group.steps.at(-1);
-    const summary =
-      primaryStep?.summary ||
-      primaryStep?.detail_preview ||
-      primaryStep?.title ||
-      group.title;
+  const grouped = new Map(MAIN_STAGES.map((stage) => [stage.key, []]));
+  for (const step of sortedSteps) grouped.get(mainStageKey(step)).push(step);
+  const executionSteps = grouped.get("execution");
+  const stageNodes = MAIN_STAGES.map((stage, index) => {
+    const stageSteps = grouped.get(stage.key);
+    const primaryStep =
+      stage.key === "context" && !stageSteps.length
+        ? executionSteps.find((step) => Number(step?.context_message_count || 0) > 0) || null
+        : stageSteps.at(-1) || null;
     return {
-      id: `execution-stage-${index + 1}`,
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
+      id: `main-stage-${stage.key}`,
+      width: STAGE_NODE_WIDTH,
+      height: STAGE_NODE_HEIGHT,
       data: {
+        nodeKind: "stage",
+        stageKey: stage.key,
         order: index + 1,
-        title: group.title,
-        summary: truncate(summary),
-        visualType: group.visualType,
-        status: aggregateStatus(group.steps),
-        eventCount: group.steps.length,
-        toolName: normalizeText(primaryStep?.tool_name),
-        durationMs: group.steps.reduce(
+        title: stage.title,
+        summary: stageSummary(stage, stageSteps, executionSteps),
+        visualType: stage.visualType,
+        status: aggregateStatus(stageSteps),
+        eventCount: stageSteps.length,
+        durationMs: stageSteps.reduce(
           (total, step) => total + Math.max(0, Number(step.duration_ms || 0)),
           0,
         ),
-        stepIds: group.steps.map((step) => step.step_id),
-        steps: group.steps,
+        stepIds: stageSteps.map((step) => step.step_id),
+        steps: stageSteps,
         primaryStep,
       },
     };
   });
+  const cycleNodes = executionSteps.map((step, index) => ({
+    id: `execution-cycle-${index + 1}`,
+    width: CYCLE_NODE_WIDTH,
+    height: CYCLE_NODE_HEIGHT,
+    data: {
+      nodeKind: "cycle",
+      stageKey: "execution",
+      order: `4.${index + 1}`,
+      title: step.title || "执行节点",
+      summary: truncate(step.summary || step.detail_preview || step.title),
+      visualType: step.step_type || "operation",
+      status: step.status || "completed",
+      eventCount: 1,
+      toolName: normalizeText(step.tool_name),
+      durationMs: Math.max(0, Number(step.duration_ms || 0)),
+      contextMessageCount: Math.max(0, Number(step.context_message_count || 0)),
+      contextInputTokens: Math.max(0, Number(step.context_input_tokens || 0)),
+      modelInputTokens: Math.max(0, Number(step.model_input_tokens || 0)),
+      modelOutputTokens: Math.max(0, Number(step.model_output_tokens || 0)),
+      modelTotalTokens: Math.max(0, Number(step.model_total_tokens || 0)),
+      modelTokenSource: normalizeText(step.model_token_source),
+      modelStepIndex: Math.max(0, Number(step.model_step_index || 0)),
+      stepIds: [step.step_id],
+      steps: [step],
+      primaryStep: step,
+    },
+  }));
+  return { stageNodes, cycleNodes };
 }
 
-function buildStageEdges(stages, edges) {
-  const stageByStepId = new Map();
-  for (const stage of stages) {
-    for (const stepId of stage.data.stepIds) stageByStepId.set(stepId, stage.id);
-  }
-  const stageEdges = [];
-  const seen = new Set();
-  for (const edge of edges) {
-    const source = stageByStepId.get(edge.source_step_id);
-    const target = stageByStepId.get(edge.target_step_id);
-    const key = `${source}->${target}`;
-    if (!source || !target || source === target || seen.has(key)) continue;
-    seen.add(key);
-    stageEdges.push({ id: `execution-edge-${stageEdges.length + 1}`, source, target });
-  }
-  if (!stageEdges.length && stages.length > 1) {
-    for (let index = 1; index < stages.length; index += 1) {
-      stageEdges.push({
-        id: `execution-edge-${index}`,
-        source: stages[index - 1].id,
-        target: stages[index].id,
-      });
-    }
-  }
-  return stageEdges;
+function buildFlowEdges(stageNodes, cycleNodes) {
+  const beforeExecution = stageNodes.slice(0, 4);
+  const answerStage = stageNodes[4];
+  const orderedNodes = cycleNodes.length
+    ? [...beforeExecution, ...cycleNodes, answerStage]
+    : [...stageNodes];
+  return orderedNodes.slice(1).map((target, index) => ({
+    id: `execution-edge-${index + 1}`,
+    source: orderedNodes[index].id,
+    target: target.id,
+  }));
 }
 
-export async function buildExecutionFlow(steps = [], edges = []) {
-  const stages = buildStages(Array.isArray(steps) ? steps : []);
-  const stageEdges = buildStageEdges(stages, Array.isArray(edges) ? edges : []);
-  if (!stages.length) return { nodes: [], edges: [] };
-
+export async function buildExecutionFlow(steps = []) {
+  const normalizedSteps = Array.isArray(steps) ? steps : [];
+  if (!normalizedSteps.length) return { nodes: [], edges: [] };
+  const { stageNodes, cycleNodes } = buildFlowNodes(normalizedSteps);
+  const nodes = [...stageNodes, ...cycleNodes];
+  const flowEdges = buildFlowEdges(stageNodes, cycleNodes);
   const layout = await elk.layout({
     id: "execution-flow",
     layoutOptions: {
       "elk.algorithm": "layered",
       "elk.direction": "DOWN",
       "elk.edgeRouting": "ORTHOGONAL",
-      "elk.spacing.nodeNode": "52",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "72",
+      "elk.spacing.nodeNode": "44",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "64",
       "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
     },
-    children: stages.map((stage) => ({
-      id: stage.id,
-      width: stage.width,
-      height: stage.height,
+    children: nodes.map((node) => ({
+      id: node.id,
+      width: node.width,
+      height: node.height,
     })),
-    edges: stageEdges.map((edge) => ({
+    edges: flowEdges.map((edge) => ({
       id: edge.id,
       sources: [edge.source],
       targets: [edge.target],
     })),
   });
-
   const positionById = new Map(
     (layout.children || []).map((node) => [node.id, { x: node.x || 0, y: node.y || 0 }]),
   );
   return {
-    nodes: stages.map((stage) => ({
-      id: stage.id,
+    nodes: nodes.map((node) => ({
+      id: node.id,
       type: "execution",
-      position: positionById.get(stage.id) || { x: 0, y: 0 },
-      data: stage.data,
+      position: positionById.get(node.id) || { x: 0, y: 0 },
+      data: node.data,
       draggable: false,
       connectable: false,
       selectable: true,
       focusable: true,
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
+      width: node.width,
+      height: node.height,
     })),
-    edges: stageEdges,
+    edges: flowEdges,
   };
 }
