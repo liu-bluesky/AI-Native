@@ -112,6 +112,24 @@
   color: var(--el-color-primary);
 }
 
+.message-supervision-link {
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 28%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--el-color-primary) 6%, white);
+  color: var(--el-color-primary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.message-supervision-link:hover {
+  border-color: color-mix(in srgb, var(--el-color-primary) 48%, transparent);
+  background: color-mix(in srgb, var(--el-color-primary) 12%, white);
+}
+
 .message-bubble {
   padding: 20px 22px;
   border-radius: 24px;

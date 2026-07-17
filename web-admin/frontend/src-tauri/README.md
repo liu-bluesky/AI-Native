@@ -6,6 +6,13 @@
 
 > 页面使用 Vue 开发，本地电脑能力使用 Rust 开发，Tauri 负责把两者组合成桌面应用。
 
+## 项目聊天本地存储
+
+- 桌面端项目聊天使用应用数据目录中的 `project-chat.sqlite3` 作为会话列表、聊天消息和交互运行快照的唯一持久化存储。
+- 前端发送项目聊天请求时固定使用 `persist_history: false`，服务端只参与模型与工具执行，不保存聊天历史。
+- `localStorage` 不再保存项目聊天会话或完整运行快照，也不再提供配额压缩、文本截断或旧快照迁移兜底。
+- 数据按 `username + project_id + chat_session_id` 隔离；删除会话时通过 SQLite 事务同时删除会话元数据和运行快照。
+
 ## 1. 这个目录负责什么
 
 `web-admin/frontend/src-tauri/` 是“AI 员工工厂”桌面应用的本地能力层。

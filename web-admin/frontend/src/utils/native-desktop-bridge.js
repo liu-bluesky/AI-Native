@@ -56,6 +56,13 @@ const TAURI_COMMAND_NAMES = {
   liuagentSaveOfflineCache: "liuagent_save_offline_cache",
   liuagentLoadOfflineCache: "liuagent_load_offline_cache",
   liuagentCleanupOfflineCache: "liuagent_cleanup_offline_cache",
+  projectChatListSessions: "project_chat_list_sessions",
+  projectChatReplaceSessions: "project_chat_replace_sessions",
+  projectChatReadRuntime: "project_chat_read_runtime",
+  projectChatWriteRuntime: "project_chat_write_runtime",
+  projectChatDeleteSession: "project_chat_delete_session",
+  agentSupervisionSearchAnswers: "agent_supervision_search_answers",
+  agentSupervisionGetAnswer: "agent_supervision_get_answer",
 };
 
 function canUseWindow() {
@@ -162,6 +169,107 @@ function resolveBridge() {
 
 export function hasNativeDesktopBridge() {
   return Boolean(resolveBridge() || canUseTauriApi() || resolveTauriInvoke());
+}
+
+function requireNativeProjectChatStore() {
+  if (!hasNativeDesktopBridge()) {
+    throw new Error("桌面聊天 SQLite 存储不可用");
+  }
+}
+
+export async function listNativeProjectChatSessions(projectId, username) {
+  requireNativeProjectChatStore();
+  const result = await invokeNativeDesktopBridge("projectChatListSessions", {
+    projectId: String(projectId || "").trim(),
+    username: String(username || "").trim(),
+  });
+  return Array.isArray(result) ? result : [];
+}
+
+export async function replaceNativeProjectChatSessions(
+  projectId,
+  username,
+  sessions,
+) {
+  requireNativeProjectChatStore();
+  return invokeNativeDesktopBridge("projectChatReplaceSessions", {
+    projectId: String(projectId || "").trim(),
+    username: String(username || "").trim(),
+    sessions: Array.isArray(sessions) ? sessions : [],
+  });
+}
+
+export async function readNativeProjectChatRuntime(
+  projectId,
+  chatSessionId,
+  username,
+) {
+  requireNativeProjectChatStore();
+  return invokeNativeDesktopBridge("projectChatReadRuntime", {
+    projectId: String(projectId || "").trim(),
+    chatSessionId: String(chatSessionId || "").trim(),
+    username: String(username || "").trim(),
+  });
+}
+
+export async function writeNativeProjectChatRuntime(
+  projectId,
+  chatSessionId,
+  username,
+  payload,
+) {
+  requireNativeProjectChatStore();
+  return invokeNativeDesktopBridge("projectChatWriteRuntime", {
+    projectId: String(projectId || "").trim(),
+    chatSessionId: String(chatSessionId || "").trim(),
+    username: String(username || "").trim(),
+    payload: payload && typeof payload === "object" ? payload : {},
+  });
+}
+
+export async function deleteNativeProjectChatSession(
+  projectId,
+  chatSessionId,
+  username,
+) {
+  requireNativeProjectChatStore();
+  return invokeNativeDesktopBridge("projectChatDeleteSession", {
+    projectId: String(projectId || "").trim(),
+    chatSessionId: String(chatSessionId || "").trim(),
+    username: String(username || "").trim(),
+  });
+}
+
+export async function searchNativeAgentSupervisionAnswers(
+  projectId,
+  username,
+  query = "",
+  limit = 50,
+) {
+  requireNativeProjectChatStore();
+  const result = await invokeNativeDesktopBridge(
+    "agentSupervisionSearchAnswers",
+    {
+      projectId: String(projectId || "").trim(),
+      username: String(username || "").trim(),
+      query: String(query || "").trim(),
+      limit: Math.max(1, Math.min(200, Number(limit || 50))),
+    },
+  );
+  return Array.isArray(result) ? result : [];
+}
+
+export async function getNativeAgentSupervisionAnswer(
+  projectId,
+  username,
+  answerId,
+) {
+  requireNativeProjectChatStore();
+  return invokeNativeDesktopBridge("agentSupervisionGetAnswer", {
+    projectId: String(projectId || "").trim(),
+    username: String(username || "").trim(),
+    answerId: String(answerId || "").trim(),
+  });
 }
 
 export async function invokeNativeDesktopBridge(method, payload = {}) {

@@ -27,6 +27,7 @@ const routes = [
       { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
       { path: 'desktop', redirect: '/workbench' },
       { path: 'ai/chat', component: () => import('../views/projects/ProjectChat.vue') },
+      { path: 'ai/supervision', component: () => import('../views/desktop/AgentSupervision.vue') },
       {
         path: 'ai/chat/settings',
         component: () => import('../views/projects/ProjectChat.vue'),
@@ -254,10 +255,11 @@ router.beforeEach(async (to, from) => {
   const bypassDesktopFallbacks = backendUnavailableForRoute || isDesktopOfflineMode()
   const allowOfflineDesktopShell =
     skipStartupStatusCheck && (normalizedPath === '/workbench' || isEmbeddedDesktopRoute(to))
-  const allowOfflineDesktopChat =
-    normalizedPath.startsWith('/ai/chat') && hasOfflineDesktopChatEntry()
+  const allowOfflineDesktopLocalApp =
+    (normalizedPath.startsWith('/ai/chat') || normalizedPath.startsWith('/ai/supervision'))
+    && hasOfflineDesktopChatEntry()
 
-  if (!token && !isPublic && !allowOfflineDesktopShell && !allowOfflineDesktopChat) {
+  if (!token && !isPublic && !allowOfflineDesktopShell && !allowOfflineDesktopLocalApp) {
     return '/login'
   }
 
@@ -275,6 +277,7 @@ router.beforeEach(async (to, from) => {
     !isChatSettingsRoutePath(to.path) &&
     to.path.startsWith('/') &&
     to.path !== '/ai/chat'
+    && to.path !== '/ai/supervision'
     && to.path !== '/workbench'
   ) {
     const rewritten = resolveSettingsAwarePath(from.path, to.path, to.path)

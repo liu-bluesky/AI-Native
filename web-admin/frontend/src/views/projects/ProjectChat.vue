@@ -1390,6 +1390,15 @@
                         >
                           回答 ID：{{ messageAnswerId(item) }}
                         </button>
+                        <button
+                          v-if="messageAnswerId(item)"
+                          type="button"
+                          class="message-supervision-link"
+                          title="查看该回答的本地执行链路"
+                          @click="openMessageSupervision(item)"
+                        >
+                          查看执行监管
+                        </button>
                         <span
                           v-if="messageAgentRuntimeDurationLabel(item)"
                           class="message-runtime-duration"
@@ -13413,25 +13422,30 @@ function resolvePendingRequestRow(pending) {
   return rows[Number(pending.assistantIndex ?? -1)] || null;
 }
 
-function readPersistedChatRuntime(projectId, chatSessionId) {
+async function readPersistedChatRuntime(projectId, chatSessionId) {
   return readLocalPersistedChatRuntime(projectId, chatSessionId);
 }
 
 function writePersistedChatRuntime(projectId, chatSessionId, payload) {
-  writeLocalPersistedChatRuntime(projectId, chatSessionId, payload);
+  void writeLocalPersistedChatRuntime(projectId, chatSessionId, payload).catch(
+    (error) => console.error("persist desktop chat runtime failed", error),
+  );
 }
 
-function clearPersistedChatRuntime(projectId, chatSessionId = "") {
+async function clearPersistedChatRuntime(projectId, chatSessionId = "") {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
-  if (!normalizedProjectId) return;
-  clearLocalPersistedChatRuntime(normalizedProjectId, normalizedChatSessionId);
+  if (!normalizedProjectId || !normalizedChatSessionId) return false;
+  return clearLocalPersistedChatRuntime(
+    normalizedProjectId,
+    normalizedChatSessionId,
+  );
 }
 
 async function fetchPersistedChatRuntime(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
-  const localPayload = readPersistedChatRuntime(
+  const localPayload = await readPersistedChatRuntime(
     normalizedProjectId,
     normalizedChatSessionId,
   );
@@ -22366,6 +22380,27 @@ async function copyMessageAnswerId(item) {
   }
 }
 
+function openMessageSupervision(item) {
+  const answerId = messageAnswerId(item);
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!answerId || !projectId) return;
+  void openRouteInDesktop(
+    router,
+    {
+      path: "/ai/supervision",
+      query: {
+        project_id: projectId,
+        answer_id: answerId,
+      },
+    },
+    {
+      mode: "new-window",
+      appId: "agent-supervision",
+      title: "智能体监管",
+    },
+  );
+}
+
 async function writeClipboardText(text) {
   const value = String(text || "");
   if (!value.trim()) {
@@ -22792,18 +22827,6 @@ function applyDeleteTargetLocally(target) {
   if (!Number.isInteger(sliceIndex) || sliceIndex < 0) return;
   messages.value = messages.value.slice(0, sliceIndex);
   chatHistoryLoadedCount.value = messages.value.length;
-}
-
-function isChatHistoryTruncateNotFound(err) {
-  if (Number(err?.status || 0) !== 404) return false;
-  const detail = String(err?.detail || err?.message || "")
-    .trim()
-    .toLowerCase();
-  return (
-    !detail ||
-    detail.includes("not found") ||
-    detail.includes("message not found")
-  );
 }
 
 function buildDeleteSuccessText(item) {
@@ -26779,7 +26802,9 @@ function setProjectChatSessionsCache(projectId, sessions) {
     ...(projectChatSessionsById.value || {}),
     [normalizedProjectId]: normalizedSessions,
   };
-  writeLocalChatSessions(normalizedProjectId, normalizedSessions);
+  void writeLocalChatSessions(normalizedProjectId, normalizedSessions).catch(
+    (error) => console.error("persist desktop chat sessions failed", error),
+  );
 }
 
 function syncLocalChatSessionMetadata(projectId, chatSessionId, rows) {
@@ -26789,7 +26814,7 @@ function syncLocalChatSessionMetadata(projectId, chatSessionId, rows) {
   const sourceSessions =
     normalizedProjectId === String(selectedProjectId.value || "").trim()
       ? chatSessions.value
-      : readLocalChatSessions(normalizedProjectId);
+      : projectChatSessionsById.value?.[normalizedProjectId] || [];
   const current = (sourceSessions || []).find(
     (item) => String(item?.id || "").trim() === normalizedSessionId,
   );
@@ -26843,7 +26868,7 @@ async function loadProjectSessionsForSidebar(projectId, options = {}) {
     return projectChatSessionsById.value[normalizedProjectId];
   }
   const sessions = normalizeVisibleChatSessions(
-    readLocalChatSessions(normalizedProjectId),
+    await readLocalChatSessions(normalizedProjectId),
   );
   setProjectChatSessionsCache(normalizedProjectId, sessions);
   return sessions;
@@ -26905,28 +26930,7 @@ async function fetchChatSessions(
     const remembered =
       options.useRemembered === false ? "" : restoreChatSession(projectId);
     const preferred = String(preferredSessionId || "").trim() || remembered;
-    const storedSessions = readLocalChatSessions(projectId);
-    if (!storedSessions.length && preferred) {
-      const legacyRuntime = readPersistedChatRuntime(projectId, preferred);
-      if (legacyRuntime) {
-        const messageRows = Array.isArray(legacyRuntime.messages)
-          ? legacyRuntime.messages
-          : [];
-        const lastMessage = [...messageRows]
-          .reverse()
-          .find((item) => String(item?.content || "").trim());
-        storedSessions.push({
-          id: preferred,
-          title: "本地历史会话",
-          preview: String(lastMessage?.content || "").trim().slice(0, 120),
-          message_count: messageRows.length,
-          source: "desktop_local_storage_migration",
-          created_at: String(legacyRuntime.updated_at || ""),
-          updated_at: String(legacyRuntime.updated_at || ""),
-          last_message_at: String(legacyRuntime.updated_at || ""),
-        });
-      }
-    }
+    const storedSessions = await readLocalChatSessions(projectId);
     chatSessions.value = normalizeVisibleChatSessions(storedSessions);
     setProjectChatSessionsCache(projectId, chatSessions.value);
     const excludedSessionIds = new Set(
@@ -26980,7 +26984,7 @@ async function refreshChatSessionListMetadata(projectId) {
     return;
   }
   const nextSessions = normalizeVisibleChatSessions(
-    readLocalChatSessions(normalizedProjectId),
+    await readLocalChatSessions(normalizedProjectId),
   );
   chatSessions.value = nextSessions;
   setProjectChatSessionsCache(normalizedProjectId, nextSessions);
@@ -27070,16 +27074,19 @@ async function fetchChatHistory(
   const previousScrollHeight = Number(container?.scrollHeight || 0);
   const previousScrollTop = Number(container?.scrollTop || 0);
   try {
-    const runtimePayload = append
-      ? null
-      : await fetchPersistedChatRuntime(projectId, normalizedSessionId);
+    const runtimePayload = await fetchPersistedChatRuntime(
+      projectId,
+      normalizedSessionId,
+    );
     const persistedRows = Array.isArray(runtimePayload?.messages)
       ? runtimePayload.messages
       : [];
-    const historyRows = append
-      ? persistedRows.slice(Math.max(0, persistedRows.length - offset - limit))
-      : [];
-    chatHistoryReachedEnd.value = true;
+    const historyEnd = append
+      ? Math.max(0, persistedRows.length - offset)
+      : persistedRows.length;
+    const historyStart = Math.max(0, historyEnd - limit);
+    const historyRows = persistedRows.slice(historyStart, historyEnd);
+    chatHistoryReachedEnd.value = historyStart === 0;
     if (append) {
       messages.value = [...historyRows, ...messages.value];
     } else {
@@ -27495,7 +27502,7 @@ async function deleteChatSession(payload) {
     } else {
       removeProjectChatSessionCacheItem(projectId, chatSessionId);
     }
-    clearPersistedChatRuntime(projectId, chatSessionId);
+    await clearPersistedChatRuntime(projectId, chatSessionId);
     forgetChatSessionMessages(projectId, chatSessionId);
     const isCurrentSession = isSelectedProject && currentChatSessionId.value === chatSessionId;
     if (isCurrentSession) {
@@ -27556,7 +27563,7 @@ async function clearMessages() {
       (item) => item.id !== chatSessionId,
     );
     setProjectChatSessionsCache(projectId, chatSessions.value);
-    clearPersistedChatRuntime(projectId, chatSessionId);
+    await clearPersistedChatRuntime(projectId, chatSessionId);
     forgetChatSessionMessages(projectId, chatSessionId);
     clearChatSessionMemory(projectId);
     clearTaskTreeSessionMemory(projectId);

@@ -1,11 +1,13 @@
 import { getStoredAuthProfile } from "@/utils/auth-storage.js";
 import {
   hasNativeDesktopBridge,
+  listNativeProjectChatSessions,
   readNativeGlobalBotConnectorConfigFile,
   readNativeGlobalMcpConfigFile,
   readNativeGlobalWebToolsConfigFile,
   readNativeProjectMcpConfigFile,
   readNativeProjectWebToolsConfigFile,
+  replaceNativeProjectChatSessions,
   writeNativeGlobalBotConnectorConfigFile,
   writeNativeGlobalMcpConfigFile,
   writeNativeGlobalWebToolsConfigFile,
@@ -24,8 +26,8 @@ import {
 
 const LOCAL_CONNECTOR_STORAGE_PREFIX = "project_chat.local_connector";
 const GUIDE_TOUR_STORAGE_PREFIX = "project_chat.guide_tour";
-const LOCAL_CHAT_SESSIONS_STORAGE_PREFIX = "project_chat.local_sessions.v1";
 const PROJECT_SELECTION_STORAGE_KEY = "project_id";
+const chatSessionWriteQueues = new Map();
 export const DEFAULT_LOCAL_MCP_CONFIG = {
   mcpServers: {
     "prompts.chat": {
@@ -76,42 +78,34 @@ function chatSessionStorageKey(projectId) {
   return normalized ? `project_chat_session_${normalized}` : "";
 }
 
-function localChatSessionsStorageKey(projectId) {
+export async function readLocalChatSessions(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
-  if (!normalizedProjectId) return "";
-  return [
-    LOCAL_CHAT_SESSIONS_STORAGE_PREFIX,
-    resolveCurrentUsername(),
+  if (!normalizedProjectId) return [];
+  await (chatSessionWriteQueues.get(normalizedProjectId) || Promise.resolve());
+  return listNativeProjectChatSessions(
     normalizedProjectId,
-  ].join(".");
+    resolveCurrentUsername(),
+  );
 }
 
-export function readLocalChatSessions(projectId) {
-  if (typeof window === "undefined") return [];
-  const key = localChatSessionsStorageKey(projectId);
-  if (!key) return [];
-  try {
-    const parsed = JSON.parse(localStorage.getItem(key) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((item) => item?.id) : [];
-  } catch {
-    return [];
-  }
-}
-
-export function writeLocalChatSessions(projectId, sessions) {
-  if (typeof window === "undefined") return;
-  const key = localChatSessionsStorageKey(projectId);
-  if (!key) return;
+export async function writeLocalChatSessions(projectId, sessions) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return 0;
   const rows = Array.isArray(sessions) ? sessions.filter((item) => item?.id) : [];
-  try {
-    if (!rows.length) {
-      localStorage.removeItem(key);
-      return;
+  const previous = chatSessionWriteQueues.get(normalizedProjectId) || Promise.resolve();
+  const next = previous.catch(() => undefined).then(() =>
+    replaceNativeProjectChatSessions(
+      normalizedProjectId,
+      resolveCurrentUsername(),
+      rows,
+    ),
+  );
+  chatSessionWriteQueues.set(normalizedProjectId, next);
+  return next.finally(() => {
+    if (chatSessionWriteQueues.get(normalizedProjectId) === next) {
+      chatSessionWriteQueues.delete(normalizedProjectId);
     }
-    localStorage.setItem(key, JSON.stringify(rows));
-  } catch (error) {
-    console.warn("persist local chat sessions failed", error);
-  }
+  });
 }
 
 function taskTreeSessionStorageKey(projectId) {

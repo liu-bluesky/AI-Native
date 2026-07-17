@@ -379,16 +379,16 @@ assert.match(
   "ProjectChat must bind the composer pause event to stopGeneration",
 );
 
-assert.match(
+assert.doesNotMatch(
   source,
-  /function isChatHistoryTruncateNotFound\(err\)[\s\S]*?Number\(err\?\.status \|\| 0\) !== 404[\s\S]*?message not found/,
-  "message delete must identify truncate 404 responses as a local-only delete case",
+  /isChatHistoryTruncateNotFound|chat\/history.*truncate/,
+  "message delete must not retain a server-history compatibility branch",
 );
 
 assert.match(
   source,
-  /catch \(err\) \{[\s\S]*?if \(isChatHistoryTruncateNotFound\(err\)\) \{[\s\S]*?applyDeleteTargetLocally\(target\);[\s\S]*?clearPersistedChatRuntime\(projectId, chatSessionId\);[\s\S]*?rememberCurrentChatSessionMessages\(\);[\s\S]*?ElMessage\.success\(buildDeleteSuccessText\(item\)\);[\s\S]*?return;/,
-  "message delete must remove locally paused turns when the server has no persisted message to truncate",
+  /async function deleteMessageAt\(messageIndex\)[\s\S]*?applyDeleteTargetLocally\(target\);[\s\S]*?rememberCurrentChatSessionMessages\(\);[\s\S]*?persistCurrentChatRuntimeNow\(projectId, chatSessionId\);[\s\S]*?ElMessage\.success\(buildDeleteSuccessText\(item\)\);/,
+  "message delete must update the desktop-local runtime directly",
 );
 
 if (/fn cancel_external_agent_session\(/.test(tauriSource)) {

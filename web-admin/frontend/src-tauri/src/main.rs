@@ -12,6 +12,7 @@ use tauri::{Emitter, Manager};
 
 mod bot;
 mod liuagent_core;
+mod project_chat_store;
 
 #[derive(Debug, Serialize)]
 struct PickPathResult {
@@ -1782,7 +1783,14 @@ fn main() {
             liuagent_ack_runtime_outbox,
             liuagent_save_offline_cache,
             liuagent_load_offline_cache,
-            liuagent_cleanup_offline_cache
+            liuagent_cleanup_offline_cache,
+            project_chat_store::project_chat_list_sessions,
+            project_chat_store::project_chat_replace_sessions,
+            project_chat_store::project_chat_read_runtime,
+            project_chat_store::project_chat_write_runtime,
+            project_chat_store::project_chat_delete_session,
+            project_chat_store::agent_supervision_search_answers,
+            project_chat_store::agent_supervision_get_answer
         ])
         .setup(|app| {
             bot::feishu::start_persisted_local_listeners(app.handle().clone());
