@@ -516,7 +516,7 @@ function goRuleDetail(ruleId) {
 function goFeedbackDetail(id) {
   const value = String(id || '').trim()
   if (!value) return
-  router.push(`/feedback/${employeeId.value}/${value}`)
+  router.push(`/agent-feedback/${employeeId.value}/${value}`)
 }
 
 async function fetchDetail() {

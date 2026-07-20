@@ -27,6 +27,7 @@ from stores.factory import (
     system_config_store,
     task_tree_evolution_store,
     usage_store,
+    user_feedback_store,
     user_store,
     work_log_template_store,
     work_session_store,

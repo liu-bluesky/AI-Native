@@ -21,6 +21,7 @@ from stores.json.system_config_store import SystemConfigStore
 from stores.json.task_tree_evolution_store import TaskTreeEvolutionStore
 from stores.json.usage_store import UsageStore
 from stores.json.user_store import UserStore
+from stores.json.user_feedback_store import UserFeedbackStore
 from stores.json.work_session_store import WorkSessionStore
 from stores.json.work_log_template_store import WorkLogTemplateStore
 
@@ -46,6 +47,7 @@ __all__ = [
     "TaskTreeEvolutionStore",
     "UsageStore",
     "UserStore",
+    "UserFeedbackStore",
     "WorkSessionStore",
     "WorkLogTemplateStore",
 ]

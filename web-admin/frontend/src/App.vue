@@ -219,12 +219,19 @@ function handleAuthStorageChange(event) {
   redirectToLoginIfNeeded()
 }
 
+function handleGlobalFeedbackShortcut(event) {
+  if (!event.altKey || !event.shiftKey || String(event.key).toLowerCase() !== 'f') return
+  event.preventDefault()
+  if (getStoredToken()) router.push('/feedback?mode=create&source=global_shortcut')
+}
+
 onMounted(async () => {
   await router.isReady()
 
   const currentPath = router.currentRoute.value.path
   const publicPaths = AUTH_PUBLIC_PATHS
   window.addEventListener('storage', handleAuthStorageChange)
+  window.addEventListener('keydown', handleGlobalFeedbackShortcut)
 
   try {
     const { initialized, setup_required: setupRequired } = await api.get('/init/status')
@@ -297,6 +304,7 @@ onBeforeUnmount(() => {
   }
   stopOnlineHeartbeat()
   window.removeEventListener('storage', handleAuthStorageChange)
+  window.removeEventListener('keydown', handleGlobalFeedbackShortcut)
   window.removeEventListener('local-bot-connectors-config-updated', scheduleLocalBotListenerSync)
 })
 

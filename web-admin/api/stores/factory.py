@@ -91,6 +91,21 @@ def _create_changelog_entry_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_user_feedback_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import UserFeedbackStore
+
+        return UserFeedbackStore(_data_dir())
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.user_feedback_store import UserFeedbackStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return UserFeedbackStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_department_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -408,6 +423,7 @@ def _create_task_tree_evolution_store() -> Any:
 
 user_store = _StoreProxy(_create_user_store)
 changelog_entry_store = _StoreProxy(_create_changelog_entry_store)
+user_feedback_store = _StoreProxy(_create_user_feedback_store)
 department_store = _StoreProxy(_create_department_store)
 role_store = _StoreProxy(_create_role_store)
 employee_store = _StoreProxy(_create_employee_store)
@@ -434,6 +450,7 @@ task_tree_evolution_store = _StoreProxy(_create_task_tree_evolution_store)
 __all__ = [
     "user_store",
     "changelog_entry_store",
+    "user_feedback_store",
     "department_store",
     "role_store",
     "employee_store",

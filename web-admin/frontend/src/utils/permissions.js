@@ -8,6 +8,8 @@ const permissionStateVersion = ref(0)
 
 const PATH_PERMISSION_MAP = [
   { prefix: '/ai/chat', permission: 'menu.ai.chat' },
+  { prefix: '/admin/feedback', permission: 'menu.feedback.admin' },
+  { prefix: '/agent-feedback', permission: 'menu.employees' },
   { prefix: '/user/settings', permission: '' },
   { prefix: '/work-logs', permission: 'menu.projects' },
   { prefix: '/users', permission: 'menu.users' },
@@ -40,6 +42,7 @@ const LEGACY_USER_PERMISSION_KEYS = new Set([
   'menu.employees.create',
   'menu.system.changelog',
   'menu.system.work_sessions',
+  'menu.feedback',
   'button.project.chat',
   'button.changelog.create',
   'button.changelog.update',
@@ -49,6 +52,7 @@ const LEGACY_USER_PERMISSION_KEYS = new Set([
 ])
 const FALLBACK_PATHS = [
   '/ai/chat',
+  '/feedback',
   '/user/settings',
   '/agent-templates',
   '/employees',

@@ -125,6 +125,49 @@ class ChangelogEntryUpdateReq(BaseModel):
     sort_order: int | None = None
 
 
+class UserFeedbackCreateReq(BaseModel):
+    category: str
+    subcategory: str = ""
+    title: str
+    description: str
+    expected_result: str = ""
+    impact_level: str = "general"
+    frequency: str = "unknown"
+    source_entry: str = "global_menu"
+    project_id: str = ""
+    context: dict[str, Any] = Field(default_factory=dict)
+    ai_evidence: dict[str, Any] = Field(default_factory=dict)
+    diagnostic_consent: dict[str, bool] = Field(default_factory=dict)
+
+
+class UserFeedbackCommentReq(BaseModel):
+    content: str
+
+
+class UserFeedbackAssignReq(BaseModel):
+    assignee_id: str = ""
+
+
+class UserFeedbackTransitionReq(BaseModel):
+    status: str
+    priority: str = ""
+
+
+class UserFeedbackReplyReq(BaseModel):
+    content: str
+
+
+class ProjectAnswerBugFeedbackReq(BaseModel):
+    answer_id: str = Field(min_length=1, max_length=160)
+    assistant_message_id: str = Field(min_length=1, max_length=160)
+    chat_session_id: str = Field(min_length=1, max_length=160)
+    answer_snapshot: str = Field(min_length=1, max_length=12000)
+    description: str = ""
+    expected_result: str = ""
+    supervision_snapshot: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
 class EmployeeCreateReq(BaseModel):
     name: str
     description: str = ""

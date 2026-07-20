@@ -20,7 +20,7 @@
         v-if="emp.feedback_upgrade_enabled"
         text
         type="primary"
-        @click="$router.push(`/feedback/${route.params.id}`)"
+        @click="$router.push(`/agent-feedback/${route.params.id}`)"
       >
         反馈
       </el-button>

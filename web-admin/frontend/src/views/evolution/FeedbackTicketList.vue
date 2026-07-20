@@ -788,7 +788,7 @@ function openBatchAnalyzePage() {
     return
   }
   router.push({
-    path: `/feedback/${employeeId.value}/batch-analyze`,
+    path: `/agent-feedback/${employeeId.value}/batch-analyze`,
     query: {
       feedback_ids: selectedFeedbackIds.value.join(','),
     },
@@ -824,7 +824,7 @@ async function submitAnalyze() {
 }
 
 function openDetail(feedbackId) {
-  router.push(`/feedback/${employeeId.value}/${feedbackId}`)
+  router.push(`/agent-feedback/${employeeId.value}/${feedbackId}`)
 }
 
 function onBugSelectionChange(rows) {

@@ -365,7 +365,7 @@ function openCandidateDetail() {
       || '',
   ).trim()
   if (!firstId) return
-  router.push(`/feedback/${employeeId.value}/${firstId}`)
+  router.push(`/agent-feedback/${employeeId.value}/${firstId}`)
 }
 
 onMounted(async () => {

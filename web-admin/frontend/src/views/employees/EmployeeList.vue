@@ -931,7 +931,7 @@ function handleEmployeeAction(row, actionKey) {
       router.push(`/employees/${row.id}/usage`);
       break;
     case "feedback":
-      router.push(`/feedback/${row.id}`);
+      router.push(`/agent-feedback/${row.id}`);
       break;
     case "enable-feedback":
       void enableFeedbackUpgrade(row);

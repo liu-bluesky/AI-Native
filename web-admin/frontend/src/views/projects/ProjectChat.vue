@@ -1399,6 +1399,15 @@
                         >
                           查看执行监管
                         </button>
+                        <button
+                          v-if="messageAnswerId(item)"
+                          type="button"
+                          class="message-supervision-link"
+                          title="基于回答 ID 和执行监管信息提交 Bug 反馈"
+                          @click="replyBugFeedbackDialogRef?.open({ item, answerId: messageAnswerId(item), chatSessionId: currentChatSessionId })"
+                        >
+                          Bug 反馈
+                        </button>
                         <span
                           v-if="messageAgentRuntimeDurationLabel(item)"
                           class="message-runtime-duration"
@@ -1802,6 +1811,11 @@
     :title="codePreviewTitle"
     :srcdoc="codePreviewSrcdoc"
     :error="codePreviewError"
+  />
+
+  <ReplyBugFeedbackDialog
+    ref="replyBugFeedbackDialogRef"
+    :project-id="selectedProjectId"
   />
 
   <el-dialog
@@ -2764,6 +2778,7 @@ import ProjectConversationSidebar from "@/modules/project-chat/components/sessio
 import ChatTaskTreePanel from "@/modules/project-chat/components/task-tree/ChatTaskTreePanel.vue";
 import TerminalApprovalDialog from "@/modules/project-chat/components/terminal/TerminalApprovalDialog.vue";
 import CodePreviewDialog from "@/modules/project-chat/components/code-preview/CodePreviewDialog.vue";
+import ReplyBugFeedbackDialog from "@/modules/project-chat/components/feedback/ReplyBugFeedbackDialog.vue";
 import SkillResourceDialog from "@/modules/project-chat/components/skill-resource/SkillResourceDialog.vue";
 import { useProjectChatComposer } from "@/modules/project-chat/composables/useProjectChatComposer.js";
 import { useProjectChatPendingRequests } from "@/modules/project-chat/composables/useProjectChatPendingRequests.js";
@@ -3286,6 +3301,7 @@ const codePreviewVisible = ref(false);
 const codePreviewTitle = ref("代码预览");
 const codePreviewSrcdoc = ref("");
 const codePreviewError = ref("");
+const replyBugFeedbackDialogRef = ref(null);
 const aiContextDialogVisible = ref(false);
 const aiContextDialogLoading = ref(false);
 const aiContextDialogMessageId = ref("");
