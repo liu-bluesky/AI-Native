@@ -20012,16 +20012,22 @@ def test_project_chat_providers_can_skip_runtime_external_tools(tmp_path, monkey
     )
     monkeypatch.setattr(projects_router, "_build_chat_mcp_modules", lambda project_id: {})
     calls = []
+    threadpool_calls = []
 
     def fake_list_project_external_tools_runtime(project_id):
         calls.append(project_id)
         return [{"tool_name": "external__slow__tool"}]
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        threadpool_calls.append((func, args, kwargs))
+        return func(*args, **kwargs)
 
     monkeypatch.setattr(
         dynamic_mcp_runtime,
         "list_project_external_tools_runtime",
         fake_list_project_external_tools_runtime,
     )
+    monkeypatch.setattr(projects_router, "run_in_threadpool", fake_run_in_threadpool)
 
     response = client.get(
         "/api/projects/proj-1/chat/providers?include_runtime_external_tools=false"
@@ -20030,6 +20036,7 @@ def test_project_chat_providers_can_skip_runtime_external_tools(tmp_path, monkey
     assert response.status_code == 200
     assert response.json()["runtime_external_tools"] == []
     assert calls == []
+    assert threadpool_calls == []
 
     response = client.get("/api/projects/proj-1/chat/providers")
 
@@ -20038,6 +20045,9 @@ def test_project_chat_providers_can_skip_runtime_external_tools(tmp_path, monkey
         {"tool_name": "external__slow__tool"}
     ]
     assert calls == ["proj-1"]
+    assert threadpool_calls == [
+        (fake_list_project_external_tools_runtime, ("proj-1",), {})
+    ]
 
 
 @pytest.mark.asyncio

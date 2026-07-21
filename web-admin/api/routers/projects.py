@@ -17162,7 +17162,7 @@ async def list_project_chat_providers(
     persisted_chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
     chat_settings = dict(persisted_chat_settings)
     runtime_external_tools = (
-        list_project_external_tools_runtime(project_id)
+        await run_in_threadpool(list_project_external_tools_runtime, project_id)
         if include_runtime_external_tools
         else []
     )

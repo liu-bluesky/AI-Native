@@ -147,7 +147,22 @@
             </div>
 
             <el-form-item v-if="activeComponent.notify.enabled" label="通知模板">
+              <div class="deploy-settings-panel__template-parameters">
+                <span>点击参数插入模板</span>
+                <div class="deploy-settings-panel__template-parameter-buttons">
+                  <el-button
+                    v-for="parameter in notifyTemplateParameters"
+                    :key="parameter.value"
+                    plain
+                    size="small"
+                    @click="insertNotifyTemplateParameter(parameter.value)"
+                  >
+                    {{ parameter.label }} {{ parameter.value }}
+                  </el-button>
+                </div>
+              </div>
               <el-input
+                ref="notifyTemplateInput"
                 v-model="activeComponent.notify.template"
                 type="textarea"
                 :rows="2"
@@ -332,7 +347,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import ProjectWorkspaceBlock from "@/components/project-workspace/ProjectWorkspaceBlock.vue";
 import api from "@/utils/api.js";
@@ -359,6 +374,32 @@ const validation = ref(null);
 const form = ref(createDefaultSettings());
 const activeProfileId = ref("prod");
 const activeComponentId = ref("app");
+const notifyTemplateInput = ref(null);
+
+const notifyTemplateParameters = [
+  { label: "项目 ID", value: "{project_id}" },
+  { label: "项目名称", value: "{project_name}" },
+  { label: "环境 ID", value: "{profile}" },
+  { label: "环境名称", value: "{profile_name}" },
+  { label: "环境标识", value: "{environment}" },
+  { label: "部署单元 ID", value: "{component}" },
+  { label: "部署单元名称", value: "{component_name}" },
+  { label: "产物 ID", value: "{artifact_id}" },
+  { label: "产物名称", value: "{artifact_name}" },
+  { label: "产物类型", value: "{artifact_kind}" },
+  { label: "版本", value: "{version}" },
+  { label: "状态", value: "{status}" },
+  { label: "状态名称", value: "{status_label}" },
+  { label: "运行 ID", value: "{run_id}" },
+  { label: "执行阶段", value: "{stage}" },
+  { label: "日志摘要", value: "{log_excerpt}" },
+  { label: "部署发起时间", value: "{deploy_time}" },
+  { label: "部署成功时间", value: "{deployed_at}" },
+  { label: "通知平台", value: "{platform}" },
+  { label: "机器人 ID", value: "{connector_id}" },
+  { label: "群 ID", value: "{chat_id}" },
+  { label: "群名称", value: "{chat_name}" },
+];
 
 const activeProfile = computed(() =>
   form.value.profiles.find((item) => item.id === activeProfileId.value) || form.value.profiles[0] || null,
@@ -382,6 +423,21 @@ const firstValidationMessage = computed(() => validation.value?.issues?.[0]?.mes
 
 function defaultNotifyTemplate() {
   return "{project_name} {profile} 部署状态：{status_label}，产物：{artifact_name}，运行：{run_id}";
+}
+
+function insertNotifyTemplateParameter(parameter) {
+  if (!parameter || !activeComponent.value) return;
+  const currentTemplate = String(activeComponent.value.notify?.template || "");
+  const textarea = notifyTemplateInput.value?.textarea;
+  const selectionStart = Number.isInteger(textarea?.selectionStart) ? textarea.selectionStart : currentTemplate.length;
+  const selectionEnd = Number.isInteger(textarea?.selectionEnd) ? textarea.selectionEnd : selectionStart;
+  activeComponent.value.notify.template = `${currentTemplate.slice(0, selectionStart)}${parameter}${currentTemplate.slice(selectionEnd)}`;
+  nextTick(() => {
+    const nextTextarea = notifyTemplateInput.value?.textarea;
+    const cursorPosition = selectionStart + parameter.length;
+    nextTextarea?.focus();
+    nextTextarea?.setSelectionRange(cursorPosition, cursorPosition);
+  });
 }
 
 function safeId(value, fallback) {
@@ -911,6 +967,26 @@ onMounted(() => Promise.all([fetchFtpCredentials(), fetchNotifyOptions()]));
   background: var(--el-fill-color-extra-light);
 }
 
+.deploy-settings-panel__template-parameters {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 10px;
+  color: var(--el-text-color-secondary);
+}
+
+.deploy-settings-panel__template-parameter-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.deploy-settings-panel__template-parameter-buttons .el-button {
+  margin-left: 0;
+}
+
 .deploy-settings-panel__notify-target {
   margin-top: 12px;
   padding: 14px;
@@ -949,5 +1025,6 @@ onMounted(() => Promise.all([fetchFtpCredentials(), fetchNotifyOptions()]));
   .deploy-settings-panel__grid.three-columns {
     grid-template-columns: 1fr;
   }
+
 }
 </style>

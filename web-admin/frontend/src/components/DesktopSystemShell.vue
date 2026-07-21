@@ -1292,10 +1292,11 @@ onBeforeUnmount(() => {
 .desktop-system__launcher {
   position: absolute;
   top: 0;
-  left: 0;
+  left: 50%;
   z-index: 20;
-  width: min(380px, calc(100vw - 28px));
+  width: min(380px, calc(100% - 32px));
   max-height: calc(100vh - 132px);
+  box-sizing: border-box;
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -1306,6 +1307,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.74);
   box-shadow: 0 22px 58px rgba(15, 23, 42, 0.08);
   backdrop-filter: blur(20px);
+  transform: translateX(-50%);
 }
 
 .desktop-system__launcher-head {
@@ -2044,7 +2046,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1200px) {
   .desktop-system__launcher {
-    width: min(100%, calc(100vw - 20px));
+    width: min(380px, calc(100% - 20px));
   }
 }
 

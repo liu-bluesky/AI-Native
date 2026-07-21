@@ -8,7 +8,7 @@ import { buildExecutionFlow } from "../src/modules/agent-supervision/utils/execu
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const readSource = (path) => readFileSync(resolve(scriptDir, path), "utf8");
 
-const sqliteStoreSource = readSource("../src-tauri/src/project_chat_store.rs");
+const jsonStoreSource = readSource("../src-tauri/src/project_chat_store.rs");
 const tauriMainSource = readSource("../src-tauri/src/main.rs");
 const nativeBridgeSource = readSource("../src/utils/native-desktop-bridge.js");
 const serviceSource = readSource(
@@ -26,33 +26,20 @@ const routerSource = readSource("../src/router/index.js");
 const desktopShellSource = readSource("../src/utils/desktop-shell.js");
 const projectChatSource = readSource("../src/views/projects/ProjectChat.vue");
 
-for (const table of [
-  "agent_supervision_answers",
-  "agent_supervision_runs",
-  "agent_supervision_steps",
-  "agent_supervision_edges",
-]) {
-  assert.match(
-    sqliteStoreSource,
-    new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`),
-    `SQLite supervision schema must contain ${table}`,
-  );
-}
-
 assert.match(
-  sqliteStoreSource,
-  /write_supervision_projection\s*\(/,
-  "runtime writes must create the supervision projection",
+  jsonStoreSource,
+  /build_supervision_details\s*\(/,
+  "supervision must be derived directly from runtime JSON",
 );
 assert.match(
-  sqliteStoreSource,
+  jsonStoreSource,
   /agent_supervision_search_answers/,
-  "SQLite store must expose answer search",
+  "JSON store must expose answer search",
 );
 assert.match(
-  sqliteStoreSource,
+  jsonStoreSource,
   /agent_supervision_get_answer/,
-  "SQLite store must expose answer details",
+  "JSON store must expose answer details",
 );
 assert.match(
   tauriMainSource,
@@ -78,12 +65,12 @@ assert.match(
 assert.match(
   serviceSource,
   /searchNativeAgentSupervisionAnswers/,
-  "supervision service must query the native SQLite bridge",
+  "supervision service must query the native JSON bridge",
 );
 assert.match(
   serviceSource,
   /getNativeAgentSupervisionAnswer/,
-  "supervision service must read details from the native SQLite bridge",
+  "supervision service must read details from the native JSON bridge",
 );
 assert.doesNotMatch(
   `${serviceSource}\n${pageSource}`,
@@ -164,15 +151,45 @@ assert.match(
   /请输入回答 ID[\s\S]*本机监管库中没有找到该回答 ID/,
   "supervision search must require an answer ID and report exact misses",
 );
-assert.match(
-  sqliteStoreSource,
-  /model_input_tokens[\s\S]*model_output_tokens[\s\S]*model_total_tokens[\s\S]*model_token_source/,
-  "SQLite supervision steps must store provider token usage separately from estimates",
+const runSearchSource = pageSource.match(
+  /async function runSearch\(\) \{[\s\S]*?\n\}/,
+)?.[0] || "";
+assert.ok(runSearchSource, "supervision page must define runSearch");
+assert.ok(
+  runSearchSource.indexOf("getAgentSupervisionAnswer(") >= 0
+    && runSearchSource.indexOf("getAgentSupervisionAnswer(")
+      < runSearchSource.indexOf("searchAgentSupervisionAnswers("),
+  "complete answer IDs must be resolved directly before fuzzy index search",
+);
+const supervisionSearchSource = jsonStoreSource.match(
+  /pub fn agent_supervision_search_answers\([\s\S]*?\n\}/,
+)?.[0] || "";
+assert.ok(
+  supervisionSearchSource.includes("load_json_envelopes"),
+  "supervision search must read the canonical JSON envelopes",
+);
+const chatSessionListSource = jsonStoreSource.match(
+  /pub fn project_chat_list_sessions\([\s\S]*?\n\}/,
+)?.[0] || "";
+assert.ok(chatSessionListSource, "JSON store must define project chat session listing");
+assert.ok(
+  chatSessionListSource.includes("merge_session_with_runtime"),
+  "chat session listing must derive metadata from the same runtime JSON",
 );
 assert.match(
-  sqliteStoreSource,
-  /model_name[\s\S]*provider_id[\s\S]*provider_name[\s\S]*agent_supervision_steps/,
-  "SQLite supervision steps must persist structured model identity",
+  jsonStoreSource,
+  /ErrorKind::NotFound[\s\S]*return Ok\(None\)/,
+  "missing historical requirement records must not block supervision parsing",
+);
+assert.match(
+  jsonStoreSource,
+  /model_input_tokens[\s\S]*model_output_tokens[\s\S]*model_total_tokens[\s\S]*model_token_source/,
+  "JSON-derived supervision steps must expose provider token usage separately from estimates",
+);
+assert.match(
+  jsonStoreSource,
+  /model_name[\s\S]*provider_id[\s\S]*provider_name[\s\S]*supervision_step_json/,
+  "JSON-derived supervision steps must expose structured model identity",
 );
 assert.match(
   pageSource,
@@ -276,19 +293,19 @@ assert.match(
 );
 assert.match(pageSource, /上下文 Token/, "cycle details must label the context token estimate");
 assert.match(
-  sqliteStoreSource,
+  jsonStoreSource,
   /context_snapshot_json[\s\S]*context_message_count[\s\S]*context_input_tokens[\s\S]*model_step_index/,
-  "SQLite supervision steps must persist per-cycle context snapshots",
+  "JSON-derived supervision steps must expose per-cycle context snapshots",
 );
 assert.match(
   projectChatSource,
   /agentExecutionCycles[\s\S]*contextSnapshot[\s\S]*toolCallIds/,
   "project chat must retain model cycles with their own context snapshots",
 );
-assert.match(
-  sqliteStoreSource,
-  /repair_supervision_projection_for_project/,
-  "supervision queries must repair missing projections from SQLite runtime snapshots",
+assert.doesNotMatch(
+  jsonStoreSource,
+  /agent_supervision_answers|agent_supervision_runs|agent_supervision_steps|agent_supervision_edges/,
+  "supervision must not maintain duplicate SQLite projection tables",
 );
 assert.match(
   projectChatSource,

@@ -173,7 +173,7 @@ export function hasNativeDesktopBridge() {
 
 function requireNativeProjectChatStore() {
   if (!hasNativeDesktopBridge()) {
-    throw new Error("桌面聊天 SQLite 存储不可用");
+    throw new Error("桌面聊天本地 JSON 存储不可用");
   }
 }
 

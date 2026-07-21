@@ -539,6 +539,25 @@ async function runSearch() {
   errorMessage.value = "";
   try {
     await loadProviderNames(normalizedProjectId);
+    const directDetail = await getAgentSupervisionAnswer(
+      normalizedProjectId,
+      normalizedAnswerId,
+    );
+    if (directDetail) {
+      detail.value = directDetail;
+      selectedStep.value = directDetail.steps?.[0] || null;
+      await prepareExecutionFlow();
+      await router.replace({
+        path: "/ai/supervision",
+        query: {
+          project_id: normalizedProjectId,
+          answer_id: directDetail.answer_id || normalizedAnswerId,
+        },
+      });
+      await nextTick();
+      await focusInitialFlow();
+      return;
+    }
     const results = await searchAgentSupervisionAnswers(
       normalizedProjectId,
       normalizedAnswerId,

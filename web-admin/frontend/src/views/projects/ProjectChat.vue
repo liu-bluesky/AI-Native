@@ -3256,7 +3256,7 @@ const mcpModules = ref({
   },
 });
 const runtimeExternalTools = ref([]);
-let runtimeExternalToolsRefreshKey = "";
+const runtimeExternalToolsRefreshingProjectIds = new Set();
 const messages = ref([]);
 const activeComposerPlan = ref(null);
 const composerPlanExpanded = ref(true);
@@ -26374,14 +26374,13 @@ async function handleProjectCreated(event) {
 async function refreshRuntimeExternalToolsInBackground(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
-  const refreshKey = `${normalizedProjectId}:${Date.now()}`;
-  runtimeExternalToolsRefreshKey = refreshKey;
+  if (runtimeExternalToolsRefreshingProjectIds.has(normalizedProjectId)) return;
+  runtimeExternalToolsRefreshingProjectIds.add(normalizedProjectId);
   try {
     const data = await fetchProjectChatProviders(normalizedProjectId, {
       includeRuntimeExternalTools: true,
     });
     if (
-      runtimeExternalToolsRefreshKey !== refreshKey ||
       normalizedProjectId !== String(selectedProjectId.value || "").trim()
     ) {
       return;
@@ -26398,9 +26397,7 @@ async function refreshRuntimeExternalToolsInBackground(projectId) {
   } catch (err) {
     console.warn("后台刷新外部 MCP 工具失败，首屏保持可用", err);
   } finally {
-    if (runtimeExternalToolsRefreshKey === refreshKey) {
-      runtimeExternalToolsRefreshKey = "";
-    }
+    runtimeExternalToolsRefreshingProjectIds.delete(normalizedProjectId);
   }
 }
 
@@ -26899,7 +26896,7 @@ function normalizeVisibleChatSessions(rawSessions) {
     .filter((session) => !isEmptyManualChatSession(session));
 }
 
-function setProjectChatSessionsCache(projectId, sessions) {
+function setProjectChatSessionsMemoryCache(projectId, sessions) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
   const normalizedSessions = Array.isArray(sessions) ? [...sessions] : [];
@@ -26907,6 +26904,13 @@ function setProjectChatSessionsCache(projectId, sessions) {
     ...(projectChatSessionsById.value || {}),
     [normalizedProjectId]: normalizedSessions,
   };
+}
+
+function setProjectChatSessionsCache(projectId, sessions) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return;
+  const normalizedSessions = Array.isArray(sessions) ? [...sessions] : [];
+  setProjectChatSessionsMemoryCache(normalizedProjectId, normalizedSessions);
   void writeLocalChatSessions(normalizedProjectId, normalizedSessions).catch(
     (error) => console.error("persist desktop chat sessions failed", error),
   );
@@ -26963,7 +26967,7 @@ async function loadProjectSessionsForSidebar(projectId, options = {}) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return [];
   if (normalizedProjectId === String(selectedProjectId.value || "").trim()) {
-    setProjectChatSessionsCache(normalizedProjectId, chatSessions.value);
+    setProjectChatSessionsMemoryCache(normalizedProjectId, chatSessions.value);
     return chatSessions.value;
   }
   if (
@@ -26975,7 +26979,7 @@ async function loadProjectSessionsForSidebar(projectId, options = {}) {
   const sessions = normalizeVisibleChatSessions(
     await readLocalChatSessions(normalizedProjectId),
   );
-  setProjectChatSessionsCache(normalizedProjectId, sessions);
+  setProjectChatSessionsMemoryCache(normalizedProjectId, sessions);
   return sessions;
 }
 
@@ -27037,7 +27041,7 @@ async function fetchChatSessions(
     const preferred = String(preferredSessionId || "").trim() || remembered;
     const storedSessions = await readLocalChatSessions(projectId);
     chatSessions.value = normalizeVisibleChatSessions(storedSessions);
-    setProjectChatSessionsCache(projectId, chatSessions.value);
+    setProjectChatSessionsMemoryCache(projectId, chatSessions.value);
     const excludedSessionIds = new Set(
       (Array.isArray(options.excludeSessionIds)
         ? options.excludeSessionIds
@@ -27069,14 +27073,8 @@ async function fetchChatSessions(
     rememberChatSession(projectId, resolved);
     return resolved;
   } catch (err) {
-    chatSessions.value = [];
-    setProjectChatSessionsCache(projectId, []);
-    currentChatSessionId.value = "";
-    draftText.value = "";
-    uploadFiles.value = [];
-    chatHistoryLoadedCount.value = 0;
     ElMessage.error(err?.detail || err?.message || "加载会话列表失败");
-    return "";
+    return String(currentChatSessionId.value || "").trim();
   } finally {
     chatSessionsLoading.value = false;
   }
@@ -27092,7 +27090,7 @@ async function refreshChatSessionListMetadata(projectId) {
     await readLocalChatSessions(normalizedProjectId),
   );
   chatSessions.value = nextSessions;
-  setProjectChatSessionsCache(normalizedProjectId, nextSessions);
+  setProjectChatSessionsMemoryCache(normalizedProjectId, nextSessions);
   const currentId = String(currentChatSessionId.value || "").trim();
   if (
     currentId &&
@@ -31918,14 +31916,6 @@ onMounted(async () => {
   const locallySelectedProjectId = readSelectedProjectId();
   if (locallySelectedProjectId) {
     selectedProjectId.value = locallySelectedProjectId;
-    const localChatSessionId = await fetchChatSessions(
-      locallySelectedProjectId,
-      restoreChatSession(locallySelectedProjectId),
-    );
-    if (localChatSessionId) {
-      await fetchChatHistory(locallySelectedProjectId, localChatSessionId);
-    }
-    loading.value = false;
   }
   try {
     await Promise.all([
@@ -31935,17 +31925,7 @@ onMounted(async () => {
       fetchChatParameterOptions(),
       fetchGlobalProviders(),
     ]);
-    const projectIdBeforeRouteSync = String(
-      selectedProjectId.value || "",
-    ).trim();
-    const initialProjectId = syncProjectFromRoute();
-    if (
-      initialProjectId &&
-      initialProjectId === projectIdBeforeRouteSync &&
-      !selectedProjectConversationLoadingKey
-    ) {
-      await loadSelectedProjectConversation(initialProjectId);
-    }
+    syncProjectFromRoute();
     await applyStatisticsAnalysisDraftFromRoute();
     await applyPluginInstallDraftFromRoute();
     await applyProjectDeployDraftFromRoute();

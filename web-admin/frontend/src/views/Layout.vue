@@ -348,6 +348,23 @@ function clampWindowBounds(payload) {
   return { x, y, width, height };
 }
 
+function resolveCenteredWindowBounds(payload, cascadeIndex = 0) {
+  const viewportWidth =
+    typeof window === "undefined" ? 1440 : window.innerWidth || 1440;
+  const viewportHeight =
+    typeof window === "undefined" ? 900 : window.innerHeight || 900;
+  const sizedBounds = clampWindowBounds({
+    width: payload?.width,
+    height: payload?.height,
+  });
+  const offset = Math.max(0, Number(cascadeIndex || 0)) * 28;
+  return clampWindowBounds({
+    ...sizedBounds,
+    x: Math.round((viewportWidth - sizedBounds.width) / 2) + offset,
+    y: Math.round((viewportHeight - sizedBounds.height) / 2) + offset,
+  });
+}
+
 function createDesktopSessionSnapshot() {
   return {
     version: DESKTOP_WINDOW_SESSION_VERSION,
@@ -401,12 +418,18 @@ function createRestoredWindow(rawWindow, index, usedIds) {
     nextId = `${baseId}-${suffix}`;
     suffix += 1;
   }
-  const defaultOffset = index * 28;
+  const defaultBounds = resolveCenteredWindowBounds(
+    {
+      width: rawWindow?.width ?? meta.width,
+      height: rawWindow?.height ?? meta.height,
+    },
+    index,
+  );
   const bounds = clampWindowBounds({
-    x: rawWindow?.x ?? (36 + defaultOffset),
-    y: rawWindow?.y ?? (32 + defaultOffset),
-    width: rawWindow?.width ?? meta.width,
-    height: rawWindow?.height ?? meta.height,
+    x: rawWindow?.x ?? defaultBounds.x,
+    y: rawWindow?.y ?? defaultBounds.y,
+    width: defaultBounds.width,
+    height: defaultBounds.height,
   });
   const restoredBounds = clampWindowBounds({
     x: rawWindow?.restoredX ?? bounds.x,
@@ -509,7 +532,13 @@ function createWindowForPath(path, payload = {}) {
   if (!isDesktopInternalPath(path) || !canAccessPath(path)) return;
   const meta = resolveDesktopAppMeta(path);
   const countForApp = desktopWindows.value.filter((item) => item.appId === meta.appId).length;
-  const offset = countForApp * 28;
+  const bounds = resolveCenteredWindowBounds(
+    {
+      width: Number(payload.width || meta.width),
+      height: Number(payload.height || meta.height),
+    },
+    countForApp,
+  );
   const id = `desktop-window-${meta.appId}-${Date.now()}`;
   const nextWindow = {
     id,
@@ -519,17 +548,17 @@ function createWindowForPath(path, payload = {}) {
     summary: String(payload.summary || "").trim() || meta.appSummary,
     sourcePath: path,
     embeddedUrl: buildEmbeddedAppUrl(path, { windowId: id }),
-    width: Number(payload.width || meta.width),
-    height: Number(payload.height || meta.height),
-    x: 36 + offset,
-    y: 32 + offset,
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
     zIndex: nextWindowOrder.value,
     minimized: false,
     maximized: false,
-    restoredX: 36 + offset,
-    restoredY: 32 + offset,
-    restoredWidth: Number(payload.width || meta.width),
-    restoredHeight: Number(payload.height || meta.height),
+    restoredX: bounds.x,
+    restoredY: bounds.y,
+    restoredWidth: bounds.width,
+    restoredHeight: bounds.height,
     ...createWindowMotionState(),
   };
   nextWindowOrder.value += 1;

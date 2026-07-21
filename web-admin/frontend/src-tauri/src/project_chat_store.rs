@@ -1,8 +1,13 @@
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
+
+const JSON_STORE_VERSION: i64 = 1;
+const JSON_STORE_DIRECTORY: &str = "project-chat-data";
+const SQLITE_MIGRATION_MARKER: &str = ".sqlite-runtime-migration-v1.complete";
 
 fn normalized(value: &str, field: &str) -> Result<String, String> {
     let value = value.trim();
@@ -18,243 +23,301 @@ fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir.join("project-chat.sqlite3"))
 }
 
-fn open_database(app: &tauri::AppHandle) -> Result<Connection, String> {
-    let connection = Connection::open(database_path(app)?).map_err(|err| err.to_string())?;
-    initialize_database(&connection)?;
-    Ok(connection)
+fn path_component(value: &str) -> String {
+    value
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
-fn ensure_table_column(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-    definition: &str,
-) -> Result<(), String> {
-    let mut statement = connection
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|err| err.to_string())?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|err| err.to_string())?;
-    for existing in columns {
-        if existing.map_err(|err| err.to_string())? == column {
-            return Ok(());
+fn json_store_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    let root = app_data_dir.join(JSON_STORE_DIRECTORY);
+    fs::create_dir_all(&root).map_err(|err| err.to_string())?;
+    Ok(root)
+}
+
+fn json_project_directory(
+    app: &tauri::AppHandle,
+    username: &str,
+    project_id: &str,
+) -> Result<PathBuf, String> {
+    let directory = json_store_root(app)?
+        .join(path_component(username))
+        .join(path_component(project_id));
+    fs::create_dir_all(&directory).map_err(|err| err.to_string())?;
+    Ok(directory)
+}
+
+fn json_session_path(
+    app: &tauri::AppHandle,
+    username: &str,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Result<PathBuf, String> {
+    Ok(json_project_directory(app, username, project_id)?
+        .join(format!("{}.json", path_component(chat_session_id))))
+}
+
+fn read_json_envelope(path: &Path) -> Result<Value, String> {
+    let raw = fs::read_to_string(path).map_err(|err| err.to_string())?;
+    serde_json::from_str(&raw).map_err(|err| err.to_string())
+}
+
+fn write_json_envelope(path: &Path, envelope: &Value) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "会话文件路径无效".to_string())?;
+    fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("session.json"),
+        std::process::id()
+    ));
+    let payload = serde_json::to_vec_pretty(envelope).map_err(|err| err.to_string())?;
+    fs::write(&temporary, payload).map_err(|err| err.to_string())?;
+    let backup = parent.join(format!(
+        ".{}.backup",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("session.json")
+    ));
+    if path.exists() {
+        if backup.exists() {
+            fs::remove_file(&backup).map_err(|err| err.to_string())?;
+        }
+        fs::rename(path, &backup).map_err(|err| err.to_string())?;
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, path);
+        }
+        return Err(error.to_string());
+    }
+    if backup.exists() {
+        fs::remove_file(backup).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+fn load_json_envelopes(
+    app: &tauri::AppHandle,
+    username: &str,
+    project_id: &str,
+) -> Result<Vec<Value>, String> {
+    migrate_legacy_sqlite_project(app, username, project_id)?;
+    let directory = json_project_directory(app, username, project_id)?;
+    let mut envelopes = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        envelopes.push(read_json_envelope(&path)?);
+    }
+    Ok(envelopes)
+}
+
+fn build_session_from_runtime(chat_session_id: &str, runtime: &Value, updated_at: &str) -> Value {
+    let messages = runtime
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let first_user_content = messages
+        .iter()
+        .find(|message| value_text(message, &["role"]).eq_ignore_ascii_case("user"))
+        .map(|message| value_text(message, &["content"]))
+        .unwrap_or_default();
+    let last_message_content = messages
+        .iter()
+        .rev()
+        .map(|message| value_text(message, &["content"]))
+        .find(|content| !content.is_empty())
+        .unwrap_or_default();
+    json!({
+        "id": chat_session_id,
+        "title": if first_user_content.is_empty() { "新对话".to_string() } else { clipped(&first_user_content, 48) },
+        "preview": clipped(&last_message_content, 120),
+        "latest_requirement": clipped(&first_user_content, 240),
+        "last_message": clipped(&last_message_content, 240),
+        "message_count": messages.len(),
+        "created_at": updated_at,
+        "updated_at": updated_at,
+        "last_message_at": if last_message_content.is_empty() { String::new() } else { updated_at.to_string() },
+        "source": "desktop_json_runtime"
+    })
+}
+
+fn merge_session_with_runtime(
+    chat_session_id: &str,
+    stored_session: Option<&Value>,
+    runtime: &Value,
+    updated_at: &str,
+) -> Value {
+    let mut session = build_session_from_runtime(chat_session_id, runtime, updated_at);
+    if let (Some(target), Some(source)) = (
+        session.as_object_mut(),
+        stored_session.and_then(Value::as_object),
+    ) {
+        for (key, value) in source {
+            if key != "message_count"
+                && key != "preview"
+                && key != "latest_requirement"
+                && key != "last_message"
+                && key != "last_message_at"
+            {
+                target.insert(key.clone(), value.clone());
+            }
         }
     }
-    connection
-        .execute(
-            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
-            [],
-        )
-        .map_err(|err| err.to_string())?;
-    Ok(())
+    session["id"] = Value::String(chat_session_id.to_string());
+    session["updated_at"] = Value::String(updated_at.to_string());
+    session
 }
 
-fn initialize_database(connection: &Connection) -> Result<(), String> {
+fn build_json_envelope(
+    username: &str,
+    project_id: &str,
+    chat_session_id: &str,
+    session: Value,
+    runtime: Value,
+    updated_at: &str,
+) -> Value {
+    json!({
+        "version": JSON_STORE_VERSION,
+        "username": username,
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "updated_at": updated_at,
+        "session": session,
+        "runtime": runtime
+    })
+}
+
+fn sqlite_table_exists(connection: &Connection, table: &str) -> Result<bool, String> {
     connection
-        .execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA busy_timeout = 5000;
-             PRAGMA foreign_keys = ON;
-             CREATE TABLE IF NOT EXISTS project_chat_sessions (
-               username TEXT NOT NULL,
-               project_id TEXT NOT NULL,
-               chat_session_id TEXT NOT NULL,
-               payload_json TEXT NOT NULL,
-               updated_at TEXT NOT NULL,
-               PRIMARY KEY (username, project_id, chat_session_id)
-             );
-             CREATE INDEX IF NOT EXISTS idx_project_chat_sessions_updated
-               ON project_chat_sessions(username, project_id, updated_at DESC);
-             CREATE TABLE IF NOT EXISTS project_chat_runtimes (
-               username TEXT NOT NULL,
-               project_id TEXT NOT NULL,
-               chat_session_id TEXT NOT NULL,
-               payload_json TEXT NOT NULL,
-               updated_at TEXT NOT NULL,
-               PRIMARY KEY (username, project_id, chat_session_id)
-             );
-             CREATE TABLE IF NOT EXISTS agent_supervision_answers (
-               username TEXT NOT NULL,
-               project_id TEXT NOT NULL,
-               chat_session_id TEXT NOT NULL,
-               assistant_message_id TEXT NOT NULL,
-               answer_id TEXT NOT NULL,
-               user_message_id TEXT NOT NULL DEFAULT '',
-               question_preview TEXT NOT NULL DEFAULT '',
-               answer_preview TEXT NOT NULL DEFAULT '',
-               status TEXT NOT NULL DEFAULT 'completed',
-               started_at_epoch_ms INTEGER NOT NULL DEFAULT 0,
-               ended_at_epoch_ms INTEGER NOT NULL DEFAULT 0,
-               duration_ms INTEGER NOT NULL DEFAULT 0,
-               updated_at TEXT NOT NULL DEFAULT '',
-               PRIMARY KEY (username, project_id, assistant_message_id)
-             );
-             CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_supervision_answer_id
-               ON agent_supervision_answers(username, project_id, answer_id);
-             CREATE INDEX IF NOT EXISTS idx_agent_supervision_answer_session
-               ON agent_supervision_answers(username, project_id, chat_session_id, updated_at DESC);
-             CREATE TABLE IF NOT EXISTS agent_supervision_runs (
-               username TEXT NOT NULL,
-               project_id TEXT NOT NULL,
-               run_id TEXT NOT NULL,
-               assistant_message_id TEXT NOT NULL,
-               answer_id TEXT NOT NULL,
-               request_id TEXT NOT NULL DEFAULT '',
-               status TEXT NOT NULL DEFAULT 'completed',
-               model_round_count INTEGER NOT NULL DEFAULT 0,
-               tool_call_count INTEGER NOT NULL DEFAULT 0,
-               started_at_epoch_ms INTEGER NOT NULL DEFAULT 0,
-               ended_at_epoch_ms INTEGER NOT NULL DEFAULT 0,
-               duration_ms INTEGER NOT NULL DEFAULT 0,
-               updated_at TEXT NOT NULL DEFAULT '',
-               PRIMARY KEY (username, project_id, run_id),
-               FOREIGN KEY (username, project_id, assistant_message_id)
-                 REFERENCES agent_supervision_answers(username, project_id, assistant_message_id)
-                 ON DELETE CASCADE
-             );
-             CREATE INDEX IF NOT EXISTS idx_agent_supervision_run_answer
-               ON agent_supervision_runs(username, project_id, assistant_message_id, updated_at DESC);
-             CREATE TABLE IF NOT EXISTS agent_supervision_steps (
-               username TEXT NOT NULL,
-               project_id TEXT NOT NULL,
-               step_id TEXT NOT NULL,
-               run_id TEXT NOT NULL,
-               parent_step_id TEXT NOT NULL DEFAULT '',
-               sort_order INTEGER NOT NULL DEFAULT 0,
-               step_type TEXT NOT NULL DEFAULT 'observation',
-               status TEXT NOT NULL DEFAULT 'completed',
-               title TEXT NOT NULL DEFAULT '',
-               summary TEXT NOT NULL DEFAULT '',
-               detail_preview TEXT NOT NULL DEFAULT '',
-               tool_name TEXT NOT NULL DEFAULT '',
-               call_id TEXT NOT NULL DEFAULT '',
-               model_name TEXT NOT NULL DEFAULT '',
-               provider_id TEXT NOT NULL DEFAULT '',
-               provider_name TEXT NOT NULL DEFAULT '',
-               model_step_index INTEGER NOT NULL DEFAULT 0,
-               context_snapshot_json TEXT NOT NULL DEFAULT '{}',
-               context_message_count INTEGER NOT NULL DEFAULT 0,
-               context_input_tokens INTEGER NOT NULL DEFAULT 0,
-               context_token_source TEXT NOT NULL DEFAULT '',
-               model_input_tokens INTEGER NOT NULL DEFAULT 0,
-               model_output_tokens INTEGER NOT NULL DEFAULT 0,
-               model_total_tokens INTEGER NOT NULL DEFAULT 0,
-               model_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
-               model_reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-               model_token_source TEXT NOT NULL DEFAULT '',
-               started_at_epoch_ms INTEGER NOT NULL DEFAULT 0,
-               ended_at_epoch_ms INTEGER NOT NULL DEFAULT 0,
-               duration_ms INTEGER NOT NULL DEFAULT 0,
-               PRIMARY KEY (username, project_id, step_id),
-               FOREIGN KEY (username, project_id, run_id)
-                 REFERENCES agent_supervision_runs(username, project_id, run_id)
-                 ON DELETE CASCADE
-             );
-             CREATE INDEX IF NOT EXISTS idx_agent_supervision_step_run
-               ON agent_supervision_steps(username, project_id, run_id, sort_order);
-             CREATE TABLE IF NOT EXISTS agent_supervision_edges (
-               username TEXT NOT NULL,
-               project_id TEXT NOT NULL,
-               edge_id TEXT NOT NULL,
-               run_id TEXT NOT NULL,
-               source_step_id TEXT NOT NULL,
-               target_step_id TEXT NOT NULL,
-               edge_type TEXT NOT NULL DEFAULT 'sequence',
-               label TEXT NOT NULL DEFAULT '',
-               sort_order INTEGER NOT NULL DEFAULT 0,
-               PRIMARY KEY (username, project_id, edge_id),
-               FOREIGN KEY (username, project_id, run_id)
-                 REFERENCES agent_supervision_runs(username, project_id, run_id)
-                 ON DELETE CASCADE
-             );",
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            params![table],
+            |row| row.get::<_, i64>(0),
         )
+        .map(|value| value != 0)
+        .map_err(|err| err.to_string())
+}
+
+fn migrate_legacy_sqlite_project(
+    app: &tauri::AppHandle,
+    username: &str,
+    project_id: &str,
+) -> Result<usize, String> {
+    let directory = json_project_directory(app, username, project_id)?;
+    let legacy_path = database_path(app)?;
+    migrate_legacy_sqlite_project_paths(&legacy_path, &directory, username, project_id)
+}
+
+fn migrate_legacy_sqlite_project_paths(
+    legacy_path: &Path,
+    directory: &Path,
+    username: &str,
+    project_id: &str,
+) -> Result<usize, String> {
+    fs::create_dir_all(directory).map_err(|err| err.to_string())?;
+    let marker = directory.join(SQLITE_MIGRATION_MARKER);
+    if marker.exists() {
+        return Ok(0);
+    }
+    if !legacy_path.exists() {
+        fs::write(marker, b"no legacy database\n").map_err(|err| err.to_string())?;
+        return Ok(0);
+    }
+    let connection = Connection::open_with_flags(&legacy_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|err| err.to_string())?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "model_name",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "provider_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "provider_name",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "model_step_index",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "context_snapshot_json",
-        "TEXT NOT NULL DEFAULT '{}'",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "context_message_count",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "context_input_tokens",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "context_token_source",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "model_input_tokens",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "model_output_tokens",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "model_total_tokens",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "model_cached_input_tokens",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "model_reasoning_tokens",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_table_column(
-        connection,
-        "agent_supervision_steps",
-        "model_token_source",
-        "TEXT NOT NULL DEFAULT ''",
-    )?;
-    Ok(())
+    let mut records: BTreeMap<String, (Option<Value>, Option<Value>, String)> = BTreeMap::new();
+    if sqlite_table_exists(&connection, "project_chat_sessions")? {
+        let mut statement = connection
+            .prepare(
+                "SELECT chat_session_id, payload_json, updated_at FROM project_chat_sessions
+                 WHERE username = ?1 AND project_id = ?2",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = statement
+            .query_map(params![username, project_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        for row in rows {
+            let (chat_session_id, payload_json, updated_at) = row.map_err(|err| err.to_string())?;
+            let session = serde_json::from_str(&payload_json).map_err(|err| err.to_string())?;
+            records.insert(chat_session_id, (Some(session), None, updated_at));
+        }
+    }
+    if sqlite_table_exists(&connection, "project_chat_runtimes")? {
+        let mut statement = connection
+            .prepare(
+                "SELECT chat_session_id, payload_json, updated_at FROM project_chat_runtimes
+                 WHERE username = ?1 AND project_id = ?2",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = statement
+            .query_map(params![username, project_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        for row in rows {
+            let (chat_session_id, payload_json, updated_at) = row.map_err(|err| err.to_string())?;
+            let runtime = serde_json::from_str(&payload_json).map_err(|err| err.to_string())?;
+            let entry = records
+                .entry(chat_session_id)
+                .or_insert_with(|| (None, None, updated_at.clone()));
+            entry.1 = Some(runtime);
+            entry.2 = updated_at;
+        }
+    }
+    let mut migrated = 0;
+    for (chat_session_id, (stored_session, stored_runtime, updated_at)) in records {
+        let path = directory.join(format!("{}.json", path_component(&chat_session_id)));
+        if path.exists() {
+            continue;
+        }
+        let runtime = stored_runtime.unwrap_or_else(|| {
+            json!({
+                "version": 1,
+                "updated_at": updated_at,
+                "messages": []
+            })
+        });
+        let session = merge_session_with_runtime(
+            &chat_session_id,
+            stored_session.as_ref(),
+            &runtime,
+            &updated_at,
+        );
+        let envelope = build_json_envelope(
+            username,
+            project_id,
+            &chat_session_id,
+            session,
+            runtime,
+            &updated_at,
+        );
+        write_json_envelope(&path, &envelope)?;
+        migrated += 1;
+    }
+    fs::write(marker, format!("migrated={migrated}\n")).map_err(|err| err.to_string())?;
+    Ok(migrated)
 }
 
 fn value_text(value: &Value, keys: &[&str]) -> String {
@@ -522,7 +585,11 @@ fn load_requirement_record(message: &Value) -> Result<Option<Value>, String> {
     if path.is_empty() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(&path).map_err(|err| format!("读取需求记录失败 {path}: {err}"))?;
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("读取需求记录失败 {path}: {err}")),
+    };
     serde_json::from_str(&raw)
         .map(Some)
         .map_err(|err| format!("解析需求记录失败 {path}: {err}"))
@@ -974,22 +1041,44 @@ fn collect_supervision_steps(
     steps
 }
 
-fn write_supervision_projection(
-    transaction: &Transaction<'_>,
-    username: &str,
-    project_id: &str,
+fn supervision_step_json(step: &SupervisionStep, index: usize, parent_step_id: &str) -> Value {
+    json!({
+        "step_id": step.step_id,
+        "parent_step_id": parent_step_id,
+        "sort_order": index as i64,
+        "step_type": step.step_type,
+        "status": step.status,
+        "title": step.title,
+        "summary": step.summary,
+        "detail_preview": step.detail_preview,
+        "tool_name": step.tool_name,
+        "call_id": step.call_id,
+        "model_name": step.model_name,
+        "provider_id": step.provider_id,
+        "provider_name": step.provider_name,
+        "model_step_index": step.model_step_index,
+        "context_snapshot": serde_json::from_str::<Value>(&step.context_snapshot_json)
+            .unwrap_or_else(|_| json!({})),
+        "context_message_count": step.context_message_count,
+        "context_input_tokens": step.context_input_tokens,
+        "context_token_source": step.context_token_source,
+        "model_input_tokens": step.model_input_tokens,
+        "model_output_tokens": step.model_output_tokens,
+        "model_total_tokens": step.model_total_tokens,
+        "model_cached_input_tokens": step.model_cached_input_tokens,
+        "model_reasoning_tokens": step.model_reasoning_tokens,
+        "model_token_source": step.model_token_source,
+        "started_at_epoch_ms": step.started_at_epoch_ms,
+        "ended_at_epoch_ms": step.ended_at_epoch_ms,
+        "duration_ms": step.duration_ms
+    })
+}
+
+fn build_supervision_details(
     chat_session_id: &str,
     payload: &Value,
     updated_at: &str,
-) -> Result<(), String> {
-    transaction
-        .execute(
-            "DELETE FROM agent_supervision_answers
-             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
-            params![username, project_id, chat_session_id],
-        )
-        .map_err(|err| err.to_string())?;
-
+) -> Result<Vec<Value>, String> {
     let messages = payload
         .get("messages")
         .and_then(Value::as_array)
@@ -997,6 +1086,7 @@ fn write_supervision_projection(
         .unwrap_or_default();
     let mut previous_user_id = String::new();
     let mut previous_user_content = String::new();
+    let mut details = Vec::new();
     for message in messages {
         let role = value_text(&message, &["role"]).to_lowercase();
         let message_id = value_text(&message, &["id"]);
@@ -1049,31 +1139,6 @@ fn write_supervision_projection(
             &message,
             &["agentRuntimeDurationMs", "messageExecutionDurationMs"],
         );
-        transaction
-            .execute(
-                "INSERT INTO agent_supervision_answers
-                 (username, project_id, chat_session_id, assistant_message_id, answer_id,
-                  user_message_id, question_preview, answer_preview, status,
-                  started_at_epoch_ms, ended_at_epoch_ms, duration_ms, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    username,
-                    project_id,
-                    chat_session_id,
-                    message_id,
-                    answer_id,
-                    previous_user_id,
-                    clipped(&previous_user_content, 1200),
-                    clipped(&content, 4000),
-                    status,
-                    started_at,
-                    ended_at,
-                    duration_ms,
-                    updated_at
-                ],
-            )
-            .map_err(|err| err.to_string())?;
-
         let nested_run_id = find_nested_text(&message, &["run_id", "runId"]);
         let run_id = if nested_run_id.is_empty() {
             format!("run:{message_id}")
@@ -1082,523 +1147,68 @@ fn write_supervision_projection(
         };
         let request_id = find_nested_text(&message, &["request_id", "requestId"]);
         let requirement = load_requirement_record(&message)?;
-        let steps = collect_supervision_steps(
+        let collected_steps = collect_supervision_steps(
             &message,
             &message_id,
             &previous_user_content,
             &status,
             requirement.as_ref(),
         );
-        let model_round_count = steps
+        let model_round_count = collected_steps
             .iter()
             .filter(|step| step.step_type == "model_call")
             .count() as i64;
-        let tool_call_count = steps
+        let tool_call_count = collected_steps
             .iter()
             .filter(|step| step.step_type == "tool_call")
             .count() as i64;
-        transaction
-            .execute(
-                "INSERT INTO agent_supervision_runs
-                 (username, project_id, run_id, assistant_message_id, answer_id, request_id,
-                  status, model_round_count, tool_call_count, started_at_epoch_ms,
-                  ended_at_epoch_ms, duration_ms, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    username,
-                    project_id,
-                    run_id,
-                    message_id,
-                    answer_id,
-                    request_id,
-                    status,
-                    model_round_count,
-                    tool_call_count,
-                    started_at,
-                    ended_at,
-                    duration_ms,
-                    updated_at
-                ],
-            )
-            .map_err(|err| err.to_string())?;
-
+        let mut steps = Vec::new();
+        let mut edges = Vec::new();
         let mut previous_step_id = String::new();
-        for (index, step) in steps.iter().enumerate() {
-            transaction
-                .execute(
-                    "INSERT INTO agent_supervision_steps
-                     (username, project_id, step_id, run_id, parent_step_id, sort_order,
-                      step_type, status, title, summary, detail_preview, tool_name, call_id,
-                      model_name, provider_id, provider_name, model_step_index, context_snapshot_json, context_message_count,
-                      context_input_tokens, context_token_source, model_input_tokens,
-                      model_output_tokens, model_total_tokens, model_cached_input_tokens,
-                      model_reasoning_tokens, model_token_source, started_at_epoch_ms,
-                      ended_at_epoch_ms, duration_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                             ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-                             ?25, ?26, ?27, ?28, ?29, ?30)",
-                    params![
-                        username,
-                        project_id,
-                        step.step_id,
-                        run_id,
-                        previous_step_id,
-                        index as i64,
-                        step.step_type,
-                        step.status,
-                        step.title,
-                        step.summary,
-                        step.detail_preview,
-                        step.tool_name,
-                        step.call_id,
-                        step.model_name,
-                        step.provider_id,
-                        step.provider_name,
-                        step.model_step_index,
-                        step.context_snapshot_json,
-                        step.context_message_count,
-                        step.context_input_tokens,
-                        step.context_token_source,
-                        step.model_input_tokens,
-                        step.model_output_tokens,
-                        step.model_total_tokens,
-                        step.model_cached_input_tokens,
-                        step.model_reasoning_tokens,
-                        step.model_token_source,
-                        step.started_at_epoch_ms,
-                        step.ended_at_epoch_ms,
-                        step.duration_ms
-                    ],
-                )
-                .map_err(|err| err.to_string())?;
+        for (index, step) in collected_steps.iter().enumerate() {
+            steps.push(supervision_step_json(step, index, &previous_step_id));
             if !previous_step_id.is_empty() {
-                let edge_id = format!("edge:{message_id}:{index}");
-                transaction
-                    .execute(
-                        "INSERT INTO agent_supervision_edges
-                         (username, project_id, edge_id, run_id, source_step_id,
-                          target_step_id, edge_type, label, sort_order)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'sequence', '', ?7)",
-                        params![
-                            username,
-                            project_id,
-                            edge_id,
-                            run_id,
-                            previous_step_id,
-                            step.step_id,
-                            index as i64
-                        ],
-                    )
-                    .map_err(|err| err.to_string())?;
+                edges.push(json!({
+                    "edge_id": format!("edge:{message_id}:{index}"),
+                    "source_step_id": previous_step_id,
+                    "target_step_id": step.step_id,
+                    "edge_type": "sequence",
+                    "label": "",
+                    "sort_order": index as i64
+                }));
             }
             previous_step_id = step.step_id.clone();
         }
+        details.push(json!({
+            "answer": {
+                "assistant_message_id": message_id,
+                "answer_id": answer_id,
+                "chat_session_id": chat_session_id,
+                "user_message_id": previous_user_id,
+                "question_preview": clipped(&previous_user_content, 1200),
+                "answer_preview": clipped(&content, 4000),
+                "status": status,
+                "started_at_epoch_ms": started_at,
+                "ended_at_epoch_ms": ended_at,
+                "duration_ms": duration_ms,
+                "updated_at": updated_at
+            },
+            "run": {
+                "run_id": run_id,
+                "request_id": request_id,
+                "status": status,
+                "model_round_count": model_round_count,
+                "tool_call_count": tool_call_count,
+                "started_at_epoch_ms": started_at,
+                "ended_at_epoch_ms": ended_at,
+                "duration_ms": duration_ms,
+                "updated_at": updated_at
+            },
+            "steps": steps,
+            "edges": edges
+        }));
     }
-    Ok(())
-}
-
-fn projectable_supervision_answer_count(payload: &Value) -> usize {
-    payload
-        .get("messages")
-        .and_then(Value::as_array)
-        .map(|messages| {
-            messages
-                .iter()
-                .filter(|message| {
-                    let role = value_text(message, &["role"]).to_lowercase();
-                    let message_id = value_text(message, &["id"]);
-                    if role == "user" || message_id.is_empty() {
-                        return false;
-                    }
-                    let has_content = !value_text(message, &["content"]).is_empty();
-                    let has_steps = message
-                        .get("processLog")
-                        .and_then(Value::as_array)
-                        .is_some_and(|items| !items.is_empty())
-                        || message
-                            .get("operations")
-                            .and_then(Value::as_array)
-                            .is_some_and(|items| !items.is_empty());
-                    has_content || has_steps
-                })
-                .count()
-        })
-        .unwrap_or_default()
-}
-
-fn projectable_supervision_context_answer_count(payload: &Value) -> Result<usize, String> {
-    let messages = payload
-        .get("messages")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut count = 0;
-    for message in messages {
-        let role = value_text(&message, &["role"]).to_lowercase();
-        if role == "user" || value_text(&message, &["id"]).is_empty() {
-            continue;
-        }
-        let message_has_context = message
-            .get("agentExecutionCycles")
-            .or_else(|| message.get("agent_execution_cycles"))
-            .and_then(Value::as_array)
-            .is_some_and(|cycles| {
-                cycles.iter().any(|cycle| {
-                    cycle
-                        .get("contextSnapshot")
-                        .or_else(|| cycle.get("context_snapshot"))
-                        .is_some_and(|snapshot| {
-                            value_i64(snapshot, &["message_count", "messageCount"]) > 0
-                        })
-                })
-            });
-        if message_has_context {
-            count += 1;
-            continue;
-        }
-        if load_requirement_record(&message)?
-            .as_ref()
-            .is_some_and(|requirement| !requirement_execution_cycles(requirement).is_empty())
-        {
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
-fn projectable_supervision_usage_answer_count(payload: &Value) -> Result<usize, String> {
-    let messages = payload
-        .get("messages")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut count = 0;
-    for message in messages {
-        let role = value_text(&message, &["role"]).to_lowercase();
-        if role == "user" || value_text(&message, &["id"]).is_empty() {
-            continue;
-        }
-        let message_has_usage = message
-            .get("agentExecutionCycles")
-            .or_else(|| message.get("agent_execution_cycles"))
-            .and_then(Value::as_array)
-            .is_some_and(|cycles| {
-                cycles.iter().any(|cycle| {
-                    let model = cycle.get("model").unwrap_or(&Value::Null);
-                    let usage = model
-                        .get("tokenUsage")
-                        .or_else(|| model.get("token_usage"))
-                        .unwrap_or(&Value::Null);
-                    !value_text(usage, &["source"]).is_empty()
-                })
-            });
-        if message_has_usage {
-            count += 1;
-            continue;
-        }
-        if load_requirement_record(&message)?
-            .as_ref()
-            .is_some_and(|requirement| {
-                requirement
-                    .get("actions_taken")
-                    .or_else(|| requirement.get("actionsTaken"))
-                    .and_then(|actions| {
-                        actions
-                            .get("model_steps")
-                            .or_else(|| actions.get("modelSteps"))
-                    })
-                    .and_then(Value::as_array)
-                    .is_some_and(|steps| {
-                        steps.iter().any(|step| {
-                            step.get("token_usage")
-                                .or_else(|| step.get("tokenUsage"))
-                                .is_some_and(|usage| !value_text(usage, &["source"]).is_empty())
-                        })
-                    })
-            })
-        {
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
-fn projectable_supervision_model_answer_count(payload: &Value) -> Result<usize, String> {
-    let messages = payload
-        .get("messages")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut count = 0;
-    for message in messages {
-        let role = value_text(&message, &["role"]).to_lowercase();
-        if role == "user" || value_text(&message, &["id"]).is_empty() {
-            continue;
-        }
-        let message_has_model = message
-            .get("agentExecutionCycles")
-            .or_else(|| message.get("agent_execution_cycles"))
-            .and_then(Value::as_array)
-            .is_some_and(|cycles| {
-                cycles.iter().any(|cycle| {
-                    let model = cycle.get("model").unwrap_or(&Value::Null);
-                    !value_text(model, &["modelName", "model_name"]).is_empty()
-                })
-            });
-        if message_has_model {
-            count += 1;
-            continue;
-        }
-        if load_requirement_record(&message)?
-            .as_ref()
-            .is_some_and(|requirement| {
-                requirement
-                    .get("actions_taken")
-                    .or_else(|| requirement.get("actionsTaken"))
-                    .and_then(|actions| {
-                        actions
-                            .get("model_steps")
-                            .or_else(|| actions.get("modelSteps"))
-                    })
-                    .and_then(Value::as_array)
-                    .is_some_and(|steps| {
-                        steps
-                            .iter()
-                            .any(|step| !value_text(step, &["model_name", "modelName"]).is_empty())
-                    })
-            })
-        {
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
-fn projectable_supervision_provider_answer_count(payload: &Value) -> Result<usize, String> {
-    let messages = payload
-        .get("messages")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut count = 0;
-    for message in messages {
-        let role = value_text(&message, &["role"]).to_lowercase();
-        if role == "user" || value_text(&message, &["id"]).is_empty() {
-            continue;
-        }
-        let message_has_provider = message
-            .get("agentExecutionCycles")
-            .or_else(|| message.get("agent_execution_cycles"))
-            .and_then(Value::as_array)
-            .is_some_and(|cycles| {
-                cycles.iter().any(|cycle| {
-                    let model = cycle.get("model").unwrap_or(&Value::Null);
-                    !value_text(model, &["providerName", "provider_name"]).is_empty()
-                })
-            });
-        if message_has_provider {
-            count += 1;
-            continue;
-        }
-        if load_requirement_record(&message)?
-            .as_ref()
-            .is_some_and(|requirement| {
-                requirement
-                    .get("actions_taken")
-                    .or_else(|| requirement.get("actionsTaken"))
-                    .and_then(|actions| {
-                        actions
-                            .get("model_steps")
-                            .or_else(|| actions.get("modelSteps"))
-                    })
-                    .and_then(Value::as_array)
-                    .is_some_and(|steps| {
-                        steps.iter().any(|step| {
-                            !value_text(step, &["provider_name", "providerName"]).is_empty()
-                        })
-                    })
-            })
-        {
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
-fn repair_supervision_projection_for_project(
-    connection: &mut Connection,
-    username: &str,
-    project_id: &str,
-) -> Result<usize, String> {
-    let runtime_rows = {
-        let mut statement = connection
-            .prepare(
-                "SELECT chat_session_id, payload_json, updated_at
-                 FROM project_chat_runtimes
-                 WHERE username = ?1 AND project_id = ?2",
-            )
-            .map_err(|err| err.to_string())?;
-        let rows = statement
-            .query_map(params![username, project_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(|err| err.to_string())?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row.map_err(|err| err.to_string())?);
-        }
-        result
-    };
-
-    let mut repaired = 0;
-    for (chat_session_id, payload_json, updated_at) in runtime_rows {
-        let payload: Value = serde_json::from_str(&payload_json).map_err(|err| err.to_string())?;
-        let expected_answers = projectable_supervision_answer_count(&payload) as i64;
-        let expected_contextual_answers =
-            projectable_supervision_context_answer_count(&payload)? as i64;
-        let expected_usage_answers = projectable_supervision_usage_answer_count(&payload)? as i64;
-        let expected_model_answers = projectable_supervision_model_answer_count(&payload)? as i64;
-        let expected_provider_answers =
-            projectable_supervision_provider_answer_count(&payload)? as i64;
-        if expected_answers <= 0 {
-            continue;
-        }
-        let projected_answers = connection
-            .query_row(
-                "SELECT COUNT(*)
-                 FROM agent_supervision_answers
-                 WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3
-                   AND updated_at = ?4",
-                params![username, project_id, chat_session_id, updated_at],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|err| err.to_string())?;
-        let incomplete_answers = connection
-            .query_row(
-                "SELECT COUNT(DISTINCT answers.assistant_message_id)
-                 FROM agent_supervision_answers AS answers
-                 LEFT JOIN agent_supervision_runs AS runs
-                   ON runs.username = answers.username
-                  AND runs.project_id = answers.project_id
-                  AND runs.assistant_message_id = answers.assistant_message_id
-                 LEFT JOIN agent_supervision_steps AS steps
-                   ON steps.username = runs.username
-                  AND steps.project_id = runs.project_id
-                  AND steps.run_id = runs.run_id
-                 WHERE answers.username = ?1
-                   AND answers.project_id = ?2
-                   AND answers.chat_session_id = ?3
-                   AND (runs.run_id IS NULL OR steps.step_id IS NULL)",
-                params![username, project_id, chat_session_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|err| err.to_string())?;
-        let projected_contextual_answers = connection
-            .query_row(
-                "SELECT COUNT(DISTINCT answers.assistant_message_id)
-                 FROM agent_supervision_answers AS answers
-                 JOIN agent_supervision_runs AS runs
-                   ON runs.username = answers.username
-                  AND runs.project_id = answers.project_id
-                  AND runs.assistant_message_id = answers.assistant_message_id
-                 JOIN agent_supervision_steps AS steps
-                   ON steps.username = runs.username
-                  AND steps.project_id = runs.project_id
-                  AND steps.run_id = runs.run_id
-                 WHERE answers.username = ?1
-                   AND answers.project_id = ?2
-                   AND answers.chat_session_id = ?3
-                   AND steps.context_message_count > 0",
-                params![username, project_id, chat_session_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|err| err.to_string())?;
-        let projected_usage_answers = connection
-            .query_row(
-                "SELECT COUNT(DISTINCT answers.assistant_message_id)
-                 FROM agent_supervision_answers AS answers
-                 JOIN agent_supervision_runs AS runs
-                   ON runs.username = answers.username
-                  AND runs.project_id = answers.project_id
-                  AND runs.assistant_message_id = answers.assistant_message_id
-                 JOIN agent_supervision_steps AS steps
-                   ON steps.username = runs.username
-                  AND steps.project_id = runs.project_id
-                  AND steps.run_id = runs.run_id
-                 WHERE answers.username = ?1
-                   AND answers.project_id = ?2
-                   AND answers.chat_session_id = ?3
-                   AND steps.model_token_source <> ''",
-                params![username, project_id, chat_session_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|err| err.to_string())?;
-        let projected_model_answers = connection
-            .query_row(
-                "SELECT COUNT(DISTINCT answers.assistant_message_id)
-                 FROM agent_supervision_answers AS answers
-                 JOIN agent_supervision_runs AS runs
-                   ON runs.username = answers.username
-                  AND runs.project_id = answers.project_id
-                  AND runs.assistant_message_id = answers.assistant_message_id
-                 JOIN agent_supervision_steps AS steps
-                   ON steps.username = runs.username
-                  AND steps.project_id = runs.project_id
-                  AND steps.run_id = runs.run_id
-                 WHERE answers.username = ?1
-                   AND answers.project_id = ?2
-                   AND answers.chat_session_id = ?3
-                   AND steps.model_name <> ''",
-                params![username, project_id, chat_session_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|err| err.to_string())?;
-        let projected_provider_answers = connection
-            .query_row(
-                "SELECT COUNT(DISTINCT answers.assistant_message_id)
-                 FROM agent_supervision_answers AS answers
-                 JOIN agent_supervision_runs AS runs
-                   ON runs.username = answers.username
-                  AND runs.project_id = answers.project_id
-                  AND runs.assistant_message_id = answers.assistant_message_id
-                 JOIN agent_supervision_steps AS steps
-                   ON steps.username = runs.username
-                  AND steps.project_id = runs.project_id
-                  AND steps.run_id = runs.run_id
-                 WHERE answers.username = ?1
-                   AND answers.project_id = ?2
-                   AND answers.chat_session_id = ?3
-                   AND steps.provider_name <> ''",
-                params![username, project_id, chat_session_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|err| err.to_string())?;
-        if projected_answers == expected_answers
-            && incomplete_answers == 0
-            && projected_contextual_answers >= expected_contextual_answers
-            && projected_usage_answers >= expected_usage_answers
-            && projected_model_answers >= expected_model_answers
-            && projected_provider_answers >= expected_provider_answers
-        {
-            continue;
-        }
-        let transaction = connection.transaction().map_err(|err| err.to_string())?;
-        write_supervision_projection(
-            &transaction,
-            username,
-            project_id,
-            &chat_session_id,
-            &payload,
-            &updated_at,
-        )?;
-        transaction.commit().map_err(|err| err.to_string())?;
-        repaired += 1;
-    }
-    Ok(repaired)
+    Ok(details)
 }
 
 #[tauri::command]
@@ -1609,24 +1219,27 @@ pub fn project_chat_list_sessions(
 ) -> Result<Vec<Value>, String> {
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
-    let mut connection = open_database(&app)?;
-    repair_supervision_projection_for_project(&mut connection, &username, &project_id)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT payload_json
-             FROM project_chat_sessions
-             WHERE username = ?1 AND project_id = ?2
-             ORDER BY updated_at DESC",
-        )
-        .map_err(|err| err.to_string())?;
-    let rows = statement
-        .query_map(params![username, project_id], |row| row.get::<_, String>(0))
-        .map_err(|err| err.to_string())?;
     let mut sessions = Vec::new();
-    for row in rows {
-        let raw = row.map_err(|err| err.to_string())?;
-        sessions.push(serde_json::from_str(&raw).map_err(|err| err.to_string())?);
+    for envelope in load_json_envelopes(&app, &username, &project_id)? {
+        let chat_session_id = value_text(&envelope, &["chat_session_id"]);
+        if chat_session_id.is_empty() {
+            continue;
+        }
+        let updated_at = value_text(&envelope, &["updated_at"]);
+        let runtime = envelope
+            .get("runtime")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        sessions.push(merge_session_with_runtime(
+            &chat_session_id,
+            envelope.get("session"),
+            &runtime,
+            &updated_at,
+        ));
     }
+    sessions.sort_by(|left, right| {
+        value_text(right, &["updated_at"]).cmp(&value_text(left, &["updated_at"]))
+    });
     Ok(sessions)
 }
 
@@ -1639,14 +1252,8 @@ pub fn project_chat_replace_sessions(
 ) -> Result<usize, String> {
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
-    let mut connection = open_database(&app)?;
-    let transaction = connection.transaction().map_err(|err| err.to_string())?;
-    transaction
-        .execute(
-            "DELETE FROM project_chat_sessions WHERE username = ?1 AND project_id = ?2",
-            params![username, project_id],
-        )
-        .map_err(|err| err.to_string())?;
+    migrate_legacy_sqlite_project(&app, &username, &project_id)?;
+    let mut written = 0;
     for session in &sessions {
         let session_id = normalized(
             session
@@ -1661,18 +1268,35 @@ pub fn project_chat_replace_sessions(
             .unwrap_or_default()
             .trim()
             .to_string();
-        let payload_json = serde_json::to_string(session).map_err(|err| err.to_string())?;
-        transaction
-            .execute(
-                "INSERT INTO project_chat_sessions
-                 (username, project_id, chat_session_id, payload_json, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![username, project_id, session_id, payload_json, updated_at],
-            )
-            .map_err(|err| err.to_string())?;
+        let path = json_session_path(&app, &username, &project_id, &session_id)?;
+        let existing = if path.exists() {
+            Some(read_json_envelope(&path)?)
+        } else {
+            None
+        };
+        let runtime = existing
+            .as_ref()
+            .and_then(|value| value.get("runtime"))
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "version": 1,
+                    "updated_at": updated_at,
+                    "messages": []
+                })
+            });
+        let envelope = build_json_envelope(
+            &username,
+            &project_id,
+            &session_id,
+            session.clone(),
+            runtime,
+            &updated_at,
+        );
+        write_json_envelope(&path, &envelope)?;
+        written += 1;
     }
-    transaction.commit().map_err(|err| err.to_string())?;
-    Ok(sessions.len())
+    Ok(written)
 }
 
 #[tauri::command]
@@ -1685,18 +1309,12 @@ pub fn project_chat_read_runtime(
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
     let chat_session_id = normalized(&chat_session_id, "聊天会话 ID")?;
-    let connection = open_database(&app)?;
-    let raw = connection
-        .query_row(
-            "SELECT payload_json FROM project_chat_runtimes
-             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
-            params![username, project_id, chat_session_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|err| err.to_string())?;
-    raw.map(|value| serde_json::from_str(&value).map_err(|err| err.to_string()))
-        .transpose()
+    migrate_legacy_sqlite_project(&app, &username, &project_id)?;
+    let path = json_session_path(&app, &username, &project_id, &chat_session_id)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(read_json_envelope(&path)?.get("runtime").cloned())
 }
 
 #[tauri::command]
@@ -1716,35 +1334,28 @@ pub fn project_chat_write_runtime(
         .unwrap_or_default()
         .trim()
         .to_string();
-    let payload_json = serde_json::to_string(&payload).map_err(|err| err.to_string())?;
-    let mut connection = open_database(&app)?;
-    let transaction = connection.transaction().map_err(|err| err.to_string())?;
-    transaction
-        .execute(
-            "INSERT INTO project_chat_runtimes
-             (username, project_id, chat_session_id, payload_json, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(username, project_id, chat_session_id) DO UPDATE SET
-               payload_json = excluded.payload_json,
-               updated_at = excluded.updated_at",
-            params![
-                username,
-                project_id,
-                chat_session_id,
-                payload_json,
-                updated_at
-            ],
-        )
-        .map_err(|err| err.to_string())?;
-    write_supervision_projection(
-        &transaction,
+    migrate_legacy_sqlite_project(&app, &username, &project_id)?;
+    let path = json_session_path(&app, &username, &project_id, &chat_session_id)?;
+    let existing = if path.exists() {
+        Some(read_json_envelope(&path)?)
+    } else {
+        None
+    };
+    let session = merge_session_with_runtime(
+        &chat_session_id,
+        existing.as_ref().and_then(|value| value.get("session")),
+        &payload,
+        &updated_at,
+    );
+    let envelope = build_json_envelope(
         &username,
         &project_id,
         &chat_session_id,
-        &payload,
+        session,
+        payload,
         &updated_at,
-    )?;
-    transaction.commit().map_err(|err| err.to_string())?;
+    );
+    write_json_envelope(&path, &envelope)?;
     Ok(true)
 }
 
@@ -1758,47 +1369,40 @@ pub fn agent_supervision_search_answers(
 ) -> Result<Vec<Value>, String> {
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
-    let query = query.trim().to_string();
-    let search_pattern = format!("%{query}%");
-    let limit = limit.unwrap_or(50).clamp(1, 200) as i64;
-    let connection = open_database(&app)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT assistant_message_id, answer_id, chat_session_id, user_message_id,
-                    question_preview, answer_preview, status, started_at_epoch_ms,
-                    ended_at_epoch_ms, duration_ms, updated_at
-             FROM agent_supervision_answers
-             WHERE username = ?1 AND project_id = ?2
-               AND (?3 = '' OR answer_id LIKE ?4 OR assistant_message_id LIKE ?4
-                    OR question_preview LIKE ?4 OR answer_preview LIKE ?4)
-             ORDER BY updated_at DESC, started_at_epoch_ms DESC
-             LIMIT ?5",
-        )
-        .map_err(|err| err.to_string())?;
-    let rows = statement
-        .query_map(
-            params![username, project_id, query, search_pattern, limit],
-            |row| {
-                Ok(json!({
-                    "assistant_message_id": row.get::<_, String>(0)?,
-                    "answer_id": row.get::<_, String>(1)?,
-                    "chat_session_id": row.get::<_, String>(2)?,
-                    "user_message_id": row.get::<_, String>(3)?,
-                    "question_preview": row.get::<_, String>(4)?,
-                    "answer_preview": row.get::<_, String>(5)?,
-                    "status": row.get::<_, String>(6)?,
-                    "started_at_epoch_ms": row.get::<_, i64>(7)?,
-                    "ended_at_epoch_ms": row.get::<_, i64>(8)?,
-                    "duration_ms": row.get::<_, i64>(9)?,
-                    "updated_at": row.get::<_, String>(10)?,
-                }))
-            },
-        )
-        .map_err(|err| err.to_string())?;
+    let query = query.trim().to_lowercase();
+    let limit = limit.unwrap_or(50).clamp(1, 200);
     let mut answers = Vec::new();
-    for row in rows {
-        answers.push(row.map_err(|err| err.to_string())?);
+    for envelope in load_json_envelopes(&app, &username, &project_id)? {
+        let chat_session_id = value_text(&envelope, &["chat_session_id"]);
+        let updated_at = value_text(&envelope, &["updated_at"]);
+        let runtime = envelope
+            .get("runtime")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        for detail in build_supervision_details(&chat_session_id, &runtime, &updated_at)? {
+            let answer = detail.get("answer").cloned().unwrap_or_else(|| json!({}));
+            let haystack = [
+                value_text(&answer, &["answer_id"]),
+                value_text(&answer, &["assistant_message_id"]),
+                value_text(&answer, &["question_preview"]),
+                value_text(&answer, &["answer_preview"]),
+            ]
+            .join("\n")
+            .to_lowercase();
+            if query.is_empty() || haystack.contains(&query) {
+                answers.push(answer);
+            }
+        }
     }
+    answers.sort_by(|left, right| {
+        value_text(right, &["updated_at"])
+            .cmp(&value_text(left, &["updated_at"]))
+            .then_with(|| {
+                value_i64(right, &["started_at_epoch_ms"])
+                    .cmp(&value_i64(left, &["started_at_epoch_ms"]))
+            })
+    });
+    answers.truncate(limit);
     Ok(answers)
 }
 
@@ -1817,164 +1421,27 @@ pub fn agent_supervision_get_answer(
     } else {
         format!("ans_{answer_id}")
     };
-    let mut connection = open_database(&app)?;
-    repair_supervision_projection_for_project(&mut connection, &username, &project_id)?;
-    let answer = connection
-        .query_row(
-            "SELECT assistant_message_id, answer_id, chat_session_id, user_message_id,
-                    question_preview, answer_preview, status, started_at_epoch_ms,
-                    ended_at_epoch_ms, duration_ms, updated_at
-             FROM agent_supervision_answers
-             WHERE username = ?1 AND project_id = ?2
-               AND (answer_id = ?3 OR assistant_message_id = ?3
-                    OR answer_id = ?4 OR assistant_message_id = ?4)
-             LIMIT 1",
-            params![username, project_id, answer_id, alternate_answer_id],
-            |row| {
-                Ok(json!({
-                    "assistant_message_id": row.get::<_, String>(0)?,
-                    "answer_id": row.get::<_, String>(1)?,
-                    "chat_session_id": row.get::<_, String>(2)?,
-                    "user_message_id": row.get::<_, String>(3)?,
-                    "question_preview": row.get::<_, String>(4)?,
-                    "answer_preview": row.get::<_, String>(5)?,
-                    "status": row.get::<_, String>(6)?,
-                    "started_at_epoch_ms": row.get::<_, i64>(7)?,
-                    "ended_at_epoch_ms": row.get::<_, i64>(8)?,
-                    "duration_ms": row.get::<_, i64>(9)?,
-                    "updated_at": row.get::<_, String>(10)?,
-                }))
-            },
-        )
-        .optional()
-        .map_err(|err| err.to_string())?;
-    let Some(answer) = answer else {
-        return Ok(None);
-    };
-    let assistant_message_id = answer
-        .get("assistant_message_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let run = connection
-        .query_row(
-            "SELECT run_id, request_id, status, model_round_count, tool_call_count,
-                    started_at_epoch_ms, ended_at_epoch_ms, duration_ms, updated_at
-             FROM agent_supervision_runs
-             WHERE username = ?1 AND project_id = ?2 AND assistant_message_id = ?3
-             ORDER BY updated_at DESC
-             LIMIT 1",
-            params![username, project_id, assistant_message_id],
-            |row| {
-                Ok(json!({
-                    "run_id": row.get::<_, String>(0)?,
-                    "request_id": row.get::<_, String>(1)?,
-                    "status": row.get::<_, String>(2)?,
-                    "model_round_count": row.get::<_, i64>(3)?,
-                    "tool_call_count": row.get::<_, i64>(4)?,
-                    "started_at_epoch_ms": row.get::<_, i64>(5)?,
-                    "ended_at_epoch_ms": row.get::<_, i64>(6)?,
-                    "duration_ms": row.get::<_, i64>(7)?,
-                    "updated_at": row.get::<_, String>(8)?,
-                }))
-            },
-        )
-        .optional()
-        .map_err(|err| err.to_string())?;
-    let Some(run) = run else {
-        return Ok(Some(json!({
-            "answer": answer,
-            "run": null,
-            "steps": [],
-            "edges": [],
-        })));
-    };
-    let run_id = run
-        .get("run_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let mut step_statement = connection
-        .prepare(
-            "SELECT step_id, parent_step_id, sort_order, step_type, status, title,
-                    summary, detail_preview, tool_name, call_id, model_name, provider_id, provider_name, model_step_index,
-                    context_snapshot_json, context_message_count, context_input_tokens,
-                    context_token_source, model_input_tokens, model_output_tokens,
-                    model_total_tokens, model_cached_input_tokens, model_reasoning_tokens,
-                    model_token_source, started_at_epoch_ms, ended_at_epoch_ms, duration_ms
-             FROM agent_supervision_steps
-             WHERE username = ?1 AND project_id = ?2 AND run_id = ?3
-             ORDER BY sort_order ASC",
-        )
-        .map_err(|err| err.to_string())?;
-    let step_rows = step_statement
-        .query_map(params![username, project_id, run_id], |row| {
-            Ok(json!({
-                "step_id": row.get::<_, String>(0)?,
-                "parent_step_id": row.get::<_, String>(1)?,
-                "sort_order": row.get::<_, i64>(2)?,
-                "step_type": row.get::<_, String>(3)?,
-                "status": row.get::<_, String>(4)?,
-                "title": row.get::<_, String>(5)?,
-                "summary": row.get::<_, String>(6)?,
-                "detail_preview": row.get::<_, String>(7)?,
-                "tool_name": row.get::<_, String>(8)?,
-                "call_id": row.get::<_, String>(9)?,
-                "model_name": row.get::<_, String>(10)?,
-                "provider_id": row.get::<_, String>(11)?,
-                "provider_name": row.get::<_, String>(12)?,
-                "model_step_index": row.get::<_, i64>(13)?,
-                "context_snapshot": serde_json::from_str::<Value>(&row.get::<_, String>(14)?)
-                    .unwrap_or_else(|_| json!({})),
-                "context_message_count": row.get::<_, i64>(15)?,
-                "context_input_tokens": row.get::<_, i64>(16)?,
-                "context_token_source": row.get::<_, String>(17)?,
-                "model_input_tokens": row.get::<_, i64>(18)?,
-                "model_output_tokens": row.get::<_, i64>(19)?,
-                "model_total_tokens": row.get::<_, i64>(20)?,
-                "model_cached_input_tokens": row.get::<_, i64>(21)?,
-                "model_reasoning_tokens": row.get::<_, i64>(22)?,
-                "model_token_source": row.get::<_, String>(23)?,
-                "started_at_epoch_ms": row.get::<_, i64>(24)?,
-                "ended_at_epoch_ms": row.get::<_, i64>(25)?,
-                "duration_ms": row.get::<_, i64>(26)?,
-            }))
-        })
-        .map_err(|err| err.to_string())?;
-    let mut steps = Vec::new();
-    for row in step_rows {
-        steps.push(row.map_err(|err| err.to_string())?);
+    for envelope in load_json_envelopes(&app, &username, &project_id)? {
+        let chat_session_id = value_text(&envelope, &["chat_session_id"]);
+        let updated_at = value_text(&envelope, &["updated_at"]);
+        let runtime = envelope
+            .get("runtime")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        for detail in build_supervision_details(&chat_session_id, &runtime, &updated_at)? {
+            let answer = detail.get("answer").cloned().unwrap_or_else(|| json!({}));
+            let stored_answer_id = value_text(&answer, &["answer_id"]);
+            let assistant_message_id = value_text(&answer, &["assistant_message_id"]);
+            if stored_answer_id == answer_id
+                || assistant_message_id == answer_id
+                || stored_answer_id == alternate_answer_id
+                || assistant_message_id == alternate_answer_id
+            {
+                return Ok(Some(detail));
+            }
+        }
     }
-    let mut edge_statement = connection
-        .prepare(
-            "SELECT edge_id, source_step_id, target_step_id, edge_type, label, sort_order
-             FROM agent_supervision_edges
-             WHERE username = ?1 AND project_id = ?2 AND run_id = ?3
-             ORDER BY sort_order ASC",
-        )
-        .map_err(|err| err.to_string())?;
-    let edge_rows = edge_statement
-        .query_map(params![username, project_id, run_id], |row| {
-            Ok(json!({
-                "edge_id": row.get::<_, String>(0)?,
-                "source_step_id": row.get::<_, String>(1)?,
-                "target_step_id": row.get::<_, String>(2)?,
-                "edge_type": row.get::<_, String>(3)?,
-                "label": row.get::<_, String>(4)?,
-                "sort_order": row.get::<_, i64>(5)?,
-            }))
-        })
-        .map_err(|err| err.to_string())?;
-    let mut edges = Vec::new();
-    for row in edge_rows {
-        edges.push(row.map_err(|err| err.to_string())?);
-    }
-    Ok(Some(json!({
-        "answer": answer,
-        "run": run,
-        "steps": steps,
-        "edges": edges,
-    })))
+    Ok(None)
 }
 
 #[tauri::command]
@@ -1987,30 +1454,11 @@ pub fn project_chat_delete_session(
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
     let chat_session_id = normalized(&chat_session_id, "聊天会话 ID")?;
-    let mut connection = open_database(&app)?;
-    let transaction = connection.transaction().map_err(|err| err.to_string())?;
-    transaction
-        .execute(
-            "DELETE FROM agent_supervision_answers
-             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
-            params![username, project_id, chat_session_id],
-        )
-        .map_err(|err| err.to_string())?;
-    transaction
-        .execute(
-            "DELETE FROM project_chat_sessions
-             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
-            params![username, project_id, chat_session_id],
-        )
-        .map_err(|err| err.to_string())?;
-    transaction
-        .execute(
-            "DELETE FROM project_chat_runtimes
-             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
-            params![username, project_id, chat_session_id],
-        )
-        .map_err(|err| err.to_string())?;
-    transaction.commit().map_err(|err| err.to_string())?;
+    migrate_legacy_sqlite_project(&app, &username, &project_id)?;
+    let path = json_session_path(&app, &username, &project_id, &chat_session_id)?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|err| err.to_string())?;
+    }
     Ok(true)
 }
 
@@ -2018,32 +1466,96 @@ pub fn project_chat_delete_session(
 mod tests {
     use super::*;
 
-    fn write_test_requirement(name: &str, value: &Value) -> PathBuf {
+    fn temporary_test_directory(name: &str) -> PathBuf {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time after epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("{name}-{suffix}.json"));
-        fs::write(
-            &path,
-            serde_json::to_vec(value).expect("serialize requirement fixture"),
-        )
-        .expect("write requirement fixture");
-        path
+        std::env::temp_dir().join(format!("{name}-{suffix}"))
     }
 
     #[test]
-    fn sqlite_schema_stores_session_and_runtime_payloads() {
-        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
-        initialize_database(&connection).expect("initialize project chat schema");
+    fn session_metadata_is_derived_from_runtime_messages() {
+        let runtime = json!({
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "展示目录结构"},
+                {"id": "assistant-1", "role": "assistant", "content": "这是目录结构"}
+            ]
+        });
+        let session = build_session_from_runtime("local-1", &runtime, "2026-07-21T00:00:00Z");
+        assert_eq!(session["id"], "local-1");
+        assert_eq!(session["title"], "展示目录结构");
+        assert_eq!(session["message_count"], 2);
+        assert_eq!(session["preview"], "这是目录结构");
+    }
+
+    #[test]
+    fn supervision_is_derived_directly_from_runtime_messages() {
+        let runtime = json!({
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "检查项目"},
+                {
+                    "id": "chat-local-1-x4ubpr",
+                    "answerId": "ans_chat-local-1-x4ubpr",
+                    "role": "assistant",
+                    "content": "检查完成",
+                    "operations": [{
+                        "operationId": "tool-1",
+                        "title": "读取文件",
+                        "summary": "读取项目文件",
+                        "tool_name": "read_file",
+                        "status": "completed"
+                    }]
+                }
+            ]
+        });
+        let details =
+            build_supervision_details("local-session-1", &runtime, "2026-07-21T00:00:00Z")
+                .expect("build supervision details");
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0]["answer"]["answer_id"], "ans_chat-local-1-x4ubpr");
+        assert_eq!(details[0]["answer"]["question_preview"], "检查项目");
+        assert!(details[0]["steps"]
+            .as_array()
+            .is_some_and(|steps| steps.len() >= 3));
+    }
+
+    #[test]
+    fn path_components_are_stable_and_filesystem_safe() {
+        assert_eq!(path_component("admin"), "61646d696e");
+        assert_eq!(
+            path_component("proj-cc47efb1"),
+            "70726f6a2d6363343765666231"
+        );
+        assert!(!path_component("用户/项目").contains('/'));
+    }
+
+    #[test]
+    fn legacy_sqlite_runtime_is_migrated_read_only_to_json() {
+        let root = temporary_test_directory("project-chat-json-migration");
+        let legacy_path = root.join("project-chat.sqlite3");
+        let json_directory = root.join("json");
+        fs::create_dir_all(&root).expect("create test directory");
+        let connection = Connection::open(&legacy_path).expect("create legacy sqlite");
         connection
-            .execute(
-                "INSERT INTO project_chat_sessions
-                 (username, project_id, chat_session_id, payload_json, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params!["admin", "project-1", "chat-1", r#"{"id":"chat-1"}"#, "1"],
+            .execute_batch(
+                "CREATE TABLE project_chat_runtimes (
+                   username TEXT NOT NULL,
+                   project_id TEXT NOT NULL,
+                   chat_session_id TEXT NOT NULL,
+                   payload_json TEXT NOT NULL,
+                   updated_at TEXT NOT NULL
+                 );",
             )
-            .expect("insert session");
+            .expect("create runtime table");
+        let runtime = json!({
+            "version": 1,
+            "updated_at": "2026-07-21T00:00:00Z",
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "迁移测试"},
+                {"id": "assistant-1", "role": "assistant", "content": "迁移完成"}
+            ]
+        });
         connection
             .execute(
                 "INSERT INTO project_chat_runtimes
@@ -2051,555 +1563,39 @@ mod tests {
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     "admin",
-                    "project-1",
-                    "chat-1",
-                    r#"{"messages":[{"role":"user","content":"hello"}]}"#,
-                    "1"
+                    "proj-cc47efb1",
+                    "local-runtime-only",
+                    serde_json::to_string(&runtime).expect("serialize runtime"),
+                    "2026-07-21T00:00:00Z"
                 ],
             )
             .expect("insert runtime");
-        let runtime: String = connection
-            .query_row(
-                "SELECT payload_json FROM project_chat_runtimes
-                 WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
-                params!["admin", "project-1", "chat-1"],
-                |row| row.get(0),
-            )
-            .expect("read runtime");
-        assert!(runtime.contains("hello"));
-    }
+        drop(connection);
+        let legacy_before = fs::read(&legacy_path).expect("read legacy before migration");
 
-    #[test]
-    fn runtime_snapshot_projects_searchable_supervision_graph() {
-        let mut connection = Connection::open_in_memory().expect("open in-memory sqlite");
-        initialize_database(&connection).expect("initialize project chat schema");
-        let payload = json!({
-            "updated_at": "2026-07-17T00:00:00Z",
-            "messages": [
-                {
-                    "id": "user-1",
-                    "role": "user",
-                    "content": "检查构建状态"
-                },
-                {
-                    "id": "assistant-1",
-                    "role": "assistant",
-                    "answerId": "ans_assistant-1",
-                    "content": "构建已经通过。",
-                    "agentRuntimeStartedAtEpochMs": 100,
-                    "agentRuntimeEndedAtEpochMs": 400,
-                    "agentRuntimeDurationMs": 300,
-                    "agentExecutionCycles": [
-                        {
-                            "cycleIndex": 1,
-                            "contextSnapshot": {
-                                "message_count": 3,
-                                "input_char_count": 900,
-                                "estimated_input_tokens": 300,
-                                "token_source": "estimated_from_serialized_model_messages",
-                                "messages_redacted": [
-                                    {"role": "system", "content_preview": "system prompt"},
-                                    {"role": "user", "content_preview": "检查构建状态"},
-                                    {"role": "tool", "content_preview": "workspace ready"}
-                                ]
-                            },
-                            "model": {
-                                "status": "completed",
-                                "providerId": "provider-1",
-                                "providerName": "深度求索",
-                                "modelName": "model-1",
-                                "summary": "决定执行构建",
-                                "toolCallIds": ["call-1"]
-                            },
-                            "tools": [
-                                {
-                                    "toolCallId": "call-1",
-                                    "name": "run_command",
-                                    "ok": true,
-                                    "summary": "npm run build 通过"
-                                }
-                            ]
-                        }
-                    ],
-                    "processLog": [
-                        {
-                            "id": "log-model",
-                            "text": "模型开始处理",
-                            "eventType": "model_call_started"
-                        },
-                        {
-                            "id": "log-tool",
-                            "text": "执行 npm run build",
-                            "kind": "command",
-                            "payload": {
-                                "tool_name": "run_command",
-                                "tool_call_id": "call-1"
-                            }
-                        }
-                    ],
-                    "operations": [
-                        {
-                            "operationId": "request:req-1",
-                            "kind": "request",
-                            "title": "执行构建",
-                            "phase": "completed",
-                            "meta": {
-                                "request_id": "req-1",
-                                "run_id": "run-1"
-                            }
-                        }
-                    ]
-                }
-            ]
-        });
-        let transaction = connection.transaction().expect("start transaction");
-        write_supervision_projection(
-            &transaction,
+        let migrated = migrate_legacy_sqlite_project_paths(
+            &legacy_path,
+            &json_directory,
             "admin",
-            "project-1",
-            "chat-1",
-            &payload,
-            "2026-07-17T00:00:00Z",
+            "proj-cc47efb1",
         )
-        .expect("project supervision snapshot");
-        transaction.commit().expect("commit projection");
+        .expect("migrate legacy sqlite");
 
-        let answer_id: String = connection
-            .query_row(
-                "SELECT answer_id FROM agent_supervision_answers
-                 WHERE username = 'admin' AND project_id = 'project-1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("read answer id");
-        let step_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM agent_supervision_steps
-                 WHERE username = 'admin' AND project_id = 'project-1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count steps");
-        let edge_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM agent_supervision_edges
-                 WHERE username = 'admin' AND project_id = 'project-1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count edges");
-        let context_metrics: (i64, i64, i64) = connection
-            .query_row(
-                "SELECT model_step_index, context_message_count, context_input_tokens
-                 FROM agent_supervision_steps
-                 WHERE username = 'admin' AND project_id = 'project-1'
-                   AND step_type = 'model_call'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("read cycle context metrics");
-        let model_identity: (String, String, String) = connection
-            .query_row(
-                "SELECT model_name, provider_id, provider_name
-                 FROM agent_supervision_steps
-                 WHERE username = 'admin' AND project_id = 'project-1'
-                   AND step_type = 'model_call'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("read model identity");
-        assert_eq!(answer_id, "ans_assistant-1");
-        assert!(step_count >= 4);
-        assert_eq!(edge_count, step_count - 1);
-        assert_eq!(context_metrics, (1, 3, 300));
+        assert_eq!(migrated, 1);
+        let json_path =
+            json_directory.join(format!("{}.json", path_component("local-runtime-only")));
+        let envelope = read_json_envelope(&json_path).expect("read migrated envelope");
+        assert_eq!(envelope["chat_session_id"], "local-runtime-only");
+        assert_eq!(envelope["session"]["title"], "迁移测试");
         assert_eq!(
-            model_identity,
-            (
-                "model-1".to_string(),
-                "provider-1".to_string(),
-                "深度求索".to_string()
-            )
+            envelope["runtime"]["messages"].as_array().map(Vec::len),
+            Some(2)
         );
-    }
-
-    #[test]
-    fn requirement_record_projects_model_round_context_and_tools() {
-        let requirement_path = write_test_requirement(
-            "agent-supervision-requirement",
-            &json!({
-                "model_input_snapshots": [
-                    {
-                        "loop": "task_processing",
-                        "message_id": "model-step-1",
-                        "message_count": 6,
-                        "estimated_input_tokens": 1331,
-                        "token_source": "estimated_from_serialized_model_messages",
-                        "messages_redacted": [{"role": "user", "content_preview": "列出目录"}]
-                    },
-                    {
-                        "loop": "task_processing",
-                        "message_id": "model-step-2",
-                        "message_count": 8,
-                        "estimated_input_tokens": 3710,
-                        "token_source": "estimated_from_serialized_model_messages",
-                        "messages_redacted": [{"role": "tool", "content_preview": "目录结果"}]
-                    }
-                ],
-                "actions_taken": {
-                    "model_steps": [
-                        {
-                            "index": 1,
-                            "status": "completed",
-                            "model_name": "DeepSeek-V4-Flash",
-                            "provider_id": "provider-1",
-                            "provider_name": "深度求索",
-                            "summary": "返回 1 个工具调用",
-                            "tool_call_count": 1,
-                            "token_usage": {
-                                "input_tokens": 120,
-                                "output_tokens": 30,
-                                "total_tokens": 150,
-                                "cached_input_tokens": 20,
-                                "reasoning_tokens": 12,
-                                "source": "provider_response_usage"
-                            }
-                        },
-                        {
-                            "index": 2,
-                            "status": "completed",
-                            "model_name": "DeepSeek-V4-Flash",
-                            "provider_id": "provider-1",
-                            "provider_name": "深度求索",
-                            "summary": "生成最终回答",
-                            "tool_call_count": 0
-                        }
-                    ],
-                    "planned_tools": [
-                        {
-                            "tool_name": "list_files",
-                            "tool_call_id": "call-1",
-                            "summary": "标准模型工具调用：list_files"
-                        }
-                    ],
-                    "tool_results": [
-                        {
-                            "tool_name": "list_files",
-                            "tool_call_id": "call-1",
-                            "ok": true,
-                            "summary": "列出 12 个条目"
-                        }
-                    ]
-                }
-            }),
-        );
-        let payload = json!({
-            "messages": [
-                {"id": "user-context", "role": "user", "content": "列出目录"},
-                {
-                    "id": "assistant-context",
-                    "role": "assistant",
-                    "answerId": "ans_assistant-context",
-                    "content": "目录如下",
-                    "operations": [{
-                        "operationId": "runtime-meta",
-                        "kind": "runtime",
-                        "meta": {"requirement_record_path": requirement_path.to_string_lossy()}
-                    }]
-                }
-            ]
-        });
-        let mut connection = Connection::open_in_memory().expect("open in-memory sqlite");
-        initialize_database(&connection).expect("initialize project chat schema");
-        let transaction = connection
-            .transaction()
-            .expect("begin projection transaction");
-        write_supervision_projection(
-            &transaction,
-            "admin",
-            "project-context",
-            "chat-context",
-            &payload,
-            "2026-07-17T02:00:00Z",
-        )
-        .expect("project requirement context");
-        transaction.commit().expect("commit projection");
-
-        let model_contexts = {
-            let mut statement = connection
-                .prepare(
-                    "SELECT model_step_index, context_message_count, context_input_tokens
-                     FROM agent_supervision_steps
-                     WHERE username = 'admin' AND project_id = 'project-context'
-                       AND step_type = 'model_call'
-                     ORDER BY model_step_index",
-                )
-                .expect("prepare model context query");
-            statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                })
-                .expect("query model contexts")
-                .map(|row| row.expect("read model context"))
-                .collect::<Vec<_>>()
-        };
-        let tool_context: (i64, i64, i64, String) = connection
-            .query_row(
-                "SELECT model_step_index, context_message_count, context_input_tokens, tool_name
-                 FROM agent_supervision_steps
-                 WHERE username = 'admin' AND project_id = 'project-context'
-                   AND step_type = 'tool_call'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .expect("read tool context");
-        let actual_usage: (i64, i64, i64, i64, i64, String, String, String, String) = connection
-            .query_row(
-                "SELECT model_input_tokens, model_output_tokens, model_total_tokens,
-                        model_cached_input_tokens, model_reasoning_tokens, model_token_source,
-                        model_name, provider_id, provider_name
-                 FROM agent_supervision_steps
-                 WHERE username = 'admin' AND project_id = 'project-context'
-                   AND step_type = 'model_call' AND model_step_index = 1",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                        row.get(7)?,
-                        row.get(8)?,
-                    ))
-                },
-            )
-            .expect("read actual token usage");
-        assert_eq!(model_contexts, vec![(1, 6, 1331), (2, 8, 3710)]);
-        assert_eq!(tool_context, (1, 6, 1331, "list_files".to_string()));
         assert_eq!(
-            actual_usage,
-            (
-                120,
-                30,
-                150,
-                20,
-                12,
-                "provider_response_usage".to_string(),
-                "DeepSeek-V4-Flash".to_string(),
-                "provider-1".to_string(),
-                "深度求索".to_string()
-            )
+            fs::read(&legacy_path).expect("read legacy after migration"),
+            legacy_before
         );
-        fs::remove_file(requirement_path).expect("remove requirement fixture");
-    }
-
-    #[test]
-    fn repair_rebuilds_projection_when_requirement_context_is_missing() {
-        let requirement_path = write_test_requirement(
-            "agent-supervision-repair",
-            &json!({
-                "model_input_snapshots": [{
-                    "loop": "task_processing",
-                    "message_count": 5,
-                    "estimated_input_tokens": 900,
-                    "token_source": "estimated_from_serialized_model_messages",
-                    "messages_redacted": [{"role": "user", "content_preview": "检查上下文"}]
-                }],
-                "actions_taken": {
-                    "model_steps": [{
-                        "index": 1,
-                        "status": "completed",
-                        "model_name": "model-1",
-                        "provider_id": "provider-1",
-                        "provider_name": "深度求索",
-                        "tool_call_count": 0
-                    }],
-                    "planned_tools": [],
-                    "tool_results": []
-                }
-            }),
-        );
-        let empty_payload = json!({
-            "messages": [
-                {"id": "user-repair-context", "role": "user", "content": "检查上下文"},
-                {
-                    "id": "assistant-repair-context",
-                    "role": "assistant",
-                    "answerId": "ans_assistant-repair-context",
-                    "content": "已完成",
-                    "processLog": [{"id": "old-model", "text": "模型调用", "eventType": "model_call"}]
-                }
-            ]
-        });
-        let contextual_payload = json!({
-            "messages": [
-                {"id": "user-repair-context", "role": "user", "content": "检查上下文"},
-                {
-                    "id": "assistant-repair-context",
-                    "role": "assistant",
-                    "answerId": "ans_assistant-repair-context",
-                    "content": "已完成",
-                    "operations": [{
-                        "operationId": "runtime-meta",
-                        "kind": "runtime",
-                        "meta": {"requirement_record_path": requirement_path.to_string_lossy()}
-                    }]
-                }
-            ]
-        });
-        let mut connection = Connection::open_in_memory().expect("open in-memory sqlite");
-        initialize_database(&connection).expect("initialize project chat schema");
-        let transaction = connection
-            .transaction()
-            .expect("begin old projection transaction");
-        write_supervision_projection(
-            &transaction,
-            "admin",
-            "project-context-repair",
-            "chat-context-repair",
-            &empty_payload,
-            "2026-07-17T03:00:00Z",
-        )
-        .expect("write context-empty projection");
-        transaction.commit().expect("commit old projection");
-        connection
-            .execute(
-                "INSERT INTO project_chat_runtimes
-                 (username, project_id, chat_session_id, payload_json, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    "admin",
-                    "project-context-repair",
-                    "chat-context-repair",
-                    serde_json::to_string(&contextual_payload).expect("serialize runtime payload"),
-                    "2026-07-17T03:00:00Z"
-                ],
-            )
-            .expect("insert contextual runtime");
-
-        let repaired = repair_supervision_projection_for_project(
-            &mut connection,
-            "admin",
-            "project-context-repair",
-        )
-        .expect("repair context-empty projection");
-        let context_metrics: (i64, i64, String, String, String) = connection
-            .query_row(
-                "SELECT context_message_count, context_input_tokens, model_name, provider_id, provider_name
-                 FROM agent_supervision_steps
-                 WHERE username = 'admin' AND project_id = 'project-context-repair'
-                   AND step_type = 'model_call'",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .expect("read repaired context metrics");
-        assert_eq!(repaired, 1);
-        assert_eq!(
-            context_metrics,
-            (
-                5,
-                900,
-                "model-1".to_string(),
-                "provider-1".to_string(),
-                "深度求索".to_string()
-            )
-        );
-        fs::remove_file(requirement_path).expect("remove requirement fixture");
-    }
-
-    #[test]
-    fn supervision_query_rebuilds_missing_runtime_projection() {
-        let mut connection = Connection::open_in_memory().expect("open in-memory sqlite");
-        initialize_database(&connection).expect("initialize project chat schema");
-        let payload = json!({
-            "updated_at": "2026-07-17T01:00:00Z",
-            "messages": [
-                {
-                    "id": "user-repair",
-                    "role": "user",
-                    "content": "为什么执行链路是空的"
-                },
-                {
-                    "id": "assistant-repair",
-                    "role": "assistant",
-                    "answerId": "ans_assistant-repair",
-                    "content": "已经从运行快照重建。",
-                    "processLog": [
-                        {
-                            "id": "repair-model",
-                            "text": "模型调用",
-                            "eventType": "model_call"
-                        }
-                    ],
-                    "operations": [
-                        {
-                            "operationId": "repair-tool",
-                            "kind": "tool_call",
-                            "title": "读取运行快照",
-                            "summary": "从 SQLite 重建投影",
-                            "phase": "completed",
-                            "payload": {
-                                "tool_name": "sqlite"
-                            }
-                        }
-                    ]
-                }
-            ]
-        });
-        connection
-            .execute(
-                "INSERT INTO project_chat_runtimes
-                 (username, project_id, chat_session_id, payload_json, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    "admin",
-                    "project-repair",
-                    "chat-repair",
-                    serde_json::to_string(&payload).expect("serialize runtime payload"),
-                    "2026-07-17T01:00:00Z"
-                ],
-            )
-            .expect("insert runtime without supervision projection");
-
-        let repaired =
-            repair_supervision_projection_for_project(&mut connection, "admin", "project-repair")
-                .expect("repair supervision projection");
-        assert_eq!(repaired, 1);
-
-        let step_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM agent_supervision_steps
-                 WHERE username = 'admin' AND project_id = 'project-repair'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count repaired steps");
-        assert!(step_count >= 4);
-
-        connection
-            .execute(
-                "DELETE FROM agent_supervision_steps
-                 WHERE username = 'admin' AND project_id = 'project-repair'",
-                [],
-            )
-            .expect("simulate incomplete projection");
-        let repaired_incomplete =
-            repair_supervision_projection_for_project(&mut connection, "admin", "project-repair")
-                .expect("repair incomplete supervision projection");
-        assert_eq!(repaired_incomplete, 1);
+        assert!(json_directory.join(SQLITE_MIGRATION_MARKER).exists());
+        fs::remove_dir_all(root).expect("remove test directory");
     }
 }
