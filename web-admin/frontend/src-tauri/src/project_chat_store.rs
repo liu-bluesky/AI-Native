@@ -577,151 +577,15 @@ fn supervision_model_token_fields(
     )
 }
 
-fn load_requirement_record(message: &Value) -> Result<Option<Value>, String> {
-    let path = find_nested_text(
-        message,
-        &["requirement_record_path", "requirementRecordPath"],
-    );
-    if path.is_empty() {
-        return Ok(None);
-    }
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(format!("读取需求记录失败 {path}: {err}")),
-    };
-    serde_json::from_str(&raw)
-        .map(Some)
-        .map_err(|err| format!("解析需求记录失败 {path}: {err}"))
-}
-
-fn requirement_execution_cycles(requirement: &Value) -> Vec<Value> {
-    let snapshots = requirement
-        .get("model_input_snapshots")
-        .or_else(|| requirement.get("modelInputSnapshots"))
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter(|item| value_text(item, &["loop"]) == "task_processing")
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if snapshots.is_empty() {
-        return Vec::new();
-    }
-
-    let actions = requirement
-        .get("actions_taken")
-        .or_else(|| requirement.get("actionsTaken"))
-        .unwrap_or(&Value::Null);
-    let model_steps = actions
-        .get("model_steps")
-        .or_else(|| actions.get("modelSteps"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let planned_tools = actions
-        .get("planned_tools")
-        .or_else(|| actions.get("plannedTools"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let tool_results = actions
-        .get("tool_results")
-        .or_else(|| actions.get("toolResults"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-
-    let mut tool_offset = 0usize;
-    snapshots
-        .into_iter()
-        .enumerate()
-        .map(|(cycle_offset, snapshot)| {
-            let model_step = model_steps.get(cycle_offset).unwrap_or(&Value::Null);
-            let tool_call_count =
-                value_i64(model_step, &["tool_call_count", "toolCallCount"]).max(0) as usize;
-            let tools = planned_tools
-                .iter()
-                .skip(tool_offset)
-                .take(tool_call_count)
-                .map(|planned_tool| {
-                    let call_id = value_text(
-                        planned_tool,
-                        &["tool_call_id", "toolCallId", "call_id", "callId"],
-                    );
-                    let result = tool_results.iter().find(|candidate| {
-                        value_text(
-                            candidate,
-                            &["tool_call_id", "toolCallId", "call_id", "callId"],
-                        ) == call_id
-                    });
-                    let result = result.unwrap_or(&Value::Null);
-                    let result_summary = value_text(result, &["summary", "error"]);
-                    json!({
-                        "name": value_text(planned_tool, &["tool_name", "toolName", "name"]),
-                        "toolCallId": call_id,
-                        "summary": if result_summary.is_empty() {
-                            value_text(planned_tool, &["summary"])
-                        } else {
-                            result_summary
-                        },
-                        "ok": result.get("ok").and_then(Value::as_bool).unwrap_or(true),
-                    })
-                })
-                .collect::<Vec<_>>();
-            tool_offset += tool_call_count;
-            json!({
-                "cycleIndex": value_i64(model_step, &["index", "step_index", "stepIndex"])
-                    .max((cycle_offset + 1) as i64),
-                "contextSnapshot": snapshot,
-                "model": {
-                    "status": value_text(model_step, &["status"]),
-                    "summary": value_text(model_step, &["summary"]),
-                    "error": value_text(model_step, &["error", "error_code", "errorCode"]),
-                    "modelName": value_text(model_step, &["model_name", "modelName"]),
-                    "providerId": value_text(model_step, &["provider_id", "providerId"]),
-                    "providerName": value_text(model_step, &["provider_name", "providerName"]),
-                    "tokenUsage": model_step
-                        .get("token_usage")
-                        .or_else(|| model_step.get("tokenUsage"))
-                        .cloned()
-                        .or_else(|| snapshot.get("token_usage").cloned())
-                        .or_else(|| snapshot.get("tokenUsage").cloned()),
-                },
-                "tools": tools,
-            })
-        })
-        .collect()
-}
-
 fn collect_execution_cycle_steps(
     message: &Value,
     assistant_message_id: &str,
-    requirement: Option<&Value>,
 ) -> Vec<SupervisionStep> {
     let message_cycles = message
         .get("agentExecutionCycles")
         .or_else(|| message.get("agent_execution_cycles"))
         .and_then(Value::as_array);
-    let requirement_cycles = requirement
-        .map(requirement_execution_cycles)
-        .unwrap_or_default();
-    let message_cycles_have_context = message_cycles.is_some_and(|cycles| {
-        cycles.iter().any(|cycle| {
-            cycle
-                .get("contextSnapshot")
-                .or_else(|| cycle.get("context_snapshot"))
-                .is_some_and(|snapshot| value_i64(snapshot, &["message_count", "messageCount"]) > 0)
-        })
-    });
-    let cycles = if message_cycles_have_context || requirement_cycles.is_empty() {
-        message_cycles.unwrap_or(&requirement_cycles)
-    } else {
-        &requirement_cycles
-    };
+    let cycles = message_cycles.map(Vec::as_slice).unwrap_or_default();
     if cycles.is_empty() {
         return Vec::new();
     }
@@ -861,7 +725,6 @@ fn collect_supervision_steps(
     assistant_message_id: &str,
     question_preview: &str,
     answer_status: &str,
-    requirement: Option<&Value>,
 ) -> Vec<SupervisionStep> {
     let started_at = value_i64(
         message,
@@ -908,7 +771,7 @@ fn collect_supervision_steps(
         ended_at_epoch_ms: started_at,
         duration_ms: 0,
     }];
-    let cycle_steps = collect_execution_cycle_steps(message, assistant_message_id, requirement);
+    let cycle_steps = collect_execution_cycle_steps(message, assistant_message_id);
     let has_execution_cycles = !cycle_steps.is_empty();
     steps.extend(cycle_steps);
 
@@ -958,6 +821,7 @@ fn collect_supervision_steps(
     }
 
     if let Some(operations) = message.get("operations").and_then(Value::as_array) {
+        let mut model_operation_index = 0i64;
         for (index, item) in operations.iter().enumerate() {
             let raw_id = value_text(item, &["operationId", "operation_id", "id"]);
             let fragment = stable_fragment(&raw_id, &format!("{index}"));
@@ -971,6 +835,27 @@ fn collect_supervision_steps(
             if has_execution_cycles && matches!(step_type.as_str(), "model_call" | "tool_call") {
                 continue;
             }
+            let metadata = item
+                .get("meta")
+                .or_else(|| item.get("payload"))
+                .unwrap_or(&Value::Null);
+            if step_type == "model_call" {
+                model_operation_index += 1;
+            }
+            let model_step_index = if step_type == "model_call" {
+                value_i64(metadata, &["model_step_index", "modelStepIndex", "index"])
+                    .max(model_operation_index)
+            } else {
+                0
+            };
+            let (
+                model_input_tokens,
+                model_output_tokens,
+                model_total_tokens,
+                model_cached_input_tokens,
+                model_reasoning_tokens,
+                model_token_source,
+            ) = supervision_model_token_fields(metadata, &Value::Null);
             steps.push(SupervisionStep {
                 step_id: format!("step:{assistant_message_id}:operation:{fragment}"),
                 step_type,
@@ -987,20 +872,20 @@ fn collect_supervision_steps(
                 detail_preview: clipped(&detail, 2000),
                 tool_name,
                 call_id,
-                model_name: String::new(),
-                provider_id: String::new(),
-                provider_name: String::new(),
-                model_step_index: 0,
+                model_name: value_text(metadata, &["model_name", "modelName"]),
+                provider_id: value_text(metadata, &["provider_id", "providerId"]),
+                provider_name: value_text(metadata, &["provider_name", "providerName"]),
+                model_step_index,
                 context_snapshot_json: "{}".to_string(),
                 context_message_count: 0,
                 context_input_tokens: 0,
                 context_token_source: String::new(),
-                model_input_tokens: 0,
-                model_output_tokens: 0,
-                model_total_tokens: 0,
-                model_cached_input_tokens: 0,
-                model_reasoning_tokens: 0,
-                model_token_source: String::new(),
+                model_input_tokens,
+                model_output_tokens,
+                model_total_tokens,
+                model_cached_input_tokens,
+                model_reasoning_tokens,
+                model_token_source,
                 started_at_epoch_ms: 0,
                 ended_at_epoch_ms: 0,
                 duration_ms: 0,
@@ -1146,14 +1031,8 @@ fn build_supervision_details(
             nested_run_id
         };
         let request_id = find_nested_text(&message, &["request_id", "requestId"]);
-        let requirement = load_requirement_record(&message)?;
-        let collected_steps = collect_supervision_steps(
-            &message,
-            &message_id,
-            &previous_user_content,
-            &status,
-            requirement.as_ref(),
-        );
+        let collected_steps =
+            collect_supervision_steps(&message, &message_id, &previous_user_content, &status);
         let model_round_count = collected_steps
             .iter()
             .filter(|step| step.step_type == "model_call")
@@ -1499,13 +1378,33 @@ mod tests {
                     "answerId": "ans_chat-local-1-x4ubpr",
                     "role": "assistant",
                     "content": "检查完成",
-                    "operations": [{
-                        "operationId": "tool-1",
-                        "title": "读取文件",
-                        "summary": "读取项目文件",
-                        "tool_name": "read_file",
-                        "status": "completed"
-                    }]
+                    "operations": [
+                        {
+                            "operationId": "model-1",
+                            "kind": "model",
+                            "title": "本地模型步骤 1",
+                            "status": "completed",
+                            "meta": {
+                                "model_step_index": 1,
+                                "model_name": "gpt-5.6-sol",
+                                "provider_id": "lmp-5693bc7e",
+                                "provider_name": "OpenAI",
+                                "token_usage": {
+                                    "input_tokens": 120,
+                                    "output_tokens": 30,
+                                    "total_tokens": 150,
+                                    "source": "provider"
+                                }
+                            }
+                        },
+                        {
+                            "operationId": "tool-1",
+                            "title": "读取文件",
+                            "summary": "读取项目文件",
+                            "tool_name": "read_file",
+                            "status": "completed"
+                        }
+                    ]
                 }
             ]
         });
@@ -1518,6 +1417,64 @@ mod tests {
         assert!(details[0]["steps"]
             .as_array()
             .is_some_and(|steps| steps.len() >= 3));
+        let model_step = details[0]["steps"]
+            .as_array()
+            .and_then(|steps| steps.iter().find(|step| step["step_type"] == "model_call"))
+            .expect("model operation fallback");
+        assert_eq!(model_step["model_name"], "gpt-5.6-sol");
+        assert_eq!(model_step["provider_id"], "lmp-5693bc7e");
+        assert_eq!(model_step["provider_name"], "OpenAI");
+        assert_eq!(model_step["model_step_index"], 1);
+        assert_eq!(model_step["model_total_tokens"], 150);
+    }
+
+    #[test]
+    fn supervision_prefers_persisted_execution_cycles() {
+        let runtime = json!({
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "检查项目"},
+                {
+                    "id": "chat-local-2-x4ubpr",
+                    "answerId": "ans_chat-local-2-x4ubpr",
+                    "role": "assistant",
+                    "content": "检查完成",
+                    "agentExecutionCycles": [{
+                        "cycleIndex": 2,
+                        "contextSnapshot": {
+                            "message_count": 4,
+                            "estimated_input_tokens": 88,
+                            "token_source": "estimate"
+                        },
+                        "model": {
+                            "status": "completed",
+                            "modelName": "gpt-5.6-sol",
+                            "providerId": "lmp-5693bc7e",
+                            "providerName": "OpenAI"
+                        },
+                        "tools": []
+                    }],
+                    "operations": [{
+                        "operationId": "model-legacy",
+                        "kind": "model",
+                        "meta": {"model_name": "wrong-fallback-model"}
+                    }]
+                }
+            ]
+        });
+        let details =
+            build_supervision_details("local-session-2", &runtime, "2026-07-21T00:00:00Z")
+                .expect("build supervision details");
+        let model_steps = details[0]["steps"]
+            .as_array()
+            .expect("steps")
+            .iter()
+            .filter(|step| step["step_type"] == "model_call")
+            .collect::<Vec<_>>();
+        assert_eq!(model_steps.len(), 1);
+        assert_eq!(model_steps[0]["model_name"], "gpt-5.6-sol");
+        assert_eq!(model_steps[0]["provider_name"], "OpenAI");
+        assert_eq!(model_steps[0]["model_step_index"], 2);
+        assert_eq!(model_steps[0]["context_message_count"], 4);
     }
 
     #[test]

@@ -9788,6 +9788,15 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
   const summary = localLiuAgentRuntimeEventSummary(event);
   const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
   const modelStepIndex = Number(payload?.index || 0) || 0;
+  const providerId = String(payload?.provider_id || payload?.providerId || "").trim();
+  const providerName = String(
+    payload?.provider_name ||
+      payload?.providerName ||
+      (providers.value || []).find(
+        (item) => String(item?.id || "").trim() === providerId,
+      )?.name ||
+      "",
+  ).trim();
   const requestId = String(payload?.requestId || payload?.request_id || "").trim();
   const argumentsPreview = String(
     payload?.arguments_preview || payload?.argumentsPreview || "",
@@ -9849,7 +9858,8 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
         String(context.chatSessionId || "").trim(),
       request_id: requestId,
       model_step_index: modelStepIndex,
-      provider_id: String(payload?.provider_id || payload?.providerId || "").trim(),
+      provider_id: providerId,
+      provider_name: providerName,
       model_name: String(payload?.model_name || payload?.modelName || "").trim(),
       tool_call_count: Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0,
       tool_name: toolName,
@@ -13585,6 +13595,11 @@ function normalizeRuntimeMessageSnapshot(row) {
     processLog: Array.isArray(row.processLog) ? row.processLog.slice() : [],
     statusNotes: Array.isArray(row.statusNotes) ? row.statusNotes.slice() : [],
     operations: Array.isArray(row.operations) ? row.operations.slice() : [],
+    agentExecutionCycles: Array.isArray(row.agentExecutionCycles)
+      ? row.agentExecutionCycles.slice()
+      : Array.isArray(row.agent_execution_cycles)
+        ? row.agent_execution_cycles.slice()
+        : [],
     messageExecutionStartedAtEpochMs:
       Number(row.messageExecutionStartedAtEpochMs || 0) || 0,
     messageExecutionEndedAtEpochMs:

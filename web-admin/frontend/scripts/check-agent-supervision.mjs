@@ -176,10 +176,10 @@ assert.ok(
   chatSessionListSource.includes("merge_session_with_runtime"),
   "chat session listing must derive metadata from the same runtime JSON",
 );
-assert.match(
+assert.doesNotMatch(
   jsonStoreSource,
-  /ErrorKind::NotFound[\s\S]*return Ok\(None\)/,
-  "missing historical requirement records must not block supervision parsing",
+  /load_requirement_record|requirement_execution_cycles/,
+  "supervision must not read requirement files as a second model metadata source",
 );
 assert.match(
   jsonStoreSource,
@@ -301,6 +301,21 @@ assert.match(
   projectChatSource,
   /agentExecutionCycles[\s\S]*contextSnapshot[\s\S]*toolCallIds/,
   "project chat must retain model cycles with their own context snapshots",
+);
+assert.match(
+  projectChatSource,
+  /function normalizeRuntimeMessageSnapshot[\s\S]*agentExecutionCycles:\s*Array\.isArray\(row\.agentExecutionCycles\)/,
+  "runtime persistence must preserve agent execution cycles in canonical chat JSON",
+);
+assert.match(
+  projectChatSource,
+  /provider_id:\s*providerId,[\s\S]*provider_name:\s*providerName,[\s\S]*model_name:/,
+  "model operations must persist structured provider identity for historical recovery",
+);
+assert.match(
+  jsonStoreSource,
+  /let metadata = item[\s\S]*get\("meta"\)[\s\S]*model_name[\s\S]*provider_id[\s\S]*provider_name/,
+  "legacy answers must recover model identity from operations in the same chat JSON",
 );
 assert.doesNotMatch(
   jsonStoreSource,
