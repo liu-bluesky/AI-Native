@@ -130,6 +130,24 @@
   background: color-mix(in srgb, var(--el-color-primary) 12%, white);
 }
 
+.message-file-changes-link {
+  padding: 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--el-color-warning) 42%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--el-color-warning) 10%, white);
+  color: #9a5b0a;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.message-file-changes-link:hover {
+  border-color: color-mix(in srgb, var(--el-color-warning) 62%, transparent);
+  background: color-mix(in srgb, var(--el-color-warning) 18%, white);
+}
+
 .message-bubble {
   padding: 20px 22px;
   border-radius: 24px;

@@ -18,6 +18,9 @@ def test_llm_provider_service_supports_bigmodel_openai_compatible_base_url():
     assert LlmProviderService._build_images_generation_url(base_url) == (
         "https://open.bigmodel.cn/api/paas/v4/images/generations"
     )
+    assert LlmProviderService._build_images_edit_url(base_url) == (
+        "https://open.bigmodel.cn/api/paas/v4/images/edits"
+    )
     assert LlmProviderService._build_videos_generation_url(base_url) == (
         "https://open.bigmodel.cn/api/paas/v4/videos/generations"
     )
@@ -42,6 +45,158 @@ def test_llm_provider_service_keeps_ollama_v1_base_url_unchanged():
     assert LlmProviderService._build_chat_completion_url(base_url) == (
         "http://127.0.0.1:11434/v1/chat/completions"
     )
+
+
+def test_llm_provider_service_uses_async_video_task_urls_for_openai_compatible_provider():
+    provider = {
+        "provider_type": "openai-compatible",
+        "base_url": "https://gateway.example.com/v1",
+    }
+
+    assert LlmProviderService._build_video_submit_url(provider) == "https://gateway.example.com/v1/videos"
+    assert LlmProviderService._build_video_task_url(provider, "task-123") == (
+        "https://gateway.example.com/v1/videos/task-123"
+    )
+
+
+def test_llm_provider_service_keeps_bigmodel_video_generation_protocol():
+    provider = {
+        "provider_type": "openai-compatible",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+    }
+
+    assert LlmProviderService._build_video_submit_url(provider) == (
+        "https://open.bigmodel.cn/api/paas/v4/videos/generations"
+    )
+    assert LlmProviderService._build_video_task_url(provider, "task-123") == (
+        "https://open.bigmodel.cn/api/paas/v4/async-result/task-123"
+    )
+
+
+def test_llm_provider_service_uses_separate_openai_image_generation_and_edit_routes():
+    base_url = "https://api.openai.com/v1"
+
+    assert LlmProviderService._build_images_generation_url(base_url) == (
+        "https://api.openai.com/v1/images/generations"
+    )
+    assert LlmProviderService._build_images_edit_url(base_url) == (
+        "https://api.openai.com/v1/images/edits"
+    )
+    assert LlmProviderService._build_images_edit_url(
+        "https://api.openai.com/v1/images/generations"
+    ) == "https://api.openai.com/v1/images/edits"
+
+
+def test_llm_provider_service_builds_official_image_edit_inputs():
+    assert LlmProviderService._build_image_edit_inputs(
+        ["https://example.test/source.png", "data:image/png;base64,AAAA", "file-image123"]
+    ) == [
+        {"image_url": "https://example.test/source.png"},
+        {"image_url": "data:image/png;base64,AAAA"},
+        {"file_id": "file-image123"},
+    ]
+
+
+def test_llm_provider_service_rejects_local_paths_for_image_edit():
+    with pytest.raises(ValueError, match="only accepts provider file IDs"):
+        LlmProviderService._build_image_edit_inputs(["/tmp/source.png"])
+
+
+def test_llm_provider_service_sends_generation_to_generations_without_edit_fields(monkeypatch):
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "provider_type": "openai-compatible",
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "test-key",
+        "model_configs": [{"name": "gpt-image-1.5", "model_type": "image_generation"}],
+    }
+    captured = {}
+
+    def fake_request_json(method, endpoint, headers, *, body=None, timeout=30):
+        captured.update({"method": method, "endpoint": endpoint, "body": body, "timeout": timeout})
+        return {"data": [{"url": "https://example.test/generated.png"}]}
+
+    monkeypatch.setattr(service, "_request_json", fake_request_json)
+
+    artifacts = service._generate_media_artifacts_sync(
+        provider,
+        provider_id="openai",
+        model_name="gpt-image-1.5",
+        prompt="draw a gourd",
+        image_size="1024x1024",
+    )
+
+    assert captured["endpoint"] == "https://api.openai.com/v1/images/generations"
+    assert captured["body"] == {
+        "model": "gpt-image-1.5",
+        "prompt": "draw a gourd",
+        "size": "1024x1024",
+    }
+    assert "images" not in captured["body"]
+    assert "image_urls" not in captured["body"]
+    assert artifacts[0]["content_url"] == "https://example.test/generated.png"
+
+
+def test_llm_provider_service_sends_edit_to_edits_with_images(monkeypatch):
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "provider_type": "openai-compatible",
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "test-key",
+        "model_configs": [{"name": "gpt-image-1.5", "model_type": "image_generation"}],
+    }
+    captured = {}
+
+    def fake_request_json(method, endpoint, headers, *, body=None, timeout=30):
+        captured.update({"method": method, "endpoint": endpoint, "body": body, "timeout": timeout})
+        return {"data": [{"url": "https://example.test/edited.png"}]}
+
+    monkeypatch.setattr(service, "_request_json", fake_request_json)
+
+    artifacts = service._edit_image_artifacts_sync(
+        provider,
+        provider_id="openai",
+        model_name="gpt-image-1.5",
+        prompt="make the gourd green",
+        image_references=["data:image/png;base64,AAAA", "file-image123"],
+        image_size="1024x1024",
+    )
+
+    assert captured["endpoint"] == "https://api.openai.com/v1/images/edits"
+    assert captured["body"] == {
+        "model": "gpt-image-1.5",
+        "prompt": "make the gourd green",
+        "images": [
+            {"image_url": "data:image/png;base64,AAAA"},
+            {"file_id": "file-image123"},
+        ],
+        "size": "1024x1024",
+        "input_fidelity": "high",
+    }
+    assert artifacts[0]["content_url"] == "https://example.test/edited.png"
+
+
+def test_llm_provider_service_rejects_bigmodel_image_edit_without_fallback(monkeypatch):
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "provider_type": "openai-compatible",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model_configs": [{"name": "cogview-4", "model_type": "image_generation"}],
+    }
+    monkeypatch.setattr(
+        service,
+        "_request_json",
+        lambda *_args, **_kwargs: pytest.fail("unsupported edit must not call a generation endpoint"),
+    )
+
+    with pytest.raises(ValueError, match="不支持 edit_image"):
+        service._edit_image_artifacts_sync(
+            provider,
+            provider_id="bigmodel",
+            model_name="cogview-4",
+            prompt="make it green",
+            image_references=["https://example.test/source.png"],
+        )
 
 
 def test_llm_provider_service_extracts_model_names_from_openai_models_payload():
@@ -143,6 +298,11 @@ async def test_llm_provider_service_does_not_cap_high_max_tokens(monkeypatch):
         "models": [],
     }
     service.get_provider_raw = lambda *args, **kwargs: provider
+    service.discover_models = lambda current: {
+        "models": ["solver-v2"],
+        "models_url": "https://gateway.example.com/v1/models",
+        "count": 1,
+    }
 
     def fake_request_json(method, endpoint, headers, *, body=None, timeout=30):
         captured["body"] = body
@@ -388,6 +548,11 @@ def test_llm_provider_service_test_connection_uses_model_config_model_alias():
     captured = {}
 
     service.get_provider_raw = lambda *args, **kwargs: provider
+    service.discover_models = lambda current: {
+        "models": ["Gemma4"],
+        "models_url": "http://localhost:11434/v1/models",
+        "count": 1,
+    }
 
     def _fake_call_chat_completion_sse(**kwargs):
         captured["model_name"] = kwargs["model_name"]
@@ -422,6 +587,11 @@ def test_llm_provider_service_test_connection_normalizes_ollama_root_urls():
     captured = {}
 
     service.get_provider_raw = lambda *args, **kwargs: provider
+    service.discover_models = lambda current: {
+        "models": ["gemma4"],
+        "models_url": "http://127.0.0.1:11434/v1/models",
+        "count": 1,
+    }
 
     def _fake_call_chat_completion_sse(**kwargs):
         captured["model_name"] = kwargs["model_name"]
@@ -453,6 +623,11 @@ def test_llm_provider_service_test_connection_rejects_empty_model_content():
         "model_configs": [{"name": "gemma4", "model_type": "text_generation"}],
     }
     service.get_provider_raw = lambda *args, **kwargs: provider
+    service.discover_models = lambda current: {
+        "models": [],
+        "models_url": "https://gateway.example.com/v1/models",
+        "count": 0,
+    }
     service._call_chat_completion_sse = lambda **kwargs: {
         "model": "gemma4",
         "choices": [{"message": {"content": ""}, "finish_reason": "stop"}],
@@ -496,3 +671,119 @@ def test_llm_provider_service_test_connection_returns_addresses_when_model_missi
         "https://gateway.example.com/v1/models",
         "https://gateway.example.com/v1/chat/completions",
     ]
+
+
+def test_llm_provider_service_test_connection_routes_image_models_to_image_generation():
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "id": "image-provider",
+        "name": "Image Provider",
+        "provider_type": "openai-compatible",
+        "base_url": "https://gateway.example.com/v1",
+        "enabled": True,
+        "default_model": "gpt-image-test",
+        "models": ["gpt-image-test"],
+        "model_configs": [{"name": "gpt-image-test", "model_type": "image_generation"}],
+    }
+    captured = {}
+    service.get_provider_raw = lambda *args, **kwargs: provider
+    service.discover_models = lambda current: {
+        "models": ["gpt-image-test"],
+        "models_url": "https://gateway.example.com/v1/models",
+        "count": 1,
+    }
+
+    def _fake_generate(current, **kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "asset_type": "image",
+                "title": "test image",
+                "preview_url": "https://cdn.example.com/test.png",
+                "content_url": "https://cdn.example.com/test.png",
+                "mime_type": "image/png",
+                "metadata": {},
+            }
+        ]
+
+    service._generate_media_artifacts_sync = _fake_generate
+    service._call_chat_completion_sse = lambda **kwargs: pytest.fail("image model must not use chat completions")
+
+    result = service.test_provider_connection("image-provider")
+
+    assert captured["model_name"] == "gpt-image-test"
+    assert result["reachable"] is True
+    assert result["model_type"] == "image_generation"
+    assert result["result_type"] == "image"
+    assert result["model_available"] is True
+    assert result["completion_url"] == "https://gateway.example.com/v1/images/generations"
+    assert result["artifacts"][0]["content_url"] == "https://cdn.example.com/test.png"
+
+
+def test_llm_provider_service_test_connection_routes_video_models_to_video_generation():
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "id": "video-provider",
+        "name": "Video Provider",
+        "provider_type": "openai-compatible",
+        "base_url": "https://gateway.example.com/v1",
+        "enabled": True,
+        "default_model": "video-test",
+        "models": ["video-test"],
+        "model_configs": [{"name": "video-test", "model_type": "video_generation"}],
+    }
+    service.get_provider_raw = lambda *args, **kwargs: provider
+    service.discover_models = lambda current: {
+        "models": ["video-test"],
+        "models_url": "https://gateway.example.com/v1/models",
+        "count": 1,
+    }
+    service._generate_media_artifacts_sync = lambda current, **kwargs: [
+        {
+            "asset_type": "video",
+            "title": "test video",
+            "preview_url": "https://cdn.example.com/test.mp4",
+            "content_url": "https://cdn.example.com/test.mp4",
+            "mime_type": "video/mp4",
+            "metadata": {"request_id": "task-1"},
+        }
+    ]
+
+    result = service.test_provider_connection("video-provider")
+
+    assert result["reachable"] is True
+    assert result["model_type"] == "video_generation"
+    assert result["result_type"] == "video"
+    assert result["completion_url"] == "https://gateway.example.com/v1/videos"
+    assert result["artifacts"][0]["metadata"]["request_id"] == "task-1"
+
+
+def test_llm_provider_service_test_connection_exposes_audio_preview():
+    service = object.__new__(LlmProviderService)
+    provider = {
+        "id": "audio-provider",
+        "name": "Audio Provider",
+        "provider_type": "openai-compatible",
+        "base_url": "https://gateway.example.com/v1",
+        "enabled": True,
+        "default_model": "tts-test",
+        "models": ["tts-test"],
+        "model_configs": [{"name": "tts-test", "model_type": "audio_generation"}],
+    }
+    service.get_provider_raw = lambda *args, **kwargs: provider
+    service.discover_models = lambda current: {
+        "models": ["tts-test"],
+        "models_url": "https://gateway.example.com/v1/models",
+        "count": 1,
+    }
+    service._generate_audio_speech_sync = lambda current, **kwargs: {
+        "audio_bytes": b"test-audio",
+        "content_type": "audio/wav",
+    }
+
+    result = service.test_provider_connection("audio-provider")
+
+    assert result["reachable"] is True
+    assert result["result_type"] == "audio"
+    assert result["completion_url"] == "https://gateway.example.com/v1/audio/speech"
+    assert result["artifacts"][0]["content_url"].startswith("data:audio/wav;base64,")

@@ -317,6 +317,7 @@
 .chat-layout .message-row.is-ai .message-bubble > .message-ai-context-actions,
 .chat-layout .message-row.is-ai .message-bubble > .message-images,
 .chat-layout .message-row.is-ai .message-bubble > .message-videos,
+.chat-layout .message-row.is-ai .message-bubble > .message-audios,
 .chat-layout .message-row.is-ai .message-bubble > .message-attachments {
   max-width: min(920px, 100%);
 }
@@ -342,9 +343,38 @@
 }
 
 .chat-layout .message-text {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   color: #24303d;
   font-size: 15px;
   line-height: 1.85;
+}
+
+.chat-layout .message-text img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: min(70vh, 720px);
+  object-fit: contain;
+  border-radius: 14px;
+}
+
+.chat-layout .message-text video {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: min(70vh, 720px);
+  object-fit: contain;
+  border-radius: 16px;
+  background: #020617;
+}
+
+.chat-layout .message-text audio {
+  display: block;
+  width: min(100%, 420px);
+  max-width: 100%;
 }
 
 .chat-layout .message-text p {
@@ -477,9 +507,20 @@
 }
 
 .chat-layout .preview-video {
+  display: block;
+  width: min(100%, 720px);
+  max-width: 100%;
+  max-height: min(70vh, 720px);
+  object-fit: contain;
   border: 1px solid #eceef2;
   border-radius: 16px;
   background: #020617;
+}
+
+.chat-layout .preview-audio {
+  display: block;
+  width: min(100%, 420px);
+  max-width: 100%;
 }
 
 .chat-layout .attachment-item {

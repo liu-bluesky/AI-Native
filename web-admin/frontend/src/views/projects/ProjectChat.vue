@@ -78,7 +78,9 @@
               class="chat-approval-banner__details"
             >
               <summary>查看要执行的操作详情</summary>
-              <pre>{{ nativeExternalAgentInteractionPrompt.commandPreview }}</pre>
+              <pre>{{
+                nativeExternalAgentInteractionPrompt.commandPreview
+              }}</pre>
             </details>
             <div class="chat-approval-banner__form">
               <ElementEasyForm
@@ -138,6 +140,7 @@
                     :data-message-id="
                       String(item?.id || '').trim() || undefined
                     "
+                    @contextmenu.prevent="openMessageContextMenu($event, item, idx)"
                   >
                     <div class="message-avatar">
                       <el-avatar
@@ -719,9 +722,7 @@
                                         {{ messageProcessEntryTitle(entry) }}
                                       </span>
                                       <span
-                                        v-if="
-                                          messageProcessEntryStatus(entry)
-                                        "
+                                        v-if="messageProcessEntryStatus(entry)"
                                         class="message-process-entry__status"
                                       >
                                         {{ messageProcessEntryStatus(entry) }}
@@ -745,8 +746,7 @@
                                     </div>
                                     <ul
                                       v-if="
-                                        messageProcessEntrySummary(entry)
-                                          .length
+                                        messageProcessEntrySummary(entry).length
                                       "
                                       class="message-process-entry__summary"
                                     >
@@ -816,7 +816,9 @@
                                       </summary>
                                       <pre
                                         class="message-process-entry__code"
-                                        >{{ messageProcessEntryCode(entry) }}</pre
+                                        >{{
+                                          messageProcessEntryCode(entry)
+                                        }}</pre
                                       >
                                     </details>
                                     <details
@@ -826,7 +828,9 @@
                                       <summary>查看结构化数据</summary>
                                       <pre
                                         class="message-process-entry__code"
-                                        >{{ messageProcessEntryJson(entry) }}</pre
+                                        >{{
+                                          messageProcessEntryJson(entry)
+                                        }}</pre
                                       >
                                     </details>
                                   </div>
@@ -996,6 +1000,9 @@
                             :preview-src-list="extractImages(item)"
                             :initial-index="imageIndex"
                             preview-teleported
+                            @contextmenu.stop.prevent="
+                              openMediaContextMenu($event, item, 'image', img, imageIndex)
+                            "
                           />
                         </div>
                         <div
@@ -1010,6 +1017,25 @@
                             controls
                             preload="metadata"
                             playsinline
+                            @contextmenu.stop.prevent="
+                              openMediaContextMenu($event, item, 'video', video, videoIndex)
+                            "
+                          />
+                        </div>
+                        <div
+                          v-if="extractAudios(item).length"
+                          class="message-audios"
+                        >
+                          <audio
+                            v-for="(audio, audioIndex) in extractAudios(item)"
+                            :key="`audio-${idx}-${audioIndex}`"
+                            :src="audio"
+                            class="preview-audio"
+                            controls
+                            preload="metadata"
+                            @contextmenu.stop.prevent="
+                              openMediaContextMenu($event, item, 'audio', audio, audioIndex)
+                            "
                           />
                         </div>
                         <div
@@ -1022,6 +1048,9 @@
                             ) in extractAttachments(item)"
                             :key="`att-${idx}-${attachmentIndex}`"
                             class="attachment-item"
+                            @contextmenu.stop.prevent="
+                              openAttachmentContextMenu($event, item, attachment, attachmentIndex)
+                            "
                           >
                             <el-tag
                               size="small"
@@ -1377,6 +1406,8 @@
                           !isInlineEditingMessage(idx) &&
                           (getMessageActions(item, idx).length ||
                             messageAnswerId(item) ||
+                            (canReviewWorkspaceChanges &&
+                              messageFileChangeCount(item)) ||
                             messageAgentRuntimeDurationLabel(item))
                         "
                         class="message-actions"
@@ -1404,9 +1435,27 @@
                           type="button"
                           class="message-supervision-link"
                           title="基于回答 ID 和执行监管信息提交 Bug 反馈"
-                          @click="replyBugFeedbackDialogRef?.open({ item, answerId: messageAnswerId(item), chatSessionId: currentChatSessionId })"
+                          @click="
+                            replyBugFeedbackDialogRef?.open({
+                              item,
+                              answerId: messageAnswerId(item),
+                              chatSessionId: currentChatSessionId,
+                            })
+                          "
                         >
                           Bug 反馈
+                        </button>
+                        <button
+                          v-if="
+                            canReviewWorkspaceChanges &&
+                            messageFileChangeCount(item)
+                          "
+                          type="button"
+                          class="message-file-changes-link"
+                          :title="`查看该回答修改的 ${messageFileChangeCount(item)} 个文件`"
+                          @click="openMessageFileChanges(item)"
+                        >
+                          文件变更 {{ messageFileChangeCount(item) }}
                         </button>
                         <span
                           v-if="messageAgentRuntimeDurationLabel(item)"
@@ -1434,7 +1483,6 @@
                 </ChatMessageList>
               </div>
             </div>
-
           </div>
 
           <TerminalApprovalDialog
@@ -1450,14 +1498,20 @@
             <div class="chat-approval-banner__head">
               <span class="chat-approval-banner__icon"></span>
               <div class="chat-approval-banner__title-wrap">
-                <strong>{{ currentLocalLiuAgentPermissionPrompt.title }}</strong>
+                <strong>{{
+                  currentLocalLiuAgentPermissionPrompt.title
+                }}</strong>
                 <div class="chat-approval-banner__meta">
-                  <span>{{ currentLocalLiuAgentPermissionPrompt.toolLabel }}</span>
-                  <span>{{ currentLocalLiuAgentPermissionPrompt.scopeLabel }}</span>
-                  <span>{{ currentLocalLiuAgentPermissionPrompt.riskLabel }}</span>
-                  <span
-                    v-if="currentLocalLiuAgentPermissionPrompt.queueLabel"
-                  >
+                  <span>{{
+                    currentLocalLiuAgentPermissionPrompt.toolLabel
+                  }}</span>
+                  <span>{{
+                    currentLocalLiuAgentPermissionPrompt.scopeLabel
+                  }}</span>
+                  <span>{{
+                    currentLocalLiuAgentPermissionPrompt.riskLabel
+                  }}</span>
+                  <span v-if="currentLocalLiuAgentPermissionPrompt.queueLabel">
                     {{ currentLocalLiuAgentPermissionPrompt.queueLabel }}
                   </span>
                 </div>
@@ -1476,7 +1530,11 @@
             <div class="chat-approval-banner__actions">
               <el-button
                 size="small"
-                @click="submitCurrentLocalLiuAgentPermissionAction('local_liuagent_deny')"
+                @click="
+                  submitCurrentLocalLiuAgentPermissionAction(
+                    'local_liuagent_deny',
+                  )
+                "
               >
                 拒绝
               </el-button>
@@ -1485,7 +1543,11 @@
                 plain
                 type="primary"
                 :loading="localLiuAgentPermissionSubmitting"
-                @click="submitCurrentLocalLiuAgentPermissionAction('local_liuagent_allow_once')"
+                @click="
+                  submitCurrentLocalLiuAgentPermissionAction(
+                    'local_liuagent_allow_once',
+                  )
+                "
               >
                 本次授权
               </el-button>
@@ -1493,7 +1555,11 @@
                 size="small"
                 type="primary"
                 :loading="localLiuAgentPermissionSubmitting"
-                @click="submitCurrentLocalLiuAgentPermissionAction('local_liuagent_allow_session')"
+                @click="
+                  submitCurrentLocalLiuAgentPermissionAction(
+                    'local_liuagent_allow_session',
+                  )
+                "
               >
                 会话授权
               </el-button>
@@ -1501,7 +1567,11 @@
                 size="small"
                 type="primary"
                 :loading="localLiuAgentPermissionSubmitting"
-                @click="submitCurrentLocalLiuAgentPermissionAction('local_liuagent_allow_always')"
+                @click="
+                  submitCurrentLocalLiuAgentPermissionAction(
+                    'local_liuagent_allow_always',
+                  )
+                "
               >
                 信任工作区
               </el-button>
@@ -1510,7 +1580,10 @@
           <section
             v-if="activeComposerPlan"
             class="composer-plan-panel"
-            :class="[`is-${activeComposerPlan.phase}`, { 'is-collapsed': !composerPlanExpanded }]"
+            :class="[
+              `is-${activeComposerPlan.phase}`,
+              { 'is-collapsed': !composerPlanExpanded },
+            ]"
           >
             <button
               type="button"
@@ -1519,7 +1592,10 @@
               @click="composerPlanExpanded = !composerPlanExpanded"
             >
               <span class="composer-plan-panel__heading">
-                <span class="composer-plan-panel__pulse" aria-hidden="true"></span>
+                <span
+                  class="composer-plan-panel__pulse"
+                  aria-hidden="true"
+                ></span>
                 <span>
                   <strong>{{ activeComposerPlan.title }}</strong>
                   <small>{{ activeComposerPlan.summary }}</small>
@@ -1533,7 +1609,10 @@
                 </el-icon>
               </span>
             </button>
-            <div v-show="composerPlanExpanded" class="composer-plan-panel__body">
+            <div
+              v-show="composerPlanExpanded"
+              class="composer-plan-panel__body"
+            >
               <ol class="composer-plan-panel__steps">
                 <li
                   v-for="(step, stepIndex) in activeComposerPlan.steps"
@@ -1563,7 +1642,10 @@
             v-model:draft-text="draftText"
             v-model:input-focused="inputFocused"
             v-model:local-agent-auth-level="localLiuAgentAuthLevelModel"
-            v-model:selected-model-option-value="selectedModelOptionValue"
+            :model-routing-mode="modelRoutingMode"
+            :model-routing-roles="modelRoutingRoles"
+            :manual-model-option-value="manualModelOptionValue"
+            :active-model-summary="activeModelSummary"
             :show-agent-workflow-status-strip="showAgentWorkflowStatusStrip"
             :show-local-agent-auth-level="nativeDesktopBridgeAvailable"
             :agent-workflow-state="agentWorkflowState"
@@ -1573,6 +1655,7 @@
             :working-status-elapsed-label="workingStatusElapsedLabel"
             :working-status-meta-items="workingStatusMetaItems"
             :is-dragging="isDragging"
+            :context-refs="composerContextRefs"
             :upload-files="uploadFiles"
             :format-file-type="formatFileType"
             :composer-placeholder="composerPlaceholder"
@@ -1601,6 +1684,8 @@
             @drag-leave="handleDragLeave"
             @drop-files="handleDrop"
             @remove-file="removeFile"
+            @remove-context-ref="removeComposerContextRef"
+            @clear-context-refs="clearComposerContextRefs"
             @editor-blur="handleEditorBlur"
             @editor-keydown="handleEditorKeydown"
             @editor-paste="handleEditorPaste"
@@ -1608,6 +1693,9 @@
             @editor-composition-end="handleEditorCompositionEnd"
             @apply-slash-command-selection="applySlashCommandSelection"
             @file-change="handleFileChange"
+            @update:model-routing-mode="setModelRoutingMode"
+            @update:model-role-selection="setModelRoleSelection"
+            @update:manual-model-option-value="setManualModelOptionValue"
             @sync-model-providers="syncModelProvidersFromServer"
             @stop-generation="stopGeneration"
             @send="doSend"
@@ -1691,36 +1779,27 @@
         />
       </el-form-item>
       <el-form-item label="传输类型">
-        <el-segmented v-model="mcpServerDraft.type" :options="mcpTransportOptions" />
-      </el-form-item>
-      <el-form-item
-        v-if="mcpServerDraft.type === 'stdio'"
-        label="命令"
-      >
-        <el-input v-model="mcpServerDraft.command" placeholder="/usr/local/bin/my-mcp" />
-      </el-form-item>
-      <el-form-item
-        v-if="mcpServerDraft.type === 'stdio'"
-        label="参数"
-      >
-        <el-input
-          v-model="mcpServerDraft.argsText"
-          placeholder='["--stdio"]'
+        <el-segmented
+          v-model="mcpServerDraft.type"
+          :options="mcpTransportOptions"
         />
       </el-form-item>
-      <el-form-item
-        v-if="mcpServerDraft.type === 'stdio'"
-        label="工作目录"
-      >
+      <el-form-item v-if="mcpServerDraft.type === 'stdio'" label="命令">
+        <el-input
+          v-model="mcpServerDraft.command"
+          placeholder="/usr/local/bin/my-mcp"
+        />
+      </el-form-item>
+      <el-form-item v-if="mcpServerDraft.type === 'stdio'" label="参数">
+        <el-input v-model="mcpServerDraft.argsText" placeholder='["--stdio"]' />
+      </el-form-item>
+      <el-form-item v-if="mcpServerDraft.type === 'stdio'" label="工作目录">
         <el-input
           v-model="mcpServerDraft.cwd"
           placeholder=". 或 /path/to/server"
         />
       </el-form-item>
-      <el-form-item
-        v-if="mcpServerDraft.type !== 'stdio'"
-        label="URL"
-      >
+      <el-form-item v-if="mcpServerDraft.type !== 'stdio'" label="URL">
         <el-input
           v-model="mcpServerDraft.url"
           placeholder="http://127.0.0.1:8000/mcp/query/sse"
@@ -1761,9 +1840,7 @@
       <el-button :loading="mcpServerTesting" @click="testMcpServerDraft">
         测试
       </el-button>
-      <el-button type="primary" @click="saveMcpServerDraft">
-        保存
-      </el-button>
+      <el-button type="primary" @click="saveMcpServerDraft"> 保存 </el-button>
     </template>
   </el-dialog>
 
@@ -1813,6 +1890,22 @@
     :error="codePreviewError"
   />
 
+  <FileChangesDrawer
+    v-model="fileChangesDialogVisible"
+    :items="visibleWorkspaceChangedFiles"
+    :context-title="fileChangesContextTitle"
+    :active-path="activeWorkspaceFilePath"
+    :active-item="activeWorkspaceReviewItem"
+    :preview="workspaceDiffPreview"
+    :target-label="workspaceDiffTargetLabel"
+    :loading="workspaceDiffLoading"
+    :saving="workspaceFileSaving"
+    @refresh="refreshFileChangesDrawer"
+    @select="openWorkspaceChangeFile"
+    @accept="acceptReviewedWorkspaceFile"
+    @revert="revertReviewedWorkspaceFile"
+  />
+
   <ReplyBugFeedbackDialog
     ref="replyBugFeedbackDialogRef"
     :project-id="selectedProjectId"
@@ -1838,9 +1931,7 @@
           <span>
             {{ aiContextDialogProviderLabel }}
           </span>
-          <span>
-            消息 {{ aiContextDialogMessageId || "-" }}
-          </span>
+          <span> 消息 {{ aiContextDialogMessageId || "-" }} </span>
         </div>
         <pre class="ai-context-dialog__pre">{{
           formattedAiContextDialogPayload
@@ -2119,314 +2210,173 @@
                   </aside>
 
                   <div class="settings-module-list">
-                  <section
-                    v-show="
-                      activeSettingsModule === 'context' &&
-                      settingsModuleMatches('项目 上下文 工作区 AIENTRY 入口 文件 workspace ai entry', 'project')
-                    "
-                    class="settings-module-section"
-                  >
-                    <div class="settings-module-section__head">
-                      <div>
-                        <strong>项目上下文</strong>
-                        <span>工作区和入口文件决定桌面智能体在本机如何理解项目。</span>
-                      </div>
-                    </div>
-                    <article
-                      v-if="hasSelectedProject"
-                      class="settings-module-row settings-module-row--stacked"
+                    <section
+                      v-show="
+                        activeSettingsModule === 'context' &&
+                        settingsModuleMatches(
+                          '项目 上下文 工作区 AIENTRY 入口 文件 workspace ai entry',
+                          'project',
+                        )
+                      "
+                      class="settings-module-section"
                     >
-                      <div class="settings-module-row__icon">
-                        <el-icon><Files /></el-icon>
-                      </div>
-                      <div class="settings-module-row__main">
-                        <strong>项目工作区</strong>
-                        <span>本机真实目录；命令执行和相对路径解析会以这里为基准。</span>
-                        <el-input
-                          v-model="projectWorkspaceDraft"
-                          class="settings-module-row__input"
-                          placeholder="/Volumes/work/project"
-                        />
-                        <div class="settings-module-row__hint">
-                          <template v-if="projectWorkspaceResolved">
-                            已保存：{{ projectWorkspaceResolved }}
-                          </template>
-                          <template v-else>
-                            当前项目还没有配置工作区路径。
-                          </template>
-                          <template v-if="projectWorkspaceDirty">
-                            当前输入尚未保存。
-                          </template>
+                      <div class="settings-module-section__head">
+                        <div>
+                          <strong>项目上下文</strong>
+                          <span
+                            >工作区和入口文件决定桌面智能体在本机如何理解项目。</span
+                          >
                         </div>
                       </div>
-                      <div class="settings-module-row__actions">
-                        <el-button
-                          @click="promptProjectWorkspaceDirectory"
-                          :loading="projectWorkspacePicking"
-                        >
-                          选择目录
-                        </el-button>
-                        <el-button
-                          type="primary"
-                          :loading="projectWorkspaceSaving"
-                          @click="saveProjectWorkspaceDirectory()"
-                        >
-                          保存
-                        </el-button>
-                      </div>
-                    </article>
-                    <article
-                      v-if="hasSelectedProject"
-                      class="settings-module-row settings-module-row--stacked"
-                    >
-                      <div class="settings-module-row__icon">
-                        <el-icon><DocumentCopy /></el-icon>
-                      </div>
-                      <div class="settings-module-row__main">
-                        <strong>AI 入口文件</strong>
-                        <span>项目级规则入口；未设置时继续使用内置统一入口。</span>
-                        <el-input
-                          v-model="aiEntryFileDraft"
-                          class="settings-module-row__input"
-                          placeholder="AIENTRY.md"
-                        />
-                        <div class="settings-module-row__hint">
-                          <template v-if="aiEntryFileResolved">
-                            已保存：{{ aiEntryFileResolved }}
-                          </template>
-                          <template v-if="aiEntryFileDirty">
-                            当前输入尚未保存。
-                          </template>
-                        </div>
-                      </div>
-                      <div class="settings-module-row__actions">
-                        <el-button
-                          @click="promptProjectAiEntryFile"
-                          :loading="aiEntryFilePicking"
-                        >
-                          选择文件
-                        </el-button>
-                        <el-button
-                          :loading="aiEntryFileCreating"
-                          @click="createDefaultAiEntryFile"
-                        >
-                          创建
-                        </el-button>
-                        <el-button
-                          type="primary"
-                          :loading="aiEntryFileSaving"
-                          @click="saveProjectAiEntryFile()"
-                        >
-                          保存
-                        </el-button>
-                      </div>
-                    </article>
-                    <article v-else class="settings-module-row">
-                      <div class="settings-module-row__icon">
-                        <el-icon><InfoFilled /></el-icon>
-                      </div>
-                      <div class="settings-module-row__main">
-                        <strong>尚未选择项目</strong>
-                        <span>选择项目后才能配置项目工作区和入口文件。</span>
-                      </div>
-                    </article>
-                  </section>
-
-                  <section
-                    v-show="
-                      activeSettingsModule === 'execution' &&
-                      settingsModuleMatches('执行 智能体 协作 模式 历史 消息 本轮 仅回答', 'project')
-                    "
-                    class="settings-module-section"
-                  >
-                    <div class="settings-module-section__head">
-                      <div>
-                        <strong>执行策略</strong>
-                        <span>控制本轮对话如何分配智能体、使用历史和选择工具边界。</span>
-                      </div>
-                    </div>
-                    <article class="settings-module-row">
-                      <div class="settings-module-row__icon">
-                        <el-icon><CollectionTag /></el-icon>
-                      </div>
-                      <div class="settings-module-row__main">
-                        <strong>执行智能体</strong>
-                        <span>{{ selectedEmployeeSummary }}</span>
-                      </div>
-                      <div class="settings-module-row__control">
-                        <el-select
-                          v-model="selectedEmployeeIds"
-                          multiple
-                          collapse-tags
-                          collapse-tags-tooltip
-                          filterable
-                          clearable
-                          placeholder="留空自动分配"
-                          class="settings-module-row__select"
-                          :disabled="!selectedProjectId"
-                        >
-                          <el-option
-                            v-for="item in projectEmployees"
-                            :key="item.id"
-                            :label="`${item.name || item.id}`"
-                            :value="item.id"
-                          />
-                        </el-select>
-                      </div>
-                    </article>
-                    <article class="settings-module-row">
-                      <div class="settings-module-row__icon">
-                        <el-icon><CircleCheck /></el-icon>
-                      </div>
-                      <div class="settings-module-row__main">
-                        <strong>协作模式</strong>
-                        <span>决定智能体如何分工；当前对话统一使用系统模型执行。</span>
-                      </div>
-                      <div class="settings-module-row__control">
-                        <el-select
-                          v-model="projectChatSettings.employee_coordination_mode"
-                          class="settings-module-row__select"
-                          :disabled="!selectedProjectId"
-                        >
-                          <el-option label="自动协作" value="auto" />
-                          <el-option label="手动模式" value="manual" />
-                        </el-select>
-                      </div>
-                    </article>
-                    <article class="settings-module-row">
-                      <div class="settings-module-row__icon">
-                        <el-icon><FolderOpened /></el-icon>
-                      </div>
-                      <div class="settings-module-row__main">
-                        <strong>技能目录</strong>
-                        <span>桌面智能体会优先从该目录读取 SKILL.md、模板和脚本。</span>
-                      </div>
-                      <div class="settings-module-row__control">
-                        <el-input
-                          v-model="projectChatSettings.skill_directory"
-                          clearable
-                          placeholder="例如 /workspace/.ai-employee/skills"
-                          :disabled="!selectedProjectId"
-                        >
-                          <template #append>
-                            <el-button
-                              :loading="skillDirectoryPicking"
-                              :disabled="
-                                !selectedProjectId || ruleDirectoryPicking
-                              "
-                              @click="pickChatRuntimeDirectory('skill')"
-                            >
-                              选择目录
-                            </el-button>
-                          </template>
-                        </el-input>
-                      </div>
-                    </article>
-                    <article class="settings-module-row">
-                      <div class="settings-module-row__icon">
-                        <el-icon><Document /></el-icon>
-                      </div>
-                      <div class="settings-module-row__main">
-                        <strong>规则目录</strong>
-                        <span>桌面智能体会按当前任务从该目录加载相关规则正文。</span>
-                      </div>
-                      <div class="settings-module-row__control">
-                        <el-input
-                          v-model="projectChatSettings.rule_directory"
-                          clearable
-                          placeholder="例如 /workspace/.ai-employee/rules"
-                          :disabled="!selectedProjectId"
-                        >
-                          <template #append>
-                            <el-button
-                              :loading="ruleDirectoryPicking"
-                              :disabled="
-                                !selectedProjectId || skillDirectoryPicking
-                              "
-                              @click="pickChatRuntimeDirectory('rule')"
-                            >
-                              选择目录
-                            </el-button>
-                          </template>
-                        </el-input>
-                      </div>
-                    </article>
-                    <article class="settings-module-row">
-                      <div class="settings-module-row__icon">
-                        <el-icon><EditPen /></el-icon>
-                      </div>
-                      <div class="settings-module-row__main">
-                        <strong>历史消息条数</strong>
-                        <span>控制发送给模型的上下文消息数量。</span>
-                      </div>
-                      <div class="settings-module-row__control">
-                        <el-input-number
-                          v-model="projectChatSettings.history_limit"
-                          :min="1"
-                          :max="50"
-                        />
-                      </div>
-                    </article>
-                    <article class="settings-module-row">
-                      <div class="settings-module-row__icon">
-                        <el-icon><InfoFilled /></el-icon>
-                      </div>
-                      <div class="settings-module-row__main">
-                        <strong>单轮仅回答</strong>
-                        <span>只对下一次对话生效，不主动调用工具。</span>
-                      </div>
-                      <el-switch v-model="singleRoundAnswerOnly" />
-                    </article>
-                  </section>
-
-                  <section
-                    v-show="
-                      activeSettingsModule === 'generation' &&
-                      settingsModuleMatches('生成 回答 模型 温度 风格 图片 视频 参数 结论', 'all')
-                    "
-                    class="settings-module-section"
-                  >
-                    <div class="settings-module-section__head">
-                      <div>
-                        <strong>生成回答</strong>
-                        <span>当前模型类型：{{ currentModelTypeLabel }}。{{ currentModelTypeDescription || "参数面板会跟随当前模型类型切换。" }}</span>
-                      </div>
-                    </div>
-                    <template v-if="currentModelParameterMode === 'text'">
-                      <article class="settings-module-row">
+                      <article
+                        v-if="hasSelectedProject"
+                        class="settings-module-row settings-module-row--stacked"
+                      >
                         <div class="settings-module-row__icon">
-                          <el-icon><EditPen /></el-icon>
+                          <el-icon><Files /></el-icon>
                         </div>
                         <div class="settings-module-row__main">
-                          <strong>回答风格</strong>
-                          <span>偏好 AI 返回内容的详细程度。</span>
+                          <strong>项目工作区</strong>
+                          <span
+                            >本机真实目录；命令执行和相对路径解析会以这里为基准。</span
+                          >
+                          <el-input
+                            v-model="projectWorkspaceDraft"
+                            class="settings-module-row__input"
+                            placeholder="/Volumes/work/project"
+                          />
+                          <div class="settings-module-row__hint">
+                            <template v-if="projectWorkspaceResolved">
+                              已保存：{{ projectWorkspaceResolved }}
+                            </template>
+                            <template v-else>
+                              当前项目还没有配置工作区路径。
+                            </template>
+                            <template v-if="projectWorkspaceDirty">
+                              当前输入尚未保存。
+                            </template>
+                          </div>
+                        </div>
+                        <div class="settings-module-row__actions">
+                          <el-button
+                            @click="promptProjectWorkspaceDirectory"
+                            :loading="projectWorkspacePicking"
+                          >
+                            选择目录
+                          </el-button>
+                          <el-button
+                            type="primary"
+                            :loading="projectWorkspaceSaving"
+                            @click="saveProjectWorkspaceDirectory()"
+                          >
+                            保存
+                          </el-button>
+                        </div>
+                      </article>
+                      <article
+                        v-if="hasSelectedProject"
+                        class="settings-module-row settings-module-row--stacked"
+                      >
+                        <div class="settings-module-row__icon">
+                          <el-icon><DocumentCopy /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>AI 入口文件</strong>
+                          <span
+                            >项目级规则入口；未设置时继续使用内置统一入口。</span
+                          >
+                          <el-input
+                            v-model="aiEntryFileDraft"
+                            class="settings-module-row__input"
+                            placeholder="AIENTRY.md"
+                          />
+                          <div class="settings-module-row__hint">
+                            <template v-if="aiEntryFileResolved">
+                              已保存：{{ aiEntryFileResolved }}
+                            </template>
+                            <template v-if="aiEntryFileDirty">
+                              当前输入尚未保存。
+                            </template>
+                          </div>
+                        </div>
+                        <div class="settings-module-row__actions">
+                          <el-button
+                            @click="promptProjectAiEntryFile"
+                            :loading="aiEntryFilePicking"
+                          >
+                            选择文件
+                          </el-button>
+                          <el-button
+                            :loading="aiEntryFileCreating"
+                            @click="createDefaultAiEntryFile"
+                          >
+                            创建
+                          </el-button>
+                          <el-button
+                            type="primary"
+                            :loading="aiEntryFileSaving"
+                            @click="saveProjectAiEntryFile()"
+                          >
+                            保存
+                          </el-button>
+                        </div>
+                      </article>
+                      <article v-else class="settings-module-row">
+                        <div class="settings-module-row__icon">
+                          <el-icon><InfoFilled /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>尚未选择项目</strong>
+                          <span>选择项目后才能配置项目工作区和入口文件。</span>
+                        </div>
+                      </article>
+                    </section>
+
+                    <section
+                      v-show="
+                        activeSettingsModule === 'execution' &&
+                        settingsModuleMatches(
+                          '执行 智能体 协作 模式 历史 消息 本轮 仅回答',
+                          'project',
+                        )
+                      "
+                      class="settings-module-section"
+                    >
+                      <div class="settings-module-section__head">
+                        <div>
+                          <strong>执行策略</strong>
+                          <span
+                            >控制本轮对话如何分配智能体、使用历史和选择工具边界。</span
+                          >
+                        </div>
+                      </div>
+                      <article class="settings-module-row">
+                        <div class="settings-module-row__icon">
+                          <el-icon><CollectionTag /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>执行智能体</strong>
+                          <span>{{ selectedEmployeeSummary }}</span>
                         </div>
                         <div class="settings-module-row__control">
                           <el-select
-                            v-model="projectChatSettings.answer_style"
+                            v-model="selectedEmployeeIds"
+                            multiple
+                            collapse-tags
+                            collapse-tags-tooltip
+                            filterable
+                            clearable
+                            placeholder="留空自动分配"
                             class="settings-module-row__select"
+                            :disabled="!selectedProjectId"
                           >
-                            <el-option label="简洁" value="concise" />
-                            <el-option label="平衡" value="balanced" />
-                            <el-option label="详细" value="detailed" />
+                            <el-option
+                              v-for="item in projectEmployees"
+                              :key="item.id"
+                              :label="`${item.name || item.id}`"
+                              :value="item.id"
+                            />
                           </el-select>
-                        </div>
-                      </article>
-                      <article class="settings-module-row settings-module-row--stacked">
-                        <div class="settings-module-row__icon">
-                          <el-icon><RefreshRight /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>温度</strong>
-                          <span>值越小越稳，值越大越发散。</span>
-                          <el-slider
-                            v-model="temperature"
-                            :min="0"
-                            :max="2"
-                            :step="0.1"
-                            show-input
-                            :show-input-controls="false"
-                          />
                         </div>
                       </article>
                       <article class="settings-module-row">
@@ -2434,265 +2384,514 @@
                           <el-icon><CircleCheck /></el-icon>
                         </div>
                         <div class="settings-module-row__main">
-                          <strong>先结论后步骤</strong>
-                          <span>长回答优先给出核心结论。</span>
+                          <strong>协作模式</strong>
+                          <span
+                            >决定智能体如何分工；当前对话统一使用系统模型执行。</span
+                          >
                         </div>
-                        <el-switch
-                          v-model="projectChatSettings.prefer_conclusion_first"
-                        />
+                        <div class="settings-module-row__control">
+                          <el-select
+                            v-model="
+                              projectChatSettings.employee_coordination_mode
+                            "
+                            class="settings-module-row__select"
+                            :disabled="!selectedProjectId"
+                          >
+                            <el-option label="自动协作" value="auto" />
+                            <el-option label="手动模式" value="manual" />
+                          </el-select>
+                        </div>
                       </article>
-                    </template>
-                    <template
-                      v-else-if="
-                        currentModelParameterMode === 'image' ||
-                        currentModelParameterMode === 'video'
-                      "
-                    >
-                      <article
-                        v-for="section in currentModelParameterSections"
-                        :key="`settings-module-${section.key}`"
-                        class="settings-module-row"
-                      >
+                      <article class="settings-module-row">
+                        <div class="settings-module-row__icon">
+                          <el-icon><FolderOpened /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>技能目录</strong>
+                          <span
+                            >桌面智能体会优先从该目录读取
+                            SKILL.md、模板和脚本。</span
+                          >
+                        </div>
+                        <div class="settings-module-row__control">
+                          <el-input
+                            v-model="projectChatSettings.skill_directory"
+                            clearable
+                            placeholder="例如 /workspace/.ai-employee/skills"
+                            :disabled="!selectedProjectId"
+                          >
+                            <template #append>
+                              <el-button
+                                :loading="skillDirectoryPicking"
+                                :disabled="
+                                  !selectedProjectId || ruleDirectoryPicking
+                                "
+                                @click="pickChatRuntimeDirectory('skill')"
+                              >
+                                选择目录
+                              </el-button>
+                            </template>
+                          </el-input>
+                        </div>
+                      </article>
+                      <article class="settings-module-row">
+                        <div class="settings-module-row__icon">
+                          <el-icon><Document /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>规则目录</strong>
+                          <span
+                            >桌面智能体会按当前任务从该目录加载相关规则正文。</span
+                          >
+                        </div>
+                        <div class="settings-module-row__control">
+                          <el-input
+                            v-model="projectChatSettings.rule_directory"
+                            clearable
+                            placeholder="例如 /workspace/.ai-employee/rules"
+                            :disabled="!selectedProjectId"
+                          >
+                            <template #append>
+                              <el-button
+                                :loading="ruleDirectoryPicking"
+                                :disabled="
+                                  !selectedProjectId || skillDirectoryPicking
+                                "
+                                @click="pickChatRuntimeDirectory('rule')"
+                              >
+                                选择目录
+                              </el-button>
+                            </template>
+                          </el-input>
+                        </div>
+                      </article>
+                      <article class="settings-module-row">
                         <div class="settings-module-row__icon">
                           <el-icon><EditPen /></el-icon>
                         </div>
                         <div class="settings-module-row__main">
-                          <strong>{{ section.label }}</strong>
-                          <span>{{ section.helper || "模型参数" }}</span>
+                          <strong>历史消息条数</strong>
+                          <span>控制发送给模型的上下文消息数量。</span>
                         </div>
                         <div class="settings-module-row__control">
-                          <el-segmented
-                            v-if="section.useSegmented"
-                            :model-value="section.modelValue"
-                            :options="
-                              section.options.map((item) => ({
-                                label: item.label,
-                                value: item.value,
-                              }))
-                            "
-                            @change="
-                              (value) =>
-                                setCurrentModelParameterValue(section.key, value)
-                            "
+                          <el-input-number
+                            v-model="projectChatSettings.history_limit"
+                            :min="1"
+                            :max="50"
                           />
-                          <el-select
-                            v-else
-                            :model-value="section.modelValue"
-                            class="settings-module-row__select"
-                            @change="
-                              (value) =>
-                                setCurrentModelParameterValue(section.key, value)
-                            "
-                          >
-                            <el-option
-                              v-for="option in section.options"
-                              :key="`${section.key}-${option.id}`"
-                              :label="option.label"
-                              :value="option.value"
-                            />
-                          </el-select>
                         </div>
                       </article>
-                    </template>
-                  </section>
+                      <article class="settings-module-row">
+                        <div class="settings-module-row__icon">
+                          <el-icon><InfoFilled /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>单轮仅回答</strong>
+                          <span>只对下一次对话生效，不主动调用工具。</span>
+                        </div>
+                        <el-switch v-model="singleRoundAnswerOnly" />
+                      </article>
+                    </section>
 
-                  <section
-                    v-show="
-                      activeSettingsModule === 'tools' &&
-                      settingsModuleMatches('工具 MCP 护栏 web search extract provider firecrawl tavily exa parallel managed', 'all')
-                    "
-                    class="settings-module-section"
-                  >
-                    <div class="settings-module-section__head">
-                      <div>
-                        <strong>工具与 MCP</strong>
-                        <span>管理当前对话可用的工具、MCP registry 和 Web 搜索 provider。</span>
-                      </div>
-                    </div>
-                    <article class="settings-module-row">
-                      <div class="settings-module-row__icon">
-                        <el-icon><CollectionTag /></el-icon>
-                      </div>
-                      <div class="settings-module-row__main">
-                        <strong>按需启用工具</strong>
-                        <span>{{ projectChatSettings.auto_use_tools ? "允许系统在必要时选择工具" : "系统不会主动调工具" }}</span>
-                      </div>
-                      <el-switch
-                        v-model="projectChatSettings.auto_use_tools"
-                        @change="projectChatSettings.auto_use_tools_explicit = true"
-                      />
-                    </article>
-                    <div class="settings-module-subsection">
-                      <div class="settings-module-subsection__head">
-                        <strong>MCP 模块</strong>
-                        <div class="settings-module-row__actions">
-                          <el-button size="small" @click="openMcpServerDialog('project')">
-                            添加项目 Server
-                          </el-button>
-                          <el-button size="small" @click="openMcpServerDialog('global')">
-                            添加全局 Server
-                          </el-button>
-                          <el-button
-                            size="small"
-                            type="primary"
-                            :loading="projectMcpConfigSaving"
-                            @click="saveProjectMcpConfig"
+                    <section
+                      v-show="
+                        activeSettingsModule === 'generation' &&
+                        settingsModuleMatches(
+                          '生成 回答 模型 温度 风格 图片 视频 参数 结论',
+                          'all',
+                        )
+                      "
+                      class="settings-module-section"
+                    >
+                      <div class="settings-module-section__head">
+                        <div>
+                          <strong>生成回答</strong>
+                          <span
+                            >当前模型类型：{{ currentModelTypeLabel }}。{{
+                              currentModelTypeDescription ||
+                              "参数面板会跟随当前模型类型切换。"
+                            }}</span
                           >
-                            保存项目文件
-                          </el-button>
                         </div>
                       </div>
-                      <div class="mcp-server-table">
-                        <article
-                          v-for="server in effectiveMcpServerRows"
-                          :key="`${server.scope}:${server.name}`"
-                          class="mcp-server-row"
-                        >
-                          <div class="mcp-server-row__main">
-                            <strong>{{ server.name }}</strong>
-                            <span>{{ server.type }} · {{ server.endpoint || "未配置入口" }}</span>
+                      <template v-if="currentModelParameterMode === 'text'">
+                        <article class="settings-module-row">
+                          <div class="settings-module-row__icon">
+                            <el-icon><EditPen /></el-icon>
                           </div>
-                          <el-tag size="small" :type="server.scope === 'project' ? 'warning' : 'info'">
-                            {{ server.scope === "project" ? "项目" : "全局" }}
-                          </el-tag>
-                          <el-tag size="small" :type="server.enabled ? 'success' : 'info'">
-                            {{ server.enabled ? "启用" : "停用" }}
-                          </el-tag>
-                          <div class="mcp-server-row__actions">
-                            <el-button size="small" @click="testMcpServer(server)">
-                              测试
-                            </el-button>
-                            <el-button size="small" @click="editMcpServer(server)">
-                              编辑
-                            </el-button>
-                            <el-button size="small" type="danger" plain @click="removeMcpServer(server)">
-                              删除
-                            </el-button>
+                          <div class="settings-module-row__main">
+                            <strong>回答风格</strong>
+                            <span>偏好 AI 返回内容的详细程度。</span>
+                          </div>
+                          <div class="settings-module-row__control">
+                            <el-select
+                              v-model="projectChatSettings.answer_style"
+                              class="settings-module-row__select"
+                            >
+                              <el-option label="简洁" value="concise" />
+                              <el-option label="平衡" value="balanced" />
+                              <el-option label="详细" value="detailed" />
+                            </el-select>
                           </div>
                         </article>
-                        <el-empty
-                          v-if="!effectiveMcpServerRows.length"
-                          description="暂无 MCP server"
-                          :image-size="48"
-                        />
-                      </div>
-                      <details class="mcp-json-details">
-                        <summary>查看 MCP JSON</summary>
-                        <el-input
-                          v-model="projectMcpConfigText"
-                          type="textarea"
-                          :rows="8"
-                          resize="vertical"
-                          spellcheck="false"
-                        />
-                        <div class="mcp-local-editor__actions">
-                          <el-button size="small" @click="formatProjectMcpConfigText">
-                            格式化 JSON
-                          </el-button>
-                          <el-button size="small" @click="resetProjectMcpConfigText">
-                            清空项目配置
-                          </el-button>
-                        </div>
-                      </details>
-                    </div>
-                    <div class="settings-module-subsection">
-                      <div class="settings-module-subsection__head">
-                        <strong>Web 搜索 Provider</strong>
-                        <el-segmented
-                          v-model="webToolsConfigScope"
-                          :options="webToolsScopeOptions"
-                        />
-                      </div>
-                      <div
-                        v-if="hasSelectedProject || webToolsConfigScope === 'global'"
-                        class="web-tools-provider-table"
-                      >
                         <article
-                          v-for="provider in webToolsProviderRows"
-                          :key="`${webToolsConfigScope}:${provider.id}`"
-                          class="web-tools-provider-row"
+                          class="settings-module-row settings-module-row--stacked"
                         >
-                          <div class="web-tools-provider-row__icon">
-                            <el-icon><CollectionTag /></el-icon>
+                          <div class="settings-module-row__icon">
+                            <el-icon><RefreshRight /></el-icon>
                           </div>
-                          <div class="web-tools-provider-row__main">
-                            <strong>{{ provider.label }}</strong>
-                            <span>{{ provider.description }}</span>
+                          <div class="settings-module-row__main">
+                            <strong>温度</strong>
+                            <span>值越小越稳，值越大越发散。</span>
+                            <el-slider
+                              v-model="temperature"
+                              :min="0"
+                              :max="2"
+                              :step="0.1"
+                              show-input
+                              :show-input-controls="false"
+                            />
                           </div>
-                          <el-tag v-if="provider.selected" size="small" type="success">
-                            当前
-                          </el-tag>
-                          <el-tag v-else-if="provider.inherited" size="small" type="info">
-                            继承
-                          </el-tag>
-                          <el-tag v-else-if="provider.configured" size="small" type="warning">
-                            已配置
-                          </el-tag>
+                        </article>
+                        <article class="settings-module-row">
+                          <div class="settings-module-row__icon">
+                            <el-icon><CircleCheck /></el-icon>
+                          </div>
+                          <div class="settings-module-row__main">
+                            <strong>先结论后步骤</strong>
+                            <span>长回答优先给出核心结论。</span>
+                          </div>
                           <el-switch
-                            :model-value="provider.selected"
-                            :disabled="webToolsConfigScope === 'project' && !hasSelectedProject"
-                            @change="
-                              (value) =>
-                                setWebToolProviderEnabled(provider.id, value)
+                            v-model="
+                              projectChatSettings.prefer_conclusion_first
                             "
                           />
-                          <el-button
-                            size="small"
-                            :icon="EditPen"
-                            circle
-                            @click="openWebToolsProviderDialog(provider.id)"
-                          />
                         </article>
-                      </div>
-                      <div v-else class="mcp-section-tip">
-                        先选择项目，才能管理当前项目 web-tools 配置。
-                      </div>
-                      <details class="mcp-json-details">
-                        <summary>高级 web-tools JSON</summary>
-                        <el-input
-                          v-if="webToolsConfigScope === 'global'"
-                          v-model="globalWebToolsConfigText"
-                          type="textarea"
-                          :rows="8"
-                          resize="vertical"
-                          spellcheck="false"
-                        />
-                        <el-input
-                          v-else
-                          v-model="projectWebToolsConfigText"
-                          type="textarea"
-                          :rows="8"
-                          resize="vertical"
-                          spellcheck="false"
-                        />
-                        <div class="mcp-local-editor__actions">
-                          <el-button size="small" @click="formatActiveWebToolsConfigText">
-                            格式化 JSON
-                          </el-button>
-                          <el-button
-                            v-if="webToolsConfigScope === 'project'"
-                            size="small"
-                            @click="resetProjectWebToolsConfigText"
+                      </template>
+                      <template
+                        v-else-if="
+                          currentModelParameterMode === 'image' ||
+                          currentModelParameterMode === 'video'
+                        "
+                      >
+                        <article
+                          v-for="section in currentModelParameterSections"
+                          :key="`settings-module-${section.key}`"
+                          class="settings-module-row"
+                        >
+                          <div class="settings-module-row__icon">
+                            <el-icon><EditPen /></el-icon>
+                          </div>
+                          <div class="settings-module-row__main">
+                            <strong>{{ section.label }}</strong>
+                            <span>{{ section.helper || "模型参数" }}</span>
+                          </div>
+                          <div class="settings-module-row__control">
+                            <el-segmented
+                              v-if="section.useSegmented"
+                              :model-value="section.modelValue"
+                              :options="
+                                section.options.map((item) => ({
+                                  label: item.label,
+                                  value: item.value,
+                                }))
+                              "
+                              @change="
+                                (value) =>
+                                  setCurrentModelParameterValue(
+                                    section.key,
+                                    value,
+                                  )
+                              "
+                            />
+                            <el-select
+                              v-else
+                              :model-value="section.modelValue"
+                              class="settings-module-row__select"
+                              @change="
+                                (value) =>
+                                  setCurrentModelParameterValue(
+                                    section.key,
+                                    value,
+                                  )
+                              "
+                            >
+                              <el-option
+                                v-for="option in section.options"
+                                :key="`${section.key}-${option.id}`"
+                                :label="option.label"
+                                :value="option.value"
+                              />
+                            </el-select>
+                          </div>
+                        </article>
+                      </template>
+                    </section>
+
+                    <section
+                      v-show="
+                        activeSettingsModule === 'tools' &&
+                        settingsModuleMatches(
+                          '工具 MCP 护栏 web search extract provider firecrawl tavily exa parallel managed',
+                          'all',
+                        )
+                      "
+                      class="settings-module-section"
+                    >
+                      <div class="settings-module-section__head">
+                        <div>
+                          <strong>工具与 MCP</strong>
+                          <span
+                            >管理当前对话可用的工具、MCP registry 和 Web 搜索
+                            provider。</span
                           >
-                            清空项目配置
-                          </el-button>
-                          <el-button
-                            size="small"
-                            type="primary"
-                            :loading="activeWebToolsConfigSaving"
-                            @click="saveActiveWebToolsConfig"
-                          >
-                            保存文件
-                          </el-button>
                         </div>
-                      </details>
-                    </div>
-                  </section>
-                  <el-empty
-                    v-if="!visibleSettingsModuleNavItems.length"
-                    description="调整搜索词或范围后继续配置"
-                    :image-size="56"
-                  />
+                      </div>
+                      <article class="settings-module-row">
+                        <div class="settings-module-row__icon">
+                          <el-icon><CollectionTag /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>按需启用工具</strong>
+                          <span>{{
+                            projectChatSettings.auto_use_tools
+                              ? "允许系统在必要时选择工具"
+                              : "系统不会主动调工具"
+                          }}</span>
+                        </div>
+                        <el-switch
+                          v-model="projectChatSettings.auto_use_tools"
+                          @change="
+                            projectChatSettings.auto_use_tools_explicit = true
+                          "
+                        />
+                      </article>
+                      <div class="settings-module-subsection">
+                        <div class="settings-module-subsection__head">
+                          <strong>MCP 模块</strong>
+                          <div class="settings-module-row__actions">
+                            <el-button
+                              size="small"
+                              @click="openMcpServerDialog('project')"
+                            >
+                              添加项目 Server
+                            </el-button>
+                            <el-button
+                              size="small"
+                              @click="openMcpServerDialog('global')"
+                            >
+                              添加全局 Server
+                            </el-button>
+                            <el-button
+                              size="small"
+                              type="primary"
+                              :loading="projectMcpConfigSaving"
+                              @click="saveProjectMcpConfig"
+                            >
+                              保存项目文件
+                            </el-button>
+                          </div>
+                        </div>
+                        <div class="mcp-server-table">
+                          <article
+                            v-for="server in effectiveMcpServerRows"
+                            :key="`${server.scope}:${server.name}`"
+                            class="mcp-server-row"
+                          >
+                            <div class="mcp-server-row__main">
+                              <strong>{{ server.name }}</strong>
+                              <span
+                                >{{ server.type }} ·
+                                {{ server.endpoint || "未配置入口" }}</span
+                              >
+                            </div>
+                            <el-tag
+                              size="small"
+                              :type="
+                                server.scope === 'project' ? 'warning' : 'info'
+                              "
+                            >
+                              {{ server.scope === "project" ? "项目" : "全局" }}
+                            </el-tag>
+                            <el-tag
+                              size="small"
+                              :type="server.enabled ? 'success' : 'info'"
+                            >
+                              {{ server.enabled ? "启用" : "停用" }}
+                            </el-tag>
+                            <div class="mcp-server-row__actions">
+                              <el-button
+                                size="small"
+                                @click="testMcpServer(server)"
+                              >
+                                测试
+                              </el-button>
+                              <el-button
+                                size="small"
+                                @click="editMcpServer(server)"
+                              >
+                                编辑
+                              </el-button>
+                              <el-button
+                                size="small"
+                                type="danger"
+                                plain
+                                @click="removeMcpServer(server)"
+                              >
+                                删除
+                              </el-button>
+                            </div>
+                          </article>
+                          <el-empty
+                            v-if="!effectiveMcpServerRows.length"
+                            description="暂无 MCP server"
+                            :image-size="48"
+                          />
+                        </div>
+                        <details class="mcp-json-details">
+                          <summary>查看 MCP JSON</summary>
+                          <el-input
+                            v-model="projectMcpConfigText"
+                            type="textarea"
+                            :rows="8"
+                            resize="vertical"
+                            spellcheck="false"
+                          />
+                          <div class="mcp-local-editor__actions">
+                            <el-button
+                              size="small"
+                              @click="formatProjectMcpConfigText"
+                            >
+                              格式化 JSON
+                            </el-button>
+                            <el-button
+                              size="small"
+                              @click="resetProjectMcpConfigText"
+                            >
+                              清空项目配置
+                            </el-button>
+                          </div>
+                        </details>
+                      </div>
+                      <div class="settings-module-subsection">
+                        <div class="settings-module-subsection__head">
+                          <strong>Web 搜索 Provider</strong>
+                          <el-segmented
+                            v-model="webToolsConfigScope"
+                            :options="webToolsScopeOptions"
+                          />
+                        </div>
+                        <div
+                          v-if="
+                            hasSelectedProject ||
+                            webToolsConfigScope === 'global'
+                          "
+                          class="web-tools-provider-table"
+                        >
+                          <article
+                            v-for="provider in webToolsProviderRows"
+                            :key="`${webToolsConfigScope}:${provider.id}`"
+                            class="web-tools-provider-row"
+                          >
+                            <div class="web-tools-provider-row__icon">
+                              <el-icon><CollectionTag /></el-icon>
+                            </div>
+                            <div class="web-tools-provider-row__main">
+                              <strong>{{ provider.label }}</strong>
+                              <span>{{ provider.description }}</span>
+                            </div>
+                            <el-tag
+                              v-if="provider.selected"
+                              size="small"
+                              type="success"
+                            >
+                              当前
+                            </el-tag>
+                            <el-tag
+                              v-else-if="provider.inherited"
+                              size="small"
+                              type="info"
+                            >
+                              继承
+                            </el-tag>
+                            <el-tag
+                              v-else-if="provider.configured"
+                              size="small"
+                              type="warning"
+                            >
+                              已配置
+                            </el-tag>
+                            <el-switch
+                              :model-value="provider.selected"
+                              :disabled="
+                                webToolsConfigScope === 'project' &&
+                                !hasSelectedProject
+                              "
+                              @change="
+                                (value) =>
+                                  setWebToolProviderEnabled(provider.id, value)
+                              "
+                            />
+                            <el-button
+                              size="small"
+                              :icon="EditPen"
+                              circle
+                              @click="openWebToolsProviderDialog(provider.id)"
+                            />
+                          </article>
+                        </div>
+                        <div v-else class="mcp-section-tip">
+                          先选择项目，才能管理当前项目 web-tools 配置。
+                        </div>
+                        <details class="mcp-json-details">
+                          <summary>高级 web-tools JSON</summary>
+                          <el-input
+                            v-if="webToolsConfigScope === 'global'"
+                            v-model="globalWebToolsConfigText"
+                            type="textarea"
+                            :rows="8"
+                            resize="vertical"
+                            spellcheck="false"
+                          />
+                          <el-input
+                            v-else
+                            v-model="projectWebToolsConfigText"
+                            type="textarea"
+                            :rows="8"
+                            resize="vertical"
+                            spellcheck="false"
+                          />
+                          <div class="mcp-local-editor__actions">
+                            <el-button
+                              size="small"
+                              @click="formatActiveWebToolsConfigText"
+                            >
+                              格式化 JSON
+                            </el-button>
+                            <el-button
+                              v-if="webToolsConfigScope === 'project'"
+                              size="small"
+                              @click="resetProjectWebToolsConfigText"
+                            >
+                              清空项目配置
+                            </el-button>
+                            <el-button
+                              size="small"
+                              type="primary"
+                              :loading="activeWebToolsConfigSaving"
+                              @click="saveActiveWebToolsConfig"
+                            >
+                              保存文件
+                            </el-button>
+                          </div>
+                        </details>
+                      </div>
+                    </section>
+                    <el-empty
+                      v-if="!visibleSettingsModuleNavItems.length"
+                      description="调整搜索词或范围后继续配置"
+                      :image-size="56"
+                    />
                   </div>
                 </div>
               </div>
@@ -2705,6 +2904,55 @@
       </section>
     </div>
   </div>
+
+  <Teleport to="body">
+    <div
+      v-if="messageContextMenu.visible"
+      class="project-chat-context-menu"
+      :style="{
+        left: `${messageContextMenu.x}px`,
+        top: `${messageContextMenu.y}px`,
+      }"
+      role="menu"
+      @contextmenu.prevent
+    >
+      <button type="button" role="menuitem" @click="appendContextMenuSelection">
+        <span>添加到 liuAgent 对话</span>
+      </button>
+      <div
+        v-if="
+          contextMenuCanCopyAddress() ||
+          contextMenuCanCopyFile() ||
+          contextMenuCanCopyContent()
+        "
+        class="project-chat-context-menu__divider"
+      ></div>
+      <button
+        v-if="contextMenuCanCopyAddress()"
+        type="button"
+        role="menuitem"
+        @click="copyContextMenuAddress"
+      >
+        <span>复制地址</span>
+      </button>
+      <button
+        v-if="contextMenuCanCopyFile()"
+        type="button"
+        role="menuitem"
+        @click="copyContextMenuFile"
+      >
+        <span>复制文件本身</span>
+      </button>
+      <button
+        v-if="contextMenuCanCopyContent()"
+        type="button"
+        role="menuitem"
+        @click="copyContextMenuContent"
+      >
+        <span>复制内容</span>
+      </button>
+    </div>
+  </Teleport>
 
   <el-tour
     v-model="chatTourVisible"
@@ -2778,6 +3026,7 @@ import ProjectConversationSidebar from "@/modules/project-chat/components/sessio
 import ChatTaskTreePanel from "@/modules/project-chat/components/task-tree/ChatTaskTreePanel.vue";
 import TerminalApprovalDialog from "@/modules/project-chat/components/terminal/TerminalApprovalDialog.vue";
 import CodePreviewDialog from "@/modules/project-chat/components/code-preview/CodePreviewDialog.vue";
+import FileChangesDrawer from "@/modules/project-chat/components/file-changes/FileChangesDrawer.vue";
 import ReplyBugFeedbackDialog from "@/modules/project-chat/components/feedback/ReplyBugFeedbackDialog.vue";
 import SkillResourceDialog from "@/modules/project-chat/components/skill-resource/SkillResourceDialog.vue";
 import { useProjectChatComposer } from "@/modules/project-chat/composables/useProjectChatComposer.js";
@@ -2817,7 +3066,10 @@ import {
 } from "@element-plus/icons-vue";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
-import { buildApiBaseUrl, resolveServerOrigin } from "@/utils/server-profile.js";
+import {
+  buildApiBaseUrl,
+  resolveServerOrigin,
+} from "@/utils/server-profile.js";
 import { formatRelativeDateTime } from "@/utils/date.js";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -2831,6 +3083,7 @@ import {
   getChatParameterDictionaryKey,
   getChatParameterDefaultValue,
   listChatParameterKeys,
+  isAttachmentSupportedMode,
   normalizeAttachmentMode,
   normalizeChatParameterValue,
   normalizeProviderModelConfigs,
@@ -2838,14 +3091,25 @@ import {
   resolveChatParameterOptions,
 } from "@/utils/llm-models.js";
 import {
+  buildModelOptionValue,
+  MODEL_ROLE_CONFIGS,
+  MODEL_ROUTING_MODE_AUTO,
+  MODEL_ROUTING_MODE_MANUAL,
+  parseModelOptionValue,
+  readModelRoleTarget,
+  writeModelRoleTarget,
+} from "@/modules/project-chat/services/modelRouting.js";
+import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
 } from "@/utils/workspace-picker.js";
 import {
   ackNativeLiuAgentRuntimeOutbox,
+  acceptNativeWorkspaceFileChange,
   classifyNativeRunnerCommand,
   cancelNativeExternalAgentSession,
   cleanupNativeLiuAgentOfflineCache,
+  copyNativeResourceFileToClipboard,
   detectNativeExecutors,
   getNativeExternalAgentSession,
   getNativeRuntimeInfo,
@@ -2857,12 +3121,15 @@ import {
   listNativeLiuAgentRuntimeEvents,
   listNativeLiuAgentRuntimeOutbox,
   listNativeRunnerPermissionDecisions,
+  listNativeWorkspaceFileChanges,
   listNativeWorkspaceFiles,
   pauseNativeLiuAgentLocalChat,
   prepareNativeExternalAgentLaunch,
   prepareNativeWorkspaceFileWrite,
   previewNativeWorkspaceDiff,
   readNativeWorkspaceFile,
+  revertNativeWorkspaceFileChange,
+  writeNativeWorkspaceFile,
   recordNativeRunnerPermissionDecision,
   cancelNativeLiuAgentRuntimeJob,
   resolveNativeExternalAgentPermission,
@@ -2939,9 +3206,7 @@ import {
   installVettSkillResource,
   searchSkillResourceItems,
 } from "@/modules/project-chat/services/projectChatSkillResources.js";
-import {
-  submitAgentRuntimePermissionActionRequest,
-} from "@/modules/project-chat/services/projectChatAgentRuntimeApi.js";
+import { submitAgentRuntimePermissionActionRequest } from "@/modules/project-chat/services/projectChatAgentRuntimeApi.js";
 import {
   createEmployeeFromDraft as createEmployeeFromDraftRequest,
   fetchEmployeeDraftCatalog,
@@ -2977,16 +3242,28 @@ import {
   attachmentTypeLabel,
   clipText,
   collectArtifactImageUrls,
+  collectArtifactAudioUrls,
   collectArtifactVideoUrls,
   extractAttachments,
+  extractAudios,
   extractImages,
   extractVideos,
   formatFileType,
   isAllowedFileType,
+  isAudioFile,
   isImageFile,
+  mergeAudioUrls,
   mergeImageUrls,
   mergeVideoUrls,
+  stripStructuredMediaDuplicatesFromMarkdown,
 } from "@/modules/project-chat/mappers/mediaMappers.js";
+import {
+  buildContextReferenceAttachments,
+  buildContextReferencesPrompt,
+  contextReferenceTypeLabel,
+  mergeContextReferences,
+  normalizeContextReference,
+} from "@/modules/project-chat/mappers/contextReferenceMappers.js";
 import {
   buildExternalAgentWarmupKey,
   buildNativeExternalAgentCommandPreview,
@@ -3025,9 +3302,7 @@ import {
   resolveNativeExternalAgentFinalAnswerText,
   runnerEvidenceMetaText,
 } from "@/modules/project-chat/mappers/native-agent/nativeAgentDetailMappers.js";
-import {
-  normalizeAiEntryFileForSave,
-} from "@/modules/project-chat/mappers/workspaceMappers.js";
+import { normalizeAiEntryFileForSave } from "@/modules/project-chat/mappers/workspaceMappers.js";
 import {
   clearPersistedChatRuntime as clearLocalPersistedChatRuntime,
   readPersistedChatRuntime as readLocalPersistedChatRuntime,
@@ -3038,9 +3313,7 @@ import {
   readProjectWorkspaceFile,
   saveProjectWorkspaceFile,
 } from "@/modules/project-chat/services/projectChatWorkspaceApi.js";
-import {
-  upsertProjectChatRequirementRecord as upsertProjectChatRequirementRecordRequest,
-} from "@/modules/project-chat/services/projectChatRequirementRecord.js";
+import { upsertProjectChatRequirementRecord as upsertProjectChatRequirementRecordRequest } from "@/modules/project-chat/services/projectChatRequirementRecord.js";
 import {
   clearChatSessionMemory,
   clearSelectedProjectId,
@@ -3316,6 +3589,7 @@ let selectedProjectConversationLoadingKey = "";
 const selectedEmployeeIds = ref([]);
 const selectedProviderId = ref("");
 const selectedModelName = ref("");
+const manualModelOptionValue = ref("");
 const defaultProviderId = ref("");
 const defaultModelName = ref("");
 const globalDefaultProviderId = ref("");
@@ -3372,7 +3646,8 @@ const settingsModuleNavItems = [
     desc: "工具、MCP、Web 搜索",
     meta: "通用",
     scope: "all",
-    keywords: "工具 MCP 护栏 web search extract provider firecrawl tavily exa parallel managed",
+    keywords:
+      "工具 MCP 护栏 web search extract provider firecrawl tavily exa parallel managed",
   },
 ];
 const visibleSettingsModuleNavItems = computed(() =>
@@ -3385,8 +3660,12 @@ const globalWebToolsConfig = ref({});
 const projectWebToolsConfig = ref({});
 const globalWebToolsConfigText = ref(formatWebToolsConfig({}));
 const projectWebToolsConfigText = ref(formatWebToolsConfig({}));
-const globalWebToolsConfigPath = ref("~/.ai-employee/desktop-agent-runtime/web-tools/config.json");
-const projectWebToolsConfigPath = ref(".ai-employee/desktop-agent-runtime/web-tools/config.json");
+const globalWebToolsConfigPath = ref(
+  "~/.ai-employee/desktop-agent-runtime/web-tools/config.json",
+);
+const projectWebToolsConfigPath = ref(
+  ".ai-employee/desktop-agent-runtime/web-tools/config.json",
+);
 const globalWebToolsConfigSaving = ref(false);
 const projectWebToolsConfigSaving = ref(false);
 const webToolsConfigScope = ref("project");
@@ -3432,10 +3711,28 @@ const webToolsProviderDefinitions = [
     label: "Managed",
     description: "连接自托管或桌面托管的搜索与正文抽取服务。",
     fields: [
-      { key: "search_url", label: "Search URL", placeholder: "https://search.example.com/search" },
-      { key: "search_token", label: "Search Token", placeholder: "可选", secret: true },
-      { key: "extract_url", label: "Extract URL", placeholder: "https://search.example.com/extract" },
-      { key: "extract_token", label: "Extract Token", placeholder: "可选", secret: true },
+      {
+        key: "search_url",
+        label: "Search URL",
+        placeholder: "https://search.example.com/search",
+      },
+      {
+        key: "search_token",
+        label: "Search Token",
+        placeholder: "可选",
+        secret: true,
+      },
+      {
+        key: "extract_url",
+        label: "Extract URL",
+        placeholder: "https://search.example.com/extract",
+      },
+      {
+        key: "extract_token",
+        label: "Extract Token",
+        placeholder: "可选",
+        secret: true,
+      },
     ],
   },
   {
@@ -3444,30 +3741,51 @@ const webToolsProviderDefinitions = [
     description: "使用 Firecrawl 搜索与页面抓取能力。",
     fields: [
       { key: "api_key", label: "API Key", placeholder: "fc-...", secret: true },
-      { key: "api_url", label: "API URL", placeholder: "https://api.firecrawl.dev" },
+      {
+        key: "api_url",
+        label: "API URL",
+        placeholder: "https://api.firecrawl.dev",
+      },
     ],
   },
   {
     id: "parallel",
     label: "Parallel",
     description: "使用 Parallel 的搜索与网页内容 API。",
-    fields: [{ key: "api_key", label: "API Key", placeholder: "parallel...", secret: true }],
+    fields: [
+      {
+        key: "api_key",
+        label: "API Key",
+        placeholder: "parallel...",
+        secret: true,
+      },
+    ],
   },
   {
     id: "tavily",
     label: "Tavily",
     description: "使用 Tavily 搜索与页面抽取 API。",
-    fields: [{ key: "api_key", label: "API Key", placeholder: "tvly-...", secret: true }],
+    fields: [
+      {
+        key: "api_key",
+        label: "API Key",
+        placeholder: "tvly-...",
+        secret: true,
+      },
+    ],
   },
   {
     id: "exa",
     label: "Exa",
     description: "使用 Exa 搜索与内容抓取 API。",
-    fields: [{ key: "api_key", label: "API Key", placeholder: "exa...", secret: true }],
+    fields: [
+      { key: "api_key", label: "API Key", placeholder: "exa...", secret: true },
+    ],
   },
 ];
-const mcpServerDialogTitle = computed(() =>
-  `${mcpServerDialogMode.value === "edit" ? "编辑" : "添加"}${mcpServerScope.value === "global" ? "全局" : "项目"} MCP Server`,
+const mcpServerDialogTitle = computed(
+  () =>
+    `${mcpServerDialogMode.value === "edit" ? "编辑" : "添加"}${mcpServerScope.value === "global" ? "全局" : "项目"} MCP Server`,
 );
 const webToolsActiveConfigPath = computed(() =>
   webToolsConfigScope.value === "global"
@@ -3500,13 +3818,17 @@ const webToolsProviderRows = computed(() => {
   return webToolsProviderDefinitions.map((definition) => ({
     ...definition,
     selected: scopeBackend === definition.id,
-    inherited: scope === "project" && !scopeBackend && globalBackend === definition.id,
+    inherited:
+      scope === "project" && !scopeBackend && globalBackend === definition.id,
     configured: webToolsProviderConfigured(scopeConfig, definition.id),
   }));
 });
 const effectiveMcpServerRows = computed(() => {
   const globalServers = normalizeMcpServerRows(globalMcpConfig.value, "global");
-  const projectServers = normalizeMcpServerRows(projectMcpConfig.value, "project");
+  const projectServers = normalizeMcpServerRows(
+    projectMcpConfig.value,
+    "project",
+  );
   const projectNames = new Set(projectServers.map((item) => item.name));
   return [
     ...projectServers,
@@ -3516,20 +3838,35 @@ const effectiveMcpServerRows = computed(() => {
 
 function normalizeMcpServerRows(config, scope) {
   const servers =
-    config?.mcpServers && typeof config.mcpServers === "object" && !Array.isArray(config.mcpServers)
+    config?.mcpServers &&
+    typeof config.mcpServers === "object" &&
+    !Array.isArray(config.mcpServers)
       ? config.mcpServers
       : {};
   return Object.entries(servers)
     .map(([name, value]) => {
-      const server = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-      const type = String(server.type || server.transport || (server.command ? "stdio" : "http")).trim() || "stdio";
+      const server =
+        value && typeof value === "object" && !Array.isArray(value)
+          ? value
+          : {};
+      const type =
+        String(
+          server.type ||
+            server.transport ||
+            (server.command ? "stdio" : "http"),
+        ).trim() || "stdio";
       return {
         scope,
         name: String(name || "").trim(),
         type,
         endpoint:
           type === "stdio"
-            ? [server.command, ...(Array.isArray(server.args) ? server.args : [])].filter(Boolean).join(" ")
+            ? [
+                server.command,
+                ...(Array.isArray(server.args) ? server.args : []),
+              ]
+                .filter(Boolean)
+                .join(" ")
             : String(server.url || "").trim(),
         enabled: Boolean(server.enabled ?? true),
         config: { ...server },
@@ -3582,7 +3919,8 @@ async function reloadLocalMcpConfig(projectId = selectedProjectId.value) {
 
   try {
     const projectFile = await readProjectMcpConfigFile(workspacePath);
-    if (normalizedProjectId !== String(selectedProjectId.value || "").trim()) return;
+    if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
+      return;
     projectMcpConfigText.value = String(
       projectFile?.content || formatMcpConfig({ mcpServers: {} }),
     );
@@ -3604,41 +3942,57 @@ async function reloadLocalWebToolsConfig(projectId = selectedProjectId.value) {
   const workspacePath = localLiuAgentWorkspacePath();
   try {
     const globalFile = await readGlobalWebToolsConfigFile();
-    globalWebToolsConfigText.value = String(globalFile?.content || formatWebToolsConfig({}));
+    globalWebToolsConfigText.value = String(
+      globalFile?.content || formatWebToolsConfig({}),
+    );
     globalWebToolsConfig.value = globalFile?.config || {};
     globalWebToolsConfigPath.value = String(
-      globalFile?.path || "~/.ai-employee/desktop-agent-runtime/web-tools/config.json",
+      globalFile?.path ||
+        "~/.ai-employee/desktop-agent-runtime/web-tools/config.json",
     ).trim();
   } catch (err) {
     globalWebToolsConfigText.value = formatWebToolsConfig({});
     globalWebToolsConfig.value = {};
-    globalWebToolsConfigPath.value = "~/.ai-employee/desktop-agent-runtime/web-tools/config.json";
+    globalWebToolsConfigPath.value =
+      "~/.ai-employee/desktop-agent-runtime/web-tools/config.json";
     ElMessage.error(err?.message || "读取全局 web-tools 配置文件失败");
   }
   if (!normalizedProjectId || !workspacePath) {
     projectWebToolsConfigText.value = formatWebToolsConfig({});
     projectWebToolsConfig.value = {};
-    effectiveWebToolsConfig.value = mergeWebToolsConfigs(globalWebToolsConfig.value, {});
-    projectWebToolsConfigPath.value = ".ai-employee/desktop-agent-runtime/web-tools/config.json";
+    effectiveWebToolsConfig.value = mergeWebToolsConfigs(
+      globalWebToolsConfig.value,
+      {},
+    );
+    projectWebToolsConfigPath.value =
+      ".ai-employee/desktop-agent-runtime/web-tools/config.json";
     return;
   }
   try {
     const projectFile = await readProjectWebToolsConfigFile(workspacePath);
-    if (normalizedProjectId !== String(selectedProjectId.value || "").trim()) return;
-    projectWebToolsConfigText.value = String(projectFile?.content || formatWebToolsConfig({}));
+    if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
+      return;
+    projectWebToolsConfigText.value = String(
+      projectFile?.content || formatWebToolsConfig({}),
+    );
     projectWebToolsConfig.value = projectFile?.config || {};
     effectiveWebToolsConfig.value = mergeWebToolsConfigs(
       globalWebToolsConfig.value,
       projectWebToolsConfig.value,
     );
     projectWebToolsConfigPath.value = String(
-      projectFile?.path || ".ai-employee/desktop-agent-runtime/web-tools/config.json",
+      projectFile?.path ||
+        ".ai-employee/desktop-agent-runtime/web-tools/config.json",
     ).trim();
   } catch (err) {
     projectWebToolsConfigText.value = formatWebToolsConfig({});
     projectWebToolsConfig.value = {};
-    effectiveWebToolsConfig.value = mergeWebToolsConfigs(globalWebToolsConfig.value, {});
-    projectWebToolsConfigPath.value = ".ai-employee/desktop-agent-runtime/web-tools/config.json";
+    effectiveWebToolsConfig.value = mergeWebToolsConfigs(
+      globalWebToolsConfig.value,
+      {},
+    );
+    projectWebToolsConfigPath.value =
+      ".ai-employee/desktop-agent-runtime/web-tools/config.json";
     ElMessage.error(err?.message || "读取项目 web-tools 配置文件失败");
   }
 }
@@ -3710,9 +4064,13 @@ async function saveProjectMcpConfig() {
   projectMcpConfigSaving.value = true;
   try {
     const result = await writeProjectMcpConfigFile(workspacePath, parsed);
-    projectMcpConfigText.value = String(result?.content || formatMcpConfig(parsed));
+    projectMcpConfigText.value = String(
+      result?.content || formatMcpConfig(parsed),
+    );
     projectMcpConfig.value = result?.config || parsed;
-    projectMcpConfigPath.value = String(result?.path || ".ai-employee/mcp.json").trim();
+    projectMcpConfigPath.value = String(
+      result?.path || ".ai-employee/mcp.json",
+    ).trim();
     await reloadLocalMcpConfig(projectId);
     ElMessage.success("项目 MCP 配置文件已保存");
     if (typeof window !== "undefined") {
@@ -3739,34 +4097,48 @@ function webToolsConfigForScope(scope = webToolsConfigScope.value) {
 }
 
 function selectedWebToolsBackend(config) {
-  const source = config && typeof config === "object" && !Array.isArray(config) ? config : {};
+  const source =
+    config && typeof config === "object" && !Array.isArray(config)
+      ? config
+      : {};
   return String(
     source?.backend ||
       source?.search?.backend ||
       source?.extract?.backend ||
       "",
-  ).trim().toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
 }
 
 function webToolsProviderConfig(config, providerId) {
-  const source = config && typeof config === "object" && !Array.isArray(config) ? config : {};
+  const source =
+    config && typeof config === "object" && !Array.isArray(config)
+      ? config
+      : {};
   const providers =
-    source.providers && typeof source.providers === "object" && !Array.isArray(source.providers)
+    source.providers &&
+    typeof source.providers === "object" &&
+    !Array.isArray(source.providers)
       ? source.providers
       : {};
   const provider = providers[providerId];
-  return provider && typeof provider === "object" && !Array.isArray(provider) ? provider : {};
+  return provider && typeof provider === "object" && !Array.isArray(provider)
+    ? provider
+    : {};
 }
 
 function webToolsProviderConfigured(config, providerId) {
-  return Object.values(webToolsProviderConfig(config, providerId)).some((value) =>
-    String(value || "").trim(),
+  return Object.values(webToolsProviderConfig(config, providerId)).some(
+    (value) => String(value || "").trim(),
   );
 }
 
 function cloneWebToolsScopeConfig(scope = webToolsConfigScope.value) {
   const raw =
-    scope === "global" ? globalWebToolsConfigText.value : projectWebToolsConfigText.value;
+    scope === "global"
+      ? globalWebToolsConfigText.value
+      : projectWebToolsConfigText.value;
   return parseWebToolsConfigText(raw);
 }
 
@@ -3783,22 +4155,41 @@ function assignWebToolsScopeConfig(scope, config) {
 }
 
 function setWebToolsBackend(config, providerId, enabled) {
-  const next = config && typeof config === "object" && !Array.isArray(config) ? config : {};
+  const next =
+    config && typeof config === "object" && !Array.isArray(config)
+      ? config
+      : {};
   const current = selectedWebToolsBackend(next);
   if (enabled) {
     next.backend = providerId;
-    if (next.search && typeof next.search === "object" && !Array.isArray(next.search)) {
+    if (
+      next.search &&
+      typeof next.search === "object" &&
+      !Array.isArray(next.search)
+    ) {
       next.search.backend = "";
     }
-    if (next.extract && typeof next.extract === "object" && !Array.isArray(next.extract)) {
+    if (
+      next.extract &&
+      typeof next.extract === "object" &&
+      !Array.isArray(next.extract)
+    ) {
       next.extract.backend = "";
     }
   } else if (current === providerId) {
     next.backend = "";
-    if (next.search && typeof next.search === "object" && !Array.isArray(next.search)) {
+    if (
+      next.search &&
+      typeof next.search === "object" &&
+      !Array.isArray(next.search)
+    ) {
       next.search.backend = "";
     }
-    if (next.extract && typeof next.extract === "object" && !Array.isArray(next.extract)) {
+    if (
+      next.extract &&
+      typeof next.extract === "object" &&
+      !Array.isArray(next.extract)
+    ) {
       next.extract.backend = "";
     }
   }
@@ -3896,12 +4287,14 @@ function hydrateWebToolsProviderDraft(scope, providerId) {
   for (const field of definition.fields || []) {
     fields[field.key] = String(provider[field.key] || "");
   }
-  webToolsProviderDraft.enabled = selectedWebToolsBackend(config) === providerId;
+  webToolsProviderDraft.enabled =
+    selectedWebToolsBackend(config) === providerId;
   webToolsProviderDraft.fields = fields;
 }
 
 async function saveWebToolsProviderDraft() {
-  const scope = webToolsProviderDialogScope.value === "global" ? "global" : "project";
+  const scope =
+    webToolsProviderDialogScope.value === "global" ? "global" : "project";
   const providerId = webToolsProviderDialogProvider.value;
   if (scope === "project" && !hasSelectedProject.value) {
     ElMessage.warning("先选择项目，再保存项目 web-tools 配置");
@@ -3910,15 +4303,23 @@ async function saveWebToolsProviderDraft() {
   try {
     const config = cloneWebToolsScopeConfig(scope);
     config.providers =
-      config.providers && typeof config.providers === "object" && !Array.isArray(config.providers)
+      config.providers &&
+      typeof config.providers === "object" &&
+      !Array.isArray(config.providers)
         ? config.providers
         : {};
     const nextProvider = {};
     for (const field of webToolsProviderDialogFieldRows.value) {
-      nextProvider[field.key] = String(webToolsProviderDraft.fields?.[field.key] || "").trim();
+      nextProvider[field.key] = String(
+        webToolsProviderDraft.fields?.[field.key] || "",
+      ).trim();
     }
     config.providers[providerId] = nextProvider;
-    setWebToolsBackend(config, providerId, Boolean(webToolsProviderDraft.enabled));
+    setWebToolsBackend(
+      config,
+      providerId,
+      Boolean(webToolsProviderDraft.enabled),
+    );
     assignWebToolsScopeConfig(scope, config);
     await persistWebToolsScopeConfig(scope);
     webToolsConfigScope.value = scope;
@@ -3939,10 +4340,13 @@ async function saveGlobalWebToolsConfig() {
   globalWebToolsConfigSaving.value = true;
   try {
     const result = await writeGlobalWebToolsConfigFile(parsed);
-    globalWebToolsConfigText.value = String(result?.content || formatWebToolsConfig(parsed));
+    globalWebToolsConfigText.value = String(
+      result?.content || formatWebToolsConfig(parsed),
+    );
     globalWebToolsConfig.value = result?.config || parsed;
     globalWebToolsConfigPath.value = String(
-      result?.path || "~/.ai-employee/desktop-agent-runtime/web-tools/config.json",
+      result?.path ||
+        "~/.ai-employee/desktop-agent-runtime/web-tools/config.json",
     ).trim();
     syncEffectiveWebToolsConfig();
     ElMessage.success("全局 web-tools 配置文件已保存");
@@ -3977,10 +4381,13 @@ async function saveProjectWebToolsConfig() {
   projectWebToolsConfigSaving.value = true;
   try {
     const result = await writeProjectWebToolsConfigFile(workspacePath, parsed);
-    projectWebToolsConfigText.value = String(result?.content || formatWebToolsConfig(parsed));
+    projectWebToolsConfigText.value = String(
+      result?.content || formatWebToolsConfig(parsed),
+    );
     projectWebToolsConfig.value = result?.config || parsed;
     projectWebToolsConfigPath.value = String(
-      result?.path || ".ai-employee/desktop-agent-runtime/web-tools/config.json",
+      result?.path ||
+        ".ai-employee/desktop-agent-runtime/web-tools/config.json",
     ).trim();
     await reloadLocalWebToolsConfig(projectId);
     ElMessage.success("项目 web-tools 配置文件已保存");
@@ -3996,9 +4403,13 @@ async function saveProjectWebToolsConfig() {
 
 async function saveGlobalMcpConfig(config) {
   const result = await writeGlobalMcpConfigFile(config);
-  globalMcpConfigText.value = String(result?.content || formatMcpConfig(config));
+  globalMcpConfigText.value = String(
+    result?.content || formatMcpConfig(config),
+  );
   globalMcpConfig.value = result?.config || config;
-  globalMcpConfigPath.value = String(result?.path || "~/.ai-employee/mcp.json").trim();
+  globalMcpConfigPath.value = String(
+    result?.path || "~/.ai-employee/mcp.json",
+  ).trim();
   syncEffectiveMcpConfig();
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("local-mcp-config-updated"));
@@ -4041,24 +4452,35 @@ function openMcpServerDialog(scope = "project") {
 }
 
 function editMcpServer(server) {
-  const config = server?.config && typeof server.config === "object" ? server.config : {};
+  const config =
+    server?.config && typeof server.config === "object" ? server.config : {};
   mcpServerDraftSyncing.value = true;
   mcpServerDialogMode.value = "edit";
   mcpServerScope.value = server?.scope === "global" ? "global" : "project";
   mcpServerDraft.name = String(server?.name || "").trim();
-  mcpServerDraft.type = String(config.type || config.transport || server?.type || "stdio").trim() || "stdio";
+  mcpServerDraft.type =
+    String(config.type || config.transport || server?.type || "stdio").trim() ||
+    "stdio";
   mcpServerDraft.command = String(config.command || "").trim();
-  mcpServerDraft.argsText = JSON.stringify(Array.isArray(config.args) ? config.args : [], null, 2);
+  mcpServerDraft.argsText = JSON.stringify(
+    Array.isArray(config.args) ? config.args : [],
+    null,
+    2,
+  );
   mcpServerDraft.cwd = String(config.cwd || "").trim();
   mcpServerDraft.url = String(config.url || "").trim();
   mcpServerDraft.headersText = JSON.stringify(
-    config.headers && typeof config.headers === "object" && !Array.isArray(config.headers)
+    config.headers &&
+      typeof config.headers === "object" &&
+      !Array.isArray(config.headers)
       ? config.headers
       : {},
     null,
     2,
   );
-  mcpServerDraft.rawJsonText = formatMcpConfig({ mcpServers: { [mcpServerDraft.name]: config } });
+  mcpServerDraft.rawJsonText = formatMcpConfig({
+    mcpServers: { [mcpServerDraft.name]: config },
+  });
   mcpServerDraft.enabled = Boolean(config.enabled ?? true);
   mcpServerDraftSyncing.value = false;
   mcpServerDialogVisible.value = true;
@@ -4067,20 +4489,31 @@ function editMcpServer(server) {
 function syncMcpServerDraftFromConfig(name, config) {
   mcpServerDraftSyncing.value = true;
   mcpServerDraft.name = String(name || "").trim();
-  mcpServerDraft.type = String(config.type || config.transport || (config.command ? "stdio" : "http")).trim() || "stdio";
+  mcpServerDraft.type =
+    String(
+      config.type || config.transport || (config.command ? "stdio" : "http"),
+    ).trim() || "stdio";
   mcpServerDraft.command = String(config.command || "").trim();
-  mcpServerDraft.argsText = JSON.stringify(Array.isArray(config.args) ? config.args : [], null, 2);
+  mcpServerDraft.argsText = JSON.stringify(
+    Array.isArray(config.args) ? config.args : [],
+    null,
+    2,
+  );
   mcpServerDraft.cwd = String(config.cwd || "").trim();
   mcpServerDraft.url = String(config.url || "").trim();
   mcpServerDraft.headersText = JSON.stringify(
-    config.headers && typeof config.headers === "object" && !Array.isArray(config.headers)
+    config.headers &&
+      typeof config.headers === "object" &&
+      !Array.isArray(config.headers)
       ? config.headers
       : {},
     null,
     2,
   );
   mcpServerDraft.enabled = Boolean(config.enabled ?? true);
-  mcpServerDraft.rawJsonText = formatMcpConfig({ mcpServers: { [mcpServerDraft.name]: config } });
+  mcpServerDraft.rawJsonText = formatMcpConfig({
+    mcpServers: { [mcpServerDraft.name]: config },
+  });
   mcpServerDraftSyncing.value = false;
 }
 
@@ -4091,17 +4524,26 @@ function buildMcpServerConfigFromFields() {
   let args = [];
   let headers = {};
   try {
-    args = parseDialogJsonText(mcpServerDraft.argsText, "[]", "参数 JSON 解析失败");
+    args = parseDialogJsonText(
+      mcpServerDraft.argsText,
+      "[]",
+      "参数 JSON 解析失败",
+    );
   } catch {
     return null;
   }
   if (!Array.isArray(args)) return null;
   try {
-    headers = parseDialogJsonText(mcpServerDraft.headersText, "{}", "请求头 JSON 解析失败");
+    headers = parseDialogJsonText(
+      mcpServerDraft.headersText,
+      "{}",
+      "请求头 JSON 解析失败",
+    );
   } catch {
     return null;
   }
-  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return null;
+  if (!headers || typeof headers !== "object" || Array.isArray(headers))
+    return null;
   const config = { type, enabled: Boolean(mcpServerDraft.enabled) };
   if (type === "stdio") {
     const command = String(mcpServerDraft.command || "").trim();
@@ -4116,7 +4558,12 @@ function buildMcpServerConfigFromFields() {
     config.url = url;
   }
   if (Object.keys(headers).length) config.headers = headers;
-  return { name, config, configRoot: { mcpServers: { [name]: config } }, entries: [[name, config]] };
+  return {
+    name,
+    config,
+    configRoot: { mcpServers: { [name]: config } },
+    entries: [[name, config]],
+  };
 }
 
 function syncMcpServerRawJsonFromFields() {
@@ -4155,7 +4602,11 @@ function resolveMcpServerPayloadFromRawJson() {
   const isSingleServerConfig =
     !rawInput.mcpServers &&
     !rawInput.servers &&
-    (rawInput.command || rawInput.url || rawInput.endpoint || rawInput.baseUrl || rawInput.base_url);
+    (rawInput.command ||
+      rawInput.url ||
+      rawInput.endpoint ||
+      rawInput.baseUrl ||
+      rawInput.base_url);
   if (isSingleServerConfig) {
     const explicitName = String(
       mcpServerDraft.name ||
@@ -4189,7 +4640,8 @@ function resolveMcpServerPayloadFromRawJson() {
     throw new Error("JSON 里没有识别到 MCP Server");
   }
   const draftName = String(mcpServerDraft.name || "").trim();
-  const selectedEntry = entries.find(([name]) => name === draftName) || entries[0];
+  const selectedEntry =
+    entries.find(([name]) => name === draftName) || entries[0];
   const [name, config] = selectedEntry;
   return { name, config, configRoot: parsed, entries };
 }
@@ -4210,7 +4662,11 @@ function applyMcpServerRawJson() {
   syncMcpServerDraftFromConfig(payload.name, payload.config);
   mcpServerDraft.rawJsonText = rawText;
   const entries = payload.entries || [];
-  ElMessage.success(entries.length > 1 ? `已导入 ${payload.name}，测试/保存会使用完整 JSON` : "已导入 MCP Server");
+  ElMessage.success(
+    entries.length > 1
+      ? `已导入 ${payload.name}，测试/保存会使用完整 JSON`
+      : "已导入 MCP Server",
+  );
 }
 
 function buildMcpServerConfigFromDraft() {
@@ -4222,13 +4678,21 @@ function buildMcpServerConfigFromDraft() {
   let args = [];
   let headers = {};
   try {
-    args = parseDialogJsonText(mcpServerDraft.argsText, "[]", "参数 JSON 解析失败");
+    args = parseDialogJsonText(
+      mcpServerDraft.argsText,
+      "[]",
+      "参数 JSON 解析失败",
+    );
   } catch (err) {
     throw new Error(err?.message || "参数 JSON 解析失败");
   }
   if (!Array.isArray(args)) throw new Error("参数必须是 JSON 数组");
   try {
-    headers = parseDialogJsonText(mcpServerDraft.headersText, "{}", "请求头 JSON 解析失败");
+    headers = parseDialogJsonText(
+      mcpServerDraft.headersText,
+      "{}",
+      "请求头 JSON 解析失败",
+    );
   } catch (err) {
     throw new Error(err?.message || "请求头 JSON 解析失败");
   }
@@ -4247,7 +4711,12 @@ function buildMcpServerConfigFromDraft() {
     if (!config.url) throw new Error(`${type} server 必须配置 URL`);
   }
   if (Object.keys(headers).length) config.headers = headers;
-  return { name, config, configRoot: { mcpServers: { [name]: config } }, entries: [[name, config]] };
+  return {
+    name,
+    config,
+    configRoot: { mcpServers: { [name]: config } },
+    entries: [[name, config]],
+  };
 }
 
 watch(
@@ -4264,10 +4733,7 @@ watch(
   syncMcpServerRawJsonFromFields,
 );
 
-watch(
-  () => mcpServerDraft.rawJsonText,
-  syncMcpServerFieldsFromRawJson,
-);
+watch(() => mcpServerDraft.rawJsonText, syncMcpServerFieldsFromRawJson);
 
 async function saveMcpServerDraft() {
   let payload;
@@ -4281,13 +4747,19 @@ async function saveMcpServerDraft() {
     if (mcpServerScope.value === "global") {
       const next = parseGlobalMcpConfig();
       next.mcpServers = next.mcpServers || {};
-      Object.assign(next.mcpServers, payload.configRoot?.mcpServers || { [payload.name]: payload.config });
+      Object.assign(
+        next.mcpServers,
+        payload.configRoot?.mcpServers || { [payload.name]: payload.config },
+      );
       await saveGlobalMcpConfig(next);
       ElMessage.success("全局 MCP Server 已保存");
     } else {
       const next = parseProjectMcpConfig();
       next.mcpServers = next.mcpServers || {};
-      Object.assign(next.mcpServers, payload.configRoot?.mcpServers || { [payload.name]: payload.config });
+      Object.assign(
+        next.mcpServers,
+        payload.configRoot?.mcpServers || { [payload.name]: payload.config },
+      );
       projectMcpConfigText.value = formatMcpConfig(next);
       projectMcpConfig.value = next;
       syncEffectiveMcpConfig();
@@ -4304,11 +4776,15 @@ async function removeMcpServer(server) {
   const name = String(server?.name || "").trim();
   if (!name) return;
   try {
-    await ElMessageBox.confirm(`删除 ${scope === "global" ? "全局" : "项目"} MCP Server：${name}？`, "删除 MCP Server", {
-      type: "warning",
-      confirmButtonText: "删除",
-      cancelButtonText: "取消",
-    });
+    await ElMessageBox.confirm(
+      `删除 ${scope === "global" ? "全局" : "项目"} MCP Server：${name}？`,
+      "删除 MCP Server",
+      {
+        type: "warning",
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+      },
+    );
     if (scope === "global") {
       const next = parseGlobalMcpConfig();
       delete next.mcpServers?.[name];
@@ -4351,7 +4827,9 @@ async function testMcpServer(server, configOverride = null) {
     if (!result?.ok) {
       throw new Error(result?.error || result?.errorCode || "MCP 测试失败");
     }
-    const count = Array.isArray(result?.content?.tools) ? result.content.tools.length : 0;
+    const count = Array.isArray(result?.content?.tools)
+      ? result.content.tools.length
+      : 0;
     ElMessage.success(`MCP Server 测试通过，发现 ${count} 个工具`);
   } catch (err) {
     ElMessage.error(err?.message || "MCP Server 测试失败");
@@ -4373,7 +4851,9 @@ async function testMcpServerDraft() {
             ...globalMcpConfig.value,
             mcpServers: {
               ...(globalMcpConfig.value.mcpServers || {}),
-              ...(payload.configRoot?.mcpServers || { [payload.name]: payload.config }),
+              ...(payload.configRoot?.mcpServers || {
+                [payload.name]: payload.config,
+              }),
             },
           },
           projectMcpConfig.value,
@@ -4382,7 +4862,9 @@ async function testMcpServerDraft() {
           ...projectMcpConfig.value,
           mcpServers: {
             ...(projectMcpConfig.value.mcpServers || {}),
-            ...(payload.configRoot?.mcpServers || { [payload.name]: payload.config }),
+            ...(payload.configRoot?.mcpServers || {
+              [payload.name]: payload.config,
+            }),
           },
         });
   mcpServerTesting.value = true;
@@ -4421,6 +4903,20 @@ function buildLocalLiuAgentSystemPromptParts() {
       source: "desktop_local_agent.entry_policy",
       priority: 120,
       content: buildDesktopLocalAgentEntryPolicyPrompt(),
+    },
+    {
+      source: "desktop_local_agent.media_tool_orchestration",
+      priority: 110,
+      content: [
+        "主模型与媒体工具职责：",
+        "- 你是主对话模型，负责理解用户意图、结合当前会话上下文并决定是否调用工具。",
+        "- generate_image、edit_image、generate_video、generate_audio、transcribe_audio 是媒体模型工具，不是主对话模型；只有用户明确要求对应的生成、编辑、转换或转写时才调用。",
+        "- 附件上下文或会话引用中已经列出的图片、视频、音频和文件，均视为用户已经提供；不得声称当前对话中没有这些内容，也不得要求用户重复上传。",
+        "- 用户要求从零生成图片时调用 generate_image；仅当用户明确要求参考某张现有图片生成时，才把附件上下文中的资产 ID 填入 reference_asset_ids。",
+        "- 用户要求修改现有图片时必须调用 edit_image，并把要修改图片的资产 ID 填入 input_asset_ids；不得改用 run_command、Python、Pillow、OpenCV 或其他本地脚本静默处理。",
+        "- 媒体工具失败时应如实返回失败原因，不得切换成本地脚本伪造成功结果。不要把图片地址或 Base64 填进 prompt。",
+        "- 用户只要求分析、解释或评价媒体内容时，直接回答，不要误调用生成工具。",
+      ].join("\n"),
     },
     {
       source: "project_chat_settings.system_prompt",
@@ -4464,9 +4960,12 @@ const activeComposerAssist = ref("");
 const externalMcpTotal = ref(0);
 const agentStatusExpanded = ref(false);
 const currentChatSessionId = ref("");
-watch([selectedProjectId, currentChatSessionId], ([projectId, chatSessionId]) => {
-  applyComposerPlanStateForChatSession(projectId, chatSessionId);
-});
+watch(
+  [selectedProjectId, currentChatSessionId],
+  ([projectId, chatSessionId]) => {
+    applyComposerPlanStateForChatSession(projectId, chatSessionId);
+  },
+);
 const chatTaskTree = ref(null);
 const taskTreePanelVisible = ref(false);
 const taskTreeLoading = ref(false);
@@ -4524,7 +5023,10 @@ function setLocalLiuAgentAuthLevel(value) {
   localLiuAgentAuthLevel.value = normalized;
   if (typeof window === "undefined") return;
   try {
-    window.localStorage?.setItem(LOCAL_LIUAGENT_AUTH_LEVEL_STORAGE_KEY, normalized);
+    window.localStorage?.setItem(
+      LOCAL_LIUAGENT_AUTH_LEVEL_STORAGE_KEY,
+      normalized,
+    );
   } catch (_error) {
     // localStorage may be unavailable in restricted WebViews.
   }
@@ -4535,15 +5037,18 @@ function normalizeLocalLiuAgentTrustedWorkspacePath(value) {
     .trim()
     .replace(/\\/g, "/")
     .replace(/\/+$/, "");
-  return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+  return /^[A-Za-z]:\//.test(normalized)
+    ? normalized.toLowerCase()
+    : normalized;
 }
 
 function readLocalLiuAgentTrustedWorkspaces() {
   if (typeof window === "undefined") return [];
   try {
     const parsed = JSON.parse(
-      window.localStorage?.getItem(LOCAL_LIUAGENT_TRUSTED_WORKSPACES_STORAGE_KEY) ||
-        "[]",
+      window.localStorage?.getItem(
+        LOCAL_LIUAGENT_TRUSTED_WORKSPACES_STORAGE_KEY,
+      ) || "[]",
     );
     return Array.isArray(parsed)
       ? parsed
@@ -4569,7 +5074,9 @@ function trustLocalLiuAgentWorkspace(workspacePath) {
 
 function localLiuAgentWorkspaceTrusted(workspacePath) {
   const normalized = normalizeLocalLiuAgentTrustedWorkspacePath(workspacePath);
-  return Boolean(normalized && readLocalLiuAgentTrustedWorkspaces().includes(normalized));
+  return Boolean(
+    normalized && readLocalLiuAgentTrustedWorkspaces().includes(normalized),
+  );
 }
 
 function localLiuAgentFullAccessEnabled(workspacePath = "") {
@@ -4584,13 +5091,21 @@ const localLiuAgentAuthLevelModel = computed({
   set: (value) => setLocalLiuAgentAuthLevel(value),
 });
 
-function buildLocalLiuAgentPermissionDecision(requestId, permissionRequest = {}, options = {}) {
+function buildLocalLiuAgentPermissionDecision(
+  requestId,
+  permissionRequest = {},
+  options = {},
+) {
   const allowSession = Boolean(options?.allowSession);
   const fullAccess = Boolean(options?.fullAccess);
   return {
     requestId: fullAccess ? "" : String(requestId || "").trim(),
     decision: allowSession || fullAccess ? "approve_session" : "approve_once",
-    grantScope: fullAccess ? "session_full_access" : allowSession ? "session" : "once",
+    grantScope: fullAccess
+      ? "session_full_access"
+      : allowSession
+        ? "session"
+        : "once",
     comment:
       String(permissionRequest?.reason || "").trim() ||
       (fullAccess ? "desktop_local_agent_full_access" : ""),
@@ -4615,10 +5130,7 @@ const {
 } = useProjectChatPendingRequests({
   currentChatSessionId,
 });
-const {
-  projectChatSettings,
-  settingsSaving,
-} = useProjectChatSettings();
+const { projectChatSettings, settingsSaving } = useProjectChatSettings();
 const {
   nativeExternalAgentLaunchingChatSessionIds,
   nativeExternalAgentBackgroundedChatSessionIds,
@@ -4859,6 +5371,11 @@ const executionWorkspacePath = computed(() =>
       "",
   ).trim(),
 );
+const workspaceReviewRoot = computed(() => executionWorkspacePath.value);
+const canReviewWorkspaceChanges = computed(
+  () =>
+    nativeDesktopBridgeAvailable.value && Boolean(workspaceReviewRoot.value),
+);
 
 /** 页面包装：标记 chatSession 的 external agent 启动状态 + 同步运行标记和加载态 */
 function setNativeExternalAgentLaunching(chatSessionId, launching) {
@@ -4906,10 +5423,14 @@ function syncNativeExternalAgentSessionPanel(preferredSessionId = "") {
 }
 
 const nativeExternalAgentSessionOutput = computed(() =>
-  buildNativeExternalAgentSessionOutputText(nativeExternalAgentSessionLogs.value),
+  buildNativeExternalAgentSessionOutputText(
+    nativeExternalAgentSessionLogs.value,
+  ),
 );
 const nativeExternalAgentSessionError = computed(() =>
-  buildNativeExternalAgentSessionErrorText(nativeExternalAgentSessionLogs.value),
+  buildNativeExternalAgentSessionErrorText(
+    nativeExternalAgentSessionLogs.value,
+  ),
 );
 const nativeExternalAgentCommandText = computed(() => {
   return buildNativeExternalAgentCommandPreview(
@@ -5032,15 +5553,19 @@ function normalizeNativeApprovalOption(option = {}, index = 0) {
     option.value || option.optionId || option.option_id || option.id || "",
   ).trim();
   if (!rawValue) return null;
-  const kind = String(option.kind || "").trim().toLowerCase();
-  const rawLabel = String(option.label || option.title || option.name || "")
-    .trim();
+  const kind = String(option.kind || "")
+    .trim()
+    .toLowerCase();
+  const rawLabel = String(
+    option.label || option.title || option.name || "",
+  ).trim();
   let label = rawLabel;
   if (!label) {
     if (/allow|approve|yes/.test(`${rawValue} ${kind}`)) {
-      label = kind.includes("session") || kind.includes("always")
-        ? "本会话批准"
-        : "批准一次";
+      label =
+        kind.includes("session") || kind.includes("always")
+          ? "本会话批准"
+          : "批准一次";
     } else if (/reject|deny|cancel|no/.test(`${rawValue} ${kind}`)) {
       label = "拒绝";
     } else {
@@ -5052,18 +5577,22 @@ function normalizeNativeApprovalOption(option = {}, index = 0) {
     value: rawValue,
     selected: index === 0 && /allow|approve|yes/.test(`${rawValue} ${kind}`),
     highlighted: index === 0,
-    submitContent: String(option.submitContent || option.submit_content || rawValue)
-      .trim(),
-    decision:
-      /reject|deny|cancel|no/.test(`${rawValue} ${kind}`)
-        ? "reject"
-        : kind.includes("session") || kind.includes("always")
-          ? "approve_session"
-          : "approve_once",
+    submitContent: String(
+      option.submitContent || option.submit_content || rawValue,
+    ).trim(),
+    decision: /reject|deny|cancel|no/.test(`${rawValue} ${kind}`)
+      ? "reject"
+      : kind.includes("session") || kind.includes("always")
+        ? "approve_session"
+        : "approve_once",
   };
 }
 
-function nativeApprovalAgentLabel(payload = {}, snapshot = {}, approvalLog = {}) {
+function nativeApprovalAgentLabel(
+  payload = {},
+  snapshot = {},
+  approvalLog = {},
+) {
   const rawAgent = String(
     payload.agentLabel ||
       payload.agent_label ||
@@ -5088,19 +5617,26 @@ function buildNativeExternalAgentApprovalInteraction({
   snapshot = null,
 } = {}) {
   const normalizedSessionId = String(
-    sessionId || snapshot?.sessionId || nativeExternalAgentSession.value?.sessionId || "",
+    sessionId ||
+      snapshot?.sessionId ||
+      nativeExternalAgentSession.value?.sessionId ||
+      "",
   ).trim();
-  const approvalLog = [...logs]
-    .reverse()
-    .find((item) => String(item?.kind || "").trim().toLowerCase() === "approval");
+  const approvalLog = [...logs].reverse().find(
+    (item) =>
+      String(item?.kind || "")
+        .trim()
+        .toLowerCase() === "approval",
+  );
   if (approvalLog) {
     const payload = parseNativeApprovalPayload(approvalLog);
     const options = (Array.isArray(payload?.options) ? payload.options : [])
       .map((item, index) => normalizeNativeApprovalOption(item, index))
       .filter(Boolean);
     if (payload && options.length) {
-      const requestId = String(payload.requestId || payload.request_id || "")
-        .trim();
+      const requestId = String(
+        payload.requestId || payload.request_id || "",
+      ).trim();
       const key = `${normalizedSessionId}:approval:${requestId || approvalLog.seq || ""}`;
       return {
         key,
@@ -5115,12 +5651,18 @@ function buildNativeExternalAgentApprovalInteraction({
           payload.commandPreview || payload.command_preview || "",
         ).trim(),
         method: String(payload.method || "").trim(),
-        agentLabel: nativeApprovalAgentLabel(payload, snapshot || {}, approvalLog),
+        agentLabel: nativeApprovalAgentLabel(
+          payload,
+          snapshot || {},
+          approvalLog,
+        ),
         fieldLabel: "选择授权范围",
         options,
         selectedValues: [],
         selectedValue:
-          options.find((item) => item.selected)?.value || options[0]?.value || "",
+          options.find((item) => item.selected)?.value ||
+          options[0]?.value ||
+          "",
         highlightedIndex: Math.max(
           0,
           options.findIndex((item) => item.highlighted),
@@ -5144,7 +5686,10 @@ function findNativeExternalAgentApprovalInteractionForSession(sessionId = "") {
   const logs = getNativeExternalAgentSessionLogs(normalizedSessionId);
   if (
     !logs.some(
-      (item) => String(item?.kind || "").trim().toLowerCase() === "approval",
+      (item) =>
+        String(item?.kind || "")
+          .trim()
+          .toLowerCase() === "approval",
     )
   ) {
     return null;
@@ -5155,7 +5700,10 @@ function findNativeExternalAgentApprovalInteractionForSession(sessionId = "") {
     normalizedSessionId
       ? nativeExternalAgentSession.value
       : null);
-  if (!snapshot || String(snapshot.status || "").trim() !== "waiting_permission") {
+  if (
+    !snapshot ||
+    String(snapshot.status || "").trim() !== "waiting_permission"
+  ) {
     return null;
   }
   const interaction = buildNativeExternalAgentApprovalInteraction({
@@ -5164,8 +5712,10 @@ function findNativeExternalAgentApprovalInteractionForSession(sessionId = "") {
     snapshot,
   });
   if (!interaction) return null;
-  if (nativeExternalAgentInteractionDismissedKey.value === interaction.key) return null;
-  if (nativeExternalAgentInteractionSubmittedKey.value === interaction.key) return null;
+  if (nativeExternalAgentInteractionDismissedKey.value === interaction.key)
+    return null;
+  if (nativeExternalAgentInteractionSubmittedKey.value === interaction.key)
+    return null;
   return interaction;
 }
 
@@ -5184,25 +5734,32 @@ const nativeExternalAgentCurrentChatApprovalInteraction = computed(() => {
     const sessionId = normalizeNativeExternalAgentSessionId(candidate);
     if (!sessionId || seen.has(sessionId)) continue;
     seen.add(sessionId);
-    const sessionChatId = getNativeExternalAgentChatSessionIdForRunnerSession(sessionId);
+    const sessionChatId =
+      getNativeExternalAgentChatSessionIdForRunnerSession(sessionId);
     if (
       sessionChatId &&
-      String(sessionChatId).trim() !== String(currentChatSessionId.value || "").trim()
+      String(sessionChatId).trim() !==
+        String(currentChatSessionId.value || "").trim()
     ) {
       continue;
     }
-    const interaction = findNativeExternalAgentApprovalInteractionForSession(sessionId);
+    const interaction =
+      findNativeExternalAgentApprovalInteractionForSession(sessionId);
     if (interaction) return interaction;
   }
   return null;
 });
 
 const nativeExternalAgentInteractionPrompt = computed(() => {
-  const currentApproval = nativeExternalAgentCurrentChatApprovalInteraction.value;
+  const currentApproval =
+    nativeExternalAgentCurrentChatApprovalInteraction.value;
   if (currentApproval) return currentApproval;
   const logs = nativeExternalAgentSessionLogs.value;
   const canWrite = canWriteNativeExternalAgentStdin.value;
-  if (!canWrite && !logs.some((item) => String(item?.kind || "").trim() === "approval")) {
+  if (
+    !canWrite &&
+    !logs.some((item) => String(item?.kind || "").trim() === "approval")
+  ) {
     return null;
   }
   const text = logs
@@ -5216,7 +5773,9 @@ const nativeExternalAgentInteractionPrompt = computed(() => {
     .filter(Boolean);
   const approvalInteraction = buildNativeExternalAgentApprovalInteraction({
     logs: logs.slice(-20),
-    sessionId: normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value),
+    sessionId: normalizeNativeExternalAgentSessionId(
+      nativeExternalAgentSession.value,
+    ),
     snapshot: nativeExternalAgentSession.value,
   });
   if (
@@ -5224,8 +5783,16 @@ const nativeExternalAgentInteractionPrompt = computed(() => {
     String(nativeExternalAgentSession.value?.status || "").trim() ===
       "waiting_permission"
   ) {
-    if (nativeExternalAgentInteractionDismissedKey.value === approvalInteraction.key) return null;
-    if (nativeExternalAgentInteractionSubmittedKey.value === approvalInteraction.key) return null;
+    if (
+      nativeExternalAgentInteractionDismissedKey.value ===
+      approvalInteraction.key
+    )
+      return null;
+    if (
+      nativeExternalAgentInteractionSubmittedKey.value ===
+      approvalInteraction.key
+    )
+      return null;
     return approvalInteraction;
   }
   if (!canWrite) return null;
@@ -5367,8 +5934,8 @@ const aiEntryFileResolved = computed(() =>
 const aiEntryFileDraftNormalized = computed(() =>
   String(aiEntryFileDraft.value || "").trim(),
 );
-const workspacePathConfigured = computed(
-  () => Boolean(executionWorkspacePath.value),
+const workspacePathConfigured = computed(() =>
+  Boolean(executionWorkspacePath.value),
 );
 const projectWorkspaceDirty = computed(
   () =>
@@ -5391,25 +5958,12 @@ const workspaceFileBridgeLabel = computed(() =>
     ? "桌面端原生只读文件桥：可浏览目录和预览 1MB 内文本文件，写入仍需后续权限流程。"
     : "服务端工作区文件接口：沿用当前项目工作区读写能力。",
 );
-const canPreviewWorkspaceDiff = computed(
-  () =>
-    nativeDesktopBridgeAvailable.value &&
-    Boolean(projectWorkspaceResolved.value),
-);
+const canPreviewWorkspaceDiff = computed(() => canReviewWorkspaceChanges.value);
 const workspaceDiffTargetLabel = computed(() =>
   activeWorkspaceFilePath.value
     ? `当前文件：${activeWorkspaceFilePath.value}`
     : "整个工作区",
 );
-const workspaceDiffStatusLabel = computed(() => {
-  if (!canPreviewWorkspaceDiff.value) return "桌面端可用";
-  if (workspaceDiffLoading.value) return "读取中";
-  const preview = workspaceDiffPreview.value;
-  if (!preview) return "未预览";
-  if (!preview.available) return "不可用";
-  if (!preview.diff && !preview.status && !preview.summary) return "无差异";
-  return preview.truncated ? "已截断" : "已生成";
-});
 const workspaceParentPath = computed(() => {
   const current = String(workspaceFileTreePath.value || "").trim();
   if (!current) return "";
@@ -5419,6 +5973,38 @@ const workspaceParentPath = computed(() => {
 });
 const workspaceFileDirty = computed(
   () => workspaceFileDraft.value !== workspaceFileOriginal.value,
+);
+const fileChangesDialogVisible = ref(false);
+const activeFileChangesMessageId = ref("");
+const activeFileChangesPaths = ref([]);
+const fileChangesContextTitle = ref("");
+const workspaceFileUndoSnapshots = ref({});
+const workspaceReviewItems = ref([]);
+const workspaceChangedFiles = computed(() =>
+  workspaceReviewItems.value.map((item) => ({
+    ...item,
+    status:
+      item.changeType === "added"
+        ? "A"
+        : item.changeType === "deleted"
+          ? "D"
+          : "M",
+  })),
+);
+const visibleWorkspaceChangedFiles = computed(() => {
+  const paths = new Set(activeFileChangesPaths.value);
+  if (!activeFileChangesMessageId.value || !paths.size) {
+    return workspaceChangedFiles.value;
+  }
+  return workspaceChangedFiles.value.filter((item) =>
+    paths.has(normalizeWorkspaceReviewPath(item.path)),
+  );
+});
+const activeWorkspaceReviewItem = computed(
+  () =>
+    workspaceReviewItems.value.find(
+      (item) => item.path === activeWorkspaceFilePath.value,
+    ) || null,
 );
 const externalAgentDesktopRunnerRequired = computed(() => {
   if (!isExternalAgentMode.value) return false;
@@ -5485,7 +6071,9 @@ const externalAgentStatusSummary = computed(() => {
   const parts = [
     externalAgentDisplayLabel.value,
     externalAgentRuntimeLabel.value,
-    nativeDesktopBridgeAvailable.value ? "桌面端原生桥" : "桌面端 Runner 未接入",
+    nativeDesktopBridgeAvailable.value
+      ? "桌面端原生桥"
+      : "桌面端 Runner 未接入",
     String(externalAgentInfo.value.sandbox_mode || "workspace-write").trim() ||
       "workspace-write",
   ];
@@ -5568,7 +6156,10 @@ const externalAgentUnavailable = computed(() => {
   if (nativeDesktopBridgeAvailable.value && nativeRunnerSelfCheckPassed.value) {
     return false;
   }
-  if (externalAgentDesktopRunnerRequired.value || !workspacePathConfigured.value) {
+  if (
+    externalAgentDesktopRunnerRequired.value ||
+    !workspacePathConfigured.value
+  ) {
     return false;
   }
   const commandSource = String(externalAgentInfo.value.command_source || "")
@@ -5742,7 +6333,9 @@ const localFeishuBotStatusText = computed(() => {
   const statuses = Object.entries(localFeishuBotStatuses.value || {}).map(
     ([connectorId, status]) => ({
       connectorId,
-      state: String(status?.state || "").trim().toLowerCase(),
+      state: String(status?.state || "")
+        .trim()
+        .toLowerCase(),
       message: String(status?.message || "").trim(),
     }),
   );
@@ -5751,13 +6344,12 @@ const localFeishuBotStatusText = computed(() => {
     ["error", "exited", "failed"].includes(item.state),
   );
   if (failed) {
-    const detail = failed.message
-      .replace(/\s+/g, " ")
-      .slice(0, 90);
+    const detail = failed.message.replace(/\s+/g, " ").slice(0, 90);
     return detail ? `飞书监听失败：${detail}` : "飞书监听失败";
   }
   if (statuses.some((item) => item.state === "ready")) return "飞书监听已就绪";
-  if (statuses.some((item) => item.state === "starting")) return "飞书监听启动中";
+  if (statuses.some((item) => item.state === "starting"))
+    return "飞书监听启动中";
   return "";
 });
 const localOfflineStatusText = computed(() => {
@@ -5770,9 +6362,7 @@ const localOfflineStatusText = computed(() => {
   return "";
 });
 const modelProviderSyncTooltip = computed(() =>
-  modelProviderOffline.value
-    ? "同步模型供应商配置"
-    : "刷新模型供应商配置",
+  modelProviderOffline.value ? "同步模型供应商配置" : "刷新模型供应商配置",
 );
 const chatHeaderStatusType = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "info";
@@ -5855,7 +6445,8 @@ const formattedAiContextDialogPayload = computed(() => {
 });
 const aiContextDialogProviderLabel = computed(() => {
   const context =
-    aiContextDialogPayload.value && typeof aiContextDialogPayload.value === "object"
+    aiContextDialogPayload.value &&
+    typeof aiContextDialogPayload.value === "object"
       ? aiContextDialogPayload.value
       : {};
   const provider = String(context.provider_id || "").trim();
@@ -5864,7 +6455,10 @@ const aiContextDialogProviderLabel = computed(() => {
     context.temperature === undefined || context.temperature === null
       ? ""
       : `temperature=${context.temperature}`;
-  return [provider, model, temperatureValue].filter(Boolean).join(" · ") || "AI 请求上下文";
+  return (
+    [provider, model, temperatureValue].filter(Boolean).join(" · ") ||
+    "AI 请求上下文"
+  );
 });
 const {
   displayedChatTaskTree,
@@ -6397,8 +6991,7 @@ async function maybeWarmupNativeExternalAgentSession() {
     projectChatSettings.value.external_agent_type || "codex_cli",
   ).trim();
   // hermes / claude / codex(mcp-server) 三者都支持常驻预热（握手后转 idle，免首条消息冷启动）。
-  const normalizedAgentType =
-    agentType === "codex" ? "codex_cli" : agentType;
+  const normalizedAgentType = agentType === "codex" ? "codex_cli" : agentType;
   if (
     normalizedAgentType !== "hermes" &&
     normalizedAgentType !== "claude_code" &&
@@ -6410,7 +7003,8 @@ async function maybeWarmupNativeExternalAgentSession() {
   if (!chatSessionId) return;
   // 已有运行/空闲的可复用会话则无需预热。
   if (isNativeExternalAgentRunningForChatSession(chatSessionId)) return;
-  if (getNativeExternalAgentRunnerSessionIdForChatSession(chatSessionId)) return;
+  if (getNativeExternalAgentRunnerSessionIdForChatSession(chatSessionId))
+    return;
   const workspacePath = resolveNativeRuntimeWorkspacePath();
   if (!workspacePath) return;
   const warmupKey = `${chatSessionId}::${agentType}::${workspacePath}`;
@@ -6628,10 +7222,9 @@ function appendNativeExternalAgentProcessLogs(row, snapshot = {}, logs = []) {
     const text = nativeExternalAgentProcessLogText(log);
     if (!text) return;
     appendMessageProcessLog(row, {
-      id:
-        String(log?.seq || "").trim()
-          ? `native-agent-log-${sessionId || "active"}-${String(log.seq).trim()}`
-          : `native-agent-log-${sessionId || "active"}-${index}`,
+      id: String(log?.seq || "").trim()
+        ? `native-agent-log-${sessionId || "active"}-${String(log.seq).trim()}`
+        : `native-agent-log-${sessionId || "active"}-${index}`,
       level: nativeExternalAgentProcessLogLevel(log),
       text,
     });
@@ -6658,9 +7251,9 @@ function isLocalImageReference(value = "") {
   const text = String(value || "").trim();
   return Boolean(
     text &&
-      !/^https?:\/\//i.test(text) &&
-      !/^data:image\//i.test(text) &&
-      /\.(?:png|jpe?g|gif|bmp|webp|svg)(?:[?#].*)?$/i.test(text),
+    !/^https?:\/\//i.test(text) &&
+    !/^data:image\//i.test(text) &&
+    /\.(?:png|jpe?g|gif|bmp|webp|svg)(?:[?#].*)?$/i.test(text),
   );
 }
 
@@ -6790,7 +7383,9 @@ function applyNativeExternalAgentSessionSnapshot(snapshot, options = {}) {
     );
   }
   if (isNativeExternalAgentPermissionExpired(snapshot)) {
-    const activePromptKey = String(terminalApprovalFallbackPrompt.value?.key || "");
+    const activePromptKey = String(
+      terminalApprovalFallbackPrompt.value?.key || "",
+    );
     if (!activePromptKey || activePromptKey.includes(sessionId)) {
       clearTerminalApprovalFallback();
       terminalApprovalDialogVisible.value = false;
@@ -7017,9 +7612,15 @@ function isCodexMcpExternalAgentSnapshot(snapshot = {}) {
   const agentType = String(snapshot?.agentType || snapshot?.agent_type || "")
     .trim()
     .toLowerCase();
-  const command = String(snapshot?.command || "").trim().toLowerCase();
+  const command = String(snapshot?.command || "")
+    .trim()
+    .toLowerCase();
   const args = Array.isArray(snapshot?.args)
-    ? snapshot.args.map((item) => String(item || "").trim().toLowerCase())
+    ? snapshot.args.map((item) =>
+        String(item || "")
+          .trim()
+          .toLowerCase(),
+      )
     : [];
   return (
     agentType === "codex" ||
@@ -7043,7 +7644,10 @@ function getNativeExternalAgentVisibleLogs(sessionId = "") {
 function latestNativeExternalAgentLogTime(snapshot = {}, logs = []) {
   const latestLogAt = logs.reduce(
     (latest, item) =>
-      Math.max(latest, Number(item.createdAtEpochMs || item.created_at_epoch_ms || 0)),
+      Math.max(
+        latest,
+        Number(item.createdAtEpochMs || item.created_at_epoch_ms || 0),
+      ),
     0,
   );
   return Math.max(
@@ -7063,7 +7667,8 @@ function buildNativeExternalAgentRunningStatus(snapshot = {}) {
   const startedAt = Number(
     snapshot?.startedAtEpochMs || snapshot?.started_at_epoch_ms || 0,
   );
-  const latestAt = latestNativeExternalAgentLogTime(snapshot, logs) || startedAt || now;
+  const latestAt =
+    latestNativeExternalAgentLogTime(snapshot, logs) || startedAt || now;
   const silentSeconds = Math.max(0, Math.floor((now - latestAt) / 1000));
   const runningSeconds = startedAt
     ? Math.max(0, Math.floor((now - startedAt) / 1000))
@@ -7249,9 +7854,12 @@ function shouldIncludeNativeExternalAgentPromptHistory({
   userPrompt = "",
   slashCommandKind = "",
 } = {}) {
-  const text = `${String(userPrompt || "")} ${String(slashCommandKind || "")}`.trim();
+  const text =
+    `${String(userPrompt || "")} ${String(slashCommandKind || "")}`.trim();
   if (!text) return true;
-  return !/(删除|删掉|移除|清空|覆盖|重置|销毁|drop\s+table|rm\s+-|delete\s+)/i.test(text);
+  return !/(删除|删掉|移除|清空|覆盖|重置|销毁|drop\s+table|rm\s+-|delete\s+)/i.test(
+    text,
+  );
 }
 
 function selectedExternalAgentEmployeeLabels() {
@@ -7400,17 +8008,21 @@ function nativeExternalAgentOutputWaitsForUserConfirmation(text) {
       compact,
     ) ||
     /(确认开始执行|确认继续|继续执行|proceed|continue)/i.test(compact) ||
-    /收到后.{0,24}(我会|将会|再).{0,24}(开始|继续|执行|实现|修改)/i.test(compact);
+    /收到后.{0,24}(我会|将会|再).{0,24}(开始|继续|执行|实现|修改)/i.test(
+      compact,
+    );
   if (!hasWaitRequest) return false;
   const hasActualCompletion =
     /(已完成|已经完成|完成了|实现完成|修复完成|已实现|已修复|已验证|验证通过|测试通过|构建通过)/.test(
       compact,
-    ) &&
-    !/(不会删除|不会覆盖|收到后|确认开始执行)/.test(compact);
+    ) && !/(不会删除|不会覆盖|收到后|确认开始执行)/.test(compact);
   return !hasActualCompletion;
 }
 
-function nativeExternalAgentRequirementStatusForFinal(snapshot = {}, output = "") {
+function nativeExternalAgentRequirementStatusForFinal(
+  snapshot = {},
+  output = "",
+) {
   const status = String(snapshot?.status || "").trim();
   if (status === "completed") {
     return nativeExternalAgentOutputWaitsForUserConfirmation(output)
@@ -7446,36 +8058,34 @@ function upsertNativeExternalAgentMessageOperation(snapshot) {
   const waitsForConfirmation =
     status === "completed" &&
     nativeExternalAgentOutputWaitsForUserConfirmation(finalOutput);
-  const operationPhase =
-    permissionExpired
-      ? "blocked"
-      : status === "running"
+  const operationPhase = permissionExpired
+    ? "blocked"
+    : status === "running"
       ? "running"
       : waitsForConfirmation
         ? "running"
-      : status === "completed" ||
-          status === "cancelled" ||
-          status === "cancelling"
-        ? "completed"
-        : "failed";
+        : status === "completed" ||
+            status === "cancelled" ||
+            status === "cancelling"
+          ? "completed"
+          : "failed";
   upsertMessageOperation(row, {
     operationId: `native-external-agent:${snapshot.sessionId}`,
     kind: "request",
     title: `${snapshot.label || "Runner"} 执行`,
-    summary:
-      permissionExpired
-        ? "授权已超时，可重新发送消息"
-        : status === "running"
+    summary: permissionExpired
+      ? "授权已超时，可重新发送消息"
+      : status === "running"
         ? runningStatus?.summary || "正在处理"
         : status === "cancelling"
           ? "正在取消"
           : waitsForConfirmation
             ? "等待你确认"
-          : status === "completed"
-            ? "已完成"
-            : status === "cancelled"
-            ? "已取消"
-            : "已结束",
+            : status === "completed"
+              ? "已完成"
+              : status === "cancelled"
+                ? "已取消"
+                : "已结束",
     detail: buildNativeExternalAgentOperationDetail(snapshot),
     phase: operationPhase,
     actionType: "none",
@@ -7486,7 +8096,8 @@ function upsertNativeExternalAgentMessageOperation(snapshot) {
       permission_expired: permissionExpired ? "true" : "",
       agent_type: snapshot.agentType,
       command:
-        runningStatus?.command || buildNativeExternalAgentCommandPreview(snapshot),
+        runningStatus?.command ||
+        buildNativeExternalAgentCommandPreview(snapshot),
       cwd: snapshot.workspacePath,
       exit_code: snapshot.exitCode,
       mcp_phase: runningStatus?.mcpPhase || "",
@@ -7767,14 +8378,10 @@ function applyNativeExternalAgentFastKilledSession(
   const row = findNativeExternalAgentMessage(normalizedSessionId);
   if (row) {
     row.displayMode = "";
-    row.content =
-      String(row.content || "").trim() || "本次Runner 执行已取消。";
+    row.content = String(row.content || "").trim() || "本次Runner 执行已取消。";
     row.time = nowText();
     completeFinishedMessageOperations(row, "Runner 会话已取消");
-    closeOpenAgentRuntimeOperationsForCompletedTurn(
-      row,
-      "Runner 会话已取消",
-    );
+    closeOpenAgentRuntimeOperationsForCompletedTurn(row, "Runner 会话已取消");
   }
   const rowIndex = row ? messages.value.findIndex((item) => item === row) : -1;
   clearActiveExecutionTransportState(rowIndex);
@@ -7891,9 +8498,7 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
   const status = String(snapshot.status || "").trim();
   completeNativeExternalAgentRunningOperations(
     snapshot.sessionId,
-    status === "cancelled"
-      ? "Runner 会话已取消"
-      : "Runner 会话已结束",
+    status === "cancelled" ? "Runner 会话已取消" : "Runner 会话已结束",
   );
   const finalOutput = resolveNativeExternalAgentFinalOutput(snapshot);
   const requirementStatus = nativeExternalAgentRequirementStatusForFinal(
@@ -7951,10 +8556,9 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
     messageId: userMessage?.id || "",
     assistantMessageId: row.id,
     resultSummary: row.content,
-    verificationResult:
-      waitsForConfirmation
-        ? "Runner 已返回计划确认提示，等待用户明确确认后继续执行。"
-        : status === "completed"
+    verificationResult: waitsForConfirmation
+      ? "Runner 已返回计划确认提示，等待用户明确确认后继续执行。"
+      : status === "completed"
         ? "Runner 已返回最终回答并写入当前聊天。"
         : blockedReason || "Runner 未完成，已写入当前聊天。",
     runnerSessionId: snapshot.sessionId,
@@ -8218,7 +8822,9 @@ async function startNativeExternalAgentSession(
     }
     if (!reused) {
       if (snapshot?.sessionId) {
-        ignoredNativeExternalAgentSessionIds.add(String(snapshot.sessionId).trim());
+        ignoredNativeExternalAgentSessionIds.add(
+          String(snapshot.sessionId).trim(),
+        );
         stopNativeExternalAgentSessionPolling(snapshot.sessionId);
         clearActiveNativeExternalAgentSessionBinding(
           snapshot.sessionId,
@@ -8424,16 +9030,21 @@ function buildExternalAgentBridgeApprovalPayload(snapshot) {
     ...getNativeExternalAgentSessionLogs(sessionId),
     ...(Array.isArray(snapshot?.logs) ? snapshot.logs : []),
   ];
-  const approvalLog = [...logs]
-    .reverse()
-    .find((item) => String(item?.kind || "").trim().toLowerCase() === "approval");
+  const approvalLog = [...logs].reverse().find(
+    (item) =>
+      String(item?.kind || "")
+        .trim()
+        .toLowerCase() === "approval",
+  );
   const payload = parseNativeApprovalPayload(approvalLog);
   if (payload) {
     const options = (Array.isArray(payload?.options) ? payload.options : [])
       .map((item, index) => normalizeNativeApprovalOption(item, index))
       .filter(Boolean);
     if (!options.length) return null;
-    const requestId = String(payload.requestId || payload.request_id || "").trim();
+    const requestId = String(
+      payload.requestId || payload.request_id || "",
+    ).trim();
     if (!requestId) return null;
     return {
       key: `${sessionId}:${requestId}`,
@@ -8757,20 +9368,43 @@ const currentModelSummary = computed(() => {
   if (providerLabel) return providerLabel;
   return "系统默认";
 });
+const modelRoutingMode = computed(
+  () =>
+    String(
+      projectChatSettings.value.model_routing_mode ||
+        CHAT_SETTINGS_DEFAULTS.model_routing_mode,
+    )
+      .trim()
+      .toLowerCase() || MODEL_ROUTING_MODE_AUTO,
+);
+const composerSelectedModelTarget = computed(() => {
+  const mainTarget = readModelRoleTarget(projectChatSettings.value, "main");
+  return {
+    ...mainTarget,
+    providerId:
+      mainTarget.providerId ||
+      selectedProviderId.value ||
+      defaultProviderId.value ||
+      "",
+    modelName:
+      mainTarget.modelName ||
+      selectedModelName.value ||
+      defaultModelName.value ||
+      "",
+  };
+});
 const currentSelectedProvider = computed(
   () =>
     (providers.value || []).find(
       (item) =>
         String(item?.id || "").trim() ===
-        String(
-          selectedProviderId.value || defaultProviderId.value || "",
-        ).trim(),
+        String(composerSelectedModelTarget.value.providerId || "").trim(),
     ) || null,
 );
 const currentSelectedModelConfig = computed(() =>
   findProviderModelConfig(
     currentSelectedProvider.value,
-    String(selectedModelName.value || defaultModelName.value || "").trim(),
+    String(composerSelectedModelTarget.value.modelName || "").trim(),
     modelTypeOptions.value,
   ),
 );
@@ -8785,27 +9419,64 @@ const currentModelTypeMeta = computed(
     modelTypeMetaMap.value.get(currentModelType.value) ||
     modelTypeMetaMap.value.get(DEFAULT_MODEL_TYPE),
 );
-const currentModelAllowedFileTypes = computed(() =>
-  normalizeChatAllowedFileTypes(
-    currentModelTypeMeta.value?.project_chat_allowed_file_types,
-  ).map((item) => item.toLowerCase()),
+const autoTranscriptionTarget = computed(() =>
+  readModelRoleTarget(projectChatSettings.value, "audio_transcription"),
 );
+const autoTranscriptionConfigured = computed(() =>
+  Boolean(
+    autoTranscriptionTarget.value.providerId &&
+    autoTranscriptionTarget.value.modelName,
+  ),
+);
+const autoTranscriptionTypeMeta = computed(() =>
+  modelTypeMetaMap.value.get("audio_transcription"),
+);
+const currentModelAllowedFileTypes = computed(() => {
+  const allowedTypes = normalizeChatAllowedFileTypes(
+    currentModelTypeMeta.value?.project_chat_allowed_file_types,
+  ).map((item) => item.toLowerCase());
+  if (autoTranscriptionConfigured.value) {
+    allowedTypes.push(
+      ...normalizeChatAllowedFileTypes(
+        autoTranscriptionTypeMeta.value?.project_chat_allowed_file_types,
+      ).map((item) => item.toLowerCase()),
+    );
+  }
+  return [...new Set(allowedTypes)];
+});
 const currentModelAttachmentMode = computed(() =>
   normalizeAttachmentMode(currentModelTypeMeta.value?.attachment_mode),
 );
-const currentModelAttachmentSupported = computed(() =>
-  Boolean(
-    String(selectedProviderId.value || defaultProviderId.value || "").trim(),
-  ),
+const currentModelAttachmentSupported = computed(
+  () =>
+    (Boolean(
+      String(composerSelectedModelTarget.value.providerId || "").trim(),
+    ) &&
+      isAttachmentSupportedMode(currentModelAttachmentMode.value)) ||
+    autoTranscriptionConfigured.value,
 );
-const currentModelAttachmentMaxFiles = computed(() =>
-  Number(currentModelTypeMeta.value?.attachment_max_files || 0) || 0,
-);
-const currentModelAttachmentMaxFileSizeMb = computed(() =>
-  Number(currentModelTypeMeta.value?.attachment_max_file_size_mb || 0) || 0,
-);
-const currentModelAttachmentModeLabel = computed(
-  () => ATTACHMENT_MODE_LABELS[currentModelAttachmentMode.value] || "",
+const currentModelAttachmentMaxFiles = computed(() => {
+  const currentMax =
+    Number(currentModelTypeMeta.value?.attachment_max_files || 0) || 0;
+  const transcriptionMax = autoTranscriptionConfigured.value
+    ? Number(autoTranscriptionTypeMeta.value?.attachment_max_files || 0) || 0
+    : 0;
+  return Math.max(currentMax, transcriptionMax);
+});
+const currentModelAttachmentMaxFileSizeMb = computed(() => {
+  const currentMax =
+    Number(currentModelTypeMeta.value?.attachment_max_file_size_mb || 0) || 0;
+  const transcriptionMax = autoTranscriptionConfigured.value
+    ? Number(
+        autoTranscriptionTypeMeta.value?.attachment_max_file_size_mb || 0,
+      ) || 0
+    : 0;
+  return Math.max(currentMax, transcriptionMax);
+});
+const currentModelAttachmentModeLabel = computed(() =>
+  autoTranscriptionConfigured.value
+    ? "智能路由（含音频转写）"
+    : ATTACHMENT_MODE_LABELS[currentModelAttachmentMode.value] || "",
 );
 const currentModelTypeLabel = computed(
   () =>
@@ -8815,11 +9486,19 @@ const currentModelTypeLabel = computed(
 const currentModelTypeDescription = computed(() =>
   String(currentModelTypeMeta.value?.description || "").trim(),
 );
-const currentModelParameterMode = computed(
-  () =>
+const currentModelParameterMode = computed(() => {
+  const modelTypeMode = {
+    image_generation: "image",
+    video_generation: "video",
+    audio_generation: "audio_generation",
+    audio_transcription: "audio_transcription",
+  }[currentModelType.value];
+  return (
+    modelTypeMode ||
     String(currentModelTypeMeta.value?.chat_parameter_mode || "text").trim() ||
-    "text",
-);
+    "text"
+  );
+});
 const mediaParameterPopoverVisible = ref(false);
 const shouldShowMediaParameterTrigger = computed(
   () =>
@@ -8928,8 +9607,10 @@ function describeChatParameterValue(parameterKey, value) {
   );
 }
 
-function buildModelGenerationInstruction() {
-  if (currentModelParameterMode.value === "image") {
+function buildModelGenerationInstruction(
+  parameterMode = currentModelParameterMode.value,
+) {
+  if (parameterMode === "image") {
     const instructionLines = [
       "当前模型类型：图片生成。",
       "请按以下预设执行本轮生成：",
@@ -8950,7 +9631,7 @@ function buildModelGenerationInstruction() {
     }
     return instructionLines.join("\n");
   }
-  if (currentModelParameterMode.value === "video") {
+  if (parameterMode === "video") {
     return [
       "当前模型类型：视频生成。",
       "请按以下预设执行本轮生成：",
@@ -8964,8 +9645,11 @@ function buildModelGenerationInstruction() {
   return "";
 }
 
-function appendModelGenerationInstruction(prompt) {
-  const instruction = buildModelGenerationInstruction();
+function appendModelGenerationInstruction(
+  prompt,
+  parameterMode = currentModelParameterMode.value,
+) {
+  const instruction = buildModelGenerationInstruction(parameterMode);
   if (!instruction) return prompt;
   return [String(prompt || "").trim(), "", instruction]
     .filter(Boolean)
@@ -9010,27 +9694,41 @@ function normalizeBotPlatformConnector(item) {
     system_prompt: String(raw.system_prompt || raw.systemPrompt || "").trim(),
     chat_mode: "desktop_local_agent",
     external_agent_type: ["codex_cli", "hermes", "claude_code"].includes(
-      String(raw.external_agent_type || raw.externalAgentType || "").trim().toLowerCase(),
+      String(raw.external_agent_type || raw.externalAgentType || "")
+        .trim()
+        .toLowerCase(),
     )
-      ? String(raw.external_agent_type || raw.externalAgentType || "").trim().toLowerCase()
+      ? String(raw.external_agent_type || raw.externalAgentType || "")
+          .trim()
+          .toLowerCase()
       : "codex_cli",
     provider_id: String(raw.provider_id || raw.providerId || "").trim(),
     model_name: String(raw.model_name || raw.modelName || "").trim(),
     app_id: String(raw.app_id || "").trim(),
     app_secret: String(raw.app_secret || "").trim(),
-    verification_token: String(raw.verification_token || raw.verificationToken || "").trim(),
+    verification_token: String(
+      raw.verification_token || raw.verificationToken || "",
+    ).trim(),
     encrypt_key: String(raw.encrypt_key || raw.encryptKey || "").trim(),
-    event_receive_mode: String(raw.event_receive_mode || raw.eventReceiveMode || "manual")
+    event_receive_mode: String(
+      raw.event_receive_mode || raw.eventReceiveMode || "manual",
+    )
       .trim()
       .toLowerCase(),
     auto_start_worker: raw.auto_start_worker ?? raw.autoStartWorker ?? false,
     reply_identity: ["bot", "user"].includes(
-      String(raw.reply_identity || raw.replyIdentity || "").trim().toLowerCase(),
+      String(raw.reply_identity || raw.replyIdentity || "")
+        .trim()
+        .toLowerCase(),
     )
-      ? String(raw.reply_identity || raw.replyIdentity || "").trim().toLowerCase()
+      ? String(raw.reply_identity || raw.replyIdentity || "")
+          .trim()
+          .toLowerCase()
       : "bot",
     project_id: String(raw.project_id || "").trim(),
-    sandbox_mode: String(raw.sandbox_mode || raw.connector_sandbox_mode || "workspace-write")
+    sandbox_mode: String(
+      raw.sandbox_mode || raw.connector_sandbox_mode || "workspace-write",
+    )
       .trim()
       .toLowerCase(),
     high_risk_tool_confirm: raw.high_risk_tool_confirm !== false,
@@ -9337,9 +10035,11 @@ function localLiuAgentRuntimeEventsFromResult(result = {}) {
 
 function localLiuAgentConversationLifecycleFromResult(result = {}) {
   const lifecycle =
-    result?.conversationLifecycle && typeof result.conversationLifecycle === "object"
+    result?.conversationLifecycle &&
+    typeof result.conversationLifecycle === "object"
       ? result.conversationLifecycle
-      : result?.conversation_lifecycle && typeof result.conversation_lifecycle === "object"
+      : result?.conversation_lifecycle &&
+          typeof result.conversation_lifecycle === "object"
         ? result.conversation_lifecycle
         : null;
   if (!lifecycle || !Array.isArray(lifecycle.nodes)) return null;
@@ -9379,7 +10079,9 @@ function localLiuAgentLifecycleNodeProcessEntry(node = {}, lifecycle = {}) {
   const id = String(node?.id || "").trim() || `lifecycle-${Date.now()}`;
   const summary = String(node?.summary || "").trim();
   const title = localLiuAgentLifecycleNodeTitle(node);
-  const toolCallId = String(node?.tool_call_id || node?.toolCallId || "").trim();
+  const toolCallId = String(
+    node?.tool_call_id || node?.toolCallId || "",
+  ).trim();
   return {
     id,
     text: [title, summary ? `  - ${summary}` : ""].filter(Boolean).join("\n"),
@@ -9390,9 +10092,11 @@ function localLiuAgentLifecycleNodeProcessEntry(node = {}, lifecycle = {}) {
     payload: {
       ...node,
       event_type: "conversation_lifecycle",
-      lifecycle_version: lifecycle?.version || "desktop-conversation-lifecycle/v1",
+      lifecycle_version:
+        lifecycle?.version || "desktop-conversation-lifecycle/v1",
       runtime_session_id: lifecycle?.session_id || lifecycle?.sessionId || "",
-      chat_session_id: lifecycle?.chat_session_id || lifecycle?.chatSessionId || "",
+      chat_session_id:
+        lifecycle?.chat_session_id || lifecycle?.chatSessionId || "",
       conversation_context:
         lifecycle?.conversation_context || lifecycle?.conversationContext || {},
       content: node?.content || {},
@@ -9415,9 +10119,13 @@ function applyLocalLiuAgentConversationLifecycle(row, result = {}) {
   });
   if (hasRuntimeEntries) return false;
   if (result?.ok === false) {
-    const existingIds = new Set(existing.map((item) => String(item?.id || "").trim()));
+    const existingIds = new Set(
+      existing.map((item) => String(item?.id || "").trim()),
+    );
     row.processLog = existing.concat(
-      lifecycleEntries.filter((item) => !existingIds.has(String(item?.id || "").trim())),
+      lifecycleEntries.filter(
+        (item) => !existingIds.has(String(item?.id || "").trim()),
+      ),
     );
   } else {
     row.processLog = lifecycleEntries;
@@ -9427,7 +10135,9 @@ function applyLocalLiuAgentConversationLifecycle(row, result = {}) {
 }
 
 function localLiuAgentRuntimeEventPayload(event = {}) {
-  return event?.payload && typeof event.payload === "object" ? event.payload : {};
+  return event?.payload && typeof event.payload === "object"
+    ? event.payload
+    : {};
 }
 
 function localLiuAgentRuntimeEventPhase(event = {}) {
@@ -9441,12 +10151,16 @@ function localLiuAgentRuntimeEventPhase(event = {}) {
     type === "command_output_chunk"
   )
     return "running";
-  if (type === "model_step") return payload?.ok === false ? "failed" : "completed";
-  if (type === "tool_result") return payload?.ok === false ? "failed" : "completed";
-  if (type === "command_finished") return payload?.ok === false ? "failed" : "completed";
+  if (type === "model_step")
+    return payload?.ok === false ? "failed" : "completed";
+  if (type === "tool_result")
+    return payload?.ok === false ? "failed" : "completed";
+  if (type === "command_finished")
+    return payload?.ok === false ? "failed" : "completed";
   if (type === "state_changed") {
     const to = String(payload?.to || "").trim();
-    if (to === "waiting_approval" || to === "waiting_user") return "waiting_user";
+    if (to === "waiting_approval" || to === "waiting_user")
+      return "waiting_user";
     if (to === "failed") return "failed";
     if (to === "completed") return "completed";
     if (to === "cancelled") return "blocked";
@@ -9455,7 +10169,9 @@ function localLiuAgentRuntimeEventPhase(event = {}) {
 }
 
 function compactLocalLiuAgentInline(value, limit = 180) {
-  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  const normalized = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!normalized || normalized.length <= limit) return normalized;
   return `${normalized.slice(0, limit)}...`;
 }
@@ -9470,21 +10186,35 @@ function localLiuAgentToolTraceVerb(toolName = "") {
   if (normalized === "write_file") return "写入文件";
   if (normalized === "apply_patch") return "应用补丁";
   if (normalized === "delete_file") return "删除文件";
-  if (["http_get", "http_post", "download_file"].includes(normalized)) return "访问网络";
-  if (["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"].includes(normalized)) return "调用 MCP";
+  if (["http_get", "http_post", "download_file"].includes(normalized))
+    return "访问网络";
+  if (
+    ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"].includes(
+      normalized,
+    )
+  )
+    return "调用 MCP";
   return normalized || "Tool";
 }
 
 function localLiuAgentToolTraceArgument(payload = {}) {
   const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
   const args =
-    payload?.arguments && typeof payload.arguments === "object" && !Array.isArray(payload.arguments)
+    payload?.arguments &&
+    typeof payload.arguments === "object" &&
+    !Array.isArray(payload.arguments)
       ? payload.arguments
       : {};
   if (toolName === "run_command" || toolName === "check_command_risk") {
-    return String(args.cmd || args.command || payload?.cmd || payload?.command || "").trim();
+    return String(
+      args.cmd || args.command || payload?.cmd || payload?.command || "",
+    ).trim();
   }
-  if (toolName === "read_file" || toolName === "write_file" || toolName === "delete_file") {
+  if (
+    toolName === "read_file" ||
+    toolName === "write_file" ||
+    toolName === "delete_file"
+  ) {
     return String(args.path || args.file || "").trim();
   }
   if (toolName === "apply_patch") {
@@ -9496,17 +10226,26 @@ function localLiuAgentToolTraceArgument(payload = {}) {
   if (toolName === "list_files") {
     return String(args.path || args.directory || ".").trim();
   }
-  if (toolName === "http_get" || toolName === "http_post" || toolName === "download_file") {
+  if (
+    toolName === "http_get" ||
+    toolName === "http_post" ||
+    toolName === "download_file"
+  ) {
     return String(args.url || "").trim();
   }
   if (toolName === "call_mcp_tool") {
     return [args.server, args.tool_name || args.name].filter(Boolean).join(".");
   }
-  return String(payload?.arguments_preview || payload?.argumentsPreview || "").trim();
+  return String(
+    payload?.arguments_preview || payload?.argumentsPreview || "",
+  ).trim();
 }
 
 function localLiuAgentToolTraceSubject(payload = {}) {
-  const argument = compactLocalLiuAgentInline(localLiuAgentToolTraceArgument(payload), 220);
+  const argument = compactLocalLiuAgentInline(
+    localLiuAgentToolTraceArgument(payload),
+    220,
+  );
   const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
   const verb = localLiuAgentToolTraceVerb(toolName);
   return `${verb}${argument ? `(${argument})` : ""}`;
@@ -9550,7 +10289,9 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
     );
     return [
       currentFocus || summary,
-      currentFocus && summary && summary !== currentFocus ? `  - ${summary}` : "",
+      currentFocus && summary && summary !== currentFocus
+        ? `  - ${summary}`
+        : "",
       argumentsPreview ? `  - 调用参数：${argumentsPreview}` : "",
       nextAction ? `  - 完成后：${nextAction}` : "",
     ]
@@ -9559,14 +10300,20 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
   }
   if (type === "model_call_started") return "";
   if (type === "model_step") {
-    const error = compactLocalLiuAgentInline(payload?.error || payload?.error_code || "", 260);
+    const error = compactLocalLiuAgentInline(
+      payload?.error || payload?.error_code || "",
+      260,
+    );
     if (payload?.ok !== false) return "";
     return ["模型调用失败", error ? `  - 错误：${error}` : ""]
       .filter(Boolean)
       .join("\n");
   }
   if (type === "command_started") {
-    const cmd = compactLocalLiuAgentInline(payload?.cmd || payload?.command || "", 260);
+    const cmd = compactLocalLiuAgentInline(
+      payload?.cmd || payload?.command || "",
+      260,
+    );
     const cwd = String(payload?.cwd || "").trim();
     return [
       cmd ? `正在执行命令：${cmd}` : "正在执行命令",
@@ -9578,23 +10325,34 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
   if (type === "command_output_chunk") {
     const stream = String(payload?.stream || "stdout").trim();
     const text = compactLocalLiuAgentInline(payload?.text || "", 500);
-    return [`Output (${stream})`, text ? `  ${text}` : ""].filter(Boolean).join("\n");
+    return [`Output (${stream})`, text ? `  ${text}` : ""]
+      .filter(Boolean)
+      .join("\n");
   }
   if (type === "command_finished") {
     const exitCode = payload?.exit_code ?? payload?.exitCode;
     const durationMs = payload?.duration_ms ?? payload?.durationMs;
-    const summary = compactLocalLiuAgentInline(payload?.summary || payload?.error || "", 260);
+    const summary = compactLocalLiuAgentInline(
+      payload?.summary || payload?.error || "",
+      260,
+    );
     return [
       "命令执行完成",
-      exitCode !== undefined && exitCode !== null ? `  - exit_code=${exitCode}` : "",
-      durationMs !== undefined && durationMs !== null ? `  - duration=${durationMs}ms` : "",
+      exitCode !== undefined && exitCode !== null
+        ? `  - exit_code=${exitCode}`
+        : "",
+      durationMs !== undefined && durationMs !== null
+        ? `  - duration=${durationMs}ms`
+        : "",
       summary ? `  - ${summary}` : "",
     ]
       .filter(Boolean)
       .join("\n");
   }
   if (type === "tool_call_started") {
-    const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+    const toolName = String(
+      payload?.tool_name || payload?.toolName || "",
+    ).trim();
     const subject = localLiuAgentToolTraceSubject(payload);
     const index = Number(payload?.tool_index || payload?.toolIndex || 0) || 0;
     const count = Number(payload?.tool_count || payload?.toolCount || 0) || 0;
@@ -9624,7 +10382,9 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
       .join("\n");
   }
   if (type === "tool_result") {
-    const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+    const toolName = String(
+      payload?.tool_name || payload?.toolName || "",
+    ).trim();
     const resultLabel = localLiuAgentToolResultLabel(toolName);
     const summary = compactLocalLiuAgentInline(
       payload?.summary || payload?.error_code || payload?.error || "",
@@ -9645,10 +10405,17 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
   if (type === "approval_required") {
     const action = String(payload?.action || "").trim();
     const risk = String(payload?.risk || "").trim();
-    const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+    const toolName = String(
+      payload?.tool_name || payload?.toolName || "",
+    ).trim();
     const preview =
-      payload?.preview && typeof payload.preview === "object" ? payload.preview : {};
-    const cmd = compactLocalLiuAgentInline(preview.cmd || preview.command || "", 260);
+      payload?.preview && typeof payload.preview === "object"
+        ? payload.preview
+        : {};
+    const cmd = compactLocalLiuAgentInline(
+      preview.cmd || preview.command || "",
+      260,
+    );
     return [
       "等待授权",
       toolName ? `  - 工具：${toolName}` : "",
@@ -9667,8 +10434,12 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
   const payload = localLiuAgentRuntimeEventPayload(event);
   if (type === "progress_update") {
     const summary = String(payload?.summary || "").trim();
-    const currentFocus = String(payload?.current_focus || payload?.currentFocus || "").trim();
-    const nextAction = String(payload?.next_action || payload?.nextAction || "").trim();
+    const currentFocus = String(
+      payload?.current_focus || payload?.currentFocus || "",
+    ).trim();
+    const nextAction = String(
+      payload?.next_action || payload?.nextAction || "",
+    ).trim();
     const argumentsPreview = compactLocalLiuAgentInline(
       payload?.arguments_preview || payload?.argumentsPreview || "",
       360,
@@ -9699,10 +10470,17 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
     const index = Number(payload?.index || 0) || 0;
     const summary = String(payload?.summary || "").trim();
     const error = String(payload?.error || "").trim();
-    const errorCode = String(payload?.error_code || payload?.errorCode || "").trim();
-    const provider = String(payload?.provider_id || payload?.providerId || "").trim();
-    const model = String(payload?.model_name || payload?.modelName || "").trim();
-    const toolCount = Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0;
+    const errorCode = String(
+      payload?.error_code || payload?.errorCode || "",
+    ).trim();
+    const provider = String(
+      payload?.provider_id || payload?.providerId || "",
+    ).trim();
+    const model = String(
+      payload?.model_name || payload?.modelName || "",
+    ).trim();
+    const toolCount =
+      Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0;
     const title = index > 0 ? `模型步骤 ${index}` : "模型步骤";
     const runtime = [provider, model].filter(Boolean).join(" / ");
     if (payload?.ok === false) {
@@ -9714,14 +10492,20 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
         .filter(Boolean)
         .join(" · ");
     }
-    const toolText = toolCount > 0 ? `返回 ${toolCount} 个工具调用` : "未继续调用工具";
+    const toolText =
+      toolCount > 0 ? `返回 ${toolCount} 个工具调用` : "未继续调用工具";
     return [title, runtime, summary || toolText].filter(Boolean).join(" · ");
   }
   if (type === "model_call_started") {
     const index = Number(payload?.index || 0) || 0;
-    const provider = String(payload?.provider_id || payload?.providerId || "").trim();
-    const model = String(payload?.model_name || payload?.modelName || "").trim();
-    const messageCount = Number(payload?.message_count || payload?.messageCount || 0) || 0;
+    const provider = String(
+      payload?.provider_id || payload?.providerId || "",
+    ).trim();
+    const model = String(
+      payload?.model_name || payload?.modelName || "",
+    ).trim();
+    const messageCount =
+      Number(payload?.message_count || payload?.messageCount || 0) || 0;
     const title = index > 0 ? `模型步骤 ${index}` : "模型步骤";
     const runtime = [provider, model].filter(Boolean).join(" / ");
     const contextText = messageCount > 0 ? `上下文 ${messageCount} 条` : "";
@@ -9739,15 +10523,24 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
   if (type === "command_finished") {
     const exitCode = payload?.exit_code ?? payload?.exitCode;
     const summary = String(payload?.summary || payload?.error || "").trim();
-    return [exitCode !== undefined && exitCode !== null ? `命令退出码 ${exitCode}` : "命令完成", summary]
+    return [
+      exitCode !== undefined && exitCode !== null
+        ? `命令退出码 ${exitCode}`
+        : "命令完成",
+      summary,
+    ]
       .filter(Boolean)
       .join(" · ");
   }
   if (type === "tool_call_started") {
-    const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+    const toolName = String(
+      payload?.tool_name || payload?.toolName || "",
+    ).trim();
     const summary = String(payload?.summary || "").trim();
-    const toolIndex = Number(payload?.tool_index || payload?.toolIndex || 0) || 0;
-    const toolCount = Number(payload?.tool_count || payload?.toolCount || 0) || 0;
+    const toolIndex =
+      Number(payload?.tool_index || payload?.toolIndex || 0) || 0;
+    const toolCount =
+      Number(payload?.tool_count || payload?.toolCount || 0) || 0;
     const subject = localLiuAgentToolTraceSubject(payload);
     const toolLabel =
       subject && toolIndex > 0 && toolCount > 0
@@ -9761,7 +10554,9 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
       .join(" · ");
   }
   if (type === "tool_result") {
-    const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+    const toolName = String(
+      payload?.tool_name || payload?.toolName || "",
+    ).trim();
     const summary = String(payload?.summary || "").trim();
     return [`完成：${localLiuAgentToolResultLabel(toolName)}`, summary]
       .filter(Boolean)
@@ -9776,19 +10571,25 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
   const payload = localLiuAgentRuntimeEventPayload(event);
   if (
     type === "tool_result" &&
-    String(payload?.error_code || payload?.errorCode || "").trim() === "permission.required"
+    String(payload?.error_code || payload?.errorCode || "").trim() ===
+      "permission.required"
   ) {
     return null;
   }
   const eventId = String(event?.event_id || event?.eventId || "").trim();
   const runtimeSessionId = String(
-    event?.runtime_session_id || event?.runtimeSessionId || event?.session_id || "",
+    event?.runtime_session_id ||
+      event?.runtimeSessionId ||
+      event?.session_id ||
+      "",
   ).trim();
   const phase = localLiuAgentRuntimeEventPhase(event);
   const summary = localLiuAgentRuntimeEventSummary(event);
   const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
   const modelStepIndex = Number(payload?.index || 0) || 0;
-  const providerId = String(payload?.provider_id || payload?.providerId || "").trim();
+  const providerId = String(
+    payload?.provider_id || payload?.providerId || "",
+  ).trim();
   const providerName = String(
     payload?.provider_name ||
       payload?.providerName ||
@@ -9797,7 +10598,9 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
       )?.name ||
       "",
   ).trim();
-  const requestId = String(payload?.requestId || payload?.request_id || "").trim();
+  const requestId = String(
+    payload?.requestId || payload?.request_id || "",
+  ).trim();
   const argumentsPreview = String(
     payload?.arguments_preview || payload?.argumentsPreview || "",
   ).trim();
@@ -9811,40 +10614,46 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
     kind:
       type === "approval_required"
         ? "approval"
-        : type === "model_step" || type === "model_call_started" || type === "progress_update"
+        : type === "model_step" ||
+            type === "model_call_started" ||
+            type === "progress_update"
           ? "model"
-        : type === "command_started" || type === "command_output_chunk" || type === "command_finished"
-          ? "tool"
-        : type === "tool_result" || type === "tool_call_started"
-          ? "tool"
-          : "request",
+          : type === "command_started" ||
+              type === "command_output_chunk" ||
+              type === "command_finished"
+            ? "tool"
+            : type === "tool_result" || type === "tool_call_started"
+              ? "tool"
+              : "request",
     title:
       type === "approval_required"
         ? "桌面本地工具授权"
         : type === "command_started"
           ? "执行命令"
-        : type === "command_output_chunk"
-          ? "Command output"
-        : type === "command_finished"
-          ? "Command finished"
-        : type === "progress_update"
-          ? "推进当前任务"
-        : type === "model_step"
-          ? `本地模型步骤 ${modelStepIndex || ""}`.trim()
-        : type === "model_call_started"
-          ? `本地模型步骤 ${modelStepIndex || ""} 请求中`.trim()
-        : type === "tool_result"
-          ? `完成：${localLiuAgentToolResultLabel(toolName)}`
-        : type === "tool_call_started"
-          ? localLiuAgentToolTraceSubject(payload)
-          : "桌面本地 Agent Runtime",
+          : type === "command_output_chunk"
+            ? "Command output"
+            : type === "command_finished"
+              ? "Command finished"
+              : type === "progress_update"
+                ? "推进当前任务"
+                : type === "model_step"
+                  ? `本地模型步骤 ${modelStepIndex || ""}`.trim()
+                  : type === "model_call_started"
+                    ? `本地模型步骤 ${modelStepIndex || ""} 请求中`.trim()
+                    : type === "tool_result"
+                      ? `完成：${localLiuAgentToolResultLabel(toolName)}`
+                      : type === "tool_call_started"
+                        ? localLiuAgentToolTraceSubject(payload)
+                        : "桌面本地 Agent Runtime",
     summary,
     detail:
       type === "approval_required"
-        ? nativeLiuAgentPermissionText(payload, { toolName: toolName || "本地工具" })
+        ? nativeLiuAgentPermissionText(payload, {
+            toolName: toolName || "本地工具",
+          })
         : type === "tool_call_started"
           ? argumentsPreview
-        : String(payload?.error_code || payload?.error || "").trim(),
+          : String(payload?.error_code || payload?.error || "").trim(),
     phase,
     actionType: type === "approval_required" ? "approve" : "none",
     meta: {
@@ -9860,13 +10669,18 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
       model_step_index: modelStepIndex,
       provider_id: providerId,
       provider_name: providerName,
-      model_name: String(payload?.model_name || payload?.modelName || "").trim(),
-      tool_call_count: Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0,
+      model_name: String(
+        payload?.model_name || payload?.modelName || "",
+      ).trim(),
+      tool_call_count:
+        Number(payload?.tool_call_count || payload?.toolCallCount || 0) || 0,
       tool_name: toolName,
       tool_index: Number(payload?.tool_index || payload?.toolIndex || 0) || 0,
       tool_count: Number(payload?.tool_count || payload?.toolCount || 0) || 0,
       arguments_preview: argumentsPreview,
-      tool_call_id: String(payload?.tool_call_id || payload?.toolCallId || "").trim(),
+      tool_call_id: String(
+        payload?.tool_call_id || payload?.toolCallId || "",
+      ).trim(),
       tool_result_id: String(
         payload?.tool_result_id || payload?.toolResultId || "",
       ).trim(),
@@ -9880,14 +10694,19 @@ function localLiuAgentRuntimeEventProcessKind(event = {}) {
   const payload = localLiuAgentRuntimeEventPayload(event);
   const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
   if (type === "progress_update") return "progress_update";
-  if (type === "model_call_started" || type === "model_step") return "model_call";
+  if (type === "model_call_started" || type === "model_step")
+    return "model_call";
   if (type === "approval_required") return "permission";
   if (type === "command_output_chunk") return "command_output";
-  if (type === "command_started" || type === "command_finished") return "command";
+  if (type === "command_started" || type === "command_finished")
+    return "command";
   if (toolName === "read_file") return "file_read";
   if (["list_files", "search_text"].includes(toolName)) return "file_search";
-  if (["write_file", "apply_patch", "delete_file"].includes(toolName)) return "file_edit";
-  if (["call_mcp_tool", "list_mcp_tools", "read_mcp_resource"].includes(toolName)) {
+  if (["write_file", "apply_patch", "delete_file"].includes(toolName))
+    return "file_edit";
+  if (
+    ["call_mcp_tool", "list_mcp_tools", "read_mcp_resource"].includes(toolName)
+  ) {
     return "mcp_call";
   }
   if (type === "tool_call_started") return "tool_call";
@@ -9895,7 +10714,10 @@ function localLiuAgentRuntimeEventProcessKind(event = {}) {
   return "log";
 }
 
-function localLiuAgentRuntimeEventProcessLogEntry(event = {}, operation = null) {
+function localLiuAgentRuntimeEventProcessLogEntry(
+  event = {},
+  operation = null,
+) {
   const type = String(event?.type || "").trim();
   const payload = localLiuAgentRuntimeEventPayload(event);
   const eventId = String(event?.event_id || event?.eventId || "").trim();
@@ -9907,7 +10729,10 @@ function localLiuAgentRuntimeEventProcessLogEntry(event = {}, operation = null) 
     id:
       eventId ||
       `local-agent-event:${String(event?.runtime_session_id || event?.runtimeSessionId || "").trim()}:${type}:${Date.now()}`,
-    text: transcriptText || operation?.summary || localLiuAgentRuntimeEventSummary(event),
+    text:
+      transcriptText ||
+      operation?.summary ||
+      localLiuAgentRuntimeEventSummary(event),
     level:
       phase === "failed"
         ? "error"
@@ -9922,10 +10747,15 @@ function localLiuAgentRuntimeEventProcessLogEntry(event = {}, operation = null) 
       ...payload,
       event_type: type,
       runtime_session_id: String(
-        event?.runtime_session_id || event?.runtimeSessionId || event?.session_id || "",
+        event?.runtime_session_id ||
+          event?.runtimeSessionId ||
+          event?.session_id ||
+          "",
       ).trim(),
     },
-    toolCallId: String(payload?.tool_call_id || payload?.toolCallId || "").trim(),
+    toolCallId: String(
+      payload?.tool_call_id || payload?.toolCallId || "",
+    ).trim(),
   };
 }
 
@@ -9943,9 +10773,13 @@ function applyLocalLiuAgentReasoningContent(row, event = {}) {
 function modelStepFailureMessageFromEvent(event = {}) {
   const payload = localLiuAgentRuntimeEventPayload(event);
   const index = Number(payload?.index || 0) || 0;
-  const provider = String(payload?.provider_id || payload?.providerId || "").trim();
+  const provider = String(
+    payload?.provider_id || payload?.providerId || "",
+  ).trim();
   const model = String(payload?.model_name || payload?.modelName || "").trim();
-  const errorCode = String(payload?.error_code || payload?.errorCode || "").trim();
+  const errorCode = String(
+    payload?.error_code || payload?.errorCode || "",
+  ).trim();
   const error = String(payload?.error || "").trim();
   const summary = String(payload?.summary || "").trim();
   const detail = compactLocalLiuAgentInline(
@@ -9966,7 +10800,12 @@ function modelStepFailureMessageFromEvent(event = {}) {
 
 function stripLocalLiuAgentRequestDiagnostic(value = "") {
   let text = String(value || "").trim();
-  for (const marker of [" request={", " request=[", "\nrequest={", "\nrequest=["]) {
+  for (const marker of [
+    " request={",
+    " request=[",
+    "\nrequest={",
+    "\nrequest=[",
+  ]) {
     const index = text.indexOf(marker);
     if (index >= 0) {
       text = text.slice(0, index).trim();
@@ -9976,7 +10815,9 @@ function stripLocalLiuAgentRequestDiagnostic(value = "") {
 }
 
 function isLocalLiuAgentRecoverableModelStepFailure(payload = {}) {
-  return payload?.ok === false && String(payload?.status || "").trim() === "failed";
+  return (
+    payload?.ok === false && String(payload?.status || "").trim() === "failed"
+  );
 }
 
 function applyLocalLiuAgentModelStepFailure(row, event = {}, context = {}) {
@@ -10000,7 +10841,9 @@ function applyLocalLiuAgentModelStepFailure(row, event = {}, context = {}) {
       source: "tauri_liuagent_local_chat",
       chat_session_id: String(context?.chatSessionId || "").trim(),
       cwd: String(context?.workspacePath || "").trim(),
-      error_code: String(payload?.error_code || payload?.errorCode || "").trim(),
+      error_code: String(
+        payload?.error_code || payload?.errorCode || "",
+      ).trim(),
       local_liuagent_recoverable: "true",
     },
   });
@@ -10017,7 +10860,9 @@ function applyLocalLiuAgentModelStepFailure(row, event = {}, context = {}) {
       source: "tauri_liuagent_local_chat",
       chat_session_id: String(context?.chatSessionId || "").trim(),
       cwd: String(context?.workspacePath || "").trim(),
-      error_code: String(payload?.error_code || payload?.errorCode || "").trim(),
+      error_code: String(
+        payload?.error_code || payload?.errorCode || "",
+      ).trim(),
       local_liuagent_recoverable: "true",
     },
   });
@@ -10025,7 +10870,10 @@ function applyLocalLiuAgentModelStepFailure(row, event = {}, context = {}) {
   return true;
 }
 
-function shouldUpsertLocalLiuAgentRuntimeOperation(event = {}, operation = null) {
+function shouldUpsertLocalLiuAgentRuntimeOperation(
+  event = {},
+  operation = null,
+) {
   if (!operation) return false;
   const type = String(event?.type || "").trim();
   if (type === "approval_required") return false;
@@ -10034,7 +10882,9 @@ function shouldUpsertLocalLiuAgentRuntimeOperation(event = {}, operation = null)
 
 function normalizeLocalLiuAgentRuntimeEpochMs(value) {
   const timestamp = Number(value || 0);
-  return Number.isFinite(timestamp) && timestamp > 0 ? Math.round(timestamp) : 0;
+  return Number.isFinite(timestamp) && timestamp > 0
+    ? Math.round(timestamp)
+    : 0;
 }
 
 function localLiuAgentRuntimeEventIsTerminal(event = {}) {
@@ -10119,7 +10969,11 @@ function applyLocalLiuAgentRuntimeTiming(row, timing = {}) {
   return normalized;
 }
 
-function updateLocalLiuAgentRuntimeTimingFromEvent(row, event = {}, options = {}) {
+function updateLocalLiuAgentRuntimeTimingFromEvent(
+  row,
+  event = {},
+  options = {},
+) {
   const eventAt = localLiuAgentRuntimeEventCreatedAt(event);
   return applyLocalLiuAgentRuntimeTiming(row, {
     startedAt: options.startedAt || eventAt,
@@ -10131,7 +10985,11 @@ function updateLocalLiuAgentRuntimeTimingFromEvent(row, event = {}, options = {}
   });
 }
 
-function updateLocalLiuAgentRuntimeTimingFromResult(row, result = {}, options = {}) {
+function updateLocalLiuAgentRuntimeTimingFromResult(
+  row,
+  result = {},
+  options = {},
+) {
   const events = localLiuAgentRuntimeEventsFromResult(result);
   let firstEventAt = 0;
   let latestEventAt = 0;
@@ -10145,7 +11003,9 @@ function updateLocalLiuAgentRuntimeTimingFromResult(row, result = {}, options = 
       terminalEventAt = Math.max(terminalEventAt, eventAt);
     }
   }
-  const waitingPermission = Boolean(localLiuAgentPermissionRequestFromChatResult(result));
+  const waitingPermission = Boolean(
+    localLiuAgentPermissionRequestFromChatResult(result),
+  );
   const hasFinalResult = result?.ok !== undefined && result?.ok !== null;
   const endedAt =
     normalizeLocalLiuAgentRuntimeEpochMs(options.endedAt) ||
@@ -10161,7 +11021,9 @@ function updateLocalLiuAgentRuntimeTimingFromResult(row, result = {}, options = 
 
 function messageAgentRuntimeDurationLabel(row = {}) {
   const durationMs =
-    Number(row?.messageExecutionDurationMs || row?.agentRuntimeDurationMs || 0) || 0;
+    Number(
+      row?.messageExecutionDurationMs || row?.agentRuntimeDurationMs || 0,
+    ) || 0;
   if (durationMs > 0) return `耗时 ${formatDurationMs(durationMs)}`;
   const startedAt = normalizeLocalLiuAgentRuntimeEpochMs(
     row?.messageExecutionStartedAtEpochMs || row?.agentRuntimeStartedAtEpochMs,
@@ -10201,7 +11063,9 @@ function applyMessageExecutionTiming(row, timing = {}) {
   const currentEndedAt = normalizeLocalLiuAgentRuntimeEpochMs(
     row.messageExecutionEndedAtEpochMs || row.agentRuntimeEndedAtEpochMs,
   );
-  const incomingStartedAt = normalizeLocalLiuAgentRuntimeEpochMs(timing.startedAt);
+  const incomingStartedAt = normalizeLocalLiuAgentRuntimeEpochMs(
+    timing.startedAt,
+  );
   const incomingEndedAt = normalizeLocalLiuAgentRuntimeEpochMs(timing.endedAt);
   const startedAt =
     currentStartedAt && incomingStartedAt
@@ -10220,7 +11084,9 @@ function applyMessageExecutionTiming(row, timing = {}) {
     row.messageExecutionEndedAtEpochMs = endedAt;
   }
   row.messageExecutionDurationMs = durationMs;
-  row.messageExecutionDurationLabel = durationMs ? formatDurationMs(durationMs) : "";
+  row.messageExecutionDurationLabel = durationMs
+    ? formatDurationMs(durationMs)
+    : "";
   return {
     startedAtEpochMs: startedAt,
     endedAtEpochMs: endedAt,
@@ -10253,7 +11119,9 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
       continue;
     }
     updateLocalLiuAgentRuntimeTimingFromEvent(row, event, { startedAt });
-    if (["plan_created", "plan_updated", "plan_completed"].includes(eventType)) {
+    if (
+      ["plan_created", "plan_updated", "plan_completed"].includes(eventType)
+    ) {
       applyLiuAgentPlanEvent(
         row,
         {
@@ -10261,12 +11129,17 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
             context?.projectId || selectedProjectId.value || "",
           ).trim(),
           run_id: String(
-            event?.runtime_session_id || event?.runtimeSessionId || event?.run_id || "",
+            event?.runtime_session_id ||
+              event?.runtimeSessionId ||
+              event?.run_id ||
+              "",
           ).trim(),
           event_type: eventType,
           event,
         },
-        String(context?.requestId || context?.assistantMessageId || row.id || "").trim(),
+        String(
+          context?.requestId || context?.assistantMessageId || row.id || "",
+        ).trim(),
       );
       continue;
     }
@@ -10337,14 +11210,19 @@ function localLiuAgentExecutionCyclesFromResult(result = {}) {
         : [];
     const toolCallIds = new Set(
       toolCalls
-        .map((tool) => String(tool?.tool_call_id || tool?.toolCallId || "").trim())
+        .map((tool) =>
+          String(tool?.tool_call_id || tool?.toolCallId || "").trim(),
+        )
         .filter(Boolean),
     );
     return {
       cycleIndex: index + 1,
       contextSnapshot: snapshot,
       model: {
-        status: String(modelStep?.status || (modelStep?.ok === false ? "failed" : "completed")),
+        status: String(
+          modelStep?.status ||
+            (modelStep?.ok === false ? "failed" : "completed"),
+        ),
         providerId,
         providerName,
         modelName: String(modelStep?.model_name || modelStep?.modelName || ""),
@@ -10358,19 +11236,25 @@ function localLiuAgentExecutionCyclesFromResult(result = {}) {
             ? modelStep.token_usage
             : modelStep?.tokenUsage && typeof modelStep.tokenUsage === "object"
               ? modelStep.tokenUsage
-              : snapshot?.token_usage && typeof snapshot.token_usage === "object"
+              : snapshot?.token_usage &&
+                  typeof snapshot.token_usage === "object"
                 ? snapshot.token_usage
-                : snapshot?.tokenUsage && typeof snapshot.tokenUsage === "object"
+                : snapshot?.tokenUsage &&
+                    typeof snapshot.tokenUsage === "object"
                   ? snapshot.tokenUsage
                   : null,
       },
       tools: toolResults
         .filter((tool) =>
-          toolCallIds.has(String(tool?.toolCallId || tool?.tool_call_id || "").trim()),
+          toolCallIds.has(
+            String(tool?.toolCallId || tool?.tool_call_id || "").trim(),
+          ),
         )
         .map((tool) => ({
           toolCallId: String(tool?.toolCallId || tool?.tool_call_id || ""),
-          toolResultId: String(tool?.toolResultId || tool?.tool_result_id || ""),
+          toolResultId: String(
+            tool?.toolResultId || tool?.tool_result_id || "",
+          ),
           name: String(tool?.name || ""),
           ok: tool?.ok !== false,
           status: String(tool?.status || tool?.content?.status || ""),
@@ -10385,14 +11269,17 @@ function localLiuAgentExecutionCyclesFromResult(result = {}) {
 function localLiuAgentResultCurrentStateDelta(result = {}) {
   const modelRuntime = localLiuAgentResultModelRuntime(result);
   const currentStateDelta =
-    modelRuntime?.currentStateDelta && typeof modelRuntime.currentStateDelta === "object"
+    modelRuntime?.currentStateDelta &&
+    typeof modelRuntime.currentStateDelta === "object"
       ? modelRuntime.currentStateDelta
       : modelRuntime?.current_state_delta &&
           typeof modelRuntime.current_state_delta === "object"
         ? modelRuntime.current_state_delta
-        : result?.currentStateDelta && typeof result.currentStateDelta === "object"
+        : result?.currentStateDelta &&
+            typeof result.currentStateDelta === "object"
           ? result.currentStateDelta
-          : result?.current_state_delta && typeof result.current_state_delta === "object"
+          : result?.current_state_delta &&
+              typeof result.current_state_delta === "object"
             ? result.current_state_delta
             : {};
   return currentStateDelta && typeof currentStateDelta === "object"
@@ -10406,7 +11293,8 @@ function localLiuAgentResultStructuredState(result = {}, key = "") {
     String(char || "").toUpperCase(),
   );
   const value =
-    currentStateDelta?.[camelKey] && typeof currentStateDelta[camelKey] === "object"
+    currentStateDelta?.[camelKey] &&
+    typeof currentStateDelta[camelKey] === "object"
       ? currentStateDelta[camelKey]
       : currentStateDelta?.[key] && typeof currentStateDelta[key] === "object"
         ? currentStateDelta[key]
@@ -10419,27 +11307,40 @@ function localLiuAgentVerificationSummary(verificationReport = {}) {
     ? verificationReport.checks
     : [];
   const status = String(
-    verificationReport?.overallStatus || verificationReport?.overall_status || "",
+    verificationReport?.overallStatus ||
+      verificationReport?.overall_status ||
+      "",
   ).trim();
   const checkSummary = checks
     .map((check) => {
-      const type = String(check?.type || check?.checkType || check?.check_type || "").trim();
+      const type = String(
+        check?.type || check?.checkType || check?.check_type || "",
+      ).trim();
       const checkStatus = String(check?.status || "").trim();
       return [type, checkStatus].filter(Boolean).join(":");
     })
     .filter(Boolean)
     .join(", ");
-  return [`Verification ${status || "-"}`, checkSummary].filter(Boolean).join(" · ");
+  return [`Verification ${status || "-"}`, checkSummary]
+    .filter(Boolean)
+    .join(" · ");
 }
 
-function appendLocalLiuAgentStructuredStateOperations(row, result = {}, context = {}) {
+function appendLocalLiuAgentStructuredStateOperations(
+  row,
+  result = {},
+  context = {},
+) {
   if (!row) return;
   const planState = localLiuAgentResultStructuredState(result, "plan_state");
   const verificationReport = localLiuAgentResultStructuredState(
     result,
     "verification_report",
   );
-  const memoryWritePlan = localLiuAgentResultStructuredState(result, "memory_write_plan");
+  const memoryWritePlan = localLiuAgentResultStructuredState(
+    result,
+    "memory_write_plan",
+  );
   const baseMeta = {
     local_liuagent_operation: "true",
     agent_runtime_event: "true",
@@ -10471,7 +11372,9 @@ function appendLocalLiuAgentStructuredStateOperations(row, result = {}, context 
   }
   if (String(verificationReport?.version || "").trim()) {
     const overallStatus = String(
-      verificationReport?.overallStatus || verificationReport?.overall_status || "",
+      verificationReport?.overallStatus ||
+        verificationReport?.overall_status ||
+        "",
     ).trim();
     upsertMessageOperation(row, {
       operationId: `local-agent-verification:${row.id}`,
@@ -10511,7 +11414,9 @@ function appendLocalLiuAgentStructuredStateOperations(row, result = {}, context 
     });
   }
   if (String(memoryWritePlan?.version || "").trim()) {
-    const items = Array.isArray(memoryWritePlan?.items) ? memoryWritePlan.items : [];
+    const items = Array.isArray(memoryWritePlan?.items)
+      ? memoryWritePlan.items
+      : [];
     appendMessageProcessLog(row, {
       id: `local-agent-memory-log:${row.id}`,
       text: `Memory classifier · ${items.length} writes/candidates`,
@@ -10561,7 +11466,11 @@ const currentChatSessionLocalLiuAgentRunning = computed(() =>
 function localLiuAgentActiveRunRow(run) {
   const assistantMessageId = String(run?.assistantMessageId || "").trim();
   if (!assistantMessageId) return null;
-  return messages.value.find((row) => String(row?.id || "").trim() === assistantMessageId) || null;
+  return (
+    messages.value.find(
+      (row) => String(row?.id || "").trim() === assistantMessageId,
+    ) || null
+  );
 }
 
 function localLiuAgentRuntimeEventKey(event = {}) {
@@ -10584,8 +11493,44 @@ function markLocalLiuAgentRuntimeEventSeen(event = {}) {
   return true;
 }
 
+async function revealWorkspaceFileChangesAfterMutation(
+  workspacePath = "",
+  assistantMessageId = "",
+) {
+  const normalizedWorkspacePath = String(
+    workspacePath || workspaceReviewRoot.value || "",
+  ).trim();
+  if (!nativeDesktopBridgeAvailable.value || !normalizedWorkspacePath) return;
+  try {
+    const items = await listNativeWorkspaceFileChanges({
+      workspacePath: normalizedWorkspacePath,
+    });
+    if (normalizedWorkspacePath !== workspaceReviewRoot.value) return;
+    workspaceReviewItems.value = items;
+    if (items.some((item) => item.reviewStatus !== "accepted")) {
+      const message = messages.value.find(
+        (item) =>
+          String(item?.id || "").trim() ===
+          String(assistantMessageId || "").trim(),
+      );
+      if (message && messageFileChangeCount(message)) {
+        setMessageFileChangesScope(message);
+      }
+      fileChangesDialogVisible.value = true;
+      const firstPath = visibleWorkspaceChangedFiles.value[0]?.path || "";
+      if (firstPath) {
+        await openWorkspaceChangeFile(firstPath);
+      }
+    }
+  } catch (err) {
+    console.warn("刷新文件变更审查失败", err);
+  }
+}
+
 function handleNativeLiuAgentRuntimeEvent(event = {}) {
-  const chatSessionId = String(event?.chat_session_id || event?.chatSessionId || "").trim();
+  const chatSessionId = String(
+    event?.chat_session_id || event?.chatSessionId || "",
+  ).trim();
   const run = localLiuAgentActiveRunForChatSession(chatSessionId);
   if (!run || run.cancelled) return;
   if (!markLocalLiuAgentRuntimeEventSeen(event)) return;
@@ -10596,6 +11541,17 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
   });
   const payload = localLiuAgentRuntimeEventPayload(event);
   const eventType = String(event?.type || "").trim();
+  const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+  if (
+    eventType === "tool_result" &&
+    payload?.ok !== false &&
+    ["write_file", "apply_patch", "delete_file"].includes(toolName)
+  ) {
+    void revealWorkspaceFileChangesAfterMutation(
+      run.workspacePath,
+      run.assistantMessageId,
+    );
+  }
   if (
     String(event?.type || "").trim() === "tool_result" &&
     String(payload?.error_code || payload?.errorCode || "").trim() ===
@@ -10607,9 +11563,14 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
     applyLiuAgentPlanEvent(
       row,
       {
-        project_id: String(run.projectId || selectedProjectId.value || "").trim(),
+        project_id: String(
+          run.projectId || selectedProjectId.value || "",
+        ).trim(),
         run_id: String(
-          event?.runtime_session_id || event?.runtimeSessionId || event?.run_id || "",
+          event?.runtime_session_id ||
+            event?.runtimeSessionId ||
+            event?.run_id ||
+            "",
         ).trim(),
         event_type: eventType,
         event,
@@ -10636,10 +11597,13 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
 }
 
 function localLiuAgentRuntimeEventCreatedAt(event = {}) {
-  const direct = Number(event?.created_at_epoch_ms || event?.createdAtEpochMs || 0) || 0;
+  const direct =
+    Number(event?.created_at_epoch_ms || event?.createdAtEpochMs || 0) || 0;
   if (direct > 0) return direct;
   const payload = localLiuAgentRuntimeEventPayload(event);
-  return Number(payload?.created_at_epoch_ms || payload?.createdAtEpochMs || 0) || 0;
+  return (
+    Number(payload?.created_at_epoch_ms || payload?.createdAtEpochMs || 0) || 0
+  );
 }
 
 function isLocalLiuAgentRuntimeEventForActiveRun(event = {}, run = {}) {
@@ -10659,8 +11623,12 @@ async function pollLocalLiuAgentRuntimeEventsOnce() {
     const runs = Array.from(localLiuAgentActiveRuns.entries());
     for (const [chatSessionId, run] of runs) {
       if (!run || run.cancelled) continue;
-      const projectId = String(run.projectId || selectedProjectId.value || "").trim();
-      const workspacePath = String(run.workspacePath || projectWorkspacePath.value || "").trim();
+      const projectId = String(
+        run.projectId || selectedProjectId.value || "",
+      ).trim();
+      const workspacePath = String(
+        run.workspacePath || projectWorkspacePath.value || "",
+      ).trim();
       if (!projectId || !chatSessionId || !workspacePath) continue;
       const result = await listNativeLiuAgentRuntimeEvents({
         projectId,
@@ -10693,7 +11661,8 @@ function startLocalLiuAgentRuntimeEventPolling() {
 }
 
 function stopLocalLiuAgentRuntimeEventPollingIfIdle() {
-  if (localLiuAgentActiveRuns.size > 0 || !localLiuAgentRuntimeEventPollTimer) return;
+  if (localLiuAgentActiveRuns.size > 0 || !localLiuAgentRuntimeEventPollTimer)
+    return;
   window.clearInterval(localLiuAgentRuntimeEventPollTimer);
   localLiuAgentRuntimeEventPollTimer = null;
   localLiuAgentRuntimeEventPollInFlight = false;
@@ -10701,9 +11670,10 @@ function stopLocalLiuAgentRuntimeEventPollingIfIdle() {
 
 async function startNativeLiuAgentRuntimeEventSubscription() {
   if (nativeLiuAgentRuntimeEventUnlisten || !hasNativeDesktopBridge()) return;
-  nativeLiuAgentRuntimeEventUnlisten = await subscribeNativeLiuAgentRuntimeEvents(
-    handleNativeLiuAgentRuntimeEvent,
-  );
+  nativeLiuAgentRuntimeEventUnlisten =
+    await subscribeNativeLiuAgentRuntimeEvents(
+      handleNativeLiuAgentRuntimeEvent,
+    );
 }
 
 function stopNativeLiuAgentRuntimeEventSubscription() {
@@ -10734,7 +11704,9 @@ function localBotRunnerResultContent(result = {}) {
 }
 
 function localBotRunnerPlainObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
 }
 
 function localBotRunnerString(...values) {
@@ -10754,9 +11726,11 @@ function findLocalBotConnectorForRequest(request = {}) {
     request.connector_id,
   );
   if (!connectorId) return null;
-  return (botPlatformConnectors.value || []).find(
-    (item) => String(item?.id || "").trim() === connectorId,
-  ) || null;
+  return (
+    (botPlatformConnectors.value || []).find(
+      (item) => String(item?.id || "").trim() === connectorId,
+    ) || null
+  );
 }
 
 async function buildLocalBotRunnerModelRuntime(request = {}) {
@@ -10800,14 +11774,18 @@ async function buildLocalBotRunnerModelRuntime(request = {}) {
     modelName,
     baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
     apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
-    temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
+    temperature: Number(
+      temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
+    ),
   };
 }
 
 async function enrichLocalBotRunnerRequest(request = {}, workspacePath = "") {
   const normalizedRequest = localBotRunnerPlainObject(request);
   const localConnector = findLocalBotConnectorForRequest(normalizedRequest);
-  const requestConnector = localBotRunnerPlainObject(normalizedRequest.connector);
+  const requestConnector = localBotRunnerPlainObject(
+    normalizedRequest.connector,
+  );
   const connectorId = localBotRunnerString(
     requestConnector.connectorId,
     requestConnector.connector_id,
@@ -10878,7 +11856,10 @@ async function enrichLocalBotRunnerRequest(request = {}, workspacePath = "") {
     normalizedRequest.workspace_path,
     workspacePath,
   );
-  if (!normalizedRequest.permissionDecision && !normalizedRequest.permission_decision) {
+  if (
+    !normalizedRequest.permissionDecision &&
+    !normalizedRequest.permission_decision
+  ) {
     normalizedRequest.permissionDecision = localLiuAgentFullAccessEnabled(
       normalizedRequest.workspacePath,
     )
@@ -10903,9 +11884,11 @@ function escapeRegExp(value) {
 function localFeishuBotConnectorById(connectorId) {
   const normalizedId = String(connectorId || "").trim();
   if (!normalizedId) return null;
-  return (botPlatformConnectors.value || []).find(
-    (item) => String(item?.id || "").trim() === normalizedId,
-  ) || null;
+  return (
+    (botPlatformConnectors.value || []).find(
+      (item) => String(item?.id || "").trim() === normalizedId,
+    ) || null
+  );
 }
 
 function parseLocalFeishuJsonObject(value) {
@@ -10926,7 +11909,8 @@ function normalizeLocalFeishuBotStatusMessage(message = "") {
   const raw = String(message || "").trim();
   if (!raw) return "";
   const parsed = parseLocalFeishuJsonObject(raw);
-  const error = parsed?.error && typeof parsed.error === "object" ? parsed.error : {};
+  const error =
+    parsed?.error && typeof parsed.error === "object" ? parsed.error : {};
   const parts = [
     localFeishuBotEventString(error.message, parsed.message),
     localFeishuBotEventString(error.hint, parsed.hint),
@@ -10959,7 +11943,8 @@ function localFeishuSenderId(sender = {}) {
 
 function normalizeLocalFeishuBotEvent(rawEvent = {}) {
   const root = rawEvent && typeof rawEvent === "object" ? rawEvent : {};
-  const event = root.event && typeof root.event === "object" ? root.event : root;
+  const event =
+    root.event && typeof root.event === "object" ? root.event : root;
   const message =
     event.message && typeof event.message === "object" ? event.message : event;
   const sender =
@@ -11078,18 +12063,22 @@ function handleNativeFeishuLocalBotStatus(payload = {}) {
     const warningKey = `${connectorId}:${state}:${message}`;
     if (!localFeishuBotStatusWarningKeys.has(warningKey)) {
       localFeishuBotStatusWarningKeys.add(warningKey);
-      ElMessage.warning(message ? `飞书机器人监听${state === "exited" ? "已退出" : "失败"}：${message}` : "飞书机器人监听失败");
+      ElMessage.warning(
+        message
+          ? `飞书机器人监听${state === "exited" ? "已退出" : "失败"}：${message}`
+          : "飞书机器人监听失败",
+      );
     }
   }
 }
 
 function normalizeLocalFeishuBotMessage(connector, event = {}) {
-  let content = localFeishuBotEventString(event.content, event.text, event.message);
-  const names = [
-    connector?.name,
-    connector?.agent_name,
-    connector?.id,
-  ]
+  let content = localFeishuBotEventString(
+    event.content,
+    event.text,
+    event.message,
+  );
+  const names = [connector?.name, connector?.agent_name, connector?.id]
     .map((item) => String(item || "").trim())
     .filter(Boolean);
   for (const name of names) {
@@ -11107,23 +12096,32 @@ function localFeishuBotMentionedByEvent(event = {}) {
       ? event.message_mentions
       : [];
   return mentions.some((mention) => {
-    const type = String(mention?.type || mention?.mention_type || "").toLowerCase();
+    const type = String(
+      mention?.type || mention?.mention_type || "",
+    ).toLowerCase();
     return type.includes("bot") || type.includes("app");
   });
 }
 
 function shouldHandleLocalFeishuBotEvent(connector, event = {}) {
   if (!connector || connector.enabled === false) return false;
-  if (String(connector.platform || "").trim().toLowerCase() !== "feishu") return false;
-  const chatType = String(event.chat_type || event.chatType || "").trim().toLowerCase();
+  if (
+    String(connector.platform || "")
+      .trim()
+      .toLowerCase() !== "feishu"
+  )
+    return false;
+  const chatType = String(event.chat_type || event.chatType || "")
+    .trim()
+    .toLowerCase();
   if (chatType === "p2p") return true;
   if (localFeishuBotMentionedByEvent(event)) return true;
-  const content = localFeishuBotEventString(event.content, event.text, event.message);
-  const mentionTargets = [
-    connector.name,
-    connector.agent_name,
-    connector.id,
-  ]
+  const content = localFeishuBotEventString(
+    event.content,
+    event.text,
+    event.message,
+  );
+  const mentionTargets = [connector.name, connector.agent_name, connector.id]
     .map((item) => String(item || "").trim())
     .filter(Boolean);
   return mentionTargets.some((target) =>
@@ -11138,9 +12136,13 @@ function resolveLocalFeishuBotBoundSessionId(connector, event = {}) {
   const matched = (chatSessions.value || []).find((session) => {
     const source = normalizeChatSourceContext(session || {});
     return (
-      String(source.platform || "").trim().toLowerCase() === "feishu" &&
-      String(source.connector_id || source.connectorId || "").trim() === connectorId &&
-      String(source.external_chat_id || source.externalChatId || "").trim() === chatId
+      String(source.platform || "")
+        .trim()
+        .toLowerCase() === "feishu" &&
+      String(source.connector_id || source.connectorId || "").trim() ===
+        connectorId &&
+      String(source.external_chat_id || source.externalChatId || "").trim() ===
+        chatId
     );
   });
   return String(matched?.id || "").trim();
@@ -11162,13 +12164,17 @@ async function ensureLocalFeishuBotChatSession(connector, event = {}) {
       chatId,
     ),
     source_type:
-      String(event.chat_type || "").trim().toLowerCase() === "p2p"
+      String(event.chat_type || "")
+        .trim()
+        .toLowerCase() === "p2p"
         ? "private_message"
         : "group_message",
   };
   const created = await createChatSession({
     switchTo: false,
-    title: sourceContext.external_chat_name || `${connector?.name || "飞书"}机器人对话`,
+    title:
+      sourceContext.external_chat_name ||
+      `${connector?.name || "飞书"}机器人对话`,
     sourceContext,
   });
   return String(created?.id || "").trim();
@@ -11240,9 +12246,10 @@ async function enrichLocalFeishuBotEventForResources(
       identity,
       downloadResources: true,
     });
-    const payload = result?.payload && typeof result.payload === "object"
-      ? result.payload
-      : {};
+    const payload =
+      result?.payload && typeof result.payload === "object"
+        ? result.payload
+        : {};
     return {
       ...event,
       message_detail: payload,
@@ -11258,7 +12265,11 @@ function dataUrlMimeType(dataUrl = "") {
   return matched?.[1] || "";
 }
 
-async function buildLocalFeishuBotAttachments(event = {}, messageId = "", identity = "bot") {
+async function buildLocalFeishuBotAttachments(
+  event = {},
+  messageId = "",
+  identity = "bot",
+) {
   const eventWithDetail = await enrichLocalFeishuBotEventForResources(
     event,
     messageId,
@@ -11282,10 +12293,13 @@ async function buildLocalFeishuBotAttachments(event = {}, messageId = "", identi
         mimeType: dataUrlMimeType(dataUrl),
         size: Number(result?.size || 0) || 0,
         kind: ref.resourceType === "image" ? "image" : "file",
-        routingMode: ref.resourceType === "image" ? "inline_image" : "local_extract",
+        routingMode:
+          ref.resourceType === "image" ? "inline_image" : "local_extract",
         extractionStatus: dataUrl ? "image_data_url" : "metadata_only",
         dataUrl,
-        extractedText: String(result?.localPath || result?.local_path || "").trim()
+        extractedText: String(
+          result?.localPath || result?.local_path || "",
+        ).trim()
           ? `飞书资源已下载到本机：${String(result?.localPath || result?.local_path || "").trim()}`
           : "",
         providerFileId: "",
@@ -11311,7 +12325,8 @@ async function buildLocalFeishuBotAttachments(event = {}, messageId = "", identi
 }
 
 async function handleNativeFeishuLocalBotEvent(payload = {}) {
-  const rawEvent = payload?.event && typeof payload.event === "object" ? payload.event : {};
+  const rawEvent =
+    payload?.event && typeof payload.event === "object" ? payload.event : {};
   const event = normalizeLocalFeishuBotEvent(rawEvent);
   const connectorId = localFeishuBotEventString(
     payload.connectorId,
@@ -11319,12 +12334,19 @@ async function handleNativeFeishuLocalBotEvent(payload = {}) {
     event.connector_id,
   );
   const connector = localFeishuBotConnectorById(connectorId);
-  const eventId = localFeishuBotEventString(event.event_id, event.message_id, event.id);
+  const eventId = localFeishuBotEventString(
+    event.event_id,
+    event.message_id,
+    event.id,
+  );
   const eventKey = `${connectorId}:${eventId || JSON.stringify(event).slice(0, 160)}`;
   if (!connector || localFeishuBotProcessingEventIds.has(eventKey)) return;
   if (!shouldHandleLocalFeishuBotEvent(connector, event)) return;
 
-  const projectId = localFeishuBotEventString(payload.projectId, selectedProjectId.value);
+  const projectId = localFeishuBotEventString(
+    payload.projectId,
+    selectedProjectId.value,
+  );
   const chatSessionId = await ensureLocalFeishuBotChatSession(connector, event);
   const workspacePath = localFeishuBotEventString(
     payload.workspacePath,
@@ -11332,7 +12354,8 @@ async function handleNativeFeishuLocalBotEvent(payload = {}) {
   );
   const message = normalizeLocalFeishuBotMessage(connector, event);
   const messageId = localFeishuBotEventString(event.message_id, event.id);
-  if (!projectId || !chatSessionId || !workspacePath || !message || !messageId) return;
+  if (!projectId || !chatSessionId || !workspacePath || !message || !messageId)
+    return;
 
   localFeishuBotProcessingEventIds.add(eventKey);
   try {
@@ -11363,13 +12386,18 @@ async function handleNativeFeishuLocalBotEvent(payload = {}) {
       attachments,
       sourceContext: {
         source_type:
-          String(event.chat_type || "").trim().toLowerCase() === "p2p"
+          String(event.chat_type || "")
+            .trim()
+            .toLowerCase() === "p2p"
             ? "private_message"
             : "group_message",
         platform: "feishu",
         connector_id: connector.id,
         external_chat_id: localFeishuBotEventString(event.chat_id),
-        external_chat_name: localFeishuBotEventString(event.chat_name, event.chatName),
+        external_chat_name: localFeishuBotEventString(
+          event.chat_name,
+          event.chatName,
+        ),
         external_message_id: messageId,
         sender_id: localFeishuBotEventString(event.sender_id),
         chat_type: localFeishuBotEventString(event.chat_type),
@@ -11428,8 +12456,9 @@ async function syncLocalFeishuBotListeners() {
   localFeishuBotListenerContextKey = contextKey;
 
   if (!localFeishuBotStatusUnlisten) {
-    localFeishuBotStatusUnlisten =
-      await subscribeNativeFeishuLocalBotStatus(handleNativeFeishuLocalBotStatus);
+    localFeishuBotStatusUnlisten = await subscribeNativeFeishuLocalBotStatus(
+      handleNativeFeishuLocalBotStatus,
+    );
   }
 
   const enabledConnectorIds = new Set(
@@ -11438,8 +12467,12 @@ async function syncLocalFeishuBotListeners() {
         return (
           connector?.enabled !== false &&
           connector?.auto_start_worker === true &&
-          String(connector?.platform || "").trim().toLowerCase() === "feishu" &&
-          String(connector?.event_receive_mode || "").trim().toLowerCase() === "long_connection" &&
+          String(connector?.platform || "")
+            .trim()
+            .toLowerCase() === "feishu" &&
+          String(connector?.event_receive_mode || "")
+            .trim()
+            .toLowerCase() === "long_connection" &&
           String(connector?.id || "").trim()
         );
       })
@@ -11514,9 +12547,12 @@ function localLiuAgentAssistantMessageIdFromRuntimeEvents(events = []) {
 }
 
 function localLiuAgentPendingPermissionFromRecovery(result = {}) {
-  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  const state =
+    result?.state && typeof result.state === "object" ? result.state : {};
   const runState =
-    state?.run_state && typeof state.run_state === "object" ? state.run_state : {};
+    state?.run_state && typeof state.run_state === "object"
+      ? state.run_state
+      : {};
   const pendingPermissions = Array.isArray(runState?.pending_permissions)
     ? runState.pending_permissions
     : [];
@@ -11528,29 +12564,38 @@ function localLiuAgentPendingPermissionFromRecovery(result = {}) {
   for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
     if (String(event?.type || "").trim() !== "approval_required") continue;
     const payload = localLiuAgentRuntimeEventPayload(event);
-    const requestId = String(payload?.requestId || payload?.request_id || "").trim();
+    const requestId = String(
+      payload?.requestId || payload?.request_id || "",
+    ).trim();
     if (requestId) return payload;
   }
   return null;
 }
 
 function localLiuAgentRuntimeSessionIdFromRecovery(result = {}) {
-  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  const state =
+    result?.state && typeof result.state === "object" ? result.state : {};
   return String(state?.session_id || state?.sessionId || "").trim();
 }
 
 function rowHasLocalLiuAgentRuntimeSession(row = {}, runtimeSessionId = "") {
   const normalizedSessionId = String(runtimeSessionId || "").trim();
   if (!row || !normalizedSessionId) return false;
-  return (Array.isArray(row.operations) ? row.operations : []).some((operation) => {
-    const meta =
-      operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
-    return (
-      String(meta.session_id || meta.sessionId || "").trim() === normalizedSessionId ||
-      String(meta.runtime_session_id || meta.runtimeSessionId || "").trim() ===
-        normalizedSessionId
-    );
-  });
+  return (Array.isArray(row.operations) ? row.operations : []).some(
+    (operation) => {
+      const meta =
+        operation?.meta && typeof operation.meta === "object"
+          ? operation.meta
+          : {};
+      return (
+        String(meta.session_id || meta.sessionId || "").trim() ===
+          normalizedSessionId ||
+        String(
+          meta.runtime_session_id || meta.runtimeSessionId || "",
+        ).trim() === normalizedSessionId
+      );
+    },
+  );
 }
 
 function findLocalLiuAgentRuntimeMessage(rows = [], result = {}) {
@@ -11580,13 +12625,17 @@ function findLocalLiuAgentRuntimeMessage(rows = [], result = {}) {
 }
 
 function localLiuAgentBackgroundJobsFromRecovery(result = {}) {
-  const state = result?.state && typeof result.state === "object" ? result.state : {};
-  const jobs = Array.isArray(state?.background_jobs) ? state.background_jobs : [];
+  const state =
+    result?.state && typeof result.state === "object" ? result.state : {};
+  const jobs = Array.isArray(state?.background_jobs)
+    ? state.background_jobs
+    : [];
   return jobs.filter((job) => job && typeof job === "object");
 }
 
 function localLiuAgentResumeJudgementFromRecovery(result = {}) {
-  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  const state =
+    result?.state && typeof result.state === "object" ? result.state : {};
   return state?.resume_judgement && typeof state.resume_judgement === "object"
     ? state.resume_judgement
     : null;
@@ -11607,11 +12656,16 @@ function localLiuAgentResumeJudgementLabel(decision) {
   const normalized = String(decision || "")
     .trim()
     .toLowerCase();
-  if (normalized === "resume_from_checkpoint") return "任务已暂停，可以从本地 checkpoint 继续执行";
-  if (normalized === "continue_waiting") return "任务还在进行中，可以继续等待或刷新状态";
-  if (normalized === "ask_ai_to_verify_completion") return "命令已结束，需要让 AI 根据产物和日志确认是否完成目标";
-  if (normalized === "ask_ai_to_inspect_failure") return "命令失败，需要让 AI 读取日志判断失败原因";
-  if (normalized === "ask_ai_to_judge") return "当前没有足够信号，需要 AI 检查上下文再判断下一步";
+  if (normalized === "resume_from_checkpoint")
+    return "任务已暂停，可以从本地 checkpoint 继续执行";
+  if (normalized === "continue_waiting")
+    return "任务还在进行中，可以继续等待或刷新状态";
+  if (normalized === "ask_ai_to_verify_completion")
+    return "命令已结束，需要让 AI 根据产物和日志确认是否完成目标";
+  if (normalized === "ask_ai_to_inspect_failure")
+    return "命令失败，需要让 AI 读取日志判断失败原因";
+  if (normalized === "ask_ai_to_judge")
+    return "当前没有足够信号，需要 AI 检查上下文再判断下一步";
   return "";
 }
 
@@ -11637,7 +12691,11 @@ function localLiuAgentBackgroundJobDetail(job = {}, judgement = null) {
   return lines.join("\n");
 }
 
-function upsertLocalLiuAgentBackgroundJobOperation(row, job = {}, options = {}) {
+function upsertLocalLiuAgentBackgroundJobOperation(
+  row,
+  job = {},
+  options = {},
+) {
   if (!row || !job || typeof job !== "object") return false;
   const statePath = String(job?.state_path || "").trim();
   const jobId = String(job?.job_id || statePath || "").trim();
@@ -11674,8 +12732,12 @@ function upsertLocalLiuAgentBackgroundJobOperation(row, job = {}, options = {}) 
       job_id: jobId,
       status,
       judgement,
-      chat_session_id: String(options?.chatSessionId || currentChatSessionId.value || "").trim(),
-      cwd: String(options?.workspacePath || localLiuAgentWorkspacePath() || "").trim(),
+      chat_session_id: String(
+        options?.chatSessionId || currentChatSessionId.value || "",
+      ).trim(),
+      cwd: String(
+        options?.workspacePath || localLiuAgentWorkspacePath() || "",
+      ).trim(),
     },
   });
   row.processExpanded = true;
@@ -11697,7 +12759,11 @@ function applyLocalLiuAgentBackgroundJobs(row, result = {}, options = {}) {
   return changed;
 }
 
-async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows = []) {
+async function restoreLocalLiuAgentRuntimeState(
+  projectId,
+  chatSessionId,
+  rows = [],
+) {
   const activeProjectId = String(selectedProjectId.value || "").trim();
   const activeChatSessionId = String(currentChatSessionId.value || "").trim();
   if (
@@ -11726,9 +12792,12 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
     }
     return;
   }
-  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  const state =
+    result?.state && typeof result.state === "object" ? result.state : {};
   const runState =
-    state?.run_state && typeof state.run_state === "object" ? state.run_state : {};
+    state?.run_state && typeof state.run_state === "object"
+      ? state.run_state
+      : {};
   const status = String(runState?.status || "").trim();
   const backgroundJobs = localLiuAgentBackgroundJobsFromRecovery(result);
   const resumeJudgement = localLiuAgentResumeJudgementFromRecovery(result);
@@ -11738,9 +12807,13 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
   if (
     !["waiting_approval", "failed", "paused"].includes(status) &&
     !backgroundJobs.length &&
-    !["resume_from_checkpoint", "continue_waiting", "ask_ai_to_verify_completion", "ask_ai_to_inspect_failure", "ask_ai_to_judge"].includes(
-      resumeDecision,
-    )
+    ![
+      "resume_from_checkpoint",
+      "continue_waiting",
+      "ask_ai_to_verify_completion",
+      "ask_ai_to_inspect_failure",
+      "ask_ai_to_judge",
+    ].includes(resumeDecision)
   )
     return;
   const row = findLocalLiuAgentRuntimeMessage(rows, result);
@@ -11754,7 +12827,8 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
     workspacePath,
   });
   if (status === "waiting_approval") {
-    const permissionRequest = localLiuAgentPendingPermissionFromRecovery(result);
+    const permissionRequest =
+      localLiuAgentPendingPermissionFromRecovery(result);
     const requestId = String(
       permissionRequest?.requestId || permissionRequest?.request_id || "",
     ).trim();
@@ -11784,7 +12858,9 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
       modelName: selectedModelName.value || defaultModelName.value || "",
       systemPrompt: buildLocalLiuAgentSystemPrompt(),
       systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
-      temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
+      temperature: Number(
+        temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
+      ),
       modelRuntime,
       aiEntryFile: String(projectAiEntryFile.value || "").trim(),
       mcpConfig: effectiveMcpConfig.value,
@@ -11797,8 +12873,9 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
       ...permissionRequest,
       requestId,
       toolName:
-        String(permissionRequest?.toolName || permissionRequest?.tool_name || "").trim() ||
-        "本地工具",
+        String(
+          permissionRequest?.toolName || permissionRequest?.tool_name || "",
+        ).trim() || "本地工具",
     };
     setLocalLiuAgentPendingPermission(requestId, {
       kind: "local_chat",
@@ -11856,7 +12933,8 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
         root_goal: String(userMessage?.content || "").trim(),
         cwd: workspacePath,
         resume_judgement: resumeJudgement,
-        recovery_reason: status === "paused" ? "manual_pause" : "runtime_failure",
+        recovery_reason:
+          status === "paused" ? "manual_pause" : "runtime_failure",
       },
     });
     clearLocalLiuAgentRecoveryPlaceholderContent(row);
@@ -11869,7 +12947,11 @@ async function restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows =
       });
     }
   }
-  rememberChatSessionMessages(activeProjectId, activeChatSessionId, messages.value);
+  rememberChatSessionMessages(
+    activeProjectId,
+    activeChatSessionId,
+    messages.value,
+  );
   schedulePersistChatRuntime();
 }
 
@@ -12091,8 +13173,7 @@ const agentWorkflowState = computed(() => {
       : {};
   const isCheckpointResumeRunning =
     String(runningMeta.local_liuagent_resuming || "").trim() === "true";
-  const isLocalLiuAgentRunning =
-    currentChatSessionLocalLiuAgentRunning.value;
+  const isLocalLiuAgentRunning = currentChatSessionLocalLiuAgentRunning.value;
   if (isCheckpointResumeRunning || isLocalLiuAgentRunning) {
     return {
       phase: "running",
@@ -12169,7 +13250,9 @@ const agentWorkflowState = computed(() => {
     const isNativeExternalAgentRunning =
       currentChatSessionNativeExternalAgentRunning.value;
     const nativeRunningStatus = isNativeExternalAgentRunning
-      ? buildNativeExternalAgentRunningStatus(nativeExternalAgentSession.value || {})
+      ? buildNativeExternalAgentRunningStatus(
+          nativeExternalAgentSession.value || {},
+        )
       : null;
     return {
       phase: "running",
@@ -12353,8 +13436,7 @@ function workingStatusKeyBelongsToSession(key, chatSessionId = "") {
   if (!normalizedKey) return false;
   const sessionKey = workingStatusSessionKey(chatSessionId);
   return (
-    normalizedKey === sessionKey ||
-    normalizedKey.startsWith(`${sessionKey}::`)
+    normalizedKey === sessionKey || normalizedKey.startsWith(`${sessionKey}::`)
   );
 }
 
@@ -12366,7 +13448,10 @@ function clearWorkingStatusStartForChatSession(chatSessionId = "") {
     }
   }
   if (
-    workingStatusKeyBelongsToSession(workingStatusActiveKey.value, chatSessionId)
+    workingStatusKeyBelongsToSession(
+      workingStatusActiveKey.value,
+      chatSessionId,
+    )
   ) {
     workingStatusActiveKey.value = "";
     workingStatusStartedAt.value = 0;
@@ -12721,7 +13806,9 @@ function setTerminalApprovalPrompt(payload) {
         "",
     ).trim(),
     options,
-    commandPreview: String(payload?.commandPreview || payload?.command_preview || "").trim(),
+    commandPreview: String(
+      payload?.commandPreview || payload?.command_preview || "",
+    ).trim(),
     toolName: String(payload?.toolName || payload?.tool_name || "").trim(),
   };
   terminalApprovalDialogVisible.value = true;
@@ -12786,6 +13873,137 @@ const providerModelGroups = computed(() =>
     })
     .filter((group) => group.providerId && group.options.length),
 );
+function filterProviderModelGroups(modelTypes = []) {
+  const allowedTypes = new Set(
+    (Array.isArray(modelTypes) ? modelTypes : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean),
+  );
+  return providerModelGroups.value
+    .map((group) => ({
+      ...group,
+      options: group.options.filter((option) =>
+        allowedTypes.has(String(option.modelType || "").trim()),
+      ),
+    }))
+    .filter((group) => group.options.length);
+}
+
+const modelRoutingRoles = computed(() =>
+  MODEL_ROLE_CONFIGS.map((role) => {
+    const savedTarget = readModelRoleTarget(projectChatSettings.value, role.id);
+    const target =
+      role.id === "main"
+        ? {
+            ...savedTarget,
+            providerId:
+              savedTarget.providerId ||
+              selectedProviderId.value ||
+              defaultProviderId.value ||
+              "",
+            modelName:
+              savedTarget.modelName ||
+              selectedModelName.value ||
+              defaultModelName.value ||
+              "",
+          }
+        : savedTarget;
+    return {
+      ...role,
+      value: buildModelOptionValue(target.providerId, target.modelName),
+      groups: filterProviderModelGroups(role.modelTypes),
+    };
+  }),
+);
+
+function resolveModelTargetParameterMode(target = {}) {
+  const provider = (providers.value || []).find(
+    (item) =>
+      String(item?.id || "").trim() === String(target.providerId || "").trim(),
+  );
+  const modelConfig = findProviderModelConfig(
+    provider,
+    String(target.modelName || "").trim(),
+    modelTypeOptions.value,
+  );
+  const modelType = String(
+    modelConfig?.model_type || DEFAULT_MODEL_TYPE,
+  ).trim();
+  return (
+    {
+      image_generation: "image",
+      video_generation: "video",
+      audio_generation: "audio_generation",
+      audio_transcription: "audio_transcription",
+    }[modelType] || "text"
+  );
+}
+
+const activeModelSummary = computed(() => {
+  const target = composerSelectedModelTarget.value;
+  const providerLabel =
+    providerDisplayNameMap.value.get(target.providerId) || target.providerId;
+  if (target.modelName && providerLabel) {
+    return `${target.modelName} · ${providerLabel}`;
+  }
+  return target.modelName || providerLabel || "未配置主模型";
+});
+
+const localLiuAgentMediaTools = computed(() =>
+  [
+    ["image", "generate_image"],
+    ["image", "edit_image"],
+    ["video", "generate_video"],
+    ["audio_generation", "generate_audio"],
+    ["audio_transcription", "transcribe_audio"],
+  ]
+    .map(([roleId, name]) => ({
+      name,
+      ...readModelRoleTarget(projectChatSettings.value, roleId),
+    }))
+    .filter((item) => item.providerId && item.modelName),
+);
+
+function setModelRoutingMode(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  projectChatSettings.value = {
+    ...projectChatSettings.value,
+    model_routing_mode:
+      normalized === MODEL_ROUTING_MODE_MANUAL
+        ? MODEL_ROUTING_MODE_MANUAL
+        : MODEL_ROUTING_MODE_AUTO,
+  };
+  if (
+    normalized === MODEL_ROUTING_MODE_MANUAL &&
+    !manualModelOptionValue.value
+  ) {
+    manualModelOptionValue.value = buildModelOptionValue(
+      selectedProviderId.value,
+      selectedModelName.value,
+    );
+  }
+}
+
+function setModelRoleSelection(payload = {}) {
+  const roleId = String(payload?.roleId || "").trim();
+  projectChatSettings.value = writeModelRoleTarget(
+    projectChatSettings.value,
+    roleId,
+    payload?.value,
+  );
+  if (roleId === "main") {
+    const target = readModelRoleTarget(projectChatSettings.value, "main");
+    selectedProviderId.value = target.providerId;
+    selectedModelName.value = target.modelName;
+  }
+}
+
+function setManualModelOptionValue(value) {
+  manualModelOptionValue.value = String(value || "").trim();
+}
+
 const selectedModelOptionValue = computed({
   get() {
     const providerId = String(selectedProviderId.value || "").trim();
@@ -12945,7 +14163,8 @@ const composerSlashCommands = computed(() => {
       command: SYSTEM_MCP_COMMAND,
       aliases: SYSTEM_MCP_COMMAND_ALIASES,
       label: "系统 MCP",
-      description: "查看 Runtime MCP 服务目录；输入 /mcp <server_id> 查看该服务工具。",
+      description:
+        "查看 Runtime MCP 服务目录；输入 /mcp <server_id> 查看该服务工具。",
       assistActionId: "",
       seedText: `${SYSTEM_MCP_COMMAND}`,
     },
@@ -13084,6 +14303,13 @@ const draftText = ref("");
 const slashCommandHighlightIndex = ref(0);
 const editorComposing = ref(false);
 const uploadFiles = ref([]);
+const composerContextRefs = ref([]);
+const messageContextMenu = reactive({
+  visible: false,
+  x: 0,
+  y: 0,
+  references: [],
+});
 const inputFocused = ref(false);
 const isDragging = ref(false);
 const {
@@ -13276,7 +14502,8 @@ function restoreComposerPlanStateFromRuntimePayload(
         typeof runtimePayload.composer_plan === "object"
           ? runtimePayload.composer_plan
           : null;
-      const persistedTimestamp = Number(persistedPlan?.eventTimestamp || 0) || 0;
+      const persistedTimestamp =
+        Number(persistedPlan?.eventTimestamp || 0) || 0;
       const cachedTimestamp =
         Number(cachedState.plan?.eventTimestamp || 0) || 0;
       if (
@@ -13434,14 +14661,18 @@ function hasFatalNativeExternalAgentProviderError(snapshot = {}) {
 function findStaleNativeExternalAgentSessionForChatSession(chatSessionId = "") {
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedChatSessionId) return null;
-  const runnerSessionId =
-    getNativeExternalAgentRunnerSessionIdForChatSession(normalizedChatSessionId);
+  const runnerSessionId = getNativeExternalAgentRunnerSessionIdForChatSession(
+    normalizedChatSessionId,
+  );
   if (!runnerSessionId) return null;
   const snapshot = nativeExternalAgentSessionsById.get(runnerSessionId);
   if (!snapshot) return null;
   const status = String(snapshot.status || "").trim();
   if (isLiveNativeExternalAgentStatus(status)) return null;
-  if (status === "idle" && !hasFatalNativeExternalAgentProviderError(snapshot)) {
+  if (
+    status === "idle" &&
+    !hasFatalNativeExternalAgentProviderError(snapshot)
+  ) {
     return null;
   }
   if (isTerminalNativeExternalAgentSnapshotStatus(status)) {
@@ -13464,7 +14695,8 @@ function findStaleNativeExternalAgentSessionForChatSession(chatSessionId = "") {
 function clearStaleNativeExternalAgentSessionBindingForChatSession(
   chatSessionId = "",
 ) {
-  const stale = findStaleNativeExternalAgentSessionForChatSession(chatSessionId);
+  const stale =
+    findStaleNativeExternalAgentSessionForChatSession(chatSessionId);
   if (!stale) return false;
   ignoredNativeExternalAgentSessionIds.add(stale.sessionId);
   stopNativeExternalAgentSessionPolling(stale.sessionId);
@@ -13623,6 +14855,14 @@ function normalizeRuntimeMessageSnapshot(row) {
         : row.sourceContext && typeof row.sourceContext === "object"
           ? row.sourceContext
           : null,
+    contextRefs: mergeContextReferences(
+      [],
+      Array.isArray(row.contextRefs)
+        ? row.contextRefs
+        : Array.isArray(row.context_refs)
+          ? row.context_refs
+          : [],
+    ),
   };
 }
 
@@ -13754,12 +14994,14 @@ function mergeHistoryRowWithRuntimeSnapshot(historyRow, runtimeRow) {
     content: historyContent.trim() ? historyContent : runtimeContent,
     time: historyTime || runtimeTime,
     role: String(historyRow?.role || runtimeRow?.role || "assistant"),
-    images: Array.isArray(historyRow?.images) && historyRow.images.length
-      ? historyRow.images
-      : runtimeRow.images,
-    videos: Array.isArray(historyRow?.videos) && historyRow.videos.length
-      ? historyRow.videos
-      : runtimeRow.videos,
+    images:
+      Array.isArray(historyRow?.images) && historyRow.images.length
+        ? historyRow.images
+        : runtimeRow.images,
+    videos:
+      Array.isArray(historyRow?.videos) && historyRow.videos.length
+        ? historyRow.videos
+        : runtimeRow.videos,
     attachments:
       Array.isArray(historyRow?.attachments) && historyRow.attachments.length
         ? historyRow.attachments
@@ -13779,7 +15021,9 @@ function applyPersistedChatRuntimeRows(historyRows, runtimePayload) {
   const historyIds = new Set(rows.map((row) => String(row?.id || "").trim()));
   const mergedRows = rows.map((row) => {
     const runtimeRow = runtimeById.get(String(row?.id || "").trim());
-    return runtimeRow ? mergeHistoryRowWithRuntimeSnapshot(row, runtimeRow) : row;
+    return runtimeRow
+      ? mergeHistoryRowWithRuntimeSnapshot(row, runtimeRow)
+      : row;
   });
   const keepRuntimeOnlyIds = new Set();
   runtimeRows.forEach((row, index) => {
@@ -14658,7 +15902,9 @@ function normalizeProjectChatSettings(raw) {
     tool_priority: normalizeStringList(
       source.tool_priority || CHAT_SETTINGS_DEFAULTS.tool_priority,
     ),
-    allowed_file_types: normalizeChatAllowedFileTypes(source.allowed_file_types),
+    allowed_file_types: normalizeChatAllowedFileTypes(
+      source.allowed_file_types,
+    ),
   };
 }
 
@@ -14813,16 +16059,13 @@ const uploadAccept = computed(() =>
     : "",
 );
 
-const effectiveUploadAllowedFileTypes = computed(() =>
-  effectiveAllowedFileTypes.value,
+const effectiveUploadAllowedFileTypes = computed(
+  () => effectiveAllowedFileTypes.value,
 );
 
 const hasUploadingAttachments = computed(() =>
-  uploadFiles.value.some(
-    (item) =>
-      ["uploading", "error"].includes(
-        String(item?.uploadStatus || "").trim(),
-      ),
+  uploadFiles.value.some((item) =>
+    ["uploading", "error"].includes(String(item?.uploadStatus || "").trim()),
   ),
 );
 
@@ -14863,7 +16106,7 @@ const canSend = computed(() => {
       ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
     );
   }
-  return uploadFiles.value.length > 0;
+  return uploadFiles.value.length > 0 || composerContextRefs.value.length > 0;
 });
 
 const isProjectOptionalEmployeeCreate = computed(
@@ -14885,15 +16128,20 @@ const isComposerDisabled = computed(() => {
   return false;
 });
 
-function formatContent(text) {
+function formatContent(text, structuredMedia = {}) {
   const displayText = stripInternalProtocolContentForDisplay(
     stripEmployeeDraftBlock(text),
   );
   if (!displayText) return "";
+  const deduplicatedText = stripStructuredMediaDuplicatesFromMarkdown(
+    displayText,
+    structuredMedia,
+  );
+  if (!deduplicatedText) return "";
   try {
-    return renderProjectChatMarkdown(displayText);
+    return renderProjectChatMarkdown(deduplicatedText);
   } catch (e) {
-    return displayText;
+    return deduplicatedText;
   }
 }
 
@@ -15154,6 +16402,107 @@ async function refreshWorkspaceFileTree() {
   await openWorkspaceDirectory(workspaceFileTreePath.value);
 }
 
+async function openMessageFileChanges(item) {
+  if (!canReviewWorkspaceChanges.value) {
+    ElMessage.warning("请先选择当前项目的本机工作区");
+    return;
+  }
+  setMessageFileChangesScope(item);
+  fileChangesDialogVisible.value = true;
+  try {
+    await refreshWorkspaceReviewItems();
+    const firstPath = visibleWorkspaceChangedFiles.value[0]?.path || "";
+    if (!firstPath) {
+      activeWorkspaceFilePath.value = "";
+      workspaceDiffPreview.value = null;
+      return;
+    }
+    await openWorkspaceChangeFile(firstPath);
+  } catch (err) {
+    ElMessage.error(err?.message || "加载本轮文件变更失败");
+  }
+}
+
+async function refreshFileChangesDrawer() {
+  try {
+    await refreshWorkspaceReviewItems();
+    const activePath = visibleWorkspaceChangedFiles.value.some(
+      (item) => item.path === activeWorkspaceFilePath.value,
+    )
+      ? activeWorkspaceFilePath.value
+      : visibleWorkspaceChangedFiles.value[0]?.path || "";
+    if (!activePath) {
+      activeWorkspaceFilePath.value = "";
+      workspaceDiffPreview.value = null;
+      return;
+    }
+    await openWorkspaceChangeFile(activePath);
+  } catch (err) {
+    ElMessage.error(err?.message || "刷新本轮文件变更失败");
+  }
+}
+
+async function openWorkspaceChangeFile(path) {
+  const item = workspaceReviewItems.value.find((entry) => entry.path === path);
+  if (item?.changeType === "deleted") {
+    activeWorkspaceFilePath.value = path;
+    workspaceFileDraft.value = "";
+    workspaceFileOriginal.value = "";
+  } else {
+    await openWorkspaceFile(path);
+  }
+  await refreshWorkspaceDiffPreview({ path });
+}
+
+async function refreshWorkspaceReviewItems() {
+  if (!canReviewWorkspaceChanges.value) {
+    workspaceReviewItems.value = [];
+    return;
+  }
+  workspaceReviewItems.value = await listNativeWorkspaceFileChanges({
+    workspacePath: workspaceReviewRoot.value,
+  });
+}
+
+async function acceptReviewedWorkspaceFile() {
+  const item = activeWorkspaceReviewItem.value;
+  if (!item) return;
+  await ElMessageBox.confirm(`确认保留 ${item.path} 的当前修改？`, "确认保存", {
+    confirmButtonText: "确认保存",
+    cancelButtonText: "返回审查",
+    type: "info",
+  });
+  await acceptNativeWorkspaceFileChange({
+    workspacePath: workspaceReviewRoot.value,
+    path: item.path,
+    expectedCurrentHash: item.currentHash,
+  });
+  await refreshWorkspaceReviewItems();
+  ElMessage.success("已确认保留当前修改");
+}
+
+async function revertReviewedWorkspaceFile() {
+  const item = activeWorkspaceReviewItem.value;
+  if (!item) return;
+  await ElMessageBox.confirm(
+    `将 ${item.path} 恢复到本轮首次修改前；外部修改会触发冲突保护。`,
+    "撤回本轮修改",
+    {
+      confirmButtonText: "确认撤回",
+      cancelButtonText: "取消",
+      type: "warning",
+    },
+  );
+  await revertNativeWorkspaceFileChange({
+    workspacePath: workspaceReviewRoot.value,
+    path: item.path,
+    expectedCurrentHash: item.currentHash,
+  });
+  await refreshWorkspaceReviewItems();
+  await refreshWorkspaceDiffPreview({ path: item.path });
+  ElMessage.success("已撤回本轮修改");
+}
+
 async function refreshWorkspaceDiffPreview(options = {}) {
   if (!canPreviewWorkspaceDiff.value) {
     workspaceDiffPreview.value = null;
@@ -15165,8 +16514,11 @@ async function refreshWorkspaceDiffPreview(options = {}) {
       : String(options?.path ?? activeWorkspaceFilePath.value ?? "").trim();
   workspaceDiffLoading.value = true;
   try {
+    if (nativeDesktopBridgeAvailable.value) {
+      await refreshWorkspaceReviewItems();
+    }
     const data = await previewNativeWorkspaceDiff({
-      workspacePath: projectWorkspaceResolved.value,
+      workspacePath: workspaceReviewRoot.value,
       path: targetPath,
     });
     workspaceDiffPreview.value = data;
@@ -15339,6 +16691,23 @@ async function prepareDesktopWorkspaceFileWrite(path) {
       riskLevel,
     });
     await refreshNativeRunnerPermissionRecords();
+    const baselineContent = workspaceFileOriginal.value;
+    const writeResult = await writeNativeWorkspaceFile({
+      workspacePath: projectWorkspaceResolved.value,
+      path: normalizedPath,
+      content: workspaceFileDraft.value,
+      expectedCurrentHash: preparation?.currentHash || "",
+    });
+    workspaceFileUndoSnapshots.value = {
+      ...workspaceFileUndoSnapshots.value,
+      [normalizedPath]: {
+        content: baselineContent,
+        savedHash: String(
+          writeResult?.contentHash || writeResult?.content_hash || "",
+        ).trim(),
+      },
+    };
+    workspaceFileOriginal.value = workspaceFileDraft.value;
     void recordDesktopAuditEvent({
       event_type: "desktop_workspace_file_write_prepare",
       step: "准备写入工作区文件",
@@ -15346,11 +16715,12 @@ async function prepareDesktopWorkspaceFileWrite(path) {
       content: summary || `桌面端准备写入：${normalizedPath}`,
       changed_files: [normalizedPath],
       facts,
-      verification: ["write_executed=false", "approval_recorded=true"],
-      next_steps: ["后续接入真实写入时必须复用本次确认摘要和 diff 预览"],
+      verification: ["write_executed=true", "approval_recorded=true"],
     });
-    ElMessage.success("已记录写入前确认；当前阶段不会执行真实写入。");
-    void refreshWorkspaceDiffPreview({ path: normalizedPath });
+    ElMessage.success("文件已确认保存");
+    await revealWorkspaceFileChangesAfterMutation(
+      projectWorkspaceResolved.value,
+    );
     return true;
   } catch (err) {
     if (err === "cancel" || err?.message === "cancel") {
@@ -15387,6 +16757,42 @@ async function prepareDesktopWorkspaceFileWrite(path) {
       ),
     });
     return false;
+  } finally {
+    workspaceFileSaving.value = false;
+  }
+}
+
+async function revertActiveWorkspaceFile() {
+  const path = String(activeWorkspaceFilePath.value || "").trim();
+  const snapshot = workspaceFileUndoSnapshots.value[path];
+  if (!path || !snapshot) return;
+  await ElMessageBox.confirm(
+    "将恢复到本轮保存前的内容；若文件已被外部修改，系统会阻止覆盖。",
+    "撤回本轮保存",
+    {
+      confirmButtonText: "确认撤回",
+      cancelButtonText: "取消",
+      type: "warning",
+    },
+  );
+  workspaceFileSaving.value = true;
+  try {
+    const result = await writeNativeWorkspaceFile({
+      workspacePath: projectWorkspaceResolved.value,
+      path,
+      content: snapshot.content,
+      expectedCurrentHash: snapshot.savedHash,
+    });
+    workspaceFileDraft.value = snapshot.content;
+    workspaceFileOriginal.value = snapshot.content;
+    const next = { ...workspaceFileUndoSnapshots.value };
+    delete next[path];
+    workspaceFileUndoSnapshots.value = next;
+    ElMessage.success("已撤回本轮保存");
+    await refreshWorkspaceDiffPreview({ path });
+    return result;
+  } catch (err) {
+    ElMessage.error(err?.message || "撤回失败，文件可能已被外部修改");
   } finally {
     workspaceFileSaving.value = false;
   }
@@ -15600,7 +17006,9 @@ async function sendTerminalApprovalChoice(choice) {
     return;
   }
 
-  ElMessage.error("授权上下文丢失（未收到结构化审批事件），请刷新 Runner 状态后重试");
+  ElMessage.error(
+    "授权上下文丢失（未收到结构化审批事件），请刷新 Runner 状态后重试",
+  );
 }
 
 function appendAssistantStatusNote(row, text) {
@@ -15653,7 +17061,9 @@ function appendMessageProcessLog(row, source = {}) {
   const text = String(source?.text || source?.content || "").trim();
   if (!text) return null;
   const payload =
-    source?.payload && typeof source.payload === "object" && !Array.isArray(source.payload)
+    source?.payload &&
+    typeof source.payload === "object" &&
+    !Array.isArray(source.payload)
       ? source.payload
       : {};
   const logs = Array.isArray(row.processLog) ? row.processLog.slice() : [];
@@ -15665,7 +17075,9 @@ function appendMessageProcessLog(row, source = {}) {
     level: normalizeProcessLogLevel(source?.level),
     kind: normalizeMessageProcessEntryKind(source?.kind || payload?.kind || ""),
     payload,
-    eventType: String(source?.eventType || source?.event_type || payload?.event_type || "").trim(),
+    eventType: String(
+      source?.eventType || source?.event_type || payload?.event_type || "",
+    ).trim(),
     toolCallId: String(
       source?.toolCallId ||
         source?.tool_call_id ||
@@ -15728,7 +17140,10 @@ function isCompletedDoneProcessLog(entry) {
 }
 
 function shouldHideProcessLogEntry(row, entry) {
-  if (hasNonTerminalUserWaitingOperation(row) && isCompletedDoneProcessLog(entry)) {
+  if (
+    hasNonTerminalUserWaitingOperation(row) &&
+    isCompletedDoneProcessLog(entry)
+  ) {
     return true;
   }
   const eventType = String(
@@ -15760,7 +17175,8 @@ function messageProcessEntryChildren(entry = {}) {
 }
 
 function messageProcessEntrySpanKey(entry = {}) {
-  if (messageProcessEntryEventType(entry) === "conversation_lifecycle") return "";
+  if (messageProcessEntryEventType(entry) === "conversation_lifecycle")
+    return "";
   const toolCallId = String(
     entry?.toolCallId ||
       entry?.tool_call_id ||
@@ -15801,15 +17217,23 @@ function chooseMessageProcessSpanKind(currentKind = "", nextKind = "") {
     "command_output",
     "log",
   ];
-  const currentIndex = priority.indexOf(currentKind) === -1 ? priority.length : priority.indexOf(currentKind);
-  const nextIndex = priority.indexOf(nextKind) === -1 ? priority.length : priority.indexOf(nextKind);
+  const currentIndex =
+    priority.indexOf(currentKind) === -1
+      ? priority.length
+      : priority.indexOf(currentKind);
+  const nextIndex =
+    priority.indexOf(nextKind) === -1
+      ? priority.length
+      : priority.indexOf(nextKind);
   return nextIndex < currentIndex ? nextKind : currentKind || nextKind || "log";
 }
 
 function payloadHasUsefulProcessContent(payload = {}) {
   if (!payload || typeof payload !== "object") return false;
   const content =
-    payload.content && typeof payload.content === "object" && !Array.isArray(payload.content)
+    payload.content &&
+    typeof payload.content === "object" &&
+    !Array.isArray(payload.content)
       ? payload.content
       : {};
   if (Object.keys(content).length) return true;
@@ -15821,9 +17245,13 @@ function mergeMessageProcessSpanEntry(group, entry) {
   group.children.push(entry);
   group.kind = chooseMessageProcessSpanKind(group.kind, nextKind);
   group.level = normalizeProcessLogLevel(entry?.level || group.level);
-  group.text = String(group.text || "").trim() || String(entry?.text || "").trim();
+  group.text =
+    String(group.text || "").trim() || String(entry?.text || "").trim();
   const payload = messageProcessEntryPayload(entry);
-  if (!payloadHasUsefulProcessContent(group.payload) || nextKind !== "command_output") {
+  if (
+    !payloadHasUsefulProcessContent(group.payload) ||
+    nextKind !== "command_output"
+  ) {
     group.payload = {
       ...(group.payload || {}),
       ...payload,
@@ -15880,14 +17308,20 @@ function normalizeMessageProcessEntryKind(kind = "") {
 }
 
 function messageProcessEntryPayload(entry = {}) {
-  return entry?.payload && typeof entry.payload === "object" && !Array.isArray(entry.payload)
+  return entry?.payload &&
+    typeof entry.payload === "object" &&
+    !Array.isArray(entry.payload)
     ? entry.payload
     : {};
 }
 
 function messageProcessEntryContent(entry = {}) {
   const payload = messageProcessEntryPayload(entry);
-  if (payload?.content && typeof payload.content === "object" && !Array.isArray(payload.content)) {
+  if (
+    payload?.content &&
+    typeof payload.content === "object" &&
+    !Array.isArray(payload.content)
+  ) {
     return payload.content;
   }
   for (const child of messageProcessEntryChildren(entry)) {
@@ -15899,7 +17333,11 @@ function messageProcessEntryContent(entry = {}) {
 
 function messageProcessEntryArguments(entry = {}) {
   const payload = messageProcessEntryPayload(entry);
-  if (payload?.arguments && typeof payload.arguments === "object" && !Array.isArray(payload.arguments)) {
+  if (
+    payload?.arguments &&
+    typeof payload.arguments === "object" &&
+    !Array.isArray(payload.arguments)
+  ) {
     return payload.arguments;
   }
   for (const child of messageProcessEntryChildren(entry)) {
@@ -15911,7 +17349,9 @@ function messageProcessEntryArguments(entry = {}) {
 
 function messageProcessEntryEventType(entry = {}) {
   const payload = messageProcessEntryPayload(entry);
-  return String(entry?.eventType || entry?.event_type || payload?.event_type || "").trim();
+  return String(
+    entry?.eventType || entry?.event_type || payload?.event_type || "",
+  ).trim();
 }
 
 function messageProcessEntryToolName(entry = {}) {
@@ -15944,20 +17384,143 @@ function messageProcessEntryPath(entry = {}) {
   ).trim();
 }
 
+function normalizeWorkspaceReviewPath(path = "") {
+  let normalized = String(path || "")
+    .trim()
+    .replace(/^file:\/\//, "")
+    .replace(/\\/g, "/");
+  const workspaceRoot = String(workspaceReviewRoot.value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  if (workspaceRoot && normalized.startsWith(`${workspaceRoot}/`)) {
+    normalized = normalized.slice(workspaceRoot.length + 1);
+  }
+  return normalized.replace(/^\.\//, "").replace(/\/{2,}/g, "/");
+}
+
+function messageProcessEntryToolCallId(entry = {}) {
+  const payload = messageProcessEntryPayload(entry);
+  return String(
+    entry?.toolCallId ||
+      entry?.tool_call_id ||
+      payload?.tool_call_id ||
+      payload?.toolCallId ||
+      "",
+  ).trim();
+}
+
+function messageProcessEntryChangedFilePaths(
+  entry = {},
+  successfulToolCallIds = new Set(),
+) {
+  const payload = messageProcessEntryPayload(entry);
+  const content = messageProcessEntryContent(entry);
+  const args = messageProcessEntryArguments(entry);
+  const eventType = messageProcessEntryEventType(entry);
+  const toolName = messageProcessEntryToolName(entry);
+  const toolCallId = messageProcessEntryToolCallId(entry);
+  const isFileMutation = ["write_file", "apply_patch", "delete_file"].includes(
+    toolName,
+  );
+  const isSuccessfulResult =
+    eventType === "tool_result" && payload?.ok !== false;
+  const isLegacyFileEdit =
+    !eventType && messageProcessEntryKind(entry) === "file_edit";
+  const isLinkedSuccessfulCall =
+    toolCallId && successfulToolCallIds.has(toolCallId);
+  if (
+    !isFileMutation ||
+    (!isSuccessfulResult && !isLegacyFileEdit && !isLinkedSuccessfulCall)
+  ) {
+    return [];
+  }
+  const candidates = [
+    content?.path,
+    payload?.path,
+    args?.path,
+    args?.file,
+    ...(Array.isArray(content?.changed_files) ? content.changed_files : []),
+    ...(Array.isArray(content?.changedFiles) ? content.changedFiles : []),
+    ...(Array.isArray(payload?.changed_files) ? payload.changed_files : []),
+    ...(Array.isArray(payload?.changedFiles) ? payload.changedFiles : []),
+  ];
+  return candidates
+    .map((path) => normalizeWorkspaceReviewPath(path))
+    .filter(Boolean);
+}
+
+function messageChangedFilePaths(item = {}) {
+  const entries = Array.isArray(item?.processLog) ? item.processLog : [];
+  const successfulToolCallIds = new Set(
+    entries
+      .filter((entry) => {
+        const payload = messageProcessEntryPayload(entry);
+        return (
+          messageProcessEntryEventType(entry) === "tool_result" &&
+          payload?.ok !== false &&
+          ["write_file", "apply_patch", "delete_file"].includes(
+            messageProcessEntryToolName(entry),
+          )
+        );
+      })
+      .map((entry) => messageProcessEntryToolCallId(entry))
+      .filter(Boolean),
+  );
+  const paths = new Set();
+  for (const entry of entries) {
+    for (const path of messageProcessEntryChangedFilePaths(
+      entry,
+      successfulToolCallIds,
+    )) {
+      paths.add(path);
+    }
+  }
+  return Array.from(paths);
+}
+
+function messageFileChangeCount(item = {}) {
+  return messageChangedFilePaths(item).length;
+}
+
+function messageFileChangesQuestionLabel(item = {}) {
+  const messageIndex = messages.value.indexOf(item);
+  for (let index = messageIndex - 1; index >= 0; index -= 1) {
+    const candidate = messages.value[index];
+    if (String(candidate?.role || "").trim() !== "user") continue;
+    const text = String(candidate?.content || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) return text.length > 48 ? `${text.slice(0, 48)}…` : text;
+  }
+  return "本轮回答";
+}
+
+function setMessageFileChangesScope(item = {}) {
+  activeFileChangesMessageId.value = String(item?.id || "").trim();
+  activeFileChangesPaths.value = messageChangedFilePaths(item);
+  fileChangesContextTitle.value = `需求：${messageFileChangesQuestionLabel(item)}`;
+}
+
 function inferMessageProcessEntryKind(entry = {}) {
   const explicit = normalizeMessageProcessEntryKind(entry?.kind || "");
   if (explicit) return explicit;
   const eventType = messageProcessEntryEventType(entry);
   const toolName = messageProcessEntryToolName(entry);
   if (eventType === "progress_update") return "progress_update";
-  if (eventType === "model_call_started" || eventType === "model_step") return "model_call";
+  if (eventType === "model_call_started" || eventType === "model_step")
+    return "model_call";
   if (eventType === "approval_required") return "permission";
   if (eventType === "command_output_chunk") return "command_output";
-  if (eventType === "command_started" || eventType === "command_finished") return "command";
+  if (eventType === "command_started" || eventType === "command_finished")
+    return "command";
   if (["read_file"].includes(toolName)) return "file_read";
   if (["list_files", "search_text"].includes(toolName)) return "file_search";
-  if (["write_file", "apply_patch", "delete_file"].includes(toolName)) return "file_edit";
-  if (["call_mcp_tool", "list_mcp_tools", "read_mcp_resource"].includes(toolName)) {
+  if (["write_file", "apply_patch", "delete_file"].includes(toolName))
+    return "file_edit";
+  if (
+    ["call_mcp_tool", "list_mcp_tools", "read_mcp_resource"].includes(toolName)
+  ) {
     return "mcp_call";
   }
   if (eventType === "tool_call_started") return "tool_call";
@@ -16005,7 +17568,9 @@ function messageProcessEntryTitle(entry = {}) {
   if (kind === "permission") return "等待授权";
   if (kind === "file_read") return `读取文件${path ? `(${path})` : ""}`;
   if (kind === "file_search") {
-    const query = String(args?.query || args?.pattern || payload?.query || "").trim();
+    const query = String(
+      args?.query || args?.pattern || payload?.query || "",
+    ).trim();
     const subject =
       toolName === "list_files"
         ? path || String(args?.path || args?.directory || ".").trim() || "."
@@ -16019,7 +17584,9 @@ function messageProcessEntryTitle(entry = {}) {
     return `编辑 ${path || localLiuAgentToolResultLabel(toolName)}${stats}`;
   }
   if (kind === "command") {
-    const cmd = String(payload?.cmd || payload?.command || args?.cmd || args?.command || "").trim();
+    const cmd = String(
+      payload?.cmd || payload?.command || args?.cmd || args?.command || "",
+    ).trim();
     return cmd ? `执行命令：${cmd}` : "执行命令";
   }
   if (kind === "command_output") {
@@ -16028,7 +17595,9 @@ function messageProcessEntryTitle(entry = {}) {
   }
   if (kind === "mcp_call") {
     const server = String(args?.server || payload?.server || "").trim();
-    const tool = String(args?.tool_name || args?.name || payload?.tool || "").trim();
+    const tool = String(
+      args?.tool_name || args?.name || payload?.tool || "",
+    ).trim();
     const target = [server, tool].filter(Boolean).join(".");
     return target ? `调用 MCP：${target}` : "调用 MCP";
   }
@@ -16055,7 +17624,8 @@ function messageProcessEntryStatus(entry = {}) {
     if (status === "waiting") return "等待";
     if (status === "running") return "运行中";
   }
-  if (eventType === "tool_call_started" || eventType === "command_started") return "运行中";
+  if (eventType === "tool_call_started" || eventType === "command_started")
+    return "运行中";
   if (eventType === "command_finished") {
     const status = String(payload?.status || "").trim();
     if (status === "no_signal") return "暂无信号";
@@ -16066,7 +17636,10 @@ function messageProcessEntryStatus(entry = {}) {
   }
   if (eventType === "tool_result") {
     const status = String(
-      payload?.status || payload?.content?.status || payload?.result?.status || "",
+      payload?.status ||
+        payload?.content?.status ||
+        payload?.result?.status ||
+        "",
     ).trim();
     if (status === "no_signal") return "暂无信号";
     if (status === "stalled") return "可能卡住";
@@ -16092,7 +17665,9 @@ function messageProcessEntryMeta(entry = {}) {
     const index = Number(payload?.index ?? -1);
     if (Number.isFinite(index) && index >= 0) meta.push(`#${index + 1}`);
     if (type === "execute_task") {
-      const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+      const toolName = String(
+        payload?.tool_name || payload?.toolName || "",
+      ).trim();
       if (toolName) meta.push(toolName);
     }
     const status = String(payload?.status || "").trim();
@@ -16110,7 +17685,9 @@ function messageProcessEntryMeta(entry = {}) {
     if (content?.truncated) meta.push("truncated");
   }
   if (kind === "file_search") {
-    const query = String(args?.query || args?.pattern || payload?.query || "").trim();
+    const query = String(
+      args?.query || args?.pattern || payload?.query || "",
+    ).trim();
     const glob = String(args?.glob || payload?.glob || "").trim();
     const matches = Array.isArray(content?.matches) ? content.matches : [];
     if (query) meta.push(`query "${query}"`);
@@ -16132,12 +17709,16 @@ function messageProcessEntryMeta(entry = {}) {
     const exitCode = payload?.exit_code ?? payload?.exitCode;
     const durationMs = payload?.duration_ms ?? payload?.durationMs;
     if (cwd) meta.push(`cwd=${cwd}`);
-    if (exitCode !== undefined && exitCode !== null) meta.push(`exit=${exitCode}`);
-    if (durationMs !== undefined && durationMs !== null) meta.push(`${durationMs}ms`);
+    if (exitCode !== undefined && exitCode !== null)
+      meta.push(`exit=${exitCode}`);
+    if (durationMs !== undefined && durationMs !== null)
+      meta.push(`${durationMs}ms`);
   }
   if (kind === "mcp_call") {
     const server = String(args?.server || payload?.server || "").trim();
-    const tool = String(args?.tool_name || args?.name || payload?.tool || "").trim();
+    const tool = String(
+      args?.tool_name || args?.name || payload?.tool || "",
+    ).trim();
     if (server) meta.push(server);
     if (tool) meta.push(tool);
   }
@@ -16174,7 +17755,9 @@ function messageProcessEntrySummary(entry = {}) {
     .filter(Boolean);
   const summary = String(payload?.summary || content?.summary || "").trim();
   if (summary && !lines.includes(summary)) lines.unshift(summary);
-  const error = String(payload?.error || payload?.error_code || payload?.errorCode || "").trim();
+  const error = String(
+    payload?.error || payload?.error_code || payload?.errorCode || "",
+  ).trim();
   if (error && !lines.includes(error)) lines.push(error);
   return lines.slice(0, 6);
 }
@@ -16222,7 +17805,8 @@ function messageProcessEntryCode(entry = {}) {
       .filter((child) => messageProcessEntryKind(child) === "command_output")
       .map((child) => {
         const childPayload = messageProcessEntryPayload(child);
-        const stream = String(childPayload?.stream || "stdout").trim() || "stdout";
+        const stream =
+          String(childPayload?.stream || "stdout").trim() || "stdout";
         const text = String(childPayload?.text || "").trim();
         return text ? `[${stream}]\n${text}` : "";
       })
@@ -16230,7 +17814,9 @@ function messageProcessEntryCode(entry = {}) {
     return clipMultilineProcessText(chunks.join("\n\n"), 160, 10000);
   }
   if (children.length) {
-    const childWithCode = children.find((child) => messageProcessEntryCode(child));
+    const childWithCode = children.find((child) =>
+      messageProcessEntryCode(child),
+    );
     if (childWithCode) return messageProcessEntryCode(childWithCode);
   }
   if (kind === "file_read") {
@@ -16245,7 +17831,11 @@ function messageProcessEntryCode(entry = {}) {
         const path = String(item?.path || "").trim();
         const line = item?.line ?? item?.line_number ?? item?.lineNumber;
         const preview = String(item?.preview || item?.text || "").trim();
-        return [path, line ? `:${line}` : "", preview ? ` ${preview}` : ""].join("");
+        return [
+          path,
+          line ? `:${line}` : "",
+          preview ? ` ${preview}` : "",
+        ].join("");
       })
       .join("\n");
   }
@@ -16261,7 +17851,8 @@ function messageProcessEntryCode(entry = {}) {
 
 function messageProcessEntryCodeLabel(entry = {}) {
   const kind = messageProcessEntryKind(entry);
-  if (messageProcessEntryEventType(entry) === "conversation_lifecycle") return "查看上下文";
+  if (messageProcessEntryEventType(entry) === "conversation_lifecycle")
+    return "查看上下文";
   if (kind === "file_read") return "查看读取片段";
   if (kind === "file_search") return "查看命中列表";
   if (kind === "command_output") return "查看输出内容";
@@ -16277,16 +17868,26 @@ function messageProcessEntryContextText(entry = {}) {
         ? payload.contextRef
         : {};
   const context =
-    payload?.conversation_context && typeof payload.conversation_context === "object"
+    payload?.conversation_context &&
+    typeof payload.conversation_context === "object"
       ? payload.conversation_context
-      : payload?.conversationContext && typeof payload.conversationContext === "object"
+      : payload?.conversationContext &&
+          typeof payload.conversationContext === "object"
         ? payload.conversationContext
         : {};
   const messages = Array.isArray(context?.messages) ? context.messages : [];
   if (!messages.length) return "";
-  const start = Math.max(0, Number(contextRef?.start_index ?? contextRef?.startIndex ?? 0) || 0);
-  const endRaw = Number(contextRef?.end_index ?? contextRef?.endIndex ?? messages.length);
-  const end = Math.min(messages.length, Number.isFinite(endRaw) ? endRaw : messages.length);
+  const start = Math.max(
+    0,
+    Number(contextRef?.start_index ?? contextRef?.startIndex ?? 0) || 0,
+  );
+  const endRaw = Number(
+    contextRef?.end_index ?? contextRef?.endIndex ?? messages.length,
+  );
+  const end = Math.min(
+    messages.length,
+    Number.isFinite(endRaw) ? endRaw : messages.length,
+  );
   const selected = messages.slice(start, end);
   if (!selected.length) return "";
   const header = [
@@ -16304,9 +17905,14 @@ function messageProcessEntryContextText(entry = {}) {
     .map((message) => {
       const index = message?.index ?? "";
       const role = String(message?.role || "user").trim();
-      const preview = String(message?.content_preview || message?.contentPreview || "").trim();
-      const toolCallId = String(message?.tool_call_id || message?.toolCallId || "").trim();
-      const toolCount = Number(message?.tool_call_count || message?.toolCallCount || 0) || 0;
+      const preview = String(
+        message?.content_preview || message?.contentPreview || "",
+      ).trim();
+      const toolCallId = String(
+        message?.tool_call_id || message?.toolCallId || "",
+      ).trim();
+      const toolCount =
+        Number(message?.tool_call_count || message?.toolCallCount || 0) || 0;
       return [
         `#${index} ${role}`,
         toolCallId ? `tool_call_id=${toolCallId}` : "",
@@ -16317,7 +17923,11 @@ function messageProcessEntryContextText(entry = {}) {
         .join("\n");
     })
     .join("\n\n");
-  return clipMultilineProcessText([header, body].filter(Boolean).join("\n\n"), 240, 16000);
+  return clipMultilineProcessText(
+    [header, body].filter(Boolean).join("\n\n"),
+    240,
+    16000,
+  );
 }
 
 function messageProcessEntryDiffText(entry = {}) {
@@ -16325,11 +17935,7 @@ function messageProcessEntryDiffText(entry = {}) {
   const content = messageProcessEntryContent(entry);
   const args = messageProcessEntryArguments(entry);
   const direct = String(
-    content?.diff ||
-      payload?.diff ||
-      args?.patch ||
-      args?.diff ||
-      "",
+    content?.diff || payload?.diff || args?.patch || args?.diff || "",
   ).trim();
   if (direct) return direct;
   for (const child of messageProcessEntryChildren(entry)) {
@@ -16426,9 +18032,7 @@ function isVisibleProcessOperation(operation) {
     String(meta.source || "").trim() === "tauri_external_agent_runner" ||
     operationId.startsWith("native-external-agent:");
   if (isNativeExternalAgent) return true;
-  if (
-    operationId.startsWith("native-external-agent:")
-  ) {
+  if (operationId.startsWith("native-external-agent:")) {
     return false;
   }
   const kind = String(operation?.kind || "")
@@ -16437,7 +18041,9 @@ function isVisibleProcessOperation(operation) {
   if (kind === "plan") return true;
   const phase = normalizeOperationPhase(operation?.phase || operation?.status);
   if (
-    ["model", "tool", "terminal", "auth", "approval", "verification"].includes(kind) &&
+    ["model", "tool", "terminal", "auth", "approval", "verification"].includes(
+      kind,
+    ) &&
     phase !== "pending"
   ) {
     return true;
@@ -16481,7 +18087,16 @@ function shouldShowInlineThinkingState(row, idx) {
 }
 
 function messageBodyHtml(row, idx) {
-  const content = formatContent(row?.content);
+  const content = formatContent(
+    row?.content,
+    row?.role === "assistant"
+      ? {
+          images: extractImages(row),
+          videos: extractVideos(row),
+          audios: extractAudios(row),
+        }
+      : {},
+  );
   if (content) return content;
   if (
     shouldShowInlineThinkingState(row, idx) &&
@@ -16578,7 +18193,9 @@ function messageProcessTitle(row, idx) {
   const summary = String(primaryOperation?.summary || "").trim();
   const detail = String(primaryOperation?.detail || "").trim();
   const logs = messageProcessDisplayEntries(row);
-  const latestLogText = logs.length ? messageProcessEntryTitle(logs[logs.length - 1]) : "";
+  const latestLogText = logs.length
+    ? messageProcessEntryTitle(logs[logs.length - 1])
+    : "";
   if (phase === "waiting_user") {
     return summary || title || detail || "等待你的处理";
   }
@@ -17182,12 +18799,17 @@ function applyAgentRuntimeEvent(row, eventData = {}) {
 
 function applyLiuAgentPlanEvent(row, eventData = {}, requestId = "") {
   const payload = agentRuntimeNestedPayload(eventData);
-  const ownerId = String(row?.id || requestId || eventData?.request_id || "").trim();
+  const ownerId = String(
+    row?.id || requestId || eventData?.request_id || "",
+  ).trim();
   const pending = pendingRequests.get(
     String(requestId || eventData?.request_id || "").trim(),
   );
   const projectId = String(
-    eventData?.project_id || pending?.projectId || selectedProjectId.value || "",
+    eventData?.project_id ||
+      pending?.projectId ||
+      selectedProjectId.value ||
+      "",
   ).trim();
   const chatSessionId = String(
     eventData?.chat_session_id ||
@@ -17204,13 +18826,14 @@ function applyLiuAgentPlanEvent(row, eventData = {}, requestId = "") {
   ) {
     return false;
   }
-  const eventTimestamp = Number(
-    payload?.updated_at_epoch_ms ||
-      payload?.updatedAtEpochMs ||
-      eventData?.event?.created_at_epoch_ms ||
-      eventData?.created_at_epoch_ms ||
-      0,
-  ) || 0;
+  const eventTimestamp =
+    Number(
+      payload?.updated_at_epoch_ms ||
+        payload?.updatedAtEpochMs ||
+        eventData?.event?.created_at_epoch_ms ||
+        eventData?.created_at_epoch_ms ||
+        0,
+    ) || 0;
   if (
     composerPlanState.plan?.ownerId === ownerId &&
     Number(composerPlanState.plan?.eventTimestamp || 0) > eventTimestamp &&
@@ -17275,7 +18898,9 @@ function applyLiuAgentPlanEvent(row, eventData = {}, requestId = "") {
     };
   });
   const planId = String(payload?.plan_id || `plan_${requestId}`).trim();
-  const status = String(payload?.status || "running").trim().toLowerCase();
+  const status = String(payload?.status || "running")
+    .trim()
+    .toLowerCase();
   const completedCount = steps.filter(
     (step) => planStepPhase(step) === "completed",
   ).length;
@@ -17283,7 +18908,8 @@ function applyLiuAgentPlanEvent(row, eventData = {}, requestId = "") {
     ["blocked", "failed"].includes(planStepPhase(step)),
   );
   const allDone =
-    steps.length > 0 && steps.every((step) => planStepPhase(step) === "completed");
+    steps.length > 0 &&
+    steps.every((step) => planStepPhase(step) === "completed");
   const phase =
     allDone || status === "completed"
       ? "completed"
@@ -17344,7 +18970,9 @@ function agentRuntimeNestedPayload(eventData = {}) {
 }
 
 function desktopClientToolTaskFromRuntimeEvent(eventData = {}) {
-  if (String(eventData?.event_type || "").trim() !== "tool_observation_created") {
+  if (
+    String(eventData?.event_type || "").trim() !== "tool_observation_created"
+  ) {
     return null;
   }
   const payload = agentRuntimeNestedPayload(eventData);
@@ -17355,15 +18983,15 @@ function desktopClientToolTaskFromRuntimeEvent(eventData = {}) {
   if (String(rawResult?.source || "").trim() !== "desktop_client_tool") {
     return null;
   }
-  const status = String(rawResult?.status || "").trim().toLowerCase();
+  const status = String(rawResult?.status || "")
+    .trim()
+    .toLowerCase();
   if (!["waiting_user_action", "queued", "running"].includes(status)) {
     return null;
   }
   const taskId = String(rawResult?.task_id || "").trim();
   const runId = String(rawResult?.run_id || eventData?.run_id || "").trim();
-  const callId = String(
-    rawResult?.call_id || payload?.call_id || "",
-  ).trim();
+  const callId = String(rawResult?.call_id || payload?.call_id || "").trim();
   const toolName = String(
     rawResult?.tool_name || payload?.tool_name || "",
   ).trim();
@@ -17412,13 +19040,19 @@ function readRememberedLocalLiuAgentWorkspacePath() {
 }
 
 function normalizeOfflineProjectListItem(item = {}) {
-  const id = String(item?.id || item?.project_id || item?.projectId || "").trim();
+  const id = String(
+    item?.id || item?.project_id || item?.projectId || "",
+  ).trim();
   if (!id) return null;
   return {
     ...item,
     id,
-    name: String(item?.name || item?.project_label || item?.projectLabel || id).trim(),
-    workspace_path: String(item?.workspace_path || item?.workspacePath || "").trim(),
+    name: String(
+      item?.name || item?.project_label || item?.projectLabel || id,
+    ).trim(),
+    workspace_path: String(
+      item?.workspace_path || item?.workspacePath || "",
+    ).trim(),
     is_offline_cached: Boolean(item?.is_offline_cached),
   };
 }
@@ -17440,7 +19074,11 @@ function saveProjectListOfflineSnapshot(list = []) {
   try {
     window.localStorage?.setItem(
       LOCAL_LIUAGENT_PROJECT_LIST_KEY,
-      JSON.stringify({ version: 1, projects, updated_at: new Date().toISOString() }),
+      JSON.stringify({
+        version: 1,
+        projects,
+        updated_at: new Date().toISOString(),
+      }),
     );
   } catch {
     // Ignore localStorage failures; workspace cache remains the stronger source.
@@ -17449,7 +19087,8 @@ function saveProjectListOfflineSnapshot(list = []) {
 
 function readProjectListOfflineSnapshot() {
   try {
-    const raw = window.localStorage?.getItem(LOCAL_LIUAGENT_PROJECT_LIST_KEY) || "";
+    const raw =
+      window.localStorage?.getItem(LOCAL_LIUAGENT_PROJECT_LIST_KEY) || "";
     if (!raw.trim()) return [];
     const parsed = JSON.parse(raw);
     return (Array.isArray(parsed?.projects) ? parsed.projects : [])
@@ -17481,7 +19120,9 @@ function normalizeProviderModelSnapshotItem(provider = {}) {
     model_configs: Array.isArray(provider?.model_configs)
       ? provider.model_configs
           .map((item) => ({
-            name: String(item?.name || item?.model_name || item?.model || "").trim(),
+            name: String(
+              item?.name || item?.model_name || item?.model || "",
+            ).trim(),
             model_type: String(item?.model_type || DEFAULT_MODEL_TYPE).trim(),
           }))
           .filter((item) => item.name)
@@ -17504,7 +19145,9 @@ function readProviderModelOfflineSnapshots() {
 }
 
 function saveProviderModelOfflineSnapshot(projectId = "") {
-  const normalizedProviders = (Array.isArray(providers.value) ? providers.value : [])
+  const normalizedProviders = (
+    Array.isArray(providers.value) ? providers.value : []
+  )
     .map(normalizeProviderModelSnapshotItem)
     .filter(Boolean);
   if (!normalizedProviders.length) return;
@@ -17531,10 +19174,11 @@ function saveProviderModelOfflineSnapshot(projectId = "") {
 function applyProviderModelOfflineSnapshot(projectId = "") {
   const snapshots = readProviderModelOfflineSnapshots();
   const scoped =
-    snapshots[providerModelSnapshotScope(projectId)] || snapshots.global || null;
-  const snapshotProviders = (Array.isArray(scoped?.providers)
-    ? scoped.providers
-    : []
+    snapshots[providerModelSnapshotScope(projectId)] ||
+    snapshots.global ||
+    null;
+  const snapshotProviders = (
+    Array.isArray(scoped?.providers) ? scoped.providers : []
   )
     .map(normalizeProviderModelSnapshotItem)
     .filter(Boolean);
@@ -17679,9 +19323,18 @@ async function saveLocalLiuAgentProjectOfflineCache({
   chatSessionId = "",
   workspacePath = "",
 } = {}) {
-  const normalizedProjectId = String(projectId || selectedProjectId.value || "").trim();
-  const normalizedWorkspacePath = String(workspacePath || localLiuAgentWorkspacePath()).trim();
-  if (!normalizedProjectId || !normalizedWorkspacePath || !hasNativeDesktopBridge()) return;
+  const normalizedProjectId = String(
+    projectId || selectedProjectId.value || "",
+  ).trim();
+  const normalizedWorkspacePath = String(
+    workspacePath || localLiuAgentWorkspacePath(),
+  ).trim();
+  if (
+    !normalizedProjectId ||
+    !normalizedWorkspacePath ||
+    !hasNativeDesktopBridge()
+  )
+    return;
   try {
     rememberLocalLiuAgentWorkspacePath(normalizedWorkspacePath);
     await saveNativeLiuAgentOfflineCache({
@@ -17692,7 +19345,9 @@ async function saveLocalLiuAgentProjectOfflineCache({
         project_id: normalizedProjectId,
         name: currentProjectLabel.value || normalizedProjectId,
         workspace_path: normalizedWorkspacePath,
-        last_chat_session_id: String(chatSessionId || currentChatSessionId.value || "").trim(),
+        last_chat_session_id: String(
+          chatSessionId || currentChatSessionId.value || "",
+        ).trim(),
         updated_at: new Date().toISOString(),
       },
     });
@@ -17713,11 +19368,15 @@ async function saveLocalLiuAgentSessionOfflineCache({
   modelRuntime = null,
   result = null,
 } = {}) {
-  const normalizedProjectId = String(projectId || selectedProjectId.value || "").trim();
+  const normalizedProjectId = String(
+    projectId || selectedProjectId.value || "",
+  ).trim();
   const normalizedChatSessionId = String(
     chatSessionId || currentChatSessionId.value || "",
   ).trim();
-  const normalizedWorkspacePath = String(workspacePath || localLiuAgentWorkspacePath()).trim();
+  const normalizedWorkspacePath = String(
+    workspacePath || localLiuAgentWorkspacePath(),
+  ).trim();
   if (
     !normalizedProjectId ||
     !normalizedChatSessionId ||
@@ -17761,13 +19420,19 @@ async function saveLocalLiuAgentSessionOfflineCache({
               time: assistantMessage.time,
             }
           : null,
-        model_runtime: sanitizeLocalLiuAgentModelRuntimeForCache(modelRuntime || {}),
+        model_runtime: sanitizeLocalLiuAgentModelRuntimeForCache(
+          modelRuntime || {},
+        ),
         runtime_result: result
           ? {
               ok: Boolean(result.ok),
-              session_id: String(result.sessionId || result.session_id || "").trim(),
+              session_id: String(
+                result.sessionId || result.session_id || "",
+              ).trim(),
               requirement_record_path: String(
-                result.requirementRecordPath || result.requirement_record_path || "",
+                result.requirementRecordPath ||
+                  result.requirement_record_path ||
+                  "",
               ).trim(),
               summary: String(result.summary || result.error || "").trim(),
             }
@@ -17785,7 +19450,9 @@ async function saveLocalLiuAgentRuntimeConfigOfflineCache({
   providerId = "",
   modelRuntime = null,
 } = {}) {
-  const normalizedWorkspacePath = String(workspacePath || localLiuAgentWorkspacePath()).trim();
+  const normalizedWorkspacePath = String(
+    workspacePath || localLiuAgentWorkspacePath(),
+  ).trim();
   const normalizedProviderId = String(providerId || "").trim();
   if (
     !normalizedWorkspacePath ||
@@ -17807,7 +19474,10 @@ async function saveLocalLiuAgentRuntimeConfigOfflineCache({
       },
     });
   } catch (err) {
-    console.warn("save local liuAgent runtime config offline cache failed", err);
+    console.warn(
+      "save local liuAgent runtime config offline cache failed",
+      err,
+    );
   }
 }
 
@@ -17855,7 +19525,8 @@ function setLocalLiuAgentPendingPermission(requestId, pending = {}) {
     ...pending,
     requestId: normalizedRequestId,
     createdAt:
-      Number(existing?.createdAt || pending.createdAt || Date.now()) || Date.now(),
+      Number(existing?.createdAt || pending.createdAt || Date.now()) ||
+      Date.now(),
     updatedAt: Date.now(),
   });
   localLiuAgentPendingPermissionVersion.value += 1;
@@ -17875,7 +19546,9 @@ function deleteLocalLiuAgentPendingPermission(requestId) {
 
 function localLiuAgentPendingPermissionRow(pending = {}) {
   return (
-    (pending?.rowId ? messages.value.find((item) => item?.id === pending.rowId) : null) ||
+    (pending?.rowId
+      ? messages.value.find((item) => item?.id === pending.rowId)
+      : null) ||
     (pending?.assistantMessageId
       ? messages.value.find((item) => item?.id === pending.assistantMessageId)
       : null) ||
@@ -17898,7 +19571,10 @@ function localLiuAgentPendingPermissionsForChatSession(chatSessionId = "") {
       ).trim();
       return pendingChatSessionId === normalizedChatSessionId;
     })
-    .sort((a, b) => (Number(a.createdAt || 0) || 0) - (Number(b.createdAt || 0) || 0));
+    .sort(
+      (a, b) =>
+        (Number(a.createdAt || 0) || 0) - (Number(b.createdAt || 0) || 0),
+    );
 }
 
 const currentLocalLiuAgentPendingPermissions = computed(() =>
@@ -17917,7 +19593,8 @@ async function clearLocalLiuAgentPendingPermissionsForChatSession(
   chatSessionId = currentChatSessionId.value,
   reason = "已停止本地智能体执行，已取消待授权操作",
 ) {
-  const pendingItems = localLiuAgentPendingPermissionsForChatSession(chatSessionId);
+  const pendingItems =
+    localLiuAgentPendingPermissionsForChatSession(chatSessionId);
   if (!pendingItems.length) return false;
   for (const pending of pendingItems) {
     const requestId = String(pending?.requestId || "").trim();
@@ -17940,13 +19617,15 @@ async function clearLocalLiuAgentPendingPermissionsForChatSession(
         assistantMessage: row,
         fallbackContent: reason,
         workspacePath: String(
-          pending?.localChatPayload?.workspacePath || localLiuAgentWorkspacePath(),
+          pending?.localChatPayload?.workspacePath ||
+            localLiuAgentWorkspacePath(),
         ).trim(),
         sourceContext: {
           ...(pending?.sourceContext || {}),
           runtime: "tauri",
           workspace_path: String(
-            pending?.localChatPayload?.workspacePath || localLiuAgentWorkspacePath(),
+            pending?.localChatPayload?.workspacePath ||
+              localLiuAgentWorkspacePath(),
           ).trim(),
           cancelled: true,
         },
@@ -17962,10 +19641,12 @@ async function clearLocalLiuAgentPendingPermissionsForChatSession(
 async function pauseLocalLiuAgentPendingPermissionsForChatSession(
   chatSessionId = currentChatSessionId.value,
 ) {
-  const pendingItems = localLiuAgentPendingPermissionsForChatSession(chatSessionId);
+  const pendingItems =
+    localLiuAgentPendingPermissionsForChatSession(chatSessionId);
   if (!pendingItems.length) return false;
   const workspacePath = String(
-    pendingItems[0]?.localChatPayload?.workspacePath || localLiuAgentWorkspacePath(),
+    pendingItems[0]?.localChatPayload?.workspacePath ||
+      localLiuAgentWorkspacePath(),
   ).trim();
   const paused = await pauseNativeLiuAgentLocalChat({
     projectId: selectedProjectId.value,
@@ -18013,7 +19694,9 @@ async function pauseLocalLiuAgentPendingPermissionsForChatSession(
 }
 
 function localLiuAgentRiskLabel(risk = "") {
-  const normalized = String(risk || "").trim().toLowerCase();
+  const normalized = String(risk || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "high") return "高风险";
   if (normalized === "medium") return "中风险";
   if (normalized === "low") return "低风险";
@@ -18032,7 +19715,8 @@ function localLiuAgentActionLabel(action = "") {
 }
 
 function localLiuAgentPermissionPreview(permissionRequest = {}) {
-  return permissionRequest?.preview && typeof permissionRequest.preview === "object"
+  return permissionRequest?.preview &&
+    typeof permissionRequest.preview === "object"
     ? permissionRequest.preview
     : {};
 }
@@ -18048,7 +19732,10 @@ function localLiuAgentPermissionCommand(permissionRequest = {}) {
   ).trim();
 }
 
-function localLiuAgentPermissionScopeLabel(permissionRequest = {}, pending = {}) {
+function localLiuAgentPermissionScopeLabel(
+  permissionRequest = {},
+  pending = {},
+) {
   const preview = localLiuAgentPermissionPreview(permissionRequest);
   const cwd = String(
     preview.cwd ||
@@ -18061,7 +19748,10 @@ function localLiuAgentPermissionScopeLabel(permissionRequest = {}, pending = {})
   return scope || "本机环境";
 }
 
-function localLiuAgentPermissionDetailText(permissionRequest = {}, pending = {}) {
+function localLiuAgentPermissionDetailText(
+  permissionRequest = {},
+  pending = {},
+) {
   const preview = localLiuAgentPermissionPreview(permissionRequest);
   const action = String(permissionRequest?.action || "").trim();
   const cmd = localLiuAgentPermissionCommand(permissionRequest);
@@ -18073,7 +19763,9 @@ function localLiuAgentPermissionDetailText(permissionRequest = {}, pending = {})
   ).trim();
   const reason = String(permissionRequest?.reason || "").trim();
   if (action === "confirm_plan") {
-    const userRequest = String(preview.userRequest || preview.user_request || "").trim();
+    const userRequest = String(
+      preview.userRequest || preview.user_request || "",
+    ).trim();
     const taskType = String(preview.taskType || preview.task_type || "").trim();
     const score = preview.score ?? "";
     const lines = [
@@ -18081,7 +19773,9 @@ function localLiuAgentPermissionDetailText(permissionRequest = {}, pending = {})
       taskType ? `类型：${taskType}` : "",
       score !== "" ? `清晰度：${score}/5` : "",
       reason ? `原因：${reason}` : "",
-      Object.keys(preview).length ? `预览：\n${JSON.stringify(preview, null, 2)}` : "",
+      Object.keys(preview).length
+        ? `预览：\n${JSON.stringify(preview, null, 2)}`
+        : "",
     ].filter(Boolean);
     return lines.join("\n\n");
   }
@@ -18089,7 +19783,9 @@ function localLiuAgentPermissionDetailText(permissionRequest = {}, pending = {})
     cmd ? `命令：${cmd}` : "",
     cwd ? `工作目录：${cwd}` : "",
     reason ? `原因：${reason}` : "",
-    Object.keys(preview).length ? `预览：\n${JSON.stringify(preview, null, 2)}` : "",
+    Object.keys(preview).length
+      ? `预览：\n${JSON.stringify(preview, null, 2)}`
+      : "",
   ].filter(Boolean);
   return lines.join("\n\n");
 }
@@ -18127,7 +19823,9 @@ function buildLocalLiuAgentPermissionPrompt(pending = {}, queueCount = 1) {
         .filter(Boolean)
         .join("\n");
   return {
-    requestId: String(pending.requestId || permissionRequest.requestId || "").trim(),
+    requestId: String(
+      pending.requestId || permissionRequest.requestId || "",
+    ).trim(),
     title: isPlanConfirmation ? "需要确认执行计划" : "需要授权本机操作",
     description,
     toolLabel: toolName || actionLabel,
@@ -18153,19 +19851,23 @@ const currentLocalLiuAgentPermissionPrompt = computed(() => {
 
 function localLiuAgentPermissionOperationId(requestId, fallback = "") {
   const normalizedRequestId = String(requestId || "").trim();
-  if (normalizedRequestId) return `local-liuagent-permission:${normalizedRequestId}`;
+  if (normalizedRequestId)
+    return `local-liuagent-permission:${normalizedRequestId}`;
   return `local-liuagent-permission:${String(fallback || Date.now()).trim()}`;
 }
 
 function removeLocalLiuAgentPermissionOperation(row, requestId) {
-  if (!row || !Array.isArray(row.operations) || !row.operations.length) return false;
+  if (!row || !Array.isArray(row.operations) || !row.operations.length)
+    return false;
   const normalizedRequestId = String(requestId || "").trim();
   if (!normalizedRequestId) return false;
   const operationId = localLiuAgentPermissionOperationId(normalizedRequestId);
   const beforeCount = row.operations.length;
   row.operations = row.operations.filter((operation) => {
     const meta =
-      operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
     const isLocalPermission =
       String(meta.local_liuagent_permission || "").trim() === "true";
     const operationRequestId = String(meta.request_id || "").trim();
@@ -18236,7 +19938,11 @@ function upsertLocalLiuAgentContinuationOperation(
   return operation;
 }
 
-function upsertLocalLiuAgentPermissionOperation(row, permissionRequest = {}, patch = {}) {
+function upsertLocalLiuAgentPermissionOperation(
+  row,
+  permissionRequest = {},
+  patch = {},
+) {
   if (!permissionRequest) return null;
   const requestId = String(permissionRequest?.requestId || "").trim();
   const toolName = String(permissionRequest?.toolName || "本地工具").trim();
@@ -18263,7 +19969,11 @@ function upsertLocalLiuAgentPermissionOperation(row, permissionRequest = {}, pat
   return upsertMessageOperation(row, operation);
 }
 
-async function executeLocalLiuAgentToolWithPermission(task, workspacePath, row = null) {
+async function executeLocalLiuAgentToolWithPermission(
+  task,
+  workspacePath,
+  row = null,
+) {
   let result = await executeNativeLiuAgentTool({
     toolCallId: task.callId,
     name: task.toolName,
@@ -18273,7 +19983,9 @@ async function executeLocalLiuAgentToolWithPermission(task, workspacePath, row =
       ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
       : null,
   });
-  const errorCode = String(result?.errorCode || result?.error_code || "").trim();
+  const errorCode = String(
+    result?.errorCode || result?.error_code || "",
+  ).trim();
   const permissionRequest =
     result?.content?.permissionRequest &&
     typeof result.content.permissionRequest === "object"
@@ -18303,13 +20015,17 @@ function localLiuAgentPermissionRequestFromChatResult(result = {}) {
   for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
     if (String(event?.type || "").trim() !== "approval_required") continue;
     const payload = localLiuAgentRuntimeEventPayload(event);
-    const requestId = String(payload?.requestId || payload?.request_id || "").trim();
+    const requestId = String(
+      payload?.requestId || payload?.request_id || "",
+    ).trim();
     if (!requestId) continue;
     return {
       ...payload,
       requestId,
       toolName: String(payload?.toolName || payload?.tool_name || "").trim(),
-      toolCallId: String(payload?.toolCallId || payload?.tool_call_id || "").trim(),
+      toolCallId: String(
+        payload?.toolCallId || payload?.tool_call_id || "",
+      ).trim(),
     };
   }
   const toolResults = Array.isArray(result?.toolResults)
@@ -18325,22 +20041,71 @@ function localLiuAgentPermissionRequestFromChatResult(result = {}) {
         : null;
     if (!permissionRequest) continue;
     const errorCode = String(
-      toolResult?.errorCode || toolResult?.error_code || result?.errorCode || result?.error_code || "",
+      toolResult?.errorCode ||
+        toolResult?.error_code ||
+        result?.errorCode ||
+        result?.error_code ||
+        "",
     ).trim();
     if (errorCode && errorCode !== "permission.required") continue;
     return {
       ...permissionRequest,
       toolName: String(toolResult?.name || "").trim(),
-      toolCallId: String(toolResult?.toolCallId || toolResult?.tool_call_id || "").trim(),
+      toolCallId: String(
+        toolResult?.toolCallId || toolResult?.tool_call_id || "",
+      ).trim(),
     };
   }
   return null;
 }
 
-function localLiuAgentPermissionContinuationMessage(baseMessage = "", permissionRequest = {}) {
+function applyLocalLiuAgentMediaToolResults(row, result = {}) {
+  const toolResults = Array.isArray(result?.toolResults)
+    ? result.toolResults
+    : Array.isArray(result?.tool_results)
+      ? result.tool_results
+      : [];
+  const mediaToolNames = new Set([
+    "generate_image",
+    "edit_image",
+    "generate_video",
+    "generate_audio",
+    "transcribe_audio",
+  ]);
+  const collected = { images: [], videos: [], audios: [] };
+  for (const toolResult of toolResults) {
+    if (!mediaToolNames.has(String(toolResult?.name || "").trim())) continue;
+    const content =
+      toolResult?.content && typeof toolResult.content === "object"
+        ? toolResult.content
+        : {};
+    for (const key of Object.keys(collected)) {
+      const values = Array.isArray(content?.[key]) ? content[key] : [];
+      collected[key].push(
+        ...values.map((item) => String(item || "").trim()).filter(Boolean),
+      );
+    }
+  }
+  for (const key of Object.keys(collected)) {
+    if (!collected[key].length) continue;
+    row[key] = [
+      ...new Set([
+        ...(Array.isArray(row?.[key]) ? row[key] : []),
+        ...collected[key],
+      ]),
+    ];
+  }
+}
+
+function localLiuAgentPermissionContinuationMessage(
+  baseMessage = "",
+  permissionRequest = {},
+) {
   const original = String(baseMessage || "").trim();
   const action = String(permissionRequest?.action || "").trim();
-  const toolName = String(permissionRequest?.toolName || permissionRequest?.tool_name || "").trim();
+  const toolName = String(
+    permissionRequest?.toolName || permissionRequest?.tool_name || "",
+  ).trim();
   const reason = String(permissionRequest?.reason || "").trim();
   const preview =
     permissionRequest?.preview && typeof permissionRequest.preview === "object"
@@ -18362,7 +20127,11 @@ function localLiuAgentPermissionContinuationMessage(baseMessage = "", permission
   return [original, continuation].filter(Boolean).join("\n\n");
 }
 
-async function maybeExecuteDesktopClientToolTask(row, eventData = {}, requestId = "") {
+async function maybeExecuteDesktopClientToolTask(
+  row,
+  eventData = {},
+  requestId = "",
+) {
   const task = desktopClientToolTaskFromRuntimeEvent(eventData);
   if (!task || localLiuAgentToolTasks.has(task.taskId)) return false;
   localLiuAgentToolTasks.add(task.taskId);
@@ -18393,8 +20162,15 @@ async function maybeExecuteDesktopClientToolTask(row, eventData = {}, requestId 
     if (toolNames.size && !toolNames.has(task.toolName)) {
       throw new Error(`桌面端未注册工具：${task.toolName}`);
     }
-    const result = await executeLocalLiuAgentToolWithPermission(task, workspacePath, row);
-    if (String(result?.errorCode || result?.error_code || "").trim() === "permission.required") {
+    const result = await executeLocalLiuAgentToolWithPermission(
+      task,
+      workspacePath,
+      row,
+    );
+    if (
+      String(result?.errorCode || result?.error_code || "").trim() ===
+      "permission.required"
+    ) {
       upsertMessageOperation(row, {
         operationId,
         kind: "tool",
@@ -18449,7 +20225,9 @@ async function maybeExecuteDesktopClientToolTask(row, eventData = {}, requestId 
     });
     return true;
   } catch (error) {
-    const message = String(error?.message || error || "桌面本地工具执行失败").trim();
+    const message = String(
+      error?.message || error || "桌面本地工具执行失败",
+    ).trim();
     upsertMessageOperation(row, {
       operationId,
       kind: "tool",
@@ -18504,13 +20282,15 @@ function agentRuntimeResumeEvents(eventData = {}) {
       ? resume.continuation
       : null;
   const candidates = [];
-  if (Array.isArray(continuation?.events)) candidates.push(...continuation.events);
+  if (Array.isArray(continuation?.events))
+    candidates.push(...continuation.events);
   if (Array.isArray(resume?.events)) candidates.push(...resume.events);
   return candidates.filter((item) => item && typeof item === "object");
 }
 
 function runtimeEventDataFromResumeEvent(event = {}, fallback = {}) {
-  const payload = event?.payload && typeof event.payload === "object" ? event.payload : {};
+  const payload =
+    event?.payload && typeof event.payload === "object" ? event.payload : {};
   return {
     type: "agent_runtime_event",
     request_id: String(fallback?.request_id || "").trim(),
@@ -18526,7 +20306,11 @@ function runtimeEventDataFromResumeEvent(event = {}, fallback = {}) {
   };
 }
 
-function maybeExecuteDesktopClientToolTasksFromResume(row, eventData = {}, requestId = "") {
+function maybeExecuteDesktopClientToolTasksFromResume(
+  row,
+  eventData = {},
+  requestId = "",
+) {
   agentRuntimeResumeEvents(eventData).forEach((event) => {
     const runtimeEvent = runtimeEventDataFromResumeEvent(event, {
       ...eventData,
@@ -18542,7 +20326,10 @@ function applyPlanCreatedEvent(row, eventData = {}, requestId = "") {
     row,
     {
       project_id: String(
-        eventData?.project_id || pending?.projectId || selectedProjectId.value || "",
+        eventData?.project_id ||
+          pending?.projectId ||
+          selectedProjectId.value ||
+          "",
       ).trim(),
       run_id: String(eventData?.run_id || requestId || "active").trim(),
       event_type: "plan_created",
@@ -18886,7 +20673,7 @@ function hasVisibleOperationInteractionForm(operation) {
   if (dismissedOperationInteractionIds.value.has(interactionId)) return false;
   return Boolean(
     operationInteractionSchema(operation) &&
-      isOperationAwaitingInteraction(operation),
+    isOperationAwaitingInteraction(operation),
   );
 }
 
@@ -20459,7 +22246,9 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
   messages.value.push(assistantMessage);
   const assistantIndex = messages.value.length - 1;
   const requestStartedAt = Date.now();
-  applyMessageExecutionTiming(assistantMessage, { startedAt: requestStartedAt });
+  applyMessageExecutionTiming(assistantMessage, {
+    startedAt: requestStartedAt,
+  });
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const client = await ensureWsClient(projectId);
   const donePromise = new Promise((resolve, reject) => {
@@ -20721,7 +22510,10 @@ async function handleOperationAction(operation, actionKey) {
     normalizedActionKey === "local_liuagent_refresh_job" ||
     normalizedActionKey === "local_liuagent_cancel_job"
   ) {
-    await submitLocalLiuAgentBackgroundJobAction(operation, normalizedActionKey);
+    await submitLocalLiuAgentBackgroundJobAction(
+      operation,
+      normalizedActionKey,
+    );
     return;
   }
   if (normalizedActionKey === "open_url" && actionType === "open_url") {
@@ -20827,8 +22619,9 @@ async function submitCurrentLocalLiuAgentPermissionAction(actionKey) {
       ...permissionRequest,
       requestId,
       toolName:
-        String(permissionRequest.toolName || permissionRequest.tool_name || "").trim() ||
-        String(pending.task?.toolName || "本地工具").trim(),
+        String(
+          permissionRequest.toolName || permissionRequest.tool_name || "",
+        ).trim() || String(pending.task?.toolName || "本地工具").trim(),
     },
     { skipUpsert: true },
   );
@@ -20862,8 +22655,7 @@ async function submitCurrentLocalLiuAgentPermissionReplyIfNeeded(text = "") {
   try {
     const fallbackPayload = {
       projectId: selectedProjectId.value,
-      chatSessionId:
-        pending.activeChatSessionId || currentChatSessionId.value,
+      chatSessionId: pending.activeChatSessionId || currentChatSessionId.value,
       workspacePath:
         pending.localChatPayload?.workspacePath ||
         pending.workspacePath ||
@@ -20872,7 +22664,9 @@ async function submitCurrentLocalLiuAgentPermissionReplyIfNeeded(text = "") {
       modelName: selectedModelName.value || defaultModelName.value || "",
       systemPrompt: buildLocalLiuAgentSystemPrompt(),
       systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
-      temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
+      temperature: Number(
+        temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
+      ),
       modelRuntime: await buildLocalLiuAgentModelRuntime(),
       mcpConfig: effectiveMcpConfig.value,
       backendContext: {
@@ -20904,7 +22698,9 @@ async function submitCurrentLocalLiuAgentPermissionReplyIfNeeded(text = "") {
         level: "warning",
       });
     }
-    ElMessage.warning("当前回复未被模型判断为明确的批准或拒绝，待授权操作保持暂停");
+    ElMessage.warning(
+      "当前回复未被模型判断为明确的批准或拒绝，待授权操作保持暂停",
+    );
     return true;
   }
   const actionKey =
@@ -20937,8 +22733,12 @@ async function submitCurrentLocalLiuAgentPermissionReplyIfNeeded(text = "") {
 async function submitLocalLiuAgentBackgroundJobAction(operation, actionKey) {
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
-  const statePath = String(meta.state_path || meta.job?.state_path || "").trim();
-  const workspacePath = String(meta.cwd || localLiuAgentWorkspacePath() || "").trim();
+  const statePath = String(
+    meta.state_path || meta.job?.state_path || "",
+  ).trim();
+  const workspacePath = String(
+    meta.cwd || localLiuAgentWorkspacePath() || "",
+  ).trim();
   const row = findMessageRowByOperationId(operation?.id);
   if (!statePath || !workspacePath) {
     ElMessage.warning("缺少后台任务状态路径，无法操作");
@@ -20964,14 +22764,20 @@ async function submitLocalLiuAgentBackgroundJobAction(operation, actionKey) {
             statePath,
           });
     if (!result?.ok) {
-      throw new Error(String(result?.error || result?.summary || "后台任务操作失败"));
+      throw new Error(
+        String(result?.error || result?.summary || "后台任务操作失败"),
+      );
     }
     const job = result?.job && typeof result.job === "object" ? result.job : {};
     upsertLocalLiuAgentBackgroundJobOperation(row, job, {
-      chatSessionId: String(meta.chat_session_id || currentChatSessionId.value || "").trim(),
+      chatSessionId: String(
+        meta.chat_session_id || currentChatSessionId.value || "",
+      ).trim(),
       workspacePath,
       judgement:
-        meta.judgement && typeof meta.judgement === "object" ? meta.judgement : null,
+        meta.judgement && typeof meta.judgement === "object"
+          ? meta.judgement
+          : null,
     });
     const status = String(job?.status || "")
       .trim()
@@ -21010,7 +22816,8 @@ function isLocalLiuAgentModelFailureStatusContent(value) {
   const normalized = String(value || "").trim();
   return (
     normalized.startsWith("模型调用失败") &&
-    (normalized.includes("错误码：") || normalized.includes("完整诊断见运行详情"))
+    (normalized.includes("错误码：") ||
+      normalized.includes("完整诊断见运行详情"))
   );
 }
 
@@ -21022,7 +22829,8 @@ function isLocalLiuAgentRecoveryPlaceholderContent(value) {
 }
 
 function clearLocalLiuAgentRecoveryPlaceholderContent(row) {
-  if (!row || !isLocalLiuAgentRecoveryPlaceholderContent(row.content)) return false;
+  if (!row || !isLocalLiuAgentRecoveryPlaceholderContent(row.content))
+    return false;
   row.content = "";
   return true;
 }
@@ -21043,7 +22851,10 @@ function localLiuAgentAutoResumeDelayMs(result = {}, retryNumber = 1) {
   });
   const retryAfterMatch = diagnosticText.match(/retry-after[=:]\s*(\d+)/i);
   if (retryAfterMatch) {
-    return Math.min(30_000, Math.max(1_000, Number(retryAfterMatch[1]) * 1_000));
+    return Math.min(
+      30_000,
+      Math.max(1_000, Number(retryAfterMatch[1]) * 1_000),
+    );
   }
   return Math.min(15_000, 1_500 * 2 ** Math.max(0, retryNumber - 1));
 }
@@ -21061,7 +22872,8 @@ function scheduleLocalLiuAgentAutomaticResume({
   const timer = window.setTimeout(() => {
     localLiuAgentAutoResumeTimers.delete(normalizedChatSessionId);
     if (
-      String(currentChatSessionId.value || "").trim() !== normalizedChatSessionId ||
+      String(currentChatSessionId.value || "").trim() !==
+        normalizedChatSessionId ||
       localLiuAgentActiveRunForChatSession(normalizedChatSessionId)
     ) {
       return;
@@ -21075,7 +22887,8 @@ function scheduleLocalLiuAgentAutomaticResume({
 }
 
 function localLiuAgentResumeStateSnapshot(result = {}) {
-  const state = result?.state && typeof result.state === "object" ? result.state : {};
+  const state =
+    result?.state && typeof result.state === "object" ? result.state : {};
   const snapshot = {
     run_state: state?.run_state || {},
     current_state: state?.current_state || {},
@@ -21128,7 +22941,9 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
     0,
     Number(options?.autoResumeRetryNumber || 0) || 0,
   );
-  const previousVisibleContent = isLocalLiuAgentRecoveryPlaceholderContent(row.content)
+  const previousVisibleContent = isLocalLiuAgentRecoveryPlaceholderContent(
+    row.content,
+  )
     ? ""
     : String(row.content || "").trim();
   clearLocalLiuAgentRecoveryPlaceholderContent(row);
@@ -21156,13 +22971,12 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
     console.warn("recover local liuAgent state before resume failed", error);
   }
   const userMessageId = String(meta.user_message_id || "").trim();
-  const originalUserMessage =
-    messages.value.find(
-      (item) =>
-        item?.role === "user" &&
-        userMessageId &&
-        String(item?.id || "").trim() === userMessageId,
-    ) ||
+  const originalUserMessage = messages.value.find(
+    (item) =>
+      item?.role === "user" &&
+      userMessageId &&
+      String(item?.id || "").trim() === userMessageId,
+  ) ||
     [...messages.value]
       .slice(0, Math.max(0, messages.value.indexOf(row)))
       .reverse()
@@ -21204,7 +23018,9 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
         chat_mode: "system",
         surface: chatSurface.value,
         resumed_from_checkpoint: Boolean(recovery?.ok),
-        recovery_reason: String(meta.recovery_reason || "runtime_failure").trim(),
+        recovery_reason: String(
+          meta.recovery_reason || "runtime_failure",
+        ).trim(),
         local_liuagent_auto_resume_retry_number: autoResumeRetryNumber,
       },
       persistUserMessage: false,
@@ -21246,7 +23062,9 @@ async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
   const pending = localLiuAgentPendingPermissions.get(requestId);
   const row =
     findMessageRowByOperationId(operation?.id || operation?.operationId) ||
-    (pending?.rowId ? messages.value.find((item) => item?.id === pending.rowId) : null) ||
+    (pending?.rowId
+      ? messages.value.find((item) => item?.id === pending.rowId)
+      : null) ||
     (pending?.assistantMessageId
       ? messages.value.find((item) => item?.id === pending.assistantMessageId)
       : null);
@@ -21260,14 +23078,18 @@ async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
   const allowSession =
     actionKey === "local_liuagent_allow_session" || allowAlways;
   const workspacePath = String(
-    pending?.workspacePath || pending?.localChatPayload?.workspacePath || meta.cwd || "",
+    pending?.workspacePath ||
+      pending?.localChatPayload?.workspacePath ||
+      meta.cwd ||
+      "",
   ).trim();
   if (allowAlways && !trustLocalLiuAgentWorkspace(workspacePath)) {
     ElMessage.warning("缺少本地工作区路径，无法保存工作区信任");
     return;
   }
   const fullAccess =
-    allowAlways || (allowSession && localLiuAgentFullAccessEnabled(workspacePath));
+    allowAlways ||
+    (allowSession && localLiuAgentFullAccessEnabled(workspacePath));
   deleteLocalLiuAgentPendingPermission(requestId);
   removeLocalLiuAgentPermissionOperation(row, requestId);
   if (denied) {
@@ -21291,7 +23113,12 @@ async function submitLocalLiuAgentPermissionAction(operation, actionKey) {
         : "已允许一次，正在继续执行",
     level: "info",
   });
-  upsertLocalLiuAgentContinuationOperation(row, pending, requestId, allowSession);
+  upsertLocalLiuAgentContinuationOperation(
+    row,
+    pending,
+    requestId,
+    allowSession,
+  );
   chatLoading.value = true;
   startWorkingStatusTimer(
     row?.id || pending?.assistantMessageId || `permission:${requestId}`,
@@ -21379,10 +23206,14 @@ async function continueLocalLiuAgentDesktopToolPermission(
     name: task.toolName,
     arguments: task.toolArgs,
     workspacePath,
-    permissionDecision: buildLocalLiuAgentPermissionDecision(requestId, permissionRequest, {
-      allowSession,
-      fullAccess,
-    }),
+    permissionDecision: buildLocalLiuAgentPermissionDecision(
+      requestId,
+      permissionRequest,
+      {
+        allowSession,
+        fullAccess,
+      },
+    ),
   });
   const ok = Boolean(result?.ok);
 
@@ -21450,8 +23281,9 @@ async function continueLocalLiuAgentChatPermission(
     assistantMessageId: row.id,
     userMessageId: pending.userMessageId,
     rootGoal:
-      String(pending.displayUserMessageContent || pending.finalUserPrompt || "").trim() ||
-      String(pending.localChatPayload?.message || "").trim(),
+      String(
+        pending.displayUserMessageContent || pending.finalUserPrompt || "",
+      ).trim() || String(pending.localChatPayload?.message || "").trim(),
     workspacePath,
     cancelled: false,
     startedAt: Date.now(),
@@ -21492,10 +23324,14 @@ async function continueLocalLiuAgentChatPermission(
   try {
     result = await startNativeLiuAgentLocalChat({
       ...localChatPayload,
-      permissionDecision: buildLocalLiuAgentPermissionDecision(requestId, permissionRequest, {
-        allowSession,
-        fullAccess,
-      }),
+      permissionDecision: buildLocalLiuAgentPermissionDecision(
+        requestId,
+        permissionRequest,
+        {
+          allowSession,
+          fullAccess,
+        },
+      ),
     });
   } finally {
     if (activeChatSessionId) {
@@ -21505,7 +23341,10 @@ async function continueLocalLiuAgentChatPermission(
   }
   const ok = Boolean(result?.ok);
   row.content = String(
-    result?.assistantContent || result?.assistant_content || result?.summary || "",
+    result?.assistantContent ||
+      result?.assistant_content ||
+      result?.summary ||
+      "",
   ).trim();
   if (!row.content && !ok) {
     row.content = `执行失败：${String(result?.error || "桌面端本地对话失败").trim()}`;
@@ -21520,7 +23359,8 @@ async function continueLocalLiuAgentChatPermission(
     chatSessionId: pending.activeChatSessionId,
     workspacePath: localChatPayload?.workspacePath,
   });
-  const nextPermissionRequest = localLiuAgentPermissionRequestFromChatResult(result);
+  const nextPermissionRequest =
+    localLiuAgentPermissionRequestFromChatResult(result);
   if (nextPermissionRequest) {
     const nextRequestId = String(nextPermissionRequest?.requestId || "").trim();
     if (nextRequestId) {
@@ -21547,7 +23387,8 @@ async function continueLocalLiuAgentChatPermission(
       projectId: selectedProjectId.value,
       chatSessionId: pending.activeChatSessionId,
       assistantMessage: row,
-      fallbackContent: "本机工具执行再次暂停，等待你在输入框上方处理下一项授权。",
+      fallbackContent:
+        "本机工具执行再次暂停，等待你在输入框上方处理下一项授权。",
       workspacePath: String(localChatPayload?.workspacePath || "").trim(),
       sourceContext: {
         ...(pending.sourceContext || {}),
@@ -21564,7 +23405,8 @@ async function continueLocalLiuAgentChatPermission(
       messageId: pending.userMessageId,
       assistantMessageId: row.id,
       resultSummary: row.content,
-      verificationResult: "授权续跑后再次遇到本机工具授权，已重新进入授权队列等待用户处理。",
+      verificationResult:
+        "授权续跑后再次遇到本机工具授权，已重新进入授权队列等待用户处理。",
       source: "desktop_local_agent",
       sourceContext: {
         ...(pending.sourceContext || {}),
@@ -21615,7 +23457,9 @@ async function continueLocalLiuAgentChatPermission(
     },
   });
   appendMessageProcessLog(row, {
-    text: ok ? "本地对话已完成并写入 workspace requirement 记录" : "本地对话执行失败",
+    text: ok
+      ? "主模型对话已完成（桌面端编排），执行记录已写入 workspace"
+      : "主模型对话执行失败",
     level: ok ? "success" : "error",
     autoExpand: !ok,
   });
@@ -21747,20 +23591,25 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
     ) || findMessageRowByOperationId(currentOperation.id);
   markAgentRuntimePermissionActionPending(currentOperation, action);
   try {
-    const response = await submitAgentRuntimePermissionActionRequest(projectId, {
-      action,
-      run_id: runId,
-      call_id: callId,
-      tool_name: toolName,
-      args:
-        meta.tool_args && typeof meta.tool_args === "object"
-          ? meta.tool_args
-          : {},
-      chat_session_id: String(
-        meta.chat_session_id || currentChatSessionId.value || "",
-      ).trim(),
-      assistant_message_id: String(meta.assistant_message_id || row?.id || "").trim(),
-    });
+    const response = await submitAgentRuntimePermissionActionRequest(
+      projectId,
+      {
+        action,
+        run_id: runId,
+        call_id: callId,
+        tool_name: toolName,
+        args:
+          meta.tool_args && typeof meta.tool_args === "object"
+            ? meta.tool_args
+            : {},
+        chat_session_id: String(
+          meta.chat_session_id || currentChatSessionId.value || "",
+        ).trim(),
+        assistant_message_id: String(
+          meta.assistant_message_id || row?.id || "",
+        ).trim(),
+      },
+    );
     const resume =
       response?.resume && typeof response.resume === "object"
         ? response.resume
@@ -22122,7 +23971,7 @@ function appendToolStartLogs(row, eventData) {
     level: "info",
     text: argumentsPreview
       ? `调用 ${label}\n参数：${argumentsPreview}`
-      : `调用 ${label}\n参数：{}`
+      : `调用 ${label}\n参数：{}`,
   });
   upsertMessageOperation(row, {
     operationId,
@@ -22464,7 +24313,9 @@ function buildMessageMarkdown(item, options = {}) {
 
 function messageAnswerId(item) {
   if (String(item?.role || "").trim() === "user") return "";
-  const explicitAnswerId = String(item?.answerId || item?.answer_id || "").trim();
+  const explicitAnswerId = String(
+    item?.answerId || item?.answer_id || "",
+  ).trim();
   if (explicitAnswerId) return explicitAnswerId;
   const messageId = String(item?.id || "").trim();
   const content = String(item?.content || "").trim();
@@ -22473,18 +24324,23 @@ function messageAnswerId(item) {
     (run) => String(run?.assistantMessageId || "").trim() === messageId,
   );
   const isStreamingLastMessage =
-    chatLoading.value === true && messages.value[messages.value.length - 1] === item;
+    chatLoading.value === true &&
+    messages.value[messages.value.length - 1] === item;
   if (isActiveLocalRun || isStreamingLastMessage) return "";
   return messageId.startsWith("ans_") ? messageId : `ans_${messageId}`;
 }
 
 function ensureMessageAnswerId(item) {
   if (!item || String(item?.role || "").trim() === "user") return "";
-  const explicitAnswerId = String(item?.answerId || item?.answer_id || "").trim();
+  const explicitAnswerId = String(
+    item?.answerId || item?.answer_id || "",
+  ).trim();
   if (explicitAnswerId) return explicitAnswerId;
   const messageId = String(item?.id || "").trim();
   if (!messageId) return "";
-  const answerId = messageId.startsWith("ans_") ? messageId : `ans_${messageId}`;
+  const answerId = messageId.startsWith("ans_")
+    ? messageId
+    : `ans_${messageId}`;
   item.answerId = answerId;
   return answerId;
 }
@@ -22686,7 +24542,9 @@ async function submitNativeExternalAgentApprovalInteraction(interaction) {
       nativeExternalAgentSession.value?.sessionId ||
       "",
   ).trim();
-  const submitContent = String(option.submitContent || option.value || "").trim();
+  const submitContent = String(
+    option.submitContent || option.value || "",
+  ).trim();
   if (!sessionId || !submitContent) {
     ElMessage.warning("缺少Runner 权限上下文，无法继续");
     return false;
@@ -22695,7 +24553,9 @@ async function submitNativeExternalAgentApprovalInteraction(interaction) {
   if (!requestId) {
     // 无结构化 requestId 时禁止提交：写 stdin 字符串无法唤醒 Tauri driver 的
     // pending_permission_txs channel，会导致 Runner 永久卡死直到 300s 超时。
-    ElMessage.error("授权上下文丢失（未收到结构化审批事件），请刷新 Runner 状态后重试");
+    ElMessage.error(
+      "授权上下文丢失（未收到结构化审批事件），请刷新 Runner 状态后重试",
+    );
     return false;
   }
   nativeExternalAgentStdinSending.value = true;
@@ -23684,9 +25544,17 @@ async function refreshPendingLocalLiuAgentOutboxCount({
   chatSessionId = "",
   workspacePath = "",
 } = {}) {
-  const normalizedProjectId = String(projectId || selectedProjectId.value || "").trim();
-  const normalizedWorkspacePath = String(workspacePath || localLiuAgentWorkspacePath()).trim();
-  if (!normalizedProjectId || !normalizedWorkspacePath || !hasNativeDesktopBridge()) {
+  const normalizedProjectId = String(
+    projectId || selectedProjectId.value || "",
+  ).trim();
+  const normalizedWorkspacePath = String(
+    workspacePath || localLiuAgentWorkspacePath(),
+  ).trim();
+  if (
+    !normalizedProjectId ||
+    !normalizedWorkspacePath ||
+    !hasNativeDesktopBridge()
+  ) {
     pendingLocalOutboxCount.value = 0;
     return 0;
   }
@@ -23740,12 +25608,16 @@ async function syncLocalLiuAgentRuntimeOutbox({
   messageId = "",
   assistantMessageId = "",
 } = {}) {
-  const normalizedProjectId = String(projectId || selectedProjectId.value || "").trim();
-  const normalizedChatSessionId = String(
-    chatSessionId || "",
+  const normalizedProjectId = String(
+    projectId || selectedProjectId.value || "",
   ).trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
   const normalizedWorkspacePath = String(workspacePath || "").trim();
-  if (!normalizedProjectId || !normalizedWorkspacePath || !hasNativeDesktopBridge()) {
+  if (
+    !normalizedProjectId ||
+    !normalizedWorkspacePath ||
+    !hasNativeDesktopBridge()
+  ) {
     pendingLocalOutboxCount.value = 0;
     return { synced: 0, pending: 0 };
   }
@@ -23776,11 +25648,15 @@ async function syncLocalLiuAgentRuntimeOutbox({
       entry?.trajectory && typeof entry.trajectory === "object"
         ? entry.trajectory
         : {};
-    const status = String(trajectory?.status || entry?.latest_status || "").trim();
+    const status = String(
+      trajectory?.status || entry?.latest_status || "",
+    ).trim();
     const result = await upsertProjectChatRequirementRecord({
       chatSessionId: entryChatSessionId,
       status: normalizeLocalLiuAgentRequirementStatus(status),
-      rootGoal: String(entry?.root_goal || entry?.rootGoal || rootGoal || "").trim(),
+      rootGoal: String(
+        entry?.root_goal || entry?.rootGoal || rootGoal || "",
+      ).trim(),
       messageId,
       assistantMessageId,
       resultSummary: String(entry?.content || "").trim(),
@@ -23792,7 +25668,9 @@ async function syncLocalLiuAgentRuntimeOutbox({
         runtime: "tauri",
         workspace_path: normalizedWorkspacePath,
         outbox_event_id: eventId,
-        source_kind: String(entry?.source_kind || entry?.sourceKind || "").trim(),
+        source_kind: String(
+          entry?.source_kind || entry?.sourceKind || "",
+        ).trim(),
         session_id: String(entry?.session_id || entry?.sessionId || "").trim(),
       },
     });
@@ -23828,8 +25706,15 @@ async function syncLocalLiuAgentRuntimeOutbox({
 }
 
 function normalizeLocalLiuAgentRequirementStatus(status) {
-  const normalized = String(status || "").trim().toLowerCase().replace(/-/g, "_");
-  if (["completed", "complete", "done", "success", "succeeded", "ok"].includes(normalized)) {
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, "_");
+  if (
+    ["completed", "complete", "done", "success", "succeeded", "ok"].includes(
+      normalized,
+    )
+  ) {
     return "done";
   }
   if (["failed", "failure", "error", "blocked"].includes(normalized)) {
@@ -23853,7 +25738,9 @@ function normalizeLocalLiuAgentRequirementStatus(status) {
   ) {
     return "in_progress";
   }
-  if (["checking", "verified", "validating", "validation"].includes(normalized)) {
+  if (
+    ["checking", "verified", "validating", "validation"].includes(normalized)
+  ) {
     return "verifying";
   }
   return ["pending", "in_progress", "verifying"].includes(normalized)
@@ -24016,7 +25903,8 @@ function buildPackageDeployCommandPrompt(commandPrompt) {
       : "当前没有选中项目；缺少 project_id 时先提示用户选择项目。",
     "",
     "用户补充要求：",
-    normalizedPrompt || "未填写；如果目标环境、打包命令或部署命令不明确，先向用户确认，不要直接执行。",
+    normalizedPrompt ||
+      "未填写；如果目标环境、打包命令或部署命令不明确，先向用户确认，不要直接执行。",
     "",
     "部署配置读取：",
     "- 第一步必须调用 get_project_deploy_options 读取当前项目的后端部署配置；不要让用户自己去查询项目部署配置。",
@@ -24201,14 +26089,19 @@ function formatBoundModuleItem(item = {}, index = 0) {
 }
 
 function formatProjectEmployeeItem(item = {}, index = 0) {
-  const name = String(item?.name || item?.employee_name || item?.id || "").trim();
+  const name = String(
+    item?.name || item?.employee_name || item?.id || "",
+  ).trim();
   const role = String(item?.project_role || item?.role || "").trim();
   const employeeId = String(item?.id || item?.employee_id || "").trim();
   const skills = normalizeStringList(
     item?.skill_names || item?.skills || item?.skill_ids || [],
     12,
   );
-  const domains = normalizeStringList(item?.rule_domains || item?.domains || [], 8);
+  const domains = normalizeStringList(
+    item?.rule_domains || item?.domains || [],
+    8,
+  );
   return [
     `${index + 1}. ${name || "未命名智能体"}`,
     [employeeId ? `ID=${employeeId}` : "", role ? `角色=${role}` : ""]
@@ -24251,7 +26144,9 @@ function buildBoundSkillContent() {
 }
 
 function buildBoundAgentContent() {
-  const employees = Array.isArray(projectEmployees.value) ? projectEmployees.value : [];
+  const employees = Array.isArray(projectEmployees.value)
+    ? projectEmployees.value
+    : [];
   const agentTypes = Array.isArray(externalAgentInfo.value?.agent_types)
     ? externalAgentInfo.value.agent_types
     : [];
@@ -24296,7 +26191,11 @@ function buildBoundRuleContent() {
     const type = String(item?.module_type || "").trim();
     return type === "rule_mcp_service";
   });
-  const lines = [`当前项目绑定规则模块 ${ruleModules.length} 个。`, "", "规则模块："];
+  const lines = [
+    `当前项目绑定规则模块 ${ruleModules.length} 个。`,
+    "",
+    "规则模块：",
+  ];
   lines.push(
     ...(ruleModules.length
       ? ruleModules.map(formatBoundModuleItem)
@@ -24403,9 +26302,7 @@ async function persistLocalLiuAgentAssistantState({
   const content = visibleContent || String(fallbackContent || "").trim();
   if (!content) return null;
   row.time = String(row.time || "").trim() || nowText();
-  const persistedMessage = preserveVisibleContent
-    ? { ...row, content }
-    : row;
+  const persistedMessage = preserveVisibleContent ? { ...row, content } : row;
   if (!preserveVisibleContent) {
     row.content = content;
   }
@@ -24449,7 +26346,10 @@ async function handleDirectProjectBindingSlashCommand(
       };
       runtimeMcpCatalog.error = message;
     }
-  } else if (!projectToolModules.value.length && !runtimeExternalTools.value.length) {
+  } else if (
+    !projectToolModules.value.length &&
+    !runtimeExternalTools.value.length
+  ) {
     await fetchProvidersByProject(selectedProjectId.value);
   }
   const userMessage = {
@@ -25119,6 +27019,7 @@ function handleFileChange(file) {
     return;
   }
   const isImage = isImageFile(raw);
+  const isAudio = isAudioFile(raw);
   if (!isAllowedFileType(raw, effectiveUploadAllowedFileTypes.value)) {
     ElMessage.error("文件类型不在当前项目对话设置允许范围内");
     return;
@@ -25136,14 +27037,18 @@ function handleFileChange(file) {
   if (isImage) {
     file.url = URL.createObjectURL(raw);
     file.kind = "image";
+  } else if (isAudio) {
+    file.url = URL.createObjectURL(raw);
+    file.kind = "audio";
   } else {
     file.url = "";
     file.kind = "document";
   }
   file.attachmentId = createLocalAttachmentId(uploadFiles.value.length);
-  file.sizeLabel = raw.size >= 1024 * 1024
-    ? `${(raw.size / 1024 / 1024).toFixed(1)}MB`
-    : `${(raw.size / 1024).toFixed(0)}KB`;
+  file.sizeLabel =
+    raw.size >= 1024 * 1024
+      ? `${(raw.size / 1024 / 1024).toFixed(1)}MB`
+      : `${(raw.size / 1024).toFixed(0)}KB`;
   file.processingLabel = resolveUploadProcessingLabel(file.kind);
   file.providerFileId = "";
   file.uploadStatus = shouldAttemptProviderFileUpload() ? "uploading" : "ready";
@@ -25154,7 +27059,9 @@ function handleFileChange(file) {
   if (file.uploadStatus === "uploading") {
     void uploadFileToProvider(file, raw);
   } else {
-    ElMessage.success(`已添加附件：${file.name || raw.name}（${file.sizeLabel}）`);
+    ElMessage.success(
+      `已添加附件：${file.name || raw.name}（${file.sizeLabel}）`,
+    );
   }
 }
 
@@ -25369,6 +27276,331 @@ function removeFile(index) {
   rememberCurrentChatSessionComposerState();
 }
 
+function closeMessageContextMenu() {
+  messageContextMenu.visible = false;
+  messageContextMenu.references = [];
+}
+
+function showMessageContextMenu(event, references = []) {
+  const normalized = mergeContextReferences([], references);
+  if (!normalized.length) return;
+  const singleReference = normalized.length === 1 ? normalized[0] : null;
+  const copyActionCount = [
+    Boolean(singleReference?.url),
+    Boolean(
+      singleReference?.url &&
+        ["image", "video", "audio", "file"].includes(singleReference?.type),
+    ),
+    normalized.some((item) => String(item?.content || "").trim()),
+  ].filter(Boolean).length;
+  const menuHeight = 20 + (1 + copyActionCount) * 42;
+  messageContextMenu.x = Math.max(
+    8,
+    Math.min(Number(event?.clientX || 0), Number(window.innerWidth || 0) - 228),
+  );
+  messageContextMenu.y = Math.max(
+    8,
+    Math.min(
+      Number(event?.clientY || 0),
+      Number(window.innerHeight || 0) - menuHeight - 8,
+    ),
+  );
+  messageContextMenu.references = normalized;
+  messageContextMenu.visible = true;
+}
+
+function messageContextRefLabel(type, index = 0) {
+  const suffix = ` ${index + 1}`;
+  return `${contextReferenceTypeLabel(type)}${suffix}`;
+}
+
+function buildAttachmentContextReference(message, attachment = {}, index = 0) {
+  const name = String(attachment?.name || "").trim();
+  return normalizeContextReference({
+    type: "file",
+    messageId: String(message?.id || "").trim(),
+    url: String(
+      attachment?.url ||
+        attachment?.download_url ||
+        attachment?.downloadUrl ||
+        attachment?.file_url ||
+        "",
+    ).trim(),
+    label: name || messageContextRefLabel("file", index),
+    content: String(
+      attachment?.content || attachment?.extracted_text || attachment?.summary || "",
+    ).trim(),
+    mimeType: String(attachment?.mime_type || attachment?.mimeType || "").trim(),
+  });
+}
+
+function buildMessageContextReferences(message = {}) {
+  const messageId = String(message?.id || "").trim();
+  const references = [];
+  const content = String(message?.content || "").trim();
+  if (content) {
+    references.push({
+      type: "message",
+      messageId,
+      label: "消息内容",
+      content,
+    });
+  }
+  for (const [index, url] of extractImages(message).entries()) {
+    references.push({
+      type: "image",
+      messageId,
+      url,
+      label: messageContextRefLabel("image", index),
+      mimeType: "image/*",
+    });
+  }
+  for (const [index, url] of extractVideos(message).entries()) {
+    references.push({
+      type: "video",
+      messageId,
+      url,
+      label: messageContextRefLabel("video", index),
+      mimeType: "video/*",
+    });
+  }
+  for (const [index, url] of extractAudios(message).entries()) {
+    references.push({
+      type: "audio",
+      messageId,
+      url,
+      label: messageContextRefLabel("audio", index),
+      mimeType: "audio/*",
+    });
+  }
+  for (const [index, attachment] of extractAttachments(message).entries()) {
+    references.push(buildAttachmentContextReference(message, attachment, index));
+  }
+  return references.filter(Boolean);
+}
+
+function selectedMessageText(event) {
+  const selection = window.getSelection?.();
+  const text = String(selection?.toString?.() || "").trim();
+  const row = event?.currentTarget;
+  if (!text || !row || !selection?.anchorNode || !row.contains(selection.anchorNode)) {
+    return "";
+  }
+  return text;
+}
+
+function openMessageContextMenu(event, message) {
+  const mediaElement = event?.target?.closest?.("img, video, audio");
+  if (mediaElement) {
+    const type = String(mediaElement.tagName || "").toLowerCase();
+    const url = String(mediaElement.currentSrc || mediaElement.src || "").trim();
+    if (["img", "video", "audio"].includes(type) && url) {
+      openMediaContextMenu(
+        event,
+        message,
+        type === "img" ? "image" : type,
+        url,
+      );
+      return;
+    }
+  }
+  const selectedText = selectedMessageText(event);
+  if (selectedText) {
+    showMessageContextMenu(event, [
+      {
+        type: "text",
+        messageId: String(message?.id || "").trim(),
+        label: "选中文字",
+        content: selectedText,
+      },
+    ]);
+    return;
+  }
+  showMessageContextMenu(event, buildMessageContextReferences(message));
+}
+
+function openMediaContextMenu(event, message, type, url, index = 0) {
+  showMessageContextMenu(event, [
+    {
+      type,
+      messageId: String(message?.id || "").trim(),
+      url,
+      label: messageContextRefLabel(type, index),
+      mimeType: `${type}/*`,
+    },
+  ]);
+}
+
+function openAttachmentContextMenu(event, message, attachment, index = 0) {
+  showMessageContextMenu(event, [
+    buildAttachmentContextReference(message, attachment, index),
+  ]);
+}
+
+function appendContextMenuSelection() {
+  const previousCount = composerContextRefs.value.length;
+  composerContextRefs.value = mergeContextReferences(
+    composerContextRefs.value,
+    messageContextMenu.references,
+  );
+  const addedCount = composerContextRefs.value.length - previousCount;
+  closeMessageContextMenu();
+  if (addedCount > 0) {
+    ElMessage.success(`已添加 ${addedCount} 项到 liuAgent 对话`);
+  } else {
+    ElMessage.info("该内容已在当前会话上下文中");
+  }
+  void focusChatComposerTextarea();
+}
+
+function contextMenuSingleReference() {
+  const references = Array.isArray(messageContextMenu.references)
+    ? messageContextMenu.references
+    : [];
+  return references.length === 1 ? references[0] : null;
+}
+
+function contextMenuCanCopyAddress() {
+  return Boolean(String(contextMenuSingleReference()?.url || "").trim());
+}
+
+function contextMenuCanCopyFile() {
+  const reference = contextMenuSingleReference();
+  return Boolean(
+    reference &&
+      ["image", "video", "audio", "file"].includes(reference.type) &&
+      String(reference.url || "").trim(),
+  );
+}
+
+function contextMenuCopyableContent() {
+  return (Array.isArray(messageContextMenu.references)
+    ? messageContextMenu.references
+    : []
+  )
+    .map((item) => String(item?.content || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function contextMenuCanCopyContent() {
+  return Boolean(contextMenuCopyableContent());
+}
+
+async function copyContextMenuAddress() {
+  const url = String(contextMenuSingleReference()?.url || "").trim();
+  closeMessageContextMenu();
+  if (!url) return;
+  try {
+    await writeClipboardText(url);
+    ElMessage.success("地址已复制");
+  } catch {
+    ElMessage.error("地址复制失败");
+  }
+}
+
+async function copyContextMenuContent() {
+  const content = contextMenuCopyableContent();
+  closeMessageContextMenu();
+  if (!content) return;
+  try {
+    await writeClipboardText(content);
+    ElMessage.success("内容已复制");
+  } catch {
+    ElMessage.error("内容复制失败");
+  }
+}
+
+function contextReferenceFileName(reference = {}) {
+  const url = String(reference?.url || "").trim();
+  if (url && !url.startsWith("data:")) {
+    try {
+      const pathname = new URL(url, window.location.href).pathname;
+      const name = decodeURIComponent(pathname.split("/").filter(Boolean).pop() || "");
+      if (name && name.includes(".")) return name;
+    } catch (_error) {}
+  }
+  const extension = {
+    image: "png",
+    video: "mp4",
+    audio: "wav",
+    file: "bin",
+  }[String(reference?.type || "").trim()];
+  return `liuagent-${String(reference?.type || "file").trim() || "file"}.${extension || "bin"}`;
+}
+
+function contextReferenceAuthorizationToken(reference = {}) {
+  const url = String(reference?.url || "").trim();
+  if (!url || url.startsWith("data:")) return "";
+  try {
+    const resourceOrigin = new URL(url, window.location.href).origin;
+    const backendOrigin = new URL(resolveServerOrigin()).origin;
+    return resourceOrigin === backendOrigin ? getStoredToken() : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function copyResourceBlobInBrowser(reference = {}) {
+  if (!navigator?.clipboard?.write || typeof window.ClipboardItem !== "function") {
+    throw new Error("当前浏览器不支持复制文件本身，请使用桌面端");
+  }
+  const response = await fetch(String(reference?.url || "").trim());
+  if (!response.ok) {
+    throw new Error(`文件读取失败（HTTP ${response.status}）`);
+  }
+  const blob = await response.blob();
+  const mimeType = String(blob.type || reference?.mimeType || "").trim();
+  if (!mimeType || mimeType.includes("*")) {
+    throw new Error("无法识别文件类型，请使用桌面端复制");
+  }
+  await navigator.clipboard.write([
+    new window.ClipboardItem({
+      [mimeType]: blob,
+    }),
+  ]);
+}
+
+async function copyContextMenuFile() {
+  const reference = contextMenuSingleReference();
+  closeMessageContextMenu();
+  if (!reference) return;
+  try {
+    const result = await copyNativeResourceFileToClipboard({
+      url: reference.url,
+      fileName: contextReferenceFileName(reference),
+      mimeType: reference.mimeType,
+      authorizationToken: contextReferenceAuthorizationToken(reference),
+    });
+    if (!result?.copied) {
+      await copyResourceBlobInBrowser(reference);
+    }
+    ElMessage.success("文件已复制，可直接粘贴");
+  } catch (error) {
+    ElMessage.error(error?.message || "文件复制失败");
+  }
+}
+
+function removeComposerContextRef(referenceId) {
+  composerContextRefs.value = composerContextRefs.value.filter(
+    (item) => String(item?.id || "") !== String(referenceId || ""),
+  );
+}
+
+function clearComposerContextRefs() {
+  composerContextRefs.value = [];
+}
+
+function handleContextMenuGlobalPointerDown(event) {
+  if (!messageContextMenu.visible) return;
+  if (event?.target?.closest?.(".project-chat-context-menu")) return;
+  closeMessageContextMenu();
+}
+
+function handleContextMenuGlobalKeydown(event) {
+  if (event?.key === "Escape") closeMessageContextMenu();
+}
+
 function resetDraft() {
   draftText.value = "";
   uploadFiles.value = [];
@@ -25458,13 +27690,17 @@ function enqueueFollowupMessage() {
 
 function interruptActiveGenerationForFollowup() {
   const currentRequestId = getActiveRequestId();
-  const pending = currentRequestId ? pendingRequests.get(currentRequestId) : null;
+  const pending = currentRequestId
+    ? pendingRequests.get(currentRequestId)
+    : null;
   const activeRow = currentActiveAssistantRow();
   if (!enqueueFollowupMessage()) return false;
   const interruptNote = "_[已中断 - 正在处理新消息]_";
   if (activeRow) {
     const content = String(activeRow.content || "").trim();
-    activeRow.content = content ? `${content}\n\n${interruptNote}` : interruptNote;
+    activeRow.content = content
+      ? `${content}\n\n${interruptNote}`
+      : interruptNote;
     activeRow.time = nowText();
     appendMessageProcessLog(activeRow, {
       level: "warning",
@@ -25553,7 +27789,10 @@ async function buildFollowupFilePayload(queueItems = []) {
 }
 
 function createLocalAttachmentId(index) {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return `att_${crypto.randomUUID()}`;
   }
   return `att_${Date.now()}_${index}`;
@@ -25585,6 +27824,7 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
   for (const [index, item] of normalizedItems.entries()) {
     const rawFile = item?.raw || item;
     const isImage = isImageFile(rawFile);
+    const isAudio = isAudioFile(rawFile);
     const providerFileId = String(item?.providerFileId || "").trim();
     const routingMode = resolveLocalRunnerAttachmentRoutingMode(
       modelMode,
@@ -25594,10 +27834,12 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
       attachmentId:
         String(item?.attachmentId || "").trim() ||
         createLocalAttachmentId(index),
-      name: String(rawFile?.name || item?.name || `attachment-${index + 1}`).trim(),
+      name: String(
+        rawFile?.name || item?.name || `attachment-${index + 1}`,
+      ).trim(),
       mimeType: String(rawFile?.type || "").trim(),
       size: Number(rawFile?.size || 0),
-      kind: isImage ? "image" : "file",
+      kind: isImage ? "image" : isAudio ? "audio" : "file",
       routingMode,
       extractionStatus: "metadata_only",
       dataUrl: "",
@@ -25605,10 +27847,7 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
       providerFileId: "",
       error: "",
     };
-    if (
-      providerFileId &&
-      String(item?.uploadStatus || "").trim() === "ready"
-    ) {
+    if (providerFileId && String(item?.uploadStatus || "").trim() === "ready") {
       attachments.push({
         ...base,
         routingMode: "provider_file",
@@ -25618,11 +27857,17 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
       continue;
     }
     try {
-      if (isImage && routingMode === "inline_image") {
+      if ((isImage && routingMode === "inline_image") || isAudio) {
         base.dataUrl = await readFileAsDataUrl(rawFile);
-        base.extractionStatus = base.dataUrl ? "image_data_url" : "metadata_only";
+        base.extractionStatus = base.dataUrl
+          ? isAudio
+            ? "audio_data_url"
+            : "image_data_url"
+          : "metadata_only";
       } else if (remainingTextBudget > 0) {
-        const extracted = String(await extractTextFromFile(rawFile) || "").trim();
+        const extracted = String(
+          (await extractTextFromFile(rawFile)) || "",
+        ).trim();
         if (extracted) {
           const perFileLimit = Math.min(
             Math.max(0, Number(docMaxCharsPerFile.value || 0)),
@@ -25645,8 +27890,10 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
 
 function resolveLocalRunnerAttachmentRoutingMode(modelMode, isImage) {
   const mode = String(modelMode || "").trim();
-  if (mode === "inline_image") return isImage ? "inline_image" : "local_extract";
-  if (mode === "provider_file") return isImage ? "inline_image" : "local_extract";
+  if (mode === "inline_image")
+    return isImage ? "inline_image" : "local_extract";
+  if (mode === "provider_file")
+    return isImage ? "inline_image" : "local_extract";
   return "local_extract";
 }
 
@@ -25784,7 +28031,12 @@ function toHistoryRows(sourceMessages, limit = 20) {
       const role = String(item.role || "")
         .trim()
         .toLowerCase();
-      const content = String(item.content || "").trim();
+      const content = [
+        String(item.content || "").trim(),
+        buildContextReferencesPrompt(item.contextRefs || item.context_refs || []),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
       const sourceKind = localLiuAgentHistorySourceKind(item);
       const diagnostic = shouldMarkLocalLiuAgentHistoryDiagnostic(item);
       return {
@@ -25808,7 +28060,10 @@ function toHistoryRows(sourceMessages, limit = 20) {
 function localLiuAgentHistorySourceKind(row = {}) {
   const operations = Array.isArray(row?.operations) ? row.operations : [];
   const hasLocalRuntimeOperation = operations.some((operation) => {
-    const meta = operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+    const meta =
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
     return (
       String(meta?.source || "").trim() === "tauri_liuagent_local_chat" ||
       String(meta?.local_liuagent_operation || "").trim() === "true"
@@ -25818,10 +28073,18 @@ function localLiuAgentHistorySourceKind(row = {}) {
 }
 
 function shouldMarkLocalLiuAgentHistoryDiagnostic(row = {}) {
-  if (String(row?.role || "").trim().toLowerCase() !== "assistant") return false;
+  if (
+    String(row?.role || "")
+      .trim()
+      .toLowerCase() !== "assistant"
+  )
+    return false;
   const operations = Array.isArray(row?.operations) ? row.operations : [];
   const hasFailedLocalRuntimeOperation = operations.some((operation) => {
-    const meta = operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+    const meta =
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
     const isLocalRuntime =
       String(meta?.source || "").trim() === "tauri_liuagent_local_chat" ||
       String(meta?.local_liuagent_operation || "").trim() === "true";
@@ -26290,7 +28553,10 @@ async function fetchGlobalProviders() {
       list.find((item) => item.id === globalDefaultProviderId.value) ||
       list[0] ||
       {};
-    const models = normalizeProviderModelNames(provider, modelTypeOptions.value);
+    const models = normalizeProviderModelNames(
+      provider,
+      modelTypeOptions.value,
+    );
     globalDefaultModelName.value = String(
       provider?.default_model || models[0] || "",
     ).trim();
@@ -26319,13 +28585,15 @@ async function fetchGlobalProviders() {
         selectedProvider?.default_model ||
           selectedModels[0] ||
           globalDefaultModelName.value ||
-        "",
+          "",
       ).trim();
     }
     saveProviderModelOfflineSnapshot("global");
   } catch (err) {
     console.warn("加载全局模型供应商失败，保留本地离线状态", err);
-    applyProviderModelOfflineSnapshot(String(selectedProjectId.value || "").trim());
+    applyProviderModelOfflineSnapshot(
+      String(selectedProjectId.value || "").trim(),
+    );
   }
   projectChatSettings.value = applyLocalConnectorRuntimeSettings(
     projectChatSettings.value,
@@ -26395,9 +28663,7 @@ async function refreshRuntimeExternalToolsInBackground(projectId) {
     const data = await fetchProjectChatProviders(normalizedProjectId, {
       includeRuntimeExternalTools: true,
     });
-    if (
-      normalizedProjectId !== String(selectedProjectId.value || "").trim()
-    ) {
+    if (normalizedProjectId !== String(selectedProjectId.value || "").trim()) {
       return;
     }
     mcpModules.value = normalizeMcpModules(data.mcp_modules || {});
@@ -26564,6 +28830,10 @@ async function fetchProvidersByProject(projectId, options = {}) {
         defaultModelName.value || providerModels[0] || "",
       );
     }
+    manualModelOptionValue.value = buildModelOptionValue(
+      selectedProviderId.value,
+      selectedModelName.value,
+    );
 
     systemPrompt.value = "";
     temperature.value = Number(
@@ -26802,6 +29072,12 @@ function applySavedProjectChatSettings(settings) {
   if (nextModelName && providerModels.includes(nextModelName)) {
     selectedModelName.value = nextModelName;
   }
+  if (!manualModelOptionValue.value) {
+    manualModelOptionValue.value = buildModelOptionValue(
+      selectedProviderId.value,
+      selectedModelName.value,
+    );
+  }
   systemPrompt.value = "";
   temperature.value = Number(
     nextSettings.temperature ?? CHAT_SETTINGS_DEFAULTS.temperature,
@@ -26951,7 +29227,9 @@ function syncLocalChatSessionMetadata(projectId, chatSessionId, rows) {
   const nextSession = normalizeChatSession({
     ...current,
     message_count: messageRows.length,
-    preview: String(lastMessage?.content || "").trim().slice(0, 120),
+    preview: String(lastMessage?.content || "")
+      .trim()
+      .slice(0, 120),
     updated_at: now,
     last_message_at: lastMessage ? now : current.last_message_at || "",
   });
@@ -26974,7 +29252,9 @@ function removeProjectChatSessionCacheItem(projectId, chatSessionId) {
   const current = projectChatSessionsById.value?.[normalizedProjectId] || [];
   setProjectChatSessionsCache(
     normalizedProjectId,
-    current.filter((item) => String(item?.id || "").trim() !== normalizedSessionId),
+    current.filter(
+      (item) => String(item?.id || "").trim() !== normalizedSessionId,
+    ),
   );
 }
 
@@ -27154,7 +29434,10 @@ async function fetchChatHistory(
   }
   const normalizedSessionId = String(chatSessionId || "").trim();
   if (!append) {
-    persistCurrentChatRuntimeBeforeSessionSwitch(projectId, normalizedSessionId);
+    persistCurrentChatRuntimeBeforeSessionSwitch(
+      projectId,
+      normalizedSessionId,
+    );
     rememberCurrentChatSessionMessages();
     rememberCurrentChatSessionComposerState();
   }
@@ -27309,7 +29592,9 @@ function resetExternalAgentRuntimeState() {
     session_id: "",
     thread_id: "",
     workspace_path: String(
-      projectWorkspacePath.value || externalAgentInfo.value.workspace_path || "",
+      projectWorkspacePath.value ||
+        externalAgentInfo.value.workspace_path ||
+        "",
     ).trim(),
   });
   resetTerminalPanel();
@@ -27588,7 +29873,8 @@ async function deleteChatSession(payload) {
     ).trim() || String(selectedProjectId.value || "").trim();
   const chatSessionId = String(session?.id || "").trim();
   if (!projectId || !chatSessionId) return;
-  const isSelectedProject = projectId === String(selectedProjectId.value || "").trim();
+  const isSelectedProject =
+    projectId === String(selectedProjectId.value || "").trim();
   if (
     isSelectedProject &&
     chatLoading.value &&
@@ -27622,7 +29908,8 @@ async function deleteChatSession(payload) {
     }
     await clearPersistedChatRuntime(projectId, chatSessionId);
     forgetChatSessionMessages(projectId, chatSessionId);
-    const isCurrentSession = isSelectedProject && currentChatSessionId.value === chatSessionId;
+    const isCurrentSession =
+      isSelectedProject && currentChatSessionId.value === chatSessionId;
     if (isCurrentSession) {
       clearChatSessionMemory(projectId);
       clearTaskTreeSessionMemory(projectId);
@@ -28201,7 +30488,8 @@ async function handleSocketMessage(eventData) {
           eventData?.run_id,
           eventData?.call_id,
           eventData?.command_signature,
-        ) || findMessageRowByOperationId(
+        ) ||
+        findMessageRowByOperationId(
           `agent-runtime-permission:${String(eventData?.run_id || "").trim()}:${String(eventData?.call_id || "").trim()}`,
         );
       if (row) {
@@ -28213,21 +30501,24 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "agent_runtime_operation_resume_result") {
     if (applyAgentRuntimeOperationResumeResult(eventData)) {
-      const row = findMessageRowByOperationId(
-        `desktop-tool:${String(eventData?.task_id || "").trim()}`,
-      ) || messages.value.find((item) =>
-        Array.isArray(item?.operations) &&
-        item.operations.some((operation) => {
-          const meta =
-            operation?.meta && typeof operation.meta === "object"
-              ? operation.meta
-              : {};
-          return (
-            String(meta.run_id || "").trim() ===
-            String(eventData?.run_id || "").trim()
-          );
-        }),
-      );
+      const row =
+        findMessageRowByOperationId(
+          `desktop-tool:${String(eventData?.task_id || "").trim()}`,
+        ) ||
+        messages.value.find(
+          (item) =>
+            Array.isArray(item?.operations) &&
+            item.operations.some((operation) => {
+              const meta =
+                operation?.meta && typeof operation.meta === "object"
+                  ? operation.meta
+                  : {};
+              return (
+                String(meta.run_id || "").trim() ===
+                String(eventData?.run_id || "").trim()
+              );
+            }),
+        );
       if (row) {
         maybeExecuteDesktopClientToolTasksFromResume(row, eventData, requestId);
       }
@@ -28731,6 +31022,10 @@ async function handleSocketMessage(eventData) {
       extractVideos(row),
       collectArtifactVideoUrls(eventData),
     );
+    row.audios = mergeAudioUrls(
+      extractAudios(row),
+      collectArtifactAudioUrls(eventData),
+    );
     scrollToBottom();
     return;
   }
@@ -29001,6 +31296,10 @@ async function handleSocketMessage(eventData) {
         extractVideos(row),
         collectArtifactVideoUrls(eventData),
       );
+      row.audios = mergeAudioUrls(
+        extractAudios(row),
+        collectArtifactAudioUrls(eventData),
+      );
       const currentContent = String(row.content || "").trim();
       if (!currentContent) {
         row.content = doneContent || guardSummary;
@@ -29094,7 +31393,9 @@ async function handleSocketMessage(eventData) {
     const message = String(eventData?.message || "未知错误");
     finishMessageExecutionTiming(
       row,
-      eventData?.created_at_epoch_ms || eventData?.createdAtEpochMs || Date.now(),
+      eventData?.created_at_epoch_ms ||
+        eventData?.createdAtEpochMs ||
+        Date.now(),
     );
     appendMessageProcessLog(row, {
       level: "error",
@@ -29123,10 +31424,7 @@ function resolvePendingRequest(requestId, pending, content = "") {
   if (!hasPendingRequestForChatSession(chatSessionId)) {
     clearWorkingStatusStartForChatSession(chatSessionId);
   }
-  persistRememberedChatSessionMessages(
-    pending.projectId,
-    chatSessionId,
-  );
+  persistRememberedChatSessionMessages(pending.projectId, chatSessionId);
   syncChatLoadingWithCurrentSession();
   settlePending(pending, "resolve", String(content || "").trim());
 }
@@ -29138,10 +31436,7 @@ function rejectPendingRequest(requestId, pending, error) {
   if (!hasPendingRequestForChatSession(chatSessionId)) {
     clearWorkingStatusStartForChatSession(chatSessionId);
   }
-  persistRememberedChatSessionMessages(
-    pending.projectId,
-    chatSessionId,
-  );
+  persistRememberedChatSessionMessages(pending.projectId, chatSessionId);
   syncChatLoadingWithCurrentSession();
 }
 
@@ -29315,7 +31610,10 @@ async function promptProjectAiEntryFile() {
   }
 }
 
-async function saveProjectWorkspaceDirectory(workspacePathOverride = null, options = {}) {
+async function saveProjectWorkspaceDirectory(
+  workspacePathOverride = null,
+  options = {},
+) {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) {
     ElMessage.warning("请先选择项目");
@@ -29424,10 +31722,12 @@ async function fetchDefaultAiEntryFileContent(projectId) {
   const data = await api.get("/projects/query-mcp/runtime", {
     params: {
       project_id: normalizedProjectId,
-      chat_session_id: String(currentChatSessionId.value || "").trim() || undefined,
+      chat_session_id:
+        String(currentChatSessionId.value || "").trim() || undefined,
     },
   });
-  const runtime = data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
+  const runtime =
+    data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
   const prompts = Array.isArray(runtime.cli_prompts) ? runtime.cli_prompts : [];
   const desktopPrompt = prompts.find(
     (item) => String(item?.key || "").trim() === "desktop-agent",
@@ -29607,6 +31907,7 @@ async function sendProjectChatRequest({
   activeSessionSourceContext,
   attachmentNames = [],
   base64Images = [],
+  audioInput = null,
   historyRows = [],
   effectiveAutoUseTools = true,
   effectiveToolPriority = [],
@@ -29616,6 +31917,9 @@ async function sendProjectChatRequest({
   onAfterDone = null,
   requestKind = "user_message",
   replaceAssistantContentOnDone = false,
+  persistHistory = false,
+  providerId = selectedProviderId.value || defaultProviderId.value || "",
+  modelName = selectedModelName.value || defaultModelName.value || "",
 }) {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const client = await ensureWsClient(projectId);
@@ -29653,7 +31957,7 @@ async function sendProjectChatRequest({
     chat_session_id: activeChatSessionId,
     request_kind:
       String(requestKind || "user_message").trim() || "user_message",
-    persist_history: false,
+    persist_history: Boolean(persistHistory),
     chat_mode: requestChatMode,
     chat_surface: chatSurface.value,
     source_context: activeSessionSourceContext,
@@ -29688,12 +31992,15 @@ async function sendProjectChatRequest({
       .trim()
       .toLowerCase(),
     history: historyRows,
-    provider_id: selectedProviderId.value || undefined,
-    model_name: selectedModelName.value || undefined,
+    provider_id: String(providerId || "").trim() || undefined,
+    model_name: String(modelName || "").trim() || undefined,
     temperature: Number(temperature.value),
     system_prompt: undefined,
     attachment_names: attachmentNames,
     images: base64Images,
+    audio_data_url: String(audioInput?.dataUrl || "").trim(),
+    audio_filename: String(audioInput?.filename || "").trim(),
+    audio_mime_type: String(audioInput?.mimeType || "").trim(),
     auto_use_tools: effectiveAutoUseTools,
     tool_priority: effectiveToolPriority,
     history_limit: resolveNumericChatSetting(
@@ -29781,9 +32088,12 @@ async function sendLocalLiuAgentChatRequest({
   displayUserMessageContent = "",
   sourceContext = {},
   attachments = [],
+  mediaTools = [],
   persistUserMessage = true,
   resumeFromCheckpoint = false,
   workspacePath: requestedWorkspacePath = "",
+  providerId: requestedProviderId = "",
+  modelName: requestedModelName = "",
 }) {
   const workspacePath = String(
     requestedWorkspacePath || localLiuAgentWorkspacePath(),
@@ -29855,10 +32165,25 @@ async function sendLocalLiuAgentChatRequest({
       userMessage.historyPersisted = true;
     }
   }
-  const modelRuntime = await buildLocalLiuAgentModelRuntime();
+  const providerId = String(
+    requestedProviderId ||
+      selectedProviderId.value ||
+      defaultProviderId.value ||
+      "",
+  ).trim();
+  const modelName = String(
+    requestedModelName ||
+      selectedModelName.value ||
+      defaultModelName.value ||
+      "",
+  ).trim();
+  const modelRuntime = await buildLocalLiuAgentModelRuntime(
+    providerId,
+    modelName,
+  );
   await saveLocalLiuAgentRuntimeConfigOfflineCache({
     workspacePath,
-    providerId: selectedProviderId.value || defaultProviderId.value || "",
+    providerId,
     modelRuntime,
   });
   const localChatPayload = {
@@ -29869,15 +32194,18 @@ async function sendLocalLiuAgentChatRequest({
     message: finalUserPrompt,
     workspacePath,
     history: historyRows,
-    providerId: selectedProviderId.value || defaultProviderId.value || "",
-    modelName: selectedModelName.value || defaultModelName.value || "",
+    providerId,
+    modelName,
     systemPrompt: buildLocalLiuAgentSystemPrompt(),
     systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
-    temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
+    temperature: Number(
+      temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
+    ),
     modelRuntime,
     aiEntryFile: String(projectAiEntryFile.value || "").trim(),
     mcpConfig: effectiveMcpConfig.value,
     attachments,
+    mediaTools,
     backendContext: {
       apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
       token: getStoredToken(),
@@ -29953,7 +32281,8 @@ async function sendLocalLiuAgentChatRequest({
     throw err;
   }
   if (activeRun.cancelled) {
-    const replacementRun = localLiuAgentActiveRunForChatSession(activeChatSessionId);
+    const replacementRun =
+      localLiuAgentActiveRunForChatSession(activeChatSessionId);
     if (replacementRun && replacementRun !== activeRun) {
       return { cancelled: true, superseded: true };
     }
@@ -29965,7 +32294,8 @@ async function sendLocalLiuAgentChatRequest({
       kind: "request",
       title: "桌面本地 Agent Runtime",
       summary: "任务已暂停，可以继续执行",
-      detail: "Runtime 已停止后续模型和工具调度，并直接记录当前工作节点；继续时会先核对 checkpoint。",
+      detail:
+        "Runtime 已停止后续模型和工具调度，并直接记录当前工作节点；继续时会先核对 checkpoint。",
       phase: "blocked",
       actionType: "none",
       meta: {
@@ -30012,7 +32342,8 @@ async function sendLocalLiuAgentChatRequest({
       resultSummary:
         String(assistantMessage.content || "").trim() ||
         LOCAL_LIUAGENT_PAUSE_SUMMARY,
-      verificationResult: "桌面 Runtime 已写入 checkpoint，执行轨迹已保留，可继续执行。",
+      verificationResult:
+        "桌面 Runtime 已写入 checkpoint，执行轨迹已保留，可继续执行。",
       source: "desktop_local_agent",
       sourceContext: {
         ...sourceContext,
@@ -30061,7 +32392,9 @@ async function sendLocalLiuAgentChatRequest({
         chat_session_id: activeChatSessionId,
         user_message_id: userMessage.id,
         root_goal: displayUserMessageContent || finalUserPrompt,
-        session_id: String(result?.sessionId || result?.session_id || "").trim(),
+        session_id: String(
+          result?.sessionId || result?.session_id || "",
+        ).trim(),
         cwd: workspacePath,
         paused: true,
         checkpoint_ready: true,
@@ -30120,7 +32453,8 @@ async function sendLocalLiuAgentChatRequest({
     schedulePersistChatRuntime();
     return result;
   }
-  const localPermissionRequest = localLiuAgentPermissionRequestFromChatResult(result);
+  const localPermissionRequest =
+    localLiuAgentPermissionRequestFromChatResult(result);
   if (localPermissionRequest) {
     const requestId = String(localPermissionRequest?.requestId || "").trim();
     if (requestId) {
@@ -30161,7 +32495,8 @@ async function sendLocalLiuAgentChatRequest({
       messageId: userMessage.id,
       assistantMessageId: assistantMessage.id,
       resultSummary: assistantMessage.content,
-      verificationResult: "本地工具调用已在 executor 执行前暂停，等待用户授权。",
+      verificationResult:
+        "本地工具调用已在 executor 执行前暂停，等待用户授权。",
       source: "desktop_local_agent",
       sourceContext: {
         ...sourceContext,
@@ -30212,7 +32547,9 @@ async function sendLocalLiuAgentChatRequest({
     ? localLiuAgentAutoResumeDelayMs(result, nextAutoResumeRetryNumber)
     : 0;
   const assistantReasoningContent = String(
-    result?.assistantReasoningContent || result?.assistant_reasoning_content || "",
+    result?.assistantReasoningContent ||
+      result?.assistant_reasoning_content ||
+      "",
   ).trim();
   if (assistantReasoningContent) {
     assistantMessage.reasoningContent = assistantReasoningContent;
@@ -30226,8 +32563,12 @@ async function sendLocalLiuAgentChatRequest({
         `ans_${String(assistantMessage?.id || "").trim()}`,
     ).trim();
     assistantMessage.content = String(
-      result?.assistantContent || result?.assistant_content || result?.summary || "",
+      result?.assistantContent ||
+        result?.assistant_content ||
+        result?.summary ||
+        "",
     ).trim();
+    applyLocalLiuAgentMediaToolResults(assistantMessage, result);
   }
   if (!assistantMessage.content && ok) {
     assistantMessage.content = "本地智能体未返回最终回答，请检查本轮执行过程。";
@@ -30237,7 +32578,10 @@ async function sendLocalLiuAgentChatRequest({
   }
   if (!ok && !shouldAutoResume) {
     const runtimeError = String(
-      result?.error || result?.summary || assistantMessage.content || "桌面端本地对话失败",
+      result?.error ||
+        result?.summary ||
+        assistantMessage.content ||
+        "桌面端本地对话失败",
     ).trim();
     showManualCloseErrorDialog(
       "桌面本地 Agent Runtime 失败",
@@ -30318,10 +32662,10 @@ async function sendLocalLiuAgentChatRequest({
   }
   appendMessageProcessLog(assistantMessage, {
     text: ok
-      ? "本地对话已完成并写入 workspace requirement 记录"
+      ? "主模型对话已完成（桌面端编排），执行记录已写入 workspace"
       : shouldAutoResume
         ? `模型步骤中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动从 checkpoint 继续（第 ${nextAutoResumeRetryNumber}/${LOCAL_LIUAGENT_AUTO_RESUME_MAX_RETRIES} 次）`
-        : "本地对话执行失败",
+        : "主模型对话执行失败",
     level: ok ? "success" : shouldAutoResume ? "warning" : "error",
     autoExpand: !ok,
   });
@@ -30330,7 +32674,9 @@ async function sendLocalLiuAgentChatRequest({
   }
   if (shouldAutoResume) {
     const operation = messageOperations(assistantMessage).find(
-      (item) => String(item?.id || item?.operationId || "").trim() === `local-agent:${assistantMessage.id}`,
+      (item) =>
+        String(item?.id || item?.operationId || "").trim() ===
+        `local-agent:${assistantMessage.id}`,
     );
     scheduleLocalLiuAgentAutomaticResume({
       row: assistantMessage,
@@ -30373,7 +32719,9 @@ async function sendLocalLiuAgentChatRequest({
           workspace_path: workspacePath,
           answer_id: messageAnswerId(assistantMessage),
           requirement_record_path: String(
-            result?.requirementRecordPath || result?.requirement_record_path || "",
+            result?.requirementRecordPath ||
+              result?.requirement_record_path ||
+              "",
           ).trim(),
           ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
         },
@@ -30418,17 +32766,28 @@ async function fetchLocalLiuAgentDesktopModelRuntime(providerId) {
   const baseUrl = String(runtime.base_url || runtime.baseUrl || "").trim();
   const apiKey = String(runtime.api_key || runtime.apiKey || "").trim();
   if (!baseUrl || !apiKey) {
-    throw new Error("当前模型供应商缺少 Base URL 或 API Key，桌面端无法本地调用模型");
+    throw new Error(
+      "当前模型供应商缺少 Base URL 或 API Key，桌面端无法本地调用模型",
+    );
   }
   return runtime;
 }
 
-async function buildLocalLiuAgentModelRuntime() {
+async function buildLocalLiuAgentModelRuntime(
+  providerIdOverride = "",
+  modelNameOverride = "",
+) {
   const providerId = String(
-    selectedProviderId.value || defaultProviderId.value || "",
+    providerIdOverride ||
+      selectedProviderId.value ||
+      defaultProviderId.value ||
+      "",
   ).trim();
   const modelName = String(
-    selectedModelName.value || defaultModelName.value || "",
+    modelNameOverride ||
+      selectedModelName.value ||
+      defaultModelName.value ||
+      "",
   ).trim();
   const runtime = await fetchLocalLiuAgentDesktopModelRuntime(providerId);
   const resolvedModelName = String(
@@ -30455,7 +32814,9 @@ async function buildLocalLiuAgentModelRuntime() {
     modelName: resolvedModelName,
     baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
     apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
-    temperature: Number(temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature),
+    temperature: Number(
+      temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
+    ),
   };
 }
 
@@ -30467,10 +32828,7 @@ function resolvePendingRequestFast(requestId, pending, content = "") {
     clearWorkingStatusStartForChatSession(chatSessionId);
   }
   syncChatLoadingWithCurrentSession();
-  persistRememberedChatSessionMessages(
-    pending.projectId,
-    chatSessionId,
-  );
+  persistRememberedChatSessionMessages(pending.projectId, chatSessionId);
   settlePending(pending, "resolve", String(content || "").trim());
 }
 
@@ -30595,7 +32953,8 @@ async function cancelActiveLocalLiuAgentRun() {
       kind: "request",
       title: "桌面本地 Agent Runtime",
       summary: "任务已暂停，可以继续执行",
-      detail: "已停止新的模型请求和工具调度；当前工作节点由桌面 Runtime 直接写入 checkpoint。",
+      detail:
+        "已停止新的模型请求和工具调度；当前工作节点由桌面 Runtime 直接写入 checkpoint。",
       phase: "blocked",
       actionType: "none",
       meta: {
@@ -30858,7 +33217,10 @@ async function sendGlobalChatWithoutProject() {
   applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
 
   chatLoading.value = true;
-  startWorkingStatusTimer(assistantMessage.id, GLOBAL_PROJECT_CHAT_LOCAL_SESSION_ID);
+  startWorkingStatusTimer(
+    assistantMessage.id,
+    GLOBAL_PROJECT_CHAT_LOCAL_SESSION_ID,
+  );
   resetDraft();
   scrollToBottom();
 
@@ -30927,7 +33289,11 @@ function explainBlockedSend() {
     ElMessage.warning("请先选择项目");
     return;
   }
-  if (!String(draftText.value || "").trim() && !uploadFiles.value.length) {
+  if (
+    !String(draftText.value || "").trim() &&
+    !uploadFiles.value.length &&
+    !composerContextRefs.value.length
+  ) {
     ElMessage.warning("请输入消息内容");
   }
 }
@@ -30949,10 +33315,14 @@ async function doSend(options = {}) {
   }
 
   if (currentChatSessionLocalLiuAgentWaitingPermission.value) {
-    if (await submitCurrentLocalLiuAgentPermissionReplyIfNeeded(draftText.value)) {
+    if (
+      await submitCurrentLocalLiuAgentPermissionReplyIfNeeded(draftText.value)
+    ) {
       return;
     }
-    ElMessage.warning("当前正在等待本机授权，请回复确认、取消，或使用授权卡片按钮");
+    ElMessage.warning(
+      "当前正在等待本机授权，请回复确认、取消，或使用授权卡片按钮",
+    );
     return;
   }
 
@@ -31006,21 +33376,40 @@ async function doSend(options = {}) {
   }
 
   const text = String(draftText.value || "").trim();
+  const activeContextRefs = mergeContextReferences([], composerContextRefs.value);
+  const contextReferencesPrompt = buildContextReferencesPrompt(activeContextRefs);
   let activeChatSessionId = String(currentChatSessionId.value || "").trim();
   const slashCommand = resolveSlashCommand(text);
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   const files = uploadFiles.value.map((item) => item.raw).filter(Boolean);
+  const requestModelTarget = composerSelectedModelTarget.value;
+  if (!requestModelTarget.providerId || !requestModelTarget.modelName) {
+    ElMessage.warning("请先配置主对话模型");
+    return;
+  }
   const historyRows = toHistoryRows(messages.value, historyLimit.value);
-  const imageUrls = uploadFiles.value
-    .filter((item) => item.kind === "image")
-    .map((item) => item.url)
-    .filter(Boolean);
-  const attachmentNames = files
-    .map((file) => String(file?.name || "").trim())
-    .filter(Boolean);
+  const imageUrls = mergeImageUrls(
+    uploadFiles.value
+      .filter((item) => item.kind === "image")
+      .map((item) => item.url)
+      .filter(Boolean),
+    activeContextRefs
+      .filter((item) => item.type === "image")
+      .map((item) => item.url)
+      .filter(Boolean),
+  );
+  const attachmentNames = normalizeStringList([
+    ...files.map((file) => String(file?.name || "").trim()).filter(Boolean),
+    ...activeContextRefs
+      .filter((item) => item.type === "file")
+      .map((item) => item.label)
+      .filter(Boolean),
+  ]);
 
-  const localLiuAgentAttachments =
-    await buildLocalLiuAgentAttachments(uploadFiles.value);
+  const localLiuAgentAttachments = [
+    ...(await buildLocalLiuAgentAttachments(uploadFiles.value)),
+    ...buildContextReferenceAttachments(activeContextRefs),
+  ];
 
   let docsText = "";
 
@@ -31109,6 +33498,9 @@ async function doSend(options = {}) {
       userPrompt += `${docsText}\n\n请先给简要结论：最多 5 条，每条不超过 40 字。`;
     }
   }
+  if (contextReferencesPrompt) {
+    userPrompt = [userPrompt, contextReferencesPrompt].filter(Boolean).join("\n\n");
+  }
   const assistAction = effectiveAssistAction;
   const assistToolNames = normalizeStringList(
     assistAction?.toolNames || [],
@@ -31191,7 +33583,10 @@ async function doSend(options = {}) {
     ? slashCommand.prompt
       ? `${slashCommand.entry.command} ${slashCommand.prompt}`
       : `${slashCommand.entry.command} ${slashCommand.entry.label}`
-    : text || "（发送了附件）";
+    : text ||
+      (activeContextRefs.length
+        ? `（引用了 ${activeContextRefs.length} 项历史内容）`
+        : "（发送了附件）");
   if (!String(displayUserMessageContent || "").trim()) {
     ElMessage.warning("请输入内容或添加附件");
     return;
@@ -31220,8 +33615,22 @@ async function doSend(options = {}) {
     role: "user",
     content: displayUserMessageContent,
     images: imageUrls,
-    videos: [],
+    videos: activeContextRefs
+      .filter((item) => item.type === "video")
+      .map((item) => item.url)
+      .filter(Boolean),
+    audios: mergeAudioUrls(
+      uploadFiles.value
+        .filter((item) => item.kind === "audio")
+        .map((item) => item.url)
+        .filter(Boolean),
+      activeContextRefs
+        .filter((item) => item.type === "audio")
+        .map((item) => item.url)
+        .filter(Boolean),
+    ),
     attachments: attachmentNames,
+    contextRefs: activeContextRefs,
     time: nowText(),
   };
   const assistantMessage = {
@@ -31230,6 +33639,7 @@ async function doSend(options = {}) {
     content: "",
     images: [],
     videos: [],
+    audios: [],
     attachments: [],
     displayMode: "",
     effectiveTools: [],
@@ -31254,6 +33664,7 @@ async function doSend(options = {}) {
   chatLoading.value = true;
   startWorkingStatusTimer(assistantMessage.id, activeChatSessionId);
   resetDraft();
+  clearComposerContextRefs();
   scrollToBottom();
 
   let requestCancelled = false;
@@ -31267,6 +33678,9 @@ async function doSend(options = {}) {
       historyRows,
       displayUserMessageContent,
       attachments: localLiuAgentAttachments,
+      mediaTools: localLiuAgentMediaTools.value,
+      providerId: requestModelTarget.providerId,
+      modelName: requestModelTarget.modelName,
       sourceContext: {
         chat_mode: "system",
         surface: chatSurface.value,
@@ -31278,6 +33692,7 @@ async function doSend(options = {}) {
           kind: item.kind,
           status: item.extractionStatus,
         })),
+        context_references: activeContextRefs,
         employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
       },
     });
@@ -31287,8 +33702,8 @@ async function doSend(options = {}) {
       "桌面本地 Agent Runtime 启动失败",
       errorMessage,
       [
-        `providerId=${String(selectedProviderId.value || defaultProviderId.value || "-").trim() || "-"}`,
-        `modelName=${String(selectedModelName.value || defaultModelName.value || "-").trim() || "-"}`,
+        `providerId=${String(requestModelTarget.providerId || "-").trim() || "-"}`,
+        `modelName=${String(requestModelTarget.modelName || "-").trim() || "-"}`,
         `workspacePath=${localLiuAgentWorkspacePath() || "-"}`,
         errorMessage,
       ].join("\n"),
@@ -31449,6 +33864,19 @@ watch(
     if (projectSettingsHydrating.value) return;
     scheduleExternalAgentStatusRefresh();
     void refreshNativeExternalAgentSessionRecords({ silent: true });
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [
+    String(workspaceReviewRoot.value || "").trim(),
+    nativeDesktopBridgeAvailable.value ? "native" : "web",
+  ],
+  () => {
+    void refreshWorkspaceReviewItems().catch(() => {
+      workspaceReviewItems.value = [];
+    });
   },
   { immediate: true },
 );
@@ -31790,16 +34218,26 @@ watch(selectedProjectId, async (value) => {
 });
 
 watch(
-  () => [webToolsProviderDialogScope.value, webToolsProviderDialogProvider.value],
+  () => [
+    webToolsProviderDialogScope.value,
+    webToolsProviderDialogProvider.value,
+  ],
   ([scope, providerId]) => {
     if (!webToolsProviderDialogVisible.value) return;
-    hydrateWebToolsProviderDraft(scope === "global" ? "global" : "project", providerId);
+    hydrateWebToolsProviderDraft(
+      scope === "global" ? "global" : "project",
+      providerId,
+    );
   },
 );
 
 watch(
   () => String(currentChatSessionId.value || "").trim(),
-  (sessionId) => {
+  (sessionId, previousSessionId) => {
+    if (previousSessionId !== undefined && sessionId !== previousSessionId) {
+      clearComposerContextRefs();
+      closeMessageContextMenu();
+    }
     syncNativeExternalAgentSessionPanel();
     syncChatLoadingWithCurrentSession();
     if (showWorkingStatusBar.value) {
@@ -31914,14 +34352,23 @@ onMounted(async () => {
     await reloadLocalBotConnectorConfig();
     await syncLocalFeishuBotListeners();
   };
-  window.addEventListener("local-mcp-config-updated", handleLocalMcpConfigUpdated);
-  window.addEventListener("local-web-tools-config-updated", handleLocalWebToolsConfigUpdated);
+  window.addEventListener(
+    "local-mcp-config-updated",
+    handleLocalMcpConfigUpdated,
+  );
+  window.addEventListener(
+    "local-web-tools-config-updated",
+    handleLocalWebToolsConfigUpdated,
+  );
   window.addEventListener(
     "local-bot-connectors-config-updated",
     handleLocalBotConnectorsConfigUpdated,
   );
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.addEventListener("keydown", handleWorkingStatusKeydown);
+  window.addEventListener("pointerdown", handleContextMenuGlobalPointerDown);
+  window.addEventListener("keydown", handleContextMenuGlobalKeydown);
+  window.addEventListener("scroll", closeMessageContextMenu, true);
   void hydrateNativeDesktopRuntimeInfo();
   void startNativeLiuAgentRuntimeEventSubscription();
   window.setTimeout(() => {
@@ -31963,7 +34410,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (handleLocalMcpConfigUpdated) {
-    window.removeEventListener("local-mcp-config-updated", handleLocalMcpConfigUpdated);
+    window.removeEventListener(
+      "local-mcp-config-updated",
+      handleLocalMcpConfigUpdated,
+    );
     handleLocalMcpConfigUpdated = null;
   }
   if (handleLocalWebToolsConfigUpdated) {
@@ -31982,6 +34432,9 @@ onUnmounted(() => {
   }
   window.removeEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.removeEventListener("keydown", handleWorkingStatusKeydown);
+  window.removeEventListener("pointerdown", handleContextMenuGlobalPointerDown);
+  window.removeEventListener("keydown", handleContextMenuGlobalKeydown);
+  window.removeEventListener("scroll", closeMessageContextMenu, true);
   clearExternalAgentStatusRefreshTimer();
   stopExternalAgentBridgeTaskPolling();
   stopNativeExternalAgentSessionPolling();
@@ -32036,23 +34489,112 @@ onUnmounted(() => {
 });
 </script>
 
-<style scoped src="../../modules/project-chat/styles/project-chat-style-01.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-02.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-03.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-04.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-05.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-06.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-07.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-08.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-09.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-10.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-11.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-12.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-13.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-14.css"></style>
-<style scoped src="../../modules/project-chat/styles/project-chat-style-15.css"></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-01.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-02.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-03.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-04.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-05.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-06.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-07.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-08.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-09.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-10.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-11.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-12.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-13.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-14.css"
+></style>
+<style
+  scoped
+  src="../../modules/project-chat/styles/project-chat-style-15.css"
+></style>
 
 <style scoped>
+.message-audios {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.preview-audio {
+  width: min(100%, 420px);
+}
+.project-chat-context-menu {
+  position: fixed;
+  z-index: 5000;
+  width: 220px;
+  padding: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(14px);
+}
+.project-chat-context-menu button {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  align-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #172033;
+  cursor: pointer;
+  text-align: left;
+}
+.project-chat-context-menu button:hover {
+  background: #eef4ff;
+}
+.project-chat-context-menu button span {
+  font-size: 13px;
+  font-weight: 600;
+}
+.project-chat-context-menu__divider {
+  height: 1px;
+  margin: 5px 4px;
+  background: #e2e8f0;
+}
 .chat-approval-banner {
   flex: 0 0 auto;
   margin: 0 16px 10px;
@@ -32143,7 +34685,9 @@ onUnmounted(() => {
   border-radius: 12px;
   background: color-mix(in srgb, var(--el-bg-color, #fff) 94%, #eff6ff 6%);
   box-shadow: 0 10px 30px rgba(30, 64, 175, 0.1);
-  transition: border-color 180ms ease, box-shadow 180ms ease;
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease;
 }
 
 .composer-plan-panel.is-completed {
@@ -32323,8 +34867,15 @@ onUnmounted(() => {
 }
 
 @keyframes composer-plan-pulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(0.82); opacity: 0.72; }
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.82);
+    opacity: 0.72;
+  }
 }
 
 @media (max-width: 720px) {

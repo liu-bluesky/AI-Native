@@ -52,12 +52,12 @@ use super::types::{
     AgentRunHistoryMessageSummary, AgentRunProjectContext, AgentRunRuntimeContext,
     AgentRunUserRequest, ClarityAssessment, LocalBackendContext, LocalChatAttachment,
     LocalChatMessage, LocalChatPauseRequest, LocalChatRequest, LocalChatResult,
-    LocalModelRuntimeConfig, LocalRuntimeEventsRequest, LocalRuntimeEventsResult,
-    LocalRuntimeJobRequest, LocalRuntimeJobResult, LocalRuntimeOutboxAckRequest,
-    LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest,
-    LocalRuntimeRecoveryResult, MemoryWritePlan, MemoryWritePlanItem, ModelCompatibilityProfile,
-    Observation, OfflineCacheCleanupRequest, OfflineCacheLoadRequest, OfflineCacheResult,
-    OfflineCacheSaveRequest, PlanNode, PlanState, PromptStack, PromptStackItem,
+    LocalMediaToolConfig, LocalModelRuntimeConfig, LocalRuntimeEventsRequest,
+    LocalRuntimeEventsResult, LocalRuntimeJobRequest, LocalRuntimeJobResult,
+    LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult,
+    LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult, MemoryWritePlan, MemoryWritePlanItem,
+    ModelCompatibilityProfile, Observation, OfflineCacheCleanupRequest, OfflineCacheLoadRequest,
+    OfflineCacheResult, OfflineCacheSaveRequest, PlanNode, PlanState, PromptStack, PromptStackItem,
     ProviderFileUploadRequest, ProviderFileUploadResult, RetryDecision, RunState,
     RuntimeSchedulerState, TaskGoal, ToolBatchState, ToolError, ToolExecutionRequest,
     VerificationCheck, VerificationReport,
@@ -2516,6 +2516,7 @@ fn prompt_stack_from_model_request(model_request: &ModelStepRequest) -> PromptSt
         model_runtime: None,
         ai_entry_file: None,
         attachments: Vec::new(),
+        media_tools: Vec::new(),
         mcp_config: json!({}),
         backend_context: None,
         permission_decision: None,
@@ -4155,6 +4156,8 @@ fn replay_pending_permission_tool_if_available(
             &request.project_id,
             request.backend_context.as_ref(),
             &request.mcp_config,
+            &request.media_tools,
+            &request.attachments,
             tool.arguments.clone(),
         ),
         workspace_path: workspace_root.to_string_lossy().to_string(),
@@ -4792,6 +4795,8 @@ fn run_agent_loop_with(
                     &request.project_id,
                     request.backend_context.as_ref(),
                     &request.mcp_config,
+                    &request.media_tools,
+                    &request.attachments,
                     tool_arguments_with_file_access_policy(&tool, &request),
                 ),
                 workspace_path: active_workspace_root.borrow().to_string_lossy().to_string(),
@@ -5390,11 +5395,96 @@ fn tool_arguments_with_file_access_policy(
     arguments
 }
 
+fn attachment_is_image(attachment: &LocalChatAttachment) -> bool {
+    attachment
+        .mime_type
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_lowercase()
+        .starts_with("image/")
+        || attachment
+            .kind
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("image"))
+}
+
+fn attachment_image_reference(attachment: &LocalChatAttachment) -> Option<String> {
+    attachment
+        .data_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && is_supported_image_reference(value))
+        .map(str::to_string)
+}
+
+fn selected_image_references(
+    arguments: &Value,
+    argument_name: &str,
+    attachments: &[LocalChatAttachment],
+    required: bool,
+) -> Result<Vec<String>, String> {
+    let Some(raw_asset_ids) = arguments.get(argument_name) else {
+        return if required {
+            Err(format!("{argument_name} is required"))
+        } else {
+            Ok(Vec::new())
+        };
+    };
+    let Some(items) = raw_asset_ids.as_array() else {
+        return Err(format!("{argument_name} must be an array of asset IDs"));
+    };
+    let mut asset_ids = Vec::new();
+    for item in items {
+        let Some(asset_id) = item
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Err(format!(
+                "{argument_name} must contain non-empty string asset IDs"
+            ));
+        };
+        if !asset_ids.iter().any(|existing| existing == asset_id) {
+            asset_ids.push(asset_id.to_string());
+        }
+    }
+    if required && asset_ids.is_empty() {
+        return Err(format!(
+            "{argument_name} must contain at least one image asset ID"
+        ));
+    }
+
+    asset_ids
+        .iter()
+        .map(|asset_id| {
+            let attachment = attachments
+                .iter()
+                .find(|attachment| {
+                    attachment
+                        .attachment_id
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|candidate| candidate == asset_id)
+                })
+                .ok_or_else(|| format!("unknown image asset ID: {asset_id}"))?;
+            if !attachment_is_image(attachment) {
+                return Err(format!("asset ID is not an image: {asset_id}"));
+            }
+            attachment_image_reference(attachment)
+                .ok_or_else(|| format!("image asset has no usable content: {asset_id}"))
+        })
+        .collect()
+}
+
 fn tool_arguments_with_backend_context(
     tool: &PlannedLocalTool,
     project_id: &str,
     backend_context: Option<&LocalBackendContext>,
     mcp_config: &Value,
+    media_tools: &[LocalMediaToolConfig],
+    attachments: &[LocalChatAttachment],
     mut arguments: Value,
 ) -> Value {
     let tool_name = tool.name.trim();
@@ -5412,6 +5502,88 @@ fn tool_arguments_with_backend_context(
                     json!(context.api_base_url.trim()),
                 );
                 object.insert("_backend_token".to_string(), json!(context.token.trim()));
+            }
+        }
+        return arguments;
+    }
+    if matches!(
+        tool_name,
+        "generate_image" | "edit_image" | "generate_video" | "generate_audio" | "transcribe_audio"
+    ) {
+        let Some(context) = backend_context else {
+            return arguments;
+        };
+        let Some(config) = media_tools
+            .iter()
+            .find(|item| item.name.trim() == tool_name)
+        else {
+            return arguments;
+        };
+        let selected_image_resolution = if tool_name == "edit_image" {
+            Some(selected_image_references(
+                &arguments,
+                "input_asset_ids",
+                attachments,
+                true,
+            ))
+        } else {
+            None
+        };
+        let Some(object) = arguments.as_object_mut() else {
+            return arguments;
+        };
+        object.insert("project_id".to_string(), json!(project_id.trim()));
+        object.insert(
+            "_backend_api_base_url".to_string(),
+            json!(context.api_base_url.trim()),
+        );
+        object.insert("_backend_token".to_string(), json!(context.token.trim()));
+        object.insert(
+            "_media_provider_id".to_string(),
+            json!(config.provider_id.trim()),
+        );
+        object.insert(
+            "_media_model_name".to_string(),
+            json!(config.model_name.trim()),
+        );
+        if let Some(resolution) = selected_image_resolution {
+            match resolution {
+                Ok(reference_images) => {
+                    object.insert("_reference_images".to_string(), json!(reference_images));
+                }
+                Err(error) => {
+                    object.insert("_reference_images".to_string(), json!([]));
+                    object.insert("_media_validation_error".to_string(), json!(error));
+                }
+            }
+        } else if tool_name == "generate_video" {
+            let reference_images = attachments
+                .iter()
+                .filter(|attachment| attachment_is_image(attachment))
+                .filter_map(attachment_image_reference)
+                .collect::<Vec<_>>();
+            object.insert("_reference_images".to_string(), json!(reference_images));
+        }
+        if tool_name == "transcribe_audio" {
+            if let Some(attachment) = attachments.iter().find(|attachment| {
+                attachment
+                    .mime_type
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .starts_with("audio/")
+                    || attachment.kind.as_deref().map(str::trim) == Some("audio")
+            }) {
+                object.insert(
+                    "_audio_data_url".to_string(),
+                    json!(attachment.data_url.as_deref().map(str::trim).unwrap_or("")),
+                );
+                object.insert("_audio_filename".to_string(), json!(attachment.name.trim()));
+                object.insert(
+                    "_audio_mime_type".to_string(),
+                    json!(attachment.mime_type.as_deref().map(str::trim).unwrap_or("")),
+                );
             }
         }
         return arguments;
@@ -7873,6 +8045,8 @@ struct ModelStepRequest {
     mcp_catalog_version: String,
     mcp_discovery_error: String,
     backend_context: Option<LocalBackendContext>,
+    media_tools: Vec<LocalMediaToolConfig>,
+    attachments: Vec<LocalChatAttachment>,
     messages: Vec<RuntimeModelMessage>,
     task_goal: Option<TaskGoal>,
     task_tree: Option<planning::TaskTree>,
@@ -7899,6 +8073,8 @@ impl ModelStepRequest {
             mcp_catalog_version: self.mcp_catalog_version.clone(),
             mcp_discovery_error: self.mcp_discovery_error.clone(),
             backend_context: self.backend_context.clone(),
+            media_tools: self.media_tools.clone(),
+            attachments: self.attachments.clone(),
             messages,
             task_goal: self.task_goal.clone(),
             task_tree: self.task_tree.clone(),
@@ -8571,6 +8747,8 @@ fn build_model_request_with_history(
         mcp_catalog_version: String::new(),
         mcp_discovery_error: String::new(),
         backend_context: request.backend_context.clone(),
+        media_tools: request.media_tools.clone(),
+        attachments: request.attachments.clone(),
         messages,
         task_goal: None,
         task_tree: None,
@@ -8784,7 +8962,7 @@ fn build_user_message_with_attachments(
                 .data_url
                 .as_deref()
                 .map(str::trim)
-                .filter(|value| value.starts_with("data:image/"))?;
+                .filter(|value| is_supported_image_reference(value))?;
             Some(RuntimeModelContentPart::ImageUrl {
                 image_url: RuntimeModelImageUrl {
                     url: data_url.to_string(),
@@ -8801,6 +8979,13 @@ fn build_user_message_with_attachments(
     });
     content_parts.extend(image_parts);
     RuntimeModelMessage::with_content_parts("user", text_content, content_parts)
+}
+
+fn is_supported_image_reference(value: &str) -> bool {
+    let normalized = value.trim().to_lowercase();
+    normalized.starts_with("data:image/")
+        || normalized.starts_with("http://")
+        || normalized.starts_with("https://")
 }
 
 fn build_attachment_prompt_context(attachments: &[LocalChatAttachment]) -> String {
@@ -8842,8 +9027,15 @@ fn build_attachment_prompt_context(attachments: &[LocalChatAttachment]) -> Strin
                 .size
                 .map(format_attachment_size)
                 .unwrap_or_else(|| "unknown size".to_string());
+            let asset_id = attachment
+                .attachment_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("unavailable");
             let mut lines = vec![
                 format!("附件 {}：{}", index + 1, display_name),
+                format!("- 资产 ID：{asset_id}"),
                 format!("- 类型：{kind}"),
                 format!("- MIME：{mime_type}"),
                 format!("- 大小：{size_label}"),
@@ -8879,7 +9071,7 @@ fn build_attachment_prompt_context(attachments: &[LocalChatAttachment]) -> Strin
                     .data_url
                     .as_deref()
                     .map(str::trim)
-                    .is_some_and(|value| value.starts_with("data:image/"))
+                    .is_some_and(is_supported_image_reference)
             {
                 lines.push("- 图片内容已作为多模态 image_url 一并发送。".to_string());
             } else {
@@ -8891,7 +9083,10 @@ fn build_attachment_prompt_context(attachments: &[LocalChatAttachment]) -> Strin
     if blocks.is_empty() {
         String::new()
     } else {
-        format!("附件上下文：\n{}", blocks.join("\n\n"))
+        format!(
+            "附件上下文：\n{}\n\n图片生成与编辑规则：从零生成图片使用 generate_image；修改现有图片必须使用 edit_image，并在 input_asset_ids 中填写上方明确列出的图片资产 ID。不得用 run_command、Python、Pillow 或 OpenCV 替代图片编辑工具。",
+            blocks.join("\n\n")
+        )
     }
 }
 
@@ -9181,6 +9376,68 @@ fn tool_disabled_reason(
                 "Project tools are disabled because no backend login context is available"
                     .to_string()
             })
+        }
+        "generate_image" | "edit_image" | "generate_video" | "generate_audio"
+        | "transcribe_audio" => {
+            let has_backend_context = request
+                .backend_context
+                .as_ref()
+                .map(|context| {
+                    !context.api_base_url.trim().is_empty() && !context.token.trim().is_empty()
+                })
+                .unwrap_or(false);
+            if !has_backend_context {
+                return Some(
+                    "Media tools are disabled because no backend login context is available"
+                        .to_string(),
+                );
+            }
+            let configured = request.media_tools.iter().any(|item| {
+                item.name.trim() == tool_name
+                    && !item.provider_id.trim().is_empty()
+                    && !item.model_name.trim().is_empty()
+            });
+            if !configured {
+                return Some(format!(
+                    "{tool_name} is disabled because no auxiliary model is configured"
+                ));
+            }
+            if tool_name == "edit_image" {
+                let has_image = request.attachments.iter().any(|attachment| {
+                    attachment_is_image(attachment)
+                        && attachment_image_reference(attachment).is_some()
+                });
+                if !has_image {
+                    return Some(
+                        "edit_image is disabled because this request has no usable image attachment"
+                            .to_string(),
+                    );
+                }
+            }
+            if tool_name == "transcribe_audio" {
+                let has_audio = request.attachments.iter().any(|attachment| {
+                    attachment
+                        .mime_type
+                        .as_deref()
+                        .map(str::trim)
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .starts_with("audio/")
+                        && attachment
+                            .data_url
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .is_some()
+                });
+                if !has_audio {
+                    return Some(
+                        "transcribe_audio is disabled because this request has no audio attachment"
+                            .to_string(),
+                    );
+                }
+            }
+            None
         }
         _ => None,
     }
@@ -10549,6 +10806,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            media_tools: Vec::new(),
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
@@ -10742,6 +11000,7 @@ mod tests {
                 model_runtime: None,
                 ai_entry_file: None,
                 attachments: Vec::new(),
+                media_tools: Vec::new(),
                 mcp_config: json!({}),
                 backend_context: None,
                 permission_decision: None,
@@ -12894,6 +13153,7 @@ mod tests {
                 model_runtime: None,
                 ai_entry_file: None,
                 attachments: Vec::new(),
+                media_tools: Vec::new(),
                 backend_context: None,
                 mcp_config: json!({}),
                 permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
@@ -13718,6 +13978,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            media_tools: Vec::new(),
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
@@ -13760,6 +14021,7 @@ mod tests {
             }),
             ai_entry_file: None,
             attachments: Vec::new(),
+            media_tools: Vec::new(),
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
@@ -13970,6 +14232,7 @@ mod tests {
             temperature: None,
             model_runtime: None,
             ai_entry_file: None,
+            media_tools: Vec::new(),
             attachments: vec![
                 LocalChatAttachment {
                     attachment_id: Some("att_doc".to_string()),
@@ -14020,6 +14283,36 @@ mod tests {
     }
 
     #[test]
+    fn local_chat_historical_image_url_builds_image_part() {
+        let mut request = LocalChatRequest::default();
+        request.message = "把上面的图片改成绿色".to_string();
+        request.attachments = vec![LocalChatAttachment {
+            attachment_id: Some("context-image".to_string()),
+            name: "历史图片".to_string(),
+            mime_type: Some("image/*".to_string()),
+            size: Some(0),
+            kind: Some("image".to_string()),
+            routing_mode: Some("inline_image".to_string()),
+            extraction_status: Some("conversation_reference".to_string()),
+            data_url: Some("https://example.test/history-image.png".to_string()),
+            extracted_text: None,
+            provider_file_id: None,
+            error: None,
+        }];
+
+        let model_request = build_model_request(&request, &request.message);
+        let user_message = model_request.messages.last().unwrap();
+        let payload = openai_compatible_message_payload(user_message);
+        let content = payload["content"].as_array().unwrap();
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(
+            content[1]["image_url"]["url"],
+            "https://example.test/history-image.png"
+        );
+        assert!(user_message.content.contains("多模态 image_url"));
+    }
+
+    #[test]
     fn local_chat_local_extract_mode_skips_image_url_parts() {
         let request = LocalChatRequest {
             project_id: "proj-test".to_string(),
@@ -14037,6 +14330,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             backend_context: None,
+            media_tools: Vec::new(),
             attachments: vec![LocalChatAttachment {
                 attachment_id: Some("att_img".to_string()),
                 name: "截图.png".to_string(),
@@ -14305,6 +14599,8 @@ mod tests {
             "proj-fallback",
             Some(&backend_context),
             &json!({}),
+            &[],
+            &[],
             tool.arguments.clone(),
         );
 
@@ -14337,6 +14633,8 @@ mod tests {
             "proj-fallback",
             Some(&backend_context),
             &json!({}),
+            &[],
+            &[],
             tool.arguments.clone(),
         );
 
@@ -14367,6 +14665,8 @@ mod tests {
             "proj-current",
             Some(&backend_context),
             &json!({}),
+            &[],
+            &[],
             tool.arguments.clone(),
         );
 
@@ -14395,6 +14695,8 @@ mod tests {
             "desktop-bot-global",
             Some(&backend_context),
             &json!({}),
+            &[],
+            &[],
             tool.arguments.clone(),
         );
 
@@ -14405,6 +14707,247 @@ mod tests {
         assert_eq!(execution_args["_backend_token"], "secret-token");
         assert!(execution_args.get("project_id").is_none());
         assert!(tool.arguments.get("_backend_token").is_none());
+    }
+
+    #[test]
+    fn configured_image_tools_are_exposed_without_implicit_generate_references() {
+        let mut request = test_model_request("请参考上传图片生成一张海报");
+        request.backend_context = Some(LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "login-token".to_string(),
+        });
+        request.media_tools = vec![
+            LocalMediaToolConfig {
+                name: "generate_image".to_string(),
+                provider_id: "provider-image".to_string(),
+                model_name: "image-model".to_string(),
+            },
+            LocalMediaToolConfig {
+                name: "edit_image".to_string(),
+                provider_id: "provider-image".to_string(),
+                model_name: "image-model".to_string(),
+            },
+        ];
+        request.attachments = vec![LocalChatAttachment {
+            attachment_id: Some("att-image".to_string()),
+            name: "reference.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            size: Some(12),
+            kind: Some("image".to_string()),
+            routing_mode: Some("inline_image".to_string()),
+            extraction_status: Some("image_data_url".to_string()),
+            data_url: Some("data:image/png;base64,AAAA".to_string()),
+            extracted_text: None,
+            provider_file_id: None,
+            error: None,
+        }];
+
+        let definitions = tool_definitions_for_request(&request);
+        assert!(definitions.iter().any(|item| item.name == "generate_image"));
+        assert!(definitions.iter().any(|item| item.name == "edit_image"));
+        assert!(!definitions.iter().any(|item| item.name == "generate_video"));
+
+        let tool = PlannedLocalTool {
+            tool_call_id: "call-image".to_string(),
+            name: "generate_image".to_string(),
+            arguments: json!({"prompt": "生成海报"}),
+            summary: "generate image".to_string(),
+        };
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            &request.project_id,
+            request.backend_context.as_ref(),
+            &request.mcp_config,
+            &request.media_tools,
+            &request.attachments,
+            tool.arguments.clone(),
+        );
+        assert_eq!(execution_args["_media_provider_id"], "provider-image");
+        assert_eq!(execution_args["_media_model_name"], "image-model");
+        assert!(execution_args.get("_reference_images").is_none());
+        assert!(tool.arguments.get("_backend_token").is_none());
+    }
+
+    #[test]
+    fn generate_image_does_not_resolve_attachment_inputs() {
+        let mut request = test_model_request("生成海报");
+        request.backend_context = Some(LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "login-token".to_string(),
+        });
+        request.media_tools = vec![LocalMediaToolConfig {
+            name: "generate_image".to_string(),
+            provider_id: "provider-image".to_string(),
+            model_name: "image-model".to_string(),
+        }];
+        request.attachments = vec![
+            LocalChatAttachment {
+                attachment_id: Some("first-image".to_string()),
+                name: "first.png".to_string(),
+                mime_type: Some("image/png".to_string()),
+                size: Some(12),
+                kind: Some("image".to_string()),
+                routing_mode: Some("inline_image".to_string()),
+                extraction_status: Some("image_data_url".to_string()),
+                data_url: Some("data:image/png;base64,FIRST".to_string()),
+                extracted_text: None,
+                provider_file_id: None,
+                error: None,
+            },
+            LocalChatAttachment {
+                attachment_id: Some("second-image".to_string()),
+                name: "second.png".to_string(),
+                mime_type: Some("image/png".to_string()),
+                size: Some(12),
+                kind: Some("image".to_string()),
+                routing_mode: Some("inline_image".to_string()),
+                extraction_status: Some("image_data_url".to_string()),
+                data_url: Some("data:image/png;base64,SECOND".to_string()),
+                extracted_text: None,
+                provider_file_id: None,
+                error: None,
+            },
+        ];
+        let tool = PlannedLocalTool {
+            tool_call_id: "call-image".to_string(),
+            name: "generate_image".to_string(),
+            arguments: json!({"prompt": "生成海报"}),
+            summary: "generate image".to_string(),
+        };
+
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            &request.project_id,
+            request.backend_context.as_ref(),
+            &request.mcp_config,
+            &request.media_tools,
+            &request.attachments,
+            tool.arguments.clone(),
+        );
+
+        assert!(execution_args.get("_reference_images").is_none());
+    }
+
+    #[test]
+    fn edit_image_receives_selected_historical_image_url() {
+        let mut request = test_model_request("把上面的图片改成绿色");
+        request.backend_context = Some(LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "login-token".to_string(),
+        });
+        request.media_tools = vec![LocalMediaToolConfig {
+            name: "edit_image".to_string(),
+            provider_id: "provider-image".to_string(),
+            model_name: "image-model".to_string(),
+        }];
+        request.attachments = vec![LocalChatAttachment {
+            attachment_id: Some("context-image".to_string()),
+            name: "历史图片".to_string(),
+            mime_type: Some("image/*".to_string()),
+            size: Some(0),
+            kind: Some("image".to_string()),
+            routing_mode: Some("inline_image".to_string()),
+            extraction_status: Some("conversation_reference".to_string()),
+            data_url: Some("https://example.test/history-image.png".to_string()),
+            extracted_text: None,
+            provider_file_id: None,
+            error: None,
+        }];
+        let tool = PlannedLocalTool {
+            tool_call_id: "call-image".to_string(),
+            name: "edit_image".to_string(),
+            arguments: json!({"prompt": "改成绿色", "input_asset_ids": ["context-image"]}),
+            summary: "edit image".to_string(),
+        };
+
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            &request.project_id,
+            request.backend_context.as_ref(),
+            &request.mcp_config,
+            &request.media_tools,
+            &request.attachments,
+            tool.arguments.clone(),
+        );
+        assert_eq!(
+            execution_args["_reference_images"][0],
+            "https://example.test/history-image.png"
+        );
+    }
+
+    #[test]
+    fn edit_image_is_hidden_without_a_usable_image_attachment() {
+        let mut request = test_model_request("把图片改成绿色");
+        request.backend_context = Some(LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "login-token".to_string(),
+        });
+        request.media_tools = vec![LocalMediaToolConfig {
+            name: "edit_image".to_string(),
+            provider_id: "provider-image".to_string(),
+            model_name: "image-model".to_string(),
+        }];
+
+        let definitions = tool_definitions_for_request(&request);
+
+        assert!(!definitions.iter().any(|item| item.name == "edit_image"));
+    }
+
+    #[test]
+    fn edit_image_rejects_missing_unknown_and_non_image_asset_ids() {
+        let mut request = test_model_request("编辑附件");
+        request.backend_context = Some(LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "login-token".to_string(),
+        });
+        request.media_tools = vec![LocalMediaToolConfig {
+            name: "edit_image".to_string(),
+            provider_id: "provider-image".to_string(),
+            model_name: "image-model".to_string(),
+        }];
+        request.attachments = vec![LocalChatAttachment {
+            attachment_id: Some("document-asset".to_string()),
+            name: "notes.txt".to_string(),
+            mime_type: Some("text/plain".to_string()),
+            size: Some(12),
+            kind: Some("document".to_string()),
+            routing_mode: Some("local_extract".to_string()),
+            extraction_status: Some("text_extracted".to_string()),
+            data_url: None,
+            extracted_text: Some("notes".to_string()),
+            provider_file_id: None,
+            error: None,
+        }];
+
+        for (arguments, expected_error) in [
+            (json!({"prompt": "编辑"}), "input_asset_ids is required"),
+            (
+                json!({"prompt": "编辑", "input_asset_ids": ["missing-image"]}),
+                "unknown image asset ID: missing-image",
+            ),
+            (
+                json!({"prompt": "编辑", "input_asset_ids": ["document-asset"]}),
+                "asset ID is not an image: document-asset",
+            ),
+        ] {
+            let tool = PlannedLocalTool {
+                tool_call_id: "call-image".to_string(),
+                name: "edit_image".to_string(),
+                arguments,
+                summary: "edit image".to_string(),
+            };
+            let execution_args = tool_arguments_with_backend_context(
+                &tool,
+                &request.project_id,
+                request.backend_context.as_ref(),
+                &request.mcp_config,
+                &request.media_tools,
+                &request.attachments,
+                tool.arguments.clone(),
+            );
+            assert_eq!(execution_args["_media_validation_error"], expected_error);
+            assert_eq!(execution_args["_reference_images"], json!([]));
+        }
     }
 
     #[test]
@@ -14501,6 +15044,8 @@ mod tests {
             "proj-657fe77f",
             Some(&backend_context),
             &mcp_config,
+            &[],
+            &[],
             tool.arguments.clone(),
         );
 
@@ -15243,6 +15788,7 @@ mod tests {
             }),
             ai_entry_file: None,
             attachments: Vec::new(),
+            media_tools: Vec::new(),
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
@@ -15364,6 +15910,7 @@ mod tests {
             }),
             ai_entry_file: None,
             attachments: Vec::new(),
+            media_tools: Vec::new(),
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: Some(crate::liuagent_core::types::PermissionDecisionInput {
@@ -15433,6 +15980,8 @@ mod tests {
             mcp_catalog_version: String::new(),
             mcp_discovery_error: String::new(),
             backend_context: None,
+            media_tools: Vec::new(),
+            attachments: Vec::new(),
             messages: vec![RuntimeModelMessage::simple(
                 "user",
                 user_message.to_string(),
@@ -16511,6 +17060,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            media_tools: Vec::new(),
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
@@ -16670,6 +17220,7 @@ mod tests {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            media_tools: Vec::new(),
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,

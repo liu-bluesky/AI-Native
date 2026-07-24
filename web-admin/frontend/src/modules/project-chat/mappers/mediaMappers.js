@@ -24,6 +24,126 @@ export function extractVideos(message) {
     .filter(Boolean);
 }
 
+export function extractAudios(message) {
+  if (!message || !Array.isArray(message.audios)) return [];
+  return message.audios
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
+function normalizeComparableMediaUrl(value) {
+  return String(value || "")
+    .trim()
+    .replace(/&amp;/gi, "&");
+}
+
+function comparableMediaUrlSet(values) {
+  return new Set(
+    (Array.isArray(values) ? values : [])
+      .map(normalizeComparableMediaUrl)
+      .filter(Boolean),
+  );
+}
+
+function htmlTagContainsStructuredUrl(tag, attribute, structuredUrls) {
+  if (!structuredUrls.size) return false;
+  const attributePattern = new RegExp(
+    `\\b${attribute}\\s*=\\s*(?:(["'])(.*?)\\1|([^\\s>]+))`,
+    "gi",
+  );
+  let match = attributePattern.exec(tag);
+  while (match) {
+    if (structuredUrls.has(normalizeComparableMediaUrl(match[2] || match[3]))) {
+      return true;
+    }
+    match = attributePattern.exec(tag);
+  }
+  return false;
+}
+
+function stripStructuredHtmlMediaBlocks(text, tagName, structuredUrls) {
+  if (!structuredUrls.size) return text;
+  const tagPattern = new RegExp(
+    `<${tagName}\\b[^>]*>[\\s\\S]*?<\\/${tagName}\\s*>|<${tagName}\\b[^>]*\\/?>`,
+    "gi",
+  );
+  return text.replace(tagPattern, (match) =>
+    htmlTagContainsStructuredUrl(match, "src", structuredUrls) ? "" : match,
+  );
+}
+
+export function stripStructuredMediaDuplicatesFromMarkdown(
+  content,
+  { images = [], videos = [], audios = [] } = {},
+) {
+  const text = String(content || "");
+  const imageUrls = comparableMediaUrlSet(images);
+  const videoUrls = comparableMediaUrlSet(videos);
+  const audioUrls = comparableMediaUrlSet(audios);
+  const linkedMediaUrls = new Set([...videoUrls, ...audioUrls]);
+  if (!text || (!imageUrls.size && !linkedMediaUrls.size)) return text;
+
+  const withoutMarkdownDuplicates = text.replace(
+    /!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g,
+    (match, angleUrl, plainUrl) =>
+      imageUrls.has(normalizeComparableMediaUrl(angleUrl || plainUrl))
+        ? ""
+        : match,
+  );
+
+  const withoutImageDuplicates = withoutMarkdownDuplicates.replace(
+    /<img\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1[^>]*>/gi,
+    (match, _quote, imageUrl) =>
+      imageUrls.has(normalizeComparableMediaUrl(imageUrl)) ? "" : match,
+  );
+
+  const withoutLinkedMediaDuplicates = withoutImageDuplicates
+    .replace(
+      /(^|[^!])\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/gm,
+      (match, prefix, angleUrl, plainUrl) =>
+        linkedMediaUrls.has(
+          normalizeComparableMediaUrl(angleUrl || plainUrl),
+        )
+          ? prefix
+          : match,
+    )
+    .replace(/<a\b[^>]*>[\s\S]*?<\/a\s*>/gi, (match) =>
+      htmlTagContainsStructuredUrl(match, "href", linkedMediaUrls) ? "" : match,
+    )
+    .replace(/<((?:https?:\/\/)[^>\s]+)>/gi, (match, mediaUrl) =>
+      linkedMediaUrls.has(normalizeComparableMediaUrl(mediaUrl)) ? "" : match,
+    );
+
+  const withoutVideoDuplicates = stripStructuredHtmlMediaBlocks(
+    withoutLinkedMediaDuplicates,
+    "video",
+    videoUrls,
+  );
+  const withoutAudioDuplicates = stripStructuredHtmlMediaBlocks(
+    withoutVideoDuplicates,
+    "audio",
+    audioUrls,
+  );
+
+  return withoutAudioDuplicates
+    .split("\n")
+    .map((line) =>
+      linkedMediaUrls.has(normalizeComparableMediaUrl(line)) ? "" : line,
+    )
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export function stripStructuredImageDuplicatesFromMarkdown(
+  content,
+  structuredImages = [],
+) {
+  return stripStructuredMediaDuplicatesFromMarkdown(content, {
+    images: structuredImages,
+  });
+}
+
 export function mergeMediaUrls(...groups) {
   const urls = [];
   const seen = new Set();
@@ -46,17 +166,22 @@ export function mergeVideoUrls(...groups) {
   return mergeMediaUrls(...groups);
 }
 
+export function mergeAudioUrls(...groups) {
+  return mergeMediaUrls(...groups);
+}
+
 export function inferArtifactAssetType(item) {
   const explicit = String(item?.asset_type || item?.assetType || "")
     .trim()
     .toLowerCase();
-  if (["image", "video"].includes(explicit)) return explicit;
+  if (["image", "video", "audio"].includes(explicit)) return explicit;
   const mimeType = String(
     item?.mime_type || item?.mimeType || item?.content_type || "",
   )
     .trim()
     .toLowerCase();
   if (mimeType.startsWith("video/")) return "video";
+  if (mimeType.startsWith("audio/")) return "audio";
   const contentUrl = String(
     item?.content_url ||
       item?.contentUrl ||
@@ -68,6 +193,9 @@ export function inferArtifactAssetType(item) {
   if (/\.(mp4|mov|m4v|webm|avi|mkv)(?:[?#].*)?$/i.test(contentUrl)) {
     return "video";
   }
+  if (/\.(mp3|wav|m4a|aac|ogg|flac)(?:[?#].*)?$/i.test(contentUrl)) {
+    return "audio";
+  }
   return "image";
 }
 
@@ -78,15 +206,15 @@ export function collectArtifactImageUrls(payload) {
   return mergeImageUrls(
     directImages,
     artifacts.flatMap((item) =>
-      inferArtifactAssetType(item) === "video"
-        ? []
-        : [
+      inferArtifactAssetType(item) === "image"
+        ? [
             item?.preview_url,
             item?.content_url,
             item?.previewUrl,
             item?.contentUrl,
             item?.url,
-          ],
+          ]
+        : [],
     ),
   );
 }
@@ -108,6 +236,33 @@ export function collectArtifactVideoUrls(payload) {
           ]
         : [],
     ),
+  );
+}
+
+export function collectArtifactAudioUrls(payload) {
+  const directAudios = Array.isArray(payload?.audios) ? payload.audios : [];
+  const artifacts = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
+  return mergeAudioUrls(
+    directAudios,
+    artifacts.flatMap((item) =>
+      inferArtifactAssetType(item) === "audio"
+        ? [
+            item?.content_url,
+            item?.contentUrl,
+            item?.preview_url,
+            item?.previewUrl,
+            item?.url,
+          ]
+        : [],
+    ),
+  );
+}
+
+export function isAudioFile(file) {
+  const mime = String(file?.type || "").toLowerCase();
+  if (mime.startsWith("audio/")) return true;
+  return ["mp3", "wav", "m4a", "aac", "ogg", "flac"].includes(
+    fileExtension(file?.name || ""),
   );
 }
 

@@ -7,6 +7,7 @@ mod adapters;
 mod args;
 mod audit;
 mod definitions;
+mod file_change_review;
 mod gateway;
 mod paths;
 mod permission;
@@ -19,6 +20,9 @@ mod types;
 mod workspace;
 
 pub use definitions::builtin_tool_definitions;
+pub use file_change_review::{
+    accept_change, capture_baseline, list_changes, revert_change, FileChangeReviewItem,
+};
 pub use gateway::prepare_agent_invocation;
 pub use paths::{desktop_runtime_root, ensure_desktop_runtime_migrated};
 pub use runtime::classify_local_permission_reply;
@@ -50,6 +54,7 @@ use tools::command::{check_command_risk, run_command, run_command_with_output_si
 use tools::deploy::{deploy_workspace_files_to_target, get_project_deploy_options};
 use tools::file::{apply_patch, delete_file, list_files, read_file, search_text, write_file};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
+use tools::media::execute_media_tool;
 use tools::network::{download_file, http_get, http_post, web_extract, web_search};
 use tools::process::process_tool;
 use tools::projects::{get_project, list_projects};
@@ -138,6 +143,8 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
             &request.arguments,
             request.permission_decision.as_ref(),
         ),
+        "generate_image" | "edit_image" | "generate_video" | "generate_audio"
+        | "transcribe_audio" => execute_media_tool(&name, &request.arguments),
         "list_projects" => list_projects(&request.arguments),
         "get_project" => get_project(&request.arguments),
         "get_project_deploy_options" => get_project_deploy_options(&request.arguments),
@@ -214,11 +221,12 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 19);
+        assert_eq!(tools.len(), 24);
         assert!(tools.iter().any(|item| item.name == "read_file"));
         assert!(tools.iter().any(|item| item.name == "delete_file"));
         assert!(tools.iter().any(|item| item.name == "run_command"));
         assert!(tools.iter().any(|item| item.name == "process"));
+        assert!(tools.iter().any(|item| item.name == "edit_image"));
         let run_command = tools
             .iter()
             .find(|item| item.name == "run_command")

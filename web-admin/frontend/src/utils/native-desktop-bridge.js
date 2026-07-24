@@ -17,6 +17,10 @@ const TAURI_COMMAND_NAMES = {
   readWorkspaceFile: "read_workspace_file",
   previewWorkspaceDiff: "preview_workspace_diff",
   prepareWorkspaceFileWrite: "prepare_workspace_file_write",
+  writeWorkspaceFile: "write_workspace_file",
+  listWorkspaceFileChanges: "list_workspace_file_changes",
+  acceptWorkspaceFileChange: "accept_workspace_file_change",
+  revertWorkspaceFileChange: "revert_workspace_file_change",
   readGlobalMcpConfigFile: "read_global_mcp_config_file",
   writeGlobalMcpConfigFile: "write_global_mcp_config_file",
   readProjectMcpConfigFile: "read_project_mcp_config_file",
@@ -28,6 +32,7 @@ const TAURI_COMMAND_NAMES = {
   readGlobalBotConnectorConfigFile: "read_global_bot_connector_config_file",
   writeGlobalBotConnectorConfigFile: "write_global_bot_connector_config_file",
   openExternalUrl: "open_external_url",
+  copyResourceFileToClipboard: "copy_resource_file_to_clipboard",
   classifyRunnerCommand: "classify_runner_command",
   runRunnerCommand: "run_runner_command",
   recordRunnerPermissionDecision: "record_runner_permission_decision",
@@ -443,6 +448,17 @@ export async function openNativeExternalUrl(url = "") {
   return result === true || result?.opened === true;
 }
 
+export async function copyNativeResourceFileToClipboard(options = {}) {
+  const url = String(options?.url || "").trim();
+  if (!url) throw new Error("缺少要复制的文件地址");
+  return invokeNativeDesktopBridge("copyResourceFileToClipboard", {
+    url,
+    fileName: String(options?.fileName || "").trim(),
+    mimeType: String(options?.mimeType || "").trim(),
+    authorizationToken: String(options?.authorizationToken || "").trim(),
+  });
+}
+
 export async function listNativeLiuAgentBuiltinTools() {
   const result = await invokeNativeDesktopBridge("liuagentBuiltinToolDefinitions");
   return Array.isArray(result) ? result : [];
@@ -560,6 +576,11 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
         ? request.attachments
         : Array.isArray(request?.localAttachments)
           ? request.localAttachments
+          : [],
+      mediaTools: Array.isArray(request?.mediaTools)
+        ? request.mediaTools
+        : Array.isArray(request?.media_tools)
+          ? request.media_tools
           : [],
       backendContext:
         request?.backendContext && typeof request.backendContext === "object"
@@ -756,6 +777,11 @@ export async function startNativeBotLocalChat(request = {}) {
         ? request.attachments
         : Array.isArray(request?.localAttachments)
           ? request.localAttachments
+          : [],
+      mediaTools: Array.isArray(request?.mediaTools)
+        ? request.mediaTools
+        : Array.isArray(request?.media_tools)
+          ? request.media_tools
           : [],
       mcpConfig:
         request?.mcpConfig && typeof request.mcpConfig === "object"
@@ -1349,6 +1375,48 @@ export async function prepareNativeWorkspaceFileWrite(options = {}) {
   });
 }
 
+export async function writeNativeWorkspaceFile(options = {}) {
+  const workspacePath = String(options?.workspacePath || options?.workspace_path || "").trim();
+  const path = String(options?.path || "").trim();
+  const content = String(options?.content || "");
+  const expectedCurrentHash = String(options?.expectedCurrentHash || options?.expected_current_hash || "").trim();
+  return invokeNativeDesktopBridge("writeWorkspaceFile", {
+    workspacePath,
+    path,
+    content,
+    expectedCurrentHash,
+  });
+}
+
+export async function listNativeWorkspaceFileChanges(options = {}) {
+  const workspacePath = String(options?.workspacePath || options?.workspace_path || "").trim();
+  const result = await invokeNativeDesktopBridge("listWorkspaceFileChanges", { workspacePath });
+  return (Array.isArray(result) ? result : []).map((item) => ({
+    path: String(item?.path || "").trim(),
+    changeType: String(item?.changeType || item?.change_type || "modified").trim(),
+    baselineHash: String(item?.baselineHash || item?.baseline_hash || "").trim(),
+    currentHash: String(item?.currentHash || item?.current_hash || "").trim(),
+    createdAtEpochMs: Number(item?.createdAtEpochMs || item?.created_at_epoch_ms || 0),
+    reviewStatus: String(item?.reviewStatus || item?.review_status || "pending").trim(),
+  }));
+}
+
+export function acceptNativeWorkspaceFileChange(options = {}) {
+  return invokeNativeDesktopBridge("acceptWorkspaceFileChange", {
+    workspacePath: String(options?.workspacePath || "").trim(),
+    path: String(options?.path || "").trim(),
+    expectedCurrentHash: String(options?.expectedCurrentHash || "").trim(),
+  });
+}
+
+export function revertNativeWorkspaceFileChange(options = {}) {
+  return invokeNativeDesktopBridge("revertWorkspaceFileChange", {
+    workspacePath: String(options?.workspacePath || "").trim(),
+    path: String(options?.path || "").trim(),
+    expectedCurrentHash: String(options?.expectedCurrentHash || "").trim(),
+  });
+}
+
 export async function classifyNativeRunnerCommand(options = {}) {
   const payload = normalizeRunnerCommandPayload(options);
   const result = await invokeNativeDesktopBridge("classifyRunnerCommand", payload);
@@ -1780,6 +1848,7 @@ function normalizeWorkspaceFileReadResult(value, fallback = {}) {
     ),
     encoding: String(value.encoding || "").trim(),
     content: String(value.content || ""),
+    contentHash: String(value.contentHash || value.content_hash || "").trim(),
   };
 }
 
@@ -1807,6 +1876,9 @@ function normalizeWorkspaceDiffPreview(value, fallback = {}) {
     exitCode: Number(value.exitCode ?? value.exit_code ?? -1),
     truncated: Boolean(value.truncated),
     reason: String(value.reason || "").trim(),
+    currentHash: String(value.currentHash || value.current_hash || "").trim(),
+    nextHash: String(value.nextHash || value.next_hash || "").trim(),
+    modifiedAtEpochMs: Number(value.modifiedAtEpochMs || value.modified_at_epoch_ms || 0),
   };
 }
 

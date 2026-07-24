@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
+from starlette.concurrency import run_in_threadpool
 
 from core.deps import ensure_any_permission, ensure_permission, is_admin_like, require_auth, user_store
 from services.catalogs.dictionary_catalog import get_dictionary_definition
@@ -223,7 +224,8 @@ async def test_llm_provider(
 ):
     _require_llm_provider_permission(auth_payload)
     try:
-        result = get_llm_provider_service().test_provider_connection(
+        result = await run_in_threadpool(
+            get_llm_provider_service().test_provider_connection,
             provider_id=provider_id,
             model_name=req.model_name,
             owner_username=str(auth_payload.get("sub") or "").strip(),

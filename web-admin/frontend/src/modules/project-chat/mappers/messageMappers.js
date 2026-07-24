@@ -336,6 +336,7 @@ export function mapHistoryMessage(item) {
   const attachments = Array.isArray(item?.attachments) ? item.attachments : [];
   const images = Array.isArray(item?.images) ? item.images : [];
   const videos = Array.isArray(item?.videos) ? item.videos : [];
+  const audios = Array.isArray(item?.audios) ? item.audios : [];
   const rawSourceContext =
     item?.source_context && typeof item.source_context === "object"
       ? item.source_context
@@ -378,6 +379,7 @@ export function mapHistoryMessage(item) {
     operations,
     images,
     videos,
+    audios,
     attachments,
     source_context: sourceContext,
     hasAiRequestContext,

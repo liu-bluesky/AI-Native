@@ -330,6 +330,89 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "generate_image",
+            description: "使用已配置的图片模型从零创建新图片。只有用户要求生成、绘制不依赖现有图片的新图片时调用；只接受文字提示词。凡是基于现有图片生成或修改，都必须调用 edit_image，禁止改用 run_command、Python、Pillow 或 OpenCV。",
+            action: "media.image.generate",
+            risk: "low",
+            requires_approval: false,
+            scope: "project",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "完整的图片生成提示词"}
+                },
+                "required": ["prompt"]
+            }),
+        },
+        ToolDefinition {
+            name: "edit_image",
+            description: "使用已配置的图片模型编辑一张或多张现有图片。必须在 input_asset_ids 中明确选择附件上下文给出的图片资产 ID；只编辑被选择的图片。工具失败时直接返回失败，禁止改用 run_command、Python、Pillow 或 OpenCV 静默替代。",
+            action: "media.image.edit",
+            risk: "low",
+            requires_approval: false,
+            scope: "project",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "针对所选图片的完整编辑要求"},
+                    "input_asset_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "description": "必填；要编辑的图片资产 ID，只能使用附件上下文中明确列出的资产 ID"
+                    }
+                },
+                "required": ["prompt", "input_asset_ids"]
+            }),
+        },
+        ToolDefinition {
+            name: "generate_video",
+            description: "使用已配置的视频生成模型创建视频。只有用户明确要求生成视频或动画时调用；用户上传的图片会自动作为参考素材传给该工具。",
+            action: "media.video.generate",
+            risk: "low",
+            requires_approval: false,
+            scope: "project",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "完整的视频生成提示词"}
+                },
+                "required": ["prompt"]
+            }),
+        },
+        ToolDefinition {
+            name: "generate_audio",
+            description: "使用已配置的语音合成模型把文本生成音频。只有用户明确要求朗读、配音或文字转语音时调用。",
+            action: "media.audio.generate",
+            risk: "low",
+            requires_approval: false,
+            scope: "project",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "要朗读或配音的完整文本"},
+                    "voice": {"type": "string", "description": "可选音色 ID"},
+                    "response_format": {"type": "string", "default": "wav"},
+                    "speed": {"type": "number", "default": 1.0, "minimum": 0.25, "maximum": 4.0}
+                },
+                "required": ["prompt"]
+            }),
+        },
+        ToolDefinition {
+            name: "transcribe_audio",
+            description: "使用已配置的音频转写模型把本轮上传的音频转成文字。音频内容由运行时自动注入，不要要求用户提供文件路径或 Base64。",
+            action: "media.audio.transcribe",
+            risk: "low",
+            requires_approval: false,
+            scope: "project",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "可选的转写提示或语言说明"}
+                }
+            }),
+        },
+        ToolDefinition {
             name: "list_projects",
             description: "列出当前桌面登录用户在后端有权限访问的真实项目列表。用户询问“项目列表 / 有哪些项目 / 列出项目”时优先使用本工具；不要用 desktop-bot-global 或本地 workspace 目录缓存冒充真实项目列表。",
             action: "project.list",

@@ -104,6 +104,7 @@ export const UNSUPPORTED_ATTACHMENT_MODE = 'unsupported'
 export const ATTACHMENT_MODE_LABELS = {
   provider_file: '供应商文件直传',
   inline_image: '图片内联输入',
+  inline_audio: '音频内联输入',
   local_extract: '本地解析文本',
   retrieval: '检索增强',
   unsupported: '不支持附件',
@@ -164,7 +165,7 @@ export const FALLBACK_MODEL_TYPE_OPTIONS = [
     id: 'audio_generation',
     label: 'Speech / 音频生成',
     description: '适合语音、配音或音频内容生成；常见别名：speech、tts。',
-    chat_parameter_mode: 'text',
+    chat_parameter_mode: 'audio_generation',
     project_chat_allowed_file_types: [],
     attachment_mode: 'unsupported',
     attachment_max_files: 0,
@@ -174,11 +175,11 @@ export const FALLBACK_MODEL_TYPE_OPTIONS = [
     id: 'audio_transcription',
     label: 'Transcriptions / 音频转写',
     description: '适合语音识别、语音转文本与实时转写场景；常见别名：transcription、speech_to_text、asr。',
-    chat_parameter_mode: 'text',
-    project_chat_allowed_file_types: [],
-    attachment_mode: 'unsupported',
-    attachment_max_files: 0,
-    attachment_max_file_size_mb: 0,
+    chat_parameter_mode: 'audio_transcription',
+    project_chat_allowed_file_types: ['audio/*'],
+    attachment_mode: 'inline_audio',
+    attachment_max_files: 1,
+    attachment_max_file_size_mb: 25,
   },
 ]
 

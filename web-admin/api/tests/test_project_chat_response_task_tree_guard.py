@@ -1,6 +1,7 @@
 """项目聊天回答前任务树保护测试"""
 
 import asyncio
+import base64
 from types import SimpleNamespace
 
 from unittest.mock import AsyncMock, MagicMock
@@ -49,6 +50,55 @@ def test_require_project_chat_session_id_rejects_empty():
 
     with pytest.raises(ValueError, match="chat_session_id is required for project chat"):
         projects_router._require_project_chat_session_id("  ")
+
+
+@pytest.mark.parametrize(
+    ("model_type", "parameter_mode", "expected"),
+    [
+        ("text_generation", "text", "text"),
+        ("multimodal_chat", "text", "text"),
+        ("image_generation", "image", "image"),
+        ("video_generation", "video", "video"),
+        ("audio_generation", "text", "audio_generation"),
+        ("audio_transcription", "text", "audio_transcription"),
+    ],
+)
+def test_resolve_provider_model_parameter_mode_uses_model_capability(
+    model_type,
+    parameter_mode,
+    expected,
+):
+    from routers import projects as projects_router
+
+    llm_service = MagicMock()
+    llm_service.get_model_config.return_value = {
+        "model_type": model_type,
+        "chat_parameter_mode": parameter_mode,
+    }
+
+    assert projects_router._resolve_provider_model_parameter_mode(
+        llm_service,
+        provider_mode="provider",
+        selected_provider={"id": "provider-1"},
+        model_name="model-1",
+    ) == expected
+
+
+def test_normalize_chat_media_artifacts_preserves_long_audio_data_url():
+    from routers import projects as projects_router
+
+    audio_data_url = "data:audio/wav;base64," + ("A" * 25000)
+    artifacts = projects_router._normalize_chat_media_artifacts(
+        [
+            {
+                "asset_type": "audio",
+                "content_url": audio_data_url,
+                "mime_type": "audio/wav",
+            }
+        ]
+    )
+
+    assert artifacts[0]["content_url"] == audio_data_url
 
 
 def test_resolve_project_chat_task_tree_context_skips_task_tree_when_disabled(monkeypatch):
@@ -139,6 +189,86 @@ async def test_generate_project_chat_media_done_payload_attaches_task_tree_audit
     assert "https://cdn.example.com/result.png" in payload["images"]
     assert payload["task_tree_audit"]["code"] == "lookup_query_auto_completed"
     assert payload["history_task_tree"]["chat_session_id"] == "chat-1"
+
+
+@pytest.mark.asyncio
+async def test_generate_project_chat_audio_done_payload_returns_playable_artifact(monkeypatch):
+    from routers import projects as projects_router
+
+    llm_service = MagicMock()
+    llm_service.generate_audio_speech = AsyncMock(
+        return_value={"audio_bytes": b"RIFFdemo", "content_type": "audio/wav"}
+    )
+    monkeypatch.setattr(projects_router, "is_admin_like", lambda auth_payload: False)
+    monkeypatch.setattr(projects_router, "_append_chat_record", lambda **kwargs: None)
+    monkeypatch.setattr(projects_router, "_save_project_chat_memory_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(
+        projects_router,
+        "_build_project_chat_done_payload",
+        lambda **kwargs: {"type": "done", **kwargs},
+    )
+
+    payload = await projects_router._generate_project_chat_media_done_payload(
+        llm_service=llm_service,
+        auth_payload={"sub": "tester"},
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        assistant_message_id="msg-1",
+        effective_user_message="请朗读这段文字",
+        selected_employee_ids=[],
+        provider_id="provider-1",
+        model_name="tts-1",
+        runtime_settings={},
+        model_parameter_mode="audio_generation",
+        memory_source="project-chat-audio-test",
+    )
+
+    assert payload["artifacts"][0]["asset_type"] == "audio"
+    assert payload["artifacts"][0]["content_url"].startswith("data:audio/wav;base64,")
+    assert payload["successful_tool_names"] == ["generate_audio_speech"]
+    llm_service.generate_media_artifacts.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generate_project_chat_transcription_uses_uploaded_audio(monkeypatch):
+    from routers import projects as projects_router
+
+    llm_service = MagicMock()
+    llm_service.transcribe_audio = AsyncMock(return_value={"text": "转写成功"})
+    monkeypatch.setattr(projects_router, "is_admin_like", lambda auth_payload: False)
+    monkeypatch.setattr(projects_router, "_append_chat_record", lambda **kwargs: None)
+    monkeypatch.setattr(projects_router, "_save_project_chat_memory_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(
+        projects_router,
+        "_build_project_chat_done_payload",
+        lambda **kwargs: {"type": "done", **kwargs},
+    )
+    audio_data_url = "data:audio/wav;base64," + base64.b64encode(b"RIFFdemo").decode("ascii")
+
+    payload = await projects_router._generate_project_chat_media_done_payload(
+        llm_service=llm_service,
+        auth_payload={"sub": "tester"},
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        assistant_message_id="msg-1",
+        effective_user_message="",
+        selected_employee_ids=[],
+        provider_id="provider-1",
+        model_name="whisper-1",
+        runtime_settings={},
+        model_parameter_mode="audio_transcription",
+        audio_data_url=audio_data_url,
+        audio_filename="sample.wav",
+        audio_mime_type="audio/wav",
+        memory_source="project-chat-transcription-test",
+    )
+
+    assert payload["content"] == "转写成功"
+    assert payload["successful_tool_names"] == ["transcribe_audio"]
+    assert llm_service.transcribe_audio.await_args.kwargs["filename"] == "sample.wav"
+    llm_service.generate_media_artifacts.assert_not_called()
 
 
 def test_project_chat_stream_can_answer_without_task_tree_when_disabled(tmp_path, monkeypatch):

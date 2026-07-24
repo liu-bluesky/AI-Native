@@ -6,6 +6,7 @@ pub mod command;
 pub mod deploy;
 pub mod file;
 pub mod mcp;
+pub mod media;
 pub mod network;
 pub mod process;
 pub mod projects;

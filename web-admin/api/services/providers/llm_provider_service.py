@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -1223,7 +1224,37 @@ class LlmProviderService:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/images/generations"):
             return base
+        if base.endswith("/images/edits"):
+            return f"{base[:-len('/images/edits')]}/images/generations"
         return f"{base}/images/generations"
+
+    @staticmethod
+    def _build_images_edit_url(base_url: str) -> str:
+        base = str(base_url or "").strip().rstrip("/")
+        if base.endswith("/images/edits"):
+            return base
+        if base.endswith("/images/generations"):
+            return f"{base[:-len('/images/generations')]}/images/edits"
+        return f"{base}/images/edits"
+
+    @staticmethod
+    def _build_image_edit_inputs(image_references: list[str]) -> list[dict[str, str]]:
+        normalized = [str(item or "").strip() for item in image_references if str(item or "").strip()]
+        if not normalized:
+            raise ValueError("image editing requires at least one input image")
+        if len(normalized) > 16:
+            raise ValueError("image editing supports at most 16 input images")
+
+        images: list[dict[str, str]] = []
+        for reference in normalized:
+            if reference.startswith("file-"):
+                images.append({"file_id": reference})
+                continue
+            if reference.startswith(("https://", "http://", "data:image/")):
+                images.append({"image_url": reference})
+                continue
+            raise ValueError("image editing only accepts provider file IDs, HTTP(S) URLs, or image data URLs")
+        return images
 
     @staticmethod
     def _build_videos_generation_url(base_url: str) -> str:
@@ -1231,6 +1262,24 @@ class LlmProviderService:
         if base.endswith("/videos/generations"):
             return base
         return f"{base}/videos/generations"
+
+    @classmethod
+    def _build_video_submit_url(cls, provider: dict[str, Any]) -> str:
+        base_url = str(provider.get("base_url") or "").strip().rstrip("/")
+        if cls._is_bigmodel_provider(provider):
+            return cls._build_videos_generation_url(base_url)
+        if base_url.endswith("/videos"):
+            return base_url
+        return f"{base_url}/videos"
+
+    @classmethod
+    def _build_video_task_url(cls, provider: dict[str, Any], request_id: str) -> str:
+        normalized_request_id = str(request_id or "").strip()
+        if not normalized_request_id:
+            return ""
+        if cls._is_bigmodel_provider(provider):
+            return cls._build_async_result_url(str(provider.get("base_url") or ""), normalized_request_id)
+        return f"{cls._build_video_submit_url(provider)}/{normalized_request_id}"
 
     @staticmethod
     def _build_audio_speech_url(base_url: str) -> str:
@@ -1488,8 +1537,12 @@ class LlmProviderService:
         asset_type: str,
         timeout_sec: int = 180,
         poll_interval_sec: int = 3,
+        result_endpoint: str = "",
     ) -> list[dict[str, Any]]:
-        endpoint = self._build_async_result_url(str(provider.get("base_url") or ""), request_id)
+        endpoint = str(result_endpoint or "").strip() or self._build_async_result_url(
+            str(provider.get("base_url") or ""),
+            request_id,
+        )
         if not endpoint:
             raise RuntimeError("provider async result endpoint is empty")
         headers = self._build_headers(provider)
@@ -1531,26 +1584,20 @@ class LlmProviderService:
         model_config = self.get_model_config(provider, model_name) or {}
         parameter_mode = str(model_config.get("chat_parameter_mode") or "text").strip().lower()
         if parameter_mode == "image":
-            endpoint = self._build_images_generation_url(str(provider.get("base_url") or ""))
             normalized_image_urls = [
                 str(item or "").strip()
                 for item in (image_urls or [])
                 if str(item or "").strip()
             ]
-            effective_prompt = str(prompt or "").strip()
             if normalized_image_urls:
-                effective_prompt = (
-                    f"{effective_prompt}\n\n"
-                    f"参考图输入：当前已提供 {len(normalized_image_urls)} 张角色参考图，请尽量保持同一人物形象、服装与发型一致。"
-                ).strip()
+                raise ValueError("generate_image does not accept input images; use edit_image instead")
+            endpoint = self._build_images_generation_url(str(provider.get("base_url") or ""))
             body = {
                 "model": model_name,
-                "prompt": effective_prompt,
+                "prompt": str(prompt or "").strip(),
             }
             if str(image_size or "").strip():
                 body["size"] = str(image_size or "").strip()
-            if normalized_image_urls and not self._is_bigmodel_provider(provider):
-                body["image_urls"] = normalized_image_urls
             payload = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=120)
             artifacts = self._extract_image_artifacts_from_payload(payload, provider_id=provider_id, model_name=model_name)
             if artifacts:
@@ -1569,7 +1616,7 @@ class LlmProviderService:
             raise RuntimeError(self._extract_error_message(payload) or "image generation returned no artifact")
 
         if parameter_mode == "video":
-            endpoint = self._build_videos_generation_url(str(provider.get("base_url") or ""))
+            endpoint = self._build_video_submit_url(provider)
             body = {
                 "model": model_name,
                 "prompt": prompt,
@@ -1591,10 +1638,60 @@ class LlmProviderService:
                     asset_type="video",
                     timeout_sec=240,
                     poll_interval_sec=5,
+                    result_endpoint=self._build_video_task_url(provider, request_id),
                 )
             raise RuntimeError(self._extract_error_message(payload) or "video generation returned no artifact")
 
         raise ValueError(f"model {model_name} is not an image/video generation model")
+
+    def _edit_image_artifacts_sync(
+        self,
+        provider: dict[str, Any],
+        *,
+        provider_id: str,
+        model_name: str,
+        prompt: str,
+        image_references: list[str],
+        image_size: str = "",
+        input_fidelity: str = "high",
+    ) -> list[dict[str, Any]]:
+        model_config = self.get_model_config(provider, model_name) or {}
+        parameter_mode = str(model_config.get("chat_parameter_mode") or "text").strip().lower()
+        if parameter_mode != "image":
+            raise ValueError(f"model {model_name} is not an image generation/editing model")
+        if self._is_bigmodel_provider(provider):
+            raise ValueError("当前 BigModel 图片供应商未配置官方图片编辑协议，不支持 edit_image")
+        provider_type = self._normalize_provider_type(provider.get("provider_type"))
+        if provider_type not in {"openai-compatible", "responses"}:
+            raise ValueError(f"Provider type {provider_type or 'unknown'} does not support the Images edit API")
+
+        endpoint = self._build_images_edit_url(str(provider.get("base_url") or ""))
+        body: dict[str, Any] = {
+            "model": model_name,
+            "prompt": str(prompt or "").strip(),
+            "images": self._build_image_edit_inputs(image_references),
+        }
+        if str(image_size or "").strip():
+            body["size"] = str(image_size or "").strip()
+        if str(input_fidelity or "").strip():
+            body["input_fidelity"] = str(input_fidelity or "").strip()
+
+        payload = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=120)
+        artifacts = self._extract_image_artifacts_from_payload(payload, provider_id=provider_id, model_name=model_name)
+        if artifacts:
+            return artifacts
+        request_id = str(payload.get("request_id") or payload.get("id") or "").strip()
+        if request_id:
+            return self._poll_async_media_result(
+                provider,
+                request_id,
+                provider_id=provider_id,
+                model_name=model_name,
+                asset_type="image",
+                timeout_sec=120,
+                poll_interval_sec=2,
+            )
+        raise RuntimeError(self._extract_error_message(payload) or "image editing returned no artifact")
 
     async def generate_media_artifacts(
         self,
@@ -1632,6 +1729,46 @@ class LlmProviderService:
             image_size=str(image_size or "").strip(),
             video_aspect_ratio=str(video_aspect_ratio or "").strip(),
             video_duration_seconds=video_duration_seconds,
+        )
+
+    async def edit_image_artifacts(
+        self,
+        provider_id: str,
+        model_name: str,
+        prompt: str,
+        *,
+        image_references: list[str],
+        owner_username: str = "",
+        include_all: bool = False,
+        image_size: str = "",
+        input_fidelity: str = "high",
+    ) -> list[dict[str, Any]]:
+        provider = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+            include_shared=True,
+        )
+        if provider is None:
+            raise LookupError(f"LLM provider {provider_id} not found")
+        if not bool(provider.get("enabled", True)):
+            raise ValueError(f"LLM provider {provider_id} is disabled")
+        chosen_model = str(model_name or "").strip() or self._pick_default_model(provider)
+        if not chosen_model:
+            raise ValueError("model_name is required")
+        return await run_in_threadpool(
+            self._edit_image_artifacts_sync,
+            provider,
+            provider_id=provider_id,
+            model_name=chosen_model,
+            prompt=str(prompt or "").strip(),
+            image_references=[
+                str(item or "").strip()
+                for item in (image_references or [])
+                if str(item or "").strip()
+            ],
+            image_size=str(image_size or "").strip(),
+            input_fidelity=str(input_fidelity or "high").strip() or "high",
         )
 
     def _list_audio_voices_sync(self, provider: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1935,12 +2072,15 @@ class LlmProviderService:
         chosen_model = str(model_name or "").strip() or self._pick_default_model(provider)
         if not chosen_model:
             raise ValueError("model_name is required")
+        chosen_voice = str(voice or "").strip() or (
+            "tongtong" if self._is_bigmodel_provider(provider) else "alloy"
+        )
         return await run_in_threadpool(
             self._generate_audio_speech_sync,
             provider,
             model_name=chosen_model,
             text=str(text or "").strip(),
-            voice=str(voice or "").strip(),
+            voice=chosen_voice,
             response_format=str(response_format or "wav").strip() or "wav",
             speed=max(0.5, min(float(speed or 1.0), 2.0)),
         )
@@ -2443,6 +2583,120 @@ class LlmProviderService:
             return self._call_responses(provider, model_name, temperature, bug)
         return self._call_chat_completion(provider, model_name, temperature, bug)
 
+    def _probe_provider_model(
+        self,
+        provider: dict[str, Any],
+        *,
+        provider_id: str,
+        model_name: str,
+        model_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        model_type = normalize_model_type(model_config.get("model_type"))
+        parameter_mode = str(model_config.get("chat_parameter_mode") or "text").strip().lower()
+        base_url = str(provider.get("base_url") or "").strip()
+
+        if parameter_mode in {"image", "video"}:
+            endpoint = (
+                self._build_images_generation_url(base_url)
+                if parameter_mode == "image"
+                else self._build_video_submit_url(provider)
+            )
+            artifacts = self._generate_media_artifacts_sync(
+                provider,
+                provider_id=provider_id,
+                model_name=model_name,
+                prompt=(
+                    "生成一张简洁的蓝色圆形图标，纯色背景，不包含文字。"
+                    if parameter_mode == "image"
+                    else "生成一个蓝色圆形缓慢移动的简短测试视频，不包含文字。"
+                ),
+                image_size="",
+                video_aspect_ratio="16:9" if parameter_mode == "video" else "",
+                video_duration_seconds=5 if parameter_mode == "video" else None,
+            )
+            if not artifacts:
+                raise RuntimeError(f"{parameter_mode} generation returned no artifact")
+            return {
+                "model_type": model_type,
+                "result_type": parameter_mode,
+                "probe_url": endpoint,
+                "output_text": "",
+                "artifacts": artifacts,
+                "message": f"/{parameter_mode}s 真实生成成功，共 {len(artifacts)} 个结果",
+            }
+
+        if model_type == "audio_generation":
+            endpoint = self._build_audio_speech_url(base_url)
+            audio_result = self._generate_audio_speech_sync(
+                provider,
+                model_name=model_name,
+                text="模型连接测试成功。",
+                voice="tongtong" if self._is_bigmodel_provider(provider) else "alloy",
+                response_format="wav",
+                speed=1.0,
+            )
+            audio_bytes = audio_result.get("audio_bytes") or b""
+            content_type = str(audio_result.get("content_type") or "audio/wav").strip()
+            if not audio_bytes:
+                raise RuntimeError("audio generation returned empty content")
+            audio_url = f"data:{content_type};base64,{base64.b64encode(audio_bytes).decode('ascii')}"
+            return {
+                "model_type": model_type,
+                "result_type": "audio",
+                "probe_url": endpoint,
+                "output_text": "",
+                "artifacts": [
+                    {
+                        "asset_type": "audio",
+                        "title": f"{model_name} 音频测试",
+                        "preview_url": audio_url,
+                        "content_url": audio_url,
+                        "mime_type": content_type,
+                        "metadata": {"provider_id": provider_id, "model_name": model_name},
+                    }
+                ],
+                "message": "/audio/speech 真实生成成功",
+            }
+
+        if model_type == "audio_transcription":
+            raise RuntimeError("音频转写模型需要上传测试音频后才能执行真实能力测试")
+
+        if self._is_responses_provider(provider):
+            endpoint = self._build_responses_url(base_url)
+            body = {
+                "model": model_name,
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "返回 ok"}],
+                    }
+                ],
+                "max_output_tokens": 16,
+            }
+            response = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=25)
+        else:
+            endpoint = self._build_chat_completion_url(base_url)
+            response = self._call_chat_completion_sse(
+                provider=provider,
+                model_name=model_name,
+                temperature=0,
+                system_prompt="你是连通性测试助手。",
+                user_prompt="只输出 ok 两个字母，不要解释。",
+                max_tokens=128,
+                timeout=35,
+            )
+        text = self._extract_content(response)
+        if not text:
+            raise RuntimeError(self._empty_model_response_message(response, model_name))
+        return {
+            "model_type": model_type,
+            "result_type": "text",
+            "probe_url": endpoint,
+            "output_text": text,
+            "artifacts": [],
+            "message": f"{urlparse(endpoint).path} 可用: {text[:120]}",
+        }
+
     def test_provider_connection(
         self,
         provider_id: str,
@@ -2465,69 +2719,68 @@ class LlmProviderService:
         base_url = str(provider.get("base_url") or "").strip().rstrip("/")
         provider_type = self._normalize_provider_type(provider.get("provider_type"))
         models_url = self._build_models_url(base_url) if base_url else ""
-        completion_url = (
-            self._build_responses_url(base_url)
-            if self._is_responses_provider(provider)
-            else self._build_chat_completion_url(base_url)
-        ) if base_url else ""
-        request_urls = [item for item in [models_url, completion_url] if item]
+        model_config = self.get_model_config(provider, chosen_model) or get_model_type_meta(DEFAULT_MODEL_TYPE)
+        model_type = normalize_model_type(model_config.get("model_type"))
         started = time.monotonic()
         models_ok = False
-        models_message = "/models 已跳过（SSE 测试模式）"
+        models_message = "/models 未执行"
         model_count = 0
+        model_available: bool | None = None
 
-        # Step 1: run a lightweight invocation probe.
+        if base_url:
+            try:
+                discovered = self.discover_models(provider)
+                discovered_models = discovered.get("models") or []
+                model_count = len(discovered_models)
+                models_ok = True
+                model_available = chosen_model in discovered_models if chosen_model else None
+                if chosen_model:
+                    models_message = f"/models 可用，共 {model_count} 个模型；当前模型{'存在' if model_available else '未返回'}"
+                else:
+                    models_message = f"/models 可用，共 {model_count} 个模型"
+            except Exception as exc:
+                models_message = f"/models 失败: {exc}"
+
         completion_ok = False
         completion_message = "未执行模型调用"
+        parameter_mode = str(model_config.get("chat_parameter_mode") or "text").strip().lower()
+        if parameter_mode == "image":
+            probe_url = self._build_images_generation_url(base_url)
+        elif parameter_mode == "video":
+            probe_url = self._build_video_submit_url(provider)
+        elif model_type == "audio_generation":
+            probe_url = self._build_audio_speech_url(base_url)
+        elif model_type == "audio_transcription":
+            probe_url = self._build_audio_transcriptions_url(base_url)
+        elif self._is_responses_provider(provider):
+            probe_url = self._build_responses_url(base_url)
+        else:
+            probe_url = self._build_chat_completion_url(base_url)
+        result_type = ""
+        output_text = ""
+        artifacts: list[dict[str, Any]] = []
         if chosen_model:
             try:
-                if self._is_responses_provider(provider):
-                    endpoint = self._build_responses_url(str(provider.get("base_url") or ""))
-                    body = {
-                        "model": chosen_model,
-                        "input": [
-                            {
-                                "role": "user",
-                                "content": [{"type": "input_text", "text": "返回 ok"}],
-                            }
-                        ],
-                        "max_output_tokens": 16,
-                    }
-                    completion_resp = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=25)
-                    text = self._extract_content(completion_resp)
-                    if not text:
-                        raise RuntimeError(
-                            self._empty_model_response_message(completion_resp, chosen_model)
-                        )
-                    completion_ok = True
-                    completion_message = f"/responses 可用: {(text or 'ok')[:120]}"
-                else:
-                    completion_resp = self._call_chat_completion_sse(
-                        provider=provider,
-                        model_name=chosen_model,
-                        temperature=0,
-                        system_prompt="你是连通性测试助手。",
-                        user_prompt="只输出 ok 两个字母，不要解释。",
-                        max_tokens=128,
-                        timeout=35,
-                    )
-                    text = self._extract_content(completion_resp)
-                    if not text:
-                        raise RuntimeError(
-                            self._empty_model_response_message(completion_resp, chosen_model)
-                        )
-                    completion_ok = True
-                    completion_message = f"/chat/completions(SSE) 可用: {(text or 'ok')[:120]}"
+                probe_result = self._probe_provider_model(
+                    provider,
+                    provider_id=provider_id,
+                    model_name=chosen_model,
+                    model_config=model_config,
+                )
+                completion_ok = True
+                completion_message = str(probe_result.get("message") or "模型能力测试成功")
+                probe_url = str(probe_result.get("probe_url") or "")
+                result_type = str(probe_result.get("result_type") or "")
+                output_text = str(probe_result.get("output_text") or "")
+                artifacts = probe_result.get("artifacts") if isinstance(probe_result.get("artifacts"), list) else []
             except Exception as exc:
-                if self._is_responses_provider(provider):
-                    completion_message = f"/responses 失败: {exc}"
-                else:
-                    completion_message = f"/chat/completions(SSE) 失败: {exc}"
+                completion_message = f"{model_type} 能力测试失败: {exc}"
         else:
             completion_message = "未指定测试模型，跳过模型调用"
 
         latency_ms = int((time.monotonic() - started) * 1000)
         reachable = bool(completion_ok)
+        request_urls = [item for item in [models_url, probe_url] if item]
         result = {
             "provider_id": provider_id,
             "provider_name": provider.get("name") or provider_id,
@@ -2537,12 +2790,18 @@ class LlmProviderService:
             "models_ok": models_ok,
             "model_count": model_count,
             "model_tested": chosen_model,
+            "model_type": model_type,
+            "model_available": model_available,
             "completion_ok": completion_ok,
             "message": f"{models_message}; {completion_message}",
             "latency_ms": latency_ms,
             "tested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "models_url": models_url,
-            "completion_url": completion_url,
+            "completion_url": probe_url,
+            "probe_url": probe_url,
+            "result_type": result_type,
+            "output_text": output_text,
+            "artifacts": artifacts,
             "request_urls": request_urls,
         }
         if not reachable:

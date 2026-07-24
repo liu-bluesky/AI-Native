@@ -495,6 +495,9 @@ class ProjectChatReq(BaseModel):
     system_prompt: str | None = None
     attachment_names: list[str] = []
     images: list[str] = []
+    audio_data_url: str = ""
+    audio_filename: str = ""
+    audio_mime_type: str = ""
     enabled_project_tool_names: list[str] = []
     auto_use_tools: bool | None = None
     tool_priority: list[str] = []
@@ -503,6 +506,20 @@ class ProjectChatReq(BaseModel):
     prefer_conclusion_first: bool | None = None
     task_tree_enabled: bool | None = None
     task_tree_auto_generate: bool | None = None
+
+
+class ProjectChatMediaToolReq(BaseModel):
+    tool_name: str
+    provider_id: str
+    model_name: str
+    prompt: str = ""
+    reference_images: list[str] = []
+    audio_data_url: str = ""
+    audio_filename: str = ""
+    audio_mime_type: str = ""
+    voice: str = ""
+    response_format: str = "wav"
+    speed: float = 1.0
 
 
 class ProjectChatSessionCreateReq(BaseModel):

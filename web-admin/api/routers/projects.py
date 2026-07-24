@@ -87,7 +87,7 @@ from services.catalogs.llm_chat_parameter_catalog import (
     get_chat_parameter_default_value,
     normalize_chat_parameter_value,
 )
-from services.catalogs.llm_model_type_catalog import DEFAULT_MODEL_TYPE
+from services.catalogs.llm_model_type_catalog import DEFAULT_MODEL_TYPE, normalize_model_type
 from services.connectors.project_host_command_service import (
     PROJECT_HOST_RUN_COMMAND_TOOL_NAME,
     build_project_host_command_tools,
@@ -188,6 +188,7 @@ from models.requests import (
     ProjectChatHistoryTruncateReq,
     ProjectChatHistoryAppendReq,
     ProjectChatRequirementRecordUpsertReq,
+    ProjectChatMediaToolReq,
     ProjectChatReq,
     ProjectChatSessionCreateReq,
     ProjectChatSessionUpdateReq,
@@ -389,8 +390,17 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "selected_employee_id": "",
     "selected_employee_ids": [],
     "employee_coordination_mode": "auto",
+    "model_routing_mode": "auto",
     "provider_id": "",
     "model_name": "",
+    "image_provider_id": "",
+    "image_model_name": "",
+    "video_provider_id": "",
+    "video_model_name": "",
+    "audio_generation_provider_id": "",
+    "audio_generation_model_name": "",
+    "audio_transcription_provider_id": "",
+    "audio_transcription_model_name": "",
     "temperature": 0.1,
     "system_prompt": "",
     "auto_use_tools": False,
@@ -4266,7 +4276,14 @@ def _serialize_studio_model_provider(provider: dict[str, Any]) -> dict[str, Any]
 
 
 def _normalize_material_url(value: Any, *, limit: int = 20000) -> str:
-    normalized = str(value or "").strip()[:limit]
+    raw_value = str(value or "").strip()
+    data_url_limit = 40 * 1024 * 1024
+    effective_limit = (
+        data_url_limit
+        if raw_value.lower().startswith(("data:image/", "data:video/", "data:audio/"))
+        else limit
+    )
+    normalized = raw_value[:effective_limit]
     if not normalized:
         return ""
     lowered = normalized.lower()
@@ -4647,7 +4664,13 @@ def _normalize_chat_media_artifacts(values: Any) -> list[dict[str, Any]]:
             continue
         seen.add(artifact_key)
         metadata = _normalize_material_mapping(item.get("metadata"))
-        title_fallback = "AI 生成视频" if asset_type == "video" else f"AI 生成图片 #{index}"
+        title_fallback = (
+            "AI 生成视频"
+            if asset_type == "video"
+            else "AI 生成音频"
+            if asset_type == "audio"
+            else f"AI 生成图片 #{index}"
+        )
         result.append(
             {
                 "asset_type": asset_type,
@@ -4710,12 +4733,17 @@ def _build_generated_media_answer(artifacts: list[dict[str, Any]] | None) -> str
     video_count = sum(
         1 for item in normalized_artifacts if str(item.get("asset_type") or "").strip().lower() == "video"
     )
+    audio_count = sum(
+        1 for item in normalized_artifacts if str(item.get("asset_type") or "").strip().lower() == "audio"
+    )
     if image_count and video_count:
         return f"已生成 {image_count} 张图片和 {video_count} 个视频，请查看下方结果。"
     if image_count:
         return f"已生成 {image_count} 张图片，请查看下方结果。"
     if video_count:
         return f"已生成 {video_count} 个视频，请查看下方结果。"
+    if audio_count:
+        return f"已生成 {audio_count} 段音频，请在下方播放。"
     return "模型未返回有效媒体结果。"
 
 
@@ -4729,8 +4757,42 @@ def _resolve_provider_model_parameter_mode(
     if str(provider_mode or "").strip().lower() != "provider":
         return "text"
     model_config = llm_service.get_model_config(selected_provider, model_name) or {}
+    model_type = normalize_model_type(model_config.get("model_type"))
+    model_type_mode = {
+        "image_generation": "image",
+        "video_generation": "video",
+        "audio_generation": "audio_generation",
+        "audio_transcription": "audio_transcription",
+    }.get(model_type)
+    if model_type_mode:
+        return model_type_mode
     parameter_mode = str(model_config.get("chat_parameter_mode") or "text").strip().lower()
-    return parameter_mode if parameter_mode in {"image", "video"} else "text"
+    return parameter_mode if parameter_mode in {"image", "video", "audio_generation", "audio_transcription"} else "text"
+
+
+def _decode_project_chat_audio_data_url(
+    value: Any,
+    *,
+    fallback_mime_type: str = "",
+) -> tuple[bytes, str]:
+    normalized = str(value or "").strip()
+    match = re.match(
+        r"^data:(audio/[a-z0-9.+-]+);base64,(.+)$",
+        normalized,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError("音频转写需要上传一个有效音频文件")
+    mime_type = str(match.group(1) or fallback_mime_type or "audio/wav").strip().lower()
+    try:
+        audio_bytes = base64.b64decode(match.group(2), validate=True)
+    except Exception as exc:
+        raise ValueError("音频附件 Base64 数据无效") from exc
+    if not audio_bytes:
+        raise ValueError("音频附件内容为空")
+    if len(audio_bytes) > 25 * 1024 * 1024:
+        raise ValueError("音频附件不能超过 25MB")
+    return audio_bytes, mime_type
 
 
 async def _generate_project_chat_media_done_payload(
@@ -4747,28 +4809,91 @@ async def _generate_project_chat_media_done_payload(
     model_name: str,
     runtime_settings: dict[str, Any],
     memory_source: str,
+    model_parameter_mode: str = "",
+    audio_data_url: str = "",
+    audio_filename: str = "",
+    audio_mime_type: str = "",
     allow_requirement_record: bool = True,
 ) -> dict[str, Any]:
-    artifacts = _normalize_chat_media_artifacts(
-        await llm_service.generate_media_artifacts(
+    normalized_mode = str(model_parameter_mode or "").strip().lower()
+    transcription_text = ""
+    if normalized_mode == "audio_generation":
+        audio_result = await llm_service.generate_audio_speech(
             provider_id,
             model_name,
-            effective_user_message,
+            text=effective_user_message,
+            voice="",
+            response_format="wav",
+            speed=1.0,
             owner_username=username,
             include_all=is_admin_like(auth_payload),
-            image_size=_resolve_project_chat_image_size(
-                runtime_settings.get("image_resolution"),
-                runtime_settings.get("image_aspect_ratio"),
-            ),
-            video_aspect_ratio=str(runtime_settings.get("video_aspect_ratio") or "").strip(),
-            video_duration_seconds=int(runtime_settings.get("video_duration_seconds") or 0) or None,
         )
-    )
-    if not artifacts:
+        audio_bytes = audio_result.get("audio_bytes") or b""
+        content_type = str(audio_result.get("content_type") or "audio/wav").strip()
+        if not audio_bytes:
+            raise RuntimeError("音频生成模型未返回有效音频")
+        audio_url = f"data:{content_type};base64,{base64.b64encode(audio_bytes).decode('ascii')}"
+        artifacts = _normalize_chat_media_artifacts(
+            [
+                {
+                    "asset_type": "audio",
+                    "title": f"{model_name} 生成音频",
+                    "preview_url": audio_url,
+                    "content_url": audio_url,
+                    "mime_type": content_type,
+                }
+            ]
+        )
+    elif normalized_mode == "audio_transcription":
+        audio_bytes, resolved_mime_type = _decode_project_chat_audio_data_url(
+            audio_data_url,
+            fallback_mime_type=audio_mime_type,
+        )
+        suffix = mimetypes.guess_extension(resolved_mime_type) or Path(audio_filename or "").suffix or ".audio"
+        temp_path = ""
+        try:
+            with NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                temp_file.write(audio_bytes)
+                temp_path = temp_file.name
+            transcription = await llm_service.transcribe_audio(
+                provider_id,
+                model_name,
+                file_path=temp_path,
+                filename=str(audio_filename or f"project-chat{suffix}").strip(),
+                mime_type=resolved_mime_type,
+                prompt=effective_user_message,
+                owner_username=username,
+                include_all=is_admin_like(auth_payload),
+            )
+            transcription_text = str(transcription.get("text") or "").strip()
+        finally:
+            if temp_path:
+                Path(temp_path).unlink(missing_ok=True)
+        if not transcription_text:
+            raise RuntimeError("音频转写模型未返回文本")
+        artifacts = []
+    else:
+        artifacts = _normalize_chat_media_artifacts(
+            await llm_service.generate_media_artifacts(
+                provider_id,
+                model_name,
+                effective_user_message,
+                owner_username=username,
+                include_all=is_admin_like(auth_payload),
+                image_size=_resolve_project_chat_image_size(
+                    runtime_settings.get("image_resolution"),
+                    runtime_settings.get("image_aspect_ratio"),
+                ),
+                video_aspect_ratio=str(runtime_settings.get("video_aspect_ratio") or "").strip(),
+                video_duration_seconds=int(runtime_settings.get("video_duration_seconds") or 0) or None,
+            )
+        )
+    if normalized_mode != "audio_transcription" and not artifacts:
         raise RuntimeError("模型未返回有效媒体结果")
     images = _collect_chat_artifact_urls(artifacts, asset_type="image")
     videos = _collect_chat_artifact_urls(artifacts, asset_type="video")
-    content = _build_generated_media_answer(artifacts)
+    audios = _collect_chat_artifact_urls(artifacts, asset_type="audio")
+    content = transcription_text or _build_generated_media_answer(artifacts)
     _append_chat_record(
         project_id=project_id,
         username=username,
@@ -4778,6 +4903,7 @@ async def _generate_project_chat_media_done_payload(
         chat_session_id=chat_session_id,
         images=images,
         videos=videos,
+        audios=audios,
     )
     done_payload = _build_project_chat_done_payload(
         content=content,
@@ -4787,7 +4913,13 @@ async def _generate_project_chat_media_done_payload(
         provider_id=provider_id,
         model_name=model_name,
         artifacts=artifacts,
-        successful_tool_names=["generate_media_artifacts"],
+        successful_tool_names=[
+            "transcribe_audio"
+            if normalized_mode == "audio_transcription"
+            else "generate_audio_speech"
+            if normalized_mode == "audio_generation"
+            else "generate_media_artifacts"
+        ],
     )
     _save_project_chat_memory_snapshot(
         project_id=project_id,
@@ -4800,6 +4932,180 @@ async def _generate_project_chat_media_done_payload(
         allow_requirement_record=allow_requirement_record,
     )
     return done_payload
+
+
+async def _execute_project_chat_media_tool(
+    *,
+    req: ProjectChatMediaToolReq,
+    auth_payload: dict,
+    username: str,
+) -> dict[str, Any]:
+    from services.providers.llm_provider_service import get_llm_provider_service
+
+    tool_name = str(req.tool_name or "").strip()
+    expected_mode = {
+        "generate_image": "image",
+        "edit_image": "image",
+        "generate_video": "video",
+        "generate_audio": "audio_generation",
+        "transcribe_audio": "audio_transcription",
+    }.get(tool_name)
+    if not expected_mode:
+        raise HTTPException(400, f"Unsupported media tool: {tool_name}")
+
+    provider_id = str(req.provider_id or "").strip()
+    model_name = str(req.model_name or "").strip()
+    if not provider_id or not model_name:
+        raise HTTPException(400, "provider_id and model_name are required")
+
+    llm_service = get_llm_provider_service()
+    provider = llm_service.get_provider_raw(
+        provider_id,
+        owner_username=username,
+        include_all=is_admin_like(auth_payload),
+        include_shared=True,
+    )
+    if provider is None:
+        raise HTTPException(404, f"LLM provider {provider_id} not found")
+    actual_mode = _resolve_provider_model_parameter_mode(
+        llm_service,
+        provider_mode="provider",
+        selected_provider=provider,
+        model_name=model_name,
+    )
+    if actual_mode != expected_mode:
+        raise HTTPException(
+            400,
+            f"Model {model_name} is configured for {actual_mode}, not {expected_mode}",
+        )
+
+    prompt = str(req.prompt or "").strip()
+    reference_images = [
+        str(item or "").strip()
+        for item in (req.reference_images or [])
+        if str(item or "").strip()
+    ]
+    if tool_name == "edit_image" and not reference_images:
+        raise HTTPException(400, "edit_image requires at least one input image")
+    artifacts: list[dict[str, Any]] = []
+    transcription_text = ""
+    if expected_mode == "audio_generation":
+        if not prompt:
+            raise HTTPException(400, "prompt is required for audio generation")
+        audio_result = await llm_service.generate_audio_speech(
+            provider_id,
+            model_name,
+            text=prompt,
+            voice=str(req.voice or "").strip(),
+            response_format=str(req.response_format or "wav").strip() or "wav",
+            speed=max(0.25, min(float(req.speed or 1.0), 4.0)),
+            owner_username=username,
+            include_all=is_admin_like(auth_payload),
+        )
+        audio_bytes = audio_result.get("audio_bytes") or b""
+        content_type = str(audio_result.get("content_type") or "audio/wav").strip()
+        if not audio_bytes:
+            raise RuntimeError("音频生成模型未返回有效音频")
+        audio_url = f"data:{content_type};base64,{base64.b64encode(audio_bytes).decode('ascii')}"
+        artifacts = _normalize_chat_media_artifacts(
+            [{
+                "asset_type": "audio",
+                "title": f"{model_name} 生成音频",
+                "preview_url": audio_url,
+                "content_url": audio_url,
+                "mime_type": content_type,
+            }]
+        )
+    elif expected_mode == "audio_transcription":
+        audio_bytes, resolved_mime_type = _decode_project_chat_audio_data_url(
+            req.audio_data_url,
+            fallback_mime_type=req.audio_mime_type,
+        )
+        suffix = mimetypes.guess_extension(resolved_mime_type) or Path(req.audio_filename or "").suffix or ".audio"
+        temp_path = ""
+        try:
+            with NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                temp_file.write(audio_bytes)
+                temp_path = temp_file.name
+            transcription = await llm_service.transcribe_audio(
+                provider_id,
+                model_name,
+                file_path=temp_path,
+                filename=str(req.audio_filename or f"project-chat{suffix}").strip(),
+                mime_type=resolved_mime_type,
+                prompt=prompt,
+                owner_username=username,
+                include_all=is_admin_like(auth_payload),
+            )
+            transcription_text = str(transcription.get("text") or "").strip()
+        finally:
+            if temp_path:
+                Path(temp_path).unlink(missing_ok=True)
+        if not transcription_text:
+            raise RuntimeError("音频转写模型未返回文本")
+    else:
+        if not prompt:
+            raise HTTPException(400, "prompt is required for media generation")
+        if tool_name == "generate_image" and reference_images:
+            raise HTTPException(400, "generate_image does not accept input images; use edit_image instead")
+        if tool_name == "edit_image":
+            media_artifacts = await llm_service.edit_image_artifacts(
+                provider_id,
+                model_name,
+                prompt,
+                image_references=reference_images,
+                owner_username=username,
+                include_all=is_admin_like(auth_payload),
+            )
+        else:
+            media_artifacts = await llm_service.generate_media_artifacts(
+                provider_id,
+                model_name,
+                prompt,
+                owner_username=username,
+                include_all=is_admin_like(auth_payload),
+            )
+        artifacts = _normalize_chat_media_artifacts(
+            media_artifacts
+        )
+        if not artifacts:
+            raise RuntimeError("模型未返回有效媒体结果")
+
+    return {
+        "ok": True,
+        "tool_name": tool_name,
+        "provider_id": provider_id,
+        "model_name": model_name,
+        "content": transcription_text or _build_generated_media_answer(artifacts),
+        "artifacts": artifacts,
+        "images": _collect_chat_artifact_urls(artifacts, asset_type="image"),
+        "videos": _collect_chat_artifact_urls(artifacts, asset_type="video"),
+        "audios": _collect_chat_artifact_urls(artifacts, asset_type="audio"),
+        "transcription": transcription_text,
+    }
+
+
+@router.post("/{project_id}/chat/media-tool")
+async def execute_project_chat_media_tool(
+    project_id: str,
+    req: ProjectChatMediaToolReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    try:
+        return await _execute_project_chat_media_tool(
+            req=req,
+            auth_payload=auth_payload,
+            username=_current_username(auth_payload),
+        )
+    except HTTPException:
+        raise
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("project chat media tool failed: %s", exc)
+        raise HTTPException(502, str(exc) or "媒体模型调用失败") from exc
 
 
 
@@ -4898,8 +5204,27 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
         if coordination_mode in {"auto", "manual"}
         else settings["employee_coordination_mode"]
     )
+    model_routing_mode = str(
+        source.get("model_routing_mode", settings["model_routing_mode"]) or ""
+    ).strip().lower()
+    settings["model_routing_mode"] = (
+        model_routing_mode
+        if model_routing_mode in {"auto", "manual"}
+        else settings["model_routing_mode"]
+    )
     settings["provider_id"] = str(source.get("provider_id", settings["provider_id"]) or "").strip()
     settings["model_name"] = str(source.get("model_name", settings["model_name"]) or "").strip()
+    for key in (
+        "image_provider_id",
+        "image_model_name",
+        "video_provider_id",
+        "video_model_name",
+        "audio_generation_provider_id",
+        "audio_generation_model_name",
+        "audio_transcription_provider_id",
+        "audio_transcription_model_name",
+    ):
+        settings[key] = str(source.get(key, settings[key]) or "").strip()
     settings["temperature"] = _coerce_float(source.get("temperature"), settings["temperature"], min_value=0.0, max_value=2.0)
     settings["system_prompt"] = str(source.get("system_prompt", settings["system_prompt"]) or "").strip()[:4000]
     settings["auto_use_tools_explicit"] = _coerce_bool(
@@ -7700,6 +8025,7 @@ def _build_project_chat_done_payload(
         payload["artifacts"] = normalized_artifacts
         payload["images"] = _collect_chat_artifact_urls(normalized_artifacts, asset_type="image")
         payload["videos"] = _collect_chat_artifact_urls(normalized_artifacts, asset_type="video")
+        payload["audios"] = _collect_chat_artifact_urls(normalized_artifacts, asset_type="audio")
     payload = _attach_task_tree_audit_to_done_payload(
         payload,
         project_id=project_id,
@@ -11040,6 +11366,7 @@ def _append_chat_record(
     attachments: list[str] | None = None,
     images: list[str] | None = None,
     videos: list[str] | None = None,
+    audios: list[str] | None = None,
     source_context: dict[str, Any] | None = None,
 ) -> ProjectChatMessage | None:
     if not _project_chat_history_persist_enabled():
@@ -11069,6 +11396,7 @@ def _append_chat_record(
                 attachments=attachments or [],
                 images=images or [],
                 videos=videos or [],
+                audios=audios or [],
                 source_context=dict(source_context or {}) if isinstance(source_context, dict) else {},
             )
         )
@@ -22417,7 +22745,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 selected_provider=selected_provider,
                 model_name=model_name,
             )
-            if model_parameter_mode in {"image", "video"}:
+            if model_parameter_mode in {"image", "video", "audio_generation", "audio_transcription"}:
                 await _send_project_chat_event(
                     _build_project_chat_start_payload(
                         request_id=request_id,
@@ -22447,6 +22775,10 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         provider_id=provider_id,
                         model_name=model_name,
                         runtime_settings=runtime_settings,
+                        model_parameter_mode=model_parameter_mode,
+                        audio_data_url=req.audio_data_url,
+                        audio_filename=req.audio_filename,
+                        audio_mime_type=req.audio_mime_type,
                         memory_source=_compose_project_chat_memory_source("project-chat-ws-media", chat_surface),
                         allow_requirement_record=allow_requirement_record,
                     )
@@ -23675,7 +24007,7 @@ async def stream_project_chat(
         selected_provider=selected_provider,
         model_name=model_name,
     )
-    if model_parameter_mode in {"image", "video"}:
+    if model_parameter_mode in {"image", "video", "audio_generation", "audio_transcription"}:
         async def media_event_stream() -> AsyncIterator[str]:
             yield _sse_payload(
                 "message",
@@ -23705,6 +24037,10 @@ async def stream_project_chat(
                     provider_id=provider_id,
                     model_name=model_name,
                     runtime_settings=runtime_settings,
+                    model_parameter_mode=model_parameter_mode,
+                    audio_data_url=req.audio_data_url,
+                    audio_filename=req.audio_filename,
+                    audio_mime_type=req.audio_mime_type,
                     memory_source=_compose_project_chat_memory_source("project-chat-sse-media", chat_surface),
                     allow_requirement_record=allow_requirement_record,
                 )

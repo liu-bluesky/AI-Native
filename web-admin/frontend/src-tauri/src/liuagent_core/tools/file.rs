@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::liuagent_core::args::{bool_arg, number_arg, required_string_arg, string_arg};
+use crate::liuagent_core::file_change_review::capture_baseline;
 use crate::liuagent_core::permission::require_approval;
 use crate::liuagent_core::types::{PermissionDecisionInput, ToolError};
 use crate::liuagent_core::workspace::{
@@ -211,6 +212,7 @@ pub fn write_file(
     } else {
         String::new()
     };
+    capture_baseline(&root, &target)?;
     fs::write(&target, content.as_bytes())
         .map_err(|err| ToolError::new("tool.execution_failed", format!("write failed: {err}")))?;
     let (added, removed, diff) =
@@ -278,6 +280,7 @@ pub fn delete_file(
     } else {
         String::new()
     };
+    capture_baseline(&root, &target)?;
     fs::remove_file(&target)
         .map_err(|err| ToolError::new("tool.execution_failed", format!("delete failed: {err}")))?;
     let exists_after = target.exists();
@@ -344,6 +347,10 @@ pub fn apply_patch(
     )?;
 
     run_git_apply(&root, &patch, true)?;
+    for path in &changed_files {
+        let target = resolve_workspace_write_target(&root, path)?;
+        capture_baseline(&root, &target)?;
+    }
     run_git_apply(&root, &patch, false)?;
     let summary = format!(
         "应用 patch：{} 个文件变更。{}",

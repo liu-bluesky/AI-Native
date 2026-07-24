@@ -39,6 +39,8 @@ pub struct LocalChatRequest {
     #[serde(default)]
     pub attachments: Vec<LocalChatAttachment>,
     #[serde(default)]
+    pub media_tools: Vec<LocalMediaToolConfig>,
+    #[serde(default)]
     pub mcp_config: Value,
     pub backend_context: Option<LocalBackendContext>,
     pub permission_decision: Option<PermissionDecisionInput>,
@@ -64,12 +66,21 @@ impl Default for LocalChatRequest {
             model_runtime: None,
             ai_entry_file: None,
             attachments: Vec::new(),
+            media_tools: Vec::new(),
             mcp_config: json!({}),
             backend_context: None,
             permission_decision: None,
             resume_from_checkpoint: false,
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalMediaToolConfig {
+    pub name: String,
+    pub provider_id: String,
+    pub model_name: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

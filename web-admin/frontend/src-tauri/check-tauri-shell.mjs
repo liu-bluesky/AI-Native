@@ -133,6 +133,9 @@ await assertIncludes("src/utils/native-desktop-bridge.js", [
   "removedNativeExternalAgentError",
   "recordNativeRunnerPermissionDecision",
   "listNativeRunnerPermissionDecisions",
+  "listNativeWorkspaceFileChanges",
+  "acceptNativeWorkspaceFileChange",
+  "revertNativeWorkspaceFileChange",
 ]);
 await assertIncludes("src/views/projects/ProjectChat.vue", [
   "startNativeLiuAgentLocalChat",
@@ -153,6 +156,14 @@ await assertIncludes("src/views/projects/ProjectChat.vue", [
   "desktop_frontend_local_listener",
   "ElCheckboxGroup",
   "ElInput",
+  "acceptReviewedWorkspaceFile",
+  "revertReviewedWorkspaceFile",
+]);
+await assertIncludes("src/modules/project-chat/components/file-changes/FileChangesDrawer.vue", [
+  "文件变更审查",
+  "确认保存",
+  "放弃修改",
+  "撤回已保存",
 ]);
 await assertIncludes("src-tauri/Cargo.toml", [
   'name = "ai-employee-factory-desktop"',

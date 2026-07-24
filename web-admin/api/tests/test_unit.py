@@ -2576,10 +2576,14 @@ def test_llm_model_type_options_carry_attachment_capability():
         "image_generation",
         "video_generation",
         "audio_generation",
-        "audio_transcription",
     ):
         assert by_id[unsupported_id]["attachment_mode"] == "unsupported"
         assert by_id[unsupported_id]["attachment_max_files"] == 0
+
+    transcription_meta = by_id["audio_transcription"]
+    assert transcription_meta["attachment_mode"] == "inline_audio"
+    assert transcription_meta["project_chat_allowed_file_types"] == ["audio/*"]
+    assert transcription_meta["attachment_max_files"] == 1
 
 
 def test_llm_model_type_catalog_normalizes_industry_aliases():
@@ -20654,6 +20658,41 @@ def test_normalize_project_chat_settings_supports_employee_coordination_mode():
     assert default_settings["employee_coordination_mode"] == "auto"
     assert manual_settings["employee_coordination_mode"] == "manual"
     assert invalid_settings["employee_coordination_mode"] == "auto"
+
+
+def test_normalize_project_chat_settings_preserves_model_role_routing():
+    from routers.projects import _normalize_project_chat_settings
+
+    settings = _normalize_project_chat_settings(
+        {
+            "model_routing_mode": "manual",
+            "provider_id": "chat-provider",
+            "model_name": "chat-model",
+            "image_provider_id": "image-provider",
+            "image_model_name": "image-model",
+            "video_provider_id": "video-provider",
+            "video_model_name": "video-model",
+            "audio_generation_provider_id": "speech-provider",
+            "audio_generation_model_name": "speech-model",
+            "audio_transcription_provider_id": "asr-provider",
+            "audio_transcription_model_name": "asr-model",
+        }
+    )
+
+    assert settings["model_routing_mode"] == "manual"
+    assert settings["provider_id"] == "chat-provider"
+    assert settings["model_name"] == "chat-model"
+    assert settings["image_provider_id"] == "image-provider"
+    assert settings["image_model_name"] == "image-model"
+    assert settings["video_provider_id"] == "video-provider"
+    assert settings["video_model_name"] == "video-model"
+    assert settings["audio_generation_provider_id"] == "speech-provider"
+    assert settings["audio_generation_model_name"] == "speech-model"
+    assert settings["audio_transcription_provider_id"] == "asr-provider"
+    assert settings["audio_transcription_model_name"] == "asr-model"
+
+    invalid = _normalize_project_chat_settings({"model_routing_mode": "mixed"})
+    assert invalid["model_routing_mode"] == "auto"
 
 
 def test_normalize_project_chat_settings_treats_legacy_file_type_defaults_as_unrestricted():

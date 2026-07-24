@@ -814,7 +814,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /const modelRuntime = await buildLocalLiuAgentModelRuntime\(\)/,
+  /const modelRuntime = await buildLocalLiuAgentModelRuntime\(providerId, modelName\)/,
   "local-runner chat must fetch an explicit desktop model runtime contract before invoking Tauri",
 );
 

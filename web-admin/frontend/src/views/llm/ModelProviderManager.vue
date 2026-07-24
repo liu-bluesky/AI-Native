@@ -13,7 +13,9 @@
         </div>
       </div>
       <div class="settings-hero__actions">
-        <el-button :loading="importingPresets" @click="importMainstreamPresets">导入主流模板</el-button>
+        <el-button :loading="importingPresets" @click="importMainstreamPresets"
+          >导入主流模板</el-button
+        >
         <el-button @click="fetchProviders">刷新</el-button>
         <el-button type="primary" @click="openCreate">新增供应商</el-button>
       </div>
@@ -26,7 +28,11 @@
           clearable
           placeholder="搜索名称、地址、创建人或模型"
         />
-        <el-select v-model="filters.providerType" clearable placeholder="供应商类型">
+        <el-select
+          v-model="filters.providerType"
+          clearable
+          placeholder="供应商类型"
+        >
           <el-option label="全部类型" value="" />
           <el-option
             v-for="item in providerTypeOptions"
@@ -54,105 +60,181 @@
           <div class="table-panel__eyebrow">Provider Matrix</div>
           <div class="table-panel__title">供应商列表</div>
         </div>
-        <div class="table-panel__meta">共 {{ filteredProviders.length }} 条</div>
+        <div class="table-panel__meta">
+          共 {{ filteredProviders.length }} 条
+        </div>
       </div>
 
-      <el-table :data="pagedProviders" stripe class="responsive-provider-table">
-      <el-table-column type="expand">
-        <template #default="{ row }">
-          <el-descriptions :column="2" border size="small" class="expand-desc">
-            <el-descriptions-item label="连接状态">
-              <el-tag :type="connectionTagType(row.id)" size="small">{{ connectionTagText(row.id) }}</el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="最近测试时间">{{ formatDateTime(getConnectionMeta(row.id, 'tested_at'), { withSeconds: true }) }}</el-descriptions-item>
-            <el-descriptions-item label="测试模型">{{ getConnectionMeta(row.id, 'model_tested') || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="延迟(ms)">{{ getConnectionMeta(row.id, 'latency_ms') || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="请求地址" :span="2">
-              {{ formatConnectionRequestAddresses(row.id) || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="返回信息" :span="2">
-              {{ getConnectionMeta(row.id, 'message') || '-' }}
-            </el-descriptions-item>
-          </el-descriptions>
-          <div class="expand-actions">
-            <span class="expand-actions__label">测试模型</span>
-            <div class="expand-actions__buttons">
-              <el-button
-                v-for="action in getProviderTestActions(row)"
-                :key="`${row.id}-${action.modelName || 'auto'}`"
-                :type="action.primary ? 'primary' : ''"
-                plain
+      <el-table
+        ref="providerTableRef"
+        :data="pagedProviders"
+        stripe
+        class="responsive-provider-table"
+        :style="providerTableStyle"
+      >
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div class="provider-expanded-content">
+              <el-descriptions
+                :column="2"
+                border
                 size="small"
-                :loading="isTestingAction(row.id, action.modelName)"
-                @click="testConnection(row, action.modelName)"
+                class="expand-desc"
               >
-                {{ action.label }}
-              </el-button>
+                <el-descriptions-item label="连接状态">
+                  <el-tag :type="connectionTagType(row.id)" size="small">{{
+                    connectionTagText(row.id)
+                  }}</el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="最近测试时间">{{
+                  formatDateTime(getConnectionMeta(row.id, "tested_at"), {
+                    withSeconds: true,
+                  })
+                }}</el-descriptions-item>
+                <el-descriptions-item label="测试模型">{{
+                  getConnectionMeta(row.id, "model_tested") || "-"
+                }}</el-descriptions-item>
+                <el-descriptions-item label="延迟(ms)">{{
+                  getConnectionMeta(row.id, "latency_ms") || "-"
+                }}</el-descriptions-item>
+                <el-descriptions-item label="请求地址" :span="2">
+                  {{ formatConnectionRequestAddresses(row.id) || "-" }}
+                </el-descriptions-item>
+                <el-descriptions-item label="返回信息" :span="2">
+                  {{ getConnectionMeta(row.id, "message") || "-" }}
+                </el-descriptions-item>
+              </el-descriptions>
+              <ProviderCapabilityTestResults
+                :results="getConnectionResults(row.id)"
+                :format-model-type-label="formatModelTypeLabel"
+              />
+              <div class="expand-actions">
+                <div class="expand-actions__copy">
+                  <span class="expand-actions__label">测试模型</span>
+                  <span class="expand-actions__hint"
+                    >图片、视频和音频测试会真实生成内容，可能产生供应商费用。</span
+                  >
+                </div>
+                <div class="expand-actions__buttons">
+                  <el-button
+                    v-for="action in getProviderTestActions(row)"
+                    :key="`${row.id}-${action.modelName || 'auto'}`"
+                    :type="action.primary ? 'primary' : ''"
+                    plain
+                    size="small"
+                    :loading="isTestingAction(row.id, action.modelName)"
+                    @click="testConnection(row, action.modelName)"
+                  >
+                    {{ action.label }}
+                  </el-button>
+                </div>
+              </div>
             </div>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
-      <el-table-column prop="owner_username" label="创建人" min-width="120" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.owner_username || '-' }}</template>
-      </el-table-column>
-      <el-table-column prop="provider_type" label="类型" min-width="140" show-overflow-tooltip />
-      <el-table-column prop="base_url" label="Base URL" min-width="200" show-overflow-tooltip />
-      <el-table-column label="共享用户" min-width="160" show-overflow-tooltip>
-        <template #default="{ row }">
-          {{ formatSharedUsers(row.shared_usernames) }}
-        </template>
-      </el-table-column>
-      <el-table-column label="模型列表" min-width="220" show-overflow-tooltip>
-        <template #default="{ row }">{{ formatProviderModels(row) }}</template>
-      </el-table-column>
-      <el-table-column prop="default_model" label="默认模型" min-width="150" show-overflow-tooltip />
-      <el-table-column label="API Key" min-width="130" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.api_key_masked || '-' }}</template>
-      </el-table-column>
-      <el-table-column label="启用" width="90" align="center">
-        <template #default="{ row }">
-          <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="创建时间" min-width="180">
-        <template #default="{ row }">{{ formatDateTime(row.created_at, { withSeconds: true }) }}</template>
-      </el-table-column>
-      <el-table-column label="更新时间" min-width="180">
-        <template #default="{ row }">{{ formatDateTime(row.updated_at, { withSeconds: true }) }}</template>
-      </el-table-column>
-      <el-table-column label="操作" min-width="320" fixed="right" class-name="table-action-column">
-        <template #default="{ row }">
-          <el-button
-            v-for="action in getPrimaryProviderActions(row)"
-            :key="`${row.id}-${action.key}`"
-            text
-            :type="action.type"
-            :loading="action.key === 'test' && testingProviderId === row.id"
-            @click="handleProviderAction(row, action.key)"
-          >
-            {{ action.label }}
-          </el-button>
-          <el-dropdown
-            v-if="getOverflowProviderActions(row).length"
-            trigger="click"
-            @command="(actionKey) => handleProviderAction(row, actionKey)"
-          >
-            <el-button text type="primary" size="small">更多</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item
-                  v-for="action in getOverflowProviderActions(row)"
-                  :key="`${row.id}-${action.key}`"
-                  :command="action.key"
-                >
-                  {{ action.label }}
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </template>
-      </el-table-column>
+          </template>
+        </el-table-column>
+        <el-table-column
+          prop="name"
+          label="名称"
+          min-width="140"
+          show-overflow-tooltip
+        />
+        <el-table-column
+          prop="owner_username"
+          label="创建人"
+          min-width="120"
+          show-overflow-tooltip
+        >
+          <template #default="{ row }">{{
+            row.owner_username || "-"
+          }}</template>
+        </el-table-column>
+        <el-table-column
+          prop="provider_type"
+          label="类型"
+          min-width="140"
+          show-overflow-tooltip
+        />
+        <el-table-column
+          prop="base_url"
+          label="Base URL"
+          min-width="200"
+          show-overflow-tooltip
+        />
+        <el-table-column label="共享用户" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ formatSharedUsers(row.shared_usernames) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="模型列表" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{
+            formatProviderModels(row)
+          }}</template>
+        </el-table-column>
+        <el-table-column
+          prop="default_model"
+          label="默认模型"
+          min-width="150"
+          show-overflow-tooltip
+        />
+        <el-table-column label="API Key" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{
+            row.api_key_masked || "-"
+          }}</template>
+        </el-table-column>
+        <el-table-column label="启用" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{
+              row.enabled ? "是" : "否"
+            }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" min-width="180">
+          <template #default="{ row }">{{
+            formatDateTime(row.created_at, { withSeconds: true })
+          }}</template>
+        </el-table-column>
+        <el-table-column label="更新时间" min-width="180">
+          <template #default="{ row }">{{
+            formatDateTime(row.updated_at, { withSeconds: true })
+          }}</template>
+        </el-table-column>
+        <el-table-column
+          label="操作"
+          min-width="320"
+          fixed="right"
+          class-name="table-action-column"
+        >
+          <template #default="{ row }">
+            <el-button
+              v-for="action in getPrimaryProviderActions(row)"
+              :key="`${row.id}-${action.key}`"
+              text
+              :type="action.type"
+              :loading="action.key === 'test' && testingProviderId === row.id"
+              @click="handleProviderAction(row, action.key)"
+            >
+              {{ action.label }}
+            </el-button>
+            <el-dropdown
+              v-if="getOverflowProviderActions(row).length"
+              trigger="click"
+              @command="(actionKey) => handleProviderAction(row, actionKey)"
+            >
+              <el-button text type="primary" size="small">更多</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="action in getOverflowProviderActions(row)"
+                    :key="`${row.id}-${action.key}`"
+                    :command="action.key"
+                  >
+                    {{ action.label }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </template>
+        </el-table-column>
       </el-table>
 
       <div v-if="filteredProviders.length" class="table-panel__pagination">
@@ -166,10 +248,18 @@
         />
       </div>
 
-      <el-empty v-if="!loading && !filteredProviders.length" description="暂无模型供应商" :image-size="60" />
+      <el-empty
+        v-if="!loading && !filteredProviders.length"
+        description="暂无模型供应商"
+        :image-size="60"
+      />
     </section>
 
-    <el-dialog v-model="showDialog" :title="dialogTitle()" width="min(860px, calc(100vw - 24px))">
+    <el-dialog
+      v-model="showDialog"
+      :title="dialogTitle()"
+      width="min(860px, calc(100vw - 24px))"
+    >
       <el-form :model="form" label-width="120px">
         <el-form-item label="主流模板">
           <div class="provider-preset-panel">
@@ -188,14 +278,28 @@
             <div v-if="activePresetMeta" class="provider-preset-note">
               <div>{{ activePresetMeta.note }}</div>
               <div>Base URL：{{ activePresetMeta.base_url }}</div>
-              <div>接口规范：{{ formatProviderInterfaceLabel(activePresetMeta.provider_type) }}（已自动选择）</div>
-              <div>示例模型：{{ activePresetMeta.model_configs.map((item) => item.name).join('、') }}</div>
+              <div>
+                接口规范：{{
+                  formatProviderInterfaceLabel(activePresetMeta.provider_type)
+                }}（已自动选择）
+              </div>
+              <div>
+                示例模型：{{
+                  activePresetMeta.model_configs
+                    .map((item) => item.name)
+                    .join("、")
+                }}
+              </div>
             </div>
             <div v-else class="provider-preset-note">
-              点击上方模板可自动填充主流供应商的接口规范、Base URL 和示例模型；模型名可按实际账号权限调整。
+              点击上方模板可自动填充主流供应商的接口规范、Base URL
+              和示例模型；模型名可按实际账号权限调整。
             </div>
             <div class="provider-standard-note">
-              OpenAI 官方最新模型优先使用 Responses；Ollama、DeepSeek、智谱、Gemini 优先使用 OpenAI-compatible；Claude 需通过兼容网关或后续 Anthropic 适配；Codex 属于外部执行器，不建议作为普通模型供应商。
+              OpenAI 官方最新模型优先使用
+              Responses；Ollama、DeepSeek、智谱、Gemini 优先使用
+              OpenAI-compatible；Claude 需通过兼容网关或后续 Anthropic
+              适配；Codex 属于外部执行器，不建议作为普通模型供应商。
             </div>
           </div>
         </el-form-item>
@@ -204,7 +308,10 @@
         </el-form-item>
         <el-form-item label="接口规范">
           <div class="provider-interface-panel">
-            <el-radio-group v-model="form.provider_type" class="provider-interface-options">
+            <el-radio-group
+              v-model="form.provider_type"
+              class="provider-interface-options"
+            >
               <el-radio-button
                 v-for="option in PROVIDER_INTERFACE_OPTIONS"
                 :key="option.value"
@@ -216,19 +323,32 @@
             <div class="provider-interface-help">
               <div class="provider-interface-help__head">
                 <strong>{{ activeProviderTypeMeta.label }}</strong>
-                <el-tag size="small" :type="providerInterfaceAssistTagType" effect="plain">
+                <el-tag
+                  size="small"
+                  :type="providerInterfaceAssistTagType"
+                  effect="plain"
+                >
                   {{ providerInterfaceAssistText }}
                 </el-tag>
               </div>
               <span>{{ activeProviderTypeMeta.description }}</span>
-              <span v-if="activePresetMeta && !isUsingPresetProviderType" class="provider-interface-help__warning">
-                {{ activePresetMeta.label }} 模板推荐 {{ formatProviderInterfaceLabel(activePresetMeta.provider_type) }}。
+              <span
+                v-if="activePresetMeta && !isUsingPresetProviderType"
+                class="provider-interface-help__warning"
+              >
+                {{ activePresetMeta.label }} 模板推荐
+                {{
+                  formatProviderInterfaceLabel(activePresetMeta.provider_type)
+                }}。
               </span>
             </div>
           </div>
         </el-form-item>
         <el-form-item label="Base URL" required>
-          <el-input v-model="form.base_url" placeholder="例如：https://api.openai.com/v1" />
+          <el-input
+            v-model="form.base_url"
+            placeholder="例如：https://api.openai.com/v1"
+          />
         </el-form-item>
         <el-form-item label="API Key">
           <el-input
@@ -279,11 +399,19 @@
                 </div>
               </div>
               <el-button
-                :type="form.default_model === String(item.name || '').trim() ? 'primary' : ''"
+                :type="
+                  form.default_model === String(item.name || '').trim()
+                    ? 'primary'
+                    : ''
+                "
                 plain
                 @click="markDefaultModel(item)"
               >
-                {{ form.default_model === String(item.name || '').trim() ? '默认模型' : '设为默认' }}
+                {{
+                  form.default_model === String(item.name || "").trim()
+                    ? "默认模型"
+                    : "设为默认"
+                }}
               </el-button>
               <el-button
                 text
@@ -324,7 +452,9 @@
             >
               <div class="model-option-line">
                 <span>{{ item.name }}</span>
-                <span class="model-option-line__meta">{{ formatModelTypeLabel(item.model_type) }}</span>
+                <span class="model-option-line__meta">{{
+                  formatModelTypeLabel(item.model_type)
+                }}</span>
               </div>
             </el-option>
           </el-select>
@@ -362,584 +492,690 @@
       </el-form>
       <template #footer>
         <el-button @click="showDialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submitForm">保存</el-button>
+        <el-button type="primary" :loading="saving" @click="submitForm"
+          >保存</el-button
+        >
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, h, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import api from '@/utils/api.js'
-import { formatDateTime, parseDateTime } from '@/utils/date.js'
-import { fetchDictionary } from '@/utils/dictionaries.js'
-import { canManageRecord, getOwnershipDeniedMessage } from '@/utils/ownership.js'
+import {
+  computed,
+  h,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from "vue";
+import { ElMessage, ElMessageBox } from "element-plus";
+import api from "@/utils/api.js";
+import { formatDateTime, parseDateTime } from "@/utils/date.js";
+import { fetchDictionary } from "@/utils/dictionaries.js";
+import {
+  canManageRecord,
+  getOwnershipDeniedMessage,
+} from "@/utils/ownership.js";
+import ProviderCapabilityTestResults from "@/components/llm/ProviderCapabilityTestResults.vue";
 import {
   buildModelTypeMetaMap,
   FALLBACK_MODEL_TYPE_OPTIONS,
   normalizeProviderModelConfigs,
   normalizeProviderModelNames,
-} from '@/utils/llm-models.js'
+} from "@/utils/llm-models.js";
 
-const loading = ref(false)
-const saving = ref(false)
-const importingPresets = ref(false)
-const discoveringModels = ref(false)
-const providers = ref([])
-const shareUserOptions = ref([])
-const modelTypeOptions = ref(FALLBACK_MODEL_TYPE_OPTIONS)
-const showDialog = ref(false)
-const editingId = ref('')
-const dialogMode = ref('create')
-const testingProviderId = ref('')
-const testingModelName = ref('')
-const currentPage = ref(1)
-const pageSize = ref(10)
-const appliedPresetKey = ref('')
-const connectionResultByProvider = reactive({})
+const loading = ref(false);
+const saving = ref(false);
+const importingPresets = ref(false);
+const discoveringModels = ref(false);
+const providers = ref([]);
+const shareUserOptions = ref([]);
+const modelTypeOptions = ref(FALLBACK_MODEL_TYPE_OPTIONS);
+const showDialog = ref(false);
+const editingId = ref("");
+const dialogMode = ref("create");
+const testingProviderId = ref("");
+const testingModelName = ref("");
+const currentPage = ref(1);
+const pageSize = ref(10);
+const appliedPresetKey = ref("");
+const providerTableRef = ref(null);
+const providerTableVisibleWidth = ref(0);
+let providerTableResizeObserver = null;
+
+const providerTableStyle = computed(() =>
+  providerTableVisibleWidth.value
+    ? {
+        "--provider-table-visible-width": `${providerTableVisibleWidth.value}px`,
+      }
+    : {},
+);
+
+function syncProviderTableVisibleWidth() {
+  const tableElement = providerTableRef.value?.$el;
+  if (!(tableElement instanceof HTMLElement)) return;
+  providerTableVisibleWidth.value = tableElement.clientWidth;
+}
+const connectionResultByProvider = reactive({});
+const connectionResultsByProvider = reactive({});
 const filters = reactive({
-  query: '',
-  providerType: '',
-  sort: 'created_desc',
-})
+  query: "",
+  providerType: "",
+  sort: "created_desc",
+});
 const form = reactive({
-  name: '',
-  provider_type: 'openai-compatible',
-  base_url: '',
-  api_key: '',
+  name: "",
+  provider_type: "openai-compatible",
+  base_url: "",
+  api_key: "",
   model_configs: [],
-  default_model: '',
+  default_model: "",
   enabled: true,
-  extra_headers_text: '',
+  extra_headers_text: "",
   shared_usernames: [],
-})
+});
 
 const PROVIDER_INTERFACE_OPTIONS = [
   {
-    value: 'openai-compatible',
-    label: 'OpenAI-compatible',
-    description: '统一走 /chat/completions，适合 DeepSeek、智谱、Gemini、OpenRouter 和多数兼容网关。',
+    value: "openai-compatible",
+    label: "OpenAI-compatible",
+    description:
+      "统一走 /chat/completions，适合 DeepSeek、智谱、Gemini、OpenRouter 和多数兼容网关。",
   },
   {
-    value: 'responses',
-    label: 'OpenAI Responses',
-    description: '统一走 /responses，适合明确支持 Responses API 的 OpenAI 系模型。',
+    value: "responses",
+    label: "OpenAI Responses",
+    description:
+      "统一走 /responses，适合明确支持 Responses API 的 OpenAI 系模型。",
   },
   {
-    value: 'custom',
-    label: 'Custom',
-    description: '仅用于保留非标准接入配置；保存前请确认后端调用层已适配该接口。',
+    value: "custom",
+    label: "Custom",
+    description:
+      "仅用于保留非标准接入配置；保存前请确认后端调用层已适配该接口。",
   },
-]
+];
 
-const modelTypeMetaMap = computed(() => buildModelTypeMetaMap(modelTypeOptions.value))
-const normalizedFormModelConfigs = computed(() => normalizeProviderModelConfigs({ model_configs: form.model_configs }, modelTypeOptions.value))
-const activeProviderTypeMeta = computed(() => resolveProviderInterfaceOption(form.provider_type))
+const modelTypeMetaMap = computed(() =>
+  buildModelTypeMetaMap(modelTypeOptions.value),
+);
+const normalizedFormModelConfigs = computed(() =>
+  normalizeProviderModelConfigs(
+    { model_configs: form.model_configs },
+    modelTypeOptions.value,
+  ),
+);
+const activeProviderTypeMeta = computed(() =>
+  resolveProviderInterfaceOption(form.provider_type),
+);
 const providerTypeOptions = computed(() =>
   Array.from(
     new Set(
       (providers.value || [])
-        .map((item) => String(item?.provider_type || '').trim())
+        .map((item) => String(item?.provider_type || "").trim())
         .filter(Boolean),
     ),
   ),
-)
+);
 
 function normalizeTimestamp(value) {
-  return parseDateTime(value)?.getTime() || 0
+  return parseDateTime(value)?.getTime() || 0;
 }
 
 const filteredProviders = computed(() => {
-  const keyword = String(filters.query || '').trim().toLowerCase()
-  const providerType = String(filters.providerType || '').trim()
+  const keyword = String(filters.query || "")
+    .trim()
+    .toLowerCase();
+  const providerType = String(filters.providerType || "").trim();
   const list = (providers.value || []).filter((item) => {
     const matchesKeyword =
       !keyword ||
-      String(item?.name || '').toLowerCase().includes(keyword) ||
-      String(item?.base_url || '').toLowerCase().includes(keyword) ||
-      String(item?.owner_username || '').toLowerCase().includes(keyword) ||
-      formatProviderModels(item).toLowerCase().includes(keyword)
-    const matchesProviderType = !providerType || String(item?.provider_type || '').trim() === providerType
-    return matchesKeyword && matchesProviderType
-  })
+      String(item?.name || "")
+        .toLowerCase()
+        .includes(keyword) ||
+      String(item?.base_url || "")
+        .toLowerCase()
+        .includes(keyword) ||
+      String(item?.owner_username || "")
+        .toLowerCase()
+        .includes(keyword) ||
+      formatProviderModels(item).toLowerCase().includes(keyword);
+    const matchesProviderType =
+      !providerType ||
+      String(item?.provider_type || "").trim() === providerType;
+    return matchesKeyword && matchesProviderType;
+  });
   return list.sort((left, right) => {
-    if (filters.sort === 'created_asc') {
-      return normalizeTimestamp(left?.created_at) - normalizeTimestamp(right?.created_at)
+    if (filters.sort === "created_asc") {
+      return (
+        normalizeTimestamp(left?.created_at) -
+        normalizeTimestamp(right?.created_at)
+      );
     }
-    if (filters.sort === 'name_asc') {
-      return String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-CN')
+    if (filters.sort === "name_asc") {
+      return String(left?.name || "").localeCompare(
+        String(right?.name || ""),
+        "zh-CN",
+      );
     }
-    return normalizeTimestamp(right?.created_at) - normalizeTimestamp(left?.created_at)
-  })
-})
+    return (
+      normalizeTimestamp(right?.created_at) -
+      normalizeTimestamp(left?.created_at)
+    );
+  });
+});
 
 const pagedProviders = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return filteredProviders.value.slice(start, start + pageSize.value)
-})
+  const start = (currentPage.value - 1) * pageSize.value;
+  return filteredProviders.value.slice(start, start + pageSize.value);
+});
 
 watch(
   () => [filters.query, filters.providerType, filters.sort, pageSize.value],
   () => {
-    currentPage.value = 1
+    currentPage.value = 1;
   },
-)
+);
 
 const PROVIDER_PRESETS = [
   {
-    key: 'ollama',
-    label: 'Ollama',
-    name: 'Ollama 本地模型',
-    provider_type: 'openai-compatible',
-    base_url: 'http://127.0.0.1:11434/v1',
-    note: 'Ollama 本地 OpenAI 兼容入口，适合接入 Gemma、Llama、Qwen、DeepSeek 等本机模型；API Key 可留空。',
+    key: "ollama",
+    label: "Ollama",
+    name: "Ollama 本地模型",
+    provider_type: "openai-compatible",
+    base_url: "http://127.0.0.1:11434/v1",
+    note: "Ollama 本地 OpenAI 兼容入口，适合接入 Gemma、Llama、Qwen、DeepSeek 等本机模型；API Key 可留空。",
     model_configs: [
-      { name: 'gemma4', model_type: 'text_generation' },
-      { name: 'gemma3', model_type: 'text_generation' },
-      { name: 'llama3.3', model_type: 'text_generation' },
-      { name: 'qwen3', model_type: 'text_generation' },
+      { name: "gemma4", model_type: "text_generation" },
+      { name: "gemma3", model_type: "text_generation" },
+      { name: "llama3.3", model_type: "text_generation" },
+      { name: "qwen3", model_type: "text_generation" },
     ],
-    default_model: 'gemma4',
+    default_model: "gemma4",
   },
   {
-    key: 'openai',
-    label: 'OpenAI',
-    name: 'OpenAI',
-    provider_type: 'responses',
-    base_url: 'https://api.openai.com/v1',
-    note: 'OpenAI 官方 Responses 入口，适合作为最新旗舰模型的通用基准供应商。',
+    key: "openai",
+    label: "OpenAI",
+    name: "OpenAI",
+    provider_type: "responses",
+    base_url: "https://api.openai.com/v1",
+    note: "OpenAI 官方 Responses 入口，适合作为最新旗舰模型的通用基准供应商。",
     model_configs: [
-      { name: 'gpt-5.5', model_type: 'multimodal_chat' },
-      { name: 'gpt-5.4', model_type: 'multimodal_chat' },
+      { name: "gpt-5.5", model_type: "multimodal_chat" },
+      { name: "gpt-5.4", model_type: "multimodal_chat" },
     ],
-    default_model: 'gpt-5.5',
+    default_model: "gpt-5.5",
   },
   {
-    key: 'deepseek',
-    label: 'DeepSeek',
-    name: 'DeepSeek',
-    provider_type: 'openai-compatible',
-    base_url: 'https://api.deepseek.com',
-    note: 'DeepSeek 官方 OpenAI 兼容入口，适合通用对话与推理模型；旧别名 deepseek-chat/deepseek-reasoner 已不再作为默认模板。',
+    key: "deepseek",
+    label: "DeepSeek",
+    name: "DeepSeek",
+    provider_type: "openai-compatible",
+    base_url: "https://api.deepseek.com",
+    note: "DeepSeek 官方 OpenAI 兼容入口，适合通用对话与推理模型；旧别名 deepseek-chat/deepseek-reasoner 已不再作为默认模板。",
     model_configs: [
-      { name: 'deepseek-v4-flash', model_type: 'text_generation' },
-      { name: 'deepseek-v4-pro', model_type: 'text_generation' },
+      { name: "deepseek-v4-flash", model_type: "text_generation" },
+      { name: "deepseek-v4-pro", model_type: "text_generation" },
     ],
-    default_model: 'deepseek-v4-flash',
+    default_model: "deepseek-v4-flash",
   },
   {
-    key: 'gemini',
-    label: 'Gemini',
-    name: 'Google Gemini',
-    provider_type: 'openai-compatible',
-    base_url: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    note: 'Google Gemini 的 OpenAI 兼容入口，适合图文理解、推理与通用对话。',
+    key: "gemini",
+    label: "Gemini",
+    name: "Google Gemini",
+    provider_type: "openai-compatible",
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+    note: "Google Gemini 的 OpenAI 兼容入口，适合图文理解、推理与通用对话。",
     model_configs: [
-      { name: 'gemini-3.5-flash', model_type: 'multimodal_chat' },
-      { name: 'gemini-3.1-pro', model_type: 'multimodal_chat' },
+      { name: "gemini-3.5-flash", model_type: "multimodal_chat" },
+      { name: "gemini-3.1-pro", model_type: "multimodal_chat" },
     ],
-    default_model: 'gemini-3.5-flash',
+    default_model: "gemini-3.5-flash",
   },
   {
-    key: 'zhipu',
-    label: '智谱 GLM',
-    name: '智谱 GLM',
-    provider_type: 'openai-compatible',
-    base_url: 'https://open.bigmodel.cn/api/paas/v4',
-    note: '智谱 OpenAI 兼容入口，已适配 /api/paas/v4，并可用于文本、视觉、TTS、音色复刻和 ASR 场景。',
+    key: "zhipu",
+    label: "智谱 GLM",
+    name: "智谱 GLM",
+    provider_type: "openai-compatible",
+    base_url: "https://open.bigmodel.cn/api/paas/v4",
+    note: "智谱 OpenAI 兼容入口，已适配 /api/paas/v4，并可用于文本、视觉、TTS、音色复刻和 ASR 场景。",
     model_configs: [
-      { name: 'glm-5.2', model_type: 'text_generation' },
-      { name: 'glm-5v-turbo', model_type: 'multimodal_chat' },
-      { name: 'glm-4.5-air', model_type: 'text_generation' },
-      { name: 'glm-tts', model_type: 'audio_generation' },
-      { name: 'glm-tts-clone', model_type: 'audio_generation' },
-      { name: 'glm-asr-2512', model_type: 'audio_transcription' },
+      { name: "glm-5.2", model_type: "text_generation" },
+      { name: "glm-5v-turbo", model_type: "multimodal_chat" },
+      { name: "glm-4.5-air", model_type: "text_generation" },
+      { name: "glm-tts", model_type: "audio_generation" },
+      { name: "glm-tts-clone", model_type: "audio_generation" },
+      { name: "glm-asr-2512", model_type: "audio_transcription" },
     ],
-    default_model: 'glm-5.2',
+    default_model: "glm-5.2",
   },
   {
-    key: 'dashscope',
-    label: '阿里百炼',
-    name: '阿里云百炼',
-    provider_type: 'openai-compatible',
-    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    note: 'DashScope OpenAI 兼容入口，适合 Qwen 系列模型接入；官方推荐工作空间专属域名，通用域名仍可作为模板起点。',
+    key: "dashscope",
+    label: "阿里百炼",
+    name: "阿里云百炼",
+    provider_type: "openai-compatible",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    note: "DashScope OpenAI 兼容入口，适合 Qwen 系列模型接入；官方推荐工作空间专属域名，通用域名仍可作为模板起点。",
     model_configs: [
-      { name: 'qwen-plus', model_type: 'text_generation' },
-      { name: 'qwen-max', model_type: 'text_generation' },
+      { name: "qwen-plus", model_type: "text_generation" },
+      { name: "qwen-max", model_type: "text_generation" },
     ],
-    default_model: 'qwen-plus',
+    default_model: "qwen-plus",
   },
   {
-    key: 'openrouter',
-    label: 'OpenRouter',
-    name: 'OpenRouter',
-    provider_type: 'openai-compatible',
-    base_url: 'https://openrouter.ai/api/v1',
-    note: '聚合路由入口，适合统一接入多家模型；如需归因统计可额外补请求头。',
+    key: "openrouter",
+    label: "OpenRouter",
+    name: "OpenRouter",
+    provider_type: "openai-compatible",
+    base_url: "https://openrouter.ai/api/v1",
+    note: "聚合路由入口，适合统一接入多家模型；如需归因统计可额外补请求头。",
     model_configs: [
-      { name: 'openai/gpt-5.5', model_type: 'multimodal_chat' },
-      { name: 'deepseek/deepseek-v4-flash', model_type: 'text_generation' },
+      { name: "openai/gpt-5.5", model_type: "multimodal_chat" },
+      { name: "deepseek/deepseek-v4-flash", model_type: "text_generation" },
     ],
-    default_model: 'openai/gpt-5.5',
+    default_model: "openai/gpt-5.5",
   },
   {
-    key: 'moonshot',
-    label: 'Moonshot',
-    name: 'Moonshot AI',
-    provider_type: 'openai-compatible',
-    base_url: 'https://api.moonshot.ai/v1',
-    note: 'Moonshot/Kimi 官方 OpenAI 兼容入口，适合中文长文本、多模态、工具调用和通用对话。',
+    key: "moonshot",
+    label: "Moonshot",
+    name: "Moonshot AI",
+    provider_type: "openai-compatible",
+    base_url: "https://api.moonshot.ai/v1",
+    note: "Moonshot/Kimi 官方 OpenAI 兼容入口，适合中文长文本、多模态、工具调用和通用对话。",
     model_configs: [
-      { name: 'kimi-k2.7-code', model_type: 'multimodal_chat' },
-      { name: 'kimi-k2.6', model_type: 'multimodal_chat' },
+      { name: "kimi-k2.7-code", model_type: "multimodal_chat" },
+      { name: "kimi-k2.6", model_type: "multimodal_chat" },
     ],
-    default_model: 'kimi-k2.7-code',
+    default_model: "kimi-k2.7-code",
   },
   {
-    key: 'siliconflow',
-    label: 'SiliconFlow',
-    name: 'SiliconFlow',
-    provider_type: 'openai-compatible',
-    base_url: 'https://api.siliconflow.cn/v1',
-    note: 'SiliconFlow 聚合入口，适合快速试用开源与商用模型。',
+    key: "siliconflow",
+    label: "SiliconFlow",
+    name: "SiliconFlow",
+    provider_type: "openai-compatible",
+    base_url: "https://api.siliconflow.cn/v1",
+    note: "SiliconFlow 聚合入口，适合快速试用开源与商用模型。",
     model_configs: [
-      { name: 'Qwen/Qwen3-32B', model_type: 'text_generation' },
-      { name: 'deepseek-ai/DeepSeek-V4-Flash', model_type: 'text_generation' },
+      { name: "Qwen/Qwen3-32B", model_type: "text_generation" },
+      { name: "deepseek-ai/DeepSeek-V4-Flash", model_type: "text_generation" },
     ],
-    default_model: 'Qwen/Qwen3-32B',
+    default_model: "Qwen/Qwen3-32B",
   },
-]
+];
 
-const activePresetMeta = computed(() => PROVIDER_PRESETS.find((item) => item.key === appliedPresetKey.value) || null)
+const activePresetMeta = computed(
+  () =>
+    PROVIDER_PRESETS.find((item) => item.key === appliedPresetKey.value) ||
+    null,
+);
 const isUsingPresetProviderType = computed(() => {
-  if (!activePresetMeta.value) return false
-  return String(form.provider_type || '').trim() === String(activePresetMeta.value.provider_type || '').trim()
-})
+  if (!activePresetMeta.value) return false;
+  return (
+    String(form.provider_type || "").trim() ===
+    String(activePresetMeta.value.provider_type || "").trim()
+  );
+});
 const providerInterfaceAssistTagType = computed(() => {
-  if (!activePresetMeta.value) return 'info'
-  return isUsingPresetProviderType.value ? 'success' : 'warning'
-})
+  if (!activePresetMeta.value) return "info";
+  return isUsingPresetProviderType.value ? "success" : "warning";
+});
 const providerInterfaceAssistText = computed(() => {
   if (!activePresetMeta.value) {
-    return String(form.provider_type || '').trim() === 'openai-compatible' ? '默认推荐' : '已手动选择'
+    return String(form.provider_type || "").trim() === "openai-compatible"
+      ? "默认推荐"
+      : "已手动选择";
   }
-  if (isUsingPresetProviderType.value) return `${activePresetMeta.value.label} 模板已选择`
-  return '已手动调整'
-})
+  if (isUsingPresetProviderType.value)
+    return `${activePresetMeta.value.label} 模板已选择`;
+  return "已手动调整";
+});
 
-let modelConfigSeed = 0
+let modelConfigSeed = 0;
 
 function resolveProviderInterfaceOption(value) {
-  const normalized = String(value || '').trim()
+  const normalized = String(value || "").trim();
   return (
     PROVIDER_INTERFACE_OPTIONS.find((item) => item.value === normalized) ||
     PROVIDER_INTERFACE_OPTIONS[0]
-  )
+  );
 }
 
 function formatProviderInterfaceLabel(value) {
-  return resolveProviderInterfaceOption(value).label
+  return resolveProviderInterfaceOption(value).label;
 }
 
-function createModelConfig(name = '', modelType = '') {
-  modelConfigSeed += 1
-  const fallbackType = modelTypeOptions.value[0]?.id || 'text_generation'
+function createModelConfig(name = "", modelType = "") {
+  modelConfigSeed += 1;
+  const fallbackType = modelTypeOptions.value[0]?.id || "text_generation";
   return {
     key: `model-config-${modelConfigSeed}`,
-    name: String(name || '').trim(),
+    name: String(name || "").trim(),
     model_type: String(modelType || fallbackType).trim() || fallbackType,
-  }
+  };
 }
 
 function resetForm() {
-  form.name = ''
-  form.provider_type = 'openai-compatible'
-  form.base_url = ''
-  form.api_key = ''
-  form.model_configs = [createModelConfig()]
-  form.default_model = ''
-  form.enabled = true
-  form.extra_headers_text = ''
-  form.shared_usernames = []
-  appliedPresetKey.value = ''
+  form.name = "";
+  form.provider_type = "openai-compatible";
+  form.base_url = "";
+  form.api_key = "";
+  form.model_configs = [createModelConfig()];
+  form.default_model = "";
+  form.enabled = true;
+  form.extra_headers_text = "";
+  form.shared_usernames = [];
+  appliedPresetKey.value = "";
 }
 
 function buildDuplicateName(name) {
-  const base = String(name || '').trim()
-  return base ? `${base} 副本` : '供应商副本'
+  const base = String(name || "").trim();
+  return base ? `${base} 副本` : "供应商副本";
 }
 
 function populateForm(row, { duplicate = false } = {}) {
-  form.name = duplicate ? buildDuplicateName(row?.name) : String(row?.name || '')
-  form.provider_type = String(row?.provider_type || 'openai-compatible')
-  form.base_url = String(row?.base_url || '')
-  form.api_key = ''
-  const modelConfigs = normalizeProviderModelConfigs(row, modelTypeOptions.value)
+  form.name = duplicate
+    ? buildDuplicateName(row?.name)
+    : String(row?.name || "");
+  form.provider_type = String(row?.provider_type || "openai-compatible");
+  form.base_url = String(row?.base_url || "");
+  form.api_key = "";
+  const modelConfigs = normalizeProviderModelConfigs(
+    row,
+    modelTypeOptions.value,
+  );
   form.model_configs = modelConfigs.length
     ? modelConfigs.map((item) => createModelConfig(item.name, item.model_type))
-    : [createModelConfig()]
-  form.default_model = String(row?.default_model || '')
-  form.enabled = row?.enabled !== false
-  const headers = row?.extra_headers && typeof row.extra_headers === 'object' ? row.extra_headers : {}
-  form.extra_headers_text = Object.keys(headers).length ? JSON.stringify(headers, null, 2) : ''
-  form.shared_usernames = Array.isArray(row?.shared_usernames) ? row.shared_usernames.map((item) => String(item || '').trim()).filter(Boolean) : []
+    : [createModelConfig()];
+  form.default_model = String(row?.default_model || "");
+  form.enabled = row?.enabled !== false;
+  const headers =
+    row?.extra_headers && typeof row.extra_headers === "object"
+      ? row.extra_headers
+      : {};
+  form.extra_headers_text = Object.keys(headers).length
+    ? JSON.stringify(headers, null, 2)
+    : "";
+  form.shared_usernames = Array.isArray(row?.shared_usernames)
+    ? row.shared_usernames
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    : [];
   appliedPresetKey.value = matchPresetKey({
     name: form.name,
     provider_type: form.provider_type,
     base_url: form.base_url,
-  })
-  syncDefaultModelSelection()
+  });
+  syncDefaultModelSelection();
 }
 
 function matchPresetKey(row) {
-  const normalizedBaseUrl = String(row?.base_url || '').trim().replace(/\/+$/, '')
-  const normalizedType = String(row?.provider_type || '').trim()
-  return PROVIDER_PRESETS.find(
-    (item) => item.provider_type === normalizedType && item.base_url === normalizedBaseUrl,
-  )?.key || ''
+  const normalizedBaseUrl = String(row?.base_url || "")
+    .trim()
+    .replace(/\/+$/, "");
+  const normalizedType = String(row?.provider_type || "").trim();
+  return (
+    PROVIDER_PRESETS.find(
+      (item) =>
+        item.provider_type === normalizedType &&
+        item.base_url === normalizedBaseUrl,
+    )?.key || ""
+  );
 }
 
 function applyProviderPreset(preset) {
-  if (!preset || typeof preset !== 'object') return
-  form.name = String(preset.name || '')
-  form.provider_type = String(preset.provider_type || 'openai-compatible')
-  form.base_url = String(preset.base_url || '')
-  form.model_configs = Array.isArray(preset.model_configs) && preset.model_configs.length
-    ? preset.model_configs.map((item) => createModelConfig(item.name, item.model_type))
-    : [createModelConfig()]
-  form.default_model = String(preset.default_model || preset.model_configs?.[0]?.name || '')
-  form.extra_headers_text = preset.extra_headers ? JSON.stringify(preset.extra_headers, null, 2) : ''
-  appliedPresetKey.value = String(preset.key || '')
-  syncDefaultModelSelection()
+  if (!preset || typeof preset !== "object") return;
+  form.name = String(preset.name || "");
+  form.provider_type = String(preset.provider_type || "openai-compatible");
+  form.base_url = String(preset.base_url || "");
+  form.model_configs =
+    Array.isArray(preset.model_configs) && preset.model_configs.length
+      ? preset.model_configs.map((item) =>
+          createModelConfig(item.name, item.model_type),
+        )
+      : [createModelConfig()];
+  form.default_model = String(
+    preset.default_model || preset.model_configs?.[0]?.name || "",
+  );
+  form.extra_headers_text = preset.extra_headers
+    ? JSON.stringify(preset.extra_headers, null, 2)
+    : "";
+  appliedPresetKey.value = String(preset.key || "");
+  syncDefaultModelSelection();
 }
 
 function openCreate() {
-  dialogMode.value = 'create'
-  editingId.value = ''
-  resetForm()
-  showDialog.value = true
+  dialogMode.value = "create";
+  editingId.value = "";
+  resetForm();
+  showDialog.value = true;
 }
 
 function openEdit(row) {
-  dialogMode.value = 'edit'
-  editingId.value = String(row.id || '')
-  populateForm(row)
-  showDialog.value = true
+  dialogMode.value = "edit";
+  editingId.value = String(row.id || "");
+  populateForm(row);
+  showDialog.value = true;
 }
 
 function openDuplicate(row) {
-  dialogMode.value = 'duplicate'
-  editingId.value = ''
-  populateForm(row, { duplicate: true })
-  showDialog.value = true
+  dialogMode.value = "duplicate";
+  editingId.value = "";
+  populateForm(row, { duplicate: true });
+  showDialog.value = true;
 }
 
 function dialogTitle() {
-  if (dialogMode.value === 'edit') return '编辑模型供应商'
-  if (dialogMode.value === 'duplicate') return '复制模型供应商'
-  return '新增模型供应商'
+  if (dialogMode.value === "edit") return "编辑模型供应商";
+  if (dialogMode.value === "duplicate") return "复制模型供应商";
+  return "新增模型供应商";
 }
 
 function apiKeyPlaceholder() {
-  if (dialogMode.value === 'edit') return '编辑时留空表示不修改'
-  if (dialogMode.value === 'duplicate') return '出于安全原因不会复制 API Key，请按需填写'
-  return '例如：sk-...'
+  if (dialogMode.value === "edit") return "编辑时留空表示不修改";
+  if (dialogMode.value === "duplicate")
+    return "出于安全原因不会复制 API Key，请按需填写";
+  return "例如：sk-...";
 }
 
 function addModelConfig() {
-  form.model_configs.push(createModelConfig())
+  form.model_configs.push(createModelConfig());
 }
 
 function mergeDiscoveredModelNames(modelNames) {
   const existingNames = new Set(
     form.model_configs
-      .map((item) => String(item?.name || '').trim())
+      .map((item) => String(item?.name || "").trim())
       .filter(Boolean),
-  )
-  let added = 0
+  );
+  let added = 0;
   modelNames.forEach((name) => {
-    const modelName = String(name || '').trim()
-    if (!modelName || existingNames.has(modelName)) return
-    existingNames.add(modelName)
-    form.model_configs.push(createModelConfig(modelName))
-    added += 1
-  })
+    const modelName = String(name || "").trim();
+    if (!modelName || existingNames.has(modelName)) return;
+    existingNames.add(modelName);
+    form.model_configs.push(createModelConfig(modelName));
+    added += 1;
+  });
   if (added > 0) {
-    form.model_configs = form.model_configs.filter((item) => String(item?.name || '').trim())
+    form.model_configs = form.model_configs.filter((item) =>
+      String(item?.name || "").trim(),
+    );
   }
-  syncDefaultModelSelection()
-  return added
+  syncDefaultModelSelection();
+  return added;
 }
 
 function removeModelConfig(index) {
-  form.model_configs.splice(index, 1)
+  form.model_configs.splice(index, 1);
   if (!form.model_configs.length) {
-    form.model_configs.push(createModelConfig())
+    form.model_configs.push(createModelConfig());
   }
-  syncDefaultModelSelection()
+  syncDefaultModelSelection();
 }
 
 function markDefaultModel(item) {
-  const modelName = String(item?.name || '').trim()
+  const modelName = String(item?.name || "").trim();
   if (!modelName) {
-    ElMessage.warning('请先填写模型名称')
-    return
+    ElMessage.warning("请先填写模型名称");
+    return;
   }
-  form.default_model = modelName
+  form.default_model = modelName;
 }
 
 function syncDefaultModelSelection() {
-  const values = normalizedFormModelConfigs.value
-  if (values.some((item) => item.name === form.default_model)) return
-  form.default_model = values[0]?.name || ''
+  const values = normalizedFormModelConfigs.value;
+  if (values.some((item) => item.name === form.default_model)) return;
+  form.default_model = values[0]?.name || "";
 }
 
 function formatModelTypeLabel(modelType) {
-  const meta = modelTypeMetaMap.value.get(String(modelType || '').trim())
-  return meta?.label || '文本生成'
+  const meta = modelTypeMetaMap.value.get(String(modelType || "").trim());
+  return meta?.label || "文本生成";
 }
 
 function getModelTypeDescription(modelType) {
-  const meta = modelTypeMetaMap.value.get(String(modelType || '').trim())
-  return meta?.description || '选择该模型在系统中的能力分类。'
+  const meta = modelTypeMetaMap.value.get(String(modelType || "").trim());
+  return meta?.description || "选择该模型在系统中的能力分类。";
 }
 
 function formatProviderModels(row) {
-  const values = normalizeProviderModelConfigs(row, modelTypeOptions.value)
-  if (!values.length) return '-'
+  const values = normalizeProviderModelConfigs(row, modelTypeOptions.value);
+  if (!values.length) return "-";
   return values
     .map((item) => `${item.name} [${formatModelTypeLabel(item.model_type)}]`)
-    .join(', ')
+    .join(", ");
 }
 
 function parseHeaders() {
-  const raw = String(form.extra_headers_text || '').trim()
-  if (!raw) return {}
+  const raw = String(form.extra_headers_text || "").trim();
+  if (!raw) return {};
   try {
-    const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed;
     }
-    throw new Error('invalid')
+    throw new Error("invalid");
   } catch {
-    throw new Error('额外请求头必须是 JSON 对象')
+    throw new Error("额外请求头必须是 JSON 对象");
   }
 }
 
 async function discoverModels() {
   if (!form.base_url.trim()) {
-    ElMessage.warning('请先填写 Base URL')
-    return
+    ElMessage.warning("请先填写 Base URL");
+    return;
   }
 
-  let extraHeaders = {}
+  let extraHeaders = {};
   try {
-    extraHeaders = parseHeaders()
+    extraHeaders = parseHeaders();
   } catch (e) {
-    ElMessage.error(e.message || '额外请求头格式错误')
-    return
+    ElMessage.error(e.message || "额外请求头格式错误");
+    return;
   }
 
-  discoveringModels.value = true
+  discoveringModels.value = true;
   try {
     const discoverEndpoint = editingId.value
       ? `/llm/providers/${encodeURIComponent(editingId.value)}/discover-models`
-      : '/llm/providers/discover-models'
+      : "/llm/providers/discover-models";
     const data = await api.post(discoverEndpoint, {
       provider_type: form.provider_type,
       base_url: form.base_url.trim(),
       api_key: form.api_key.trim(),
       extra_headers: extraHeaders,
-    })
-    const models = Array.isArray(data?.models) ? data.models : []
-    const added = mergeDiscoveredModelNames(models)
+    });
+    const models = Array.isArray(data?.models) ? data.models : [];
+    const added = mergeDiscoveredModelNames(models);
     if (added > 0) {
-      ElMessage.success(`已获取 ${models.length} 个模型，新增 ${added} 个`)
+      ElMessage.success(`已获取 ${models.length} 个模型，新增 ${added} 个`);
     } else if (models.length) {
-      ElMessage.info(`已获取 ${models.length} 个模型，当前列表已包含`)
+      ElMessage.info(`已获取 ${models.length} 个模型，当前列表已包含`);
     } else {
-      ElMessage.warning('未获取到模型')
+      ElMessage.warning("未获取到模型");
     }
   } catch (e) {
-    ElMessage.error(e.detail || e.message || '获取模型失败')
+    ElMessage.error(e.detail || e.message || "获取模型失败");
   } finally {
-    discoveringModels.value = false
+    discoveringModels.value = false;
   }
 }
 
 async function fetchProviders() {
-  loading.value = true
+  loading.value = true;
   try {
-    const data = await api.get('/llm/providers')
-    providers.value = Array.isArray(data?.providers) ? data.providers : []
+    const data = await api.get("/llm/providers");
+    providers.value = Array.isArray(data?.providers) ? data.providers : [];
   } catch (e) {
-    ElMessage.error(e.detail || '加载模型供应商失败')
-    providers.value = []
+    ElMessage.error(e.detail || "加载模型供应商失败");
+    providers.value = [];
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
 async function fetchShareUserOptions() {
   try {
-    const data = await api.get('/llm/providers/share-options')
-    const users = Array.isArray(data?.users) ? data.users : []
+    const data = await api.get("/llm/providers/share-options");
+    const users = Array.isArray(data?.users) ? data.users : [];
     shareUserOptions.value = users
       .map((item) => {
-        const username = String(item?.username || '').trim()
-        if (!username) return null
-        const role = String(item?.role || '').trim()
+        const username = String(item?.username || "").trim();
+        if (!username) return null;
+        const role = String(item?.role || "").trim();
         return {
           username,
           label: role ? `${username} (${role})` : username,
-        }
+        };
       })
-      .filter(Boolean)
+      .filter(Boolean);
   } catch (e) {
-    shareUserOptions.value = []
-    ElMessage.error(e.detail || '加载共享用户失败')
+    shareUserOptions.value = [];
+    ElMessage.error(e.detail || "加载共享用户失败");
   }
 }
 
 async function fetchModelTypeOptions() {
   try {
-    const data = await fetchDictionary('llm_model_types')
-    const options = Array.isArray(data?.options) ? data.options : []
+    const data = await fetchDictionary("llm_model_types");
+    const options = Array.isArray(data?.options) ? data.options : [];
     if (options.length) {
-      modelTypeOptions.value = options
+      modelTypeOptions.value = options;
     }
   } catch (e) {
-    modelTypeOptions.value = FALLBACK_MODEL_TYPE_OPTIONS
-    ElMessage.error(e.detail || '加载模型类型失败')
+    modelTypeOptions.value = FALLBACK_MODEL_TYPE_OPTIONS;
+    ElMessage.error(e.detail || "加载模型类型失败");
   }
 }
 
 async function submitForm() {
   if (!form.name.trim() || !form.base_url.trim()) {
-    ElMessage.warning('请填写供应商名称和 Base URL')
-    return
+    ElMessage.warning("请填写供应商名称和 Base URL");
+    return;
   }
 
-  let extraHeaders = {}
+  let extraHeaders = {};
   try {
-    extraHeaders = parseHeaders()
+    extraHeaders = parseHeaders();
   } catch (e) {
-    ElMessage.error(e.message || '额外请求头格式错误')
-    return
+    ElMessage.error(e.message || "额外请求头格式错误");
+    return;
   }
 
-  const modelConfigs = normalizedFormModelConfigs.value
+  const modelConfigs = normalizedFormModelConfigs.value;
   if (!modelConfigs.length) {
-    ElMessage.warning('请至少添加一个模型')
-    return
+    ElMessage.warning("请至少添加一个模型");
+    return;
   }
-  const preferredDefaultModel = String(form.default_model || '').trim()
-  const defaultModel = modelConfigs.some((item) => item.name === preferredDefaultModel)
+  const preferredDefaultModel = String(form.default_model || "").trim();
+  const defaultModel = modelConfigs.some(
+    (item) => item.name === preferredDefaultModel,
+  )
     ? preferredDefaultModel
-    : modelConfigs[0].name
-  form.default_model = defaultModel
+    : modelConfigs[0].name;
+  form.default_model = defaultModel;
 
   const payload = {
     name: form.name.trim(),
@@ -953,288 +1189,418 @@ async function submitForm() {
     enabled: Boolean(form.enabled),
     extra_headers: extraHeaders,
     shared_usernames: Array.isArray(form.shared_usernames)
-      ? form.shared_usernames.map((item) => String(item || '').trim()).filter(Boolean)
+      ? form.shared_usernames
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
       : [],
-  }
+  };
 
   if (!editingId.value || form.api_key.trim()) {
-    payload.api_key = form.api_key.trim()
+    payload.api_key = form.api_key.trim();
   }
 
-  saving.value = true
+  saving.value = true;
   try {
     if (editingId.value) {
-      await api.patch(`/llm/providers/${encodeURIComponent(editingId.value)}`, payload)
-      ElMessage.success('更新成功')
+      await api.patch(
+        `/llm/providers/${encodeURIComponent(editingId.value)}`,
+        payload,
+      );
+      ElMessage.success("更新成功");
     } else {
-      await api.post('/llm/providers', payload)
-      ElMessage.success(dialogMode.value === 'duplicate' ? '复制创建成功' : '创建成功')
+      await api.post("/llm/providers", payload);
+      ElMessage.success(
+        dialogMode.value === "duplicate" ? "复制创建成功" : "创建成功",
+      );
     }
-    showDialog.value = false
-    fetchProviders()
+    showDialog.value = false;
+    fetchProviders();
   } catch (e) {
-    ElMessage.error(e.detail || '保存失败')
+    ElMessage.error(e.detail || "保存失败");
   } finally {
-    saving.value = false
+    saving.value = false;
   }
 }
 
 function buildPresetPayload(preset) {
-  const modelConfigs = Array.isArray(preset?.model_configs) ? preset.model_configs : []
+  const modelConfigs = Array.isArray(preset?.model_configs)
+    ? preset.model_configs
+    : [];
   return {
-    name: String(preset?.name || '').trim(),
-    provider_type: String(preset?.provider_type || 'openai-compatible').trim(),
-    base_url: String(preset?.base_url || '').trim(),
+    name: String(preset?.name || "").trim(),
+    provider_type: String(preset?.provider_type || "openai-compatible").trim(),
+    base_url: String(preset?.base_url || "").trim(),
     model_configs: modelConfigs.map((item) => ({
-      name: String(item?.name || '').trim(),
-      model_type: String(item?.model_type || modelTypeOptions.value[0]?.id || 'text_generation').trim(),
+      name: String(item?.name || "").trim(),
+      model_type: String(
+        item?.model_type || modelTypeOptions.value[0]?.id || "text_generation",
+      ).trim(),
     })),
-    default_model: String(preset?.default_model || modelConfigs[0]?.name || '').trim(),
+    default_model: String(
+      preset?.default_model || modelConfigs[0]?.name || "",
+    ).trim(),
     enabled: false,
-    extra_headers: preset?.extra_headers && typeof preset.extra_headers === 'object' ? preset.extra_headers : {},
+    extra_headers:
+      preset?.extra_headers && typeof preset.extra_headers === "object"
+        ? preset.extra_headers
+        : {},
     shared_usernames: [],
-    api_key: '',
-  }
+    api_key: "",
+  };
 }
 
 async function importMainstreamPresets() {
   try {
     await ElMessageBox.confirm(
-      '将批量创建主流供应商模板，默认处于禁用状态。导入后请补充 API Key、按需调整模型并手动启用。',
-      '导入主流模板',
-      { type: 'info' },
-    )
+      "将批量创建主流供应商模板，默认处于禁用状态。导入后请补充 API Key、按需调整模型并手动启用。",
+      "导入主流模板",
+      { type: "info" },
+    );
   } catch {
-    return
+    return;
   }
 
-  importingPresets.value = true
+  importingPresets.value = true;
   try {
     const existingKeys = new Set(
       (Array.isArray(providers.value) ? providers.value : []).map(
-        (item) => `${String(item?.name || '').trim()}@@${String(item?.base_url || '').trim().replace(/\/+$/, '')}`,
+        (item) =>
+          `${String(item?.name || "").trim()}@@${String(item?.base_url || "")
+            .trim()
+            .replace(/\/+$/, "")}`,
       ),
-    )
-    let createdCount = 0
-    let skippedCount = 0
+    );
+    let createdCount = 0;
+    let skippedCount = 0;
     for (const preset of PROVIDER_PRESETS) {
-      const dedupeKey = `${preset.name}@@${preset.base_url}`
+      const dedupeKey = `${preset.name}@@${preset.base_url}`;
       if (existingKeys.has(dedupeKey)) {
-        skippedCount += 1
-        continue
+        skippedCount += 1;
+        continue;
       }
-      await api.post('/llm/providers', buildPresetPayload(preset))
-      existingKeys.add(dedupeKey)
-      createdCount += 1
+      await api.post("/llm/providers", buildPresetPayload(preset));
+      existingKeys.add(dedupeKey);
+      createdCount += 1;
     }
-    await fetchProviders()
+    await fetchProviders();
     if (!createdCount) {
-      ElMessage.info(`主流模板已存在，已跳过 ${skippedCount} 条`)
-      return
+      ElMessage.info(`主流模板已存在，已跳过 ${skippedCount} 条`);
+      return;
     }
-    ElMessage.success(`已导入 ${createdCount} 条主流模板${skippedCount ? `，跳过 ${skippedCount} 条重复项` : ''}`)
+    ElMessage.success(
+      `已导入 ${createdCount} 条主流模板${skippedCount ? `，跳过 ${skippedCount} 条重复项` : ""}`,
+    );
   } catch (e) {
-    ElMessage.error(e?.detail || '导入主流模板失败')
+    ElMessage.error(e?.detail || "导入主流模板失败");
   } finally {
-    importingPresets.value = false
+    importingPresets.value = false;
   }
 }
 
 function formatSharedUsers(usernames) {
   const values = Array.isArray(usernames)
-    ? usernames.map((item) => String(item || '').trim()).filter(Boolean)
-    : []
-  return values.join(', ') || '-'
+    ? usernames.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  return values.join(", ") || "-";
 }
 
 function canManageProvider(row) {
-  return canManageRecord(row)
+  return canManageRecord(row);
 }
 
 function getProviderActions() {
   return [
-    { key: 'test', label: '测试连接', type: 'success' },
-    { key: 'duplicate', label: '复制', type: 'warning' },
-    { key: 'edit', label: '编辑', type: 'primary', requiresManage: true },
-    { key: 'delete', label: '删除', type: 'danger', requiresManage: true },
-  ]
+    { key: "test", label: "测试连接", type: "success" },
+    { key: "duplicate", label: "复制", type: "warning" },
+    { key: "edit", label: "编辑", type: "primary", requiresManage: true },
+    { key: "delete", label: "删除", type: "danger", requiresManage: true },
+  ];
 }
 
 function getPrimaryProviderActions(row) {
-  return getProviderActions(row).map((item) => ({
-    ...item,
-    disabled: item.requiresManage ? !canManageProvider(row) : false,
-  })).slice(0, 3)
+  return getProviderActions(row)
+    .map((item) => ({
+      ...item,
+      disabled: item.requiresManage ? !canManageProvider(row) : false,
+    }))
+    .slice(0, 3);
 }
 
 function getOverflowProviderActions(row) {
-  return getProviderActions(row).map((item) => ({
-    ...item,
-    disabled: item.requiresManage ? !canManageProvider(row) : false,
-  })).slice(3)
+  return getProviderActions(row)
+    .map((item) => ({
+      ...item,
+      disabled: item.requiresManage ? !canManageProvider(row) : false,
+    }))
+    .slice(3);
 }
 
 function handleProviderAction(row, actionKey) {
   switch (actionKey) {
-    case 'test':
-      void testConnection(row, getPrimaryTestModel(row))
-      break
-    case 'duplicate':
-      openDuplicate(row)
-      break
-    case 'edit':
+    case "test":
+      void testConnection(row, getPrimaryTestModel(row));
+      break;
+    case "duplicate":
+      openDuplicate(row);
+      break;
+    case "edit":
       if (!canManageProvider(row)) {
-        ElMessage.warning(getOwnershipDeniedMessage(row, '编辑'))
-        return
+        ElMessage.warning(getOwnershipDeniedMessage(row, "编辑"));
+        return;
       }
-      openEdit(row)
-      break
-    case 'delete':
+      openEdit(row);
+      break;
+    case "delete":
       if (!canManageProvider(row)) {
-        ElMessage.warning(getOwnershipDeniedMessage(row, '删除'))
-        return
+        ElMessage.warning(getOwnershipDeniedMessage(row, "删除"));
+        return;
       }
-      void removeProvider(row)
-      break
+      void removeProvider(row);
+      break;
     default:
-      break
+      break;
   }
 }
 
 async function removeProvider(row) {
-  const id = String(row.id || '')
-  if (!id) return
-  await ElMessageBox.confirm(`确定删除供应商 ${row.name || id}？`, '删除确认', { type: 'warning' })
+  const id = String(row.id || "");
+  if (!id) return;
+  await ElMessageBox.confirm(`确定删除供应商 ${row.name || id}？`, "删除确认", {
+    type: "warning",
+  });
   try {
-    await api.delete(`/llm/providers/${encodeURIComponent(id)}`)
-    ElMessage.success('删除成功')
-    fetchProviders()
+    await api.delete(`/llm/providers/${encodeURIComponent(id)}`);
+    ElMessage.success("删除成功");
+    fetchProviders();
   } catch (e) {
-    ElMessage.error(e.detail || '删除失败')
+    ElMessage.error(e.detail || "删除失败");
   }
 }
 
 function getConnectionMeta(providerId, key) {
-  const state = connectionResultByProvider[String(providerId || '')]
-  if (!state || typeof state !== 'object') return ''
-  return state[key] || ''
+  const state = connectionResultByProvider[String(providerId || "")];
+  if (!state || typeof state !== "object") return "";
+  return state[key] || "";
+}
+
+function storeConnectionResult(providerId, result, fallbackModelName = "") {
+  const normalizedProviderId = String(providerId || "").trim();
+  if (!normalizedProviderId || !result || typeof result !== "object") return;
+  const normalizedModelName =
+    String(result.model_tested || fallbackModelName || "default").trim() ||
+    "default";
+  connectionResultByProvider[normalizedProviderId] = result;
+  if (!connectionResultsByProvider[normalizedProviderId]) {
+    connectionResultsByProvider[normalizedProviderId] = {};
+  }
+  connectionResultsByProvider[normalizedProviderId][normalizedModelName] =
+    result;
+}
+
+function getConnectionResults(providerId) {
+  const states = connectionResultsByProvider[String(providerId || "")];
+  if (!states || typeof states !== "object") return [];
+  return Object.values(states).sort((left, right) => {
+    const leftTime = parseDateTime(left?.tested_at)?.getTime?.() || 0;
+    const rightTime = parseDateTime(right?.tested_at)?.getTime?.() || 0;
+    return rightTime - leftTime;
+  });
 }
 
 function formatConnectionRequestAddresses(providerId) {
-  const state = connectionResultByProvider[String(providerId || '')]
-  if (!state || typeof state !== 'object') return ''
+  const state = connectionResultByProvider[String(providerId || "")];
+  if (!state || typeof state !== "object") return "";
   const urls = Array.isArray(state.request_urls)
-    ? state.request_urls.map((item) => String(item || '').trim()).filter(Boolean)
-    : []
+    ? state.request_urls
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    : [];
   const fallbackUrls = [
-    String(state.models_url || '').trim(),
-    String(state.completion_url || '').trim(),
-  ].filter(Boolean)
-  return (urls.length ? urls : fallbackUrls).join('；')
+    String(state.models_url || "").trim(),
+    String(state.completion_url || "").trim(),
+  ].filter(Boolean);
+  return (urls.length ? urls : fallbackUrls).join("；");
 }
 
 function connectionTagType(providerId) {
-  const state = connectionResultByProvider[String(providerId || '')]
-  if (!state) return 'info'
-  return state.reachable ? 'success' : 'danger'
+  const state = connectionResultByProvider[String(providerId || "")];
+  if (!state) return "info";
+  return state.reachable ? "success" : "danger";
 }
 
 function connectionTagText(providerId) {
-  const state = connectionResultByProvider[String(providerId || '')]
-  if (!state) return '未测试'
-  return state.reachable ? '已连通' : '连接失败'
+  const state = connectionResultByProvider[String(providerId || "")];
+  if (!state) return "未测试";
+  return state.reachable ? "已连通" : "连接失败";
 }
 
 function normalizeProviderModels(row) {
-  return normalizeProviderModelNames(row, modelTypeOptions.value)
+  return normalizeProviderModelNames(row, modelTypeOptions.value);
 }
 
 function getPrimaryTestModel(row) {
-  return normalizeProviderModels(row)[0] || ''
+  return normalizeProviderModels(row)[0] || "";
 }
 
 function getProviderTestActions(row) {
-  const models = normalizeProviderModels(row)
+  const models = normalizeProviderModels(row);
   if (!models.length) {
-    return [{ modelName: '', label: '按默认配置测试', primary: true }]
+    return [{ modelName: "", label: "按默认配置测试", primary: true }];
   }
-  const defaultModel = String(row?.default_model || '').trim()
+  const defaultModel = String(row?.default_model || "").trim();
   return models.map((modelName, index) => ({
     modelName,
-    label: index === 0 && defaultModel === modelName ? `默认模型 · ${modelName}` : modelName,
+    label:
+      index === 0 && defaultModel === modelName
+        ? `默认模型 · ${modelName}`
+        : modelName,
     primary: index === 0,
-  }))
+  }));
 }
 
-function isTestingAction(providerId, modelName = '') {
-  return testingProviderId.value === String(providerId || '') && testingModelName.value === String(modelName || '').trim()
+function getProviderTestModelType(row, modelName = "") {
+  const normalizedModelName = String(
+    modelName || row?.default_model || "",
+  ).trim();
+  const configs = normalizeProviderModelConfigs(row, modelTypeOptions.value);
+  return String(
+    configs.find(
+      (item) => String(item?.name || "").trim() === normalizedModelName,
+    )?.model_type || "text_generation",
+  ).trim();
 }
 
-function buildConnectionFailureMessage(result, fallbackMessage = '') {
-  const message = String(result?.message || fallbackMessage || '模型接口连接测试失败').trim()
+async function confirmBillableCapabilityTest(row, modelName = "") {
+  const modelType = getProviderTestModelType(row, modelName);
+  if (
+    !["image_generation", "video_generation", "audio_generation"].includes(
+      modelType,
+    )
+  )
+    return true;
+  const modelLabel = String(
+    modelName || row?.default_model || "默认模型",
+  ).trim();
+  try {
+    await ElMessageBox.confirm(
+      `将调用 ${modelLabel} 执行真实${formatModelTypeLabel(modelType)}测试，可能产生供应商费用。是否继续？`,
+      "确认真实能力测试",
+      {
+        type: "warning",
+        confirmButtonText: "继续测试",
+        cancelButtonText: "取消",
+      },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isTestingAction(providerId, modelName = "") {
+  return (
+    testingProviderId.value === String(providerId || "") &&
+    testingModelName.value === String(modelName || "").trim()
+  );
+}
+
+function buildConnectionFailureMessage(result, fallbackMessage = "") {
+  const message = String(
+    result?.message || fallbackMessage || "模型接口连接测试失败",
+  ).trim();
   const addresses = Array.isArray(result?.request_urls)
-    ? result.request_urls.map((item) => String(item || '').trim()).filter(Boolean)
+    ? result.request_urls
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
     : [
-        String(result?.models_url || '').trim(),
-        String(result?.completion_url || '').trim(),
-      ].filter(Boolean)
-  const modelName = String(result?.model_tested || '').trim()
-  return h('div', { class: 'connection-failure-detail' }, [
-    h('p', message),
-    modelName ? h('p', `测试模型：${modelName}`) : h('p', '测试模型：未解析到可用模型'),
+        String(result?.models_url || "").trim(),
+        String(result?.completion_url || "").trim(),
+      ].filter(Boolean);
+  const modelName = String(result?.model_tested || "").trim();
+  return h("div", { class: "connection-failure-detail" }, [
+    h("p", message),
+    modelName
+      ? h("p", `测试模型：${modelName}`)
+      : h("p", "测试模型：未解析到可用模型"),
     addresses.length
-      ? h('div', [
-          h('p', '请求地址：'),
-          h('ul', addresses.map((item) => h('li', item))),
+      ? h("div", [
+          h("p", "请求地址："),
+          h(
+            "ul",
+            addresses.map((item) => h("li", item)),
+          ),
         ])
-      : h('p', '请求地址：-'),
-  ])
+      : h("p", "请求地址：-"),
+  ]);
 }
 
-function showConnectionTestFailure(result, fallbackMessage = '') {
+function showConnectionTestFailure(result, fallbackMessage = "") {
   void ElMessageBox.alert(
     buildConnectionFailureMessage(result, fallbackMessage),
-    '模型接口连接测试失败',
+    "模型接口连接测试失败",
     {
-      type: 'error',
-      confirmButtonText: '关闭',
+      type: "error",
+      confirmButtonText: "关闭",
     },
-  )
+  );
 }
 
-async function testConnection(row, modelName = '') {
-  const providerId = String(row?.id || '').trim()
-  if (!providerId) return
-  const normalizedModelName = String(modelName || '').trim()
-  testingProviderId.value = providerId
-  testingModelName.value = normalizedModelName
+async function testConnection(row, modelName = "") {
+  const providerId = String(row?.id || "").trim();
+  if (!providerId) return;
+  const normalizedModelName = String(modelName || "").trim();
+  if (!(await confirmBillableCapabilityTest(row, normalizedModelName))) return;
+  testingProviderId.value = providerId;
+  testingModelName.value = normalizedModelName;
   try {
-    const response = await api.post(`/llm/providers/${encodeURIComponent(providerId)}/test`, {
-      model_name: normalizedModelName,
-    })
-    const result = response.result || {}
-    connectionResultByProvider[providerId] = result
-    if (response.status === 'ok' && result.reachable) {
-      ElMessage.success('模型接口连接测试成功')
+    const response = await api.post(
+      `/llm/providers/${encodeURIComponent(providerId)}/test`,
+      {
+        model_name: normalizedModelName,
+      },
+    );
+    const result = response.result || {};
+    storeConnectionResult(providerId, result, normalizedModelName);
+    if (response.status === "ok" && result.reachable) {
+      ElMessage.success("模型真实能力测试成功，结果已展示");
     } else {
-      showConnectionTestFailure(result, result.message)
+      showConnectionTestFailure(result, result.message);
     }
   } catch (e) {
-    connectionResultByProvider[providerId] = {
+    const failedResult = {
       reachable: false,
-      message: e.detail || '连接失败',
+      model_tested: normalizedModelName,
+      message: e.detail || "连接失败",
       tested_at: new Date().toISOString(),
-    }
-    showConnectionTestFailure(connectionResultByProvider[providerId], e.detail || '模型接口连接测试失败')
+    };
+    storeConnectionResult(providerId, failedResult, normalizedModelName);
+    showConnectionTestFailure(failedResult, e.detail || "模型接口连接测试失败");
   } finally {
-    testingProviderId.value = ''
-    testingModelName.value = ''
+    testingProviderId.value = "";
+    testingModelName.value = "";
   }
 }
 
 onMounted(async () => {
-  await Promise.all([fetchProviders(), fetchShareUserOptions(), fetchModelTypeOptions()])
-})
+  await Promise.all([
+    fetchProviders(),
+    fetchShareUserOptions(),
+    fetchModelTypeOptions(),
+  ]);
+  await nextTick();
+  syncProviderTableVisibleWidth();
+  const tableElement = providerTableRef.value?.$el;
+  if (tableElement instanceof HTMLElement) {
+    providerTableResizeObserver = new ResizeObserver(
+      syncProviderTableVisibleWidth,
+    );
+    providerTableResizeObserver.observe(tableElement);
+  }
+});
+
+onBeforeUnmount(() => {
+  providerTableResizeObserver?.disconnect();
+});
 </script>
 
 <style scoped>
@@ -1336,11 +1702,41 @@ onMounted(async () => {
   margin-bottom: 12px;
 }
 
+.responsive-provider-table :deep(.el-table__expanded-cell) {
+  position: relative;
+}
+
+.provider-expanded-content {
+  position: sticky;
+  left: 50px;
+  box-sizing: border-box;
+  width: max(
+    0px,
+    calc(var(--provider-table-visible-width, 100vw) - 100px)
+  );
+  max-width: max(
+    0px,
+    calc(var(--provider-table-visible-width, 100vw) - 100px)
+  );
+}
+
+.expand-actions__hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .expand-actions {
-  display: flex;
-  align-items: flex-start;
-  flex-wrap: wrap;
+  display: grid;
   gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.expand-actions__copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
 }
 
 .expand-actions__label {
@@ -1353,6 +1749,19 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.expand-actions__buttons :deep(.el-button) {
+  max-width: 100%;
+  margin-left: 0;
+}
+
+.expand-actions__buttons :deep(.el-button > span) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .model-config-editor {
@@ -1531,6 +1940,23 @@ onMounted(async () => {
 @media (max-width: 640px) {
   .filter-panel__grid {
     grid-template-columns: 1fr;
+  }
+
+  .responsive-provider-table :deep(.el-table__expanded-cell) {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .provider-expanded-content {
+    left: 16px;
+    width: max(
+      0px,
+      calc(var(--provider-table-visible-width, 100vw) - 32px)
+    );
+    max-width: max(
+      0px,
+      calc(var(--provider-table-visible-width, 100vw) - 32px)
+    );
   }
 }
 </style>

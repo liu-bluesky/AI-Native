@@ -65,6 +65,7 @@ pub fn build_local_chat_request(request: BotChatRequest) -> LocalChatRequest {
         model_runtime: request.model_runtime,
         ai_entry_file: None,
         attachments: request.attachments,
+        media_tools: Vec::new(),
         mcp_config: with_bot_context(
             request.mcp_config,
             json!({

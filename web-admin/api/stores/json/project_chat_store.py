@@ -73,6 +73,7 @@ class ProjectChatMessage:
     attachments: list[str] = field(default_factory=list)
     images: list[str] = field(default_factory=list)
     videos: list[str] = field(default_factory=list)
+    audios: list[str] = field(default_factory=list)
     source_context: dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: f"chat-{uuid.uuid4().hex[:12]}")
     created_at: str = field(default_factory=_now_iso)
@@ -159,6 +160,7 @@ class ProjectChatStore:
                     attachments=_normalize_attachments(raw.get("attachments")),
                     images=_normalize_attachments(raw.get("images")),
                     videos=_normalize_attachments(raw.get("videos")),
+                    audios=_normalize_attachments(raw.get("audios")),
                     source_context=dict(raw.get("source_context") or {}) if isinstance(raw.get("source_context"), dict) else {},
                     created_at=str(raw.get("created_at") or _now_iso()),
                 )

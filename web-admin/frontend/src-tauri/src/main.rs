@@ -1,7 +1,10 @@
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
+#[cfg(target_os = "linux")]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -18,6 +21,14 @@ mod project_chat_store;
 struct PickPathResult {
     cancelled: bool,
     path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipboardFileResult {
+    copied: bool,
+    path: String,
+    name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,6 +94,7 @@ struct WorkspaceFileReadResult {
     modified_at_epoch_ms: u64,
     encoding: String,
     content: String,
+    content_hash: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,6 +126,20 @@ struct WorkspaceFileWritePreparation {
     requires_approval: bool,
     summary: String,
     reason: String,
+    current_hash: String,
+    next_hash: String,
+    modified_at_epoch_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFileWriteResult {
+    root: String,
+    path: String,
+    size: u64,
+    modified_at_epoch_ms: u64,
+    previous_hash: String,
+    content_hash: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -646,6 +672,7 @@ fn read_workspace_file(
         .and_then(system_time_to_epoch_millis)
         .unwrap_or(0);
 
+    let content_hash = text_fingerprint(&content);
     Ok(WorkspaceFileReadResult {
         root: root.to_string_lossy().to_string(),
         path: workspace_relative_path(&root, &target),
@@ -657,6 +684,7 @@ fn read_workspace_file(
         modified_at_epoch_ms,
         encoding,
         content,
+        content_hash,
     })
 }
 
@@ -786,11 +814,101 @@ fn prepare_workspace_file_write(
         requires_approval: changed,
         summary,
         reason: if changed {
-            "当前命令只生成写入前确认摘要，不执行文件写入".to_string()
+            "确认后将校验文件哈希并执行真实写入".to_string()
         } else {
             "没有检测到内容变化".to_string()
         },
+        current_hash: text_fingerprint(&current_content),
+        next_hash: text_fingerprint(&content),
+        modified_at_epoch_ms: metadata
+            .as_ref()
+            .and_then(|value| value.modified().ok())
+            .and_then(system_time_to_epoch_millis)
+            .unwrap_or(0),
     })
+}
+
+#[tauri::command]
+fn write_workspace_file(
+    workspace_path: String,
+    path: String,
+    content: String,
+    expected_current_hash: String,
+) -> Result<WorkspaceFileWriteResult, String> {
+    let root = resolve_workspace_root(&workspace_path)?;
+    let target = resolve_workspace_write_target(&root, path)?;
+    if target.exists() && !target.is_file() {
+        return Err("目标路径不是文件".to_string());
+    }
+    let current_content = if target.exists() {
+        fs::read_to_string(&target).map_err(|err| format!("无法读取当前文件：{err}"))?
+    } else {
+        String::new()
+    };
+    let previous_hash = text_fingerprint(&current_content);
+    if !expected_current_hash.is_empty() && previous_hash != expected_current_hash {
+        return Err("文件已被其他程序修改，请刷新 Diff 后重新确认".to_string());
+    }
+    if content.as_bytes().len() > 1024 * 1024 {
+        return Err("文件超过 1MB，暂不支持在侧栏直接保存".to_string());
+    }
+    if current_content != content {
+        liuagent_core::capture_baseline(&root, &target).map_err(|err| err.message)?;
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("无法创建目标目录：{err}"))?;
+    }
+    let temporary = target.with_extension(format!("{}.ai-employee-tmp", std::process::id()));
+    fs::write(&temporary, content.as_bytes()).map_err(|err| format!("无法写入临时文件：{err}"))?;
+    fs::rename(&temporary, &target).map_err(|err| {
+        let _ = fs::remove_file(&temporary);
+        format!("无法替换目标文件：{err}")
+    })?;
+    let metadata = target
+        .metadata()
+        .map_err(|err| format!("无法读取保存结果：{err}"))?;
+    Ok(WorkspaceFileWriteResult {
+        root: root.to_string_lossy().to_string(),
+        path: workspace_relative_path(&root, &target),
+        size: metadata.len(),
+        modified_at_epoch_ms: metadata
+            .modified()
+            .ok()
+            .and_then(system_time_to_epoch_millis)
+            .unwrap_or(0),
+        previous_hash,
+        content_hash: text_fingerprint(&content),
+    })
+}
+
+#[tauri::command]
+fn list_workspace_file_changes(
+    workspace_path: String,
+) -> Result<Vec<liuagent_core::FileChangeReviewItem>, String> {
+    let root = resolve_workspace_root(&workspace_path)?;
+    liuagent_core::list_changes(&root)
+}
+
+#[tauri::command]
+fn accept_workspace_file_change(
+    workspace_path: String,
+    path: String,
+    expected_current_hash: String,
+) -> Result<bool, String> {
+    let root = resolve_workspace_root(&workspace_path)?;
+    liuagent_core::accept_change(&root, &path, &expected_current_hash)?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn revert_workspace_file_change(
+    workspace_path: String,
+    path: String,
+    expected_current_hash: String,
+) -> Result<bool, String> {
+    let root = resolve_workspace_root(&workspace_path)?;
+    liuagent_core::revert_change(&root, &path, &expected_current_hash)?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -882,6 +1000,242 @@ fn open_external_url(url: String) -> Result<bool, String> {
         return Err("只允许打开 http/https 外部链接".to_string());
     }
     open_external_url_with_system(parsed.as_str())
+}
+
+#[tauri::command]
+fn copy_resource_file_to_clipboard(
+    url: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    authorization_token: Option<String>,
+) -> Result<ClipboardFileResult, String> {
+    let normalized_url = url.trim();
+    if normalized_url.is_empty() {
+        return Err("缺少要复制的文件地址".to_string());
+    }
+    let requested_mime_type = mime_type.unwrap_or_default();
+    let (bytes, resolved_mime_type) = load_clipboard_resource(
+        normalized_url,
+        authorization_token.as_deref().unwrap_or(""),
+        &requested_mime_type,
+    )?;
+    if bytes.is_empty() {
+        return Err("文件内容为空".to_string());
+    }
+    if bytes.len() > 100 * 1024 * 1024 {
+        return Err("复制文件不能超过 100MB".to_string());
+    }
+    let output_name = resolve_clipboard_file_name(
+        file_name.as_deref().unwrap_or(""),
+        normalized_url,
+        &resolved_mime_type,
+    );
+    let clipboard_entry_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let output_dir = std::env::temp_dir()
+        .join("ai-employee-clipboard")
+        .join(clipboard_entry_id.to_string());
+    fs::create_dir_all(&output_dir).map_err(|err| format!("创建临时目录失败：{err}"))?;
+    let output_path = output_dir.join(&output_name);
+    fs::write(&output_path, bytes).map_err(|err| format!("保存临时文件失败：{err}"))?;
+    copy_local_file_to_system_clipboard(&output_path)?;
+    Ok(ClipboardFileResult {
+        copied: true,
+        path: output_path.to_string_lossy().to_string(),
+        name: output_name,
+    })
+}
+
+fn load_clipboard_resource(
+    resource_url: &str,
+    authorization_token: &str,
+    fallback_mime_type: &str,
+) -> Result<(Vec<u8>, String), String> {
+    if resource_url.starts_with("data:") {
+        return decode_clipboard_data_url(resource_url, fallback_mime_type);
+    }
+    if let Ok(parsed) = reqwest::Url::parse(resource_url) {
+        if parsed.scheme() == "file" {
+            let path = parsed
+                .to_file_path()
+                .map_err(|_| "本地文件地址无效".to_string())?;
+            let bytes = fs::read(&path).map_err(|err| format!("读取本地文件失败：{err}"))?;
+            return Ok((bytes, fallback_mime_type.trim().to_string()));
+        }
+        if matches!(parsed.scheme(), "http" | "https") {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(60))
+                .build()
+                .map_err(|err| format!("创建下载客户端失败：{err}"))?;
+            let mut request = client.get(parsed);
+            if !authorization_token.trim().is_empty() {
+                request = request.bearer_auth(authorization_token.trim());
+            }
+            let response = request
+                .send()
+                .map_err(|err| format!("下载文件失败：{err}"))?
+                .error_for_status()
+                .map_err(|err| format!("下载文件失败：{err}"))?;
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.split(';').next().unwrap_or("").trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| fallback_mime_type.trim().to_string());
+            let bytes = response
+                .bytes()
+                .map_err(|err| format!("读取下载文件失败：{err}"))?;
+            return Ok((bytes.to_vec(), content_type));
+        }
+    }
+    let path = PathBuf::from(resource_url);
+    let bytes = fs::read(&path).map_err(|err| format!("读取文件失败：{err}"))?;
+    Ok((bytes, fallback_mime_type.trim().to_string()))
+}
+
+fn decode_clipboard_data_url(
+    data_url: &str,
+    fallback_mime_type: &str,
+) -> Result<(Vec<u8>, String), String> {
+    let (header, payload) = data_url
+        .split_once(',')
+        .ok_or_else(|| "Data URL 格式无效".to_string())?;
+    if !header.ends_with(";base64") {
+        return Err("仅支持 Base64 Data URL".to_string());
+    }
+    let mime_type = header
+        .strip_prefix("data:")
+        .and_then(|value| value.strip_suffix(";base64"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| fallback_mime_type.trim())
+        .to_string();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .map_err(|err| format!("Data URL 解码失败：{err}"))?;
+    Ok((bytes, mime_type))
+}
+
+fn resolve_clipboard_file_name(requested: &str, resource_url: &str, mime_type: &str) -> String {
+    let requested_name = sanitize_clipboard_file_name(requested);
+    let url_name = reqwest::Url::parse(resource_url)
+        .ok()
+        .and_then(|url| {
+            url.path_segments()
+                .and_then(|mut segments| segments.next_back())
+                .map(sanitize_clipboard_file_name)
+        })
+        .unwrap_or_default();
+    let mut name = if !requested_name.is_empty() {
+        requested_name
+    } else if !url_name.is_empty() {
+        url_name
+    } else {
+        "liuagent-file".to_string()
+    };
+    if Path::new(&name).extension().is_none() {
+        if let Some(extension) = clipboard_extension_for_mime_type(mime_type) {
+            name.push('.');
+            name.push_str(extension);
+        }
+    }
+    name
+}
+
+fn sanitize_clipboard_file_name(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '.' | '-' | '_' | ' ') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['.', ' '])
+        .chars()
+        .take(120)
+        .collect()
+}
+
+fn clipboard_extension_for_mime_type(mime_type: &str) -> Option<&'static str> {
+    match mime_type.trim().to_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "video/mp4" => Some("mp4"),
+        "video/webm" => Some("webm"),
+        "audio/mpeg" => Some("mp3"),
+        "audio/wav" | "audio/x-wav" => Some("wav"),
+        "audio/mp4" => Some("m4a"),
+        "application/pdf" => Some("pdf"),
+        "text/plain" => Some("txt"),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn copy_local_file_to_system_clipboard(path: &Path) -> Result<(), String> {
+    let output = Command::new("osascript")
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "set the clipboard to (POSIX file (item 1 of argv))",
+            "-e",
+            "end run",
+            "--",
+        ])
+        .arg(path)
+        .output()
+        .map_err(|err| format!("调用系统剪贴板失败：{err}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn copy_local_file_to_system_clipboard(path: &Path) -> Result<(), String> {
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", "Set-Clipboard -Path $args[0]"])
+        .arg(path)
+        .output()
+        .map_err(|err| format!("调用系统剪贴板失败：{err}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn copy_local_file_to_system_clipboard(path: &Path) -> Result<(), String> {
+    let uri = format!("file://{}\n", path.to_string_lossy());
+    let mut child = Command::new("xclip")
+        .args(["-selection", "clipboard", "-t", "text/uri-list"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("需要安装 xclip 才能复制文件：{err}"))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "无法写入系统剪贴板".to_string())?
+        .write_all(uri.as_bytes())
+        .map_err(|err| format!("写入系统剪贴板失败：{err}"))?;
+    let status = child.wait().map_err(|err| err.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("系统剪贴板拒绝复制文件".to_string())
+    }
 }
 
 #[tauri::command]
@@ -1647,6 +2001,15 @@ fn count_text_lines(value: &str) -> usize {
     }
 }
 
+fn text_fingerprint(value: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
 fn classify_workspace_file_write_risk(exists: bool, current_size: u64, next_size: u64) -> String {
     if !exists {
         return "medium".to_string();
@@ -1745,6 +2108,10 @@ fn main() {
             read_workspace_file,
             preview_workspace_diff,
             prepare_workspace_file_write,
+            write_workspace_file,
+            list_workspace_file_changes,
+            accept_workspace_file_change,
+            revert_workspace_file_change,
             read_global_mcp_config_file,
             write_global_mcp_config_file,
             read_project_mcp_config_file,
@@ -1756,6 +2123,7 @@ fn main() {
             read_global_bot_connector_config_file,
             write_global_bot_connector_config_file,
             open_external_url,
+            copy_resource_file_to_clipboard,
             classify_runner_command,
             run_runner_command,
             record_runner_permission_decision,
@@ -1798,4 +2166,70 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running AI Employee Factory desktop app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_resource_helpers_decode_and_name_files() {
+        let (bytes, mime_type) =
+            decode_clipboard_data_url("data:image/png;base64,QUJDRA==", "application/octet-stream")
+                .unwrap();
+        assert_eq!(bytes, b"ABCD");
+        assert_eq!(mime_type, "image/png");
+        assert_eq!(
+            resolve_clipboard_file_name("", "https://example.test/files/demo.png?x=1", ""),
+            "demo.png"
+        );
+        assert_eq!(
+            resolve_clipboard_file_name("liuAgent 图片", "data:image/png;base64,AAAA", "image/png"),
+            "liuAgent 图片.png"
+        );
+        assert_eq!(
+            sanitize_clipboard_file_name("../不安全/文件?.png"),
+            "_不安全_文件_.png"
+        );
+    }
+
+    #[test]
+    fn workspace_write_rejects_stale_hash_and_supports_revert() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-employee-diff-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let target = root.join("sample.txt");
+        fs::write(&target, "before\n").unwrap();
+        let baseline_hash = text_fingerprint("before\n");
+        let saved = write_workspace_file(
+            root.to_string_lossy().to_string(),
+            "sample.txt".to_string(),
+            "after\n".to_string(),
+            baseline_hash,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "after\n");
+        let changes = liuagent_core::list_changes(&root).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "sample.txt");
+        assert_eq!(changes[0].review_status, "pending");
+        assert!(write_workspace_file(
+            root.to_string_lossy().to_string(),
+            "sample.txt".to_string(),
+            "stale\n".to_string(),
+            text_fingerprint("before\n"),
+        )
+        .is_err());
+        liuagent_core::revert_change(&root, "sample.txt", &saved.content_hash).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "before\n");
+        assert!(liuagent_core::list_changes(&root).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

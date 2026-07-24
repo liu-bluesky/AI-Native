@@ -67,6 +67,53 @@
         @dragleave.prevent="$emit('drag-leave', $event)"
         @drop.prevent="$emit('drop-files', $event)"
       >
+        <div v-if="contextRefs.length" class="composer-context-area">
+          <div class="composer-context-area__header">
+            <span>已追加 {{ contextRefs.length }} 项会话内容</span>
+            <el-button text size="small" @click="$emit('clear-context-refs')">
+              清空
+            </el-button>
+          </div>
+          <div class="composer-context-list">
+            <div
+              v-for="item in contextRefs"
+              :key="item.id"
+              class="composer-context-card"
+            >
+              <div class="composer-context-card__preview">
+                <img
+                  v-if="item.type === 'image' && item.url"
+                  :src="item.url"
+                  alt=""
+                />
+                <video
+                  v-else-if="item.type === 'video' && item.url"
+                  :src="item.url"
+                  muted
+                  preload="metadata"
+                />
+                <el-icon v-else-if="item.type === 'image'"><Picture /></el-icon>
+                <el-icon v-else-if="item.type === 'video'"><VideoPause /></el-icon>
+                <el-icon v-else><Document /></el-icon>
+              </div>
+              <div class="composer-context-card__body">
+                <span class="composer-context-card__type">{{
+                  contextRefTypeLabel(item.type)
+                }}</span>
+                <strong>{{ item.label }}</strong>
+                <span v-if="item.content">{{ item.content }}</span>
+              </div>
+              <button
+                type="button"
+                class="composer-context-card__remove"
+                aria-label="移除引用内容"
+                @click="$emit('remove-context-ref', item.id)"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        </div>
         <div v-if="uploadFiles.length > 0" class="upload-preview-area">
           <div
             v-for="(file, idx) in uploadFiles"
@@ -170,43 +217,20 @@
 
         <div class="input-footer">
           <div class="footer-left">
-            <el-select
+            <el-button
               v-if="isChatSettingsDisplayReady"
-              v-model="selectedModelOptionValueModel"
-              class="chat-model-select"
-              popper-class="chat-model-select-dropdown"
-              size="small"
-              filterable
-              placeholder="选择模型"
+              class="chat-model-routing-trigger"
               :disabled="chatLoading || !providerModelGroups.length"
+              @click="modelRoutingDialogVisible = true"
             >
-              <el-option-group
-                v-for="group in providerModelGroups"
-                :key="group.providerId"
-                :label="group.label"
-              >
-                <el-option
-                  v-for="option in group.options"
-                  :key="option.value"
-                  :label="option.label"
-                  :value="option.value"
-                >
-                  <div class="chat-model-option">
-                    <div class="chat-model-option__main">
-                      <span class="chat-model-option__name">
-                        {{ option.modelName }}
-                      </span>
-                      <span class="chat-model-option__provider">
-                        <!-- {{ option.providerLabel }} -->
-                      </span>
-                    </div>
-                    <span class="chat-model-option__type">
-                      {{ option.modelTypeLabel }}
-                    </span>
-                  </div>
-                </el-option>
-              </el-option-group>
-            </el-select>
+              <el-icon><Setting /></el-icon>
+              <span class="chat-model-routing-trigger__mode">
+                主模型编排
+              </span>
+              <span class="chat-model-routing-trigger__summary">
+                {{ activeModelSummary || "选择模型" }}
+              </span>
+            </el-button>
             <span v-if="modelProviderOffline" class="chat-model-offline-badge">
               离线
             </span>
@@ -322,6 +346,66 @@
         </div>
       </div>
     </div>
+
+    <el-dialog
+      v-model="modelRoutingDialogVisible"
+      title="对话模型配置"
+      width="min(720px, 92vw)"
+      append-to-body
+      destroy-on-close
+      class="chat-model-routing-dialog"
+    >
+      <div class="chat-model-routing-dialog__intro">
+        主模型是唯一对话入口，负责理解意图并通过结构化工具调用图片、视频和音频模型。
+      </div>
+      <div class="chat-model-routing-roles">
+        <section
+          v-for="role in modelRoutingRoles"
+          :key="role.id"
+          class="chat-model-routing-role"
+        >
+          <div class="chat-model-routing-role__copy">
+            <strong>{{ role.label }}</strong>
+            <span>{{ role.description }}</span>
+          </div>
+          <el-select
+            :model-value="role.value"
+            filterable
+            clearable
+            :placeholder="role.id === 'main' ? '请选择主对话模型' : '未配置'"
+            @update:model-value="
+              $emit('update:modelRoleSelection', {
+                roleId: role.id,
+                value: $event,
+              })
+            "
+          >
+            <el-option-group
+              v-for="group in role.groups"
+              :key="group.providerId"
+              :label="group.label"
+            >
+              <el-option
+                v-for="option in group.options"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              >
+                <div class="chat-model-option">
+                  <span class="chat-model-option__name">{{ option.modelName }}</span>
+                  <span class="chat-model-option__type">{{ option.modelTypeLabel }}</span>
+                </div>
+              </el-option>
+            </el-option-group>
+          </el-select>
+        </section>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="modelRoutingDialogVisible = false">
+          完成
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -333,6 +417,7 @@ import {
   Picture,
   Promotion,
   Refresh,
+  Setting,
   VideoPause,
 } from "@element-plus/icons-vue";
 
@@ -343,6 +428,7 @@ const props = defineProps([
   "chatLoading",
   "composerHintText",
   "composerPlaceholder",
+  "contextRefs",
   "draftText",
   "externalAgentDisplayLabel",
   "filteredSlashCommands",
@@ -358,6 +444,10 @@ const props = defineProps([
   "modelProviderOffline",
   "modelProviderSyncing",
   "modelProviderSyncTooltip",
+  "modelRoutingMode",
+  "modelRoutingRoles",
+  "manualModelOptionValue",
+  "activeModelSummary",
   "providerModelGroups",
   "selectedModelOptionValue",
   "selectedProjectId",
@@ -378,6 +468,7 @@ const props = defineProps([
 
 const emit = defineEmits([
   "apply-slash-command-selection",
+  "clear-context-refs",
   "drag-leave",
   "drag-over",
   "drop-files",
@@ -388,16 +479,21 @@ const emit = defineEmits([
   "editor-paste",
   "file-change",
   "remove-file",
+  "remove-context-ref",
   "send",
   "sync-model-providers",
   "stop-generation",
   "update:draftText",
   "update:inputFocused",
   "update:localAgentAuthLevel",
+  "update:manualModelOptionValue",
+  "update:modelRoleSelection",
+  "update:modelRoutingMode",
   "update:selectedModelOptionValue",
 ]);
 
 const inputWrapperRef = ref(null);
+const modelRoutingDialogVisible = ref(false);
 
 const draftTextModel = computed({
   get: () => props.draftText,
@@ -426,6 +522,19 @@ const localAgentAuthLevelModel = computed({
 
 function emitFileChange(uploadFile, uploadFiles) {
   emit("file-change", uploadFile, uploadFiles);
+}
+
+function contextRefTypeLabel(type) {
+  return (
+    {
+      image: "图片",
+      video: "视频",
+      audio: "音频",
+      file: "附件",
+      text: "选中文字",
+      message: "历史消息",
+    }[String(type || "").trim()] || "会话内容"
+  );
 }
 
 defineExpose({

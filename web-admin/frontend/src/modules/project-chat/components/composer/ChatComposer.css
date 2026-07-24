@@ -512,10 +512,37 @@
   color: #71717a;
 }
 
-.chat-model-select {
+.chat-model-select,
+.chat-model-routing-trigger {
   width: clamp(196px, 24vw, 248px);
   flex: 0 1 248px;
   min-width: 0;
+}
+
+.footer-left :deep(.chat-model-routing-trigger.el-button) {
+  display: inline-flex;
+  justify-content: flex-start;
+  width: clamp(196px, 24vw, 280px);
+  padding: 0 12px;
+  border-color: rgba(148, 163, 184, 0.26);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.chat-model-routing-trigger__mode {
+  flex: 0 0 auto;
+  color: var(--el-color-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chat-model-routing-trigger__summary {
+  min-width: 0;
+  overflow: hidden;
+  color: #475569;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-model-sync-button {
@@ -605,6 +632,68 @@
   background: rgba(248, 250, 252, 0.92);
 }
 
+:deep(.chat-model-routing-dialog .el-dialog__body) {
+  padding-top: 10px;
+}
+
+.chat-model-routing-dialog__intro {
+  margin-bottom: 16px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.chat-model-routing-mode {
+  margin-bottom: 18px;
+}
+
+.chat-model-routing-roles {
+  display: grid;
+  gap: 12px;
+}
+
+.chat-model-routing-role,
+.chat-model-routing-manual {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.9fr) minmax(260px, 1.1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.76);
+}
+
+.chat-model-routing-role__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-model-routing-role__copy strong {
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.chat-model-routing-role__copy span {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.chat-model-routing-role :deep(.el-select),
+.chat-model-routing-manual :deep(.el-select) {
+  width: 100%;
+}
+
+@media (max-width: 680px) {
+  .chat-model-routing-role,
+  .chat-model-routing-manual {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+}
+
 .local-agent-auth-level {
   display: inline-flex;
   align-items: center;
@@ -665,6 +754,109 @@
   background: #d4d4d8 !important;
   box-shadow: none !important;
   color: #71717a !important;
+}
+
+.composer-context-area {
+  padding: 10px 12px 0;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.composer-context-area__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.composer-context-list {
+  display: flex;
+  gap: 8px;
+  padding: 8px 0 10px;
+  overflow-x: auto;
+}
+
+.composer-context-card {
+  position: relative;
+  display: flex;
+  flex: 0 0 min(280px, 78vw);
+  min-width: 0;
+  gap: 9px;
+  align-items: center;
+  padding: 8px 28px 8px 8px;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.composer-context-card__preview {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 9px;
+  background: #e8eef7;
+  color: #475569;
+}
+
+.composer-context-card__preview img,
+.composer-context-card__preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.composer-context-card__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.composer-context-card__body strong,
+.composer-context-card__body > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-context-card__body strong {
+  color: #1e293b;
+  font-size: 13px;
+}
+
+.composer-context-card__body > span:last-child {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.composer-context-card__type {
+  color: #2563eb;
+  font-size: 11px;
+}
+
+.composer-context-card__remove {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 17px;
+}
+
+.composer-context-card__remove:hover {
+  background: #e2e8f0;
+  color: #0f172a;
 }
 
 @keyframes workingPulse {
