@@ -8590,6 +8590,8 @@ struct OpenAiCompatibleToolCall {
 struct OpenAiCompatibleFunctionCall {
     name: Option<String>,
     arguments: Option<Value>,
+    #[serde(skip)]
+    argument_chunks: Vec<String>,
 }
 
 fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelStepRequest {
@@ -9595,9 +9597,10 @@ fn parse_openai_compatible_json_response(
         .as_ref()
         .and_then(|message| stringify_model_content(message.reasoning_content.clone()))
         .unwrap_or_default();
-    let tool_calls = message
-        .and_then(|message| collect_openai_tool_calls(run_key, message.tool_calls))
-        .unwrap_or_default();
+    let tool_calls = match message {
+        Some(message) => collect_openai_tool_calls(run_key, message.tool_calls)?,
+        None => Vec::new(),
+    };
     Ok(ParsedModelResponse {
         content,
         reasoning_content,
@@ -9658,7 +9661,7 @@ fn parse_openai_compatible_streaming_reader<R: BufRead>(
             }
         }
     }
-    let tool_calls = collect_openai_tool_calls(run_key, Some(tool_chunks)).unwrap_or_default();
+    let tool_calls = collect_openai_tool_calls(run_key, Some(tool_chunks))?;
     Ok(ParsedModelResponse {
         content,
         reasoning_content,
@@ -9692,36 +9695,54 @@ fn merge_openai_tool_call_chunks(
                     .get_or_insert_with(|| OpenAiCompatibleFunctionCall {
                         name: None,
                         arguments: None,
+                        argument_chunks: Vec::new(),
                     });
             if let Some(name) = function.name {
-                let name = name.trim();
-                if !name.is_empty() {
-                    if current_function.name.is_some() {
-                        return Err(format!(
-                            "model stream protocol error: tool_calls[{index}].function.name was emitted more than once"
-                        ));
-                    }
-                    current_function.name = Some(name.to_string());
-                }
+                merge_openai_tool_call_name(&mut current_function.name, &name);
             }
             if let Some(arguments) = function.arguments {
-                let piece = stringify_model_content(Some(arguments)).unwrap_or_default();
-                let existing = current_function
-                    .arguments
-                    .get_or_insert_with(|| Value::String(String::new()));
-                match existing {
-                    Value::String(value) => value.push_str(&piece),
-                    other => {
-                        let mut combined =
-                            stringify_model_content(Some(other.clone())).unwrap_or_default();
-                        combined.push_str(&piece);
-                        *other = Value::String(combined);
-                    }
-                }
+                record_openai_tool_call_argument_chunk(current_function, arguments);
             }
         }
     }
     Ok(())
+}
+
+fn merge_openai_tool_call_name(target: &mut Option<String>, incoming: &str) {
+    let incoming = incoming.trim();
+    if incoming.is_empty() {
+        return;
+    }
+    let Some(existing) = target.as_mut() else {
+        *target = Some(incoming.to_string());
+        return;
+    };
+    if existing == incoming || existing.starts_with(incoming) {
+        return;
+    }
+    if incoming.starts_with(existing.as_str()) {
+        existing.clear();
+        existing.push_str(incoming);
+        return;
+    }
+    let overlap = (1..=existing.len().min(incoming.len()))
+        .rev()
+        .find(|length| {
+            incoming.is_char_boundary(*length) && existing.ends_with(&incoming[..*length])
+        })
+        .unwrap_or_default();
+    existing.push_str(&incoming[overlap..]);
+}
+
+fn record_openai_tool_call_argument_chunk(
+    target: &mut OpenAiCompatibleFunctionCall,
+    incoming: Value,
+) {
+    let incoming = stringify_model_content(Some(incoming)).unwrap_or_default();
+    if incoming.is_empty() {
+        return;
+    }
+    target.argument_chunks.push(incoming);
 }
 
 fn openai_compatible_message_payload(message: &RuntimeModelMessage) -> Value {
@@ -9787,45 +9808,109 @@ fn with_assistant_reasoning_content(mut payload: Value, message: &RuntimeModelMe
 fn collect_openai_tool_calls(
     run_key: &str,
     tool_calls: Option<Vec<OpenAiCompatibleToolCall>>,
-) -> Option<Vec<PlannedLocalTool>> {
-    let planned = tool_calls?
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, tool_call)| {
-            let function = tool_call.function?;
-            let name = function
-                .name
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())?
-                .to_string();
-            let arguments = parse_openai_tool_arguments(function.arguments);
-            let tool_call_id = tool_call
-                .id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    stable_tool_call_id_for_arguments(run_key, &name, &arguments, index)
-                });
-            Some(PlannedLocalTool {
-                tool_call_id: normalized_tool_call_id(Some(tool_call_id)),
-                summary: format!("标准模型工具调用：{name}"),
-                name,
-                arguments,
-            })
-        })
-        .collect::<Vec<_>>();
-    Some(planned)
+) -> Result<Vec<PlannedLocalTool>, String> {
+    let mut planned = Vec::new();
+    for (index, tool_call) in tool_calls.unwrap_or_default().into_iter().enumerate() {
+        let Some(function) = tool_call.function else {
+            continue;
+        };
+        let Some(name) = function
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let arguments = parse_openai_tool_arguments(function.arguments, &function.argument_chunks)
+            .map_err(|err| {
+                format!(
+                    "model stream protocol error: tool_calls[{index}] ({name}) arguments: {err}"
+                )
+            })?;
+        let tool_call_id = tool_call
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                stable_tool_call_id_for_arguments(run_key, &name, &arguments, index)
+            });
+        planned.push(PlannedLocalTool {
+            tool_call_id: normalized_tool_call_id(Some(tool_call_id)),
+            summary: format!("标准模型工具调用：{name}"),
+            name,
+            arguments,
+        });
+    }
+    Ok(planned)
 }
 
-fn parse_openai_tool_arguments(value: Option<Value>) -> Value {
-    match value.unwrap_or_else(|| json!({})) {
-        Value::String(raw) => serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({})),
-        object @ Value::Object(_) => object,
-        other => other,
+fn parse_openai_tool_arguments(
+    value: Option<Value>,
+    streamed_chunks: &[String],
+) -> Result<Value, String> {
+    if !streamed_chunks.is_empty() {
+        return parse_openai_streamed_tool_arguments(streamed_chunks);
     }
+    match value.unwrap_or_else(|| json!({})) {
+        Value::String(raw) if raw.trim().is_empty() => Ok(json!({})),
+        Value::String(raw) => serde_json::from_str::<Value>(&raw)
+            .map_err(|err| format!("invalid JSON ({err}); raw={raw}")),
+        object @ Value::Object(_) => Ok(object),
+        other => Ok(other),
+    }
+}
+
+fn parse_openai_streamed_tool_arguments(chunks: &[String]) -> Result<Value, String> {
+    let chunks = chunks
+        .iter()
+        .map(|chunk| chunk.as_str())
+        .filter(|chunk| !chunk.is_empty())
+        .collect::<Vec<_>>();
+    if chunks.is_empty() {
+        return Ok(json!({}));
+    }
+
+    let concatenated = chunks.concat();
+    if let Ok(value) = serde_json::from_str::<Value>(&concatenated) {
+        return Ok(value);
+    }
+
+    for index in (0..chunks.len()).rev() {
+        let candidate = chunks[index];
+        let Ok(value @ Value::Object(_)) = serde_json::from_str::<Value>(candidate) else {
+            continue;
+        };
+        let previous = chunks[..index].concat();
+        if previous.is_empty()
+            || openai_argument_chunk_is_replacement_snapshot(&previous, candidate)
+        {
+            return Ok(value);
+        }
+    }
+
+    serde_json::from_str::<Value>(&concatenated)
+        .map_err(|err| format!("invalid JSON ({err}); raw={concatenated}"))
+}
+
+fn openai_argument_chunk_is_replacement_snapshot(previous: &str, candidate: &str) -> bool {
+    if previous == candidate
+        || candidate.starts_with(previous)
+        || serde_json::from_str::<Value>(previous)
+            .map(|value| value.is_object())
+            .unwrap_or(false)
+    {
+        return true;
+    }
+    previous
+        .chars()
+        .zip(candidate.chars())
+        .take_while(|(left, right)| left == right)
+        .count()
+        >= 16
 }
 
 fn build_chat_completion_url(base_url: &str) -> Result<String, ToolError> {
@@ -14198,7 +14283,7 @@ mod tests {
     }
 
     #[test]
-    fn streamed_tool_name_rejects_repeated_name_field() {
+    fn streamed_tool_name_accepts_repeated_name_field() {
         let chunks = [
             json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"get_project","arguments":"{"}}]}}]}),
             json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"get_project","arguments":"}"}}]}}]}),
@@ -14209,10 +14294,138 @@ mod tests {
             .collect::<String>();
         stream_body.push_str("data: [DONE]\n\n");
 
+        let parsed =
+            parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
+                .unwrap();
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].name, "get_project");
+        assert_eq!(parsed.tool_calls[0].arguments, json!({}));
+    }
+
+    #[test]
+    fn streamed_tool_name_merges_cumulative_and_fragmented_name_fields() {
+        let chunks = [
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"deploy","arguments":"{\"target\":\""}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"deploy_workspace_","arguments":"prod"}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"files_to_","arguments":"\""}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"target","arguments":"}"}}]}}]}),
+        ];
+        let mut stream_body = chunks
+            .into_iter()
+            .map(|chunk| format!("data: {}\n\n", chunk))
+            .collect::<String>();
+        stream_body.push_str("data: [DONE]\n\n");
+
+        let parsed =
+            parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
+                .unwrap();
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(
+            parsed.tool_calls[0].name,
+            "deploy_workspace_files_to_target"
+        );
+        assert_eq!(parsed.tool_calls[0].arguments["target"], "prod");
+    }
+
+    #[test]
+    fn streamed_tool_arguments_accept_repeated_complete_value() {
+        let arguments = "{\"path\":\"package.json\",\"start_line\":1}";
+        let chunks = [
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":arguments}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":arguments}}]}}]}),
+        ];
+        let mut stream_body = chunks
+            .into_iter()
+            .map(|chunk| format!("data: {}\n\n", chunk))
+            .collect::<String>();
+        stream_body.push_str("data: [DONE]\n\n");
+
+        let parsed =
+            parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
+                .unwrap();
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].name, "read_file");
+        assert_eq!(parsed.tool_calls[0].arguments["path"], "package.json");
+        assert_eq!(parsed.tool_calls[0].arguments["start_line"], 1);
+    }
+
+    #[test]
+    fn streamed_tool_arguments_accept_cumulative_value() {
+        let chunks = [
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":"{\"path\":\""}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":"{\"path\":\"package.json\",\"start_line\":1}"}}]}}]}),
+        ];
+        let mut stream_body = chunks
+            .into_iter()
+            .map(|chunk| format!("data: {}\n\n", chunk))
+            .collect::<String>();
+        stream_body.push_str("data: [DONE]\n\n");
+
+        let parsed =
+            parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
+                .unwrap();
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].arguments["path"], "package.json");
+        assert_eq!(parsed.tool_calls[0].arguments["start_line"], 1);
+    }
+
+    #[test]
+    fn streamed_tool_arguments_replace_malformed_snapshot_with_complete_snapshot() {
+        let malformed_snapshot = r#"{"explanation":"已收到部署确认","steps":[status":"in_progress","title":"核验 test/app/target-2 部署配置"},{"status":"pending","title":"上传 PC 目标"}]}"#;
+        let complete_snapshot = r#"{"explanation":"已收到部署确认","steps":[{"status":"in_progress","title":"核验 test/app/target-2 部署配置"},{"status":"pending","title":"上传 PC 目标"}]}"#;
+        let chunks = [
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"update_execution_plan","arguments":malformed_snapshot}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"update_execution_plan","arguments":complete_snapshot}}]}}]}),
+        ];
+        let mut stream_body = chunks
+            .into_iter()
+            .map(|chunk| format!("data: {}\n\n", chunk))
+            .collect::<String>();
+        stream_body.push_str("data: [DONE]\n\n");
+
+        let parsed =
+            parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
+                .unwrap();
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].name, "update_execution_plan");
+        assert_eq!(
+            parsed.tool_calls[0].arguments["steps"][0]["status"],
+            "in_progress"
+        );
+        assert_eq!(
+            parsed.tool_calls[0].arguments["steps"][1]["title"],
+            "上传 PC 目标"
+        );
+    }
+
+    #[test]
+    fn streamed_tool_arguments_keep_valid_nested_object_fragments() {
+        let chunks = [
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"search_text","arguments":"{\"filters\":"}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]}}]}),
+        ];
+        let mut stream_body = chunks
+            .into_iter()
+            .map(|chunk| format!("data: {}\n\n", chunk))
+            .collect::<String>();
+        stream_body.push_str("data: [DONE]\n\n");
+
+        let parsed =
+            parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
+                .unwrap();
+        assert_eq!(parsed.tool_calls[0].arguments, json!({"filters": {}}));
+    }
+
+    #[test]
+    fn streamed_tool_arguments_reject_invalid_final_json() {
+        let chunk = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":"{\"path\":"}}]}}]});
+        let stream_body = format!("data: {}\n\ndata: [DONE]\n\n", chunk);
+
         let error =
             parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
                 .unwrap_err();
-        assert!(error.contains("function.name was emitted more than once"));
+        assert!(error.contains("tool_calls[0] (read_file) arguments: invalid JSON"));
     }
 
     #[test]
