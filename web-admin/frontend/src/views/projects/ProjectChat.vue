@@ -10148,9 +10148,11 @@ function localLiuAgentRuntimeEventPhase(event = {}) {
     type === "model_call_started" ||
     type === "tool_call_started" ||
     type === "command_started" ||
-    type === "command_output_chunk"
+    type === "command_output_chunk" ||
+    type === "background_waiting"
   )
     return "running";
+  if (type === "background_notification") return "completed";
   if (type === "model_step")
     return payload?.ok === false ? "failed" : "completed";
   if (type === "tool_result")
@@ -10349,6 +10351,31 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
       .filter(Boolean)
       .join("\n");
   }
+  if (type === "background_waiting") {
+    const sessionIds = Array.isArray(payload?.session_ids)
+      ? payload.session_ids.filter(Boolean).join(", ")
+      : "";
+    return [
+      "等待后台任务通知",
+      sessionIds ? `  - 会话：${sessionIds}` : "",
+      "  - 完成或命中目标信号后，模型会自动继续",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (type === "background_notification") {
+    const notificationType = String(payload?.type || "notification").trim();
+    const sessionId = String(payload?.session_id || "").trim();
+    const pattern = String(payload?.pattern || "").trim();
+    return [
+      "收到后台任务通知",
+      sessionId ? `  - 会话：${sessionId}` : "",
+      `  - 类型：${notificationType}`,
+      pattern ? `  - 目标信号：${pattern}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
   if (type === "tool_call_started") {
     const toolName = String(
       payload?.tool_name || payload?.toolName || "",
@@ -10532,6 +10559,15 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
       .filter(Boolean)
       .join(" · ");
   }
+  if (type === "background_waiting")
+    return "后台任务运行中，完成或命中目标信号后 AI 自动继续";
+  if (type === "background_notification") {
+    const notificationType = String(payload?.type || "notification").trim();
+    const pattern = String(payload?.pattern || "").trim();
+    return pattern
+      ? `后台任务已通知 AI：${notificationType} · ${pattern}`
+      : `后台任务已通知 AI：${notificationType}`;
+  }
   if (type === "tool_call_started") {
     const toolName = String(
       payload?.tool_name || payload?.toolName || "",
@@ -10622,9 +10658,12 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
               type === "command_output_chunk" ||
               type === "command_finished"
             ? "tool"
-            : type === "tool_result" || type === "tool_call_started"
+            : type === "background_waiting" ||
+                type === "background_notification"
               ? "tool"
-              : "request",
+              : type === "tool_result" || type === "tool_call_started"
+                ? "tool"
+                : "request",
     title:
       type === "approval_required"
         ? "桌面本地工具授权"
@@ -10634,17 +10673,21 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
             ? "Command output"
             : type === "command_finished"
               ? "Command finished"
-              : type === "progress_update"
-                ? "推进当前任务"
-                : type === "model_step"
-                  ? `本地模型步骤 ${modelStepIndex || ""}`.trim()
-                  : type === "model_call_started"
-                    ? `本地模型步骤 ${modelStepIndex || ""} 请求中`.trim()
-                    : type === "tool_result"
-                      ? `完成：${localLiuAgentToolResultLabel(toolName)}`
-                      : type === "tool_call_started"
-                        ? localLiuAgentToolTraceSubject(payload)
-                        : "桌面本地 Agent Runtime",
+              : type === "background_waiting"
+                ? "等待后台任务通知"
+                : type === "background_notification"
+                  ? "后台任务已通知 AI"
+                  : type === "progress_update"
+                    ? "推进当前任务"
+                    : type === "model_step"
+                      ? `本地模型步骤 ${modelStepIndex || ""}`.trim()
+                      : type === "model_call_started"
+                        ? `本地模型步骤 ${modelStepIndex || ""} 请求中`.trim()
+                        : type === "tool_result"
+                          ? `完成：${localLiuAgentToolResultLabel(toolName)}`
+                          : type === "tool_call_started"
+                            ? localLiuAgentToolTraceSubject(payload)
+                            : "桌面本地 Agent Runtime",
     summary,
     detail:
       type === "approval_required"
@@ -10699,6 +10742,8 @@ function localLiuAgentRuntimeEventProcessKind(event = {}) {
   if (type === "approval_required") return "permission";
   if (type === "command_output_chunk") return "command_output";
   if (type === "command_started" || type === "command_finished")
+    return "command";
+  if (type === "background_waiting" || type === "background_notification")
     return "command";
   if (toolName === "read_file") return "file_read";
   if (["list_files", "search_text"].includes(toolName)) return "file_search";

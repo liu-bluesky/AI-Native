@@ -46,6 +46,7 @@ use super::tools::mcp::{
     call_routed_mcp_tool, discover_mcp_tools, select_mcp_tools_for_goal, DiscoveredMcpTool,
 };
 use super::tools::network::{web_extract_configured, web_search_configured};
+use super::tools::process::wait_for_background_process_notification;
 use super::types::{
     AgentInvocationRequest, AgentInvocationResult, AgentRunAttachmentRoute,
     AgentRunAttachmentSummary, AgentRunContext, AgentRunHistoryContext,
@@ -4556,6 +4557,7 @@ fn run_agent_loop_with(
     let mut last_acceptance_gate: Option<AcceptanceGateResult> = None;
     let mut model_plan_tree: Option<planning::TaskTree> = None;
     let mut model_plan_event_index = 0_u64;
+    let mut pending_background_processes = HashSet::<String>::new();
     let mut permission_cache = load_session_permission_cache(workspace_root, run_key);
     let active_workspace_root = RefCell::new(workspace_root.clone());
     let allow_project_workspace_switch = is_tauri_bot_local_chat_request(base_request);
@@ -4691,6 +4693,72 @@ fn run_agent_loop_with(
             }
         }
         if current_planned_tools.is_empty() {
+            if !pending_background_processes.is_empty() {
+                let session_ids = pending_background_processes
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if let Some(sink) = event_sink {
+                    sink(json!({
+                        "event_id": format!("evt_{}_background_wait_{}", runtime_session_id, epoch_millis()),
+                        "runtime_session_id": runtime_session_id,
+                        "chat_session_id": run_key,
+                        "type": "background_waiting",
+                        "payload": {
+                            "session_ids": session_ids.clone(),
+                            "message": "后台任务仍在运行；目标完成或命中目标信号后会自动继续模型。"
+                        },
+                        "created_at_epoch_ms": epoch_millis()
+                    }));
+                }
+                loop {
+                    if local_chat_pause_requested(run_key) {
+                        stopped_reason = "manual_pause".to_string();
+                        break 'agent_loop;
+                    }
+                    match wait_for_background_process_notification(
+                        &active_workspace_root.borrow().to_string_lossy(),
+                        &session_ids,
+                        1_000,
+                        Some(&|| local_chat_pause_requested(run_key)),
+                    ) {
+                        Ok(Some(notification)) => {
+                            if let Some(session_id) =
+                                notification.get("session_id").and_then(Value::as_str)
+                            {
+                                pending_background_processes.remove(session_id);
+                            }
+                            if let Some(sink) = event_sink {
+                                sink(json!({
+                                    "event_id": format!("evt_{}_background_notification_{}", runtime_session_id, epoch_millis()),
+                                    "runtime_session_id": runtime_session_id,
+                                    "chat_session_id": run_key,
+                                    "type": "background_notification",
+                                    "payload": notification.clone(),
+                                    "created_at_epoch_ms": epoch_millis()
+                                }));
+                            }
+                            messages.push(RuntimeModelMessage::simple(
+                                "user",
+                                background_notification_model_message(&notification),
+                            ));
+                            continue 'agent_loop;
+                        }
+                        Ok(None) => continue,
+                        Err(error) => {
+                            messages.push(RuntimeModelMessage::simple(
+                                "user",
+                                format!(
+                                    "后台任务通知监听失败，请检查进程状态后继续：{}",
+                                    error.message
+                                ),
+                            ));
+                            pending_background_processes.clear();
+                            continue 'agent_loop;
+                        }
+                    }
+                }
+            }
             let acceptance_gate = evaluate_acceptance_gate(
                 workspace_root,
                 request.task_goal.as_ref(),
@@ -4959,6 +5027,12 @@ fn run_agent_loop_with(
                 result.tool_call_id.clone(),
                 observation_content,
             ));
+            if let Some(session_id) = background_process_notification_session_id(&result) {
+                pending_background_processes.insert(session_id);
+            }
+            if let Some(session_id) = resolved_background_process_session_id(&tool, &result) {
+                pending_background_processes.remove(&session_id);
+            }
             let continue_after_recoverable_failure =
                 should_continue_after_recoverable_failure(&result, &attempts);
             attempts.push(attempt);
@@ -5025,6 +5099,76 @@ fn run_agent_loop_with(
         stopped_reason,
         awaiting_permission,
     )
+}
+
+fn background_process_notification_session_id(
+    result: &super::types::ToolExecutionResult,
+) -> Option<String> {
+    if !result.ok {
+        return None;
+    }
+    let subscription = result.content.get("background_notification")?;
+    if subscription.is_null() || subscription.get("kind").and_then(Value::as_str) != Some("process")
+    {
+        return None;
+    }
+    subscription
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn background_notification_model_message(notification: &Value) -> String {
+    let notification_type = notification
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("notification");
+    let session_id = notification
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = notification
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let pattern = notification
+        .get("pattern")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let output_preview = notification
+        .get("output_preview")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    format!(
+        "[后台任务主动通知]\n会话：{session_id}\n通知类型：{notification_type}\n进程状态：{status}\n匹配信号：{pattern}\n最近输出：\n{output_preview}\n\n目标完成或目标信号已经出现。请直接检查结果并继续下一步，不要再次盲目调用 process(wait)。"
+    )
+}
+
+fn resolved_background_process_session_id(
+    tool: &PlannedLocalTool,
+    result: &super::types::ToolExecutionResult,
+) -> Option<String> {
+    if tool.name.trim() != "process" || !result.ok {
+        return None;
+    }
+    let status = result
+        .content
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !matches!(status, "notified" | "exited" | "killed" | "already_exited") {
+        return None;
+    }
+    result
+        .content
+        .get("session_id")
+        .and_then(Value::as_str)
+        .or_else(|| tool.arguments.get("session_id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn is_terminal_mcp_catalog_failure(result: &super::types::ToolExecutionResult) -> bool {
@@ -13372,6 +13516,72 @@ mod tests {
         assert_eq!(finished["payload"]["terminal"], false);
         assert_eq!(finished["payload"]["session_id"], "proc_test");
         assert_eq!(finished["payload"]["pid"], 1234);
+    }
+
+    #[test]
+    fn agent_loop_resumes_when_background_watch_pattern_matches() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_background_notify_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let workspace_root = dir.canonicalize().unwrap();
+        let request = test_model_request("启动后台任务，准备好后继续");
+        let model_call_count = Cell::new(0);
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            match index {
+                0 => test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_background_notify".to_string(),
+                        name: "run_command".to_string(),
+                        arguments: json!({
+                            "cmd": "printf 'Worker ready\\n'; sleep 0.1",
+                            "background": true,
+                            "watch_patterns": ["Worker ready"]
+                        }),
+                        summary: "标准模型工具调用：run_command".to_string(),
+                    }],
+                ),
+                1 => test_model_result("后台任务已启动，等待目标信号。", Vec::new()),
+                _ => {
+                    assert!(request.messages.iter().any(|message| {
+                        message.role == "user"
+                            && message.content.contains("[后台任务主动通知]")
+                            && message.content.contains("Worker ready")
+                    }));
+                    test_model_result("目标信号已出现，继续后续步骤。", Vec::new())
+                }
+            }
+        };
+        let tool_runner = |request: ToolExecutionRequest| execute_tool(request);
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+
+        let result = run_agent_loop_with(
+            "chat-background-notify-test",
+            "runtime-background-notify-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &workspace_root,
+            Some(crate::liuagent_core::types::PermissionDecisionInput {
+                request_id: Some("perm_call_background_notify_command_run".to_string()),
+                decision: "approve_once".to_string(),
+                grant_scope: Some("once".to_string()),
+                comment: None,
+            }),
+            Some(&sink),
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok(), "{}", result.error());
+        assert_eq!(model_call_count.get(), 3);
+        assert!(events
+            .borrow()
+            .iter()
+            .any(|event| event["type"] == "background_notification"));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

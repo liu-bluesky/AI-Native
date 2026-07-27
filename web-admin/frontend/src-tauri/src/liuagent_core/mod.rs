@@ -530,7 +530,6 @@ mod tests {
         assert!(killed.ok, "{}", killed.error);
         assert_eq!(killed.content["status"], "killed");
 
-        tools::process::clear_process_registry_for_tests();
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -172,7 +172,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "run_command",
-            description: "在本地 workspace 内执行命令。预计会退出的命令使用前台模式；服务器、watcher、开发服务等长期运行命令必须设置 background=true，工具会立即返回 session_id，后续统一使用 process 工具查询日志、等待、输入或终止。",
+            description: "在本地 workspace 内执行命令。预计会快速退出的命令使用前台模式。长时间但最终会结束的后台任务使用 background=true + notify_on_complete=true，结束后 Runtime 会主动通知模型。服务器、watcher、消费者等长期运行任务使用 background=true + watch_patterns=[目标日志]，命中目标信号后 Runtime 会主动通知模型，进程继续运行。配置通知后不要反复调用 process(wait)。",
             action: "command.run",
             risk: "medium",
             requires_approval: true,
@@ -185,7 +185,18 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     "background": {
                         "type": "boolean",
                         "default": false,
-                        "description": "是否创建后台进程会话。服务器、watcher、npm run dev 等不会自行退出的命令应设为 true；成功后立即返回 session_id。"
+                        "description": "是否创建后台进程会话。成功后立即返回 session_id。"
+                    },
+                    "notify_on_complete": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "仅配合 background=true 使用。适用于构建、测试、部署等最终会退出的任务；进程退出时 Runtime 主动通知模型继续处理结果。与 watch_patterns 同时提供时，以 notify_on_complete 为准。"
+                    },
+                    "watch_patterns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 20,
+                        "description": "仅配合 background=true 使用。适用于不会自行退出的常驻任务；输出首次包含任一目标字符串时 Runtime 主动通知模型，进程保持运行。例如 Worker ready、Watching for changes。不要用它匹配高频日志。"
                     },
                     "timeout_ms": {
                         "type": "number",
@@ -199,7 +210,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "process",
-            description: "管理 run_command(background=true) 创建的后台进程。使用 action=list 列出进程；poll 查询状态和本次新增输出；log 分页读取日志；wait 在有限时间内等待退出；kill 终止整个进程组，并由 Runtime 权限门冻结本次准确调用等待用户确认，模型不得先用自然语言询问；write 写入原始 stdin；submit 写入并追加回车；close 关闭 stdin 并发送 EOF。",
+            description: "管理 run_command(background=true) 创建的后台进程。使用 action=list 列出进程；poll 查询状态和本次新增输出；log 分页读取日志；wait 仅用于未配置主动通知的临时等待，若进程配置了 notify_on_complete 或 watch_patterns，wait 也会在通知产生时立即返回；kill 终止整个进程组，并由 Runtime 权限门冻结本次准确调用等待用户确认；write 写入原始 stdin；submit 写入并追加回车；close 关闭 stdin 并发送 EOF。",
             action: "command.process",
             risk: "low",
             requires_approval: false,

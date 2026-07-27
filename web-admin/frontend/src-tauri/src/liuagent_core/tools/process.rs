@@ -4,7 +4,7 @@
 //! 全部通过 `process(action=...)` 这一条模型工具管理。
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 #[cfg(unix)]
@@ -47,6 +47,13 @@ struct ProcessState {
     updated_at_epoch_ms: u128,
 }
 
+#[derive(Default)]
+struct ProcessNotificationState {
+    queue: VecDeque<Value>,
+    matched_patterns: HashSet<String>,
+    completion_queued: bool,
+}
+
 struct ProcessSession {
     id: String,
     command: String,
@@ -56,9 +63,12 @@ struct ProcessSession {
     started_at_epoch_ms: u128,
     started: Instant,
     max_output_bytes: usize,
+    notify_on_complete: bool,
+    watch_patterns: Vec<String>,
     child: Mutex<Child>,
     state: Mutex<ProcessState>,
     output: Mutex<ProcessOutput>,
+    notifications: Mutex<ProcessNotificationState>,
     state_path: PathBuf,
     log_path: PathBuf,
 }
@@ -84,6 +94,7 @@ impl ProcessSession {
             }
         }
         append_log(&self.log_path, &tagged);
+        self.queue_matching_output_notifications();
     }
 
     fn refresh(&self) -> Result<(), ToolError> {
@@ -120,8 +131,19 @@ impl ProcessSession {
             "exited".to_string()
         };
         state.updated_at_epoch_ms = epoch_millis();
+        let status = state.status.clone();
         drop(state);
-        self.persist_state()
+        self.persist_state()?;
+        if self.notify_on_complete || !self.watch_patterns.is_empty() {
+            self.queue_notification(json!({
+                "type": "process_exited",
+                "session_id": self.id,
+                "status": status,
+                "exit_code": exit_code,
+                "output_preview": self.output_preview(),
+            }));
+        }
+        Ok(())
     }
 
     fn persist_state(&self) -> Result<(), ToolError> {
@@ -144,6 +166,8 @@ impl ProcessSession {
                 "started_at_epoch_ms": self.started_at_epoch_ms,
                 "updated_at_epoch_ms": state.updated_at_epoch_ms,
                 "log_path": self.log_path.to_string_lossy(),
+                "notify_on_complete": self.notify_on_complete,
+                "watch_patterns": self.watch_patterns,
             }),
         )
     }
@@ -179,7 +203,66 @@ impl ProcessSession {
             "output_preview": preview,
             "truncated": output.truncated,
             "log_path": self.log_path.to_string_lossy(),
+            "notify_on_complete": self.notify_on_complete,
+            "watch_patterns": self.watch_patterns,
         }))
+    }
+
+    fn output_preview(&self) -> String {
+        self.output
+            .lock()
+            .map(|output| {
+                let start = output.bytes.len().saturating_sub(2_000);
+                String::from_utf8_lossy(&output.bytes[start..]).to_string()
+            })
+            .unwrap_or_default()
+    }
+
+    fn queue_matching_output_notifications(&self) {
+        if self.watch_patterns.is_empty() {
+            return;
+        }
+        let output = self
+            .output
+            .lock()
+            .map(|output| String::from_utf8_lossy(&output.bytes).to_string())
+            .unwrap_or_default();
+        let mut notifications = match self.notifications.lock() {
+            Ok(notifications) => notifications,
+            Err(_) => return,
+        };
+        for pattern in &self.watch_patterns {
+            if notifications.matched_patterns.contains(pattern) || !output.contains(pattern) {
+                continue;
+            }
+            notifications.matched_patterns.insert(pattern.clone());
+            notifications.queue.push_back(json!({
+                "type": "watch_match",
+                "session_id": self.id,
+                "status": "running",
+                "pattern": pattern,
+                "output_preview": self.output_preview(),
+            }));
+        }
+    }
+
+    fn queue_notification(&self, notification: Value) {
+        if let Ok(mut notifications) = self.notifications.lock() {
+            if notification["type"] == "process_exited" {
+                if notifications.completion_queued {
+                    return;
+                }
+                notifications.completion_queued = true;
+            }
+            notifications.queue.push_back(notification);
+        }
+    }
+
+    fn take_notification(&self) -> Option<Value> {
+        self.notifications
+            .lock()
+            .ok()
+            .and_then(|mut notifications| notifications.queue.pop_front())
     }
 }
 
@@ -188,6 +271,8 @@ pub fn spawn_background_process(
     cwd: &Path,
     command_text: &str,
     max_output_chars: usize,
+    notify_on_complete: bool,
+    watch_patterns: Vec<String>,
 ) -> Result<(Value, String), ToolError> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
     let mut command = Command::new(shell);
@@ -230,6 +315,8 @@ pub fn spawn_background_process(
         started_at_epoch_ms,
         started: Instant::now(),
         max_output_bytes: max_output_chars,
+        notify_on_complete,
+        watch_patterns: watch_patterns.clone(),
         child: Mutex::new(child),
         state: Mutex::new(ProcessState {
             status: "running".to_string(),
@@ -238,6 +325,7 @@ pub fn spawn_background_process(
             updated_at_epoch_ms: started_at_epoch_ms,
         }),
         output: Mutex::new(ProcessOutput::default()),
+        notifications: Mutex::new(ProcessNotificationState::default()),
         state_path: session_dir.join("state.json"),
         log_path: session_dir.join("process.log"),
     });
@@ -266,6 +354,19 @@ pub fn spawn_background_process(
             "command": command_text,
             "cwd": workspace_relative_path(root, cwd),
             "log_path": session.log_path.to_string_lossy(),
+            "state_path": session.state_path.to_string_lossy(),
+            "notify_on_complete": notify_on_complete,
+            "watch_patterns": watch_patterns,
+            "background_notification": if notify_on_complete || !session.watch_patterns.is_empty() {
+                json!({
+                    "kind": "process",
+                    "session_id": session.id,
+                    "notify_on_complete": notify_on_complete,
+                    "watch_patterns": session.watch_patterns,
+                })
+            } else {
+                Value::Null
+            },
         }),
         format!("后台进程已启动，session_id={}，pid={pid}", session.id),
     ))
@@ -399,6 +500,18 @@ fn process_wait(
     ) as u64;
     let started = Instant::now();
     loop {
+        if let Some(notification) = session.take_notification() {
+            let notification_type = notification["type"].as_str().unwrap_or("notification");
+            return Ok((
+                json!({
+                    "session_id": session.id,
+                    "status": "notified",
+                    "process_status": notification["status"],
+                    "notification": notification,
+                }),
+                format!("进程 {} 已发出通知：{}", session.id, notification_type),
+            ));
+        }
         let snapshot = session.snapshot(false)?;
         if snapshot["status"] != "running" {
             return Ok((
@@ -417,6 +530,32 @@ fn process_wait(
                 }),
                 format!("等待 {}ms 后进程 {} 仍在运行", timeout_ms, session.id),
             ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+pub fn wait_for_background_process_notification(
+    workspace_path: &str,
+    session_ids: &[String],
+    timeout_ms: u64,
+    cancel_check: Option<&dyn Fn() -> bool>,
+) -> Result<Option<Value>, ToolError> {
+    let root = resolve_workspace_root(workspace_path)?;
+    let started = Instant::now();
+    loop {
+        for session_id in session_ids {
+            let session = scoped_session(&root, session_id)?;
+            session.refresh()?;
+            if let Some(notification) = session.take_notification() {
+                return Ok(Some(notification));
+            }
+        }
+        if cancel_check.map(|check| check()).unwrap_or(false) {
+            return Ok(None);
+        }
+        if started.elapsed() >= Duration::from_millis(timeout_ms) {
+            return Ok(None);
         }
         thread::sleep(Duration::from_millis(25));
     }
@@ -776,11 +915,66 @@ fn epoch_millis() -> u128 {
 }
 
 #[cfg(test)]
-pub(crate) fn clear_process_registry_for_tests() {
-    if let Ok(mut sessions) = registry().lock() {
-        for session in sessions.values() {
-            let _ = process_kill(session);
-        }
-        sessions.clear();
+mod tests {
+    use super::*;
+
+    fn test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("liuagent_{name}_{}", epoch_millis()));
+        fs::create_dir_all(&root).unwrap();
+        fs::canonicalize(root).unwrap()
+    }
+
+    #[test]
+    fn watch_pattern_notifies_while_process_keeps_running() {
+        let root = test_root("process_watch_notification");
+        let (content, _) = spawn_background_process(
+            &root,
+            &root,
+            "printf 'booting\\n'; sleep 0.1; printf 'Worker ready\\n'; sleep 5",
+            20_000,
+            false,
+            vec!["Worker ready".to_string()],
+        )
+        .unwrap();
+        let session_id = content["session_id"].as_str().unwrap().to_string();
+
+        let notification = wait_for_background_process_notification(
+            root.to_string_lossy().as_ref(),
+            std::slice::from_ref(&session_id),
+            2_000,
+            None,
+        )
+        .unwrap()
+        .expect("watch pattern should notify");
+
+        assert_eq!(notification["type"], "watch_match");
+        assert_eq!(notification["pattern"], "Worker ready");
+        assert_eq!(notification["status"], "running");
+        let session = scoped_session(&root, &session_id).unwrap();
+        process_kill(&session).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn notify_on_complete_emits_exit_notification() {
+        let root = test_root("process_exit_notification");
+        let (content, _) =
+            spawn_background_process(&root, &root, "printf 'done\\n'", 20_000, true, Vec::new())
+                .unwrap();
+        let session_id = content["session_id"].as_str().unwrap().to_string();
+
+        let notification = wait_for_background_process_notification(
+            root.to_string_lossy().as_ref(),
+            std::slice::from_ref(&session_id),
+            2_000,
+            None,
+        )
+        .unwrap()
+        .expect("process exit should notify");
+
+        assert_eq!(notification["type"], "process_exited");
+        assert_eq!(notification["status"], "exited");
+        assert_eq!(notification["exit_code"], 0);
+        let _ = fs::remove_dir_all(root);
     }
 }

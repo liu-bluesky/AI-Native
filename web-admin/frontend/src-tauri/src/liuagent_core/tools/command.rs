@@ -93,6 +93,8 @@ pub fn run_command_with_output_sink_and_cancel(
     let cmd = required_string_arg(arguments, "cmd")?;
     let cwd_arg = string_arg(arguments, "cwd", ".");
     let background = bool_arg(arguments, "background", false);
+    let notify_on_complete = bool_arg(arguments, "notify_on_complete", false);
+    let watch_patterns = string_array_arg(arguments, "watch_patterns", 20, 200)?;
     let timeout_ms = number_arg(
         arguments,
         "timeout_ms",
@@ -132,7 +134,19 @@ pub fn run_command_with_output_sink_and_cancel(
     }
 
     if background {
-        let (mut content, summary) = spawn_background_process(&root, &cwd, &cmd, max_output_chars)?;
+        let effective_watch_patterns = if notify_on_complete {
+            Vec::new()
+        } else {
+            watch_patterns
+        };
+        let (mut content, summary) = spawn_background_process(
+            &root,
+            &cwd,
+            &cmd,
+            max_output_chars,
+            notify_on_complete,
+            effective_watch_patterns,
+        )?;
         if let Some(object) = content.as_object_mut() {
             object.insert("cmd".to_string(), json!(cmd));
         }
@@ -152,6 +166,46 @@ pub fn run_command_with_output_sink_and_cancel(
         object.insert("cmd".to_string(), json!(cmd));
     }
     Ok((content, summary))
+}
+
+fn string_array_arg(
+    arguments: &Value,
+    key: &str,
+    max_items: usize,
+    max_chars: usize,
+) -> Result<Vec<String>, ToolError> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = value.as_array() else {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            format!("{key} must be an array of strings"),
+        ));
+    };
+    let mut values = Vec::new();
+    for item in items.iter().take(max_items) {
+        let Some(text) = item.as_str() else {
+            return Err(ToolError::new(
+                "tool.schema_invalid",
+                format!("{key} must contain only strings"),
+            ));
+        };
+        let normalized = text.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        if normalized.chars().count() > max_chars {
+            return Err(ToolError::new(
+                "tool.schema_invalid",
+                format!("{key} entries must not exceed {max_chars} characters"),
+            ));
+        }
+        if !values.iter().any(|value| value == normalized) {
+            values.push(normalized.to_string());
+        }
+    }
+    Ok(values)
 }
 
 pub fn classify_command_risk(cmd: &str) -> (String, Vec<String>) {
