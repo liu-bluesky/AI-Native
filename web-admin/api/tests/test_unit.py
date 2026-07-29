@@ -104,8 +104,15 @@ def test_build_project_host_command_tools_stays_available_without_workspace_path
     assert "回退到当前 API 服务所在仓库根目录执行" in tools[0]["description"]
 
 
-def test_tool_executor_routes_project_host_terminal_tools(tmp_path):
+def test_tool_executor_routes_project_host_terminal_tools(tmp_path, monkeypatch):
     from services.tool_executor import ToolExecutor
+    from services.connectors import project_host_terminal_service
+
+    monkeypatch.setattr(
+        project_host_terminal_service,
+        "build_cli_plugin_runtime_environment",
+        lambda **_kwargs: (dict(project_host_terminal_service.os.environ), {}),
+    )
 
     async def run_case():
         executor = ToolExecutor(
@@ -120,9 +127,21 @@ def test_tool_executor_routes_project_host_terminal_tools(tmp_path):
             "project_host_terminal_start",
             {"initial_command": "printf terminal-ready"},
         )
-        assert started["ok"] is True
-        assert started["source"] == "project_host_terminal"
+        assert "error" not in started, started
+        assert started["ok"] is False
+        assert started["source"] == "operation_wait_task"
+        assert started["status"] == "running"
+        assert started["task_id"]
         assert started["session_id"]
+        assert started["async_feedback"] == {
+            "version": 1,
+            "kind": "terminal",
+            "subscription_id": started["task_id"],
+            "session_id": started["session_id"],
+            "status": "running",
+            "notification_mode": "runtime_push",
+            "events": ["completed", "failed"],
+        }
 
         echoed = await executor._execute_tool(
             "project_host_terminal_input",
@@ -146,6 +165,18 @@ def test_tool_executor_routes_project_host_terminal_tools(tmp_path):
 
         stopped = await executor._execute_tool("project_host_terminal_stop", {})
         assert stopped["ok"] is True
+
+        from services.operation_wait_task_service import get_operation_wait_task
+
+        operation_task = None
+        for _ in range(20):
+            operation_task = get_operation_wait_task(started["task_id"])
+            if operation_task and operation_task.get("status") == "succeeded":
+                break
+            await asyncio.sleep(0.05)
+        assert operation_task is not None
+        assert operation_task["status"] == "succeeded"
+        assert operation_task["execution"]["session_id"] == started["session_id"]
 
     asyncio.run(run_case())
 

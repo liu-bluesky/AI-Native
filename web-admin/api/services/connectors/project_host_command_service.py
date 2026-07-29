@@ -93,6 +93,7 @@ def build_project_host_command_tools(workspace_path: str) -> list[dict[str, Any]
             "description": (
                 "启动或附加当前项目的交互式 PTY 终端。适合处理第三方 CLI 的菜单选择、验证码、"
                 "设备授权、REPL、持续输出或其它需要多轮输入的场景。可传 initial_command 启动后立即执行。"
+                "终端退出后系统会通过统一异步通知主动恢复 AI，不需要反复调用 read 查询是否结束。"
             ),
             "parameters_schema": {
                 "type": "object",

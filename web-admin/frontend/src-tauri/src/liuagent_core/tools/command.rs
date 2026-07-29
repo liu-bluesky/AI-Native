@@ -93,7 +93,7 @@ pub fn run_command_with_output_sink_and_cancel(
     let cmd = required_string_arg(arguments, "cmd")?;
     let cwd_arg = string_arg(arguments, "cwd", ".");
     let background = bool_arg(arguments, "background", false);
-    let notify_on_complete = bool_arg(arguments, "notify_on_complete", false);
+    let requested_notify_on_complete = bool_arg(arguments, "notify_on_complete", false);
     let watch_patterns = string_array_arg(arguments, "watch_patterns", 20, 200)?;
     let timeout_ms = number_arg(
         arguments,
@@ -134,6 +134,11 @@ pub fn run_command_with_output_sink_and_cancel(
     }
 
     if background {
+        // A bare background command is treated as a finite task. This keeps the
+        // runtime subscribed instead of forcing the model to poll `process`.
+        // Long-lived services must declare watch_patterns so the runtime can
+        // resume on a meaningful readiness signal without waiting for exit.
+        let notify_on_complete = requested_notify_on_complete || watch_patterns.is_empty();
         let effective_watch_patterns = if notify_on_complete {
             Vec::new()
         } else {

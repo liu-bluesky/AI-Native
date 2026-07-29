@@ -357,10 +357,19 @@ pub fn spawn_background_process(
             "state_path": session.state_path.to_string_lossy(),
             "notify_on_complete": notify_on_complete,
             "watch_patterns": watch_patterns,
-            "background_notification": if notify_on_complete || !session.watch_patterns.is_empty() {
+            "async_feedback": if notify_on_complete || !session.watch_patterns.is_empty() {
                 json!({
+                    "version": 1,
                     "kind": "process",
+                    "subscription_id": session.id,
                     "session_id": session.id,
+                    "status": "running",
+                    "notification_mode": "runtime_push",
+                    "events": if notify_on_complete {
+                        json!(["completed", "failed"])
+                    } else {
+                        json!(["signal"])
+                    },
                     "notify_on_complete": notify_on_complete,
                     "watch_patterns": session.watch_patterns,
                 })

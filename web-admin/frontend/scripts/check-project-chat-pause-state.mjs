@@ -147,7 +147,7 @@ assert.doesNotMatch(
 
 assert.match(
   source,
-  /async function submitLocalLiuAgentResume\(operation, options = \{\}\)[\s\S]*?const previousVisibleContent = isLocalLiuAgentRecoveryPlaceholderContent\(row\.content\)[\s\S]*?clearLocalLiuAgentRecoveryPlaceholderContent\(row\);[\s\S]*?`上次有效结果：\$\{previousVisibleContent \|\| "无"\}`/,
+  /async function submitLocalLiuAgentResume\(operation, options = \{\}\)[\s\S]*?const previousVisibleContent = isLocalLiuAgentRecoveryPlaceholderContent\(\s*row\.content,?\s*\)[\s\S]*?clearLocalLiuAgentRecoveryPlaceholderContent\(row\);[\s\S]*?`上次有效结果：\$\{previousVisibleContent \|\| "无"\}`/,
   "checkpoint resume must exclude recovery placeholders from model context",
 );
 
@@ -171,7 +171,7 @@ assert.doesNotMatch(
 
 assert.match(
   source,
-  /function isLocalLiuAgentRecoverableModelStepFailure\(payload = \{\}\) \{[\s\S]*?payload\?\.ok === false &&[\s\S]*?payload\?\.status[\s\S]*?=== "failed";[\s\S]*?if \(!isLocalLiuAgentRecoverableModelStepFailure\(payload\)\) return false;[\s\S]*?模型步骤中断，正在准备从 checkpoint 恢复[\s\S]*?const phase = "running"/,
+  /function isLocalLiuAgentRecoverableModelStepFailure\(payload = \{\}\) \{[\s\S]*?payload\?\.ok === false &&[\s\S]*?payload\?\.status[\s\S]*?=== "failed"[\s\S]*?if \(!isLocalLiuAgentRecoverableModelStepFailure\(payload\)\) return false;[\s\S]*?模型步骤中断，正在准备从 checkpoint 恢复[\s\S]*?const phase = "running"/,
   "all failed model steps must use one checkpoint recovery standard",
 );
 
@@ -273,8 +273,8 @@ assert.match(
 
 assert.match(
   source,
-  /function closeIdleChatWsAfterFastCancel\(\)[\s\S]*?pendingRequests\.size > 0[\s\S]*?wsClient\.value\.close\(1000, "generation cancelled"\);/,
-  "fast pause must close the idle websocket stream after local cancellation",
+  /function closeIdleChatWsAfterFastCancel\(\)[\s\S]*?hasProjectPending[\s\S]*?getWsClient\(projectId\)[\s\S]*?disconnectWs\("generation cancelled", \{ projectId \}\);/,
+  "fast pause must close only the idle websocket stream owned by the cancelled project",
 );
 
 assert.match(
@@ -291,7 +291,7 @@ assert.match(
 
 assert.match(
   source,
-  /function resolvePendingRequestFast[\s\S]*?persistRememberedChatSessionMessages\(\s*pending\.projectId,\s*chatSessionId,\s*\);[\s\S]*?settlePending\(pending,\s*"resolve"/,
+  /function resolvePendingRequestFast[\s\S]*?persistRememberedChatSessionMessages\(\s*pending\.projectId,\s*chatSessionId,?\s*\);[\s\S]*?settlePending\(pending,\s*"resolve"/,
   "fast pause must persist the stopped runtime before the caller continues",
 );
 

@@ -91,6 +91,9 @@ export function normalizeChatSession(item) {
     last_message: String(
       item?.last_message || item?.lastMessage || item?.last_message_content || "",
     ).trim(),
+    last_message_id: String(
+      item?.last_message_id || item?.lastMessageId || "",
+    ).trim(),
     message_count: Number(item?.message_count || 0),
     source_type: sourceContext.source_type,
     platform: sourceContext.platform,
@@ -104,6 +107,28 @@ export function normalizeChatSession(item) {
     updated_at: String(item?.updated_at || "").trim(),
     last_message_at: String(item?.last_message_at || "").trim(),
   };
+}
+
+export function chatSessionStablePositionAt(session) {
+  return String(session?.created_at || "").trim();
+}
+
+export function compareChatSessionsByStablePosition(left, right) {
+  const leftCreatedAt = chatSessionStablePositionAt(left);
+  const rightCreatedAt = chatSessionStablePositionAt(right);
+  if (leftCreatedAt !== rightCreatedAt) {
+    return leftCreatedAt < rightCreatedAt ? 1 : -1;
+  }
+  const leftId = String(left?.id || "");
+  const rightId = String(right?.id || "");
+  if (leftId === rightId) return 0;
+  return leftId < rightId ? -1 : 1;
+}
+
+export function sortChatSessionsByStablePosition(sessions) {
+  return [...(Array.isArray(sessions) ? sessions : [])].sort(
+    compareChatSessionsByStablePosition,
+  );
 }
 
 export function isGroupChatSession(session) {

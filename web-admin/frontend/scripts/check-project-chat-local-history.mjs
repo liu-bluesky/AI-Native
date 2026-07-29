@@ -43,9 +43,15 @@ for (const [label, endpointPattern] of [
   );
 }
 
-assert.ok(
-  (projectChatSource.match(/persist_history:\s*false/g) || []).length >= 2,
-  "normal and interaction chat requests must disable server history persistence",
+assert.match(
+  projectChatSource,
+  /async function sendProjectChatRequest\([\s\S]*?persistHistory = false[\s\S]*?persist_history: Boolean\(persistHistory\)/,
+  "normal project chat requests must disable server history persistence by default",
+);
+assert.match(
+  projectChatSource,
+  /type: "interaction_submit"[\s\S]*?persist_history: false/,
+  "interaction chat requests must disable server history persistence",
 );
 assert.match(
   storageSource,
@@ -94,6 +100,16 @@ assert.match(
 );
 assert.match(
   nativeStoreSource,
+  /fn runtime_activity_updated_at\([\s\S]*?runtime_message_activity[\s\S]*?existing_session_activity/,
+  "runtime-only persistence must preserve the existing conversation activity timestamp",
+);
+assert.match(
+  nativeStoreSource,
+  /session_stable_position_at\(right\)[\s\S]*?session_stable_position_at\(left\)[\s\S]*?value_text\(left, &\["id"\]\)/,
+  "native session listing must use deterministic creation ordering with an id tie-breaker",
+);
+assert.match(
+  nativeStoreSource,
   /OpenFlags::SQLITE_OPEN_READ_ONLY[\s\S]*migrate_legacy_sqlite_project/,
   "legacy SQLite data must only be opened read-only for one-time migration",
 );
@@ -107,6 +123,21 @@ assert.match(
   /function setProjectChatSessionsMemoryCache/,
   "session reads must have a memory-only cache path",
 );
+assert.match(
+  projectChatSource,
+  /function syncLocalChatSessionMetadata[\s\S]*?messageActivityChanged[\s\S]*?updated_at: messageActivityChanged \? now : current\.updated_at[\s\S]*?sortChatSessionsByStablePosition/,
+  "message updates must not move a conversation from its stable sidebar position",
+);
+assert.match(
+  projectChatSource,
+  /function normalizeVisibleChatSessions[\s\S]*?sortChatSessionsByStablePosition/,
+  "loaded conversation lists must use the same stable creation ordering as live updates",
+);
+assert.match(
+  projectChatSource,
+  /sortChatSessionsByStablePosition/,
+  "project chat must keep sidebar positions independent from message activity",
+);
 const fetchChatSessionsSource = projectChatSource.match(
   /async function fetchChatSessions\([\s\S]*?\n\}/,
 )?.[0] || "";
@@ -115,6 +146,47 @@ assert.doesNotMatch(
   fetchChatSessionsSource,
   /setProjectChatSessionsCache\(/,
   "session reads and load failures must not overwrite JSON session metadata",
+);
+
+const fetchChatHistorySource = projectChatSource.slice(
+  projectChatSource.indexOf("async function fetchChatHistory("),
+  projectChatSource.indexOf("async function loadOlderMessages("),
+);
+assert.ok(fetchChatHistorySource, "project chat must define fetchChatHistory");
+assert.match(
+  projectChatSource,
+  /function persistCurrentChatRuntimeBeforeSessionSwitch[\s\S]*?onlyIfDirty: true/,
+  "switching conversations must only flush a dirty runtime snapshot",
+);
+assert.match(
+  projectChatSource,
+  /const dirtyChatRuntimeSessionKeys = new Set\(\)[\s\S]*?function markChatRuntimeDirty/,
+  "chat runtime persistence must track dirty sessions explicitly",
+);
+assert.match(
+  fetchChatHistorySource,
+  /getCachedChatRuntime[\s\S]*?getRememberedChatSessionMessages[\s\S]*?chatHistoryLoading\.value = !hasImmediateRows/,
+  "revisited conversations must render cached rows without a blocking history loader",
+);
+assert.match(
+  projectChatSource,
+  /async function applyChatMessagesWithoutPersisting[\s\S]*?chatRuntimePersistenceSuppressionDepth/,
+  "hydrating history must suppress runtime persistence watchers",
+);
+assert.match(
+  projectChatSource,
+  /watch\(\s*messages,[\s\S]*?chatRuntimePersistenceSuppressionDepth > 0[\s\S]*?schedulePersistChatRuntime/,
+  "message hydration must not be treated as a new runtime mutation",
+);
+assert.doesNotMatch(
+  fetchChatHistorySource,
+  /await restoreInteractiveChatRuntime\(/,
+  "interactive runtime recovery must not block history rendering",
+);
+assert.match(
+  fetchChatHistorySource,
+  /void restoreInteractiveChatRuntime\([\s\S]*?\.catch\(/,
+  "interactive runtime recovery must continue safely in the background",
 );
 
 console.log("project chat local history checks passed");

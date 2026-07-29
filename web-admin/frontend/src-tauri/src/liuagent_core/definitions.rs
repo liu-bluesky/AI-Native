@@ -172,7 +172,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "run_command",
-            description: "在本地 workspace 内执行命令。预计会快速退出的命令使用前台模式。长时间但最终会结束的后台任务使用 background=true + notify_on_complete=true，结束后 Runtime 会主动通知模型。服务器、watcher、消费者等长期运行任务使用 background=true + watch_patterns=[目标日志]，命中目标信号后 Runtime 会主动通知模型，进程继续运行。配置通知后不要反复调用 process(wait)。",
+            description: "在本地 workspace 内执行命令。预计会快速退出的命令使用前台模式。background=true 的有限任务默认订阅退出事件，结束后 Runtime 会主动通知模型，不需要 process 轮询。服务器、watcher、消费者等长期运行任务必须使用 background=true + watch_patterns=[目标日志]，命中目标信号后 Runtime 主动通知模型且进程继续运行。",
             action: "command.run",
             risk: "medium",
             requires_approval: true,
@@ -189,8 +189,8 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "notify_on_complete": {
                         "type": "boolean",
-                        "default": false,
-                        "description": "仅配合 background=true 使用。适用于构建、测试、部署等最终会退出的任务；进程退出时 Runtime 主动通知模型继续处理结果。与 watch_patterns 同时提供时，以 notify_on_complete 为准。"
+                        "default": true,
+                        "description": "仅配合 background=true 使用。有限后台任务默认在进程退出时由 Runtime 主动通知模型。与 watch_patterns 同时提供时，以 notify_on_complete 为准。"
                     },
                     "watch_patterns": {
                         "type": "array",
@@ -210,7 +210,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "process",
-            description: "管理 run_command(background=true) 创建的后台进程。使用 action=list 列出进程；poll 查询状态和本次新增输出；log 分页读取日志；wait 仅用于未配置主动通知的临时等待，若进程配置了 notify_on_complete 或 watch_patterns，wait 也会在通知产生时立即返回；kill 终止整个进程组，并由 Runtime 权限门冻结本次准确调用等待用户确认；write 写入原始 stdin；submit 写入并追加回车；close 关闭 stdin 并发送 EOF。",
+            description: "管理 run_command(background=true) 创建的后台进程。正常完成和目标信号由 Runtime 主动反馈 AI；poll/wait 仅用于人工诊断或通知监听失败后的恢复。log 分页读取日志；kill 终止整个进程组；write 写入原始 stdin；submit 写入并追加回车；close 关闭 stdin 并发送 EOF。",
             action: "command.process",
             risk: "low",
             requires_approval: false,

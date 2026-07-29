@@ -4,6 +4,8 @@ import {
 } from "@/modules/project-chat/mappers/chatSourceMappers.js";
 
 export {
+  chatSessionStablePositionAt,
+  compareChatSessionsByStablePosition,
   formatChatPlatformLabel,
   formatChatSessionSourceLabel,
   isBotConversationSession,
@@ -12,6 +14,7 @@ export {
   normalizeChatSourceContext,
   normalizeStringList,
   resolveChatSessionGroupLabel,
+  sortChatSessionsByStablePosition,
 } from "@/modules/project-chat/mappers/chatSourceMappers.js";
 
 function nowText() {

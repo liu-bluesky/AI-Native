@@ -601,12 +601,51 @@ class ToolExecutor:
                     workspace_path=self._host_workspace_path,
                     initial_command=str(args.get("initial_command") or "").strip(),
                 )
+                from services.operation_wait_task_service import create_external_operation_wait_task
+
+                operation_task = create_external_operation_wait_task(
+                    operation_kind="terminal_interaction",
+                    operation_label="项目交互终端",
+                    username=self._username,
+                    metadata={
+                        "project_id": self._project_id,
+                        "chat_session_id": self._chat_session_id,
+                        "employee_id": self._employee_id,
+                        "agent_runtime_v2": {
+                            "run_id": str(args.get("_agent_runtime_run_id") or "").strip(),
+                            "call_id": str(args.get("_agent_runtime_call_id") or "").strip(),
+                            "tool_name": normalized_tool_name,
+                        },
+                    },
+                    execution={
+                        "session_id": str(result.get("session_id") or "").strip(),
+                        "workspace_path": str(result.get("workspace_path") or "").strip(),
+                    },
+                )
+                asyncio.create_task(
+                    self._watch_project_host_terminal_operation(
+                        str(result.get("session_id") or "").strip(),
+                        str(operation_task.get("task_id") or "").strip(),
+                    )
+                )
                 return {
-                    "ok": True,
-                    "source": "project_host_terminal",
+                    **dict(result),
+                    "ok": False,
+                    "execution_ok": False,
+                    "source": "operation_wait_task",
+                    "status": "running",
+                    "task_id": str(operation_task.get("task_id") or "").strip(),
                     "interactive": True,
                     "action_type": "enter_text",
-                    **dict(result),
+                    "async_feedback": {
+                        "version": 1,
+                        "kind": "terminal",
+                        "subscription_id": str(operation_task.get("task_id") or "").strip(),
+                        "session_id": str(result.get("session_id") or "").strip(),
+                        "status": "running",
+                        "notification_mode": "runtime_push",
+                        "events": ["completed", "failed"],
+                    },
                 }
             if normalized_tool_name == "project_host_terminal_input":
                 from services.connectors.project_host_terminal_service import (
@@ -666,6 +705,49 @@ class ToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": str(exc), "source": "project_host_terminal"}
         return {"ok": False, "error": f"Unsupported project host terminal tool: {normalized_tool_name}"}
+
+    async def _watch_project_host_terminal_operation(self, session_id: str, task_id: str) -> None:
+        if not session_id or not task_id:
+            return
+        from services.connectors.project_host_terminal_service import (
+            attach_project_host_terminal_listener,
+            detach_project_host_terminal_listener,
+        )
+        from services.operation_wait_task_service import complete_external_operation_wait_task
+
+        queue = None
+        try:
+            queue, history = attach_project_host_terminal_listener(session_id)
+            events = list(history)
+            while True:
+                event = events.pop(0) if events else await queue.get()
+                if str(event.get("type") or "").strip().lower() != "exit":
+                    continue
+                exit_code = event.get("exit_code")
+                execution_ok = exit_code in (None, 0, "0")
+                complete_external_operation_wait_task(
+                    task_id,
+                    execution_ok=execution_ok,
+                    execution={
+                        "session_id": session_id,
+                        "exit_code": exit_code,
+                        "status": "completed" if execution_ok else "failed",
+                    },
+                )
+                return
+        except Exception as exc:
+            complete_external_operation_wait_task(
+                task_id,
+                execution_ok=False,
+                execution={
+                    "session_id": session_id,
+                    "status": "failed",
+                    "error": str(exc),
+                },
+            )
+        finally:
+            if queue is not None:
+                detach_project_host_terminal_listener(session_id, queue)
 
     async def _maybe_execute_cli_auth_operation_task(
         self,

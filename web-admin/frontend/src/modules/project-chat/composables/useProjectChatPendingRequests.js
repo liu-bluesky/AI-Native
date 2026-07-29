@@ -153,22 +153,46 @@ export function useProjectChatPendingRequests({ currentChatSessionId }) {
     };
   }
 
+  function pendingMatchesScope(pending, options = {}) {
+    const projectId = String(options?.projectId || "").trim();
+    const chatSessionId = String(options?.chatSessionId || "").trim();
+    if (
+      projectId &&
+      String(pending?.projectId || "").trim() !== projectId
+    ) {
+      return false;
+    }
+    if (
+      chatSessionId &&
+      String(pending?.chatSessionId || "").trim() !== chatSessionId
+    ) {
+      return false;
+    }
+    return true;
+  }
+
   /**
-   * 批量清理所有 pending request（reject + 删除 Map 条目 + 清除追踪），不处理页面 UI 副作用。
+   * 按作用域批量清理 pending request（reject + 删除 Map 条目 + 清除追踪），
+   * 不处理页面 UI 副作用。未传作用域时清理全部请求。
    * @param {string} reason
+   * @param {{ projectId?: string, chatSessionId?: string }} options
    * @returns {Array<{ requestId: string, pending: object }>} 原 pending 条目列表，供页面做消息行更新等副作用
    */
-  function rejectAndCleanupAllRequests(reason) {
+  function rejectAndCleanupRequests(reason, options = {}) {
     const message = String(reason || "连接已断开").trim();
-    const items = Array.from(pendingRequests.entries()).map(
-      ([requestId, pending]) => ({ requestId, pending }),
-    );
+    const items = Array.from(pendingRequests.entries())
+      .filter(([, pending]) => pendingMatchesScope(pending, options))
+      .map(([requestId, pending]) => ({ requestId, pending }));
     for (const { requestId, pending } of items) {
       settlePending(pending, "reject", new Error(message));
       pendingRequests.delete(requestId);
       clearTrackedPendingRequest(requestId);
     }
     return items;
+  }
+
+  function rejectAndCleanupAllRequests(reason) {
+    return rejectAndCleanupRequests(reason);
   }
 
   return {
@@ -182,6 +206,7 @@ export function useProjectChatPendingRequests({ currentChatSessionId }) {
     clearTrackedPendingRequest,
     cleanupRequest,
     rejectAndCleanupRequest,
+    rejectAndCleanupRequests,
     rejectAndCleanupAllRequests,
   };
 }

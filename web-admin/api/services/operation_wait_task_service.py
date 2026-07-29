@@ -382,6 +382,56 @@ def _update_task(task_id: str, **patch: Any) -> dict[str, Any]:
     return normalized
 
 
+def create_external_operation_wait_task(
+    *,
+    operation_kind: str,
+    operation_label: str,
+    username: str,
+    metadata: dict[str, Any] | None = None,
+    execution: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create a canonical runtime-push task for a non-auth async operation."""
+    task = {
+        "task_id": f"operation-{uuid.uuid4().hex}",
+        "plugin_id": "",
+        "created_by": str(username or "").strip(),
+        "operation_kind": str(operation_kind or "external_operation").strip(),
+        "operation_label": str(operation_label or "后台操作").strip(),
+        "status": "running",
+        "status_label": _build_task_status_label("running"),
+        "status_reason": _build_task_status_reason(status="running"),
+        "ok": False,
+        "execution_ok": False,
+        "execution": dict(execution or {}),
+        "metadata": dict(metadata or {}),
+        "created_at": _utc_now_iso(),
+    }
+    with _TASK_LOCK:
+        normalized = _write_task(task)
+    _emit_task_event(normalized, event_type="task_created")
+    return normalized
+
+
+def complete_external_operation_wait_task(
+    task_id: str,
+    *,
+    execution_ok: bool,
+    execution: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Mark an async operation concluded so the runtime can resume the AI."""
+    payload = dict(execution or {})
+    return _update_task(
+        task_id,
+        status="succeeded",
+        status_label="已完成" if execution_ok else "执行失败",
+        status_reason=("操作完成" if execution_ok else "操作已结束，但执行失败"),
+        ok=bool(execution_ok),
+        execution_ok=bool(execution_ok),
+        execution=payload,
+        completed_at=_utc_now_iso(),
+    )
+
+
 def merge_operation_wait_task_metadata(
     task_id: str,
     metadata_patch: dict[str, Any] | None,

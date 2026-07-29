@@ -11,36 +11,50 @@ export function useProjectChatTransport({
   const wsConnected = ref(false);
   const wsClient = ref(null);
   const wsProjectId = ref("");
-  const reconnectAttempt = ref(0);
-
-  let reconnectTimer = null;
-  let connectingPromise = null;
-  let connectionGeneration = 0;
-  let manualClose = false;
+  const connections = new Map();
 
   const wsStatusText = computed(() => (wsConnected.value ? "已连接" : "未连接"));
   const wsStatusType = computed(() => (wsConnected.value ? "success" : "info"));
 
-  function clearReconnectTimer() {
-    if (reconnectTimer !== null) {
-      window.clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
+  function syncActiveConnection(projectId = wsProjectId.value) {
+    const normalizedProjectId = String(projectId || "").trim();
+    wsProjectId.value = normalizedProjectId;
+    const entry = normalizedProjectId ? connections.get(normalizedProjectId) : null;
+    wsClient.value = entry?.client || null;
+    wsConnected.value = Boolean(entry?.connected && entry?.client?.isOpen?.());
+    return entry || null;
+  }
+
+  function selectWsProject(projectId = "") {
+    return syncActiveConnection(projectId);
+  }
+
+  function getWsClient(projectId = wsProjectId.value) {
+    const normalizedProjectId = String(projectId || "").trim();
+    return normalizedProjectId ? connections.get(normalizedProjectId)?.client || null : null;
+  }
+
+  function clearReconnectTimer(entry) {
+    if (!entry || entry.reconnectTimer === null) return;
+    window.clearTimeout(entry.reconnectTimer);
+    entry.reconnectTimer = null;
   }
 
   function scheduleReconnect(projectId, reason = "") {
-    const normalizedProjectId = String(projectId || wsProjectId.value || "").trim();
-    if (!normalizedProjectId || manualClose) return;
-    if (reconnectTimer !== null) return;
-    const attempt = Math.min(Number(reconnectAttempt.value || 0) + 1, 5);
-    reconnectAttempt.value = attempt;
+    const normalizedProjectId = String(projectId || "").trim();
+    const entry = connections.get(normalizedProjectId);
+    if (!normalizedProjectId || !entry || entry.manualClose) return;
+    if (entry.reconnectTimer !== null) return;
+    const attempt = Math.min(Number(entry.reconnectAttempt || 0) + 1, 5);
+    entry.reconnectAttempt = attempt;
     const delayMs = Math.min(30000, 1000 * 2 ** Math.max(0, attempt - 1));
-    reconnectTimer = window.setTimeout(() => {
-      reconnectTimer = null;
+    entry.reconnectTimer = window.setTimeout(() => {
+      entry.reconnectTimer = null;
       void ensureWsClient(normalizedProjectId, { reconnect: true }).catch((err) => {
         if (attempt >= 5) {
           onUnexpectedClose?.(
             err?.message || reason || "项目聊天实时连接重连失败",
+            normalizedProjectId,
           );
           return;
         }
@@ -49,19 +63,36 @@ export function useProjectChatTransport({
     }, delayMs);
   }
 
-  function disconnectWs(reason = "") {
-    manualClose = true;
-    connectionGeneration += 1;
-    clearReconnectTimer();
-    if (wsClient.value) {
-      wsClient.value.close(1000, reason || "client close");
+  function closeProjectConnection(projectId, reason = "") {
+    const normalizedProjectId = String(projectId || "").trim();
+    const entry = connections.get(normalizedProjectId);
+    if (!entry) return false;
+    entry.manualClose = true;
+    entry.generation += 1;
+    clearReconnectTimer(entry);
+    entry.client?.close(1000, reason || "client close");
+    connections.delete(normalizedProjectId);
+    if (wsProjectId.value === normalizedProjectId) {
+      syncActiveConnection(normalizedProjectId);
+    }
+    return true;
+  }
+
+  function disconnectWs(reason = "", options = {}) {
+    const projectId = String(options?.projectId || "").trim();
+    if (projectId) {
+      closeProjectConnection(projectId, reason);
+      onDisconnect?.(reason || "连接已断开", projectId);
+      return;
+    }
+    const projectIds = Array.from(connections.keys());
+    for (const activeProjectId of projectIds) {
+      closeProjectConnection(activeProjectId, reason);
     }
     wsClient.value = null;
     wsConnected.value = false;
     wsProjectId.value = "";
-    reconnectAttempt.value = 0;
-    connectingPromise = null;
-    onDisconnect?.(reason || "连接已断开");
+    onDisconnect?.(reason || "连接已断开", "");
   }
 
   async function ensureWsClient(projectId, options = {}) {
@@ -70,90 +101,104 @@ export function useProjectChatTransport({
       throw new Error("缺少项目 ID");
     }
     const shouldForceReconnect = Boolean(options?.forceReconnect);
-    if (
-      !shouldForceReconnect &&
-      wsClient.value &&
-      wsProjectId.value === normalizedProjectId &&
-      wsClient.value.isOpen()
-    ) {
-      return wsClient.value;
+    let entry = connections.get(normalizedProjectId);
+    if (shouldForceReconnect && entry) {
+      closeProjectConnection(normalizedProjectId, "replace connection");
+      entry = null;
     }
-    if (!shouldForceReconnect && connectingPromise && wsProjectId.value === normalizedProjectId) {
-      return connectingPromise;
+    if (entry?.client?.isOpen?.()) {
+      syncActiveConnection(normalizedProjectId);
+      return entry.client;
     }
-    if (wsClient.value && wsProjectId.value !== normalizedProjectId) {
-      disconnectWs("switch project");
-    } else if (wsClient.value && shouldForceReconnect) {
-      connectionGeneration += 1;
-      wsClient.value.close(1000, "replace connection");
-      wsClient.value = null;
-      wsConnected.value = false;
-      connectingPromise = null;
-    } else if (wsClient.value) {
-      connectionGeneration += 1;
-      wsClient.value.close(1000, "stale connection");
-      wsClient.value = null;
-      wsConnected.value = false;
+    if (entry?.connectingPromise) {
+      syncActiveConnection(normalizedProjectId);
+      return entry.connectingPromise;
     }
 
     const token = getToken?.();
     if (!token) {
       throw new Error("登录状态失效，请重新登录");
     }
-    manualClose = false;
-    clearReconnectTimer();
-    wsProjectId.value = normalizedProjectId;
-    const generation = connectionGeneration + 1;
-    connectionGeneration = generation;
-    // WebSocket 的协议事件仍由页面编排层处理，这里只负责连接生命周期。
+    if (!entry) {
+      entry = {
+        client: null,
+        connected: false,
+        reconnectAttempt: 0,
+        reconnectTimer: null,
+        connectingPromise: null,
+        generation: 0,
+        manualClose: false,
+      };
+      connections.set(normalizedProjectId, entry);
+    }
+    entry.manualClose = false;
+    clearReconnectTimer(entry);
+    const generation = entry.generation + 1;
+    entry.generation = generation;
     const client = createProjectChatWsClient({
       projectId: normalizedProjectId,
       token,
       onOpen: () => {
-        if (connectionGeneration !== generation) return;
-        wsConnected.value = true;
-        reconnectAttempt.value = 0;
+        if (entry.generation !== generation) return;
+        entry.connected = true;
+        entry.reconnectAttempt = 0;
+        if (wsProjectId.value === normalizedProjectId) {
+          syncActiveConnection(normalizedProjectId);
+        }
       },
-      onMessage,
+      onMessage: (eventData) => onMessage?.(eventData, normalizedProjectId),
       onError: () => {
-        if (connectionGeneration !== generation) return;
-        wsConnected.value = false;
+        if (entry.generation !== generation) return;
+        entry.connected = false;
+        if (wsProjectId.value === normalizedProjectId) {
+          syncActiveConnection(normalizedProjectId);
+        }
       },
       onStale: (reason) => {
-        if (connectionGeneration !== generation) return;
-        wsConnected.value = false;
-        onUnexpectedClose?.(reason);
+        if (entry.generation !== generation) return;
+        entry.connected = false;
+        if (wsProjectId.value === normalizedProjectId) {
+          syncActiveConnection(normalizedProjectId);
+        }
+        onUnexpectedClose?.(reason, normalizedProjectId);
       },
       onClose: (event) => {
-        if (connectionGeneration !== generation) return;
-        wsConnected.value = false;
-        if (wsClient.value === client) {
-          wsClient.value = null;
+        if (entry.generation !== generation) return;
+        entry.connected = false;
+        if (entry.client === client) {
+          entry.client = null;
+        }
+        if (wsProjectId.value === normalizedProjectId) {
+          syncActiveConnection(normalizedProjectId);
         }
         const code = Number(event?.code || 1000);
-        if (manualClose || code === 1000) return;
-        const reason =
+        if (entry.manualClose || code === 1000) return;
+        const closeReason =
           String(event?.reason || "").trim() ||
           `项目聊天实时连接关闭(${code})`;
-        onUnexpectedClose?.(reason);
-        scheduleReconnect(normalizedProjectId, reason);
+        onUnexpectedClose?.(closeReason, normalizedProjectId);
+        scheduleReconnect(normalizedProjectId, closeReason);
       },
     });
-    wsClient.value = client;
-    connectingPromise = client.ready
+    entry.client = client;
+    syncActiveConnection(normalizedProjectId);
+    entry.connectingPromise = client.ready
       .then(() => {
-        if (connectionGeneration !== generation || wsClient.value !== client) {
+        if (entry.generation !== generation || entry.client !== client) {
           throw new Error("WebSocket 连接已被替换");
         }
-        wsConnected.value = true;
+        entry.connected = true;
+        if (wsProjectId.value === normalizedProjectId) {
+          syncActiveConnection(normalizedProjectId);
+        }
         return client;
       })
       .finally(() => {
-        if (wsClient.value === client) {
-          connectingPromise = null;
+        if (entry.client === client) {
+          entry.connectingPromise = null;
         }
       });
-    return connectingPromise;
+    return entry.connectingPromise;
   }
 
   return {
@@ -162,6 +207,8 @@ export function useProjectChatTransport({
     wsProjectId,
     wsStatusText,
     wsStatusType,
+    selectWsProject,
+    getWsClient,
     disconnectWs,
     ensureWsClient,
     scheduleReconnect,

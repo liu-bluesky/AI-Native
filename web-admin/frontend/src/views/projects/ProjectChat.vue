@@ -3236,6 +3236,7 @@ import {
   normalizeProcessLogLevel,
   normalizeStringList,
   resolveChatSessionGroupLabel,
+  sortChatSessionsByStablePosition,
 } from "@/modules/project-chat/mappers/messageMappers.js";
 import {
   attachmentTagType,
@@ -5126,6 +5127,7 @@ const {
   trackPendingRequest,
   cleanupRequest,
   rejectAndCleanupRequest,
+  rejectAndCleanupRequests,
   rejectAndCleanupAllRequests,
 } = useProjectChatPendingRequests({
   currentChatSessionId,
@@ -5202,6 +5204,8 @@ const {
   wsProjectId,
   wsStatusText,
   wsStatusType,
+  selectWsProject,
+  getWsClient,
   disconnectWs,
   ensureWsClient,
 } = useProjectChatTransport({
@@ -5211,12 +5215,15 @@ const {
     terminalMirrorConnected.value = false;
     rejectPendingAgentPrepares(reason || "连接已断开");
   },
-  onUnexpectedClose: (reason) => {
-    rejectPendingRequests(reason);
+  onUnexpectedClose: (reason, projectId) => {
+    rejectPendingRequests(reason, { projectId });
     ElMessage.warning(`项目聊天实时连接断开：${reason}`);
   },
 });
 const chatSessionMessageCache = new Map();
+const chatSessionRuntimeCache = new Map();
+const dirtyChatRuntimeSessionKeys = new Set();
+let chatRuntimePersistenceSuppressionDepth = 0;
 const queuedFollowupMessages = ref([]);
 let followupQueueDraining = false;
 let activeFollowupAssistantMessageId = "";
@@ -11508,14 +11515,35 @@ const currentChatSessionLocalLiuAgentRunning = computed(() =>
   Boolean(localLiuAgentActiveRunForChatSession(currentChatSessionId.value)),
 );
 
+function localLiuAgentActiveRunRows(run) {
+  if (Array.isArray(run?.rows)) return run.rows;
+  const projectId = String(run?.projectId || "").trim();
+  const chatSessionId = String(run?.chatSessionId || "").trim();
+  if (!projectId || !chatSessionId) return [];
+  if (isCurrentChatSession(projectId, chatSessionId)) {
+    return messages.value;
+  }
+  return getRememberedChatSessionMessages(projectId, chatSessionId) || [];
+}
+
 function localLiuAgentActiveRunRow(run) {
   const assistantMessageId = String(run?.assistantMessageId || "").trim();
   if (!assistantMessageId) return null;
   return (
-    messages.value.find(
+    localLiuAgentActiveRunRows(run).find(
       (row) => String(row?.id || "").trim() === assistantMessageId,
     ) || null
   );
+}
+
+function persistLocalLiuAgentActiveRunMessages(run) {
+  const projectId = String(run?.projectId || "").trim();
+  const chatSessionId = String(run?.chatSessionId || "").trim();
+  const rows = localLiuAgentActiveRunRows(run);
+  if (!projectId || !chatSessionId || !rows.length) return false;
+  rememberChatSessionMessages(projectId, chatSessionId, rows);
+  persistRememberedChatSessionMessages(projectId, chatSessionId);
+  return true;
 }
 
 function localLiuAgentRuntimeEventKey(event = {}) {
@@ -11536,6 +11564,11 @@ function markLocalLiuAgentRuntimeEventSeen(event = {}) {
   if (localLiuAgentSeenRuntimeEventIds.has(eventKey)) return false;
   localLiuAgentSeenRuntimeEventIds.add(eventKey);
   return true;
+}
+
+function hasSeenLocalLiuAgentRuntimeEvent(event = {}) {
+  const eventKey = localLiuAgentRuntimeEventKey(event);
+  return Boolean(eventKey && localLiuAgentSeenRuntimeEventIds.has(eventKey));
 }
 
 async function revealWorkspaceFileChangesAfterMutation(
@@ -11577,10 +11610,10 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
     event?.chat_session_id || event?.chatSessionId || "",
   ).trim();
   const run = localLiuAgentActiveRunForChatSession(chatSessionId);
-  if (!run || run.cancelled) return;
-  if (!markLocalLiuAgentRuntimeEventSeen(event)) return;
+  if (!run || run.cancelled) return false;
   const row = localLiuAgentActiveRunRow(run);
-  if (!row) return;
+  if (!row) return false;
+  if (hasSeenLocalLiuAgentRuntimeEvent(event)) return true;
   updateLocalLiuAgentRuntimeTimingFromEvent(row, event, {
     startedAt: run.startedAt,
   });
@@ -11590,7 +11623,8 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
   if (
     eventType === "tool_result" &&
     payload?.ok !== false &&
-    ["write_file", "apply_patch", "delete_file"].includes(toolName)
+    ["write_file", "apply_patch", "delete_file"].includes(toolName) &&
+    isCurrentChatSession(run.projectId, chatSessionId)
   ) {
     void revealWorkspaceFileChangesAfterMutation(
       run.workspacePath,
@@ -11598,11 +11632,13 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
     );
   }
   if (
-    String(event?.type || "").trim() === "tool_result" &&
+    eventType === "tool_result" &&
     String(payload?.error_code || payload?.errorCode || "").trim() ===
       "permission.required"
   ) {
-    return;
+    markLocalLiuAgentRuntimeEventSeen(event);
+    persistLocalLiuAgentActiveRunMessages(run);
+    return true;
   }
   if (["plan_created", "plan_updated", "plan_completed"].includes(eventType)) {
     applyLiuAgentPlanEvent(
@@ -11622,8 +11658,12 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
       },
       String(run.assistantMessageId || row.id || "").trim(),
     );
-    scrollToBottom({ force: false });
-    return;
+    markLocalLiuAgentRuntimeEventSeen(event);
+    persistLocalLiuAgentActiveRunMessages(run);
+    if (isCurrentChatSession(run.projectId, chatSessionId)) {
+      scrollToBottom({ force: false });
+    }
+    return true;
   }
   applyLocalLiuAgentReasoningContent(row, event);
   const operation = localLiuAgentRuntimeEventOperation(event, {
@@ -11638,7 +11678,12 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
     ...localLiuAgentRuntimeEventProcessLogEntry(event, operation),
     autoExpand: true,
   });
-  scrollToBottom({ force: false });
+  markLocalLiuAgentRuntimeEventSeen(event);
+  persistLocalLiuAgentActiveRunMessages(run);
+  if (isCurrentChatSession(run.projectId, chatSessionId)) {
+    scrollToBottom({ force: false });
+  }
+  return true;
 }
 
 function localLiuAgentRuntimeEventCreatedAt(event = {}) {
@@ -11685,9 +11730,13 @@ async function pollLocalLiuAgentRuntimeEventsOnce() {
       const events = Array.isArray(result?.events) ? result.events : [];
       for (const event of events) {
         const eventId = String(event?.event_id || event?.eventId || "").trim();
+        if (!isLocalLiuAgentRuntimeEventForActiveRun(event, run)) {
+          if (eventId) run.lastRuntimeEventId = eventId;
+          continue;
+        }
+        const handled = handleNativeLiuAgentRuntimeEvent(event);
+        if (!handled) break;
         if (eventId) run.lastRuntimeEventId = eventId;
-        if (!isLocalLiuAgentRuntimeEventForActiveRun(event, run)) continue;
-        handleNativeLiuAgentRuntimeEvent(event);
       }
     }
   } catch (err) {
@@ -14456,6 +14505,51 @@ function chatSessionMessageCacheKey(projectId, chatSessionId) {
   return `${normalizedProjectId}:${normalizedChatSessionId}`;
 }
 
+function getCachedChatRuntime(projectId, chatSessionId) {
+  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
+  if (!key) return null;
+  const payload = chatSessionRuntimeCache.get(key);
+  return payload && typeof payload === "object" ? payload : null;
+}
+
+function rememberCachedChatRuntime(projectId, chatSessionId, payload) {
+  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
+  if (!key || !payload || typeof payload !== "object") return;
+  chatSessionRuntimeCache.set(key, payload);
+}
+
+function forgetCachedChatRuntime(projectId, chatSessionId) {
+  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
+  if (!key) return;
+  chatSessionRuntimeCache.delete(key);
+  dirtyChatRuntimeSessionKeys.delete(key);
+}
+
+function markChatRuntimeDirty(projectId, chatSessionId) {
+  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
+  if (!key) return "";
+  dirtyChatRuntimeSessionKeys.add(key);
+  return key;
+}
+
+function isChatRuntimeDirty(projectId, chatSessionId) {
+  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
+  return Boolean(key && dirtyChatRuntimeSessionKeys.has(key));
+}
+
+async function applyChatMessagesWithoutPersisting(rows) {
+  chatRuntimePersistenceSuppressionDepth += 1;
+  try {
+    messages.value = Array.isArray(rows) ? rows : [];
+    await nextTick();
+  } finally {
+    chatRuntimePersistenceSuppressionDepth = Math.max(
+      0,
+      chatRuntimePersistenceSuppressionDepth - 1,
+    );
+  }
+}
+
 function composerPlanStateKey(projectId, chatSessionId) {
   return chatSessionMessageCacheKey(projectId, chatSessionId);
 }
@@ -14583,7 +14677,9 @@ function persistCurrentChatRuntimeBeforeSessionSwitch(
   ) {
     return;
   }
-  persistCurrentChatRuntimeNow(activeProjectId, activeChatSessionId);
+  persistCurrentChatRuntimeNow(activeProjectId, activeChatSessionId, {
+    onlyIfDirty: true,
+  });
 }
 
 function isCurrentChatSession(projectId, chatSessionId) {
@@ -14619,6 +14715,7 @@ function forgetChatSessionMessages(projectId, chatSessionId) {
   const key = chatSessionMessageCacheKey(projectId, chatSessionId);
   if (!key) return;
   chatSessionMessageCache.delete(key);
+  forgetCachedChatRuntime(projectId, chatSessionId);
   forgetComposerPlanState(projectId, chatSessionId);
 }
 
@@ -14819,28 +14916,48 @@ async function readPersistedChatRuntime(projectId, chatSessionId) {
 }
 
 function writePersistedChatRuntime(projectId, chatSessionId, payload) {
-  void writeLocalPersistedChatRuntime(projectId, chatSessionId, payload).catch(
-    (error) => console.error("persist desktop chat runtime failed", error),
-  );
+  rememberCachedChatRuntime(projectId, chatSessionId, payload);
+  return writeLocalPersistedChatRuntime(projectId, chatSessionId, payload)
+    .then(() => true)
+    .catch((error) => {
+      console.error("persist desktop chat runtime failed", error);
+      return false;
+    });
 }
 
 async function clearPersistedChatRuntime(projectId, chatSessionId = "") {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId || !normalizedChatSessionId) return false;
-  return clearLocalPersistedChatRuntime(
+  const cleared = await clearLocalPersistedChatRuntime(
     normalizedProjectId,
     normalizedChatSessionId,
   );
+  if (cleared) {
+    forgetCachedChatRuntime(normalizedProjectId, normalizedChatSessionId);
+  }
+  return cleared;
 }
 
 async function fetchPersistedChatRuntime(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
+  const cachedPayload = getCachedChatRuntime(
+    normalizedProjectId,
+    normalizedChatSessionId,
+  );
+  if (cachedPayload) return cachedPayload;
   const localPayload = await readPersistedChatRuntime(
     normalizedProjectId,
     normalizedChatSessionId,
   );
+  if (localPayload && typeof localPayload === "object") {
+    rememberCachedChatRuntime(
+      normalizedProjectId,
+      normalizedChatSessionId,
+      localPayload,
+    );
+  }
   return localPayload;
 }
 
@@ -15316,6 +15433,7 @@ function schedulePersistChatRuntime() {
   const projectId = String(selectedProjectId.value || "").trim();
   const chatSessionId = String(currentChatSessionId.value || "").trim();
   if (!projectId || !chatSessionId) return;
+  markChatRuntimeDirty(projectId, chatSessionId);
   if (chatRuntimePersistTimer) {
     clearTimeout(chatRuntimePersistTimer);
   }
@@ -15329,11 +15447,17 @@ function schedulePersistChatRuntime() {
     ) {
       return;
     }
-    persistCurrentChatRuntimeNow(projectId, chatSessionId);
+    persistCurrentChatRuntimeNow(projectId, chatSessionId, {
+      onlyIfDirty: true,
+    });
   }, 300);
 }
 
-function persistCurrentChatRuntimeNow(projectId = "", chatSessionId = "") {
+function persistCurrentChatRuntimeNow(
+  projectId = "",
+  chatSessionId = "",
+  options = {},
+) {
   const normalizedProjectId = String(
     projectId || selectedProjectId.value || "",
   ).trim();
@@ -15343,21 +15467,37 @@ function persistCurrentChatRuntimeNow(projectId = "", chatSessionId = "") {
   if (!normalizedProjectId || !normalizedChatSessionId) return;
   if (!isCurrentChatSession(normalizedProjectId, normalizedChatSessionId))
     return;
+  if (
+    options.onlyIfDirty === true &&
+    !isChatRuntimeDirty(normalizedProjectId, normalizedChatSessionId)
+  ) {
+    return false;
+  }
   if (chatRuntimePersistTimer) {
     clearTimeout(chatRuntimePersistTimer);
     chatRuntimePersistTimer = null;
   }
   const payload = buildPersistedChatRuntimePayload();
-  writePersistedChatRuntime(
+  const runtimeKey = chatSessionMessageCacheKey(
+    normalizedProjectId,
+    normalizedChatSessionId,
+  );
+  dirtyChatRuntimeSessionKeys.delete(runtimeKey);
+  void writePersistedChatRuntime(
     normalizedProjectId,
     normalizedChatSessionId,
     payload,
-  );
+  ).then((saved) => {
+    if (!saved) {
+      dirtyChatRuntimeSessionKeys.add(runtimeKey);
+    }
+  });
   syncLocalChatSessionMetadata(
     normalizedProjectId,
     normalizedChatSessionId,
     messages.value,
   );
+  return true;
 }
 
 const chatHistoryHasMore = computed(() => {
@@ -15522,15 +15662,28 @@ function getFileReviewStatusMeta(status) {
   return { label: "无需审查", type: "info", text: "当前未触发文件变更审查。" };
 }
 
-async function sendApprovalDecision(requestId, approvalId, approved) {
-  if (!wsClient.value || !wsClient.value.isOpen()) {
-    const projectId = String(selectedProjectId.value || "").trim();
-    if (!projectId) {
-      throw new Error("项目聊天实时连接未连接");
-    }
-    await ensureWsClient(projectId);
+function projectIdForRequest(requestId, fallbackProjectId = "") {
+  return String(
+    pendingRequests.get(String(requestId || "").trim())?.projectId ||
+      fallbackProjectId ||
+      selectedProjectId.value ||
+      "",
+  ).trim();
+}
+
+async function clientForRequest(requestId, fallbackProjectId = "") {
+  const projectId = projectIdForRequest(requestId, fallbackProjectId);
+  if (!projectId) {
+    throw new Error("项目聊天实时连接未连接");
   }
-  wsClient.value.send({
+  const existing = getWsClient(projectId);
+  if (existing?.isOpen?.()) return existing;
+  return ensureWsClient(projectId);
+}
+
+async function sendApprovalDecision(requestId, approvalId, approved) {
+  const client = await clientForRequest(requestId);
+  client.send({
     type: "approval_response",
     request_id: requestId,
     approval_id: approvalId,
@@ -15539,14 +15692,8 @@ async function sendApprovalDecision(requestId, approvalId, approved) {
 }
 
 async function sendFileReviewDecision(requestId, reviewId, approved) {
-  if (!wsClient.value || !wsClient.value.isOpen()) {
-    const projectId = String(selectedProjectId.value || "").trim();
-    if (!projectId) {
-      throw new Error("项目聊天实时连接未连接");
-    }
-    await ensureWsClient(projectId);
-  }
-  wsClient.value.send({
+  const client = await clientForRequest(requestId);
+  client.send({
     type: "file_review_response",
     request_id: requestId,
     review_id: reviewId,
@@ -16903,10 +17050,11 @@ async function startTerminalMirror(options = {}) {
 
 async function stopTerminalMirror() {
   const projectId = String(selectedProjectId.value || "").trim();
-  if (!projectId || !wsClient.value) return;
+  const client = getWsClient(projectId);
+  if (!projectId || !client) return;
   const chatSessionId = String(currentChatSessionId.value || "").trim();
   if (!chatSessionId) return;
-  wsClient.value.send({
+  client.send({
     type: "terminal_mirror_stop",
     request_id: `mirror-stop-${Date.now()}`,
     chat_mode: "host_terminal",
@@ -20252,7 +20400,7 @@ async function maybeExecuteDesktopClientToolTask(
         output_preview: String(result?.summary || result?.error || "").trim(),
       },
     });
-    const client = wsClient.value;
+    const client = await clientForRequest(requestId);
     if (!client || !client.isOpen()) {
       throw new Error("项目聊天实时连接未连接，无法回传桌面工具结果");
     }
@@ -20290,7 +20438,7 @@ async function maybeExecuteDesktopClientToolTask(
         error: message,
       },
     });
-    const client = wsClient.value;
+    const client = getWsClient(projectIdForRequest(requestId));
     if (client && client.isOpen()) {
       client.send({
         type: "desktop_tool_result",
@@ -23280,7 +23428,10 @@ async function continueLocalLiuAgentDesktopToolPermission(
       output_preview: String(result?.summary || result?.error || "").trim(),
     },
   });
-  const client = wsClient.value;
+  const client = await clientForRequest(
+    `local-liuagent-${requestId}`,
+    pending?.projectId || selectedProjectId.value,
+  );
   if (!client || !client.isOpen()) {
     throw new Error("项目聊天实时连接未连接，无法回传桌面工具结果");
   }
@@ -29193,10 +29344,10 @@ function upsertChatSessionFromRealtime(sessionPayload) {
   if (isEmptyManualChatSession(session)) {
     return null;
   }
-  chatSessions.value = [
+  chatSessions.value = sortChatSessionsByStablePosition([
     session,
     ...chatSessions.value.filter((item) => item.id !== session.id),
-  ];
+  ]);
   setProjectChatSessionsCache(
     String(selectedProjectId.value || "").trim(),
     chatSessions.value,
@@ -29227,15 +29378,17 @@ function isEmptyManualChatSession(session) {
 }
 
 function normalizeVisibleChatSessions(rawSessions) {
-  return (Array.isArray(rawSessions) ? rawSessions : [])
-    .map(normalizeChatSession)
-    .filter((session) => !isEmptyManualChatSession(session));
+  return sortChatSessionsByStablePosition(
+    (Array.isArray(rawSessions) ? rawSessions : [])
+      .map(normalizeChatSession)
+      .filter((session) => !isEmptyManualChatSession(session)),
+  );
 }
 
 function setProjectChatSessionsMemoryCache(projectId, sessions) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
-  const normalizedSessions = Array.isArray(sessions) ? [...sessions] : [];
+  const normalizedSessions = sortChatSessionsByStablePosition(sessions);
   projectChatSessionsById.value = {
     ...(projectChatSessionsById.value || {}),
     [normalizedProjectId]: normalizedSessions,
@@ -29245,7 +29398,7 @@ function setProjectChatSessionsMemoryCache(projectId, sessions) {
 function setProjectChatSessionsCache(projectId, sessions) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
-  const normalizedSessions = Array.isArray(sessions) ? [...sessions] : [];
+  const normalizedSessions = sortChatSessionsByStablePosition(sessions);
   setProjectChatSessionsMemoryCache(normalizedProjectId, normalizedSessions);
   void writeLocalChatSessions(normalizedProjectId, normalizedSessions).catch(
     (error) => console.error("persist desktop chat sessions failed", error),
@@ -29268,22 +29421,38 @@ function syncLocalChatSessionMetadata(projectId, chatSessionId, rows) {
   const lastMessage = [...messageRows]
     .reverse()
     .find((item) => String(item?.content || "").trim());
-  const now = new Date().toISOString();
+  const nextPreview = String(lastMessage?.content || "")
+    .trim()
+    .slice(0, 120);
+  const nextLastMessageId = String(lastMessage?.id || "").trim();
+  const currentLastMessageId = String(current?.last_message_id || "").trim();
+  const currentPreview = String(
+    current?.preview || current?.last_message || "",
+  )
+    .trim()
+    .slice(0, 120);
+  const messageActivityChanged = currentLastMessageId
+    ? currentLastMessageId !== nextLastMessageId || currentPreview !== nextPreview
+    : currentPreview !== nextPreview ||
+      Number(current?.message_count || 0) < messageRows.length;
+  const now = messageActivityChanged ? new Date().toISOString() : "";
   const nextSession = normalizeChatSession({
     ...current,
     message_count: messageRows.length,
-    preview: String(lastMessage?.content || "")
-      .trim()
-      .slice(0, 120),
-    updated_at: now,
-    last_message_at: lastMessage ? now : current.last_message_at || "",
+    preview: nextPreview,
+    last_message_id: nextLastMessageId,
+    updated_at: messageActivityChanged ? now : current.updated_at || "",
+    last_message_at:
+      messageActivityChanged && lastMessage
+        ? now
+        : current.last_message_at || "",
   });
-  const nextSessions = [
+  const nextSessions = sortChatSessionsByStablePosition([
     nextSession,
     ...(sourceSessions || []).filter(
       (item) => String(item?.id || "").trim() !== normalizedSessionId,
     ),
-  ];
+  ]);
   if (normalizedProjectId === String(selectedProjectId.value || "").trim()) {
     chatSessions.value = nextSessions;
   }
@@ -29507,9 +29676,35 @@ async function fetchChatHistory(
     append ? "append" : "replace",
     Date.now(),
   ].join("|");
+  const cachedRuntimePayload = append
+    ? null
+    : getCachedChatRuntime(projectId, normalizedSessionId);
+  const rememberedRows = append
+    ? null
+    : getRememberedChatSessionMessages(projectId, normalizedSessionId);
+  const cachedRuntimeRows = Array.isArray(cachedRuntimePayload?.messages)
+    ? cachedRuntimePayload.messages
+    : null;
+  const immediateRows = Array.isArray(rememberedRows)
+    ? rememberedRows
+    : Array.isArray(cachedRuntimeRows)
+      ? applyPersistedChatRuntimeRows(
+          cachedRuntimeRows.slice(-CHAT_HISTORY_PAGE_SIZE),
+          cachedRuntimePayload,
+        )
+      : null;
+  const hasImmediateRows = Array.isArray(immediateRows);
   if (!append) {
     activeChatHistoryLoadingKey = loadingKey;
-    chatHistoryLoading.value = true;
+    chatHistoryLoading.value = !hasImmediateRows;
+    if (hasImmediateRows) {
+      await applyChatMessagesWithoutPersisting(immediateRows);
+      chatHistoryLoadedCount.value = immediateRows.length;
+      chatHistoryReachedEnd.value =
+        !cachedRuntimeRows || cachedRuntimeRows.length <= immediateRows.length;
+      rememberChatSession(projectId, normalizedSessionId);
+      scrollToBottom();
+    }
   }
   const offset = Math.max(0, Number(options.offset ?? 0) || 0);
   const limit = Math.max(
@@ -29524,6 +29719,12 @@ async function fetchChatHistory(
       projectId,
       normalizedSessionId,
     );
+    if (
+      !isCurrentChatSession(projectId, normalizedSessionId) ||
+      (!append && activeChatHistoryLoadingKey !== loadingKey)
+    ) {
+      return;
+    }
     const persistedRows = Array.isArray(runtimePayload?.messages)
       ? runtimePayload.messages
       : [];
@@ -29534,15 +29735,25 @@ async function fetchChatHistory(
     const historyRows = persistedRows.slice(historyStart, historyEnd);
     chatHistoryReachedEnd.value = historyStart === 0;
     if (append) {
-      messages.value = [...historyRows, ...messages.value];
+      await applyChatMessagesWithoutPersisting([
+        ...historyRows,
+        ...messages.value,
+      ]);
     } else {
-      const liveRows = hasPendingRequestForChatSession(normalizedSessionId)
-        ? getRememberedChatSessionMessages(projectId, normalizedSessionId)
-        : null;
-      messages.value =
+      const liveRows =
+        hasPendingRequestForChatSession(normalizedSessionId) ||
+        Boolean(localLiuAgentActiveRunForChatSession(normalizedSessionId))
+          ? getRememberedChatSessionMessages(projectId, normalizedSessionId)
+          : null;
+      const nextRows =
         Array.isArray(liveRows) && liveRows.length
           ? liveRows
-          : applyPersistedChatRuntimeRows(historyRows, runtimePayload);
+          : cachedRuntimePayload === runtimePayload && hasImmediateRows
+            ? immediateRows
+            : applyPersistedChatRuntimeRows(historyRows, runtimePayload);
+      if (messages.value !== nextRows) {
+        await applyChatMessagesWithoutPersisting(nextRows);
+      }
     }
     rememberChatSessionMessages(projectId, normalizedSessionId, messages.value);
     chatHistoryLoadedCount.value = messages.value.length;
@@ -29554,11 +29765,17 @@ async function fetchChatHistory(
     );
     void fetchChatTaskTree(projectId, normalizedSessionId, { silent: true });
     if (!append) {
-      await restoreInteractiveChatRuntime(
+      if (activeChatHistoryLoadingKey === loadingKey) {
+        activeChatHistoryLoadingKey = "";
+        chatHistoryLoading.value = false;
+      }
+      void restoreInteractiveChatRuntime(
         projectId,
         normalizedSessionId,
         messages.value,
         runtimePayload,
+      ).catch((error) =>
+        console.warn("restore interactive chat runtime failed", error),
       );
     }
     if (append) {
@@ -29575,8 +29792,14 @@ async function fetchChatHistory(
       scrollToBottom();
     }
   } catch (err) {
+    if (
+      !isCurrentChatSession(projectId, normalizedSessionId) ||
+      (!append && activeChatHistoryLoadingKey !== loadingKey)
+    ) {
+      return;
+    }
     if (!append) {
-      messages.value = [];
+      await applyChatMessagesWithoutPersisting([]);
       chatHistoryLoadedCount.value = 0;
       chatHistoryReachedEnd.value = false;
     }
@@ -29881,7 +30104,9 @@ async function handleCreateNewConversation() {
   resetDraft();
   applyTaskTreePayload(null);
   resetTerminalPanel();
-  scrollToBottom();
+  if (isCurrentChatSession(projectId, activeChatSessionId)) {
+    scrollToBottom();
+  }
   await focusChatComposerTextarea();
 }
 
@@ -30051,7 +30276,7 @@ function isIntentOnlyReply(text) {
 // WebSocket 事件分发主入口（~1333行，待迁入 realtimeEventMappers.js / composable）
 // 处理：心跳、后台操作、pending request 结算、终端镜像、agent 就绪、工作流状态
 // ============================================================
-async function handleSocketMessage(eventData) {
+async function handleSocketMessage(eventData, sourceProjectId = "") {
   const { eventType, requestId } = normalizeProjectChatWsEvent(eventData);
   if (isProjectChatHeartbeatEvent(eventType)) {
     return;
@@ -31215,7 +31440,9 @@ async function handleSocketMessage(eventData) {
         row.content =
           String(row.content || "").trim() ||
           "命令已接入项目终端；如出现可识别交互，会在终端输出下方显示表单。";
-        const activeClient = wsClient.value;
+        const activeClient = getWsClient(
+          pending?.projectId || sourceProjectId || selectedProjectId.value,
+        );
         if (activeClient && typeof activeClient.send === "function") {
           activeClient.send({ type: "cancel", request_id: requestId });
         }
@@ -31485,9 +31712,15 @@ function rejectPendingRequest(requestId, pending, error) {
   syncChatLoadingWithCurrentSession();
 }
 
-function rejectPendingRequests(reason) {
+function rejectPendingRequests(reason, options = {}) {
   const message = String(reason || "连接已断开").trim();
-  const items = rejectAndCleanupAllRequests(reason);
+  const hasScope = Boolean(
+    String(options?.projectId || "").trim() ||
+      String(options?.chatSessionId || "").trim(),
+  );
+  const items = hasScope
+    ? rejectAndCleanupRequests(reason, options)
+    : rejectAndCleanupAllRequests(reason);
   for (const { requestId, pending } of items) {
     const row = resolvePendingRequestRow(pending);
     if (row) {
@@ -32274,6 +32507,7 @@ async function sendLocalLiuAgentChatRequest({
   const activeRun = {
     chatSessionId: activeChatSessionId,
     projectId,
+    rows: messages.value,
     assistantMessageId: assistantMessage.id,
     userMessageId: userMessage.id,
     rootGoal: displayUserMessageContent || finalUserPrompt,
@@ -32400,8 +32634,7 @@ async function sendLocalLiuAgentChatRequest({
         ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
       },
     });
-    rememberChatSessionMessages(projectId, activeChatSessionId, messages.value);
-    schedulePersistChatRuntime();
+    persistLocalLiuAgentActiveRunMessages(activeRun);
     return { cancelled: true };
   }
   applyLocalLiuAgentRuntimeEvents(assistantMessage, result, {
@@ -32494,8 +32727,7 @@ async function sendLocalLiuAgentChatRequest({
     });
     deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
     syncChatLoadingWithCurrentSession();
-    rememberChatSessionMessages(projectId, activeChatSessionId, messages.value);
-    schedulePersistChatRuntime();
+    persistLocalLiuAgentActiveRunMessages(activeRun);
     return result;
   }
   const localPermissionRequest =
@@ -32571,6 +32803,7 @@ async function sendLocalLiuAgentChatRequest({
       modelRuntime,
       result,
     });
+    persistLocalLiuAgentActiveRunMessages(activeRun);
     deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
     syncChatLoadingWithCurrentSession();
     return result;
@@ -32731,6 +32964,7 @@ async function sendLocalLiuAgentChatRequest({
       delayMs: autoResumeDelayMs,
     });
   }
+  persistLocalLiuAgentActiveRunMessages(activeRun);
   deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
   syncChatLoadingWithCurrentSession();
   scrollToBottom();
@@ -32950,7 +33184,7 @@ function showManualCloseErrorDialog(title, message, detail = "") {
 function sendCancelRequestNow(requestId) {
   const normalizedRequestId = String(requestId || "").trim();
   if (!normalizedRequestId) return false;
-  const activeClient = wsClient.value;
+  const activeClient = getWsClient(projectIdForRequest(normalizedRequestId));
   if (!activeClient || !activeClient.isOpen()) return false;
   try {
     activeClient.send({ type: "cancel", request_id: normalizedRequestId });
@@ -33075,12 +33309,13 @@ async function cancelActiveLocalLiuAgentRun() {
 
 function closeIdleChatWsAfterFastCancel() {
   if (queuedFollowupMessages.value.length > 0) return;
-  if (!wsClient.value || pendingRequests.size > 0) return;
-  wsClient.value.close(1000, "generation cancelled");
+  const projectId = String(selectedProjectId.value || "").trim();
+  const hasProjectPending = Array.from(pendingRequests.values()).some(
+    (pending) => String(pending?.projectId || "").trim() === projectId,
+  );
+  if (!getWsClient(projectId) || hasProjectPending) return;
+  disconnectWs("generation cancelled", { projectId });
   terminalMirrorConnected.value = false;
-  wsClient.value = null;
-  wsConnected.value = false;
-  wsProjectId.value = "";
 }
 
 async function stopGeneration() {
@@ -34004,6 +34239,7 @@ watch(autoSaveFingerprint, (nextFingerprint, prevFingerprint) => {
 watch(
   messages,
   () => {
+    if (chatRuntimePersistenceSuppressionDepth > 0) return;
     schedulePersistChatRuntime();
   },
   { deep: true },
@@ -34023,8 +34259,6 @@ watch(
 
 watch(
   () => [
-    String(selectedProjectId.value || "").trim(),
-    String(currentChatSessionId.value || "").trim(),
     String(terminalPanelStatus.value || "").trim(),
     String(hostTerminalSessionId.value || "").trim(),
     String(hostTerminalWorkspacePath.value || "").trim(),
@@ -34211,6 +34445,7 @@ async function loadSelectedProjectConversation(projectId) {
 
 watch(selectedProjectId, async (value) => {
   const projectId = String(value || "").trim();
+  selectWsProject(projectId);
   projectSettingsHydratedProjectId.value = "";
   reloadLocalMcpConfig(projectId);
   reloadLocalWebToolsConfig(projectId);
@@ -34223,15 +34458,11 @@ watch(selectedProjectId, async (value) => {
   clearOngoingTaskRestoreNotice();
   currentWorkSessionId.value = "";
   if (!projectId) {
-    rejectPendingRequests("已切换项目，当前请求取消");
-    disconnectWs("switch project");
     singleRoundAnswerOnly.value = false;
     resetWorkspaceFilePanel();
     await fetchProvidersByProject("");
     return;
   }
-  rejectPendingRequests("已切换项目，当前请求取消");
-  disconnectWs("switch project");
   singleRoundAnswerOnly.value = false;
   currentChatSessionId.value = "";
   messages.value = [];

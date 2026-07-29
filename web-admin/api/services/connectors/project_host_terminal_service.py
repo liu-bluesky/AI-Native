@@ -115,16 +115,17 @@ async def _pump_terminal_session(session_id: str) -> None:
                 break
         await session.process.wait()
     finally:
-        session.closed = True
-        session.exit_code = session.process.returncode
-        _terminal_owner_index.pop(session.owner_key, None)
-        await _broadcast_terminal_event(
-            session,
-            {
-                "type": "exit",
-                "exit_code": session.exit_code,
-            },
-        )
+        if not session.closed:
+            session.closed = True
+            session.exit_code = session.process.returncode
+            _terminal_owner_index.pop(session.owner_key, None)
+            await _broadcast_terminal_event(
+                session,
+                {
+                    "type": "exit",
+                    "exit_code": session.exit_code,
+                },
+            )
         if not session.listeners:
             _cleanup_terminal_session(session_id)
 
@@ -275,6 +276,18 @@ async def stop_project_host_terminal(session_id: str) -> dict[str, Any]:
         return {"ok": False, "reason": "not_found"}
     if session.process.returncode is None:
         session.process.terminate()
+        try:
+            await asyncio.wait_for(session.process.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            session.process.kill()
+            await session.process.wait()
+    session.closed = True
+    session.exit_code = session.process.returncode
+    _terminal_owner_index.pop(session.owner_key, None)
+    await _broadcast_terminal_event(
+        session,
+        {"type": "exit", "exit_code": session.exit_code},
+    )
     try:
         os.close(session.master_fd)
     except OSError:
@@ -286,7 +299,6 @@ async def stop_project_host_terminal(session_id: str) -> dict[str, Any]:
             session.process.kill()
         except ProcessLookupError:
             pass
-    session.closed = True
     _cleanup_terminal_session(session_id)
     return {"ok": True}
 

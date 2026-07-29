@@ -374,7 +374,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /function deleteLocalLiuAgentActiveRun\(chatSessionId = "", expectedRun = null\) \{[\s\S]*?localLiuAgentActiveRuns\.get\(normalizedChatSessionId\) !== expectedRun[\s\S]*?return false;[\s\S]*?if \(activeRun\.cancelled\) \{[\s\S]*?const replacementRun = localLiuAgentActiveRunForChatSession\(activeChatSessionId\);[\s\S]*?replacementRun !== activeRun[\s\S]*?return \{ cancelled: true, superseded: true \};/,
+  /function deleteLocalLiuAgentActiveRun\(chatSessionId = "", expectedRun = null\) \{[\s\S]*?localLiuAgentActiveRuns\.get\(normalizedChatSessionId\) !== expectedRun[\s\S]*?return false;[\s\S]*?if \(activeRun\.cancelled\) \{[\s\S]*?const replacementRun\s*=\s*localLiuAgentActiveRunForChatSession\(activeChatSessionId\);[\s\S]*?replacementRun !== activeRun[\s\S]*?return \{ cancelled: true, superseded: true \};/,
   "a paused request finishing late must not delete or overwrite a newer resumed run",
 );
 
@@ -542,13 +542,13 @@ assert.match(
 
 assert.match(
   projectChat,
-  /function shouldUpsertLocalLiuAgentRuntimeOperation\(event = \{\}, operation = null\)[\s\S]*?type === "approval_required"[\s\S]*?shouldShowMessageOperationCard\(operation\)/,
+  /function shouldUpsertLocalLiuAgentRuntimeOperation\(\s*event = \{\},\s*operation = null,?\s*\)[\s\S]*?type === "approval_required"[\s\S]*?shouldShowMessageOperationCard\(operation\)/,
   "local liuAgent runtime events must only create message operations for real user interactions",
 );
 
 assert.match(
   projectChat,
-  /function localLiuAgentRuntimeEventProcessLogEntry\(event = \{\}, operation = null\)[\s\S]*?kind: localLiuAgentRuntimeEventProcessKind\(event\)[\s\S]*?payload: \{/,
+  /function localLiuAgentRuntimeEventProcessLogEntry\(\s*event = \{\},\s*operation = null,?\s*\)[\s\S]*?kind: localLiuAgentRuntimeEventProcessKind\(event\)[\s\S]*?payload: \{/,
   "local liuAgent runtime events must preserve structured payloads in processLog entries",
 );
 
@@ -566,7 +566,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /result\?\.assistantReasoningContent \|\| result\?\.assistant_reasoning_content[\s\S]*?assistantMessage\.reasoningContent = assistantReasoningContent/,
+  /result\?\.assistantReasoningContent\s*\|\|\s*result\?\.assistant_reasoning_content[\s\S]*?assistantMessage\.reasoningContent = assistantReasoningContent/,
   "local liuAgent final result must persist assistant reasoningContent even when live events are missed",
 );
 
@@ -614,7 +614,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /currentLocalLiuAgentPermissionPrompt[\s\S]*class="chat-approval-banner chat-approval-banner--local-agent"[\s\S]*submitCurrentLocalLiuAgentPermissionAction\('local_liuagent_allow_once'\)/,
+  /currentLocalLiuAgentPermissionPrompt[\s\S]*class="chat-approval-banner chat-approval-banner--local-agent"[\s\S]*submitCurrentLocalLiuAgentPermissionAction\(\s*'local_liuagent_allow_once',?\s*\)/,
   "local liuAgent authorization must render as a single queued banner above the composer",
 );
 
@@ -638,13 +638,13 @@ assert.doesNotMatch(
 
 assert.match(
   projectChat,
-  /const nextPermissionRequest = localLiuAgentPermissionRequestFromChatResult\(result\)[\s\S]*setLocalLiuAgentPendingPermission\(nextRequestId,[\s\S]*本机工具执行再次暂停，等待你在输入框上方处理下一项授权/,
+  /const nextPermissionRequest\s*=\s*localLiuAgentPermissionRequestFromChatResult\(result\)[\s\S]*setLocalLiuAgentPendingPermission\(nextRequestId,[\s\S]*本机工具执行再次暂停，等待你在输入框上方处理下一项授权/,
   "authorized local liuAgent continuations that hit another permission must enqueue the next prompt instead of ending the run",
 );
 
 assert.match(
   projectChat,
-  /function shouldUpsertLocalLiuAgentRuntimeOperation\(event = \{\}, operation = null\)[\s\S]*type === "approval_required"\) return false/,
+  /function shouldUpsertLocalLiuAgentRuntimeOperation\(\s*event = \{\},\s*operation = null,?\s*\)[\s\S]*type === "approval_required"\) return false/,
   "local liuAgent approval_required events must not create duplicate message operation cards",
 );
 
@@ -778,7 +778,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /const localLiuAgentAttachments =\s*await buildLocalLiuAgentAttachments\(uploadFiles\.value\);/s,
+  /const localLiuAgentAttachments = \[[\s\S]*?await buildLocalLiuAgentAttachments\(uploadFiles\.value\)[\s\S]*?buildContextReferenceAttachments\(activeContextRefs\)[\s\S]*?\];/,
   "desktop local chat must build structured attachments for the liuAgent path",
 );
 
@@ -814,7 +814,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /const modelRuntime = await buildLocalLiuAgentModelRuntime\(providerId, modelName\)/,
+  /const modelRuntime = await buildLocalLiuAgentModelRuntime\(\s*providerId,\s*modelName,?\s*\)/,
   "local-runner chat must fetch an explicit desktop model runtime contract before invoking Tauri",
 );
 
@@ -904,7 +904,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /upsertLocalLiuAgentContinuationOperation\(row, pending, requestId, allowSession\);\s*chatLoading\.value = true;/,
+  /upsertLocalLiuAgentContinuationOperation\(\s*row,\s*pending,\s*requestId,\s*allowSession,?\s*\);\s*chatLoading\.value = true;/,
   "ProjectChat must keep the local runner visibly busy while continuing after permission",
 );
 
@@ -946,7 +946,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /watch\(\[selectedProjectId, currentChatSessionId\],[\s\S]*applyComposerPlanStateForChatSession\(projectId, chatSessionId\)/,
+  /watch\(\s*\[selectedProjectId, currentChatSessionId\],[\s\S]*applyComposerPlanStateForChatSession\(projectId, chatSessionId\)/,
   "switching conversations must restore the selected session composer plan",
 );
 
@@ -970,8 +970,8 @@ assert.match(
 
 assert.match(
   projectChat,
-  /function persistCurrentChatRuntimeBeforeSessionSwitch\([\s\S]*persistCurrentChatRuntimeNow\(activeProjectId, activeChatSessionId\)/,
-  "conversation switching must persist the previous session plan before replacing the active session",
+  /function persistCurrentChatRuntimeBeforeSessionSwitch\([\s\S]*persistCurrentChatRuntimeNow\(activeProjectId, activeChatSessionId, \{[\s\S]*onlyIfDirty: true/,
+  "conversation switching must flush a changed previous session plan before replacing the active session",
 );
 
 assert.match(
@@ -1116,6 +1116,54 @@ assert.match(
   projectChat,
   /currentChatSessionLocalLiuAgentWaitingPermission\.value[\s\S]*submitCurrentLocalLiuAgentPermissionReplyIfNeeded\(draftText\.value\)/,
   "pending permission replies must be consumed before creating a new model request",
+);
+
+assert.match(
+  projectChat,
+  /const activeRun = \{[\s\S]*?chatSessionId: activeChatSessionId,[\s\S]*?projectId,[\s\S]*?rows: messages\.value,[\s\S]*?assistantMessageId: assistantMessage\.id/,
+  "local liuAgent runs must retain the message collection owned by their chat session",
+);
+
+assert.match(
+  projectChat,
+  /function localLiuAgentActiveRunRows\(run\)[\s\S]*?Array\.isArray\(run\?\.rows\)[\s\S]*?getRememberedChatSessionMessages\(projectId, chatSessionId\)/,
+  "background runtime events must resolve rows from the owning chat session instead of the foreground conversation",
+);
+
+assert.match(
+  projectChat,
+  /function handleNativeLiuAgentRuntimeEvent\(event = \{\}\)[\s\S]*?const row = localLiuAgentActiveRunRow\(run\);[\s\S]*?if \(!row\) return false;[\s\S]*?hasSeenLocalLiuAgentRuntimeEvent\(event\)[\s\S]*?appendMessageProcessLog\(row,[\s\S]*?markLocalLiuAgentRuntimeEventSeen\(event\)/,
+  "runtime events must not be marked consumed until their owning assistant row was updated successfully",
+);
+
+assert.match(
+  projectChat,
+  /const handled = handleNativeLiuAgentRuntimeEvent\(event\);[\s\S]*?if \(!handled\) break;[\s\S]*?if \(eventId\) run\.lastRuntimeEventId = eventId;/,
+  "runtime polling must only advance the event cursor after the event was applied",
+);
+
+assert.match(
+  projectChat,
+  /function persistLocalLiuAgentActiveRunMessages\(run\)[\s\S]*?rememberChatSessionMessages\(projectId, chatSessionId, rows\);[\s\S]*?persistRememberedChatSessionMessages\(projectId, chatSessionId\);/,
+  "background runtime mutations must be persisted to the owning chat session immediately",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /rememberChatSessionMessages\(projectId, activeChatSessionId, messages\.value\)/,
+  "local runtime completion and pause paths must never write foreground rows into a background session",
+);
+
+assert.match(
+  projectChat,
+  /hasPendingRequestForChatSession\(normalizedSessionId\) \|\|[\s\S]*?localLiuAgentActiveRunForChatSession\(normalizedSessionId\)[\s\S]*?getRememberedChatSessionMessages\(projectId, normalizedSessionId\)/,
+  "returning to a running local-agent conversation must restore its live cached rows",
+);
+
+assert.match(
+  projectChat,
+  /const runtimePayload = await fetchPersistedChatRuntime\([\s\S]*?if \([\s\S]*?!isCurrentChatSession\(projectId, normalizedSessionId\)[\s\S]*?activeChatHistoryLoadingKey !== loadingKey[\s\S]*?return;/,
+  "a stale conversation-history response must not overwrite the newly selected conversation",
 );
 
 console.log("local liuAgent chat checks passed");

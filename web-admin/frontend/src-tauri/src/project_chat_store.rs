@@ -139,12 +139,19 @@ fn build_session_from_runtime(chat_session_id: &str, runtime: &Value, updated_at
         .map(|message| value_text(message, &["content"]))
         .find(|content| !content.is_empty())
         .unwrap_or_default();
+    let last_message_id = messages
+        .iter()
+        .rev()
+        .find(|message| !value_text(message, &["content"]).is_empty())
+        .map(|message| value_text(message, &["id"]))
+        .unwrap_or_default();
     json!({
         "id": chat_session_id,
         "title": if first_user_content.is_empty() { "新对话".to_string() } else { clipped(&first_user_content, 48) },
         "preview": clipped(&last_message_content, 120),
         "latest_requirement": clipped(&first_user_content, 240),
         "last_message": clipped(&last_message_content, 240),
+        "last_message_id": last_message_id,
         "message_count": messages.len(),
         "created_at": updated_at,
         "updated_at": updated_at,
@@ -169,6 +176,7 @@ fn merge_session_with_runtime(
                 && key != "preview"
                 && key != "latest_requirement"
                 && key != "last_message"
+                && key != "last_message_id"
                 && key != "last_message_at"
             {
                 target.insert(key.clone(), value.clone());
@@ -178,6 +186,69 @@ fn merge_session_with_runtime(
     session["id"] = Value::String(chat_session_id.to_string());
     session["updated_at"] = Value::String(updated_at.to_string());
     session
+}
+
+fn runtime_message_activity(runtime: &Value) -> Vec<Value> {
+    runtime
+        .get("messages")
+        .and_then(Value::as_array)
+        .map(|messages| {
+            messages
+                .iter()
+                .map(|message| {
+                    json!({
+                        "id": value_text(message, &["id"]),
+                        "role": value_text(message, &["role"]),
+                        "content": value_text(message, &["content"]),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn session_stable_position_at(session: &Value) -> String {
+    value_text(session, &["created_at"])
+}
+
+fn compare_sessions_by_stable_position(left: &Value, right: &Value) -> std::cmp::Ordering {
+    session_stable_position_at(right)
+        .cmp(&session_stable_position_at(left))
+        .then_with(|| value_text(left, &["id"]).cmp(&value_text(right, &["id"])))
+}
+
+fn session_activity_at(session: &Value) -> String {
+    value_text(session, &["last_message_at", "updated_at", "created_at"])
+}
+
+fn runtime_activity_updated_at(
+    existing: Option<&Value>,
+    runtime: &Value,
+    requested_updated_at: &str,
+) -> String {
+    let Some(existing) = existing else {
+        return requested_updated_at.to_string();
+    };
+    let existing_activity = existing
+        .get("runtime")
+        .map(runtime_message_activity)
+        .unwrap_or_default();
+    if existing_activity != runtime_message_activity(runtime) {
+        return requested_updated_at.to_string();
+    }
+    let existing_session_activity = existing
+        .get("session")
+        .map(session_activity_at)
+        .unwrap_or_default();
+    if !existing_session_activity.is_empty() {
+        return existing_session_activity;
+    }
+    let envelope_activity = value_text(existing, &["updated_at"]);
+    if envelope_activity.is_empty() {
+        requested_updated_at.to_string()
+    } else {
+        envelope_activity
+    }
 }
 
 fn build_json_envelope(
@@ -1116,9 +1187,7 @@ pub fn project_chat_list_sessions(
             &updated_at,
         ));
     }
-    sessions.sort_by(|left, right| {
-        value_text(right, &["updated_at"]).cmp(&value_text(left, &["updated_at"]))
-    });
+    sessions.sort_by(compare_sessions_by_stable_position);
     Ok(sessions)
 }
 
@@ -1207,7 +1276,7 @@ pub fn project_chat_write_runtime(
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
     let chat_session_id = normalized(&chat_session_id, "聊天会话 ID")?;
-    let updated_at = payload
+    let requested_updated_at = payload
         .get("updated_at")
         .and_then(Value::as_str)
         .unwrap_or_default()
@@ -1220,11 +1289,13 @@ pub fn project_chat_write_runtime(
     } else {
         None
     };
+    let activity_updated_at =
+        runtime_activity_updated_at(existing.as_ref(), &payload, &requested_updated_at);
     let session = merge_session_with_runtime(
         &chat_session_id,
         existing.as_ref().and_then(|value| value.get("session")),
         &payload,
-        &updated_at,
+        &activity_updated_at,
     );
     let envelope = build_json_envelope(
         &username,
@@ -1232,7 +1303,7 @@ pub fn project_chat_write_runtime(
         &chat_session_id,
         session,
         payload,
-        &updated_at,
+        &activity_updated_at,
     );
     write_json_envelope(&path, &envelope)?;
     Ok(true)
@@ -1366,6 +1437,88 @@ mod tests {
         assert_eq!(session["title"], "展示目录结构");
         assert_eq!(session["message_count"], 2);
         assert_eq!(session["preview"], "这是目录结构");
+        assert_eq!(session["last_message_id"], "assistant-1");
+    }
+
+    #[test]
+    fn session_position_is_stable_when_message_activity_changes() {
+        let mut sessions = vec![
+            json!({
+                "id": "older",
+                "created_at": "2026-07-20T00:00:00Z",
+                "updated_at": "2026-07-28T00:00:00Z",
+                "last_message_at": "2026-07-28T00:00:00Z"
+            }),
+            json!({
+                "id": "newer",
+                "created_at": "2026-07-21T00:00:00Z",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "last_message_at": "2026-07-21T00:00:00Z"
+            }),
+        ];
+        sessions.sort_by(compare_sessions_by_stable_position);
+        assert_eq!(value_text(&sessions[0], &["id"]), "newer");
+        assert_eq!(value_text(&sessions[1], &["id"]), "older");
+    }
+
+    #[test]
+    fn runtime_persistence_without_message_changes_preserves_session_activity_time() {
+        let existing = json!({
+            "updated_at": "2026-07-21T00:00:00Z",
+            "session": {
+                "id": "local-1",
+                "created_at": "2026-07-20T00:00:00Z",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "last_message_at": "2026-07-21T00:00:00Z"
+            },
+            "runtime": {
+                "updated_at": "2026-07-21T00:00:00Z",
+                "messages": [
+                    {"id": "user-1", "role": "user", "content": "检查项目"},
+                    {"id": "assistant-1", "role": "assistant", "content": "处理中"}
+                ]
+            }
+        });
+        let next_runtime = json!({
+            "updated_at": "2026-07-28T00:00:00Z",
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "检查项目"},
+                {
+                    "id": "assistant-1",
+                    "role": "assistant",
+                    "content": "处理中",
+                    "processLog": [{"text": "切换会话时保存运行状态"}]
+                }
+            ]
+        });
+
+        assert_eq!(
+            runtime_activity_updated_at(Some(&existing), &next_runtime, "2026-07-28T00:00:00Z"),
+            "2026-07-21T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn runtime_persistence_with_new_message_updates_session_activity_time() {
+        let existing = json!({
+            "updated_at": "2026-07-21T00:00:00Z",
+            "runtime": {
+                "messages": [
+                    {"id": "user-1", "role": "user", "content": "检查项目"}
+                ]
+            }
+        });
+        let next_runtime = json!({
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "检查项目"},
+                {"id": "assistant-1", "role": "assistant", "content": "检查完成"}
+            ]
+        });
+
+        assert_eq!(
+            runtime_activity_updated_at(Some(&existing), &next_runtime, "2026-07-28T00:00:00Z"),
+            "2026-07-28T00:00:00Z"
+        );
     }
 
     #[test]
