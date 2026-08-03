@@ -2,8 +2,25 @@
 //!
 //! 这些结构需要保持 JSON 友好，方便 CLI、Desktop 和未来 Web Bridge 使用同一套协议。
 
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
+
+fn deserialize_json_schema_u8<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let number = serde_json::Number::deserialize(deserializer)?;
+    if let Some(value) = number.as_u64() {
+        return u8::try_from(value).map_err(D::Error::custom);
+    }
+    let Some(value) = number.as_f64() else {
+        return Err(D::Error::custom("expected an integer between 0 and 255"));
+    };
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=u8::MAX as f64).contains(&value) {
+        return Err(D::Error::custom("expected an integer between 0 and 255"));
+    }
+    Ok(value as u8)
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,7 +46,6 @@ pub struct LocalChatRequest {
     pub history: Vec<LocalChatMessage>,
     pub provider_id: Option<String>,
     pub model_name: Option<String>,
-    pub system_prompt: Option<String>,
     #[serde(default)]
     pub system_prompt_parts: Vec<LocalChatPromptPart>,
     pub temperature: Option<f64>,
@@ -60,7 +76,6 @@ impl Default for LocalChatRequest {
             history: Vec::new(),
             provider_id: None,
             model_name: None,
-            system_prompt: None,
             system_prompt_parts: Vec::new(),
             temperature: None,
             model_runtime: None,
@@ -390,6 +405,10 @@ pub struct ToolBatchState {
 pub struct PromptStack {
     pub version: String,
     pub items: Vec<PromptStackItem>,
+    pub task_profile: Option<TaskProfile>,
+    pub selected_context_sources: Vec<String>,
+    pub total_content_chars: usize,
+    pub estimated_tokens: usize,
     pub resolved_system_prompt_hash: String,
     pub resolved_system_prompt_preview: String,
     pub warnings: Vec<String>,
@@ -400,8 +419,63 @@ pub struct PromptStack {
 pub struct PromptStackItem {
     pub source: String,
     pub priority: i64,
+    pub content_chars: usize,
+    pub estimated_tokens: usize,
     pub content_hash: String,
     pub content_preview: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskIntent {
+    Answer,
+    Design,
+    Diagnose,
+    Execute,
+}
+
+impl TaskIntent {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Answer => "answer",
+            Self::Design => "design",
+            Self::Diagnose => "diagnose",
+            Self::Execute => "execute",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProfile {
+    pub version: String,
+    pub intent: TaskIntent,
+    pub domains: Vec<String>,
+    pub goal: String,
+    pub targets: Vec<String>,
+    #[serde(deserialize_with = "deserialize_json_schema_u8")]
+    pub clarity_score: u8,
+    pub ambiguities: Vec<String>,
+    pub complexity: String,
+    pub risk: String,
+    pub required_context: Vec<String>,
+    pub required_capabilities: Vec<String>,
+    pub output_contract: Vec<String>,
+    pub source: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRouterOutput {
+    pub intent: TaskIntent,
+    pub domains: Vec<String>,
+    pub goal: String,
+    pub targets: Vec<String>,
+    #[serde(deserialize_with = "deserialize_json_schema_u8")]
+    pub clarity_score: u8,
+    pub ambiguities: Vec<String>,
+    pub complexity: String,
+    pub required_context: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]

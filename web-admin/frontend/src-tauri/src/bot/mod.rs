@@ -65,7 +65,6 @@ mod tests {
 
         let local_request = build_local_chat_request(request);
 
-        assert_eq!(local_request.system_prompt, None);
         assert_eq!(local_request.system_prompt_parts.len(), 1);
         assert_eq!(
             local_request.system_prompt_parts[0].source,
@@ -91,7 +90,6 @@ mod tests {
 
         let local_request = build_local_chat_request(request);
 
-        assert_eq!(local_request.system_prompt, None);
         assert!(local_request.system_prompt_parts.is_empty());
         assert_eq!(
             local_request.mcp_config["_bot_context"]["connector"]["connectorId"],

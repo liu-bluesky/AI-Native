@@ -59,7 +59,6 @@ pub fn build_local_chat_request(request: BotChatRequest) -> LocalChatRequest {
         history: request.history,
         provider_id,
         model_name,
-        system_prompt: None,
         system_prompt_parts,
         temperature: None,
         model_runtime: request.model_runtime,

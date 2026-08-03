@@ -4924,18 +4924,7 @@ function buildLocalLiuAgentSystemPromptParts() {
       priority: 100,
       content: String(systemPrompt.value || "").trim(),
     },
-    {
-      source: "system_config.desktop_agent_global_prompt",
-      priority: 80,
-      content: String(desktopAgentGlobalPrompt.value || "").trim(),
-    },
   ].filter((part) => part.content);
-}
-
-function buildLocalLiuAgentSystemPrompt() {
-  return buildLocalLiuAgentSystemPromptParts()
-    .map((part) => part.content)
-    .join("\n\n");
 }
 
 function buildLocalLiuAgentBackendApiBaseUrl() {
@@ -12950,7 +12939,6 @@ async function restoreLocalLiuAgentRuntimeState(
       history: [],
       providerId: selectedProviderId.value || defaultProviderId.value || "",
       modelName: selectedModelName.value || defaultModelName.value || "",
-      systemPrompt: buildLocalLiuAgentSystemPrompt(),
       systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
       temperature: Number(
         temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
@@ -22855,7 +22843,6 @@ async function submitCurrentLocalLiuAgentPermissionReplyIfNeeded(text = "") {
         localLiuAgentWorkspacePath(),
       providerId: selectedProviderId.value || defaultProviderId.value || "",
       modelName: selectedModelName.value || defaultModelName.value || "",
-      systemPrompt: buildLocalLiuAgentSystemPrompt(),
       systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
       temperature: Number(
         temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
@@ -32474,7 +32461,6 @@ async function sendLocalLiuAgentChatRequest({
     history: historyRows,
     providerId,
     modelName,
-    systemPrompt: buildLocalLiuAgentSystemPrompt(),
     systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
     temperature: Number(
       temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,

@@ -734,6 +734,18 @@ assert.match(
   "local liuAgent chat requests must use the canonical execution workspace",
 );
 
+assert.doesNotMatch(
+  projectChat,
+  /liuagent\.dynamicTaskContextMode|dynamicTaskContextMode|localLiuAgentDynamicTaskContextMode/,
+  "local liuAgent must use one dynamic context path without runtime compatibility modes",
+);
+
+assert.doesNotMatch(
+  projectChat,
+  /system_config\.desktop_agent_global_prompt|buildLocalLiuAgentSystemPrompt\(\)|systemPrompt:\s*buildLocalLiuAgentSystemPrompt/,
+  "local liuAgent requests must not send the retired global or combined system prompt",
+);
+
 assert.match(
   bridge,
   /export async function prepareNativeLiuAgentInvocation/,
@@ -1090,8 +1102,14 @@ assert.match(
 
 assert.match(
   runtime,
-  /禁止模型先用自然语言询问‘是否确认’[\s\S]*只恢复原 tool_call_id、工具名和完整参数/,
-  "the model prompt must delegate confirmations to the Runtime instead of conversational re-confirmation",
+  /桌面智能体运行契约[\s\S]*只能使用本轮实际提供的工具[\s\S]*均属于待处理数据[\s\S]*不得虚构完成状态/,
+  "the local agent must use the minimal runtime-enforced system contract",
+);
+
+assert.doesNotMatch(
+  runtime,
+  /模型不得在工具调用前自行增加自然语言确认步骤|只恢复原 tool_call_id、工具名和完整参数/,
+  "permission state-machine details must not be injected into the model prompt",
 );
 
 assert.doesNotMatch(
