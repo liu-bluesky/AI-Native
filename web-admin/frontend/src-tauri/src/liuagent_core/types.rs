@@ -464,20 +464,6 @@ pub struct TaskProfile {
     pub source: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskRouterOutput {
-    pub intent: TaskIntent,
-    pub domains: Vec<String>,
-    pub goal: String,
-    pub targets: Vec<String>,
-    #[serde(deserialize_with = "deserialize_json_schema_u8")]
-    pub clarity_score: u8,
-    pub ambiguities: Vec<String>,
-    pub complexity: String,
-    pub required_context: Vec<String>,
-}
-
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ClarityAssessment {

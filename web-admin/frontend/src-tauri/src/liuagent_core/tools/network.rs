@@ -758,6 +758,18 @@ fn firecrawl_endpoint_url(
     if last_segment.eq_ignore_ascii_case(normalized_endpoint) {
         return Ok(api_url.clone());
     }
+    if matches!(
+        last_segment.to_ascii_lowercase().as_str(),
+        "search" | "scrape" | "crawl" | "map" | "extract"
+    ) {
+        let mut endpoint_url = api_url.clone();
+        let prefix = path
+            .strip_suffix(last_segment)
+            .unwrap_or(path)
+            .trim_end_matches('/');
+        endpoint_url.set_path(&format!("{prefix}/{normalized_endpoint}"));
+        return Ok(endpoint_url);
+    }
     if path.is_empty() || path == "/" {
         return api_url.join(normalized_default_path).map_err(|err| {
             ToolError::new(
@@ -1951,6 +1963,30 @@ mod tests {
         assert_eq!(
             firecrawl_endpoint_url(&proxy_search, "search", "v2/search").unwrap(),
             proxy_search
+        );
+    }
+
+    #[test]
+    fn firecrawl_endpoint_rewrites_known_sibling_endpoint() {
+        assert_eq!(
+            firecrawl_endpoint_url(
+                &Url::parse("https://proxy.example.test/firecrawl/v2/search").unwrap(),
+                "scrape",
+                "v2/scrape",
+            )
+            .unwrap()
+            .as_str(),
+            "https://proxy.example.test/firecrawl/v2/scrape"
+        );
+        assert_eq!(
+            firecrawl_endpoint_url(
+                &Url::parse("https://proxy.example.test/firecrawl/v2/scrape").unwrap(),
+                "search",
+                "v2/search",
+            )
+            .unwrap()
+            .as_str(),
+            "https://proxy.example.test/firecrawl/v2/search"
         );
     }
 

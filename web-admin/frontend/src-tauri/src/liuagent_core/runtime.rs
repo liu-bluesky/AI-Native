@@ -60,8 +60,8 @@ use super::types::{
     ModelCompatibilityProfile, Observation, OfflineCacheCleanupRequest, OfflineCacheLoadRequest,
     OfflineCacheResult, OfflineCacheSaveRequest, PlanNode, PlanState, PromptStack, PromptStackItem,
     ProviderFileUploadRequest, ProviderFileUploadResult, RetryDecision, RunState,
-    RuntimeSchedulerState, TaskGoal, TaskIntent, TaskProfile, TaskRouterOutput, ToolBatchState,
-    ToolError, ToolExecutionRequest, VerificationCheck, VerificationReport,
+    RuntimeSchedulerState, TaskGoal, TaskIntent, TaskProfile, ToolBatchState, ToolError,
+    ToolExecutionRequest, VerificationCheck, VerificationReport,
 };
 use super::workspace::resolve_workspace_root;
 use super::workspace::{resolve_workspace_child, workspace_relative_path};
@@ -813,11 +813,7 @@ fn start_local_chat_inner(
     } else {
         String::new()
     };
-    let task_profile = classify_task_profile_with_model(
-        &base_model_request,
-        &user_message,
-        &context_model_runner,
-    )?;
+    let task_profile = build_task_profile(&user_message);
     let mut model_request = build_model_request_with_history_and_task_profile(
         &request,
         &user_message,
@@ -9028,267 +9024,6 @@ fn build_task_profile(user_message: &str) -> TaskProfile {
     }
 }
 
-fn json_object_candidate(content: &str) -> Option<&str> {
-    let content = content.trim();
-    if content.starts_with('{') && content.ends_with('}') {
-        return Some(content);
-    }
-    let start = content.find('{')?;
-    let end = content.rfind('}')?;
-    content.get(start..=end)
-}
-
-fn validate_allowed_values(
-    field: &str,
-    values: &mut Vec<String>,
-    allowed: &[&str],
-    error_code: &str,
-) -> Result<(), ToolError> {
-    if let Some(value) = values
-        .iter()
-        .find(|value| !allowed.iter().any(|candidate| value == candidate))
-    {
-        return Err(ToolError::new(
-            error_code,
-            format!("TaskProfile.{field} 包含未允许的值：{value}"),
-        ));
-    }
-    values.sort();
-    values.dedup();
-    Ok(())
-}
-
-fn validate_model_task_profile(
-    user_message: &str,
-    mut routed: TaskRouterOutput,
-    policy_baseline: &TaskProfile,
-) -> Result<TaskProfile, ToolError> {
-    if routed.goal.trim().is_empty() {
-        return Err(ToolError::new(
-            "model.task_profile_invalid",
-            "TaskRouterOutput.goal 不能为空",
-        ));
-    }
-    if !(1..=5).contains(&routed.clarity_score) {
-        return Err(ToolError::new(
-            "model.task_profile_invalid",
-            "TaskRouterOutput.clarityScore 必须在 1 到 5 之间",
-        ));
-    }
-    routed.goal = truncate_inline(&routed.goal, 220);
-    if routed.intent == TaskIntent::Execute && policy_baseline.intent != TaskIntent::Execute {
-        return Err(ToolError::new(
-            "model.task_profile_policy_violation",
-            "Task Router 将非执行请求升级成了 execute",
-        ));
-    }
-    if text_contains_any(
-        user_message,
-        &[
-            "不要修改",
-            "不要改",
-            "只分析",
-            "仅分析",
-            "只诊断",
-            "不要操作",
-            "read only",
-        ],
-    ) && routed.intent != TaskIntent::Diagnose
-    {
-        return Err(ToolError::new(
-            "model.task_profile_policy_violation",
-            "用户要求只读分析，但 Task Router 返回了可修改状态的任务画像",
-        ));
-    }
-    validate_allowed_values(
-        "domains",
-        &mut routed.domains,
-        &[
-            "general",
-            "code",
-            "ui",
-            "product",
-            "security",
-            "media",
-            "deployment",
-            "data",
-        ],
-        "model.task_profile_invalid",
-    )?;
-    if routed.domains.is_empty() {
-        return Err(ToolError::new(
-            "model.task_profile_invalid",
-            "TaskRouterOutput.domains 不能为空",
-        ));
-    }
-    validate_allowed_values(
-        "requiredContext",
-        &mut routed.required_context,
-        &[
-            "project_business_context",
-            "entry_policy",
-            "code_conventions",
-            "ui_rules",
-            "security_rules",
-            "media_rules",
-            "deployment_rules",
-            "planning_rules",
-            "relevant_history",
-        ],
-        "context.unknown_source",
-    )?;
-    routed.targets = routed
-        .targets
-        .into_iter()
-        .map(|target| truncate_inline(&target, 160))
-        .filter(|target| !target.is_empty())
-        .take(8)
-        .collect();
-    routed.ambiguities = routed
-        .ambiguities
-        .into_iter()
-        .map(|ambiguity| truncate_inline(&ambiguity, 160))
-        .filter(|ambiguity| !ambiguity.is_empty())
-        .take(8)
-        .collect();
-    if !matches!(routed.complexity.as_str(), "simple" | "normal" | "complex") {
-        return Err(ToolError::new(
-            "model.task_profile_invalid",
-            format!("TaskRouterOutput.complexity 非法：{}", routed.complexity),
-        ));
-    }
-    let risk = task_profile_risk(user_message, &routed.intent);
-    let required_capabilities = task_profile_required_capabilities(&routed.intent, &routed.domains);
-    let output_contract = task_profile_output_contract(&routed.intent);
-    Ok(TaskProfile {
-        version: "task-profile/v1".to_string(),
-        intent: routed.intent,
-        domains: routed.domains,
-        goal: routed.goal,
-        targets: routed.targets,
-        clarity_score: routed.clarity_score,
-        ambiguities: routed.ambiguities,
-        complexity: routed.complexity,
-        risk,
-        required_context: routed.required_context,
-        required_capabilities,
-        output_contract,
-        source: "model_router".to_string(),
-    })
-}
-
-fn validate_task_profile_capabilities(
-    profile: &TaskProfile,
-    available_tools: &[String],
-) -> Result<(), ToolError> {
-    let has_tool = |name: &str| available_tools.iter().any(|tool| tool == name);
-    let capability_available = |capability: &str| match capability {
-        "model_response" => true,
-        "file_read" => has_tool("read_file"),
-        "file_write" => has_tool("write_file") || has_tool("apply_patch"),
-        "command_test" => has_tool("run_command"),
-        "media_tool" => available_tools.iter().any(|tool| {
-            matches!(
-                tool.as_str(),
-                "generate_image"
-                    | "edit_image"
-                    | "generate_video"
-                    | "generate_audio"
-                    | "transcribe_audio"
-            )
-        }),
-        "deployment_tool" => available_tools.iter().any(|tool| tool.contains("deploy")),
-        "project_tool" => available_tools.iter().any(|tool| {
-            tool.contains("project") || tool == "call_mcp_tool" || tool == "list_mcp_tools"
-        }),
-        _ => false,
-    };
-    if let Some(capability) = profile
-        .required_capabilities
-        .iter()
-        .find(|capability| !capability_available(capability))
-    {
-        return Err(ToolError::new(
-            "model.task_profile_unavailable_capability",
-            format!("TaskProfile 声明了当前请求没有提供的能力：{capability}"),
-        ));
-    }
-    Ok(())
-}
-
-fn classify_task_profile_with_model(
-    base_request: &ModelStepRequest,
-    user_message: &str,
-    model_runner: &dyn Fn(&ModelStepRequest) -> ModelStepResult,
-) -> Result<TaskProfile, ToolError> {
-    let policy_baseline = build_task_profile(user_message);
-    let available_tools = tool_definitions_for_request(base_request)
-        .into_iter()
-        .map(|definition| definition.name.to_string())
-        .collect::<Vec<_>>();
-    let messages = vec![
-        RuntimeModelMessage::system(
-            "desktop_runtime.task_router_contract",
-            200,
-            [
-                "你是桌面智能体任务路由器，只输出一个 JSON 对象，不要输出解释或 Markdown。",
-                "intent 只能是 answer、design、diagnose、execute。",
-                "用户未明确要求修改、创建、执行或操作时，不得输出 execute。",
-                "用户明确说不要修改、只分析或只诊断时，必须输出 diagnose。",
-                "domains 只能选择 general、code、ui、product、security、media、deployment、data。",
-                "requiredContext 只能选择 project_business_context、entry_policy、code_conventions、ui_rules、security_rules、media_rules、deployment_rules、planning_rules、relevant_history。",
-                "clarityScore 必须是 1 到 5 的 JSON 整数，例如 1 或 5；不得输出 1.0、字符串或小数。",
-                "complexity 由你根据任务依赖、范围和专业难度判断，只能是 simple、normal、complex；不得通过关键词机械判断。",
-                "domains、targets、ambiguities、requiredContext 必须是字符串数组。",
-                "只输出以下八个字段：intent、domains、goal、targets、clarityScore、ambiguities、complexity、requiredContext。不要输出 version、source、risk、requiredCapabilities、outputContract；这些字段由 Runtime 生成。",
-                r#"输出形状示例：{"intent":"answer","domains":["general"],"goal":"回应用户问候","targets":[],"clarityScore":5,"ambiguities":[],"complexity":"simple","requiredContext":[]}"#,
-            ]
-            .join("\n"),
-        ),
-        RuntimeModelMessage::simple(
-            "user",
-            format!(
-                "用户当前请求：\n{}",
-                user_message.trim()
-            ),
-        ),
-    ];
-    let mut classifier_request = base_request.with_messages(messages);
-    classifier_request.expose_tools = false;
-    let result = model_runner(&classifier_request);
-    if !result.ok {
-        return Err(ToolError::new(
-            "model.task_profile_failed",
-            if result.error.trim().is_empty() {
-                result.summary
-            } else {
-                result.error
-            },
-        ));
-    }
-    if !result.tool_calls.is_empty() {
-        return Err(ToolError::new(
-            "model.task_profile_invalid",
-            "Task Router 不允许返回工具调用",
-        ));
-    }
-    let Some(candidate) = json_object_candidate(&result.content) else {
-        return Err(ToolError::new(
-            "model.task_profile_invalid",
-            "Task Router 未返回 JSON 对象",
-        ));
-    };
-    let routed = serde_json::from_str::<TaskRouterOutput>(candidate).map_err(|error| {
-        ToolError::new(
-            "model.task_profile_invalid",
-            format!("Task Router JSON 不符合 TaskRouterOutput Schema：{error}"),
-        )
-    })?;
-    let profile = validate_model_task_profile(user_message, routed, &policy_baseline)?;
-    validate_task_profile_capabilities(&profile, &available_tools)?;
-    Ok(profile)
-}
-
 fn render_dynamic_task_brief(profile: &TaskProfile) -> RuntimeModelMessage {
     let target = if profile.targets.is_empty() {
         "当前用户请求中明确的对象".to_string()
@@ -10570,6 +10305,33 @@ fn merge_openai_stream_text(target: &mut String, incoming: &str) {
         target.push_str(incoming);
         return;
     }
+    let target_trimmed = target.trim();
+    let incoming_trimmed = incoming.trim();
+    let structured_snapshot = matches!(target_trimmed.as_bytes().first(), Some(b'{' | b'['))
+        && matches!(incoming_trimmed.as_bytes().first(), Some(b'{' | b'['));
+    if structured_snapshot {
+        if target_trimmed == incoming_trimmed || incoming_trimmed.starts_with(target_trimmed) {
+            target.clear();
+            target.push_str(incoming);
+            return;
+        }
+        if target_trimmed.starts_with(incoming_trimmed) {
+            return;
+        }
+        let target_value = serde_json::from_str::<Value>(target_trimmed);
+        let incoming_value = serde_json::from_str::<Value>(incoming_trimmed);
+        if let Ok(incoming_value) = incoming_value {
+            if target_value
+                .as_ref()
+                .map(|target_value| target_value == &incoming_value)
+                .unwrap_or(true)
+            {
+                target.clear();
+                target.push_str(incoming);
+                return;
+            }
+        }
+    }
     let overlap = (1..=target.len().min(incoming.len()))
         .rev()
         .find(|length| incoming.is_char_boundary(*length) && target.ends_with(&incoming[..*length]))
@@ -11786,7 +11548,7 @@ mod tests {
     }
 
     #[test]
-    fn local_chat_requires_a_working_task_router_model() {
+    fn local_chat_without_model_runtime_uses_skeleton_without_router_failure() {
         let dir = std::env::temp_dir().join(format!("liuagent_local_chat_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("README.md"), "local agent").unwrap();
@@ -11813,9 +11575,13 @@ mod tests {
             resume_from_checkpoint: false,
         });
 
-        assert!(!result.ok);
-        assert_eq!(result.error_code, "model.task_profile_failed");
-        assert!(result.error.contains("未配置桌面端可本地调用的模型运行时"));
+        assert!(result.ok);
+        assert!(result.error_code.is_empty());
+        assert_eq!(result.model_result["status"], "mock");
+        assert!(result.model_result["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("未配置桌面端可本地调用的模型运行时"));
         assert!(result.tool_results.is_empty());
         let _ = fs::remove_dir_all(dir);
     }
@@ -11858,8 +11624,9 @@ mod tests {
             |event| events.borrow_mut().push(event),
         );
 
-        assert!(!result.ok);
-        assert_eq!(result.error_code, "model.task_profile_failed");
+        assert!(result.ok);
+        assert!(result.error_code.is_empty());
+        assert_eq!(result.model_result["status"], "mock");
         let events = events.borrow();
         assert_eq!(
             events.first().and_then(|event| event["type"].as_str()),
@@ -11875,9 +11642,11 @@ mod tests {
             })
             .expect("checkpoint resume progress must be emitted live");
         assert_eq!(resume_index, 1);
-        assert!(!events
+        let model_call_index = events
             .iter()
-            .any(|event| event["type"] == "model_call_started"));
+            .position(|event| event["type"] == "model_call_started")
+            .expect("checkpoint resume must continue into the main model loop");
+        assert!(model_call_index > resume_index);
         assert!(events.iter().all(|event| {
             !event["event_id"]
                 .as_str()
@@ -14898,8 +14667,9 @@ mod tests {
             resume_from_checkpoint: false,
         });
 
-        assert!(!result.ok);
-        assert_eq!(result.error_code, "model.task_profile_failed");
+        assert!(result.ok);
+        assert!(result.error_code.is_empty());
+        assert_eq!(result.model_result["status"], "mock");
         assert!(result.tool_results.is_empty());
         assert!(target.exists(), "natural language must not delete files");
         assert_eq!(fs::read_to_string(&target).unwrap(), "must stay");
@@ -15133,6 +14903,29 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&parsed.content).unwrap()["intent"],
             "answer"
+        );
+    }
+
+    #[test]
+    fn streamed_content_merges_whitespace_normalized_json_snapshots() {
+        let chunks = [
+            json!({"choices":[{"delta":{"content":" {\"intent\":\"answer\""}}]}),
+            json!({"choices":[{"message":{"content":"{\"intent\": \"answer\", \"clarityScore\": 5}"}}]}),
+            json!({"choices":[{"message":{"content":"\n{\"intent\":\"answer\",\"clarityScore\":5}\n"}}]}),
+        ];
+        let mut stream_body = chunks
+            .into_iter()
+            .map(|chunk| format!("data: {}\n\n", chunk))
+            .collect::<String>();
+        stream_body.push_str("data: [DONE]\n\n");
+
+        let parsed =
+            parse_openai_compatible_streaming_reader(stream_body.as_bytes(), "test-provider")
+                .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<Value>(parsed.content.trim()).unwrap(),
+            json!({"intent":"answer","clarityScore":5})
         );
     }
 
@@ -17133,20 +16926,6 @@ mod tests {
             .collect()
     }
 
-    fn test_task_router_output(user_message: &str) -> TaskRouterOutput {
-        let profile = build_task_profile(user_message);
-        TaskRouterOutput {
-            intent: profile.intent,
-            domains: profile.domains,
-            goal: profile.goal,
-            targets: profile.targets,
-            clarity_score: profile.clarity_score,
-            ambiguities: profile.ambiguities,
-            complexity: profile.complexity,
-            required_context: profile.required_context,
-        }
-    }
-
     #[test]
     fn deterministic_task_profile_classifies_four_intents() {
         assert_eq!(build_task_profile("什么是缓存").intent, TaskIntent::Answer);
@@ -17165,131 +16944,18 @@ mod tests {
     }
 
     #[test]
-    fn model_task_profile_cannot_upgrade_answer_or_override_read_only_request() {
-        let answer_baseline = build_task_profile("什么是缓存");
-        let mut attempted_upgrade = test_task_router_output("什么是缓存");
-        attempted_upgrade.intent = TaskIntent::Execute;
-        let error = validate_model_task_profile("什么是缓存", attempted_upgrade, &answer_baseline)
-            .unwrap_err();
-        assert_eq!(error.code, "model.task_profile_policy_violation");
+    fn deterministic_task_profile_owns_policy_fields() {
+        let profile = build_task_profile("修复登录 Bug");
 
-        let diagnose_baseline = build_task_profile("只分析登录问题，不要修改");
-        let mut attempted_mutation = test_task_router_output("只分析登录问题，不要修改");
-        attempted_mutation.intent = TaskIntent::Execute;
-        let error = validate_model_task_profile(
-            "只分析登录问题，不要修改",
-            attempted_mutation,
-            &diagnose_baseline,
-        )
-        .unwrap_err();
-        assert_eq!(error.code, "model.task_profile_policy_violation");
-    }
-
-    #[test]
-    fn task_profile_model_router_hides_tools_and_rejects_invalid_json() {
-        let request = test_model_request("解释当前登录流程");
-        let exposed_tools = Cell::new(true);
-        let runner = |classifier_request: &ModelStepRequest| {
-            exposed_tools.set(classifier_request.expose_tools);
-            test_model_result("not-json", Vec::new())
-        };
-
-        let error =
-            classify_task_profile_with_model(&request, &request.user_message, &runner).unwrap_err();
-
-        assert!(!exposed_tools.get());
-        assert_eq!(error.code, "model.task_profile_invalid");
-    }
-
-    #[test]
-    fn task_profile_model_router_accepts_valid_profile_without_tools() {
-        let request = test_model_request("什么是缓存");
-        let exposed_tools = Cell::new(true);
-        let routed_profile = test_task_router_output(&request.user_message);
-        let payload = serde_json::to_string(&routed_profile).unwrap();
-        let runner = |classifier_request: &ModelStepRequest| {
-            exposed_tools.set(classifier_request.expose_tools);
-            test_model_result(&payload, Vec::new())
-        };
-
-        let profile = classify_task_profile_with_model(&request, &request.user_message, &runner)
-            .expect("valid router profile");
-
-        assert!(!exposed_tools.get());
-        assert_eq!(profile.intent, TaskIntent::Answer);
-        assert_eq!(profile.source, "model_router");
-    }
-
-    #[test]
-    fn task_profile_model_router_accepts_json_schema_integer_written_as_float() {
-        let request = test_model_request("什么是缓存");
-        let routed_profile = test_task_router_output(&request.user_message);
-        let payload = serde_json::to_string(&routed_profile)
-            .unwrap()
-            .replace("\"clarityScore\":5", "\"clarityScore\":1.0");
-        let runner =
-            |_classifier_request: &ModelStepRequest| test_model_result(&payload, Vec::new());
-
-        let profile = classify_task_profile_with_model(&request, &request.user_message, &runner)
-            .expect("JSON Schema integer value 1.0 should be normalized");
-
-        assert_eq!(profile.clarity_score, 1);
-    }
-
-    #[test]
-    fn task_profile_model_router_rejects_fractional_clarity_score() {
-        let request = test_model_request("什么是缓存");
-        let routed_profile = test_task_router_output(&request.user_message);
-        let payload = serde_json::to_string(&routed_profile)
-            .unwrap()
-            .replace("\"clarityScore\":5", "\"clarityScore\":1.5");
-        let runner =
-            |_classifier_request: &ModelStepRequest| test_model_result(&payload, Vec::new());
-
-        let error = classify_task_profile_with_model(&request, &request.user_message, &runner)
-            .expect_err("fractional clarityScore must remain invalid");
-
-        assert_eq!(error.code, "model.task_profile_invalid");
-        assert!(error.message.contains("expected an integer"));
-    }
-
-    #[test]
-    fn task_profile_rejects_unknown_context_and_unavailable_capability() {
-        let baseline = build_task_profile("什么是缓存");
-        let mut unknown_context = test_task_router_output("什么是缓存");
-        unknown_context
-            .required_context
-            .push("unknown_context".to_string());
-        let error =
-            validate_model_task_profile("什么是缓存", unknown_context, &baseline).unwrap_err();
-        assert_eq!(error.code, "context.unknown_source");
-
-        let mut unavailable_capability = baseline;
-        unavailable_capability
+        assert_eq!(profile.source, "runtime_policy_baseline");
+        assert_eq!(profile.risk, "normal_write");
+        assert!(profile
             .required_capabilities
-            .push("media_tool".to_string());
-        let error =
-            validate_task_profile_capabilities(&unavailable_capability, &["read_file".to_string()])
-                .unwrap_err();
-        assert_eq!(error.code, "model.task_profile_unavailable_capability");
-    }
-
-    #[test]
-    fn runtime_derives_output_contract_instead_of_trusting_router_text() {
-        let request = test_model_request("你好");
-        let mut payload = serde_json::to_value(test_task_router_output(&request.user_message))
-            .expect("router output JSON");
-        payload["outputContract"] = json!(["简洁友好地回应问候"]);
-        let payload = payload.to_string();
-        let runner =
-            |_classifier_request: &ModelStepRequest| test_model_result(&payload, Vec::new());
-
-        let profile = classify_task_profile_with_model(&request, &request.user_message, &runner)
-            .expect("Runtime must own outputContract");
-
-        assert_eq!(profile.output_contract, vec!["direct_answer"]);
-        assert_eq!(profile.risk, "read_only");
-        assert_eq!(profile.required_capabilities, vec!["model_response"]);
+            .contains(&"file_write".to_string()));
+        assert_eq!(
+            profile.output_contract,
+            vec!["root_cause", "changed_files", "verification"]
+        );
     }
 
     #[test]
@@ -18481,8 +18147,9 @@ mod tests {
             resume_from_checkpoint: false,
         });
 
-        assert!(!result.ok);
-        assert_eq!(result.error_code, "model.task_profile_failed");
+        assert!(result.ok);
+        assert!(result.error_code.is_empty());
+        assert_eq!(result.model_result["status"], "mock");
         assert!(result.plan_status.is_empty());
         assert!(result.tool_results.is_empty());
         let _ = fs::remove_dir_all(dir);
@@ -18627,8 +18294,9 @@ mod tests {
             resume_from_checkpoint: false,
         });
 
-        assert!(!result.ok);
-        assert_eq!(result.error_code, "model.task_profile_failed");
+        assert!(result.ok);
+        assert!(result.error_code.is_empty());
+        assert_eq!(result.model_result["status"], "mock");
         assert!(result.plan_status.is_empty());
         let _ = fs::remove_dir_all(dir);
     }
