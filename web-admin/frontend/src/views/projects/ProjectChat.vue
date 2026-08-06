@@ -1894,6 +1894,8 @@
     v-model="fileChangesDialogVisible"
     :items="visibleWorkspaceChangedFiles"
     :context-title="fileChangesContextTitle"
+    :scope-mode="fileChangesScopeMode"
+    :message-scope-available="activeFileChangesPaths.length > 0"
     :active-path="activeWorkspaceFilePath"
     :active-item="activeWorkspaceReviewItem"
     :preview="workspaceDiffPreview"
@@ -1901,8 +1903,11 @@
     :loading="workspaceDiffLoading"
     :saving="workspaceFileSaving"
     @refresh="refreshFileChangesDrawer"
+    @show-all="showAllWorkspaceFileChanges"
+    @show-message="showMessageFileChangesOnly"
     @select="openWorkspaceChangeFile"
     @accept="acceptReviewedWorkspaceFile"
+    @accept-batch="acceptReviewedWorkspaceFiles"
     @revert="revertReviewedWorkspaceFile"
   />
 
@@ -5973,6 +5978,7 @@ const workspaceFileDirty = computed(
 const fileChangesDialogVisible = ref(false);
 const activeFileChangesMessageId = ref("");
 const activeFileChangesPaths = ref([]);
+const fileChangesScopeMode = ref("all");
 const fileChangesContextTitle = ref("");
 const workspaceFileUndoSnapshots = ref({});
 const workspaceReviewItems = ref([]);
@@ -5989,7 +5995,11 @@ const workspaceChangedFiles = computed(() =>
 );
 const visibleWorkspaceChangedFiles = computed(() => {
   const paths = new Set(activeFileChangesPaths.value);
-  if (!activeFileChangesMessageId.value || !paths.size) {
+  if (
+    fileChangesScopeMode.value !== "message" ||
+    !activeFileChangesMessageId.value ||
+    !paths.size
+  ) {
     return workspaceChangedFiles.value;
   }
   return workspaceChangedFiles.value.filter((item) =>
@@ -6350,7 +6360,7 @@ const localFeishuBotStatusText = computed(() => {
 });
 const localOfflineStatusText = computed(() => {
   if (pendingLocalOutboxCount.value > 0) {
-    return `待同步 ${pendingLocalOutboxCount.value} 条`;
+    return `本地运行记录待同步 ${pendingLocalOutboxCount.value} 条`;
   }
   if (localFeishuBotStatusText.value) return localFeishuBotStatusText.value;
   if (modelProviderOffline.value) return "离线 · 本地模型";
@@ -11560,10 +11570,7 @@ function hasSeenLocalLiuAgentRuntimeEvent(event = {}) {
   return Boolean(eventKey && localLiuAgentSeenRuntimeEventIds.has(eventKey));
 }
 
-async function revealWorkspaceFileChangesAfterMutation(
-  workspacePath = "",
-  assistantMessageId = "",
-) {
+async function revealWorkspaceFileChangesAfterMutation(workspacePath = "") {
   const normalizedWorkspacePath = String(
     workspacePath || workspaceReviewRoot.value || "",
   ).trim();
@@ -11574,21 +11581,8 @@ async function revealWorkspaceFileChangesAfterMutation(
     });
     if (normalizedWorkspacePath !== workspaceReviewRoot.value) return;
     workspaceReviewItems.value = items;
-    if (items.some((item) => item.reviewStatus !== "accepted")) {
-      const message = messages.value.find(
-        (item) =>
-          String(item?.id || "").trim() ===
-          String(assistantMessageId || "").trim(),
-      );
-      if (message && messageFileChangeCount(message)) {
-        setMessageFileChangesScope(message);
-      }
-      fileChangesDialogVisible.value = true;
-      const firstPath = visibleWorkspaceChangedFiles.value[0]?.path || "";
-      if (firstPath) {
-        await openWorkspaceChangeFile(firstPath);
-      }
-    }
+    // 运行中的文件事件只更新工作区快照，不主动抢占当前任务抽屉。
+    // 文件审查由用户从回答入口主动打开，避免多个 el-drawer 互相覆盖。
   } catch (err) {
     console.warn("刷新文件变更审查失败", err);
   }
@@ -11617,7 +11611,6 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
   ) {
     void revealWorkspaceFileChangesAfterMutation(
       run.workspacePath,
-      run.assistantMessageId,
     );
   }
   if (
@@ -16661,6 +16654,41 @@ async function acceptReviewedWorkspaceFile() {
   ElMessage.success("已确认保留当前修改");
 }
 
+async function acceptReviewedWorkspaceFiles(paths = []) {
+  const normalizedPaths = [...new Set(
+    (Array.isArray(paths) ? paths : [])
+      .map((path) => String(path || "").trim())
+      .filter(Boolean),
+  )];
+  const items = normalizedPaths
+    .map((path) => workspaceReviewItems.value.find((item) => item.path === path))
+    .filter((item) => item && item.reviewStatus !== "accepted");
+  if (!items.length) return;
+  await ElMessageBox.confirm(
+    `确认保存选中的 ${items.length} 个文件？保存后这些文件将不再出现在待确认列表中。`,
+    "批量确认保存",
+    {
+      confirmButtonText: "确认保存",
+      cancelButtonText: "返回审查",
+      type: "info",
+    },
+  );
+  workspaceFileSaving.value = true;
+  try {
+    for (const item of items) {
+      await acceptNativeWorkspaceFileChange({
+        workspacePath: workspaceReviewRoot.value,
+        path: item.path,
+        expectedCurrentHash: item.currentHash,
+      });
+    }
+    await refreshWorkspaceReviewItems();
+    ElMessage.success(`已确认保存 ${items.length} 个文件`);
+  } finally {
+    workspaceFileSaving.value = false;
+  }
+}
+
 async function revertReviewedWorkspaceFile() {
   const item = activeWorkspaceReviewItem.value;
   if (!item) return;
@@ -17680,8 +17708,56 @@ function messageFileChangesQuestionLabel(item = {}) {
 function setMessageFileChangesScope(item = {}) {
   activeFileChangesMessageId.value = String(item?.id || "").trim();
   activeFileChangesPaths.value = messageChangedFilePaths(item);
+  fileChangesScopeMode.value = "all";
   fileChangesContextTitle.value = `需求：${messageFileChangesQuestionLabel(item)}`;
 }
+
+async function showMessageFileChangesOnly() {
+  if (!activeFileChangesMessageId.value || !activeFileChangesPaths.value.length) {
+    return;
+  }
+  fileChangesScopeMode.value = "message";
+  const activePath = visibleWorkspaceChangedFiles.value.some(
+    (item) => item.path === activeWorkspaceFilePath.value,
+  )
+    ? activeWorkspaceFilePath.value
+    : visibleWorkspaceChangedFiles.value[0]?.path || "";
+  if (activePath) {
+    await openWorkspaceChangeFile(activePath);
+  }
+}
+
+async function showAllWorkspaceFileChanges() {
+  fileChangesScopeMode.value = "all";
+  const activePath = visibleWorkspaceChangedFiles.value.some(
+    (item) => item.path === activeWorkspaceFilePath.value,
+  )
+    ? activeWorkspaceFilePath.value
+    : visibleWorkspaceChangedFiles.value[0]?.path || "";
+  if (activePath) {
+    await openWorkspaceChangeFile(activePath);
+  }
+}
+
+function resetFileChangesScope() {
+  activeFileChangesMessageId.value = "";
+  activeFileChangesPaths.value = [];
+  fileChangesScopeMode.value = "all";
+  fileChangesContextTitle.value = "";
+}
+
+watch(fileChangesDialogVisible, (visible) => {
+  if (!visible) {
+    resetFileChangesScope();
+  }
+});
+
+watch(
+  [selectedProjectId, currentChatSessionId],
+  () => {
+    resetFileChangesScope();
+  },
+);
 
 function inferMessageProcessEntryKind(entry = {}) {
   const explicit = normalizeMessageProcessEntryKind(entry?.kind || "");
@@ -25823,7 +25899,11 @@ async function syncLocalLiuAgentRuntimeOutbox({
   let synced = 0;
   for (const entry of entries) {
     const entryChatSessionId = String(
-      entry?.chat_session_id || entry?.chatSessionId || normalizedChatSessionId,
+      entry?.chat_session_id ||
+        entry?.chatSessionId ||
+        normalizedChatSessionId ||
+        currentChatSessionId.value ||
+        "local-outbox",
     ).trim();
     const eventId = String(entry?.event_id || entry?.eventId || "").trim();
     if (!entryChatSessionId || !eventId) continue;
@@ -25834,12 +25914,19 @@ async function syncLocalLiuAgentRuntimeOutbox({
     const status = String(
       trajectory?.status || entry?.latest_status || "",
     ).trim();
+    const entryRootGoal = String(
+      entry?.root_goal ||
+        entry?.rootGoal ||
+        rootGoal ||
+        entry?.title ||
+        entry?.summary ||
+        entry?.content ||
+        `桌面端本地 Agent 运行记录${status ? `（${status}）` : ""}`,
+    ).trim();
     const result = await upsertProjectChatRequirementRecord({
       chatSessionId: entryChatSessionId,
       status: normalizeLocalLiuAgentRequirementStatus(status),
-      rootGoal: String(
-        entry?.root_goal || entry?.rootGoal || rootGoal || "",
-      ).trim(),
+      rootGoal: entryRootGoal,
       messageId,
       assistantMessageId,
       resultSummary: String(entry?.content || "").trim(),
@@ -29535,8 +29622,29 @@ async function fetchChatSessions(
     const remembered =
       options.useRemembered === false ? "" : restoreChatSession(projectId);
     const preferred = String(preferredSessionId || "").trim() || remembered;
-    const storedSessions = await readLocalChatSessions(projectId);
-    chatSessions.value = normalizeVisibleChatSessions(storedSessions);
+    const storedSessions = normalizeVisibleChatSessions(
+      await readLocalChatSessions(projectId),
+    );
+    let remoteSessions = [];
+    try {
+      const data = await api.get(
+        `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
+        { params: { limit: 50 } },
+      );
+      remoteSessions = normalizeVisibleChatSessions(data?.sessions || []);
+    } catch (error) {
+      console.warn("加载服务端项目聊天会话失败，回退本地会话", error);
+    }
+    const mergedSessions = new Map(
+      storedSessions.map((session) => [String(session.id || "").trim(), session]),
+    );
+    remoteSessions.forEach((session) => {
+      const sessionId = String(session.id || "").trim();
+      if (sessionId) mergedSessions.set(sessionId, session);
+    });
+    chatSessions.value = normalizeVisibleChatSessions([
+      ...mergedSessions.values(),
+    ]);
     setProjectChatSessionsMemoryCache(projectId, chatSessions.value);
     const excludedSessionIds = new Set(
       (Array.isArray(options.excludeSessionIds)
@@ -29582,9 +29690,29 @@ async function refreshChatSessionListMetadata(projectId) {
   if (normalizedProjectId !== String(selectedProjectId.value || "").trim()) {
     return;
   }
-  const nextSessions = normalizeVisibleChatSessions(
+  const localSessions = normalizeVisibleChatSessions(
     await readLocalChatSessions(normalizedProjectId),
   );
+  let remoteSessions = [];
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/sessions`,
+      { params: { limit: 50 } },
+    );
+    remoteSessions = normalizeVisibleChatSessions(data?.sessions || []);
+  } catch (error) {
+    console.warn("刷新服务端项目聊天会话失败，保留本地会话", error);
+  }
+  const mergedSessions = new Map(
+    localSessions.map((session) => [String(session.id || "").trim(), session]),
+  );
+  remoteSessions.forEach((session) => {
+    const sessionId = String(session.id || "").trim();
+    if (sessionId) mergedSessions.set(sessionId, session);
+  });
+  const nextSessions = normalizeVisibleChatSessions([
+    ...mergedSessions.values(),
+  ]);
   chatSessions.value = nextSessions;
   setProjectChatSessionsMemoryCache(normalizedProjectId, nextSessions);
   const currentId = String(currentChatSessionId.value || "").trim();
@@ -29683,7 +29811,8 @@ async function fetchChatHistory(
   const hasImmediateRows = Array.isArray(immediateRows);
   if (!append) {
     activeChatHistoryLoadingKey = loadingKey;
-    chatHistoryLoading.value = !hasImmediateRows;
+    // 本地缓存只作为首屏占位，最终仍要等待服务端历史完成校准。
+    chatHistoryLoading.value = true;
     if (hasImmediateRows) {
       await applyChatMessagesWithoutPersisting(immediateRows);
       chatHistoryLoadedCount.value = immediateRows.length;
@@ -29702,25 +29831,34 @@ async function fetchChatHistory(
   const previousScrollHeight = Number(container?.scrollHeight || 0);
   const previousScrollTop = Number(container?.scrollTop || 0);
   try {
-    const runtimePayload = await fetchPersistedChatRuntime(
-      projectId,
-      normalizedSessionId,
-    );
+    const [remoteHistoryResult, runtimePayload] = await Promise.all([
+      api
+        .get(`/projects/${encodeURIComponent(projectId)}/chat/history`, {
+          params: {
+            limit,
+            offset,
+            chat_session_id: normalizedSessionId,
+          },
+        })
+        .then((data) => ({ ok: true, data }))
+        .catch((error) => ({ ok: false, error })),
+      fetchPersistedChatRuntime(projectId, normalizedSessionId),
+    ]);
     if (
       !isCurrentChatSession(projectId, normalizedSessionId) ||
       (!append && activeChatHistoryLoadingKey !== loadingKey)
     ) {
       return;
     }
-    const persistedRows = Array.isArray(runtimePayload?.messages)
-      ? runtimePayload.messages
+    const remoteRows = remoteHistoryResult.ok
+      ? (remoteHistoryResult.data?.messages || []).map(mapHistoryMessage)
       : [];
-    const historyEnd = append
-      ? Math.max(0, persistedRows.length - offset)
-      : persistedRows.length;
-    const historyStart = Math.max(0, historyEnd - limit);
-    const historyRows = persistedRows.slice(historyStart, historyEnd);
-    chatHistoryReachedEnd.value = historyStart === 0;
+    // 服务端接口已经按 offset/limit 返回当前页，不能再次按 offset 截切。
+    const historyRows = remoteRows;
+    const localRows = applyPersistedChatRuntimeRows([], runtimePayload);
+    chatHistoryReachedEnd.value = remoteHistoryResult.ok
+      ? remoteRows.length < limit
+      : true;
     if (append) {
       await applyChatMessagesWithoutPersisting([
         ...historyRows,
@@ -29735,9 +29873,13 @@ async function fetchChatHistory(
       const nextRows =
         Array.isArray(liveRows) && liveRows.length
           ? liveRows
-          : cachedRuntimePayload === runtimePayload && hasImmediateRows
+          : hasImmediateRows && immediateRows.length && !historyRows.length
             ? immediateRows
-            : applyPersistedChatRuntimeRows(historyRows, runtimePayload);
+            : historyRows.length
+              ? applyPersistedChatRuntimeRows(historyRows, runtimePayload)
+              : localRows.length
+                ? localRows
+                : [];
       if (messages.value !== nextRows) {
         await applyChatMessagesWithoutPersisting(nextRows);
       }
@@ -34735,6 +34877,11 @@ onUnmounted(() => {
   nativeExternalAgentDeferredCleanupTimers.clear();
   stopWorkingStatusTimer();
   if (chatRuntimePersistTimer !== null) {
+    persistCurrentChatRuntimeNow(
+      selectedProjectId.value,
+      currentChatSessionId.value,
+      { onlyIfDirty: true },
+    );
     window.clearTimeout(chatRuntimePersistTimer);
     chatRuntimePersistTimer = null;
   }

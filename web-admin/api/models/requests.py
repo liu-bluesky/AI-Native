@@ -771,7 +771,6 @@ class SystemConfigUpdateReq(BaseModel):
     enable_employee_manual_generation: bool | None = None
     enable_user_register: bool | None = None
     chat_upload_max_limit: int | None = None
-    default_chat_system_prompt: str | None = None
     desktop_agent_global_prompt: str | None = None
     public_changelog: str | None = None
     employee_auto_rule_generation_enabled: bool | None = None

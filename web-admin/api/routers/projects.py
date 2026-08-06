@@ -20850,8 +20850,6 @@ async def generate_project_chat_task_tree(
     _ensure_project_access(project_id, auth_payload)
     username = _current_username(auth_payload)
     chat_session_id = str(req.chat_session_id or "").strip()
-    if not chat_session_id:
-        raise HTTPException(400, "chat_session_id is required")
     message = str(req.message or "").strip()
     if not message:
         raise HTTPException(400, "message is required")
@@ -21044,9 +21042,12 @@ def _build_project_chat_requirement_record(
     req: ProjectChatRequirementRecordUpsertReq,
 ) -> ProjectRequirementRecord:
     root_goal = str(req.root_goal or "").strip()
+    title = str(req.title or "").strip()
     if not root_goal:
-        raise HTTPException(400, "root_goal is required")
-    title = str(req.title or "").strip() or root_goal[:120] or "AI 对话需求"
+        # 旧版桌面 outbox 可能只有运行结果，没有 root_goal；保留这类记录，
+        # 避免同步按钮因为历史数据格式较旧而永久卡在待同步状态。
+        root_goal = title or "桌面端本地 Agent 运行记录"
+    title = title or root_goal[:120] or "AI 对话需求"
     now = _now_iso()
     record = ProjectRequirementRecord(
         id=getattr(existing, "id", "") or record_chat_session_id,
@@ -21062,6 +21063,7 @@ def _build_project_chat_requirement_record(
     return record
 
 
+@router.post("/{project_id}/chat/requirement-record")
 async def upsert_project_chat_requirement_record(
     project_id: str,
     req: ProjectChatRequirementRecordUpsertReq,
@@ -21070,9 +21072,7 @@ async def upsert_project_chat_requirement_record(
     _ensure_permission(auth_payload, "menu.ai.chat")
     _ensure_project_access(project_id, auth_payload)
     username = _current_username(auth_payload)
-    chat_session_id = str(req.chat_session_id or "").strip()
-    if not chat_session_id:
-        raise HTTPException(400, "chat_session_id is required")
+    chat_session_id = str(req.chat_session_id or "").strip() or "local-outbox"
     message_id = str(req.message_id or "").strip()
     assistant_message_id = str(req.assistant_message_id or "").strip()
     message_key = message_id or assistant_message_id

@@ -299,11 +299,10 @@ fn migrate_legacy_sqlite_project_paths(
 ) -> Result<usize, String> {
     fs::create_dir_all(directory).map_err(|err| err.to_string())?;
     let marker = directory.join(SQLITE_MIGRATION_MARKER);
-    if marker.exists() {
-        return Ok(0);
-    }
     if !legacy_path.exists() {
-        fs::write(marker, b"no legacy database\n").map_err(|err| err.to_string())?;
+        if !marker.exists() {
+            fs::write(marker, b"no legacy database\n").map_err(|err| err.to_string())?;
+        }
         return Ok(0);
     }
     let connection = Connection::open_with_flags(&legacy_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -1682,6 +1681,12 @@ mod tests {
             .expect("insert runtime");
         drop(connection);
         let legacy_before = fs::read(&legacy_path).expect("read legacy before migration");
+        fs::create_dir_all(&json_directory).expect("create json directory");
+        fs::write(
+            json_directory.join(SQLITE_MIGRATION_MARKER),
+            b"previous migration completed\n",
+        )
+        .expect("seed migration marker");
 
         let migrated = migrate_legacy_sqlite_project_paths(
             &legacy_path,

@@ -31,17 +31,16 @@ const nativeBridgeSource = readFileSync(nativeBridgePath, "utf8");
 const nativeStoreSource = readFileSync(nativeStorePath, "utf8");
 const activeNativeStoreSource = nativeStoreSource.split("#[cfg(test)]")[0];
 
-for (const [label, endpointPattern] of [
-  ["/chat/sessions", /\/chat\/sessions/],
-  ["/chat/runtime", /\/chat\/runtime/],
-  ["/chat/history", /\/chat\/history`/],
-]) {
-  assert.doesNotMatch(
-    projectChatSource,
-    endpointPattern,
-    `project chat must not use remote conversation endpoint ${label}`,
-  );
-}
+assert.match(
+  projectChatSource,
+  /api\.get\([\s\S]*?\/projects\/\$\{encodeURIComponent\(projectId\)\}\/chat\/sessions/,
+  "project chat must restore the authoritative remote session list",
+);
+assert.match(
+  projectChatSource,
+  /api\.get\([\s\S]*?\/projects\/\$\{encodeURIComponent\(projectId\)\}\/chat\/history/,
+  "project chat must restore the authoritative remote history",
+);
 
 assert.match(
   projectChatSource,
@@ -113,6 +112,11 @@ assert.match(
   /OpenFlags::SQLITE_OPEN_READ_ONLY[\s\S]*migrate_legacy_sqlite_project/,
   "legacy SQLite data must only be opened read-only for one-time migration",
 );
+assert.match(
+  nativeStoreSource,
+  /fn migrate_legacy_sqlite_project_paths[\s\S]*?if !legacy_path\.exists\(\)[\s\S]*?if !marker\.exists\(\)/,
+  "legacy migration must reconcile SQLite rows even when a previous marker exists",
+);
 assert.doesNotMatch(
   activeNativeStoreSource,
   /CREATE TABLE IF NOT EXISTS|INSERT INTO project_chat_|DELETE FROM project_chat_|UPDATE project_chat_/,
@@ -142,10 +146,10 @@ const fetchChatSessionsSource = projectChatSource.match(
   /async function fetchChatSessions\([\s\S]*?\n\}/,
 )?.[0] || "";
 assert.ok(fetchChatSessionsSource, "project chat must define fetchChatSessions");
-assert.doesNotMatch(
+assert.match(
   fetchChatSessionsSource,
-  /setProjectChatSessionsCache\(/,
-  "session reads and load failures must not overwrite JSON session metadata",
+  /remoteSessions[\s\S]*?storedSessions[\s\S]*?mergedSessions/,
+  "remote and local session metadata must be merged instead of replacing the remote source",
 );
 
 const fetchChatHistorySource = projectChatSource.slice(
@@ -165,8 +169,8 @@ assert.match(
 );
 assert.match(
   fetchChatHistorySource,
-  /getCachedChatRuntime[\s\S]*?getRememberedChatSessionMessages[\s\S]*?chatHistoryLoading\.value = !hasImmediateRows/,
-  "revisited conversations must render cached rows without a blocking history loader",
+  /getCachedChatRuntime[\s\S]*?getRememberedChatSessionMessages[\s\S]*?chatHistoryLoading\.value = true/,
+  "revisited conversations must render cached rows while revalidating remote history",
 );
 assert.match(
   projectChatSource,

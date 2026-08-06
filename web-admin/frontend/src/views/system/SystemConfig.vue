@@ -167,19 +167,6 @@
 
             </div>
 
-            <el-form-item label="AI 对话中心默认系统提示词">
-              <el-input
-                v-model="form.default_chat_system_prompt"
-                type="textarea"
-                :rows="8"
-                resize="vertical"
-                placeholder="为空时使用系统内置默认提示词；填写后会作为项目聊天未单独配置 system prompt 时的默认值。"
-              />
-              <div class="field-desc">
-                当项目聊天没有单独填写 `system_prompt` 时，会自动回退到这里。
-              </div>
-            </el-form-item>
-
             <el-form-item label="桌面运行环境全局提示词">
               <el-input
                 v-model="form.desktop_agent_global_prompt"
@@ -1660,7 +1647,6 @@ const form = ref({
   enable_project_manual_generation: false,
   enable_employee_manual_generation: false,
   chat_upload_max_limit: 6,
-  default_chat_system_prompt: "",
   desktop_agent_global_prompt: DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT,
   employee_auto_rule_generation_enabled: true,
   employee_auto_rule_generation_source_filters: ["prompts_chat_curated"],
@@ -2248,10 +2234,6 @@ function applyConfigToForm(config, options = {}) {
   const payload =
     config && typeof config === "object" && !Array.isArray(config) ? config : {};
   const preservePrompt = Boolean(options.preservePrompt);
-  const hasPrompt = Object.prototype.hasOwnProperty.call(
-    payload,
-    "default_chat_system_prompt",
-  );
   const hasEmployeeRulePrompt = Object.prototype.hasOwnProperty.call(
     payload,
     "employee_auto_rule_generation_prompt",
@@ -2268,16 +2250,10 @@ function applyConfigToForm(config, options = {}) {
     enable_employee_manual_generation:
       !!payload.enable_employee_manual_generation,
     chat_upload_max_limit: Number(payload.chat_upload_max_limit || 6),
-    default_chat_system_prompt:
-      hasPrompt || !preservePrompt
-        ? String(payload.default_chat_system_prompt || "")
-        : String(form.value.default_chat_system_prompt || ""),
     desktop_agent_global_prompt:
       hasDesktopAgentPrompt
         ? String(payload.desktop_agent_global_prompt || "")
-        : preservePrompt
-          ? String(form.value.desktop_agent_global_prompt || "")
-          : DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT,
+        : DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT,
     employee_auto_rule_generation_enabled:
       !Object.prototype.hasOwnProperty.call(
         payload,
@@ -2975,9 +2951,6 @@ async function saveConfig() {
       enable_employee_manual_generation:
         !!form.value.enable_employee_manual_generation,
       chat_upload_max_limit: Number(form.value.chat_upload_max_limit || 6),
-      default_chat_system_prompt: String(
-        form.value.default_chat_system_prompt || "",
-      ),
       desktop_agent_global_prompt: String(
         form.value.desktop_agent_global_prompt || "",
       ),

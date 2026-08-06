@@ -21,7 +21,8 @@ mod workspace;
 
 pub use definitions::builtin_tool_definitions;
 pub use file_change_review::{
-    accept_change, capture_baseline, list_changes, revert_change, FileChangeReviewItem,
+    accept_change, capture_baseline, list_changes, revert_change, review_diff_inputs,
+    FileChangeReviewItem,
 };
 pub use gateway::prepare_agent_invocation;
 pub use paths::{desktop_runtime_root, ensure_desktop_runtime_migrated};

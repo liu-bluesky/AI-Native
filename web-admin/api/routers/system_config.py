@@ -199,6 +199,9 @@ async def _build_greeting_audio_metadata(
 
 def _serialize_system_config(config: object, *, include_sensitive_voice_scope: bool) -> dict[str, object]:
     payload = asdict(config)
+    # Legacy storage field kept only so existing system-config.json files remain readable;
+    # it is no longer part of the public system configuration API.
+    payload.pop("default_chat_system_prompt", None)
     payload["bot_platform_connectors"] = list_bot_connectors()
     if include_sensitive_voice_scope:
         return payload
@@ -529,7 +532,6 @@ async def patch_system_config(
         "enable_employee_manual_generation",
         "enable_user_register",
         "chat_upload_max_limit",
-        "default_chat_system_prompt",
         "desktop_agent_global_prompt",
         "public_changelog",
         "employee_auto_rule_generation_enabled",
@@ -582,9 +584,6 @@ async def patch_system_config(
         if value < 1 or value > 20:
             raise HTTPException(400, "chat_upload_max_limit must be between 1 and 20")
         updates["chat_upload_max_limit"] = value
-
-    if "default_chat_system_prompt" in updates:
-        updates["default_chat_system_prompt"] = str(updates["default_chat_system_prompt"] or "").strip()[:8000]
 
     if "desktop_agent_global_prompt" in updates:
         updates["desktop_agent_global_prompt"] = str(updates["desktop_agent_global_prompt"] or "").strip()[:12000]

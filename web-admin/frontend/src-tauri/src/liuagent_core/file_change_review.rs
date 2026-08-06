@@ -157,6 +157,30 @@ pub fn list_changes(root: &Path) -> Result<Vec<FileChangeReviewItem>, String> {
     Ok(items)
 }
 
+/// Returns the review baseline and current bytes for a tracked file change.
+/// This is separate from git status because newly created files are not present
+/// in `git diff` until they are staged.
+pub fn review_diff_inputs(
+    root: &Path,
+    relative_path: &str,
+) -> Result<Option<(Vec<u8>, Vec<u8>)>, String> {
+    let metadata_path = snapshot_path(root, relative_path);
+    if !metadata_path.exists() {
+        return Ok(None);
+    }
+    let snapshot = read_snapshot(&metadata_path).map_err(|err| err.message)?;
+    let baseline = STANDARD
+        .decode(snapshot.baseline_base64)
+        .map_err(|err| format!("解析变更基线失败：{err}"))?;
+    let target = resolve_workspace_write_target(root, relative_path).map_err(|err| err.message)?;
+    let current = if target.exists() {
+        fs::read(target).map_err(|err| format!("读取当前文件失败：{err}"))?
+    } else {
+        Vec::new()
+    };
+    Ok(Some((baseline, current)))
+}
+
 pub fn accept_change(root: &Path, relative_path: &str, expected_hash: &str) -> Result<(), String> {
     let target = resolve_workspace_write_target(root, relative_path).map_err(|err| err.message)?;
     let current = if target.exists() {

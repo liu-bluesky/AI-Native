@@ -694,7 +694,13 @@ fn preview_workspace_diff(
     path: Option<String>,
 ) -> Result<WorkspaceDiffPreviewResult, String> {
     let root = resolve_workspace_root(&workspace_path)?;
-    let relative_path = resolve_existing_workspace_relative_path(&root, path.unwrap_or_default())?;
+    let raw_path = path.unwrap_or_default();
+    let relative_path = if raw_path.trim().is_empty() {
+        String::new()
+    } else {
+        let target = resolve_workspace_write_target(&root, raw_path)?;
+        workspace_relative_path(&root, &target)
+    };
     let path_filter = if relative_path.is_empty() {
         Vec::new()
     } else {
@@ -724,13 +730,22 @@ fn preview_workspace_diff(
         &build_git_path_args(&["diff", "--stat"], &path_filter),
     );
     let diff = run_git_readonly(&root, &build_git_path_args(&["diff"], &path_filter));
+    let review_diff = if !relative_path.is_empty() && diff.stdout.trim().is_empty() {
+        liuagent_core::review_diff_inputs(&root, &relative_path)?
+            .map(|(baseline, current)| render_review_diff(&root, &relative_path, baseline, current))
+    } else {
+        None
+    };
     let reason = [status.stderr, summary.stderr.clone(), diff.stderr.clone()]
         .into_iter()
         .map(|value| value.trim().to_string())
         .find(|value| !value.is_empty())
         .unwrap_or_default();
     let (summary_text, summary_truncated) = truncate_text(summary.stdout, 8_000);
-    let (diff_text, diff_truncated) = truncate_text(diff.stdout, 30_000);
+    let (diff_text, diff_truncated) = match review_diff {
+        Some(result) => truncate_text(result.stdout, 30_000),
+        None => truncate_text(diff.stdout, 30_000),
+    };
     let (status_text, status_truncated) = truncate_text(status.stdout, 8_000);
     let exit_code = if diff.exit_code != 0 {
         diff.exit_code
@@ -750,6 +765,67 @@ fn preview_workspace_diff(
         exit_code,
         truncated: summary_truncated || diff_truncated || status_truncated,
         reason,
+    })
+}
+
+fn render_review_diff(
+    root: &Path,
+    relative_path: &str,
+    baseline: Vec<u8>,
+    current: Vec<u8>,
+) -> GitReadResult {
+    let review_dir = root.join(".ai-employee").join("file-change-review");
+    if let Err(err) = fs::create_dir_all(&review_dir) {
+        return GitReadResult {
+            exit_code: -1,
+            stdout: String::new(),
+            stderr: format!("创建差异临时目录失败：{err}"),
+        };
+    }
+    let token = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or_default()
+    );
+    let baseline_path = review_dir.join(format!(".diff-{token}-baseline"));
+    let current_path = review_dir.join(format!(".diff-{token}-current"));
+    let result = (|| {
+        fs::write(&baseline_path, baseline).map_err(|err| format!("写入差异基线失败：{err}"))?;
+        fs::write(&current_path, current).map_err(|err| format!("写入当前差异失败：{err}"))?;
+        let args = vec![
+            "diff".to_string(),
+            "--no-index".to_string(),
+            "--no-ext-diff".to_string(),
+            "--unified=3".to_string(),
+            "--".to_string(),
+            baseline_path.to_string_lossy().to_string(),
+            current_path.to_string_lossy().to_string(),
+        ];
+        let mut output = run_git_readonly(root, &args);
+        if output.exit_code == 1 {
+            output.exit_code = 0;
+        }
+        output.stdout = output
+            .stdout
+            .replace(
+                &baseline_path.to_string_lossy().to_string(),
+                &format!("a/{relative_path}"),
+            )
+            .replace(
+                &current_path.to_string_lossy().to_string(),
+                &format!("b/{relative_path}"),
+            );
+        Ok(output)
+    })();
+    let _ = fs::remove_file(&baseline_path);
+    let _ = fs::remove_file(&current_path);
+    result.unwrap_or_else(|err| GitReadResult {
+        exit_code: -1,
+        stdout: String::new(),
+        stderr: err,
     })
 }
 
@@ -1669,18 +1745,6 @@ fn resolve_workspace_child(root: &Path, raw_path: String) -> Result<PathBuf, Str
         return Err("路径必须位于项目工作区内".to_string());
     }
     Ok(resolved)
-}
-
-fn resolve_existing_workspace_relative_path(
-    root: &Path,
-    raw_path: String,
-) -> Result<String, String> {
-    let raw = raw_path.trim();
-    if raw.is_empty() {
-        return Ok(String::new());
-    }
-    let resolved = resolve_workspace_child(root, raw.to_string())?;
-    Ok(workspace_relative_path(root, &resolved))
 }
 
 fn resolve_workspace_write_target(root: &Path, raw_path: String) -> Result<PathBuf, String> {

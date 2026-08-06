@@ -32,18 +32,47 @@ assert.match(
 );
 assert.match(
   projectChat,
-  /activeFileChangesPaths[\s\S]*?visibleWorkspaceChangedFiles[\s\S]*?normalizeWorkspaceReviewPath/,
-  "the drawer must filter review items by the active answer paths",
+  /fileChangesScopeMode[\s\S]*?visibleWorkspaceChangedFiles[\s\S]*?normalizeWorkspaceReviewPath/,
+  "answer filtering must be an explicit scope mode instead of replacing the workspace list",
+);
+assert.match(
+  projectChat,
+  /function setMessageFileChangesScope[\s\S]*?fileChangesScopeMode\.value = "all"/,
+  "opening an answer must default to the complete workspace change list",
 );
 assert.match(
   projectChat,
   /messageProcessEntryChangedFilePaths[\s\S]*?changed_files[\s\S]*?messageChangedFilePaths/,
   "answer file paths must come from successful file tool process logs",
 );
+const revealStart = projectChat.indexOf(
+  "async function revealWorkspaceFileChangesAfterMutation",
+);
+const revealEnd = projectChat.indexOf(
+  "function handleNativeLiuAgentRuntimeEvent",
+  revealStart,
+);
+assert.ok(revealStart >= 0 && revealEnd > revealStart, "file change refresh helper must exist");
+const revealSource = projectChat.slice(revealStart, revealEnd);
+assert.doesNotMatch(
+  revealSource,
+  /fileChangesDialogVisible\.value\s*=\s*true/,
+  "runtime file mutations must not automatically open the file changes drawer",
+);
+assert.doesNotMatch(
+  revealSource,
+  /setMessageFileChangesScope/,
+  "runtime refresh must not silently switch the drawer into answer-only scope",
+);
 assert.match(
   projectChat,
-  /\["write_file", "apply_patch", "delete_file"\]\.includes\(toolName\)[\s\S]*?revealWorkspaceFileChangesAfterMutation/,
-  "successful file tools must refresh and reveal the review drawer",
+  /watch\(fileChangesDialogVisible[\s\S]*?resetFileChangesScope/,
+  "closing the drawer must clear the answer scope",
+);
+assert.match(
+  projectChat,
+  /@show-all="showAllWorkspaceFileChanges"[\s\S]*?@show-message="showMessageFileChangesOnly"/,
+  "users must be able to switch explicitly between all files and answer-only files",
 );
 
 console.log("project chat file changes layout check passed");

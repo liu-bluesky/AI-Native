@@ -21,9 +21,11 @@
           plain
           class="chat-context-bar__action-button chat-context-bar__action-button--sync"
           :loading="syncing"
+          :title="`将桌面端本地 Agent 运行记录同步到服务端（${pendingSyncCount} 条）`"
+          :aria-label="`同步本地 Agent 运行记录 ${pendingSyncCount} 条`"
           @click="emit('sync-local-cache')"
         >
-          同步 {{ pendingSyncCount }} 条
+          同步运行记录 {{ pendingSyncCount }} 条
         </el-button>
         <el-button
           ref="guideButtonRef"
