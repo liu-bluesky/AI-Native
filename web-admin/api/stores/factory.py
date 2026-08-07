@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 from threading import Lock
 from typing import Any, Callable
 
@@ -246,8 +247,10 @@ def _create_project_deploy_store() -> Any:
 def _create_project_requirement_record_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
+        legacy_path = _data_dir() / "project-requirement-records"
+        if legacy_path.exists():
+            shutil.rmtree(legacy_path, ignore_errors=True)
         from stores.json import ProjectRequirementRecordStore
-
         return ProjectRequirementRecordStore(_data_dir())
     if settings.core_store_backend == "postgres":
         try:

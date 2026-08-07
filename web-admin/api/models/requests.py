@@ -523,6 +523,8 @@ class ProjectChatMediaToolReq(BaseModel):
 
 
 class ProjectChatSessionCreateReq(BaseModel):
+    project_id: str = ""
+    chat_session_id: str = ""
     title: str = ""
     source_type: str = ""
     platform: str = ""

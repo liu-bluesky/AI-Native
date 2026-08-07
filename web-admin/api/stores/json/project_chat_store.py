@@ -375,6 +375,17 @@ class ProjectChatStore:
         sessions.sort(key=lambda item: str(item.updated_at or ""), reverse=True)
         return sessions[:safe_limit]
 
+    def list_sessions_global(self, username: str, limit: int = 200) -> list[ProjectChatSession]:
+        safe_limit = max(1, min(int(limit or 200), 500))
+        sessions: list[ProjectChatSession] = []
+        if not self._root.exists():
+            return sessions
+        for project_dir in self._root.iterdir():
+            if project_dir.is_dir():
+                sessions.extend(self.list_sessions(project_dir.name, username, limit=safe_limit))
+        sessions.sort(key=lambda item: str(item.updated_at or ""), reverse=True)
+        return sessions[:safe_limit]
+
     def get_session(self, project_id: str, username: str, chat_session_id: str) -> ProjectChatSession | None:
         normalized_session_id = str(chat_session_id or "").strip()
         if not normalized_session_id:
@@ -415,6 +426,33 @@ class ProjectChatStore:
         if safe_limit is None or len(messages) <= safe_limit:
             return messages
         return messages[-safe_limit:]
+
+    def list_messages_global(
+        self,
+        username: str,
+        limit: int = 200,
+        chat_session_id: str = "",
+        offset: int = 0,
+    ) -> list[ProjectChatMessage]:
+        messages: list[ProjectChatMessage] = []
+        if not self._root.exists():
+            return messages
+        for project_dir in self._root.iterdir():
+            if project_dir.is_dir():
+                messages.extend(
+                    self.list_messages(
+                        project_dir.name,
+                        username,
+                        limit=0,
+                        chat_session_id=chat_session_id,
+                    )
+                )
+        messages.sort(key=lambda item: str(item.created_at or ""))
+        safe_offset = max(0, int(offset or 0))
+        if safe_offset:
+            messages = messages[: max(0, len(messages) - safe_offset)]
+        safe_limit = int(limit or 0)
+        return messages if safe_limit <= 0 else messages[-min(safe_limit, 1000) :]
 
     def append_message(self, message: ProjectChatMessage) -> ProjectChatMessage:
         project_id = str(message.project_id or "").strip()

@@ -187,7 +187,6 @@ from models.requests import (
     ProjectRequirementRecordBatchDeleteReq,
     ProjectChatHistoryTruncateReq,
     ProjectChatHistoryAppendReq,
-    ProjectChatRequirementRecordUpsertReq,
     ProjectChatMediaToolReq,
     ProjectChatReq,
     ProjectChatSessionCreateReq,
@@ -12400,7 +12399,14 @@ async def list_global_assistant_chat_history(
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
-    return {"messages": []}
+    username = _current_username(auth_payload)
+    records = project_chat_store.list_messages_global(
+        username,
+        limit=limit,
+        offset=offset,
+        chat_session_id=str(chat_session_id or "").strip(),
+    )
+    return {"messages": [_serialize_project_chat_message_for_client(item) for item in records]}
 
 
 @router.get("/chat/global/sessions")
@@ -12409,26 +12415,36 @@ async def list_global_assistant_chat_sessions(
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
-    return {"sessions": []}
+    username = _current_username(auth_payload)
+    records = project_chat_store.list_sessions_global(username, limit=limit)
+    return {"sessions": [_serialize_chat_session(item) for item in records]}
 
 
 @router.post("/chat/global/sessions")
 async def create_global_assistant_chat_session(
+    req: ProjectChatSessionCreateReq | None = Body(default=None),
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
-    now = _now_iso()
-    return {
-        "session": {
-            "id": f"chat-session-{uuid.uuid4().hex[:12]}",
-            "title": "新对话",
-            "preview": "",
-            "message_count": 0,
-            "created_at": now,
-            "updated_at": now,
-            "last_message_at": now,
-        }
-    }
+    payload = req or ProjectChatSessionCreateReq()
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(400, "project_id is required")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    source_context = _normalize_project_chat_source_context(
+        payload.model_dump(),
+        project_id=project_id,
+        default_source_type="manual_ai_chat",
+    )
+    item = project_chat_store.create_session(
+        project_id=project_id,
+        username=username,
+        title=str(payload.title or "新对话").strip() or "新对话",
+        source_context=source_context,
+        session_id=str(payload.chat_session_id or "").strip(),
+    )
+    return {"session": _serialize_chat_session(item)}
 
 
 @router.get("/chat/global/voice-input/runtime")
@@ -18458,7 +18474,7 @@ async def list_project_chat_task_tree_sessions(
     }
 
 
-@router.get("/{project_id}/requirement-records")
+# Project requirement-records product API removed. Historical data is dropped by migration 0012.
 async def list_project_requirement_records(
     project_id: str,
     employee_id: str = Query("", max_length=80),
@@ -18538,7 +18554,7 @@ async def list_project_memories(
     }
 
 
-@router.post("/{project_id}/requirement-records/batch-delete")
+# Project requirement-records product API removed. Historical data is dropped by migration 0012.
 async def batch_delete_project_requirement_records(
     project_id: str,
     req: ProjectRequirementRecordBatchDeleteReq,
@@ -21030,75 +21046,6 @@ async def append_project_chat_history_message(
         )
     )
     return {"message": _serialize_project_chat_message_for_client(message)}
-
-
-def _build_project_chat_requirement_record(
-    *,
-    project_id: str,
-    username: str,
-    record_chat_session_id: str,
-    source_chat_session_id: str,
-    existing: ProjectRequirementRecord | None,
-    req: ProjectChatRequirementRecordUpsertReq,
-) -> ProjectRequirementRecord:
-    root_goal = str(req.root_goal or "").strip()
-    title = str(req.title or "").strip()
-    if not root_goal:
-        # 旧版桌面 outbox 可能只有运行结果，没有 root_goal；保留这类记录，
-        # 避免同步按钮因为历史数据格式较旧而永久卡在待同步状态。
-        root_goal = title or "桌面端本地 Agent 运行记录"
-    title = title or root_goal[:120] or "AI 对话需求"
-    now = _now_iso()
-    record = ProjectRequirementRecord(
-        id=getattr(existing, "id", "") or record_chat_session_id,
-        project_id=project_id,
-        username=username,
-        chat_session_id=record_chat_session_id,
-        source_chat_session_id=source_chat_session_id,
-        title=title[:200],
-        root_goal=root_goal,
-        created_at=getattr(existing, "created_at", "") or now,
-        updated_at=now,
-    )
-    return record
-
-
-@router.post("/{project_id}/chat/requirement-record")
-async def upsert_project_chat_requirement_record(
-    project_id: str,
-    req: ProjectChatRequirementRecordUpsertReq,
-    auth_payload: dict = Depends(require_auth),
-):
-    _ensure_permission(auth_payload, "menu.ai.chat")
-    _ensure_project_access(project_id, auth_payload)
-    username = _current_username(auth_payload)
-    chat_session_id = str(req.chat_session_id or "").strip() or "local-outbox"
-    message_id = str(req.message_id or "").strip()
-    assistant_message_id = str(req.assistant_message_id or "").strip()
-    message_key = message_id or assistant_message_id
-    if message_key:
-        message_digest = hashlib.sha1(message_key.encode("utf-8")).hexdigest()[:16]
-        chat_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", chat_session_id).strip("._-")[:48]
-        record_chat_session_id = f"{chat_prefix or 'chat'}__msg__{message_digest}"
-    else:
-        record_chat_session_id = chat_session_id
-    existing = project_requirement_record_store.get(project_id, username, record_chat_session_id)
-    record = _build_project_chat_requirement_record(
-        project_id=project_id,
-        username=username,
-        record_chat_session_id=record_chat_session_id,
-        source_chat_session_id=chat_session_id,
-        existing=existing,
-        req=req,
-    )
-    saved = project_requirement_record_store.save(record)
-    await _invalidate_project_requirement_records_cache(project_id)
-    return {
-        "requirement_record": _serialize_project_requirement_record(saved),
-        "project_id": project_id,
-        "chat_session_id": record_chat_session_id,
-        "source_chat_session_id": chat_session_id,
-    }
 
 
 @router.get("/{project_id}/chat/runtime")

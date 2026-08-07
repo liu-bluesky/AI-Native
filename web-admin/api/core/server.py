@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import shutil
 
 from fastapi import FastAPI
 from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.config import get_settings
+from core.config import get_api_data_dir, get_settings
 from core.db_migrations import run_postgres_migrations
 from core.deps import (
     project_experience_summary_store,
@@ -31,8 +32,6 @@ from routers import (
     llm_providers,
     memory,
     usage,
-    feedback_upgrade,
-    user_feedback,
     ftp_credentials,
     users,
     roles,
@@ -67,6 +66,11 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # 应用层“项目需求记录”已移除；JSON 后端启动时清理历史记录目录。
+        shutil.rmtree(
+            get_api_data_dir() / "project-requirement-records",
+            ignore_errors=True,
+        )
         if settings.auto_run_db_migrations and (
             settings.core_store_backend == "postgres" or settings.usage_store_backend == "postgres"
         ):
@@ -115,8 +119,6 @@ def create_app() -> FastAPI:
         llm_providers,
         memory,
         usage,
-        feedback_upgrade,
-        user_feedback,
         ftp_credentials,
         users,
         roles,

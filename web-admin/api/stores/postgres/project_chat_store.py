@@ -281,6 +281,47 @@ class ProjectChatStorePostgres:
         sessions.sort(key=lambda item: str(item.updated_at or ""), reverse=True)
         return sessions[:safe_limit]
 
+    def list_sessions_global(self, username: str, limit: int = 200) -> list[ProjectChatSession]:
+        safe_limit = max(1, min(int(limit or 200), 500))
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, project_id, username, title, preview, latest_requirement, message_count,
+                       source_type, platform, connector_id, resolve_identity, external_chat_id, external_chat_name, thread_key,
+                       created_at, updated_at, last_message_at
+                FROM project_chat_sessions
+                WHERE username = %s
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                (username, safe_limit),
+            )
+            rows = cur.fetchall()
+        sessions = [
+            ProjectChatSession(
+                id=str(row["id"] or ""),
+                project_id=str(row["project_id"] or ""),
+                username=str(row["username"] or username),
+                title=str(row["title"] or "新对话"),
+                preview=str(row["preview"] or ""),
+                latest_requirement=str(row.get("latest_requirement") or ""),
+                message_count=max(0, int(row["message_count"] or 0)),
+                source_type=str(row.get("source_type") or ""),
+                platform=str(row.get("platform") or ""),
+                connector_id=str(row.get("connector_id") or ""),
+                resolve_identity=str(row.get("resolve_identity") or ""),
+                external_chat_id=str(row.get("external_chat_id") or ""),
+                external_chat_name=str(row.get("external_chat_name") or ""),
+                thread_key=str(row.get("thread_key") or ""),
+                created_at=_to_iso(row.get("created_at")),
+                updated_at=_to_iso(row.get("updated_at")),
+                last_message_at=_to_iso(row.get("last_message_at")),
+            )
+            for row in rows
+            if str(row.get("id") or "").strip()
+        ]
+        return sessions
+
     def get_session(self, project_id: str, username: str, chat_session_id: str) -> ProjectChatSession | None:
         normalized_session_id = str(chat_session_id or "").strip()
         if not normalized_session_id:
@@ -417,6 +458,69 @@ class ProjectChatStorePostgres:
                 ProjectChatMessage(
                     id=str(payload.get("id") or f"chat-{uuid.uuid4().hex[:12]}"),
                     project_id=str(payload.get("project_id") or project_id),
+                    username=str(payload.get("username") or username),
+                    role=str(payload.get("role") or "assistant"),
+                    content=str(payload.get("content") or ""),
+                    chat_session_id=str(payload.get("chat_session_id") or "").strip(),
+                    display_mode=str(payload.get("display_mode") or "").strip(),
+                    source_type=_normalize_chat_source_type(payload.get("source_type")),
+                    platform=_normalize_chat_context_text(payload.get("platform"), 40).lower(),
+                    connector_id=_normalize_chat_context_text(payload.get("connector_id"), 120),
+                    external_chat_id=_normalize_chat_context_text(payload.get("external_chat_id"), 200),
+                    external_chat_name=_normalize_chat_context_text(payload.get("external_chat_name"), 200),
+                    external_message_id=_normalize_chat_context_text(payload.get("external_message_id"), 200),
+                    sender_id=_normalize_chat_context_text(payload.get("sender_id"), 200),
+                    sender_name=_normalize_chat_context_text(payload.get("sender_name"), 120),
+                    thread_key=_normalize_chat_context_text(payload.get("thread_key"), 240),
+                    attachments=_normalize_attachments(payload.get("attachments")),
+                    images=_normalize_attachments(payload.get("images")),
+                    videos=_normalize_attachments(payload.get("videos")),
+                    source_context=dict(payload.get("source_context") or {}) if isinstance(payload.get("source_context"), dict) else {},
+                    created_at=str(payload.get("created_at") or _now_iso()),
+                )
+            )
+        return items
+
+    def list_messages_global(
+        self,
+        username: str,
+        limit: int = 200,
+        chat_session_id: str = "",
+        offset: int = 0,
+    ) -> list[ProjectChatMessage]:
+        parsed_limit = int(limit or 0)
+        safe_limit = None if parsed_limit <= 0 else max(1, min(parsed_limit, 1000))
+        safe_offset = max(0, int(offset or 0))
+        normalized_session_id = str(chat_session_id or "").strip()
+        params: list[Any] = [username]
+        where = "username = %s"
+        if normalized_session_id:
+            where += " AND COALESCE(payload->>'chat_session_id', '') = %s"
+            params.append(normalized_session_id)
+        limit_sql = ""
+        if safe_limit is not None:
+            limit_sql = " LIMIT %s"
+            params.append(safe_limit)
+        params.append(safe_offset)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT payload
+                FROM project_chat_messages
+                WHERE {where}
+                ORDER BY created_at DESC
+                {limit_sql} OFFSET %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+        items: list[ProjectChatMessage] = []
+        for row in reversed(rows):
+            payload = row["payload"] or {}
+            items.append(
+                ProjectChatMessage(
+                    id=str(payload.get("id") or f"chat-{uuid.uuid4().hex[:12]}"),
+                    project_id=str(payload.get("project_id") or ""),
                     username=str(payload.get("username") or username),
                     role=str(payload.get("role") or "assistant"),
                     content=str(payload.get("content") or ""),

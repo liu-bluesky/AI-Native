@@ -51,13 +51,10 @@
             :model-summary="currentModelSummary"
             :status-text="chatHeaderStatusText"
             :offline-status-text="localOfflineStatusText"
-            :pending-sync-count="pendingLocalOutboxCount"
-            :syncing="localOutboxSyncing"
             :can-trust-workspace="canTrustAgentRuntimeWorkspace"
             :workspace-trust-saving="workspaceTrustSaving"
             @start-guide="startChatTour"
             @open-project-detail="openCurrentProjectDetail"
-            @sync-local-cache="syncCurrentLocalLiuAgentRuntimeOutbox"
             @trust-workspace="trustAgentRuntimeWorkspace"
             @open-mcp="openUnifiedMcpDialog"
             @open-skill-resource="openSkillResourceCenter"
@@ -1431,21 +1428,6 @@
                           查看执行监管
                         </button>
                         <button
-                          v-if="messageAnswerId(item)"
-                          type="button"
-                          class="message-supervision-link"
-                          title="基于回答 ID 和执行监管信息提交 Bug 反馈"
-                          @click="
-                            replyBugFeedbackDialogRef?.open({
-                              item,
-                              answerId: messageAnswerId(item),
-                              chatSessionId: currentChatSessionId,
-                            })
-                          "
-                        >
-                          Bug 反馈
-                        </button>
-                        <button
                           v-if="
                             canReviewWorkspaceChanges &&
                             messageFileChangeCount(item)
@@ -1909,11 +1891,6 @@
     @accept="acceptReviewedWorkspaceFile"
     @accept-batch="acceptReviewedWorkspaceFiles"
     @revert="revertReviewedWorkspaceFile"
-  />
-
-  <ReplyBugFeedbackDialog
-    ref="replyBugFeedbackDialogRef"
-    :project-id="selectedProjectId"
   />
 
   <el-dialog
@@ -3032,7 +3009,6 @@ import ChatTaskTreePanel from "@/modules/project-chat/components/task-tree/ChatT
 import TerminalApprovalDialog from "@/modules/project-chat/components/terminal/TerminalApprovalDialog.vue";
 import CodePreviewDialog from "@/modules/project-chat/components/code-preview/CodePreviewDialog.vue";
 import FileChangesDrawer from "@/modules/project-chat/components/file-changes/FileChangesDrawer.vue";
-import ReplyBugFeedbackDialog from "@/modules/project-chat/components/feedback/ReplyBugFeedbackDialog.vue";
 import SkillResourceDialog from "@/modules/project-chat/components/skill-resource/SkillResourceDialog.vue";
 import { useProjectChatComposer } from "@/modules/project-chat/composables/useProjectChatComposer.js";
 import { useProjectChatPendingRequests } from "@/modules/project-chat/composables/useProjectChatPendingRequests.js";
@@ -3319,7 +3295,6 @@ import {
   readProjectWorkspaceFile,
   saveProjectWorkspaceFile,
 } from "@/modules/project-chat/services/projectChatWorkspaceApi.js";
-import { upsertProjectChatRequirementRecord as upsertProjectChatRequirementRecordRequest } from "@/modules/project-chat/services/projectChatRequirementRecord.js";
 import {
   clearChatSessionMemory,
   clearSelectedProjectId,
@@ -3463,6 +3438,7 @@ const workspaceTrustSaving = ref(false);
 const projectListOffline = ref(false);
 const modelProviderOffline = ref(false);
 const modelProviderSyncing = ref(false);
+// 兼容桌面运行时状态轮询；项目聊天顶部同步入口已移除。
 const pendingLocalOutboxCount = ref(0);
 const localOutboxSyncing = ref(false);
 const projectWorkspaceSaving = ref(false);
@@ -3580,7 +3556,6 @@ const codePreviewVisible = ref(false);
 const codePreviewTitle = ref("代码预览");
 const codePreviewSrcdoc = ref("");
 const codePreviewError = ref("");
-const replyBugFeedbackDialogRef = ref(null);
 const aiContextDialogVisible = ref(false);
 const aiContextDialogLoading = ref(false);
 const aiContextDialogMessageId = ref("");
@@ -6359,9 +6334,6 @@ const localFeishuBotStatusText = computed(() => {
   return "";
 });
 const localOfflineStatusText = computed(() => {
-  if (pendingLocalOutboxCount.value > 0) {
-    return `本地运行记录待同步 ${pendingLocalOutboxCount.value} 条`;
-  }
   if (localFeishuBotStatusText.value) return localFeishuBotStatusText.value;
   if (modelProviderOffline.value) return "离线 · 本地模型";
   if (projectListOffline.value) return "离线 · 本地项目";
@@ -25783,19 +25755,10 @@ async function upsertProjectChatRequirementRecord({
   chatSessionId = "",
   ...payload
 } = {}) {
-  const projectId = String(selectedProjectId.value || "").trim();
-  const activeChatSessionId = String(
-    chatSessionId || currentChatSessionId.value || "",
-  ).trim();
-  try {
-    return await upsertProjectChatRequirementRecordRequest(projectId, {
-      ...payload,
-      chatSessionId: activeChatSessionId,
-    });
-  } catch (err) {
-    console.warn("upsert project chat requirement record failed", err);
-    return null;
-  }
+  // 需求记录功能已移除；聊天会话与消息统一写入 project_chat_sessions/messages。
+  void chatSessionId;
+  void payload;
+  return null;
 }
 
 async function refreshPendingLocalLiuAgentOutboxCount({
@@ -29455,7 +29418,7 @@ function normalizeVisibleChatSessions(rawSessions) {
   return sortChatSessionsByStablePosition(
     (Array.isArray(rawSessions) ? rawSessions : [])
       .map(normalizeChatSession)
-      .filter((session) => !isEmptyManualChatSession(session)),
+      .filter((session) => session.id),
   );
 }
 
@@ -29472,7 +29435,18 @@ function setProjectChatSessionsMemoryCache(projectId, sessions) {
 function setProjectChatSessionsCache(projectId, sessions) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
-  const normalizedSessions = sortChatSessionsByStablePosition(sessions);
+  const normalizedSessions = sortChatSessionsByStablePosition(
+    (Array.isArray(sessions) ? sessions : [])
+      .map((session) => ({
+        ...session,
+        project_id:
+          String(session?.project_id || "").trim() || normalizedProjectId,
+      }))
+      .filter(
+        (session) =>
+          String(session?.project_id || "").trim() === normalizedProjectId,
+      ),
+  );
   setProjectChatSessionsMemoryCache(normalizedProjectId, normalizedSessions);
   void writeLocalChatSessions(normalizedProjectId, normalizedSessions).catch(
     (error) => console.error("persist desktop chat sessions failed", error),
@@ -29560,7 +29534,9 @@ async function loadProjectSessionsForSidebar(projectId, options = {}) {
     return projectChatSessionsById.value[normalizedProjectId];
   }
   const sessions = normalizeVisibleChatSessions(
-    await readLocalChatSessions(normalizedProjectId),
+    (chatSessions.value || []).filter(
+      (item) => String(item?.project_id || "").trim() === normalizedProjectId,
+    ),
   );
   setProjectChatSessionsMemoryCache(normalizedProjectId, sessions);
   return sessions;
@@ -29626,14 +29602,15 @@ async function fetchChatSessions(
       await readLocalChatSessions(projectId),
     );
     let remoteSessions = [];
-    try {
-      const data = await api.get(
-        `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
-        { params: { limit: 50 } },
-      );
-      remoteSessions = normalizeVisibleChatSessions(data?.sessions || []);
-    } catch (error) {
-      console.warn("加载服务端项目聊天会话失败，回退本地会话", error);
+    if (!hasNativeDesktopBridge()) {
+      try {
+        const data = await api.get("/projects/chat/global/sessions", {
+          params: { limit: 500 },
+        });
+        remoteSessions = normalizeVisibleChatSessions(data?.sessions || []);
+      } catch (error) {
+        console.warn("加载服务端项目聊天会话失败，回退本地会话", error);
+      }
     }
     const mergedSessions = new Map(
       storedSessions.map((session) => [String(session.id || "").trim(), session]),
@@ -29642,10 +29619,22 @@ async function fetchChatSessions(
       const sessionId = String(session.id || "").trim();
       if (sessionId) mergedSessions.set(sessionId, session);
     });
-    chatSessions.value = normalizeVisibleChatSessions([
+    const allSessions = normalizeVisibleChatSessions([
       ...mergedSessions.values(),
     ]);
-    setProjectChatSessionsMemoryCache(projectId, chatSessions.value);
+    const sessionsByProject = allSessions.reduce((groups, session) => {
+      const sessionProjectId = String(session?.project_id || "").trim();
+      if (sessionProjectId) (groups[sessionProjectId] ||= []).push(session);
+      return groups;
+    }, {});
+    for (const [sessionProjectId, sessions] of Object.entries(
+      sessionsByProject,
+    )) {
+      setProjectChatSessionsMemoryCache(sessionProjectId, sessions);
+    }
+    chatSessions.value = normalizeVisibleChatSessions(
+      sessionsByProject[String(projectId || "").trim()] || [],
+    );
     const excludedSessionIds = new Set(
       (Array.isArray(options.excludeSessionIds)
         ? options.excludeSessionIds
@@ -29694,14 +29683,15 @@ async function refreshChatSessionListMetadata(projectId) {
     await readLocalChatSessions(normalizedProjectId),
   );
   let remoteSessions = [];
-  try {
-    const data = await api.get(
-      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/sessions`,
-      { params: { limit: 50 } },
-    );
-    remoteSessions = normalizeVisibleChatSessions(data?.sessions || []);
-  } catch (error) {
-    console.warn("刷新服务端项目聊天会话失败，保留本地会话", error);
+  if (!hasNativeDesktopBridge()) {
+    try {
+      const data = await api.get("/projects/chat/global/sessions", {
+        params: { limit: 500 },
+      });
+      remoteSessions = normalizeVisibleChatSessions(data?.sessions || []);
+    } catch (error) {
+      console.warn("刷新服务端项目聊天会话失败，保留本地会话", error);
+    }
   }
   const mergedSessions = new Map(
     localSessions.map((session) => [String(session.id || "").trim(), session]),
@@ -29710,9 +29700,22 @@ async function refreshChatSessionListMetadata(projectId) {
     const sessionId = String(session.id || "").trim();
     if (sessionId) mergedSessions.set(sessionId, session);
   });
-  const nextSessions = normalizeVisibleChatSessions([
+  const allSessions = normalizeVisibleChatSessions([
     ...mergedSessions.values(),
   ]);
+  const sessionsByProject = allSessions.reduce((groups, session) => {
+    const sessionProjectId = String(session?.project_id || "").trim();
+    if (sessionProjectId) (groups[sessionProjectId] ||= []).push(session);
+    return groups;
+  }, {});
+  for (const [sessionProjectId, sessions] of Object.entries(
+    sessionsByProject,
+  )) {
+    setProjectChatSessionsMemoryCache(sessionProjectId, sessions);
+  }
+  const nextSessions = normalizeVisibleChatSessions(
+    sessionsByProject[normalizedProjectId] || [],
+  );
   chatSessions.value = nextSessions;
   setProjectChatSessionsMemoryCache(normalizedProjectId, nextSessions);
   const currentId = String(currentChatSessionId.value || "").trim();
@@ -29832,16 +29835,18 @@ async function fetchChatHistory(
   const previousScrollTop = Number(container?.scrollTop || 0);
   try {
     const [remoteHistoryResult, runtimePayload] = await Promise.all([
-      api
-        .get(`/projects/${encodeURIComponent(projectId)}/chat/history`, {
-          params: {
-            limit,
-            offset,
-            chat_session_id: normalizedSessionId,
-          },
-        })
-        .then((data) => ({ ok: true, data }))
-        .catch((error) => ({ ok: false, error })),
+      hasNativeDesktopBridge()
+        ? Promise.resolve({ ok: false, data: null })
+        : api
+            .get("/projects/chat/global/history", {
+              params: {
+                limit,
+                offset,
+                chat_session_id: normalizedSessionId,
+              },
+            })
+            .then((data) => ({ ok: true, data }))
+            .catch((error) => ({ ok: false, error })),
       fetchPersistedChatRuntime(projectId, normalizedSessionId),
     ]);
     if (
@@ -29854,11 +29859,16 @@ async function fetchChatHistory(
       ? (remoteHistoryResult.data?.messages || []).map(mapHistoryMessage)
       : [];
     // 服务端接口已经按 offset/limit 返回当前页，不能再次按 offset 截切。
-    const historyRows = remoteRows;
     const localRows = applyPersistedChatRuntimeRows([], runtimePayload);
+    const historyRows = remoteHistoryResult.ok
+      ? remoteRows
+      : localRows.slice(
+          Math.max(0, localRows.length - offset - limit),
+          Math.max(0, localRows.length - offset),
+        );
     chatHistoryReachedEnd.value = remoteHistoryResult.ok
       ? remoteRows.length < limit
-      : true;
+      : offset + historyRows.length >= localRows.length;
     if (append) {
       await applyChatMessagesWithoutPersisting([
         ...historyRows,
@@ -30014,11 +30024,23 @@ async function createChatSession(options = {}) {
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const chatSessionId = `chat-session-${String(randomId).replace(/[^A-Za-z0-9-]/g, "").slice(0, 48)}`;
+    let data = null;
+    if (!hasNativeDesktopBridge()) {
+      data = await api.post("/projects/chat/global/sessions", {
+        project_id: projectId,
+        chat_session_id: chatSessionId,
+        title: title || "新对话",
+        source_context: sourceContext,
+      });
+    }
     const session = normalizeChatSession({
-      id: `local-${randomId}`,
+      ...(data?.session || {}),
+      id: data?.session?.id || chatSessionId,
+      project_id: projectId,
       title: title || "新对话",
       source_context: sourceContext,
-      source: "desktop_local_storage",
+      source: "database",
       message_count: 0,
       preview: "",
       created_at: now,
@@ -30028,6 +30050,7 @@ async function createChatSession(options = {}) {
     if (!session.id) {
       throw new Error("创建会话失败");
     }
+    await writeLocalChatSessions(projectId, [session]);
     chatSessions.value = [
       session,
       ...chatSessions.value.filter((item) => item.id !== session.id),
@@ -30083,15 +30106,27 @@ async function updateChatSession(chatSessionId, options = {}) {
     if (!session.id) {
       throw new Error("更新会话失败");
     }
+    let data = null;
+    if (!hasNativeDesktopBridge()) {
+      data = await api.patch(
+        `/projects/${encodeURIComponent(projectId)}/chat/sessions/${encodeURIComponent(normalizedSessionId)}`,
+        {
+          title: session.title,
+          source_context: session.source_context || {},
+        },
+      );
+    }
+    const persistedSession = normalizeChatSession(data?.session || session);
+    await writeLocalChatSessions(projectId, [persistedSession]);
     chatSessions.value = [
-      session,
-      ...chatSessions.value.filter((item) => item.id !== session.id),
+      persistedSession,
+      ...chatSessions.value.filter((item) => item.id !== persistedSession.id),
     ];
     setProjectChatSessionsCache(projectId, chatSessions.value);
-    if (currentChatSessionId.value === session.id) {
-      rememberChatSession(projectId, session.id);
+    if (currentChatSessionId.value === persistedSession.id) {
+      rememberChatSession(projectId, persistedSession.id);
     }
-    return session;
+    return persistedSession;
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "更新会话失败");
     return null;

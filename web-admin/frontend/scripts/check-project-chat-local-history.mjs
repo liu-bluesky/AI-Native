@@ -117,10 +117,10 @@ assert.match(
   /fn migrate_legacy_sqlite_project_paths[\s\S]*?if !legacy_path\.exists\(\)[\s\S]*?if !marker\.exists\(\)/,
   "legacy migration must reconcile SQLite rows even when a previous marker exists",
 );
-assert.doesNotMatch(
+assert.match(
   activeNativeStoreSource,
-  /CREATE TABLE IF NOT EXISTS|INSERT INTO project_chat_|DELETE FROM project_chat_|UPDATE project_chat_/,
-  "active chat storage must not create or mutate SQLite tables",
+  /CREATE TABLE IF NOT EXISTS desktop_project_chat_sessions[\s\S]*CREATE TABLE IF NOT EXISTS desktop_project_chat_runtimes/,
+  "active desktop chat storage must use the canonical local SQLite tables",
 );
 assert.match(
   projectChatSource,

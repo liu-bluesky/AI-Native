@@ -15,19 +15,6 @@
       </div>
       <div class="chat-context-bar__actions">
         <el-button
-          v-if="pendingSyncCount > 0"
-          size="small"
-          type="primary"
-          plain
-          class="chat-context-bar__action-button chat-context-bar__action-button--sync"
-          :loading="syncing"
-          :title="`将桌面端本地 Agent 运行记录同步到服务端（${pendingSyncCount} 条）`"
-          :aria-label="`同步本地 Agent 运行记录 ${pendingSyncCount} 条`"
-          @click="emit('sync-local-cache')"
-        >
-          同步运行记录 {{ pendingSyncCount }} 条
-        </el-button>
-        <el-button
           ref="guideButtonRef"
           size="small"
           class="chat-context-bar__action-button chat-context-bar__action-button--guide"
@@ -86,8 +73,6 @@ defineProps({
   modelSummary: { type: String, default: "" },
   statusText: { type: String, default: "" },
   offlineStatusText: { type: String, default: "" },
-  pendingSyncCount: { type: Number, default: 0 },
-  syncing: { type: Boolean, default: false },
   canTrustWorkspace: { type: Boolean, default: false },
   workspaceTrustSaving: { type: Boolean, default: false },
 });
@@ -95,7 +80,6 @@ defineProps({
 const emit = defineEmits([
   "start-guide",
   "open-project-detail",
-  "sync-local-cache",
   "trust-workspace",
   "open-mcp",
   "open-skill-resource",

@@ -78,6 +78,7 @@ export function normalizeChatSession(item) {
   const sourceContext = normalizeChatSourceContext(item || {});
   return {
     id: String(item?.id || "").trim(),
+    project_id: String(item?.project_id || item?.projectId || "").trim(),
     title: String(item?.title || "新对话").trim() || "新对话",
     preview: String(item?.preview || "").trim(),
     latest_requirement: String(

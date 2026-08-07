@@ -5,7 +5,7 @@
         <p class="work-log-page__eyebrow">Project Work Log</p>
         <h1>项目工作日志</h1>
         <p>
-          独立的项目工作日志模块。这里直接读取项目需求记录和工作会话生成日志，不再依赖全局助手表单。
+          独立的项目工作日志模块。这里直接读取项目工作会话生成日志，不再依赖全局助手表单。
         </p>
       </div>
       <button
@@ -249,7 +249,7 @@
           <div class="work-log-panel__title work-log-panel__title--table">
             <div>
               <span>日志记录</span>
-              <p>这里只显示本模块写入后端的真实生成记录，内容来自项目需求记录和工作会话。</p>
+              <p>这里只显示本模块写入后端的真实生成记录，内容来自项目工作会话。</p>
             </div>
             <button type="button" class="work-log-link" :disabled="loadingRecords" @click="loadRecords">
               {{ loadingRecords ? "刷新中" : "刷新记录" }}
@@ -829,12 +829,10 @@ function resolveRequirementTime(record) {
 }
 
 async function fetchRequirementRecords(projectId, startDate, endDate) {
-  const data = await api.get(`/projects/${encodeURIComponent(projectId)}/requirement-records`, {
-    params: { limit: 300 },
-  });
-  return Array.isArray(data?.items)
-    ? data.items.filter((item) => inDateRange(resolveRequirementTime(item), startDate, endDate))
-    : [];
+  void projectId;
+  void startDate;
+  void endDate;
+  return [];
 }
 
 function normalizePlainText(value, fallback = "") {
@@ -935,8 +933,8 @@ function buildProjectDraftText(project, sessions, requirementRecords) {
     : "";
   return [
     `## 项目：${projectLabel}`,
-    `记录数量：需求记录 ${requirementRecords.length} 条，工作会话 ${sessions.length} 条。`,
-    `本期项目工作计划（由需求记录反推）：围绕 ${solvedItems.length + activeItems.length} 项需求推进，其中已解决/交付 ${solvedItems.length} 项，持续推进 ${activeItems.length} 项。`,
+    `记录数量：工作会话 ${sessions.length} 条。`,
+    `本期项目工作计划：围绕 ${solvedItems.length + activeItems.length} 项工作推进，其中已解决/交付 ${solvedItems.length} 项，持续推进 ${activeItems.length} 项。`,
     `本期可写入总结的工作事项：\n${formatList(summaryItems, "本期暂无可写入总结的工作事项")}`,
     `本期解决了什么：\n${formatList(solvedItems, "本期暂无已闭环问题")}`,
     `本期仍在推进：\n${formatList(activeItems, "暂无进行中事项")}`,
@@ -969,7 +967,7 @@ function buildDraftText(projectPayloads) {
     `项目：${projectLabel || "未选择项目"}`,
     `模板：${resolveLabel(templates, form.template)}`,
     form.extraNotes ? `补充说明：${form.extraNotes}` : "",
-    `总记录数量：需求记录 ${totalRequirementCount} 条，工作会话 ${totalSessionCount} 条。`,
+    `总记录数量：工作会话 ${totalSessionCount} 条。`,
     "以下原始数据已按项目分组；生成时必须把每个项目下的事项归入对应项目，不能跨项目合并或挪用。",
     payloads
       .map((item) => buildProjectDraftText(item.project, item.sessions || [], item.requirementRecords || []))
@@ -985,7 +983,7 @@ function buildAiPrompt(draftText, projects = []) {
     .map((project) => String(project?.name || project?.id || "").trim())
     .filter(Boolean);
   return [
-    `请基于以下项目需求记录和工作轨迹，生成一份${resolveLabel(reportTypes, form.reportType)}。`,
+    `请基于以下项目工作轨迹，生成一份${resolveLabel(reportTypes, form.reportType)}。`,
     `输出模板：${resolveLabel(templates, form.template)}。`,
     selectedTemplate.value?.description
       ? [

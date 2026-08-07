@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -8,6 +8,7 @@ use tauri::Manager;
 const JSON_STORE_VERSION: i64 = 1;
 const JSON_STORE_DIRECTORY: &str = "project-chat-data";
 const SQLITE_MIGRATION_MARKER: &str = ".sqlite-runtime-migration-v1.complete";
+const SQLITE_CANONICAL_MIGRATION_KEY: &str = "desktop-project-chat-v1";
 
 fn normalized(value: &str, field: &str) -> Result<String, String> {
     let value = value.trim();
@@ -279,6 +280,197 @@ fn sqlite_table_exists(connection: &Connection, table: &str) -> Result<bool, Str
         )
         .map(|value| value != 0)
         .map_err(|err| err.to_string())
+}
+
+fn ensure_canonical_sqlite_schema(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;
+             CREATE TABLE IF NOT EXISTS desktop_project_chat_sessions (
+                 username TEXT NOT NULL,
+                 project_id TEXT NOT NULL,
+                 chat_session_id TEXT NOT NULL,
+                 session_json TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT '',
+                 PRIMARY KEY (username, project_id, chat_session_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_desktop_project_chat_sessions_user_updated
+                 ON desktop_project_chat_sessions(username, updated_at DESC);
+             CREATE TABLE IF NOT EXISTS desktop_project_chat_runtimes (
+                 username TEXT NOT NULL,
+                 project_id TEXT NOT NULL,
+                 chat_session_id TEXT NOT NULL,
+                 runtime_json TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT '',
+                 PRIMARY KEY (username, project_id, chat_session_id)
+             );
+             CREATE TABLE IF NOT EXISTS desktop_project_chat_metadata (
+                 key TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
+             );",
+        )
+        .map_err(|err| err.to_string())
+}
+
+fn upsert_canonical_session(
+    connection: &Connection,
+    username: &str,
+    project_id: &str,
+    chat_session_id: &str,
+    session: &Value,
+    updated_at: &str,
+) -> Result<(), String> {
+    let payload = serde_json::to_string(session).map_err(|err| err.to_string())?;
+    connection
+        .execute(
+            "INSERT INTO desktop_project_chat_sessions
+                 (username, project_id, chat_session_id, session_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(username, project_id, chat_session_id) DO UPDATE SET
+                 session_json = excluded.session_json,
+                 updated_at = excluded.updated_at",
+            params![username, project_id, chat_session_id, payload, updated_at],
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn upsert_canonical_runtime(
+    connection: &Connection,
+    username: &str,
+    project_id: &str,
+    chat_session_id: &str,
+    runtime: &Value,
+    updated_at: &str,
+) -> Result<(), String> {
+    let payload = serde_json::to_string(runtime).map_err(|err| err.to_string())?;
+    connection
+        .execute(
+            "INSERT INTO desktop_project_chat_runtimes
+                 (username, project_id, chat_session_id, runtime_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(username, project_id, chat_session_id) DO UPDATE SET
+                 runtime_json = excluded.runtime_json,
+                 updated_at = excluded.updated_at",
+            params![username, project_id, chat_session_id, payload, updated_at],
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn migrate_legacy_tables_to_canonical(connection: &Connection) -> Result<usize, String> {
+    let mut migrated = 0;
+    if sqlite_table_exists(connection, "project_chat_sessions")? {
+        migrated += connection
+            .execute(
+                "INSERT OR IGNORE INTO desktop_project_chat_sessions
+                     (username, project_id, chat_session_id, session_json, updated_at)
+                 SELECT username, project_id, chat_session_id, payload_json, updated_at
+                 FROM project_chat_sessions",
+                [],
+            )
+            .map_err(|err| err.to_string())?;
+    }
+    if sqlite_table_exists(connection, "project_chat_runtimes")? {
+        migrated += connection
+            .execute(
+                "INSERT OR IGNORE INTO desktop_project_chat_runtimes
+                     (username, project_id, chat_session_id, runtime_json, updated_at)
+                 SELECT username, project_id, chat_session_id, payload_json, updated_at
+                 FROM project_chat_runtimes",
+                [],
+            )
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(migrated)
+}
+
+fn migrate_json_store_to_canonical(
+    connection: &Connection,
+    root: &Path,
+) -> Result<usize, String> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut pending = vec![root.to_path_buf()];
+    let mut migrated = 0;
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).map_err(|err| err.to_string())? {
+            let entry = entry.map_err(|err| err.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let envelope = read_json_envelope(&path)?;
+            let username = value_text(&envelope, &["username"]);
+            let project_id = value_text(&envelope, &["project_id"]);
+            let chat_session_id = value_text(&envelope, &["chat_session_id"]);
+            if username.is_empty() || project_id.is_empty() || chat_session_id.is_empty() {
+                continue;
+            }
+            let updated_at = value_text(&envelope, &["updated_at"]);
+            let runtime = envelope
+                .get("runtime")
+                .cloned()
+                .unwrap_or_else(|| json!({"version": 1, "updated_at": updated_at, "messages": []}));
+            let session = merge_session_with_runtime(
+                &chat_session_id,
+                envelope.get("session"),
+                &runtime,
+                &updated_at,
+            );
+            upsert_canonical_session(
+                connection,
+                &username,
+                &project_id,
+                &chat_session_id,
+                &session,
+                &updated_at,
+            )?;
+            upsert_canonical_runtime(
+                connection,
+                &username,
+                &project_id,
+                &chat_session_id,
+                &runtime,
+                &updated_at,
+            )?;
+            migrated += 1;
+        }
+    }
+    Ok(migrated)
+}
+
+fn open_canonical_database(app: &tauri::AppHandle) -> Result<Connection, String> {
+    let path = database_path(app)?;
+    let connection = Connection::open(path).map_err(|err| err.to_string())?;
+    ensure_canonical_sqlite_schema(&connection)?;
+    let migrated = connection
+        .query_row(
+            "SELECT value FROM desktop_project_chat_metadata WHERE key = ?1",
+            params![SQLITE_CANONICAL_MIGRATION_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?
+        .is_some();
+    if !migrated {
+        migrate_legacy_tables_to_canonical(&connection)?;
+        let root = json_store_root(app)?;
+        migrate_json_store_to_canonical(&connection, &root)?;
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO desktop_project_chat_metadata(key, value) VALUES (?1, ?2)",
+                params![SQLITE_CANONICAL_MIGRATION_KEY, "complete"],
+            )
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(connection)
 }
 
 fn migrate_legacy_sqlite_project(
@@ -1167,24 +1359,53 @@ pub fn project_chat_list_sessions(
     project_id: String,
 ) -> Result<Vec<Value>, String> {
     let username = normalized(&username, "用户名")?;
-    let project_id = normalized(&project_id, "项目 ID")?;
+    let _project_id = project_id.trim();
+    let connection = open_canonical_database(&app)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT project_id, chat_session_id, session_json, updated_at
+             FROM desktop_project_chat_sessions
+             WHERE username = ?1
+             ORDER BY updated_at DESC, chat_session_id ASC",
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map(params![username], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|err| err.to_string())?;
     let mut sessions = Vec::new();
-    for envelope in load_json_envelopes(&app, &username, &project_id)? {
-        let chat_session_id = value_text(&envelope, &["chat_session_id"]);
-        if chat_session_id.is_empty() {
-            continue;
-        }
-        let updated_at = value_text(&envelope, &["updated_at"]);
-        let runtime = envelope
-            .get("runtime")
-            .cloned()
+    for row in rows {
+        let (project_id, chat_session_id, session_json, updated_at) =
+            row.map_err(|err| err.to_string())?;
+        let session = serde_json::from_str::<Value>(&session_json).map_err(|err| err.to_string())?;
+        let runtime_json = connection
+            .query_row(
+                "SELECT runtime_json FROM desktop_project_chat_runtimes
+                 WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
+                params![username, project_id, chat_session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|err| err.to_string())?;
+        let runtime = runtime_json
+            .as_ref()
+            .map(|value| serde_json::from_str::<Value>(value).map_err(|err| err.to_string()))
+            .transpose()?
             .unwrap_or_else(|| json!({}));
-        sessions.push(merge_session_with_runtime(
+        let mut merged = merge_session_with_runtime(
             &chat_session_id,
-            envelope.get("session"),
+            Some(&session),
             &runtime,
             &updated_at,
-        ));
+        );
+        merged["project_id"] = Value::String(project_id);
+        sessions.push(merged);
     }
     sessions.sort_by(compare_sessions_by_stable_position);
     Ok(sessions)
@@ -1199,7 +1420,7 @@ pub fn project_chat_replace_sessions(
 ) -> Result<usize, String> {
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
-    migrate_legacy_sqlite_project(&app, &username, &project_id)?;
+    let connection = open_canonical_database(&app)?;
     let mut written = 0;
     for session in &sessions {
         let session_id = normalized(
@@ -1209,38 +1430,53 @@ pub fn project_chat_replace_sessions(
                 .unwrap_or_default(),
             "聊天会话 ID",
         )?;
-        let updated_at = session
-            .get("updated_at")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let path = json_session_path(&app, &username, &project_id, &session_id)?;
-        let existing = if path.exists() {
-            Some(read_json_envelope(&path)?)
+        let session_project_id = value_text(session, &["project_id"]);
+        let session_project_id = if session_project_id.is_empty() {
+            project_id.clone()
         } else {
-            None
+            session_project_id
         };
-        let runtime = existing
+        let updated_at = value_text(session, &["updated_at", "created_at"]);
+        let runtime_json = connection
+            .query_row(
+                "SELECT runtime_json FROM desktop_project_chat_runtimes
+                 WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
+                params![username, session_project_id, session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|err| err.to_string())?;
+        let runtime = runtime_json
             .as_ref()
-            .and_then(|value| value.get("runtime"))
-            .cloned()
-            .unwrap_or_else(|| {
-                json!({
-                    "version": 1,
-                    "updated_at": updated_at,
-                    "messages": []
-                })
-            });
-        let envelope = build_json_envelope(
-            &username,
-            &project_id,
+            .map(|value| serde_json::from_str::<Value>(value).map_err(|err| err.to_string()))
+            .transpose()?
+            .unwrap_or_else(|| json!({"version": 1, "updated_at": updated_at, "messages": []}));
+        let mut normalized_session = session.clone();
+        normalized_session["project_id"] = Value::String(session_project_id.clone());
+        let merged = merge_session_with_runtime(
             &session_id,
-            session.clone(),
-            runtime,
+            Some(&normalized_session),
+            &runtime,
             &updated_at,
         );
-        write_json_envelope(&path, &envelope)?;
+        upsert_canonical_session(
+            &connection,
+            &username,
+            &session_project_id,
+            &session_id,
+            &merged,
+            &updated_at,
+        )?;
+        if runtime_json.is_none() {
+            upsert_canonical_runtime(
+                &connection,
+                &username,
+                &session_project_id,
+                &session_id,
+                &runtime,
+                &updated_at,
+            )?;
+        }
         written += 1;
     }
     Ok(written)
@@ -1256,12 +1492,19 @@ pub fn project_chat_read_runtime(
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
     let chat_session_id = normalized(&chat_session_id, "聊天会话 ID")?;
-    migrate_legacy_sqlite_project(&app, &username, &project_id)?;
-    let path = json_session_path(&app, &username, &project_id, &chat_session_id)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    Ok(read_json_envelope(&path)?.get("runtime").cloned())
+    let connection = open_canonical_database(&app)?;
+    let payload = connection
+        .query_row(
+            "SELECT runtime_json FROM desktop_project_chat_runtimes
+             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
+            params![username, project_id, chat_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+    payload
+        .map(|value| serde_json::from_str::<Value>(&value).map_err(|err| err.to_string()))
+        .transpose()
 }
 
 #[tauri::command]
@@ -1275,36 +1518,62 @@ pub fn project_chat_write_runtime(
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
     let chat_session_id = normalized(&chat_session_id, "聊天会话 ID")?;
-    let requested_updated_at = payload
-        .get("updated_at")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    migrate_legacy_sqlite_project(&app, &username, &project_id)?;
-    let path = json_session_path(&app, &username, &project_id, &chat_session_id)?;
-    let existing = if path.exists() {
-        Some(read_json_envelope(&path)?)
-    } else {
-        None
-    };
-    let activity_updated_at =
-        runtime_activity_updated_at(existing.as_ref(), &payload, &requested_updated_at);
-    let session = merge_session_with_runtime(
+    let requested_updated_at = value_text(&payload, &["updated_at"]);
+    let connection = open_canonical_database(&app)?;
+    let existing_runtime_json = connection
+        .query_row(
+            "SELECT runtime_json FROM desktop_project_chat_runtimes
+             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
+            params![username, project_id, chat_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+    let existing_session_json = connection
+        .query_row(
+            "SELECT session_json FROM desktop_project_chat_sessions
+             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
+            params![username, project_id, chat_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+    let existing_envelope = existing_runtime_json.as_ref().map(|runtime_json| {
+        json!({
+            "runtime": serde_json::from_str::<Value>(runtime_json).unwrap_or_else(|_| json!({})),
+            "session": existing_session_json.as_ref()
+                .and_then(|value| serde_json::from_str::<Value>(value).ok())
+                .unwrap_or_else(|| json!({}))
+        })
+    });
+    let activity_updated_at = runtime_activity_updated_at(
+        existing_envelope.as_ref(),
+        &payload,
+        &requested_updated_at,
+    );
+    let mut session = merge_session_with_runtime(
         &chat_session_id,
-        existing.as_ref().and_then(|value| value.get("session")),
+        existing_envelope.as_ref().and_then(|value| value.get("session")),
         &payload,
         &activity_updated_at,
     );
-    let envelope = build_json_envelope(
+    session["project_id"] = Value::String(project_id.clone());
+    upsert_canonical_runtime(
+        &connection,
         &username,
         &project_id,
         &chat_session_id,
-        session,
-        payload,
+        &payload,
         &activity_updated_at,
-    );
-    write_json_envelope(&path, &envelope)?;
+    )?;
+    upsert_canonical_session(
+        &connection,
+        &username,
+        &project_id,
+        &chat_session_id,
+        &session,
+        &activity_updated_at,
+    )?;
     Ok(true)
 }
 
@@ -1403,11 +1672,21 @@ pub fn project_chat_delete_session(
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
     let chat_session_id = normalized(&chat_session_id, "聊天会话 ID")?;
-    migrate_legacy_sqlite_project(&app, &username, &project_id)?;
-    let path = json_session_path(&app, &username, &project_id, &chat_session_id)?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|err| err.to_string())?;
-    }
+    let connection = open_canonical_database(&app)?;
+    connection
+        .execute(
+            "DELETE FROM desktop_project_chat_sessions
+             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
+            params![username, project_id, chat_session_id],
+        )
+        .map_err(|err| err.to_string())?;
+    connection
+        .execute(
+            "DELETE FROM desktop_project_chat_runtimes
+             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
+            params![username, project_id, chat_session_id],
+        )
+        .map_err(|err| err.to_string())?;
     Ok(true)
 }
 

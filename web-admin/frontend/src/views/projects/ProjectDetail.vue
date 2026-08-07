@@ -53,7 +53,7 @@
       <ProjectAppSection
         eyebrow="Workspace"
         title="项目工作区"
-        description="概览、协作设置、需求记录和 MCP 接入都作为这个项目应用里的不同工作页签。"
+        description="概览、协作设置和 MCP 接入作为这个项目应用里的不同工作页签。"
         class="project-detail-tabs-shell"
       >
         <el-tabs v-model="activeProjectTab" class="project-detail-tabs">
@@ -664,7 +664,7 @@
             </div>
           </el-tab-pane>
 
-          <el-tab-pane name="memory">
+          <el-tab-pane v-if="false" name="memory">
             <template #label>
               <span class="project-detail-tab-label">
                 <span class="project-detail-tab-label__title">需求记录</span>
@@ -1205,9 +1205,6 @@
           </el-form-item>
           <el-form-item label="启用 MCP">
             <el-switch v-model="editForm.mcp_enabled" />
-          </el-form-item>
-          <el-form-item label="反馈升级">
-            <el-switch v-model="editForm.feedback_upgrade_enabled" />
           </el-form-item>
         </el-form>
         <template #footer>
@@ -2422,7 +2419,6 @@ const editForm = ref({
   workspace_path: "",
   ai_entry_file: "",
   mcp_enabled: true,
-  feedback_upgrade_enabled: true,
 });
 
 const uiRuleForm = ref({
@@ -2626,12 +2622,6 @@ const projectHeroStats = computed(() => [
     label: "部署配置",
     value: isProjectDeployEnabled.value ? "开" : "关",
     meta: deployTabMeta.value,
-  },
-  {
-    key: "records",
-    label: "需求记录",
-    value: requirementRecords.value.length,
-    meta: isMemoryTabActive.value ? "当前已加载" : "切到需求记录页签后可细看",
   },
 ]);
 
@@ -5289,56 +5279,12 @@ function normalizeProjectIdTarget(targetProjectId = projectId.value) {
 }
 
 async function fetchRequirementRecords(targetProjectId = projectId.value) {
-  const effectiveProjectId = normalizeProjectIdTarget(targetProjectId);
-  if (!effectiveProjectId) return;
-  taskSessionsLoading.value = true;
-  requirementRecordsLoaded.value = false;
-  try {
-    const query = String(memoryFilters.value.query || "").trim();
-    const selectedEmployeeId = String(
-      memoryFilters.value.employeeId || "",
-    ).trim();
-    const data = await api.get(
-      `/projects/${effectiveProjectId}/requirement-records`,
-      {
-        params: {
-          limit: PROJECT_TASK_SESSION_FETCH_LIMIT,
-          query: query || undefined,
-          employee_id: selectedEmployeeId || undefined,
-        },
-      },
-    );
-    if (effectiveProjectId !== projectId.value) return;
-    projectRequirementRecords.value = Array.isArray(data?.items)
-      ? data.items
-      : [];
-    projectTaskSessions.value = Array.isArray(data?.task_sessions)
-      ? data.task_sessions
-      : [];
-    taskTreeStorageBackend.value = String(data?.storage_backend || "").trim();
-    const validSessionIds = new Set(
-      (projectTaskSessions.value || [])
-        .map((item) => String(item?.id || "").trim())
-        .filter(Boolean),
-    );
-    projectTaskTreeDetails.value = Object.fromEntries(
-      Object.entries(projectTaskTreeDetails.value || {}).filter(([sessionId]) =>
-        validSessionIds.has(sessionId),
-      ),
-    );
-  } catch (err) {
-    if (effectiveProjectId !== projectId.value) return;
-    projectRequirementRecords.value = [];
-    projectTaskSessions.value = [];
-    projectTaskTreeDetails.value = {};
-    taskTreeStorageBackend.value = "";
-    ElMessage.error(err?.detail || err?.message || "加载需求记录失败");
-  } finally {
-    if (effectiveProjectId === projectId.value) {
-      requirementRecordsLoaded.value = true;
-      taskSessionsLoading.value = false;
-    }
-  }
+  void targetProjectId;
+  projectRequirementRecords.value = [];
+  projectTaskSessions.value = [];
+  projectTaskTreeDetails.value = {};
+  taskTreeStorageBackend.value = "";
+  requirementRecordsLoaded.value = true;
 }
 
 async function fetchProjectWorkSessions(targetProjectId = projectId.value) {
@@ -6130,49 +6076,9 @@ async function refreshRequirementRecords() {
 }
 
 async function deleteRequirementRecords(recordIds, successLabel = "需求记录") {
-  const normalizedIds = [
-    ...new Set(
-      (Array.isArray(recordIds) ? recordIds : [])
-        .map((item) => String(item || "").trim())
-        .filter(Boolean),
-    ),
-  ];
-  if (!normalizedIds.length) {
-    ElMessage.warning("请先选择要删除的需求记录");
-    return null;
-  }
-  if (!canManageProject.value) {
-    ElMessage.warning(manageBlockedMessage());
-    return null;
-  }
-  requirementRecordDeleting.value = true;
-  try {
-    const data = await api.post(
-      `/projects/${projectId.value}/requirement-records/batch-delete`,
-      {
-        record_ids: normalizedIds,
-      },
-    );
-    const deletedIds = Array.isArray(data?.deleted_record_ids)
-      ? data.deleted_record_ids
-      : [];
-    selectedRequirementRecordIds.value = (
-      selectedRequirementRecordIds.value || []
-    ).filter((item) => !deletedIds.includes(item));
-    const deletedCount = Number(data?.deleted_count || 0);
-    if (deletedCount > 0) {
-      ElMessage.success(`已删除 ${deletedCount} 条${successLabel}`);
-    } else {
-      ElMessage.warning("没有可删除的需求记录");
-    }
-    await refreshRequirementRecords();
-    return data;
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "删除需求记录失败");
-    return null;
-  } finally {
-    requirementRecordDeleting.value = false;
-  }
+  void recordIds;
+  void successLabel;
+  return null;
 }
 
 async function handleDeleteRequirementRecord(record) {
@@ -6815,7 +6721,6 @@ function openEditDialog() {
     workspace_path: project.value.workspace_path || "",
     ai_entry_file: project.value.ai_entry_file || "",
     mcp_enabled: project.value.mcp_enabled ?? true,
-    feedback_upgrade_enabled: project.value.feedback_upgrade_enabled ?? true,
   };
   showEditDialog.value = true;
 }
