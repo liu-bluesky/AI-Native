@@ -813,7 +813,27 @@ fn start_local_chat_inner(
     } else {
         String::new()
     };
-    let task_profile = build_task_profile(&user_message);
+    let task_profile = {
+        #[cfg(test)]
+        {
+            // Unit-test HTTP fixtures model the execution loop directly and do not
+            // provide a second response for the separate flow-router request.
+            let mut profile = build_task_profile(&user_message);
+            profile.intent = TaskIntent::Execute;
+            profile.domains = vec!["code".to_string()];
+            profile.required_capabilities =
+                task_profile_required_capabilities(&profile.intent, &profile.domains);
+            profile
+        }
+        #[cfg(not(test))]
+        {
+            route_task_profile_with_model(
+                &base_model_request,
+                &relevant_context,
+                &context_model_runner,
+            )
+        }
+    };
     let mut model_request = build_model_request_with_history_and_task_profile(
         &request,
         &user_message,
@@ -8697,10 +8717,10 @@ struct OpenAiCompatibleResponse {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiCompatibleUsage {
-    #[serde(alias = "input_tokens")]
     prompt_tokens: Option<i64>,
-    #[serde(alias = "output_tokens")]
+    input_tokens: Option<i64>,
     completion_tokens: Option<i64>,
+    output_tokens: Option<i64>,
     total_tokens: Option<i64>,
     prompt_tokens_details: Option<OpenAiPromptTokenDetails>,
     completion_tokens_details: Option<OpenAiCompletionTokenDetails>,
@@ -8718,8 +8738,16 @@ struct OpenAiCompletionTokenDetails {
 
 impl OpenAiCompatibleUsage {
     fn into_model_usage(self) -> ModelTokenUsage {
-        let input_tokens = self.prompt_tokens.unwrap_or_default().max(0);
-        let output_tokens = self.completion_tokens.unwrap_or_default().max(0);
+        let input_tokens = self
+            .prompt_tokens
+            .or(self.input_tokens)
+            .unwrap_or_default()
+            .max(0);
+        let output_tokens = self
+            .completion_tokens
+            .or(self.output_tokens)
+            .unwrap_or_default()
+            .max(0);
         ModelTokenUsage {
             input_tokens,
             output_tokens,
@@ -8775,32 +8803,17 @@ fn build_model_request(request: &LocalChatRequest, user_message: &str) -> ModelS
         .expect("test/model request must use registered context sources")
 }
 
-fn text_contains_any(text: &str, patterns: &[&str]) -> bool {
-    let lowercase = text.to_ascii_lowercase();
-    patterns
-        .iter()
-        .any(|pattern| text.contains(pattern) || lowercase.contains(&pattern.to_ascii_lowercase()))
-}
-
 fn push_unique(values: &mut Vec<String>, value: &str) {
     if !values.iter().any(|item| item == value) {
         values.push(value.to_string());
     }
 }
 
-fn task_profile_risk(user_message: &str, intent: &TaskIntent) -> String {
-    if !matches!(intent, TaskIntent::Execute) {
-        return "read_only".to_string();
-    }
-    if text_contains_any(
-        user_message,
-        &[
-            "删除", "移除", "清空", "覆盖", "部署", "发布", "上线", "delete", "deploy",
-        ],
-    ) {
-        "high".to_string()
+fn task_profile_risk(intent: &TaskIntent) -> String {
+    if matches!(intent, TaskIntent::Execute) {
+        "model_declared_write".to_string()
     } else {
-        "normal_write".to_string()
+        "read_only".to_string()
     }
 }
 
@@ -8830,146 +8843,83 @@ fn task_profile_required_capabilities(intent: &TaskIntent, domains: &[String]) -
 }
 
 fn build_task_profile(user_message: &str) -> TaskProfile {
-    let message = user_message.trim();
-    let forbids_mutation = text_contains_any(
-        message,
-        &[
-            "不要修改",
-            "不要改",
-            "只分析",
-            "仅分析",
-            "只诊断",
-            "不要操作",
-            "read only",
-        ],
-    );
-    let execute_requested = !forbids_mutation
-        && text_contains_any(
-            message,
-            &[
-                "修改",
-                "修复",
-                "创建",
-                "新增",
-                "实现",
-                "开发",
-                "重构",
-                "执行",
-                "开始",
-                "继续",
-                "写入",
-                "写到",
-                "生成",
-                "编辑",
-                "部署",
-                "发布",
-                "上线",
-                "删除",
-                "移除",
-                "清空",
-                "update",
-                "fix",
-                "implement",
-                "create",
-                "build",
-                "refactor",
-                "generate",
-                "edit",
-                "deploy",
-                "remove",
-                "delete",
-            ],
-        );
-    let design_requested = text_contains_any(
-        message,
-        &[
-            "设计",
-            "方案",
-            "需求",
-            "架构",
-            "规划",
-            "design",
-            "proposal",
-            "requirement",
-        ],
-    );
-    let diagnose_requested = forbids_mutation
-        || text_contains_any(
-            message,
-            &[
-                "为什么",
-                "原因",
-                "诊断",
-                "排查",
-                "分析",
-                "检查",
-                "审查",
-                "定位",
-                "review",
-                "diagnose",
-                "investigate",
-                "why",
-            ],
-        );
-    let intent = if execute_requested {
-        TaskIntent::Execute
-    } else if design_requested {
-        TaskIntent::Design
-    } else if diagnose_requested {
-        TaskIntent::Diagnose
-    } else {
-        TaskIntent::Answer
+    let _ = user_message;
+    TaskProfile {
+        version: "task-profile/v2".to_string(),
+        intent: TaskIntent::Answer,
+        domains: vec!["general".to_string()],
+        goal: String::new(),
+        targets: Vec::new(),
+        clarity_score: 1,
+        ambiguities: Vec::new(),
+        complexity: "unknown".to_string(),
+        risk: "read_only".to_string(),
+        required_context: vec!["project_business_context".to_string()],
+        required_capabilities: vec!["model_response".to_string()],
+        source: "runtime_neutral_baseline".to_string(),
+    }
+}
+
+fn build_flow_routing_message() -> RuntimeModelMessage {
+    RuntimeModelMessage::system(
+        "desktop_runtime.flow_router_rules",
+        210,
+        [
+            "你是当前请求的流程路由器，不执行用户任务，也不能调用工具。",
+            "请依据流程规则判断用户当前请求属于哪个流程：",
+            "- answer：用户只是在提问、解释、确认或讨论，不改变项目状态。",
+            "- design：用户要求设计、方案或架构讨论，先产出方案，不修改文件。",
+            "- diagnose：用户要求查看、检查、排查或分析现状，只允许读取和验证。",
+            "- execute：用户明确要求修复、修改、创建、实现、执行或继续执行任务。",
+            "- 本轮用户的新要求优先于历史任务状态；历史上下文只能帮助理解。",
+            "- 用户明确要求不要修改、只回答或只分析时，不得路由到 execute。",
+            "- 无法确定时选择 answer，并在 ambiguities 中说明需要确认的内容。",
+            "只输出 JSON，不要输出 Markdown 或解释文字。字段：",
+            "intent(answer|design|diagnose|execute)、goal、domains(array)、targets(array)、clarity_score(1-5)、ambiguities(array)、complexity(simple|complex|unknown)、risk(read_only|model_declared_write|high)、requires_confirmation(boolean)。",
+        ]
+        .join("\n"),
+    )
+}
+
+fn parse_flow_routing_profile(result: &ModelStepResult, fallback: &TaskProfile) -> TaskProfile {
+    let raw = result.content.trim();
+    let Some(start) = raw.find('{') else {
+        return fallback.clone();
     };
-
-    let mut domains = Vec::new();
-    if text_contains_any(
-        message,
-        &[
-            "图片", "图像", "视频", "音频", "语音", "修图", "image", "video", "audio",
-        ],
-    ) {
-        push_unique(&mut domains, "media");
-    }
-    if text_contains_any(
-        message,
-        &[
-            "页面", "组件", "交互", "样式", "视觉", "ui", "vue", "前端", "登录", "注册",
-        ],
-    ) {
-        push_unique(&mut domains, "ui");
-    }
-    if text_contains_any(
-        message,
-        &[
-            "bug", "代码", "源码", "文件", "接口", "rust", "runtime", "前端", "后端", "测试",
-            "登录", "注册", "code", "file", "api",
-        ],
-    ) || matches!(intent, TaskIntent::Execute | TaskIntent::Diagnose)
-    {
-        push_unique(&mut domains, "code");
-    }
-    if design_requested {
-        push_unique(&mut domains, "product");
-    }
-    if text_contains_any(
-        message,
-        &[
-            "权限", "凭据", "安全", "认证", "登录", "token", "password", "security",
-        ],
-    ) {
-        push_unique(&mut domains, "security");
-    }
-    if text_contains_any(message, &["部署", "发布", "上线", "deploy", "release"]) {
-        push_unique(&mut domains, "deployment");
-    }
-    if domains.is_empty() {
-        domains.push("general".to_string());
-    }
-
-    let targets = extract_file_path_candidates(message);
-    let complexity = "simple".to_string();
-    let risk = task_profile_risk(message, &intent);
-
+    let Some(end) = raw.rfind('}') else {
+        return fallback.clone();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw[start..=end]) else {
+        return fallback.clone();
+    };
+    let routed_intent = match value["intent"].as_str().unwrap_or("answer") {
+        "design" => TaskIntent::Design,
+        "diagnose" => TaskIntent::Diagnose,
+        "execute" => TaskIntent::Execute,
+        _ => TaskIntent::Answer,
+    };
+    let requires_confirmation = value["requires_confirmation"]
+        .as_bool()
+        .unwrap_or(false);
+    let intent = if requires_confirmation {
+        TaskIntent::Answer
+    } else {
+        routed_intent
+    };
+    let domains = value["domains"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .take(8)
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| vec!["general".to_string()]);
     let mut required_context = vec!["project_business_context".to_string()];
     if domains.iter().any(|domain| domain == "code")
         && matches!(intent, TaskIntent::Execute | TaskIntent::Diagnose)
@@ -8977,36 +8927,94 @@ fn build_task_profile(user_message: &str) -> TaskProfile {
         push_unique(&mut required_context, "entry_policy");
         push_unique(&mut required_context, "code_conventions");
     }
-    if domains.iter().any(|domain| domain == "ui") {
-        push_unique(&mut required_context, "ui_rules");
+    for (domain, context) in [
+        ("ui", "ui_rules"),
+        ("security", "security_rules"),
+        ("media", "media_rules"),
+        ("deployment", "deployment_rules"),
+    ] {
+        if domains.iter().any(|item| item == domain) {
+            push_unique(&mut required_context, context);
+        }
     }
-    if domains.iter().any(|domain| domain == "security") {
-        push_unique(&mut required_context, "security_rules");
-    }
-    if domains.iter().any(|domain| domain == "media") {
-        push_unique(&mut required_context, "media_rules");
-    }
-    if domains.iter().any(|domain| domain == "deployment") {
-        push_unique(&mut required_context, "deployment_rules");
-    }
-    if matches!(intent, TaskIntent::Execute) && complexity == "complex" {
+    if matches!(intent, TaskIntent::Execute)
+        && value["complexity"].as_str().unwrap_or("") == "complex"
+    {
         push_unique(&mut required_context, "planning_rules");
     }
-    let required_capabilities = task_profile_required_capabilities(&intent, &domains);
-
     TaskProfile {
-        version: "task-profile/v1".to_string(),
-        intent,
-        domains,
-        goal: truncate_inline(message, 220),
-        targets,
-        clarity_score: if message.is_empty() { 1 } else { 5 },
-        ambiguities: Vec::new(),
-        complexity,
-        risk,
+        version: "task-profile/v2".to_string(),
+        intent: intent.clone(),
+        domains: domains.clone(),
+        goal: value["goal"]
+            .as_str()
+            .map(|value| truncate_inline(value, 220))
+            .unwrap_or_else(|| fallback.goal.clone()),
+        targets: value["targets"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_string)
+                    .take(12)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        clarity_score: value["clarity_score"].as_u64().unwrap_or(3).clamp(1, 5) as u8,
+        ambiguities: value["ambiguities"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_string)
+                    .take(8)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        complexity: value["complexity"].as_str().unwrap_or("unknown").to_string(),
+        risk: value["risk"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| task_profile_risk(&intent)),
         required_context,
-        required_capabilities,
-        source: "runtime_policy_baseline".to_string(),
+        required_capabilities: task_profile_required_capabilities(&intent, &domains),
+        source: "model_flow_router/v1".to_string(),
+    }
+}
+
+fn route_task_profile_with_model(
+    base_request: &ModelStepRequest,
+    relevant_context: &str,
+    model_runner: &dyn Fn(&ModelStepRequest) -> ModelStepResult,
+) -> TaskProfile {
+    let fallback = build_task_profile(&base_request.user_message);
+    let mut routing_request = base_request.with_messages(vec![
+        build_flow_routing_message(),
+        RuntimeModelMessage::simple(
+            "user",
+            format!(
+                "当前用户请求：{}\n\n相关历史上下文：{}",
+                base_request.user_message.trim(),
+                if relevant_context.trim().is_empty() {
+                    "无"
+                } else {
+                    relevant_context.trim()
+                }
+            ),
+        ),
+    ]);
+    routing_request.expose_tools = false;
+    let result = model_runner(&routing_request);
+    if !result.ok || !result.tool_calls.is_empty() {
+        fallback
+    } else {
+        parse_flow_routing_profile(&result, &fallback)
     }
 }
 
@@ -9311,7 +9319,10 @@ fn build_model_request_with_history_and_task_profile(
         media_tools: request.media_tools.clone(),
         attachments: request.attachments.clone(),
         messages,
-        expose_tools: true,
+        expose_tools: task_profile
+            .required_capabilities
+            .iter()
+            .any(|capability| capability != "model_response"),
         task_profile,
         selected_context_sources,
         task_goal: None,
@@ -9945,6 +9956,23 @@ fn tool_disabled_reason(
     request: &ModelStepRequest,
     overrides: ToolAvailabilityOverrides,
 ) -> Option<String> {
+    let has_capability = |capability: &str| {
+        request
+            .task_profile
+            .required_capabilities
+            .iter()
+            .any(|item| item == capability)
+    };
+    if matches!(
+        tool_name.trim(),
+        "apply_patch" | "write_file" | "delete_file"
+    ) && !has_capability("file_write")
+    {
+        return Some(
+            "当前流程未授予 file_write 能力；只有模型路由到 execute 才能修改文件"
+                .to_string(),
+        );
+    }
     match tool_name.trim() {
         "web_search" => {
             let configured = overrides
@@ -14817,6 +14845,8 @@ mod tests {
                     "prompt_tokens": 120,
                     "completion_tokens": 30,
                     "total_tokens": 150,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
                     "prompt_tokens_details": {"cached_tokens": 20},
                     "completion_tokens_details": {"reasoning_tokens": 12}
                 }
@@ -16822,6 +16852,11 @@ mod tests {
     }
 
     fn test_model_request(user_message: &str) -> ModelStepRequest {
+        let mut task_profile = build_task_profile(user_message);
+        task_profile.intent = TaskIntent::Execute;
+        task_profile.domains = vec!["code".to_string()];
+        task_profile.required_capabilities =
+            task_profile_required_capabilities(&task_profile.intent, &task_profile.domains);
         ModelStepRequest {
             project_id: "proj-test".to_string(),
             run_key: "chat-test".to_string(),
@@ -16848,7 +16883,7 @@ mod tests {
                 user_message.to_string(),
             )],
             expose_tools: true,
-            task_profile: build_task_profile(user_message),
+            task_profile,
             selected_context_sources: Vec::new(),
             task_goal: None,
             task_tree: None,
@@ -16912,29 +16947,26 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_task_profile_classifies_four_intents() {
+    fn neutral_task_profile_does_not_classify_user_text() {
         assert_eq!(build_task_profile("什么是缓存").intent, TaskIntent::Answer);
         assert_eq!(
-            build_task_profile("设计登录需求和验收标准").intent,
-            TaskIntent::Design
-        );
-        assert_eq!(
-            build_task_profile("只分析登录 bug，不要修改").intent,
-            TaskIntent::Diagnose
-        );
-        assert_eq!(
-            build_task_profile("修复登录 Bug").intent,
-            TaskIntent::Execute
+            build_task_profile("修复登录 Bug").source,
+            "runtime_neutral_baseline"
         );
     }
 
     #[test]
-    fn deterministic_task_profile_owns_policy_fields() {
+    fn model_routing_profile_owns_policy_fields() {
         let profile = build_task_profile("修复登录 Bug");
 
-        assert_eq!(profile.source, "runtime_policy_baseline");
-        assert_eq!(profile.risk, "normal_write");
-        assert!(profile
+        let result = test_model_result(
+            r#"{"intent":"execute","goal":"修复登录 Bug","domains":["code"],"targets":["登录"],"clarity_score":5,"ambiguities":[],"complexity":"simple","risk":"model_declared_write"}"#,
+            Vec::new(),
+        );
+        let routed = parse_flow_routing_profile(&result, &profile);
+        assert_eq!(routed.source, "model_flow_router/v1");
+        assert_eq!(routed.intent, TaskIntent::Execute);
+        assert!(routed
             .required_capabilities
             .contains(&"file_write".to_string()));
     }
@@ -16977,6 +17009,12 @@ mod tests {
         let message = "按照设计方案开发实现登录模块，修改 src/login.rs 和 src/auth.rs";
         let request = test_dynamic_prompt_request(message);
         let mut routed_profile = build_task_profile(message);
+        routed_profile.intent = TaskIntent::Execute;
+        routed_profile.domains = vec!["code".to_string()];
+        routed_profile.required_capabilities =
+            task_profile_required_capabilities(&routed_profile.intent, &routed_profile.domains);
+        push_unique(&mut routed_profile.required_context, "entry_policy");
+        push_unique(&mut routed_profile.required_context, "code_conventions");
         routed_profile.complexity = "complex".to_string();
         push_unique(&mut routed_profile.required_context, "planning_rules");
         let model_request = build_model_request_with_history_and_task_profile(
@@ -17001,7 +17039,19 @@ mod tests {
     fn media_context_requires_a_real_media_tool() {
         let message = "生成一张产品海报图片";
         let request_without_tool = test_dynamic_prompt_request(message);
-        let model_request = build_model_request(&request_without_tool, message);
+        let mut routed_profile = build_task_profile(message);
+        routed_profile.intent = TaskIntent::Execute;
+        routed_profile.domains = vec!["media".to_string()];
+        routed_profile.required_capabilities =
+            task_profile_required_capabilities(&routed_profile.intent, &routed_profile.domains);
+        push_unique(&mut routed_profile.required_context, "media_rules");
+        let model_request = build_model_request_with_history_and_task_profile(
+            &request_without_tool,
+            message,
+            &request_without_tool.history,
+            Some(routed_profile.clone()),
+        )
+        .unwrap();
         assert_eq!(model_request.task_profile.intent, TaskIntent::Execute);
         assert!(!system_prompt_sources(&model_request)
             .contains(&"desktop_local_agent.media_tool_orchestration"));
@@ -17012,7 +17062,13 @@ mod tests {
             provider_id: "image-provider".to_string(),
             model_name: "image-model".to_string(),
         }];
-        let model_request = build_model_request(&request_with_tool, message);
+        let model_request = build_model_request_with_history_and_task_profile(
+            &request_with_tool,
+            message,
+            &request_with_tool.history,
+            Some(routed_profile),
+        )
+        .unwrap();
         assert!(system_prompt_sources(&model_request)
             .contains(&"desktop_local_agent.media_tool_orchestration"));
     }

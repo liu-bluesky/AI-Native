@@ -14425,8 +14425,6 @@ const chatHistoryLoading = ref(false);
 const chatHistoryLoadingMore = ref(false);
 const chatHistoryReachedEnd = ref(false);
 let activeChatHistoryLoadingKey = "";
-const AGENTIC_OPERATION_TOOL_NAMES = ["project_host_run_command"];
-
 const ACTIONABLE_OPERATION_HINT_RE =
   /(帮我|替我|给我|你来|请你|直接|现在|马上|代办|执行|运行|跑一下|检查|检测|查一下|查询一下|查看一下|创建|修改|更新|修复|部署|安装|登录|登陆|授权|认证|鉴权|发送|发一条|同步|拉取|提交|构建|测试|验证)/i;
 const ACTIONABLE_OPERATION_TARGET_RE =
@@ -33963,9 +33961,8 @@ async function doSend(options = {}) {
       silent: true,
     });
   }
-  const operationToolNames = shouldUseAgenticOperation
-    ? AGENTIC_OPERATION_TOOL_NAMES
-    : [];
+  // 本机命令统一由 Tauri runtime 的 run_command 提供。
+  const operationToolNames = [];
   const effectiveUserPrompt = shouldInjectAssistPrompt
     ? [
         userPrompt,
@@ -34000,7 +33997,6 @@ async function doSend(options = {}) {
       ? normalizeStringList([
         ...selectedProjectToolNames.value,
         ...activeCommandToolNames,
-        ...(slashCommandRequiresTools ? AGENTIC_OPERATION_TOOL_NAMES : []),
         ...operationToolNames,
       ])
     : [];

@@ -172,7 +172,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "run_command",
-            description: "在本地 workspace 内执行命令。预计会快速退出的命令使用前台模式。background=true 的有限任务默认订阅退出事件，结束后 Runtime 会主动通知模型，不需要 process 轮询。服务器、watcher、消费者等长期运行任务必须使用 background=true + watch_patterns=[目标日志]，命中目标信号后 Runtime 主动通知模型且进程继续运行。",
+            description: "实际执行本机 workspace 内的 Shell/终端命令。用于运行 Git、npm、cargo、测试、构建、脚本和其他命令，例如 git status、git pull origin main、npm run build、cargo test。cmd 是要执行的完整命令，cwd 是运行目录，默认使用当前 workspace。普通的短命令使用 background=false；只有服务器、watcher、消费者等持续运行的进程才使用 background=true。此工具会真正执行命令；check_command_risk 只检查风险而不执行命令，process 只管理已创建的后台进程。",
             action: "command.run",
             risk: "medium",
             requires_approval: true,

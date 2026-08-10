@@ -161,7 +161,7 @@ function formatAgentRuntimeToolCallTranscript(payload = {}) {
   const args = agentRuntimeToolArgsFromPayload(payload);
   const modelArgs = agentRuntimeModelToolArgsFromPayload(payload);
   const command = String(args?.command || "").trim();
-  if (toolName === "project_host_run_command" && command) {
+  if (toolName === "run_command" && command) {
     const cwd = String(args?.cwd || "").trim();
     return {
       level: "info",
