@@ -42,6 +42,11 @@ assert.match(
   "JSON store must expose answer details",
 );
 assert.match(
+  jsonStoreSource,
+  /agent_supervision_find_answer/,
+  "JSON store must expose project-independent local answer lookup",
+);
+assert.match(
   tauriMainSource,
   /project_chat_store::agent_supervision_search_answers/,
   "Tauri must register supervision answer search",
@@ -50,6 +55,11 @@ assert.match(
   tauriMainSource,
   /project_chat_store::agent_supervision_get_answer/,
   "Tauri must register supervision answer details",
+);
+assert.match(
+  tauriMainSource,
+  /project_chat_store::agent_supervision_find_answer/,
+  "Tauri must register project-independent local answer lookup",
 );
 assert.match(
   nativeBridgeSource,
@@ -61,6 +71,11 @@ assert.match(
   /agent_supervision_get_answer/,
   "native bridge must map supervision answer details",
 );
+assert.match(
+  nativeBridgeSource,
+  /agent_supervision_find_answer/,
+  "native bridge must map project-independent local answer lookup",
+);
 
 assert.match(
   serviceSource,
@@ -71,6 +86,21 @@ assert.match(
   serviceSource,
   /getNativeAgentSupervisionAnswer/,
   "supervision service must read details from the native JSON bridge",
+);
+assert.match(
+  jsonStoreSource,
+  /project_id:\s*Option<String>/,
+  "native answer lookup must support project-scoped lookup",
+);
+assert.match(
+  nativeBridgeSource,
+  /projectId: String\(projectId \|\| ""\)\.trim\(\)/,
+  "native answer lookup must pass the current project when available",
+);
+assert.match(
+  pageSource,
+  /findAgentSupervisionAnswer\(\s*normalizedAnswerId,\s*preferredProjectId/s,
+  "supervision must query the current project before global fallback",
 );
 assert.doesNotMatch(
   `${serviceSource}\n${pageSource}`,
@@ -156,10 +186,20 @@ const runSearchSource = pageSource.match(
 )?.[0] || "";
 assert.ok(runSearchSource, "supervision page must define runSearch");
 assert.ok(
-  runSearchSource.indexOf("getAgentSupervisionAnswer(") >= 0
-    && runSearchSource.indexOf("getAgentSupervisionAnswer(")
-      < runSearchSource.indexOf("searchAgentSupervisionAnswers("),
+  pageSource.indexOf("findAnswerInVisibleProjects(") >= 0
+    && pageSource.indexOf("findAnswerInVisibleProjects(")
+      < pageSource.indexOf("searchAgentSupervisionAnswers("),
   "complete answer IDs must be resolved directly before fuzzy index search",
+);
+assert.match(
+  pageSource,
+  /findAnswerInVisibleProjects[\s\S]*projectOptions\.value\.map[\s\S]*getAgentSupervisionAnswer/,
+  "supervision must recover an answer from the correct visible project when the route project is stale",
+);
+assert.match(
+  pageSource,
+  /projectId\.value = resolvedProjectId[\s\S]*project_id: resolvedProjectId/,
+  "supervision must switch to and persist the project that owns the answer",
 );
 const supervisionSearchSource = jsonStoreSource.match(
   /pub fn agent_supervision_search_answers\([\s\S]*?\n\}/,
@@ -306,6 +346,24 @@ assert.match(
   projectChatSource,
   /function normalizeRuntimeMessageSnapshot[\s\S]*agentExecutionCycles:\s*Array\.isArray\(row\.agentExecutionCycles\)/,
   "runtime persistence must preserve agent execution cycles in canonical chat JSON",
+);
+assert.match(
+  projectChatSource,
+  /function persistRememberedChatSessionMessages[\s\S]*writePersistedChatRuntime[\s\S]*then\(/,
+  "runtime persistence must wait for the canonical write result before updating session metadata",
+);
+assert.match(
+  jsonStoreSource,
+  /fn merge_runtime_payload[\s\S]*answerId[\s\S]*messages_added_by_newer_snapshot|fn merge_runtime_payload[\s\S]*messages/,
+  "canonical runtime writes must merge snapshots instead of dropping newer answer messages",
+);
+const historyMapperSource = readSource(
+  "../src/modules/project-chat/mappers/messageMappers.js",
+);
+assert.match(
+  historyMapperSource,
+  /answerId:\s*String\(item\?\.answerId\s*\|\|\s*item\?\.answer_id\s*\|\|\s*\"\"\)/,
+  "history mapping must preserve the persisted answer id",
 );
 assert.match(
   projectChatSource,

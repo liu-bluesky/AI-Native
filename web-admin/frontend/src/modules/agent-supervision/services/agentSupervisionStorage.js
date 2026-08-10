@@ -1,4 +1,5 @@
 import {
+  findNativeAgentSupervisionAnswer,
   getNativeAgentSupervisionAnswer,
   searchNativeAgentSupervisionAnswers,
 } from "@/utils/native-desktop-bridge.js";
@@ -31,5 +32,15 @@ export async function getAgentSupervisionAnswer(projectId, answerId) {
     normalizedProjectId,
     resolveCurrentUsername(),
     normalizedAnswerId,
+  );
+}
+
+export async function findAgentSupervisionAnswer(answerId, projectId = "") {
+  const normalizedAnswerId = normalizeAgentSupervisionAnswerId(answerId);
+  if (!normalizedAnswerId) return null;
+  return findNativeAgentSupervisionAnswer(
+    resolveCurrentUsername(),
+    normalizedAnswerId,
+    String(projectId || "").trim(),
   );
 }

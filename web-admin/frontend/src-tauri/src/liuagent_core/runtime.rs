@@ -8829,18 +8829,6 @@ fn task_profile_required_capabilities(intent: &TaskIntent, domains: &[String]) -
     capabilities
 }
 
-fn task_profile_output_contract(intent: &TaskIntent) -> Vec<String> {
-    match intent {
-        TaskIntent::Answer => vec!["direct_answer"],
-        TaskIntent::Design => vec!["design_scope", "proposed_solution", "acceptance_criteria"],
-        TaskIntent::Diagnose => vec!["root_cause", "evidence", "recommended_fix"],
-        TaskIntent::Execute => vec!["root_cause", "changed_files", "verification"],
-    }
-    .into_iter()
-    .map(str::to_string)
-    .collect()
-}
-
 fn build_task_profile(user_message: &str) -> TaskProfile {
     let message = user_message.trim();
     let forbids_mutation = text_contains_any(
@@ -9005,7 +8993,6 @@ fn build_task_profile(user_message: &str) -> TaskProfile {
         push_unique(&mut required_context, "planning_rules");
     }
     let required_capabilities = task_profile_required_capabilities(&intent, &domains);
-    let output_contract = task_profile_output_contract(&intent);
 
     TaskProfile {
         version: "task-profile/v1".to_string(),
@@ -9019,7 +9006,6 @@ fn build_task_profile(user_message: &str) -> TaskProfile {
         risk,
         required_context,
         required_capabilities,
-        output_contract,
         source: "runtime_policy_baseline".to_string(),
     }
 }
@@ -9046,7 +9032,6 @@ fn render_dynamic_task_brief(profile: &TaskProfile) -> RuntimeModelMessage {
             format!("- 目标对象：{target}"),
             format!("- 专业领域：{}", profile.domains.join("、")),
             format!("- 复杂度：{}；风险：{}", profile.complexity, profile.risk),
-            format!("- 完成时交付：{}", profile.output_contract.join("、")),
         ]
         .join("\n"),
     )
@@ -16952,10 +16937,6 @@ mod tests {
         assert!(profile
             .required_capabilities
             .contains(&"file_write".to_string()));
-        assert_eq!(
-            profile.output_contract,
-            vec!["root_cause", "changed_files", "verification"]
-        );
     }
 
     #[test]
@@ -16972,6 +16953,23 @@ mod tests {
         assert!(!sources.contains(&"desktop_local_agent.media_tool_orchestration"));
         assert!(!sources.contains(&"system_config.desktop_agent_global_prompt"));
         assert_eq!(model_request.task_profile.intent, TaskIntent::Answer);
+    }
+
+    #[test]
+    fn dynamic_task_brief_does_not_force_output_sections() {
+        let message = "设计登录需求和验收标准";
+        let request = test_dynamic_prompt_request(message);
+        let model_request = build_model_request(&request, message);
+        let dynamic_brief = model_request
+            .messages
+            .iter()
+            .find(|message| message.prompt_source == "desktop_runtime.dynamic_task_brief")
+            .expect("dynamic task brief should be present");
+
+        assert!(!dynamic_brief.content.contains("完成时交付"));
+        assert!(!dynamic_brief.content.contains("design_scope"));
+        assert!(!dynamic_brief.content.contains("proposed_solution"));
+        assert!(!dynamic_brief.content.contains("acceptance_criteria"));
     }
 
     #[test]

@@ -359,6 +359,78 @@ fn upsert_canonical_runtime(
     Ok(())
 }
 
+fn merge_runtime_payload(existing: Option<&Value>, incoming: &Value) -> Value {
+    let Some(existing) = existing else {
+        return incoming.clone();
+    };
+    let (Some(existing_object), Some(incoming_object)) =
+        (existing.as_object(), incoming.as_object())
+    else {
+        return incoming.clone();
+    };
+    let mut merged = existing_object.clone();
+    for (key, value) in incoming_object {
+        merged.insert(key.clone(), value.clone());
+    }
+
+    let existing_messages = existing_object
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let incoming_messages = incoming_object
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if incoming_object.get("messages").is_some() {
+        let mut existing_by_id = BTreeMap::new();
+        for message in existing_messages {
+            let id = value_text(&message, &["id"]);
+            if !id.is_empty() {
+                existing_by_id.insert(id, message);
+            }
+        }
+        let mut messages = Vec::with_capacity(incoming_messages.len() + existing_by_id.len());
+        let mut incoming_ids = std::collections::HashSet::new();
+        for message in incoming_messages {
+            let id = value_text(&message, &["id"]);
+            if !id.is_empty() {
+                incoming_ids.insert(id.clone());
+            }
+            let Some(previous) = existing_by_id.get(&id) else {
+                messages.push(message);
+                continue;
+            };
+            let (Some(previous_object), Some(message_object)) =
+                (previous.as_object(), message.as_object())
+            else {
+                messages.push(message);
+                continue;
+            };
+            let mut merged_message = previous_object.clone();
+            for (key, value) in message_object {
+                let preserve_answer_id = matches!(key.as_str(), "answerId" | "answer_id")
+                    && value.as_str().is_some_and(|text| text.trim().is_empty());
+                let preserve_content = key == "content"
+                    && value.as_str().is_some_and(|text| text.trim().is_empty())
+                    && !value_text(previous, &["content"]).is_empty();
+                if !preserve_answer_id && !preserve_content {
+                    merged_message.insert(key.clone(), value.clone());
+                }
+            }
+            messages.push(Value::Object(merged_message));
+        }
+        for (id, message) in existing_by_id {
+            if !incoming_ids.contains(&id) {
+                messages.push(message);
+            }
+        }
+        merged.insert("messages".to_string(), Value::Array(messages));
+    }
+    Value::Object(merged)
+}
+
 fn migrate_legacy_tables_to_canonical(connection: &Connection) -> Result<usize, String> {
     let mut migrated = 0;
     if sqlite_table_exists(connection, "project_chat_sessions")? {
@@ -1546,15 +1618,19 @@ pub fn project_chat_write_runtime(
                 .unwrap_or_else(|| json!({}))
         })
     });
+    let merged_payload = merge_runtime_payload(
+        existing_envelope.as_ref().and_then(|value| value.get("runtime")),
+        &payload,
+    );
     let activity_updated_at = runtime_activity_updated_at(
         existing_envelope.as_ref(),
-        &payload,
+        &merged_payload,
         &requested_updated_at,
     );
     let mut session = merge_session_with_runtime(
         &chat_session_id,
         existing_envelope.as_ref().and_then(|value| value.get("session")),
-        &payload,
+        &merged_payload,
         &activity_updated_at,
     );
     session["project_id"] = Value::String(project_id.clone());
@@ -1563,7 +1639,7 @@ pub fn project_chat_write_runtime(
         &username,
         &project_id,
         &chat_session_id,
-        &payload,
+        &merged_payload,
         &activity_updated_at,
     )?;
     upsert_canonical_session(
@@ -1656,6 +1732,78 @@ pub fn agent_supervision_get_answer(
                 || assistant_message_id == alternate_answer_id
             {
                 return Ok(Some(detail));
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+pub fn agent_supervision_find_answer(
+    app: tauri::AppHandle,
+    username: String,
+    answer_id: String,
+    project_id: Option<String>,
+) -> Result<Option<Value>, String> {
+    let username = normalized(&username, "用户名")?;
+    let answer_id = normalized(&answer_id, "回答 ID")?;
+    let project_id = project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let alternate_answer_id = if answer_id.starts_with("ans_") {
+        answer_id.trim_start_matches("ans_").to_string()
+    } else {
+        format!("ans_{answer_id}")
+    };
+    let connection = open_canonical_database(&app)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT project_id, chat_session_id, runtime_json, updated_at
+             FROM desktop_project_chat_runtimes
+             WHERE (?1 = '' OR username = ?1)
+               AND (?2 = '' OR project_id = ?2)",
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map(
+            params![
+                if project_id.is_empty() {
+                    username
+                } else {
+                    String::new()
+                },
+                project_id
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .map_err(|err| err.to_string())?;
+    for row in rows {
+        let (project_id, chat_session_id, runtime_json, updated_at) =
+            row.map_err(|err| err.to_string())?;
+        let runtime = serde_json::from_str::<Value>(&runtime_json).map_err(|err| err.to_string())?;
+        for detail in build_supervision_details(&chat_session_id, &runtime, &updated_at)? {
+            let answer = detail.get("answer").cloned().unwrap_or_else(|| json!({}));
+            let stored_answer_id = value_text(&answer, &["answer_id"]);
+            let assistant_message_id = value_text(&answer, &["assistant_message_id"]);
+            if stored_answer_id == answer_id
+                || assistant_message_id == answer_id
+                || stored_answer_id == alternate_answer_id
+                || assistant_message_id == alternate_answer_id
+            {
+                return Ok(Some(json!({
+                    "project_id": project_id,
+                    "detail": detail,
+                })));
             }
         }
     }
@@ -1797,6 +1945,57 @@ mod tests {
             runtime_activity_updated_at(Some(&existing), &next_runtime, "2026-07-28T00:00:00Z"),
             "2026-07-28T00:00:00Z"
         );
+    }
+
+    #[test]
+    fn stale_runtime_write_does_not_drop_completed_answer_or_answer_id() {
+        let existing = json!({
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "检查项目"},
+                {
+                    "id": "assistant-1",
+                    "role": "assistant",
+                    "content": "检查完成",
+                    "answerId": "ans_assistant-1"
+                }
+            ]
+        });
+        let stale = json!({
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "检查项目"},
+                {"id": "assistant-1", "role": "assistant", "content": ""}
+            ]
+        });
+
+        let merged = merge_runtime_payload(Some(&existing), &stale);
+        assert_eq!(merged["messages"][1]["content"], "检查完成");
+        assert_eq!(merged["messages"][1]["answerId"], "ans_assistant-1");
+    }
+
+    #[test]
+    fn stale_runtime_write_keeps_messages_added_by_newer_snapshot() {
+        let existing = json!({
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "第一问"},
+                {"id": "assistant-1", "role": "assistant", "content": "第一答"},
+                {
+                    "id": "assistant-2",
+                    "role": "assistant",
+                    "content": "第二答",
+                    "answerId": "ans_assistant-2"
+                }
+            ]
+        });
+        let stale = json!({
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "第一问"},
+                {"id": "assistant-1", "role": "assistant", "content": "第一答"}
+            ]
+        });
+
+        let merged = merge_runtime_payload(Some(&existing), &stale);
+        assert_eq!(merged["messages"].as_array().map(Vec::len), Some(3));
+        assert_eq!(merged["messages"][2]["answerId"], "ans_assistant-2");
     }
 
     #[test]

@@ -279,6 +279,7 @@ import "@vue-flow/minimap/dist/style.css";
 
 import ExecutionFlowNode from "@/components/agent-supervision/ExecutionFlowNode.vue";
 import {
+  findAgentSupervisionAnswer,
   getAgentSupervisionAnswer,
   searchAgentSupervisionAnswers,
 } from "@/modules/agent-supervision/services/agentSupervisionStorage.js";
@@ -510,6 +511,44 @@ async function loadProviderNames(nextProjectId) {
   }
 }
 
+async function findAnswerInVisibleProjects(answerId, preferredProjectId = "") {
+  const normalizedAnswerId = String(answerId || "").trim();
+  if (!normalizedAnswerId) return null;
+  const localMatch = await findAgentSupervisionAnswer(
+    normalizedAnswerId,
+    preferredProjectId,
+  );
+  if (localMatch?.detail && localMatch?.project_id) {
+    return {
+      projectId: String(localMatch.project_id).trim(),
+      detail: localMatch.detail,
+    };
+  }
+  if (!projectOptions.value.length) {
+    await loadProjectOptions();
+  }
+  const candidateProjectIds = [
+    preferredProjectId,
+    ...projectOptions.value.map((project) => project.id),
+  ].filter((value, index, values) => {
+    const normalized = String(value || "").trim();
+    return normalized && values.indexOf(value) === index;
+  });
+  for (const candidateProjectId of candidateProjectIds) {
+    const candidateDetail = await getAgentSupervisionAnswer(
+      candidateProjectId,
+      normalizedAnswerId,
+    );
+    if (candidateDetail) {
+      return {
+        projectId: candidateProjectId,
+        detail: candidateDetail,
+      };
+    }
+  }
+  return null;
+}
+
 async function handleProjectChange(nextProjectId) {
   resetExecutionFlow();
   projectId.value = String(nextProjectId || "").trim();
@@ -538,31 +577,29 @@ async function runSearch() {
   searching.value = true;
   errorMessage.value = "";
   try {
-    await loadProviderNames(normalizedProjectId);
-    const directDetail = await getAgentSupervisionAnswer(
-      normalizedProjectId,
+    const resolved = await findAnswerInVisibleProjects(
       normalizedAnswerId,
+      normalizedProjectId,
     );
-    if (directDetail) {
-      detail.value = directDetail;
-      selectedStep.value = directDetail.steps?.[0] || null;
+    if (resolved?.detail) {
+      const resolvedProjectId = resolved.projectId;
+      projectId.value = resolvedProjectId;
+      await loadProviderNames(resolvedProjectId);
+      detail.value = resolved.detail;
+      selectedStep.value = resolved.detail.steps?.[0] || null;
       await prepareExecutionFlow();
       await router.replace({
         path: "/ai/supervision",
         query: {
-          project_id: normalizedProjectId,
-          answer_id: directDetail.answer_id || normalizedAnswerId,
+          project_id: resolvedProjectId,
+          answer_id: resolved.detail.answer_id || normalizedAnswerId,
         },
       });
       await nextTick();
       await focusInitialFlow();
       return;
     }
-    const results = await searchAgentSupervisionAnswers(
-      normalizedProjectId,
-      normalizedAnswerId,
-      20,
-    );
+    const results = await searchAgentSupervisionAnswers(normalizedProjectId, normalizedAnswerId, 20);
     const exact = results.find(
       (item) =>
         item.answer_id === normalizedAnswerId ||

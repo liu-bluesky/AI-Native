@@ -460,7 +460,6 @@ pub struct TaskProfile {
     pub risk: String,
     pub required_context: Vec<String>,
     pub required_capabilities: Vec<String>,
-    pub output_contract: Vec<String>,
     pub source: String,
 }
 

@@ -68,6 +68,7 @@ const TAURI_COMMAND_NAMES = {
   projectChatDeleteSession: "project_chat_delete_session",
   agentSupervisionSearchAnswers: "agent_supervision_search_answers",
   agentSupervisionGetAnswer: "agent_supervision_get_answer",
+  agentSupervisionFindAnswer: "agent_supervision_find_answer",
 };
 
 function canUseWindow() {
@@ -274,6 +275,19 @@ export async function getNativeAgentSupervisionAnswer(
     projectId: String(projectId || "").trim(),
     username: String(username || "").trim(),
     answerId: String(answerId || "").trim(),
+  });
+}
+
+export async function findNativeAgentSupervisionAnswer(
+  username,
+  answerId,
+  projectId = "",
+) {
+  requireNativeProjectChatStore();
+  return invokeNativeDesktopBridge("agentSupervisionFindAnswer", {
+    username: String(username || "").trim(),
+    answerId: String(answerId || "").trim(),
+    projectId: String(projectId || "").trim(),
   });
 }
 

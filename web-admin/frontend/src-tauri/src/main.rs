@@ -2222,7 +2222,8 @@ fn main() {
             project_chat_store::project_chat_write_runtime,
             project_chat_store::project_chat_delete_session,
             project_chat_store::agent_supervision_search_answers,
-            project_chat_store::agent_supervision_get_answer
+            project_chat_store::agent_supervision_get_answer,
+            project_chat_store::agent_supervision_find_answer
         ])
         .setup(|app| {
             bot::feishu::start_persisted_local_listeners(app.handle().clone());

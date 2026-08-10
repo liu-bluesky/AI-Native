@@ -14820,12 +14820,18 @@ function persistRememberedChatSessionMessages(projectId, chatSessionId) {
   const rows = isCurrentChatSession(projectId, chatSessionId)
     ? messages.value
     : getRememberedChatSessionMessages(projectId, chatSessionId);
-  if (!Array.isArray(rows) || !rows.length) return;
+  if (!Array.isArray(rows) || !rows.length) return Promise.resolve(false);
   const payload = isCurrentChatSession(projectId, chatSessionId)
     ? buildPersistedChatRuntimePayload()
     : buildRuntimePayloadForRows(rows, projectId, chatSessionId);
-  writePersistedChatRuntime(projectId, chatSessionId, payload);
-  syncLocalChatSessionMetadata(projectId, chatSessionId, rows);
+  return writePersistedChatRuntime(projectId, chatSessionId, payload).then(
+    (saved) => {
+      if (saved) {
+        syncLocalChatSessionMetadata(projectId, chatSessionId, rows);
+      }
+      return saved;
+    },
+  );
 }
 
 function resolvePendingRequestRow(pending) {
@@ -26472,7 +26478,7 @@ async function persistLocalLiuAgentChatMessage({
   }
   void workspacePath;
   void sourceContext;
-  persistRememberedChatSessionMessages(
+  await persistRememberedChatSessionMessages(
     normalizedProjectId,
     normalizedChatSessionId,
   );

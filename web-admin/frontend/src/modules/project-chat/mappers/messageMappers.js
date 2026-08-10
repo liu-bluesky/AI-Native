@@ -365,6 +365,11 @@ export function mapHistoryMessage(item) {
     id: String(item?.id || ""),
     role: String(item?.role || "assistant"),
     content: String(item?.content || ""),
+    // Keep the canonical answer id when restoring server history.  The chat
+    // view can derive an id from the message id as a fallback, but dropping
+    // the persisted value here makes supervision links depend on a message
+    // id that may differ between local runtime and server history.
+    answerId: String(item?.answerId || item?.answer_id || "").trim(),
     reasoningContent: String(
       item?.reasoningContent || item?.reasoning_content || "",
     ).trim(),
