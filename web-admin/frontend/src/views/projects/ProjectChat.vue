@@ -1643,9 +1643,8 @@
             :composer-placeholder="composerPlaceholder"
             :is-composer-disabled="isComposerDisabled"
             :is-chat-settings-display-ready="isChatSettingsDisplayReady"
-            :is-slash-command-menu-visible="isSlashCommandMenuVisible"
-            :filtered-slash-commands="filteredSlashCommands"
-            :slash-command-highlight-index="slashCommandHighlightIndex"
+            :tool-command-items="composerSlashCommands"
+            :active-tool-command-id="activeComposerToolCommandId"
             :is-external-agent-mode="isExternalAgentMode"
             :provider-model-groups="providerModelGroups"
             :model-provider-offline="modelProviderOffline"
@@ -1673,7 +1672,7 @@
             @editor-paste="handleEditorPaste"
             @editor-composition-start="handleEditorCompositionStart"
             @editor-composition-end="handleEditorCompositionEnd"
-            @apply-slash-command-selection="applySlashCommandSelection"
+            @toggle-tool-command="toggleComposerToolCommand"
             @file-change="handleFileChange"
             @update:model-routing-mode="setModelRoutingMode"
             @update:model-role-selection="setModelRoleSelection"
@@ -4927,6 +4926,7 @@ const aiEntryFileDraft = ref("");
 const singleRoundAnswerOnly = ref(false);
 const employeeCreateSubmitting = ref(false);
 const activeComposerAssist = ref("");
+const activeComposerToolCommandId = ref("");
 const externalMcpTotal = ref(0);
 const agentStatusExpanded = ref(false);
 const currentChatSessionId = ref("");
@@ -14190,6 +14190,12 @@ const activeComposerAssistMeta = computed(
       (item) => item.id === String(activeComposerAssist.value || "").trim(),
     ) || null,
 );
+const activeComposerToolCommand = computed(
+  () =>
+    composerSlashCommands.value.find(
+      (item) => item.id === String(activeComposerToolCommandId.value || "").trim(),
+    ) || null,
+);
 function buildAssistSlashCommand(actionId) {
   const normalized = String(actionId || "")
     .trim()
@@ -14211,7 +14217,7 @@ const composerSlashCommands = computed(() => {
       aliases: SYSTEM_MCP_COMMAND_ALIASES,
       label: "系统 MCP",
       description:
-        "查看 Runtime MCP 服务目录；输入 /mcp <server_id> 查看该服务工具。",
+        "查看 Runtime MCP 服务目录和其中可调用的工具。",
       assistActionId: "",
       seedText: `${SYSTEM_MCP_COMMAND}`,
     },
@@ -14262,7 +14268,7 @@ const composerSlashCommands = computed(() => {
       aliases: HOST_RUN_COMMAND_ALIASES,
       label: "本机命令",
       description:
-        "让 AI 直接在当前电脑执行命令并返回实际结果，例如 /run lark-cli auth status。",
+        "让 AI 直接在当前电脑执行命令并返回实际结果。",
       assistActionId: "",
     },
     {
@@ -14282,7 +14288,7 @@ const composerSlashCommands = computed(() => {
       aliases: LARK_CLI_COMMAND_ALIASES,
       label: "飞书 CLI",
       description:
-        "强制优先使用 lark-cli 执行飞书相关操作，例如 /lark-cli auth status 或 /feishucli 给某人发 test。",
+        "优先使用 lark-cli 执行飞书相关操作并返回真实结果。",
       assistActionId: "",
     },
     {
@@ -14319,7 +14325,23 @@ const composerSlashCommands = computed(() => {
       assistActionId: String(action.id || "").trim(),
     });
   }
-  return commands;
+  commands.push({
+    id: "image",
+    kind: "media_image",
+    command: "image",
+    aliases: [],
+    label: "图片",
+    description: "由 AI 根据需求选择生成图片或修改图片工具。",
+    assistActionId: "",
+    toolNames: ["generate_image", "edit_image"],
+  });
+  const visibleCommandIds = new Set([
+    "assist_employee_create",
+    "package_deploy",
+    "form_json",
+    "image",
+  ]);
+  return commands.filter((item) => visibleCommandIds.has(item.id));
 });
 
 function normalizeSlashCommandToken(value) {
@@ -14375,42 +14397,6 @@ const {
   getCacheKey: chatSessionMessageCacheKey,
 });
 
-const currentSlashDraftState = computed(() =>
-  parseSlashCommandDraft(draftText.value),
-);
-const filteredSlashCommands = computed(() => {
-  const state = currentSlashDraftState.value;
-  if (!state?.isCommandPhase) return [];
-  const query = String(state.query || "").trim();
-  if (!query) {
-    return composerSlashCommands.value;
-  }
-  return composerSlashCommands.value.filter((item) => {
-    const haystacks = [
-      item.command,
-      ...(Array.isArray(item.aliases) ? item.aliases : []),
-      item.label,
-      item.description,
-    ]
-      .map((value) => normalizeSlashCommandToken(value))
-      .filter(Boolean);
-    return haystacks.some((value) => value.includes(query));
-  });
-});
-const isSlashCommandMenuVisible = computed(() =>
-  Boolean(
-    inputFocused.value &&
-    currentSlashDraftState.value?.isCommandPhase &&
-    filteredSlashCommands.value.length,
-  ),
-);
-
-watch(
-  () => filteredSlashCommands.value.map((item) => item.id).join("|"),
-  () => {
-    slashCommandHighlightIndex.value = 0;
-  },
-);
 const projectToolNameOptions = computed(() =>
   projectToolModules.value
     .map((item) => String(item?.tool_name || "").trim())
@@ -26055,13 +26041,20 @@ function appendAgenticOperationInstruction(prompt, sourcePrompt) {
     .join("\n");
 }
 
-function applySlashCommandSelection(item) {
-  if (!item?.command) return;
-  draftText.value =
-    String(item.seedText || "").trim() || `${String(item.command).trim()} `;
-  slashCommandHighlightIndex.value = 0;
-  rememberCurrentChatSessionComposerState();
-  void focusChatComposerTextarea();
+function toggleComposerToolCommand(item) {
+  const commandId = String(item?.id || "").trim();
+  if (!commandId) return;
+  if (activeComposerToolCommandId.value === commandId) {
+    activeComposerToolCommandId.value = "";
+    activeComposerAssist.value = "";
+    return;
+  }
+  activeComposerToolCommandId.value = commandId;
+  if (item?.kind === "assist") {
+    activeComposerAssist.value = String(item.assistActionId || "").trim();
+  } else {
+    activeComposerAssist.value = "";
+  }
 }
 
 async function fetchProjectStatsAiReport(projectId) {
@@ -26294,7 +26287,7 @@ function buildSystemMcpToolListContent(catalog = {}) {
   lines.push(
     selectedServerId
       ? "说明：工具索引来自桌面 Runtime 实际注册结果。"
-      : "查看工具：输入 /mcp <server_id>，例如 /mcp system。",
+      : "查看 Runtime MCP 服务目录和可调用工具。",
   );
   return lines.join("\n");
 }
@@ -27446,35 +27439,6 @@ function handleEditorKeydown(event) {
     editorComposing.value ||
     Boolean(nativeEvent?.isComposing) ||
     Number(nativeEvent?.keyCode || 0) === 229;
-  if (isSlashCommandMenuVisible.value) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      slashCommandHighlightIndex.value =
-        (slashCommandHighlightIndex.value + 1) %
-        filteredSlashCommands.value.length;
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      slashCommandHighlightIndex.value =
-        (slashCommandHighlightIndex.value -
-          1 +
-          filteredSlashCommands.value.length) %
-        filteredSlashCommands.value.length;
-      return;
-    }
-    if (
-      (event.key === "Enter" || event.key === "Tab") &&
-      !event.shiftKey &&
-      !isImeComposing
-    ) {
-      event.preventDefault();
-      applySlashCommandSelection(
-        filteredSlashCommands.value[slashCommandHighlightIndex.value] || null,
-      );
-      return;
-    }
-  }
   if (event.key === "Enter" && !event.shiftKey && !isImeComposing) {
     event.preventDefault();
     void doSend();
@@ -33822,7 +33786,13 @@ async function doSend(options = {}) {
   const activeContextRefs = mergeContextReferences([], composerContextRefs.value);
   const contextReferencesPrompt = buildContextReferencesPrompt(activeContextRefs);
   let activeChatSessionId = String(currentChatSessionId.value || "").trim();
-  const slashCommand = resolveSlashCommand(text);
+  const slashCommand = activeComposerToolCommand.value
+    ? {
+        entry: activeComposerToolCommand.value,
+        token: String(activeComposerToolCommand.value.command || "").trim(),
+        prompt: text,
+      }
+    : null;
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   const files = uploadFiles.value.map((item) => item.raw).filter(Boolean);
   const requestModelTarget = composerSelectedModelTarget.value;
@@ -33969,6 +33939,10 @@ async function doSend(options = {}) {
   const slashCommandRequiresTools = ["host_run", "lark_cli"].includes(
     String(slashCommand?.entry?.kind || "").trim(),
   );
+  const activeCommandToolNames = normalizeStringList(
+    slashCommand?.entry?.toolNames || [],
+    20,
+  );
   const shouldUseAgenticOperation =
     !slashCommand &&
     !shouldInjectAssistPrompt &&
@@ -34009,6 +33983,7 @@ async function doSend(options = {}) {
   );
   const effectiveAutoUseTools =
     slashCommandRequiresTools ||
+    activeCommandToolNames.length > 0 ||
     shouldUseAgenticOperation ||
     (assistAction && assistToolNames.length)
       ? true
@@ -34016,17 +33991,14 @@ async function doSend(options = {}) {
         ? false
         : projectChatToolsExplicitlyEnabled();
   const effectiveSelectedProjectToolNames = effectiveAutoUseTools
-    ? normalizeStringList([
+      ? normalizeStringList([
         ...selectedProjectToolNames.value,
+        ...activeCommandToolNames,
         ...(slashCommandRequiresTools ? AGENTIC_OPERATION_TOOL_NAMES : []),
         ...operationToolNames,
       ])
     : [];
-  const displayUserMessageContent = slashCommand
-    ? slashCommand.prompt
-      ? `${slashCommand.entry.command} ${slashCommand.prompt}`
-      : `${slashCommand.entry.command} ${slashCommand.entry.label}`
-    : text ||
+  const displayUserMessageContent = text ||
       (activeContextRefs.length
         ? `（引用了 ${activeContextRefs.length} 项历史内容）`
         : "（发送了附件）");

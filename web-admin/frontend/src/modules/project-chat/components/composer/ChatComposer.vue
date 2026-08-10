@@ -93,7 +93,9 @@
                   preload="metadata"
                 />
                 <el-icon v-else-if="item.type === 'image'"><Picture /></el-icon>
-                <el-icon v-else-if="item.type === 'video'"><VideoPause /></el-icon>
+                <el-icon v-else-if="item.type === 'video'"
+                  ><VideoPause
+                /></el-icon>
                 <el-icon v-else><Document /></el-icon>
               </div>
               <div class="composer-context-card__body">
@@ -186,33 +188,23 @@
           @compositionend="$emit('editor-composition-end', $event)"
         />
 
-        <div v-if="isSlashCommandMenuVisible" class="chat-slash-menu">
-          <div class="chat-slash-menu__head">
-            <span class="chat-slash-menu__title">可用命令</span>
-            <span class="chat-slash-menu__summary">
-              输入命令后回车发送，或先点选再补充内容
-            </span>
+        <div v-if="safeToolCommandItems.length" class="chat-tool-bar">
+          <span class="chat-tool-bar__label">工具</span>
+          <div class="chat-tool-bar__buttons">
+            <button
+              v-for="item in safeToolCommandItems"
+              :key="item.id"
+              type="button"
+              class="chat-tool-button"
+              :class="{ 'is-active': activeToolCommandId === item.id }"
+              :title="item.description"
+              :disabled="isComposerDisabled"
+              :aria-pressed="activeToolCommandId === item.id"
+              @click="$emit('toggle-tool-command', item)"
+            >
+              {{ item.label }}
+            </button>
           </div>
-          <button
-            v-for="(item, index) in filteredSlashCommands"
-            :key="item.id"
-            type="button"
-            class="chat-slash-menu__item"
-            :class="{ 'is-active': index === slashCommandHighlightIndex }"
-            @mousedown.prevent="$emit('apply-slash-command-selection', item)"
-          >
-            <div class="chat-slash-menu__item-main">
-              <span class="chat-slash-menu__command">
-                {{ item.command }}
-              </span>
-              <span class="chat-slash-menu__label">
-                {{ item.label }}
-              </span>
-            </div>
-            <div class="chat-slash-menu__description">
-              {{ item.description }}
-            </div>
-          </button>
         </div>
 
         <div class="input-footer">
@@ -224,9 +216,7 @@
               @click="modelRoutingDialogVisible = true"
             >
               <el-icon><Setting /></el-icon>
-              <span class="chat-model-routing-trigger__mode">
-                主模型编排
-              </span>
+              <span class="chat-model-routing-trigger__mode"> 主模型编排 </span>
               <span class="chat-model-routing-trigger__summary">
                 {{ activeModelSummary || "选择模型" }}
               </span>
@@ -294,10 +284,7 @@
               </el-button>
             </el-tooltip>
             <slot name="media-parameters" />
-            <div
-              v-if="showLocalAgentAuthLevel"
-              class="local-agent-auth-level"
-            >
+            <div v-if="showLocalAgentAuthLevel" class="local-agent-auth-level">
               <span class="local-agent-auth-level__label">授权级别</span>
               <el-select
                 v-model="localAgentAuthLevelModel"
@@ -392,8 +379,12 @@
                 :value="option.value"
               >
                 <div class="chat-model-option">
-                  <span class="chat-model-option__name">{{ option.modelName }}</span>
-                  <span class="chat-model-option__type">{{ option.modelTypeLabel }}</span>
+                  <span class="chat-model-option__name">{{
+                    option.modelName
+                  }}</span>
+                  <span class="chat-model-option__type">{{
+                    option.modelTypeLabel
+                  }}</span>
                 </div>
               </el-option>
             </el-option-group>
@@ -431,7 +422,8 @@ const props = defineProps([
   "contextRefs",
   "draftText",
   "externalAgentDisplayLabel",
-  "filteredSlashCommands",
+  "toolCommandItems",
+  "activeToolCommandId",
   "formatFileType",
   "hasSelectedProject",
   "inputFocused",
@@ -439,7 +431,6 @@ const props = defineProps([
   "isComposerDisabled",
   "isDragging",
   "isExternalAgentMode",
-  "isSlashCommandMenuVisible",
   "localAgentAuthLevel",
   "modelProviderOffline",
   "modelProviderSyncing",
@@ -455,7 +446,6 @@ const props = defineProps([
   "showLocalAgentAuthLevel",
   "showPauseGenerationButton",
   "showWorkingStatusBar",
-  "slashCommandHighlightIndex",
   "attachmentSupported",
   "attachmentMode",
   "attachmentModeLabel",
@@ -467,7 +457,7 @@ const props = defineProps([
 ]);
 
 const emit = defineEmits([
-  "apply-slash-command-selection",
+  "toggle-tool-command",
   "clear-context-refs",
   "drag-leave",
   "drag-over",
@@ -494,6 +484,9 @@ const emit = defineEmits([
 
 const inputWrapperRef = ref(null);
 const modelRoutingDialogVisible = ref(false);
+const safeToolCommandItems = computed(() =>
+  Array.isArray(props.toolCommandItems) ? props.toolCommandItems : [],
+);
 
 const draftTextModel = computed({
   get: () => props.draftText,

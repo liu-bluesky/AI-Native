@@ -219,39 +219,26 @@
                 :disabled="bootstrapping || loading"
                 @keydown="handleComposerKeydown"
               />
-
               <div
-                v-if="isAssistantSlashMenuVisible"
-                class="assistant-slash-menu"
+                v-if="assistantToolCommandItems.length"
+                class="assistant-tool-tags"
               >
-                <div class="assistant-slash-menu__head">
-                  <span class="assistant-slash-menu__title">可用命令</span>
-                  <span class="assistant-slash-menu__summary">
-                    点击命令后补充内容，或直接回车选择
-                  </span>
-                </div>
+                <span class="assistant-tool-tags__label">可用工具</span>
                 <button
-                  v-for="(item, index) in filteredAssistantSlashCommands"
+                  v-for="item in assistantToolCommandItems"
                   :key="item.id"
                   type="button"
-                  class="assistant-slash-menu__item"
-                  :class="{
-                    'is-active': index === assistantSlashCommandHighlightIndex,
-                  }"
-                  @mousedown.prevent="applyAssistantSlashCommandSelection(item)"
+                  class="assistant-tool-tag"
+                  :class="{ 'is-active': activeAssistantToolName === item.id }"
+                  :title="item.description"
+                  :disabled="bootstrapping || loading"
+                  @click="toggleAssistantTool(item)"
                 >
-                  <div class="assistant-slash-menu__item-main">
-                    <span class="assistant-slash-menu__command">
-                      {{ item.command }}
-                    </span>
-                    <span class="assistant-slash-menu__label">
-                      {{ item.label }}
-                    </span>
-                  </div>
-                  <div class="assistant-slash-menu__description">
-                    {{ item.description }}
-                  </div>
+                  {{ item.label }}
                 </button>
+                <span v-if="activeAssistantToolName" class="assistant-tool-tags__hint">
+                  已激活：{{ activeAssistantToolName }}（AI 将结合实际需求决定是否调用）
+                </span>
               </div>
             </div>
 
@@ -533,6 +520,7 @@ import {
 import {
   getNativeRuntimeInfo,
   hasNativeDesktopBridge,
+  listNativeLiuAgentBuiltinTools,
   pauseNativeLiuAgentLocalChat,
   recoverNativeLiuAgentRuntimeState,
   startNativeLiuAgentLocalChat,
@@ -567,29 +555,6 @@ const ASSISTANT_FAB_DESKTOP_OFFSET_PX = 20;
 const ASSISTANT_FAB_MOBILE_OFFSET_PX = 12;
 const ASSISTANT_FAB_DESKTOP_SIZE_PX = 132;
 const ASSISTANT_FAB_MOBILE_SIZE_PX = 108;
-const DIRECT_ROUTE_COMMANDS = [
-  {
-    path: "/market",
-    label: "市场",
-    aliases: ["市场", "市场页", "能力市场", "官网市场", "官网市场页"],
-  },
-  {
-    path: "/tasks",
-    label: "任务",
-    aliases: ["任务", "任务页", "任务模块", "任务中心", "待办", "待办事项"],
-  },
-];
-const ASSISTANT_SLASH_COMMANDS = [
-  {
-    id: "create_task",
-    command: "/创建任务",
-    aliases: ["/task", "/todo", "/任务"],
-    label: "创建任务",
-    description: "把后续文字创建为任务，并打开任务模块",
-    kind: "create_task",
-  },
-];
-
 const route = useRoute();
 const router = useRouter();
 
@@ -608,7 +573,8 @@ const assistantPanelSize = ref(loadStoredAssistantPanelSize());
 const assistantPanelResizing = ref(false);
 const settingsDialogOpen = ref(false);
 const typedDraftText = ref("");
-const assistantSlashCommandHighlightIndex = ref(0);
+const assistantToolDefinitions = ref([]);
+const activeAssistantToolName = ref("");
 const voiceDraftText = ref("");
 const messageContainerRef = ref(null);
 const assistantFabRef = ref(null);
@@ -892,61 +858,35 @@ const voiceActiveTrackDetailRows = computed(() =>
     (item) => !["实际音轨", "采样率", "声道数"].includes(item.label),
   ),
 );
-function parseAssistantSlashDraft(value) {
-  const draftValue = String(value || "").trimStart();
-  if (!draftValue.startsWith("/")) return null;
-  const firstLine = draftValue.split(/\n/)[0] || "";
-  const match = firstLine.match(/^(\/[^\s]*)/);
-  if (!match) return null;
-  return {
-    token: normalizeAssistantSlashToken(match[1]),
-    query: normalizeAssistantSlashToken(match[1]).replace(/^\//, ""),
-    isCommandPhase: !/\s/.test(firstLine),
-  };
-}
-const currentAssistantSlashDraftState = computed(() =>
-  parseAssistantSlashDraft(typedDraftText.value),
-);
-const filteredAssistantSlashCommands = computed(() => {
-  const state = currentAssistantSlashDraftState.value;
-  if (!state?.isCommandPhase) return [];
-  const query = String(state.query || "").trim();
-  if (!query) return ASSISTANT_SLASH_COMMANDS;
-  return ASSISTANT_SLASH_COMMANDS.filter((item) => {
-    const haystacks = [
-      item.command,
-      ...(Array.isArray(item.aliases) ? item.aliases : []),
-      item.label,
-      item.description,
-    ]
-      .map((value) => normalizeAssistantSlashToken(value).replace(/^\//, ""))
-      .filter(Boolean);
-    return haystacks.some((value) => value.includes(query));
-  });
+const assistantToolCommandItems = computed(() => {
+  const availableCommands = assistantToolDefinitions.value
+    .map((tool) => {
+      const name = String(tool?.name || "").trim();
+      if (!name) return null;
+      return {
+        id: name,
+        label: name,
+        description: String(tool?.description || "").trim() || "由 AI 根据工具定义决定是否调用",
+        kind: "tool",
+      };
+    })
+    .filter(Boolean);
+  return availableCommands;
 });
-const isAssistantSlashMenuVisible = computed(
-  () =>
-    !bootstrapping.value &&
-    !loading.value &&
-    Boolean(currentAssistantSlashDraftState.value?.isCommandPhase) &&
-    filteredAssistantSlashCommands.value.length > 0,
-);
-watch(
-  () => filteredAssistantSlashCommands.value.map((item) => item.id).join("|"),
-  () => {
-    assistantSlashCommandHighlightIndex.value = 0;
-  },
-);
-const composerPlaceholder = computed(() => "输入问题，或输入 / 选择命令");
+function toggleAssistantTool(item) {
+  const name = String(item?.id || "").trim();
+  activeAssistantToolName.value =
+    activeAssistantToolName.value === name ? "" : name;
+}
+const composerPlaceholder = computed(() => "输入问题，工具请点击下方标签激活");
 const typedComposerHint = computed(() => {
   if (isVoiceExecutionPending.value) {
     return "当前指令执行中，请等待完成后再说下一句";
   }
   if (loading.value) return "AI 正在回复中";
-  if (isAssistantSlashMenuVisible.value) return "↑↓ 选择命令，Enter 应用";
   return isListening.value
     ? `实时通话保持待机中，说“${voiceWakePhrase.value}”即可唤醒`
-    : "Enter 发送，Shift + Enter 换行，输入 / 可选择命令";
+    : "Enter 发送，Shift + Enter 换行；工具通过下方标签激活";
 });
 const isVoiceExecutionPending = computed(
   () => isListening.value && loading.value,
@@ -2916,6 +2856,7 @@ async function runGlobalAssistantLocalChat({
   assistantMessage,
   text,
   history,
+  activeToolName,
 }) {
   if (!hasNativeDesktopBridge()) {
     throw new Error("当前不是 Tauri 桌面端，无法调用本地智能体");
@@ -2990,6 +2931,15 @@ async function runGlobalAssistantLocalChat({
               source: "global-assistant-recovery",
               priority: 95,
               content: recoveryContext,
+            },
+          ]
+        : []),
+      ...(activeToolName
+        ? [
+            {
+              source: "global-assistant-active-tool",
+              priority: 96,
+              content: `用户在界面中激活了工具 ${activeToolName}。把它视为本轮工具偏好，但仍需根据实际任务判断是否调用；若不适用，可以选择其他可用工具或不调用工具。`,
             },
           ]
         : []),
@@ -3892,73 +3842,9 @@ async function handleVoiceSocketMessage(eventData, eventType, requestId) {
 }
 
 function handleComposerKeydown(event) {
-  if (isAssistantSlashMenuVisible.value) {
-    const commands = filteredAssistantSlashCommands.value;
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      assistantSlashCommandHighlightIndex.value =
-        (assistantSlashCommandHighlightIndex.value + 1) % commands.length;
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      assistantSlashCommandHighlightIndex.value =
-        (assistantSlashCommandHighlightIndex.value - 1 + commands.length) %
-        commands.length;
-      return;
-    }
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-      const selected =
-        commands[assistantSlashCommandHighlightIndex.value] || commands[0];
-      if (selected) {
-        event.preventDefault();
-        applyAssistantSlashCommandSelection(selected);
-        return;
-      }
-    }
-    if (event.key === "Escape") {
-      assistantSlashCommandHighlightIndex.value = 0;
-      typedDraftText.value = "";
-      return;
-    }
-  }
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
   event.preventDefault();
   void sendCurrentDraft();
-}
-
-function normalizeAssistantSlashToken(value) {
-  return String(value || "").trim().toLowerCase();
-}
-
-function resolveAssistantSlashCommand(text) {
-  const trimmed = String(text || "").trim();
-  if (!trimmed.startsWith("/")) return null;
-  const match = trimmed.match(/^(\/[^\s]+)(?:\s+([\s\S]*))?$/);
-  if (!match) return null;
-  const token = normalizeAssistantSlashToken(match[1]);
-  const prompt = String(match[2] || "").trim();
-  const entry =
-    ASSISTANT_SLASH_COMMANDS.find((item) => {
-      const tokens = [item.command, ...(Array.isArray(item.aliases) ? item.aliases : [])];
-      return tokens.some(
-        (candidate) => normalizeAssistantSlashToken(candidate) === token,
-      );
-    }) || null;
-  if (!entry) return null;
-  return { entry, token, prompt };
-}
-
-function applyAssistantSlashCommandSelection(item) {
-  if (!item?.command) return;
-  typedDraftText.value = `${item.command} `;
-  assistantSlashCommandHighlightIndex.value = 0;
-  nextTick(() => {
-    const textarea = document.querySelector(".assistant-command-composer textarea");
-    if (textarea && typeof textarea.focus === "function") {
-      textarea.focus();
-    }
-  });
 }
 
 async function sendCurrentDraft() {
@@ -3978,31 +3864,6 @@ async function submitVoiceDraft() {
 async function sendMessage(rawText, options = {}) {
   const text = String(rawText || "").trim();
   if (!text || loading.value) return;
-  const slashCommand = resolveAssistantSlashCommand(text);
-  if (slashCommand?.entry?.kind === "create_task") {
-    if (!slashCommand.prompt) {
-      ElMessage.warning("请在 /创建任务 后输入任务内容");
-      return;
-    }
-    if (
-      await tryHandleTaskCreationCommand(`创建任务 ${slashCommand.prompt}`, {
-        ...options,
-        displayText: text,
-      })
-    ) {
-      typedDraftText.value = "";
-      return;
-    }
-  }
-  if (await tryHandleTaskCreationCommand(text, options)) {
-    typedDraftText.value = "";
-    return;
-  }
-  if (await tryHandleDirectRouteCommand(text, options)) {
-    typedDraftText.value = "";
-    return;
-  }
-
   let sessionId = String(currentChatSessionId.value || "").trim();
   if (!sessionId) {
     sessionId = createEphemeralSessionId();
@@ -4062,6 +3923,7 @@ async function sendMessage(rawText, options = {}) {
         assistantMessage,
         text,
         history,
+        activeToolName: String(activeAssistantToolName.value || "").trim(),
       }).catch((err) => {
         void handleSocketMessage({
           type: "error",
@@ -5600,6 +5462,14 @@ onMounted(() => {
   window.addEventListener("storage", handleSystemConfigStorageUpdated);
   if (!shouldRender.value) return;
   ensureAssistantBrowserBridgeInstalled();
+  void listNativeLiuAgentBuiltinTools()
+    .then((tools) => {
+      assistantToolDefinitions.value = Array.isArray(tools) ? tools : [];
+    })
+    .catch((error) => {
+      assistantToolDefinitions.value = [];
+      console.warn("加载本地 AI 工具定义失败", error);
+    });
   void startNativeGlobalAssistantRuntimeSubscription();
   selectedVoiceInputDeviceId.value = normalizeVoiceInputSelectionValue(
     loadStoredVoiceInputDeviceId(),
@@ -6066,82 +5936,57 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.assistant-slash-menu {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: 4;
-  display: grid;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
-}
-
-.assistant-slash-menu__head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 2px 4px 6px;
-}
-
-.assistant-slash-menu__title {
-  color: #0f172a;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.assistant-slash-menu__summary {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.assistant-slash-menu__item {
-  display: grid;
-  gap: 4px;
-  width: 100%;
-  border: none;
-  border-radius: 12px;
-  padding: 10px 12px;
-  color: #334155;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.assistant-slash-menu__item:hover,
-.assistant-slash-menu__item.is-active {
-  background: rgba(14, 165, 233, 0.1);
-  color: #0f172a;
-}
-
-.assistant-slash-menu__item-main {
+.assistant-tool-tags {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  margin-top: 10px;
 }
 
-.assistant-slash-menu__command {
-  color: #0f766e;
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-    "Courier New", monospace;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.assistant-slash-menu__label {
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.assistant-slash-menu__description {
+.assistant-tool-tags__label {
   color: #64748b;
   font-size: 12px;
-  line-height: 1.45;
+  font-weight: 800;
+}
+
+.assistant-tool-tag {
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #334155;
+  background: rgba(248, 250, 252, 0.92);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease;
+}
+
+.assistant-tool-tag:hover {
+  border-color: rgba(14, 165, 233, 0.48);
+  background: rgba(14, 165, 233, 0.1);
+  color: #075985;
+}
+
+.assistant-tool-tag.is-active {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #fff;
+}
+
+.assistant-tool-tag:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.assistant-tool-tags__hint {
+  flex-basis: 100%;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .assistant-voice-diagnostics {
