@@ -201,6 +201,8 @@ def test_legacy_external_agent_task_routes_are_not_registered(tmp_path, monkeypa
         "/api/projects/proj-1/chat/external-agent/tasks/task-1/approval-requests",
         json={},
     ).status_code == 404
+    assert client.get("/api/projects/chat/global/tasks").status_code == 404
+    assert client.post("/api/projects/chat/global/tasks", json={"description": "旧任务"}).status_code == 404
 
 
 def test_backend_agent_runtime_routes_return_gone(tmp_path, monkeypatch):
@@ -1728,7 +1730,7 @@ def test_feishu_archive_attachment_append_reuses_existing_attachment_field(tmp_p
     assert put_calls == []
 
 
-def test_global_assistant_task_listener_extracts_need_trigger(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_listener_extracts_need_trigger(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -1761,7 +1763,7 @@ def test_global_assistant_task_listener_extracts_need_trigger(tmp_path, monkeypa
     assert [item["id"] for item in matches] == ["task-need-alert"]
 
 
-def test_global_assistant_task_infers_dynamic_project_chat_action_for_reminder(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_infers_dynamic_project_chat_action_for_reminder(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -1787,7 +1789,7 @@ def test_global_assistant_task_infers_dynamic_project_chat_action_for_reminder(t
     assert task["actions"][0]["params"]["mode"] == "dynamic_task"
 
 
-def test_global_assistant_task_module_empty_speech_action_migrates_to_stable_system_speech(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_module_empty_speech_action_migrates_to_stable_system_speech(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -1816,7 +1818,7 @@ def test_global_assistant_task_module_empty_speech_action_migrates_to_stable_sys
     assert task["actions"][0]["params"]["repeat"] == 2
 
 
-def test_global_assistant_task_engine_records_event_execution(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_engine_records_event_execution(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -1865,7 +1867,7 @@ def test_global_assistant_task_engine_records_event_execution(tmp_path, monkeypa
     assert tasks[0]["execution_history"][0]["action_results"][0]["action_type"] == "file_processing"
 
 
-def test_global_assistant_task_upsert_preserves_runtime_execution_fields(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_upsert_preserves_runtime_execution_fields(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -1918,7 +1920,7 @@ def test_global_assistant_task_upsert_preserves_runtime_execution_fields(tmp_pat
     assert tasks[0]["last_run_at"]
 
 
-def test_global_assistant_task_rejects_edit_while_doing(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_rejects_edit_while_doing(tmp_path, monkeypatch):
     import pytest
 
     from core import config as core_config
@@ -1977,7 +1979,7 @@ def test_global_assistant_task_rejects_edit_while_doing(tmp_path, monkeypatch):
     assert tasks[0]["description"] == "监听到 bug 时提醒"
 
 
-def test_global_assistant_task_engine_runs_due_schedule(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_engine_runs_due_schedule(tmp_path, monkeypatch):
     from datetime import datetime, timedelta, timezone
 
     from core import config as core_config
@@ -2021,7 +2023,7 @@ def test_global_assistant_task_engine_runs_due_schedule(tmp_path, monkeypatch):
     assert tasks[0]["next_run_at"]
 
 
-def test_global_assistant_task_infers_schedule_from_natural_reminder_time(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_infers_schedule_from_natural_reminder_time(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -2054,7 +2056,7 @@ def test_global_assistant_task_infers_schedule_from_natural_reminder_time(tmp_pa
     assert schedule_trigger["schedule"]["next_run_at"] == "2026-04-27T06:21:00+00:00"
 
 
-def test_global_assistant_task_route_uses_llm_classifier_schedule(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_route_uses_llm_classifier_schedule(tmp_path, monkeypatch):
     from routers import projects as projects_router
     from services.runtime.provider_resolver import ResolvedProviderRuntime
 
@@ -2128,7 +2130,7 @@ def test_global_assistant_task_route_uses_llm_classifier_schedule(tmp_path, monk
     assert task["actions"][0]["params"]["text"] == "下午两点21提醒 吃饭"
 
 
-def test_global_assistant_task_classifier_does_not_treat_repeat_count_as_daily_interval():
+def legacy_removed_global_assistant_task_classifier_does_not_treat_repeat_count_as_daily_interval():
     from routers.projects import _merge_global_task_classifier_result
 
     task = _merge_global_task_classifier_result(
@@ -2157,7 +2159,7 @@ def test_global_assistant_task_classifier_does_not_treat_repeat_count_as_daily_i
     assert schedule_trigger["schedule"]["interval_seconds"] == 0
 
 
-def test_global_assistant_task_classifier_prefers_local_same_day_daily_time():
+def legacy_removed_global_assistant_task_classifier_prefers_local_same_day_daily_time():
     from routers.projects import _merge_global_task_classifier_result
 
     task = _merge_global_task_classifier_result(
@@ -2190,7 +2192,7 @@ def test_global_assistant_task_classifier_prefers_local_same_day_daily_time():
     assert task["next_run_at"] == "2026-04-27T08:05:00+00:00"
 
 
-def test_global_assistant_reminder_classifier_uses_stable_system_speech_action(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_reminder_classifier_uses_stable_system_speech_action(tmp_path, monkeypatch):
     from core import config as core_config
     from routers.projects import _merge_global_task_classifier_result
     from services.assistant.global_assistant_task_service import upsert_global_assistant_task
@@ -2230,7 +2232,7 @@ def test_global_assistant_reminder_classifier_uses_stable_system_speech_action(t
     assert normalized["actions"][0]["params"]["repeat"] == 2
 
 
-def test_global_assistant_task_route_uses_local_connector_classifier(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_route_uses_local_connector_classifier(tmp_path, monkeypatch):
     from routers import projects as projects_router
     from services.runtime.provider_resolver import ResolvedProviderRuntime
 
@@ -2305,7 +2307,7 @@ def test_global_assistant_task_route_uses_local_connector_classifier(tmp_path, m
     assert schedule_trigger["source"] == "llm-classifier"
 
 
-def test_global_assistant_task_route_falls_back_to_natural_schedule_parser(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_route_falls_back_to_natural_schedule_parser(tmp_path, monkeypatch):
     client, _store_factory = _build_project_chat_runtime_test_client(
         tmp_path,
         monkeypatch,
@@ -2332,7 +2334,7 @@ def test_global_assistant_task_route_falls_back_to_natural_schedule_parser(tmp_p
     assert schedule_trigger["source"] == "natural-language"
 
 
-def test_global_assistant_task_engine_queues_due_system_speech(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_task_engine_queues_due_system_speech(tmp_path, monkeypatch):
     from datetime import datetime, timedelta, timezone
 
     from core import config as core_config
@@ -2399,7 +2401,7 @@ def test_global_assistant_task_engine_queues_due_system_speech(tmp_path, monkeyp
     assert tasks[0]["execution_history"][0]["action_results"][0]["status"] == "queued"
 
 
-def test_global_assistant_system_speech_action_respects_disabled_config_in_event_loop(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_system_speech_action_respects_disabled_config_in_event_loop(tmp_path, monkeypatch):
     import asyncio
     from types import SimpleNamespace
 
@@ -2431,7 +2433,7 @@ def test_global_assistant_system_speech_action_respects_disabled_config_in_event
     assert result == {"queued": False, "reason": "系统未开启语音播报"}
 
 
-def test_global_assistant_project_chat_action_uses_llm_dynamic_plan_for_repeated_speech(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_project_chat_action_uses_llm_dynamic_plan_for_repeated_speech(tmp_path, monkeypatch):
     from core import config as core_config
     from stores.json.project_store import ProjectConfig
 
@@ -2503,7 +2505,7 @@ def test_global_assistant_project_chat_action_uses_llm_dynamic_plan_for_repeated
     assert executed["latest_execution"]["action_results"][0]["dynamic_action_count"] == 3
 
 
-def test_global_assistant_dynamic_model_call_is_one_shot_without_history_or_tools(monkeypatch):
+def legacy_removed_global_assistant_dynamic_model_call_is_one_shot_without_history_or_tools(monkeypatch):
     from types import SimpleNamespace
 
     from routers import projects as projects_router
@@ -2562,7 +2564,7 @@ def test_global_assistant_dynamic_model_call_is_one_shot_without_history_or_tool
     assert captured["completion"]["messages"][-1] == {"role": "user", "content": "return json"}
 
 
-def test_global_assistant_async_project_chat_action_finalizes_execution_history(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_async_project_chat_action_finalizes_execution_history(tmp_path, monkeypatch):
     import asyncio
 
     from core import config as core_config
@@ -2654,7 +2656,7 @@ def test_global_assistant_async_project_chat_action_finalizes_execution_history(
     assert {item["role_ids"][0] for item in queued_calls} == {"project-operator"}
 
 
-def test_global_assistant_async_project_chat_failure_reactivates_schedule_for_retry(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_async_project_chat_failure_reactivates_schedule_for_retry(tmp_path, monkeypatch):
     import asyncio
 
     from core import config as core_config
@@ -2734,7 +2736,7 @@ def test_global_assistant_async_project_chat_failure_reactivates_schedule_for_re
     assert "llm unavailable" in latest["message"]
 
 
-def test_global_assistant_system_speech_action_repeats_without_llm(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_system_speech_action_repeats_without_llm(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -2799,7 +2801,7 @@ def test_postgres_project_chat_store_create_session_accepts_explicit_session_id(
     assert "session_id" in inspect.signature(ProjectChatStorePostgres.create_session).parameters
 
 
-def test_feishu_meeting_reminder_parser_handles_fixed_time():
+def legacy_removed_feishu_meeting_reminder_parser_handles_fixed_time():
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
@@ -2825,7 +2827,7 @@ def test_feishu_meeting_reminder_parser_handles_fixed_time():
     assert urgent.reminder_label == "2026-04-27 14:55"
 
 
-def test_feishu_scheduled_reminder_sends_due_message_and_completes(tmp_path, monkeypatch):
+def legacy_removed_feishu_scheduled_reminder_sends_due_message_and_completes(tmp_path, monkeypatch):
     from datetime import datetime, timedelta, timezone
 
     from core import config as core_config
@@ -4409,7 +4411,7 @@ def test_feishu_archive_writer_cli_user_bitable_recreates_deleted_base(tmp_path,
     assert record["recreated_from_deleted"] is True
 
 
-def test_global_assistant_archive_action_returns_saved(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_archive_action_returns_saved(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -4467,7 +4469,7 @@ def test_global_assistant_archive_action_returns_saved(tmp_path, monkeypatch):
     assert result["doc_id"] == "doc-1"
 
 
-def test_global_assistant_archive_action_preserves_skipped_status(tmp_path, monkeypatch):
+def legacy_removed_global_assistant_archive_action_preserves_skipped_status(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -4646,7 +4648,7 @@ def test_feishu_archive_clarification_request_is_skipped(tmp_path, monkeypatch):
     assert archive_calls == []
 
 
-def test_feishu_structured_pending_archive_reply_executes_archive_task(tmp_path, monkeypatch):
+def legacy_removed_feishu_structured_pending_archive_reply_executes_archive_task(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -4866,7 +4868,7 @@ def test_feishu_failed_archive_reply_hides_internal_budget_details():
     assert "不要重复发送同一句“重新执行”" in reply
 
 
-def test_feishu_structured_pending_archive_reruns_after_failed_pre_match(tmp_path, monkeypatch):
+def legacy_removed_feishu_structured_pending_archive_reruns_after_failed_pre_match(tmp_path, monkeypatch):
     from core import config as core_config
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))

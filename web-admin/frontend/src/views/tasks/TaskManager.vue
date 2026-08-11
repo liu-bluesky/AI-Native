@@ -3,437 +3,273 @@
     <div class="task-manager__ambient" aria-hidden="true" />
     <header class="task-manager__hero">
       <div>
-        <span class="task-manager__eyebrow">Task Center</span>
-        <h1>任务</h1>
-        <p>从系统状态助手输入“创建任务 + 描述”，也可以在这里手动添加、推进和完成任务。</p>
+        <span class="task-manager__eyebrow">LOCAL AI RUNTIME</span>
+        <h1>长任务</h1>
+        <p>跨项目查看本机 AI Runtime 的执行状态。切换项目或会话不会中断任务。</p>
       </div>
-      <div class="task-manager__stats">
-        <span><strong>{{ taskStats.todo }}</strong>待处理</span>
-        <span><strong>{{ taskStats.doing }}</strong>进行中</span>
-        <span><strong>{{ taskStats.done }}</strong>已完成</span>
+      <div class="task-manager__stats" aria-label="长任务统计">
+        <span><strong>{{ activeTasks.length }}</strong>执行中</span>
+        <span><strong>{{ waitingTasks.length }}</strong>等待处理</span>
+        <span><strong>{{ recoverableTasks.length }}</strong>可恢复</span>
+        <span><strong>{{ completedTasks.length }}</strong>已完成</span>
       </div>
     </header>
 
-    <form class="task-manager__composer" @submit.prevent="submitTask">
-      <textarea
-        v-model="draftText"
-        rows="3"
-        placeholder="描述一个任务，例如：明天上午整理飞书群消息发送流程"
-      />
-      <div class="task-manager__composer-grid">
-        <label>
-          <span>任务类型</span>
-          <select v-model="draftTaskType">
-            <option v-for="item in taskTypeOptions" :key="item.value" :value="item.value">
-              {{ item.label }}
-            </option>
-          </select>
-        </label>
-        <label>
-          <span>触发关键词</span>
-          <input v-model="draftTriggerText" placeholder="多个关键词用逗号分隔" />
-        </label>
-        <label>
-          <span>执行动作</span>
-          <select v-model="draftActionType">
-            <option v-for="item in actionTypeOptions" :key="item.value" :value="item.value">
-              {{ item.label }}
-            </option>
-          </select>
-        </label>
-        <label>
-          <span>计划时间</span>
-          <input v-model="draftRunAt" type="datetime-local" />
-        </label>
+    <section class="local-task-panel">
+      <div class="local-task-panel__head">
+        <div>
+          <span class="task-manager__eyebrow">ON THIS DEVICE</span>
+          <h2>AI 长任务</h2>
+        </div>
+        <span class="local-task-panel__count">仅保存在本机</span>
       </div>
-      <div class="task-manager__composer-footer">
-        <span>任务会同步到后端；有关键词会监听事件，有计划时间会进入后台调度。</span>
-        <button type="submit" :disabled="!canSubmitTask">创建任务</button>
+
+      <div v-if="!localAiTasks.length" class="task-manager__empty">
+        <strong>还没有本地 AI 长任务</strong>
+        <span>在项目聊天中发送需要持续执行的需求后，任务会自动出现在这里。</span>
       </div>
-    </form>
 
-    <div class="task-manager__toolbar">
-      <button
-        v-for="item in statusFilters"
-        :key="item.value"
-        type="button"
-        :class="{ 'is-active': activeFilter === item.value }"
-        @click="activeFilter = item.value"
-      >
-        {{ item.label }}
-      </button>
-    </div>
-
-    <div v-if="!filteredTasks.length" class="task-manager__empty">
-      <strong>暂无任务</strong>
-      <span>试试在系统状态助手里输入：创建任务 跟进今天的客户反馈。</span>
-    </div>
-
-    <div v-else class="task-manager__list">
-      <article
-        v-for="task in filteredTasks"
-        :key="task.id"
-        class="task-card"
-        :class="[`is-${task.status}`, { 'is-disabled': !isTaskEnabled(task) }]"
-      >
-        <div class="task-card__main">
-          <div class="task-card__head">
-            <span class="task-card__status">{{ statusLabel(task.status) }}</span>
-            <span class="task-card__source">{{ sourceLabel(task.source) }}</span>
-            <span
-              class="task-card__enabled"
-              :class="{ 'is-disabled': !isTaskEnabled(task) }"
-            >
-              {{ isTaskEnabled(task) ? "已启用" : "已停用" }}
+      <div v-else class="local-task-panel__list">
+        <article v-for="task in localAiTasks" :key="task.id" class="local-task-card">
+          <div class="local-task-card__head">
+            <span class="local-task-card__status" :class="`is-${task.status}`">
+              {{ localAiTaskStatusLabel(task.status) }}
             </span>
+            <span class="local-task-card__project">{{ task.projectName || task.projectId || "未命名项目" }}</span>
+            <time>{{ formatTaskTime(task.updatedAt) }}</time>
           </div>
-          <h2>{{ task.title }}</h2>
-          <p>{{ task.description }}</p>
-          <div class="task-card__meta">
-            <span>{{ taskTypeLabel(task.task_type) }}</span>
-            <span>{{ actionLabel(task.actions?.[0]?.type) }}</span>
-            <span>执行 {{ task.executionCount || 0 }} 次</span>
-            <span v-if="task.nextRunAt">下次 {{ formatTaskTime(task.nextRunAt) }}</span>
-          </div>
-          <div v-if="task.triggerPhrases?.length" class="task-card__phrases">
-            <span v-for="phrase in task.triggerPhrases" :key="phrase">{{ phrase }}</span>
-          </div>
-          <time>{{ formatTaskTime(task.createdAt) }}</time>
-        </div>
-        <div class="task-card__actions">
-          <button
-            type="button"
-            :class="isTaskEnabled(task) ? 'is-muted' : 'is-enable'"
-            :disabled="!canEditTask(task)"
-            :title="canEditTask(task) ? '' : '进行中的任务不允许修改启停状态'"
-            @click="toggleTaskEnabled(task)"
-          >
-            {{ isTaskEnabled(task) ? "停用" : "启用" }}
-          </button>
-          <button
-            type="button"
-            :disabled="!canEditTask(task)"
-            :title="canEditTask(task) ? '编辑任务' : '进行中的任务不允许编辑'"
-            @click="startEditTask(task)"
-          >
-            编辑
-          </button>
-          <button type="button" @click="setTaskStatus(task, 'todo')">待处理</button>
-          <button type="button" @click="setTaskStatus(task, 'doing')">进行中</button>
-          <button type="button" @click="setTaskStatus(task, 'done')">完成</button>
-          <button type="button" class="is-danger" @click="removeTask(task)">删除</button>
-        </div>
-      </article>
-    </div>
 
-    <div v-if="editingTaskId" class="task-manager__modal">
-      <div class="task-manager__modal-backdrop" aria-hidden="true" @click="cancelEditTask" />
-      <form
-        class="task-manager__editor"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="task-edit-title"
-        @submit.prevent="saveEditedTask"
-      >
-        <div class="task-manager__editor-head">
-          <div>
-            <span class="task-manager__eyebrow">Edit Task</span>
-            <h2 id="task-edit-title">编辑任务</h2>
+          <h3>{{ task.title }}</h3>
+          <div class="local-task-card__step">
+            <span>当前步骤</span>
+            <strong>{{ task.currentStep || "本地 Runtime 正在执行" }}</strong>
           </div>
-          <button type="button" class="is-icon" aria-label="关闭编辑弹框" @click="cancelEditTask">
-            <span aria-hidden="true">×</span>
-          </button>
-        </div>
-        <textarea
-          v-model="editText"
-          rows="3"
-          placeholder="更新任务描述"
-        />
-        <div class="task-manager__composer-grid">
-          <label>
-            <span>任务类型</span>
-            <select v-model="editTaskType">
-              <option v-for="item in taskTypeOptions" :key="item.value" :value="item.value">
-                {{ item.label }}
-              </option>
-            </select>
-          </label>
-          <label>
-            <span>触发关键词</span>
-            <input v-model="editTriggerText" placeholder="多个关键词用逗号分隔" />
-          </label>
-          <label>
-            <span>执行动作</span>
-            <select v-model="editActionType">
-              <option v-for="item in actionTypeOptions" :key="item.value" :value="item.value">
-                {{ item.label }}
-              </option>
-            </select>
-          </label>
-          <label>
-            <span>计划时间</span>
-            <input v-model="editRunAt" type="datetime-local" />
-          </label>
-        </div>
-        <div class="task-manager__modal-actions">
-          <span>进行中的任务不允许编辑；可先将任务退回待处理或完成后再调整。</span>
-          <div>
-            <button type="button" class="is-muted" @click="cancelEditTask">取消</button>
-            <button type="submit" :disabled="!canSaveEditedTask">保存修改</button>
+          <p v-if="task.lastOutput" class="local-task-card__output">{{ task.lastOutput }}</p>
+          <div class="local-task-card__meta">
+            <span>开始 {{ formatTaskTime(task.createdAt) }}</span>
+            <span v-if="task.completedAt">结束 {{ formatTaskTime(task.completedAt) }}</span>
+            <span v-else>更新 {{ formatTaskTime(task.updatedAt) }}</span>
           </div>
-        </div>
-      </form>
-    </div>
+          <div class="local-task-card__actions">
+            <button type="button" class="is-primary" @click="openTaskChat(task)">跳转原会话</button>
+            <button
+              v-if="task.recoverable && isRecoverableStatus(task.status)"
+              type="button"
+              @click="openTaskChat(task, 'resume')"
+            >
+              继续执行
+            </button>
+            <button
+              v-if="isTaskActive(task)"
+              type="button"
+              class="is-danger"
+              :disabled="cancellingTaskIds.has(task.id)"
+              @click="cancelTask(task)"
+            >
+              {{ cancellingTaskIds.has(task.id) ? "正在取消…" : "取消任务" }}
+            </button>
+            <button
+              v-if="isTaskRemovable(task)"
+              type="button"
+              class="is-danger"
+              @click="deleteTask(task)"
+            >
+              删除记录
+            </button>
+          </div>
+        </article>
+      </div>
+    </section>
   </section>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
+import { ElMessage } from "element-plus";
 import {
-  TASKS_UPDATED_EVENT,
-  buildTaskTitle,
-  createTask,
-  deleteTask,
-  listTasks,
-  syncTasksToServer,
-  updateTask,
-} from "@/utils/task-store.js";
+  deleteLocalAiTask,
+  isLocalAiTaskActive,
+  listLocalAiTasks,
+  LOCAL_AI_TASKS_UPDATED_EVENT,
+  updateLocalAiTask,
+} from "@/utils/local-ai-task-store.js";
+import {
+  hasNativeDesktopBridge,
+  pauseNativeLiuAgentLocalChat,
+  recoverNativeLiuAgentRuntimeState,
+} from "@/utils/native-desktop-bridge.js";
+import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 
-const tasks = ref([]);
-const draftText = ref("");
-const draftTaskType = ref("workflow");
-const draftTriggerText = ref("");
-const draftActionType = ref("project_chat");
-const draftRunAt = ref("");
-const editingTaskId = ref("");
-const editText = ref("");
-const editTaskType = ref("generic");
-const editTriggerText = ref("");
-const editActionType = ref("project_chat");
-const editRunAt = ref("");
-const activeFilter = ref("all");
-const statusFilters = [
-  { label: "全部", value: "all" },
-  { label: "待处理", value: "todo" },
-  { label: "进行中", value: "doing" },
-  { label: "已完成", value: "done" },
-];
-const taskTypeOptions = [
-  { label: "通用任务", value: "generic" },
-  { label: "消息监听", value: "message_listener" },
-  { label: "文件处理", value: "file_processing" },
-  { label: "工作流", value: "workflow" },
-  { label: "提醒", value: "reminder" },
-];
-const actionTypeOptions = [
-  { label: "大模型动态执行", value: "project_chat" },
-  { label: "记录执行", value: "record" },
-  { label: "通知", value: "notify" },
-  { label: "系统播报", value: "system_speech" },
-  { label: "文件处理", value: "file_processing" },
-];
+const router = useRouter();
+const localAiTasks = ref([]);
+const cancellingTaskIds = ref(new Set());
+let localAiTaskRefreshTimer = null;
 
-const canSubmitTask = computed(() => Boolean(String(draftText.value || "").trim()));
-const editingTask = computed(() => tasks.value.find((task) => task.id === editingTaskId.value) || null);
-const canSaveEditedTask = computed(() => {
-  const task = editingTask.value;
-  return Boolean(task && canEditTask(task) && String(editText.value || "").trim());
-});
-const filteredTasks = computed(() => {
-  if (activeFilter.value === "all") return tasks.value;
-  return tasks.value.filter((task) => task.status === activeFilter.value);
-});
-const taskStats = computed(() =>
-  tasks.value.reduce(
-    (result, task) => ({
-      ...result,
-      [task.status]: Number(result[task.status] || 0) + 1,
-    }),
-    { todo: 0, doing: 0, done: 0 },
-  ),
+const activeTasks = computed(() => localAiTasks.value.filter((task) => isLocalAiTaskActive(task)));
+const waitingTasks = computed(() =>
+  localAiTasks.value.filter((task) => ["waiting_approval", "waiting_user", "reconnecting"].includes(task.status)),
+);
+const recoverableTasks = computed(() =>
+  localAiTasks.value.filter((task) => task.recoverable && isRecoverableStatus(task.status)),
+);
+const completedTasks = computed(() =>
+  localAiTasks.value.filter((task) => ["done", "failed", "cancelled"].includes(task.status)),
 );
 
-function refreshTasks() {
-  tasks.value = listTasks();
+function refreshLocalAiTasks() {
+  localAiTasks.value = listLocalAiTasks();
 }
 
-function submitTask() {
-  const description = String(draftText.value || "").trim();
-  if (!description) return;
-  const payload = buildTaskPayloadFromForm({
-    description,
-    taskType: draftTaskType.value,
-    triggerText: draftTriggerText.value,
-    actionType: draftActionType.value,
-    runAtValue: draftRunAt.value,
-  });
-  createTask({
-    ...payload,
-    source: "tasks-module",
-  });
-  draftText.value = "";
-  draftTaskType.value = "workflow";
-  draftTriggerText.value = "";
-  draftActionType.value = "project_chat";
-  draftRunAt.value = "";
-  refreshTasks();
+function isTaskActive(task) {
+  return isLocalAiTaskActive(task);
 }
 
-function buildTaskPayloadFromForm({ description, taskType, triggerText, actionType, runAtValue }) {
-  const triggerPhrases = String(triggerText || "")
-    .split(/[,，\n]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const runAt = runAtValue ? new Date(runAtValue).toISOString() : "";
-  const triggers = [
-    {
-      type: "event",
-      enabled: triggerPhrases.length > 0,
-      source: "feishu",
-      phrases: triggerPhrases,
-    },
-  ];
-  if (runAt) {
-    triggers.push({
-      type: "schedule",
-      enabled: true,
-      schedule: {
-        run_at: runAt,
-        next_run_at: runAt,
-        interval_seconds: 0,
-      },
-    });
-  }
-  const normalizedActionType = String(actionType || "project_chat").trim() || "project_chat";
-  const actionParams = normalizedActionType === "project_chat" ? { mode: "dynamic_task" } : {};
-  return {
-    title: buildTaskTitle(description),
-    description,
-    task_type: taskType || (normalizedActionType === "project_chat" ? "workflow" : "generic"),
-    listen_enabled: triggerPhrases.length > 0 || Boolean(runAt),
-    triggerPhrases,
-    triggers,
-    actions: [{ type: normalizedActionType, enabled: true, params: actionParams }],
-    nextRunAt: runAt,
-  };
+function isRecoverableStatus(status) {
+  return ["interrupted", "failed", "reconnecting"].includes(String(status || "").trim());
 }
 
-function setTaskStatus(task, status) {
-  updateTask(task.id, { status });
-  refreshTasks();
+function isTaskRemovable(task) {
+  return ["done", "failed", "cancelled"].includes(String(task?.status || "").trim());
 }
 
-function canEditTask(task) {
-  return String(task?.status || "todo") !== "doing";
-}
-
-function toDatetimeLocalValue(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return localDate.toISOString().slice(0, 16);
-}
-
-function taskRunAtValue(task) {
-  if (task?.nextRunAt) return toDatetimeLocalValue(task.nextRunAt);
-  const scheduleTrigger = Array.isArray(task?.triggers)
-    ? task.triggers.find((trigger) => trigger?.type === "schedule")
-    : null;
-  return toDatetimeLocalValue(scheduleTrigger?.schedule?.next_run_at || scheduleTrigger?.schedule?.run_at || "");
-}
-
-function startEditTask(task) {
-  if (!canEditTask(task)) {
-    window.alert("进行中的任务不允许编辑");
-    return;
-  }
-  editingTaskId.value = task.id;
-  editText.value = String(task.description || task.title || "").trim();
-  editTaskType.value = String(task.task_type || "generic");
-  editTriggerText.value = Array.isArray(task.triggerPhrases) ? task.triggerPhrases.join("，") : "";
-  editActionType.value = String(task.actions?.[0]?.type || "record");
-  editRunAt.value = taskRunAtValue(task);
-}
-
-function cancelEditTask() {
-  editingTaskId.value = "";
-  editText.value = "";
-  editTaskType.value = "generic";
-  editTriggerText.value = "";
-  editActionType.value = "project_chat";
-  editRunAt.value = "";
-}
-
-function saveEditedTask() {
-  const task = editingTask.value;
-  if (!task) return;
-  if (!canEditTask(task)) {
-    window.alert("进行中的任务不允许编辑");
-    cancelEditTask();
-    return;
-  }
-  const description = String(editText.value || "").trim();
-  if (!description) return;
-  updateTask(
-    task.id,
-    buildTaskPayloadFromForm({
-      description,
-      taskType: editTaskType.value,
-      triggerText: editTriggerText.value,
-      actionType: editActionType.value,
-      runAtValue: editRunAt.value,
+async function refreshLocalAiTaskRuntimeStates() {
+  refreshLocalAiTasks();
+  if (!hasNativeDesktopBridge()) return;
+  const activeTasksSnapshot = listLocalAiTasks({ activeOnly: true });
+  await Promise.all(
+    activeTasksSnapshot.map(async (task) => {
+      if (!task.projectId || !task.chatSessionId || !task.workspacePath) return;
+      const result = await recoverNativeLiuAgentRuntimeState({
+        projectId: task.projectId,
+        chatSessionId: task.chatSessionId,
+        workspacePath: task.workspacePath,
+      }).catch(() => null);
+      if (!result?.ok) return;
+      const state = result.state && typeof result.state === "object" ? result.state : {};
+      const runState = state.run_state && typeof state.run_state === "object" ? state.run_state : {};
+      const runtimeStatus = String(runState.status || state.current_state?.status || "").trim().toLowerCase();
+      const status = {
+        running: "running",
+        waiting_approval: "waiting_approval",
+        waiting_user: "waiting_user",
+        paused: "interrupted",
+        interrupted: "interrupted",
+        done: "done",
+        completed: "done",
+        failed: "failed",
+        cancelled: "cancelled",
+      }[runtimeStatus];
+      if (!status) return;
+      if (task.status === "cancelling") return;
+      if (task.status === "cancelled" && ["paused", "interrupted"].includes(runtimeStatus)) {
+        return;
+      }
+      updateLocalAiTask(task.id, {
+        status,
+        recoverable: ["interrupted", "failed"].includes(status),
+        currentStep: status === "running" ? "本地 Runtime 正在执行" : task.currentStep,
+        statePath: state.state_path || runState.state_path || task.statePath,
+      });
     }),
   );
-  cancelEditTask();
-  refreshTasks();
+  refreshLocalAiTasks();
 }
 
-function isTaskEnabled(task) {
-  if (Array.isArray(task.triggers) && task.triggers.length) {
-    return task.triggers.some((trigger) => trigger?.enabled !== false);
-  }
-  return task.listen_enabled !== false;
+function openTaskChat(task, action = "") {
+  if (!task.projectId || !task.chatSessionId) return;
+  void openRouteInDesktop(router, {
+    path: "/ai/chat",
+    query: {
+      project_id: task.projectId,
+      chat_session_id: task.chatSessionId,
+      local_runtime_task: "1",
+      local_runtime_task_action: action,
+      local_ai_task_id: task.id,
+    },
+  }, {
+    mode: "focus-or-open",
+    appId: "chat",
+    title: "项目 AI 对话",
+    eyebrow: "Project Chat",
+    targetWindowId: task.originWindowId,
+  });
 }
 
-function toggleTaskEnabled(task) {
-  if (!canEditTask(task)) {
-    window.alert("进行中的任务不允许编辑");
+function deleteTask(task) {
+  if (!isTaskRemovable(task)) {
+    ElMessage.warning("仅已完成、失败或已取消的任务可以删除记录");
     return;
   }
-  const nextEnabled = !isTaskEnabled(task);
-  const triggers = Array.isArray(task.triggers)
-    ? task.triggers.map((trigger) => ({ ...trigger, enabled: nextEnabled }))
-    : [];
-  updateTask(task.id, {
-    listen_enabled: nextEnabled,
-    triggers,
+  if (!deleteLocalAiTask(task.id)) {
+    ElMessage.warning("任务记录不存在或已被删除");
+    return;
+  }
+  refreshLocalAiTasks();
+  ElMessage.success("任务记录已删除");
+}
+
+async function cancelTask(task) {
+  if (cancellingTaskIds.value.has(task.id)) return;
+  cancellingTaskIds.value = new Set([...cancellingTaskIds.value, task.id]);
+  updateLocalAiTask(task.id, {
+    status: "cancelling",
+    currentStep: "正在停止本地 Runtime",
+    recoverable: false,
   });
-  refreshTasks();
+  refreshLocalAiTasks();
+  const result = await Promise.race([
+    pauseNativeLiuAgentLocalChat({
+      projectId: task.projectId,
+      chatSessionId: task.chatSessionId,
+      workspacePath: task.workspacePath,
+      reason: "manual_pause",
+    })
+      .then((paused) => ({ completed: true, paused }))
+      .catch(() => ({ completed: true, paused: false })),
+    new Promise((resolve) => {
+      window.setTimeout(() => resolve({ completed: false, paused: false }), 5000);
+    }),
+  ]);
+  cancellingTaskIds.value = new Set(
+    [...cancellingTaskIds.value].filter((taskId) => taskId !== task.id),
+  );
+  if (result.paused) {
+    updateLocalAiTask(task.id, {
+      status: "cancelled",
+      currentStep: "任务已取消",
+      recoverable: false,
+    });
+    refreshLocalAiTasks();
+    openTaskChat(task, "cancelled");
+    ElMessage.success("已停止本地 AI Runtime");
+    return;
+  }
+  updateLocalAiTask(task.id, {
+    status: "interrupted",
+    currentStep: result.completed ? "未能停止本地 Runtime" : "停止请求超时",
+    lastOutput: result.completed
+      ? "本地 Runtime 未接受取消请求，请打开原会话重试。"
+      : "本地 Runtime 暂未响应取消请求，请打开原会话重试。",
+    recoverable: true,
+  });
+  refreshLocalAiTasks();
+  ElMessage.error("未能停止本地 Runtime，已标记为可恢复，请在原会话重试");
 }
 
-function removeTask(task) {
-  if (!window.confirm(`确定删除任务“${task.title}”？`)) return;
-  deleteTask(task.id);
-  refreshTasks();
-}
-
-function statusLabel(status) {
-  if (status === "doing") return "进行中";
-  if (status === "done") return "已完成";
-  return "待处理";
-}
-
-function sourceLabel(source) {
-  if (source === "global-assistant") return "系统状态助手";
-  return "任务模块";
-}
-
-function taskTypeLabel(type) {
-  return taskTypeOptions.find((item) => item.value === type)?.label || "通用任务";
-}
-
-function actionLabel(type) {
-  return actionTypeOptions.find((item) => item.value === type)?.label || "记录执行";
+function localAiTaskStatusLabel(status) {
+  return {
+    queued: "排队中",
+    running: "运行中",
+    waiting_approval: "等待授权",
+    waiting_user: "等待输入",
+    reconnecting: "准备续跑",
+    cancelling: "正在取消",
+    interrupted: "可恢复",
+    done: "已完成",
+    failed: "执行失败",
+    cancelled: "已取消",
+  }[String(status || "").trim()] || "本地任务";
 }
 
 function formatTaskTime(value) {
@@ -447,26 +283,24 @@ function formatTaskTime(value) {
   }).format(date);
 }
 
-function handleTasksUpdated() {
-  refreshTasks();
-}
-
-function handleEditorKeydown(event) {
-  if (event.key === "Escape" && editingTaskId.value) {
-    cancelEditTask();
-  }
+function handleLocalAiTasksUpdated() {
+  refreshLocalAiTasks();
 }
 
 onMounted(() => {
-  refreshTasks();
-  void syncTasksToServer(tasks.value);
-  window.addEventListener(TASKS_UPDATED_EVENT, handleTasksUpdated);
-  window.addEventListener("keydown", handleEditorKeydown);
+  void refreshLocalAiTaskRuntimeStates();
+  localAiTaskRefreshTimer = window.setInterval(() => {
+    void refreshLocalAiTaskRuntimeStates();
+  }, 3000);
+  window.addEventListener(LOCAL_AI_TASKS_UPDATED_EVENT, handleLocalAiTasksUpdated);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener(TASKS_UPDATED_EVENT, handleTasksUpdated);
-  window.removeEventListener("keydown", handleEditorKeydown);
+  if (localAiTaskRefreshTimer !== null) {
+    window.clearInterval(localAiTaskRefreshTimer);
+    localAiTaskRefreshTimer = null;
+  }
+  window.removeEventListener(LOCAL_AI_TASKS_UPDATED_EVENT, handleLocalAiTasksUpdated);
 });
 </script>
 
@@ -477,14 +311,13 @@ onBeforeUnmount(() => {
   padding: 30px;
   overflow: hidden;
   color: #0f172a;
-  background:
-    radial-gradient(circle at 14% 4%, rgba(56, 189, 248, 0.18), transparent 30%),
-    linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.92));
+  background: radial-gradient(circle at 14% 4%, rgba(56, 189, 248, 0.18), transparent 30%), linear-gradient(180deg, #f8fafc, #f1f5f9);
 }
 
 .task-manager__ambient {
   position: absolute;
-  inset: auto -120px -180px auto;
+  right: -120px;
+  bottom: -180px;
   width: 360px;
   height: 360px;
   border-radius: 999px;
@@ -494,10 +327,7 @@ onBeforeUnmount(() => {
 }
 
 .task-manager__hero,
-.task-manager__composer,
-.task-manager__toolbar,
-.task-card,
-.task-manager__empty {
+.local-task-panel {
   position: relative;
   z-index: 1;
 }
@@ -505,413 +335,215 @@ onBeforeUnmount(() => {
 .task-manager__hero {
   display: flex;
   justify-content: space-between;
-  gap: 20px;
+  gap: 24px;
   align-items: flex-start;
-  margin-bottom: 22px;
+  margin-bottom: 24px;
 }
 
 .task-manager__eyebrow {
-  display: inline-flex;
-  margin-bottom: 8px;
   color: #2563eb;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
-.task-manager h1 {
+.task-manager h1,
+.local-task-panel h2,
+.local-task-card h3 {
   margin: 0;
-  font-size: 34px;
-  letter-spacing: -0.04em;
 }
 
-.task-manager p {
+.task-manager h1 {
+  margin-top: 8px;
+  font-size: 32px;
+}
+
+.task-manager__hero p {
+  max-width: 620px;
   margin: 8px 0 0;
   color: #64748b;
-  line-height: 1.7;
+  line-height: 1.55;
 }
 
 .task-manager__stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(86px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(4, minmax(78px, 1fr));
+  gap: 8px;
+  min-width: 360px;
 }
 
 .task-manager__stats span {
-  padding: 12px 14px;
+  display: grid;
+  gap: 3px;
+  padding: 12px;
   border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.76);
+  border-radius: 16px;
   color: #64748b;
-  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  text-align: center;
 }
 
 .task-manager__stats strong {
-  display: block;
   color: #0f172a;
   font-size: 22px;
 }
 
-.task-manager__composer {
-  padding: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.1);
+.local-task-panel {
+  padding: 20px;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: 26px;
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.94), rgba(255, 255, 255, 0.9));
+  box-shadow: 0 18px 48px rgba(37, 99, 235, 0.1);
 }
 
-.task-manager__editor {
-  position: relative;
-  z-index: 21;
-  box-sizing: border-box;
-  width: min(760px, 100%);
-  max-height: calc(100vh - 48px);
-  overflow: auto;
-  padding: 16px;
-  border: 1px solid rgba(37, 99, 235, 0.18);
-  border-radius: 24px;
-  background: #f8fbff;
-  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.24);
-}
-
-.task-manager__modal {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-}
-
-.task-manager__modal-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.46);
-  backdrop-filter: blur(4px);
-}
-
-.task-manager__editor-head {
+.local-task-panel__head,
+.local-task-card__head,
+.local-task-card__meta,
+.local-task-card__actions {
   display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  align-items: flex-start;
-  margin-bottom: 12px;
-}
-
-.task-manager__editor h2 {
-  margin: 0;
-  font-size: 20px;
-}
-
-.task-manager__composer textarea,
-.task-manager__editor textarea {
-  box-sizing: border-box;
-  width: 100%;
-  border: none;
-  outline: none;
-  resize: vertical;
-  min-height: 82px;
-  border-radius: 16px;
-  padding: 14px 16px;
-  color: #0f172a;
-  background: rgba(241, 245, 249, 0.86);
-  font: inherit;
-  line-height: 1.6;
-}
-
-.task-manager__composer-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: center;
   gap: 10px;
-  margin-top: 12px;
 }
 
-.task-manager__composer-grid label {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  color: #475569;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.task-manager__composer-grid input,
-.task-manager__composer-grid select {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 12px;
-  outline: none;
-  padding: 9px 10px;
-  color: #0f172a;
-  background: #ffffff;
-  font: inherit;
-}
-
-.task-manager__composer-footer {
-  display: flex;
+.local-task-panel__head,
+.local-task-card__head {
   justify-content: space-between;
-  gap: 14px;
-  align-items: center;
-  margin-top: 12px;
-  color: #64748b;
+}
+
+.local-task-panel h2 {
+  margin-top: 5px;
+  font-size: 21px;
+}
+
+.local-task-panel__count {
+  color: #2563eb;
   font-size: 13px;
-}
-
-.task-manager__modal-actions {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  align-items: center;
-  margin-top: 12px;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.task-manager__modal-actions div {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.task-manager button {
-  border: none;
-  cursor: pointer;
-  font: inherit;
-}
-
-.task-manager button:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.task-manager__composer button,
-.task-manager__editor button,
-.task-card__actions button,
-.task-manager__toolbar button {
-  border-radius: 999px;
-  padding: 9px 14px;
-  color: #1d4ed8;
-  background: rgba(219, 234, 254, 0.9);
   font-weight: 700;
 }
 
-.task-manager__composer button {
-  color: #ffffff;
-  background: linear-gradient(135deg, #2563eb, #06b6d4);
-  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.24);
+.local-task-panel__list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
 }
 
-.task-manager__editor button[type="submit"] {
-  color: #ffffff;
-  background: #2563eb;
-  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.18);
+.local-task-card {
+  padding: 17px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.88);
 }
 
-.task-manager__editor button.is-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
+.local-task-card__head {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.local-task-card__status {
   border-radius: 999px;
-  padding: 0;
+  padding: 4px 9px;
+  color: #2563eb;
+  background: #dbeafe;
+  font-weight: 800;
+}
+
+.local-task-card__status.is-done { color: #15803d; background: #dcfce7; }
+.local-task-card__status.is-failed { color: #b91c1c; background: #fee2e2; }
+.local-task-card__status.is-cancelled { color: #64748b; background: #e2e8f0; }
+.local-task-card__status.is-waiting_approval,
+.local-task-card__status.is-waiting_user,
+.local-task-card__status.is-reconnecting,
+.local-task-card__status.is-interrupted { color: #a16207; background: #fef3c7; }
+
+.local-task-card__project {
+  flex: 1;
   color: #475569;
-  background: rgba(226, 232, 240, 0.95);
-  font-size: 22px;
-  line-height: 1;
 }
 
-.task-manager__editor button.is-muted {
+.local-task-card h3 {
+  margin-top: 13px;
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.local-task-card__step {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 11px 12px;
+  border-radius: 13px;
+  background: #f8fafc;
+}
+
+.local-task-card__step span,
+.local-task-card__meta {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.local-task-card__step strong {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.local-task-card__output {
+  margin: 10px 0 0;
   color: #475569;
-  background: rgba(226, 232, 240, 0.95);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
-.task-manager__toolbar {
-  display: flex;
-  gap: 10px;
-  margin: 18px 0;
+.local-task-card__meta {
+  margin-top: 12px;
 }
 
-.task-manager__toolbar button.is-active {
-  color: #ffffff;
-  background: #0f172a;
+.local-task-card__actions {
+  justify-content: flex-end;
+  margin-top: 14px;
 }
+
+.task-manager button {
+  border: 0;
+  border-radius: 999px;
+  padding: 9px 14px;
+  color: #1d4ed8;
+  background: #dbeafe;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.task-manager button:hover { filter: brightness(0.97); }
+.task-manager button.is-primary { color: #fff; background: linear-gradient(135deg, #2563eb, #06b6d4); }
+.task-manager button.is-danger { color: #b91c1c; background: #fee2e2; }
 
 .task-manager__empty {
   display: grid;
   place-items: center;
   gap: 8px;
   min-height: 220px;
+  margin-top: 16px;
   border: 1px dashed rgba(148, 163, 184, 0.5);
-  border-radius: 24px;
+  border-radius: 20px;
   color: #64748b;
-  background: rgba(255, 255, 255, 0.58);
+  text-align: center;
 }
 
-.task-manager__empty strong {
-  color: #0f172a;
-  font-size: 20px;
-}
-
-.task-manager__list {
-  display: grid;
-  gap: 14px;
-}
-
-.task-card {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
-}
-
-.task-card.is-done {
-  opacity: 0.72;
-}
-
-.task-card.is-disabled {
-  border-color: rgba(148, 163, 184, 0.34);
-  background: rgba(248, 250, 252, 0.78);
-}
-
-.task-card.is-disabled h2,
-.task-card.is-disabled p {
-  color: #64748b;
-}
-
-.task-card__head,
-.task-card__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.task-card__status,
-.task-card__source,
-.task-card__enabled {
-  display: inline-flex;
-  border-radius: 999px;
-  padding: 4px 9px;
-  color: #2563eb;
-  background: rgba(219, 234, 254, 0.9);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.task-card__source {
-  color: #0f766e;
-  background: rgba(204, 251, 241, 0.86);
-}
-
-.task-card__enabled {
-  color: #15803d;
-  background: rgba(220, 252, 231, 0.9);
-}
-
-.task-card__enabled.is-disabled {
-  color: #64748b;
-  background: rgba(226, 232, 240, 0.9);
-}
-
-.task-card h2 {
-  margin: 10px 0 0;
-  font-size: 18px;
-}
-
-.task-card__meta,
-.task-card__phrases {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.task-card__meta span,
-.task-card__phrases span {
-  display: inline-flex;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 10px;
-  padding: 4px 8px;
-  color: #475569;
-  background: rgba(248, 250, 252, 0.92);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.task-card__phrases span {
-  color: #7c2d12;
-  background: rgba(255, 247, 237, 0.96);
-}
-
-.task-card time {
-  display: inline-flex;
-  margin-top: 12px;
-  color: #94a3b8;
-  font-size: 12px;
-}
-
-.task-card__actions {
-  align-content: flex-start;
-  justify-content: flex-end;
-  min-width: 260px;
-}
-
-.task-card__actions button.is-enable {
-  color: #15803d;
-  background: rgba(220, 252, 231, 0.95);
-}
-
-.task-card__actions button.is-muted {
-  color: #475569;
-  background: rgba(226, 232, 240, 0.95);
-}
-
-.task-card__actions button.is-danger {
-  color: #b91c1c;
-  background: rgba(254, 226, 226, 0.9);
-}
+.task-manager__empty strong { color: #0f172a; font-size: 19px; }
 
 @media (max-width: 760px) {
-  .task-manager {
-    padding: 20px;
-  }
-
-  .task-manager__hero,
-  .task-card,
-  .task-manager__composer-footer,
-  .task-manager__modal-actions {
-    flex-direction: column;
-  }
-
-  .task-manager__stats {
-    width: 100%;
-  }
-
-  .task-manager__composer-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .task-manager__modal {
-    padding: 16px;
-  }
-
-  .task-manager__modal-actions {
-    align-items: stretch;
-  }
-
-  .task-manager__modal-actions div {
-    justify-content: flex-end;
-  }
-
-  .task-card__actions {
-    min-width: 0;
-    justify-content: flex-start;
-  }
+  .task-manager { padding: 20px; }
+  .task-manager__hero { flex-direction: column; }
+  .task-manager__stats { width: 100%; min-width: 0; }
+  .local-task-card__head { align-items: flex-start; flex-wrap: wrap; }
+  .local-task-card__project { flex-basis: 100%; order: 3; }
+  .local-task-card__meta,
+  .local-task-card__actions { align-items: flex-start; flex-wrap: wrap; }
+  .local-task-card__actions { justify-content: flex-start; }
 }
 </style>

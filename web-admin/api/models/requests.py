@@ -850,33 +850,6 @@ class GlobalAssistantSpeechReq(BaseModel):
     text: str = Field(default="", max_length=4000)
 
 
-class GlobalAssistantTaskReq(BaseModel):
-    id: str = ""
-    title: str = ""
-    description: str = ""
-    status: Literal["todo", "doing", "done"] = "todo"
-    source: str = "manual"
-    task_type: str = "generic"
-    listen_enabled: bool = True
-    trigger_phrases: list[str] = Field(default_factory=list)
-    triggers: list[dict[str, Any]] = Field(default_factory=list)
-    actions: list[dict[str, Any]] = Field(default_factory=list)
-    next_run_at: str = ""
-
-
-class GlobalAssistantTaskUpdateReq(BaseModel):
-    title: str | None = None
-    description: str | None = None
-    status: Literal["todo", "doing", "done"] | None = None
-    source: str | None = None
-    task_type: str | None = None
-    listen_enabled: bool | None = None
-    trigger_phrases: list[str] | None = None
-    triggers: list[dict[str, Any]] | None = None
-    actions: list[dict[str, Any]] | None = None
-    next_run_at: str | None = None
-
-
 class ReviewReq(BaseModel):
     reviewed_by: str
     action: str

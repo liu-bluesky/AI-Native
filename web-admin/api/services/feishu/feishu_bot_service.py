@@ -59,12 +59,6 @@ from services.feishu.feishu_archive_writer_service import (
     archive_feishu_task_message,
     is_feishu_auto_archive_action,
 )
-from services.assistant.global_assistant_task_service import (
-    execute_global_assistant_task,
-    list_global_assistant_tasks,
-    process_global_assistant_tasks_for_event,
-)
-from services.feishu.feishu_scheduled_reminder_service import create_feishu_meeting_reminder_task
 from services.providers.system_speech_service import enqueue_system_speech
 
 logger = logging.getLogger(__name__)
@@ -2602,65 +2596,6 @@ def _looks_like_feishu_archive_confirmation(text: str) -> bool:
         "确认保存",
         "确认归档",
     }
-
-
-def _process_feishu_archive_tasks_after_reply(
-    *,
-    username: str,
-    project_id: str,
-    message_text: str,
-    reply_content: str,
-    source_context: dict[str, Any],
-    already_matched_tasks: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    text = str(reply_content or "")
-    has_structured_archive_payload = all(
-        item in text
-        for item in ("【待归档类型】", "【待归档状态】", "【结构化内容】")
-    )
-    if not has_structured_archive_payload and not _reply_contains_direct_bitable_pending_archive(text):
-        return []
-    archive_context = {
-        **source_context,
-        **_extract_direct_bitable_archive_context(reply_content),
-        "archive_input": "assistant_structured_reply",
-    }
-    succeeded_task_ids = {
-        str(task.get("id") or "").strip()
-        for task in already_matched_tasks
-        if _task_archive_write_succeeded(task)
-    }
-    archive_message = "\n\n".join(
-        item
-        for item in (
-            str(message_text or "").strip(),
-            "机器人整理结果：",
-            str(reply_content or "").strip(),
-        )
-        if item
-    )
-    processed: list[dict[str, Any]] = []
-    for task in list_global_assistant_tasks(username=username, project_id=project_id, include_done=False):
-        task_id = str(task.get("id") or "").strip()
-        if not task_id or task_id in succeeded_task_ids:
-            continue
-        if not bool(task.get("listen_enabled", True)):
-            continue
-        if not _task_uses_auto_archive_workflow(task):
-            continue
-        executed = execute_global_assistant_task(
-            username=username,
-            project_id=project_id,
-            task_id=task_id,
-            trigger_type="event",
-            message_text=archive_message,
-            match_reason="assistant-structured-archive",
-            source_context=archive_context,
-            action_filter=_is_auto_archive_project_chat_action,
-        )
-        if executed:
-            processed.append({**task, "latest_execution": executed.get("latest_execution")})
-    return processed
 
 
 def _process_direct_bitable_attachment_after_reply(reply_content: str) -> dict[str, Any] | None:

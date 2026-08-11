@@ -95,14 +95,6 @@ from services.connectors.project_host_command_service import (
 )
 from services.projects.project_voice_service import get_project_voice_service
 from services.providers.system_speech_service import enqueue_system_speech
-from services.assistant.global_assistant_task_service import (
-    delete_global_assistant_task,
-    _infer_natural_schedule_time,
-    _parse_iso_datetime,
-    list_global_assistant_tasks,
-    update_global_assistant_task,
-    upsert_global_assistant_task,
-)
 from services.assistant.assistant_workflow_state_service import (
     detect_assistant_task_types,
     evolve_assistant_workflow_state,
@@ -211,8 +203,6 @@ from models.requests import (
     ProjectUserAddReq,
     ProjectUpdateReq,
     GlobalAssistantSpeechReq,
-    GlobalAssistantTaskReq,
-    GlobalAssistantTaskUpdateReq,
     ExternalUrlOpenReq,
     WorkspaceDirectoryPickReq,
     WorkspaceFilePickReq,
@@ -12859,19 +12849,6 @@ async def play_global_assistant_system_speech(
     return {"status": "queued", **result}
 
 
-@router.get("/chat/global/tasks")
-async def list_global_assistant_task_items(
-    auth_payload: dict = Depends(require_auth),
-    x_project_id: str | None = Header(None),
-):
-    _ensure_permission(auth_payload, "menu.ai.chat")
-    tasks = list_global_assistant_tasks(
-        username=_current_username(auth_payload),
-        project_id=str(x_project_id or "").strip(),
-    )
-    return {"tasks": tasks}
-
-
 def _extract_global_task_classifier_json(value: str) -> dict[str, Any]:
     text = str(value or "").strip()
     if not text:
@@ -13150,69 +13127,6 @@ async def _classify_global_assistant_task_creation(
     except Exception as exc:
         logger.info("global assistant task creation classification skipped: %s", exc)
         return task
-
-
-@router.post("/chat/global/tasks")
-async def upsert_global_assistant_task_item(
-    req: GlobalAssistantTaskReq,
-    auth_payload: dict = Depends(require_auth),
-    x_project_id: str | None = Header(None),
-):
-    _ensure_permission(auth_payload, "menu.ai.chat")
-    description = str(req.description or req.title or "").strip()
-    if not description:
-        raise HTTPException(400, "description is required")
-    try:
-        task_payload = await _classify_global_assistant_task_creation(
-            req.model_dump(),
-            auth_payload=auth_payload,
-        )
-        task = upsert_global_assistant_task(
-            username=_current_username(auth_payload),
-            project_id=str(x_project_id or "").strip(),
-            task=task_payload,
-        )
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    return {"task": task}
-
-
-@router.put("/chat/global/tasks/{task_id}")
-async def update_global_assistant_task_item(
-    task_id: str,
-    req: GlobalAssistantTaskUpdateReq,
-    auth_payload: dict = Depends(require_auth),
-    x_project_id: str | None = Header(None),
-):
-    _ensure_permission(auth_payload, "menu.ai.chat")
-    updates = {key: value for key, value in req.model_dump().items() if value is not None}
-    try:
-        task = update_global_assistant_task(
-            username=_current_username(auth_payload),
-            project_id=str(x_project_id or "").strip(),
-            task_id=task_id,
-            updates=updates,
-        )
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    if task is None:
-        raise HTTPException(404, "task not found")
-    return {"task": task}
-
-
-@router.delete("/chat/global/tasks/{task_id}")
-async def delete_global_assistant_task_item(
-    task_id: str,
-    auth_payload: dict = Depends(require_auth),
-):
-    _ensure_permission(auth_payload, "menu.ai.chat")
-    deleted = delete_global_assistant_task(
-        username=_current_username(auth_payload),
-        task_id=task_id,
-    )
-    if not deleted:
-        raise HTTPException(404, "task not found")
-    return {"status": "deleted"}
 
 
 @router.post("/chat/global/voice-output/speech")

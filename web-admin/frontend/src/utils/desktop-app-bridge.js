@@ -93,6 +93,7 @@ export function requestDesktopOpenPath(path, options = {}) {
     summary: String(options.summary || "").trim(),
     eyebrow: String(options.eyebrow || "").trim(),
     params: options.params && typeof options.params === "object" ? options.params : {},
+    targetWindowId: String(options.targetWindowId || "").trim(),
     requestId: String(options.requestId || "").trim(),
   });
 }

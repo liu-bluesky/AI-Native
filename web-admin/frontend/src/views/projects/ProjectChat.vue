@@ -3017,6 +3017,11 @@ import { useProjectChatSettings } from "@/modules/project-chat/composables/usePr
 import { useProjectChatTerminal } from "@/modules/project-chat/composables/useProjectChatTerminal.js";
 import { useProjectChatTransport } from "@/modules/project-chat/composables/useProjectChatTransport.js";
 import api from "@/utils/api.js";
+import {
+  getLocalAiTask,
+  registerLocalAiTask,
+  updateLocalAiTask,
+} from "@/utils/local-ai-task-store.js";
 import { fetchProjectMcpRuntimeCatalog } from "@/modules/project-chat/services/projectChatMcpRuntimeApi.js";
 // ============================================================
 // 权限、认证、字典、项目
@@ -3382,6 +3387,9 @@ import {
 } from "@/modules/project-chat/constants/settingsCenterConfig.js";
 
 const CREATE_CHAT_SESSION_QUERY_KEY = "create_chat_session";
+const LOCAL_RUNTIME_TASK_QUERY_KEY = "local_runtime_task";
+const LOCAL_RUNTIME_TASK_ACTION_QUERY_KEY = "local_runtime_task_action";
+const LOCAL_AI_TASK_ID_QUERY_KEY = "local_ai_task_id";
 const DEFAULT_AI_ENTRY_FILE = "AIENTRY.md";
 
 const route = useRoute();
@@ -23131,7 +23139,14 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
   const operationMatch = findMessageOperationById(
     operation?.id || operation?.operationId,
   );
-  const row = operationMatch?.row || null;
+  const row =
+    operationMatch?.row ||
+    (operation?.rowId
+      ? messages.value.find(
+          (item) => String(item?.id || "").trim() === String(operation.rowId).trim(),
+        )
+      : null) ||
+    null;
   const currentOperation = operationMatch?.operation || operation;
   const meta =
     currentOperation?.meta && typeof currentOperation.meta === "object"
@@ -23637,14 +23652,6 @@ async function continueLocalLiuAgentChatPermission(
         ...localLiuAgentRuntimeTimingSourceContext(row),
       },
     });
-    await syncLocalLiuAgentRuntimeOutbox({
-      projectId: selectedProjectId.value,
-      chatSessionId: pending.activeChatSessionId,
-      workspacePath: String(localChatPayload?.workspacePath || "").trim(),
-      rootGoal: pending.displayUserMessageContent || pending.finalUserPrompt,
-      messageId: pending.userMessageId,
-      assistantMessageId: row.id,
-    });
     return;
   }
   const operations = Array.isArray(result?.operations) ? result.operations : [];
@@ -23705,14 +23712,6 @@ async function continueLocalLiuAgentChatPermission(
       ).trim(),
       ...localLiuAgentRuntimeTimingSourceContext(row),
     },
-  });
-  await syncLocalLiuAgentRuntimeOutbox({
-    projectId: selectedProjectId.value,
-    chatSessionId: pending.activeChatSessionId,
-    workspacePath: String(localChatPayload?.workspacePath || "").trim(),
-    rootGoal: pending.displayUserMessageContent || pending.finalUserPrompt,
-    messageId: pending.userMessageId,
-    assistantMessageId: row.id,
   });
 }
 
@@ -25534,6 +25533,12 @@ function routeChatTarget() {
     projectId: routeProjectId || resolveSettingsRouteProjectId(),
     chatSessionId: String(route.query.chat_session_id || "").trim(),
     createNewSession,
+    localRuntimeTask:
+      String(route.query[LOCAL_RUNTIME_TASK_QUERY_KEY] || "").trim() === "1",
+    localRuntimeTaskAction: String(
+      route.query[LOCAL_RUNTIME_TASK_ACTION_QUERY_KEY] || "",
+    ).trim(),
+    localAiTaskId: String(route.query[LOCAL_AI_TASK_ID_QUERY_KEY] || "").trim(),
     messageId: String(route.query.message_id || "").trim(),
   };
 }
@@ -25555,6 +25560,89 @@ function clearRouteCreateChatSessionFlag() {
   const nextQuery = { ...route.query };
   delete nextQuery[CREATE_CHAT_SESSION_QUERY_KEY];
   void router.replace({ query: nextQuery }).catch(() => {});
+}
+
+function clearLocalRuntimeTaskRouteAction() {
+  if (!String(route.query[LOCAL_RUNTIME_TASK_ACTION_QUERY_KEY] || "").trim()) return;
+  const nextQuery = { ...route.query };
+  delete nextQuery[LOCAL_RUNTIME_TASK_ACTION_QUERY_KEY];
+  void router.replace({ query: nextQuery }).catch(() => {});
+}
+
+function findLocalRuntimeResumeOperation(projectId, chatSessionId, localTaskId = "") {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedSessionId = String(chatSessionId || "").trim();
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const row = messages.value[index];
+    if (!row || String(row.role || "").trim() !== "assistant") continue;
+    const operation = messageOperations(row).find((item) => {
+      const meta = item?.meta && typeof item.meta === "object" ? item.meta : {};
+      return (
+        String(meta.local_liuagent_operation || "").trim() === "true" &&
+        String(meta.local_liuagent_recoverable || "").trim() === "true" &&
+        String(meta.project_id || normalizedProjectId).trim() === normalizedProjectId &&
+        String(meta.chat_session_id || "").trim() === normalizedSessionId
+      );
+    });
+    if (operation) return operation;
+  }
+  const task = getLocalAiTask(localTaskId);
+  if (
+    !task ||
+    task.projectId !== normalizedProjectId ||
+    task.chatSessionId !== normalizedSessionId ||
+    !task.assistantMessageId ||
+    !task.workspacePath
+  ) {
+    return null;
+  }
+  const row = messages.value.find(
+    (item) => String(item?.id || "").trim() === task.assistantMessageId,
+  );
+  if (!row) return null;
+  return {
+    id: `local-agent:${row.id}`,
+    rowId: row.id,
+    meta: {
+      local_liuagent_operation: "true",
+      local_liuagent_recoverable: "true",
+      source: "tauri_liuagent_local_chat",
+      project_id: task.projectId,
+      chat_session_id: task.chatSessionId,
+      user_message_id: task.userMessageId,
+      root_goal: task.title,
+      cwd: task.workspacePath,
+      recovery_reason: "task_center_resume",
+    },
+  };
+}
+
+async function applyLocalRuntimeTaskRouteAction() {
+  const target = routeChatTarget();
+  const action = String(target.localRuntimeTaskAction || "").trim();
+  if (!target.localRuntimeTask || !action) return;
+  if (
+    target.projectId !== String(selectedProjectId.value || "").trim() ||
+    target.chatSessionId !== String(currentChatSessionId.value || "").trim()
+  ) {
+    return;
+  }
+  clearLocalRuntimeTaskRouteAction();
+  if (action === "cancelled") {
+    await cancelActiveLocalLiuAgentRun({ runtimeAlreadyPaused: true });
+    return;
+  }
+  if (action !== "resume") return;
+  const operation = findLocalRuntimeResumeOperation(
+    target.projectId,
+    target.chatSessionId,
+    target.localAiTaskId,
+  );
+  if (!operation) {
+    ElMessage.warning("未找到可恢复的本地 AI 任务，请在会话中检查当前状态");
+    return;
+  }
+  await submitLocalLiuAgentResume(operation);
 }
 
 async function focusChatComposerTextarea() {
@@ -29566,9 +29654,28 @@ async function fetchChatSessions(
     const remembered =
       options.useRemembered === false ? "" : restoreChatSession(projectId);
     const preferred = String(preferredSessionId || "").trim() || remembered;
-    const storedSessions = normalizeVisibleChatSessions(
+    let storedSessions = normalizeVisibleChatSessions(
       await readLocalChatSessions(projectId),
     );
+    if (
+      routeChatTarget().localRuntimeTask &&
+      preferred &&
+      !storedSessions.some((session) => String(session?.id || "").trim() === preferred)
+    ) {
+      storedSessions = [
+        {
+          id: preferred,
+          project_id: String(projectId || "").trim(),
+          title: "本地 AI 长任务",
+          preview: "从任务中心打开的本地 Runtime 会话",
+          source: "local_runtime_task",
+          created_at: "",
+          updated_at: "",
+          last_message_at: "",
+        },
+        ...storedSessions,
+      ];
+    }
     let remoteSessions = [];
     if (!hasNativeDesktopBridge()) {
       try {
@@ -32646,6 +32753,20 @@ async function sendLocalLiuAgentChatRequest({
     cancelled: false,
     startedAt: Date.now(),
   };
+  const localTask = registerLocalAiTask({
+    projectId,
+    projectName: currentProjectLabel.value,
+    chatSessionId: activeChatSessionId,
+    assistantMessageId: assistantMessage.id,
+    userMessageId: userMessage.id,
+    title: displayUserMessageContent || finalUserPrompt,
+    status: "running",
+    currentStep: resumeFromCheckpoint ? "从 checkpoint 继续执行" : "正在调用本地 AI Runtime",
+    workspacePath,
+    originWindowId: new URLSearchParams(window.location.search).get("desktop_window_id") || "",
+    recoverable: true,
+  });
+  activeRun.localTaskId = localTask.id;
   applyLocalLiuAgentRuntimeTiming(assistantMessage, {
     startedAt: activeRun.startedAt,
     running: true,
@@ -32686,11 +32807,23 @@ async function sendLocalLiuAgentChatRequest({
     await startNativeLiuAgentRuntimeEventSubscription();
     result = await startNativeLiuAgentLocalChat(localChatPayload);
   } catch (err) {
+    updateLocalAiTask(activeRun.localTaskId, {
+      status: "failed",
+      currentStep: "本地 Runtime 启动失败",
+      lastOutput: String(err?.message || "桌面端本地任务启动失败").trim(),
+      recoverable: true,
+    });
     deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
     syncChatLoadingWithCurrentSession();
     throw err;
   }
   if (activeRun.cancelled) {
+    updateLocalAiTask(activeRun.localTaskId, {
+      status: "interrupted",
+      currentStep: "已暂停，等待继续执行",
+      lastOutput: "本地 Runtime 已保留 checkpoint。",
+      recoverable: true,
+    });
     const replacementRun =
       localLiuAgentActiveRunForChatSession(activeChatSessionId);
     if (replacementRun && replacementRun !== activeRun) {
@@ -32781,6 +32914,12 @@ async function sendLocalLiuAgentChatRequest({
     result?.errorCode || result?.error_code || "",
   ).trim();
   if (runtimePauseCode === "runtime.paused") {
+    updateLocalAiTask(activeRun.localTaskId, {
+      status: "interrupted",
+      currentStep: "已暂停，等待继续执行",
+      lastOutput: String(assistantMessage.content || LOCAL_LIUAGENT_PAUSE_SUMMARY).trim(),
+      recoverable: true,
+    });
     const recoveryReason = "manual_pause";
     ensureMessageAnswerId(assistantMessage);
     pauseOpenMessageOperations(assistantMessage);
@@ -32864,6 +33003,12 @@ async function sendLocalLiuAgentChatRequest({
   const localPermissionRequest =
     localLiuAgentPermissionRequestFromChatResult(result);
   if (localPermissionRequest) {
+    updateLocalAiTask(activeRun.localTaskId, {
+      status: "waiting_approval",
+      currentStep: "等待本机工具授权",
+      lastOutput: "本地工具调用已暂停，等待用户确认。",
+      recoverable: true,
+    });
     const requestId = String(localPermissionRequest?.requestId || "").trim();
     if (requestId) {
       setLocalLiuAgentPendingPermission(requestId, {
@@ -32913,14 +33058,6 @@ async function sendLocalLiuAgentChatRequest({
         permission_request_id: requestId,
         ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
       },
-    });
-    await syncLocalLiuAgentRuntimeOutbox({
-      projectId,
-      chatSessionId: activeChatSessionId,
-      workspacePath,
-      rootGoal: displayUserMessageContent || finalUserPrompt,
-      messageId: userMessage.id,
-      assistantMessageId: assistantMessage.id,
     });
     await saveLocalLiuAgentSessionOfflineCache({
       projectId,
@@ -33095,6 +33232,18 @@ async function sendLocalLiuAgentChatRequest({
       delayMs: autoResumeDelayMs,
     });
   }
+  updateLocalAiTask(activeRun.localTaskId, {
+    status: ok ? "done" : shouldAutoResume ? "reconnecting" : "failed",
+    currentStep: ok
+      ? "任务已完成"
+      : shouldAutoResume
+        ? "连接暂时中断，正在等待自动继续"
+        : "本地 Runtime 执行失败",
+    lastOutput: String(
+      assistantMessage.content || result?.error || result?.summary || "",
+    ).trim(),
+    recoverable: !ok,
+  });
   persistLocalLiuAgentActiveRunMessages(activeRun);
   deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
   syncChatLoadingWithCurrentSession();
@@ -33135,14 +33284,6 @@ async function sendLocalLiuAgentChatRequest({
           ).trim(),
           ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
         },
-      });
-      await syncLocalLiuAgentRuntimeOutbox({
-        projectId,
-        chatSessionId: activeChatSessionId,
-        workspacePath,
-        rootGoal: displayUserMessageContent || finalUserPrompt,
-        messageId: userMessage.id,
-        assistantMessageId: assistantMessage.id,
       });
       await saveLocalLiuAgentSessionOfflineCache({
         projectId,
@@ -33334,16 +33475,18 @@ function sendCancelRequestInBackground(requestId) {
   }, 0);
 }
 
-async function cancelActiveLocalLiuAgentRun() {
+async function cancelActiveLocalLiuAgentRun(options = {}) {
   const chatSessionId = String(currentChatSessionId.value || "").trim();
   const run = localLiuAgentActiveRunForChatSession(chatSessionId);
   if (!run || run.cancelled) return false;
-  const paused = await pauseNativeLiuAgentLocalChat({
-    projectId: run.projectId || selectedProjectId.value,
-    chatSessionId,
-    workspacePath: String(run.workspacePath || "").trim(),
-    reason: "manual_pause",
-  });
+  const paused = options.runtimeAlreadyPaused === true
+    ? true
+    : await pauseNativeLiuAgentLocalChat({
+        projectId: run.projectId || selectedProjectId.value,
+        chatSessionId,
+        workspacePath: String(run.workspacePath || "").trim(),
+        reason: "manual_pause",
+      });
   if (!paused) return false;
   run.cancelled = true;
   deleteLocalLiuAgentActiveRun(chatSessionId);
@@ -33431,6 +33574,13 @@ async function cancelActiveLocalLiuAgentRun() {
   }
   queuedFollowupMessages.value = [];
   activeFollowupAssistantMessageId = "";
+  if (run.localTaskId) {
+    updateLocalAiTask(run.localTaskId, {
+      status: "cancelled",
+      currentStep: "任务已取消",
+      recoverable: false,
+    });
+  }
   clearWorkingStatusStartForChatSession(chatSessionId);
   syncChatLoadingWithCurrentSession();
   chatLoading.value = isChatSessionBusy();
@@ -34572,6 +34722,7 @@ async function loadSelectedProjectConversation(projectId) {
       })
       .catch(() => {});
     await applyRouteMessageFocus();
+    await applyLocalRuntimeTaskRouteAction();
     await applyProjectDeployDraftFromRoute();
   } finally {
     if (selectedProjectConversationLoadingKey === loadingKey) {
@@ -34687,6 +34838,8 @@ watch(
     String(routeChatTarget().projectId || "").trim(),
     String(route.query.chat_session_id || "").trim(),
     String(route.query[CREATE_CHAT_SESSION_QUERY_KEY] || "").trim(),
+    String(route.query[LOCAL_RUNTIME_TASK_QUERY_KEY] || "").trim(),
+    String(route.query[LOCAL_RUNTIME_TASK_ACTION_QUERY_KEY] || "").trim(),
     String(route.query.message_id || "").trim(),
   ],
   async (
@@ -34694,6 +34847,8 @@ watch(
       routeProjectId,
       routeChatSessionId,
       routeCreateChatSession,
+      routeLocalRuntimeTask,
+      routeLocalRuntimeTaskAction,
       routeMessageId,
     ],
     previous,
@@ -34703,6 +34858,8 @@ watch(
       routeProjectId,
       routeChatSessionId,
       routeCreateChatSession,
+      routeLocalRuntimeTask,
+      routeLocalRuntimeTaskAction,
       routeMessageId,
     ].join("|");
     if (currentKey === previousKey) return;
@@ -34723,6 +34880,7 @@ watch(
       await fetchChatHistory(activeProjectId, routeChatSessionId);
     }
     await applyRouteMessageFocus();
+    await applyLocalRuntimeTaskRouteAction();
   },
 );
 
@@ -34876,10 +35034,6 @@ onUnmounted(() => {
     window.clearInterval(localLiuAgentRuntimeEventPollTimer);
     localLiuAgentRuntimeEventPollTimer = null;
   }
-  localLiuAgentAutoResumeTimers.forEach((timer) => {
-    window.clearTimeout(timer);
-  });
-  localLiuAgentAutoResumeTimers.clear();
   nativeExternalAgentDeferredCleanupTimers.forEach((timer) => {
     window.clearTimeout(timer);
   });

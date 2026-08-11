@@ -528,7 +528,6 @@ import {
 } from "@/utils/native-desktop-bridge.js";
 import { buildApiBaseUrl, resolveServerOrigin } from "@/utils/server-profile.js";
 import { createGlobalAssistantWsClient } from "@/utils/ws-chat.js";
-import { buildTaskTitle, createTask, parseTaskCreationCommand } from "@/utils/task-store.js";
 
 const FALLBACK_OPEN_WIDTH = 1080;
 const GLOBAL_ASSISTANT_STORAGE_PREFIX = "global_ai_assistant.";
@@ -4467,63 +4466,6 @@ function resolveDirectRouteCommand(text) {
     }
   }
   return null;
-}
-
-async function tryHandleTaskCreationCommand(text, options = {}) {
-  const taskInput = parseTaskCreationCommand(text);
-  if (!taskInput?.description) return false;
-  const normalizedText = String(options?.displayText || text || "").trim();
-  if (options?.openPanel !== false) {
-    panelOpen.value = true;
-  }
-  if (options?.recordConversation !== false && normalizedText) {
-    messages.value.push(
-      normalizeMessage({
-        id: createLocalMessageId(),
-        role: "user",
-        content: normalizedText,
-        created_at: new Date().toISOString(),
-      }),
-    );
-  }
-  const task = createTask({
-    title: buildTaskTitle(taskInput.description),
-    description: taskInput.description,
-    source: "global-assistant",
-    task_type: "workflow",
-    actions: [
-      {
-        type: "project_chat",
-        enabled: true,
-        label: "大模型动态执行",
-        params: { mode: "dynamic_task" },
-      },
-    ],
-  });
-  try {
-    if (String(route.path || "").trim() !== "/tasks") {
-      await router.push("/tasks");
-    }
-  } catch {}
-  const assistantText = `已创建任务“${task.title}”，并打开任务模块。`;
-  if (options?.recordConversation !== false) {
-    messages.value.push(
-      normalizeMessage({
-        id: createLocalMessageId(),
-        role: "assistant",
-        content: assistantText,
-        created_at: new Date().toISOString(),
-      }),
-    );
-  }
-  if (isListening.value) {
-    enterVoiceStandbyMode();
-    voiceStatusText.value = `${assistantText} 说“${voiceWakePhrase.value}”即可继续。`;
-  } else {
-    ElMessage.success(assistantText);
-  }
-  scrollToBottom();
-  return true;
 }
 
 async function tryHandleDirectRouteCommand(text, options = {}) {

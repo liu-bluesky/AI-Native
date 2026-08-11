@@ -1002,8 +1002,10 @@ function openPathAsWindow(path, payload = {}) {
   const meta = resolveDesktopAppMeta(normalizedPath);
   const mode = String(payload.mode || "new-window").trim() || "new-window";
   const requestedAppId = String(payload.appId || "").trim() || meta.appId;
+  const targetWindowId = String(payload.targetWindowId || "").trim();
   const existing = mode !== "new-window"
-    ? desktopWindows.value.find((item) => item.appId === requestedAppId)
+    ? desktopWindows.value.find((item) => item.id === targetWindowId)
+      || desktopWindows.value.find((item) => item.appId === requestedAppId)
       || desktopWindows.value.find((item) => item.sourcePath === normalizedPath)
     : null;
   if (existing) {

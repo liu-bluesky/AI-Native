@@ -53,10 +53,6 @@ from services.mcp.dynamic_mcp_runtime import (
 from services.projects.project_experience_summary_service import (
     ProjectExperienceSummaryBackgroundService,
 )
-from services.assistant.global_assistant_task_service import (
-    start_global_assistant_task_scheduler,
-    stop_global_assistant_task_scheduler,
-)
 from services.chat.project_chat_realtime_service import (
     start_project_chat_realtime_subscriber,
     stop_project_chat_realtime_subscriber,
@@ -71,6 +67,7 @@ def create_app() -> FastAPI:
             get_api_data_dir() / "project-requirement-records",
             ignore_errors=True,
         )
+        (get_api_data_dir() / "global-assistant-tasks.json").unlink(missing_ok=True)
         if settings.auto_run_db_migrations and (
             settings.core_store_backend == "postgres" or settings.usage_store_backend == "postgres"
         ):
@@ -83,13 +80,11 @@ def create_app() -> FastAPI:
         app.state.project_experience_summary_worker = experience_summary_worker
         app.state.feishu_long_connection_supervisor = None
         app.state.project_chat_realtime_subscriber = start_project_chat_realtime_subscriber()
-        app.state.global_assistant_task_scheduler = start_global_assistant_task_scheduler()
         if settings.project_experience_summary_worker_enabled:
             experience_summary_worker.start()
         try:
             yield
         finally:
-            await stop_global_assistant_task_scheduler()
             await stop_project_chat_realtime_subscriber()
             await experience_summary_worker.stop()
 
