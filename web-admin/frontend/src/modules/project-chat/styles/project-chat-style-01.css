@@ -2,9 +2,9 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: minmax(264px, 304px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
-  gap: 18px;
+  gap: 20px;
   padding: 18px max(20px, calc((100% - 1240px) / 2)) 18px;
   align-items: stretch;
   overflow: hidden;

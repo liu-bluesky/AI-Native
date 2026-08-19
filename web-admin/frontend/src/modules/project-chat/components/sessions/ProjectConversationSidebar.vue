@@ -42,7 +42,13 @@
 
     <div class="chat-session-panel">
       <div class="chat-session-panel__head">
-        <div class="chat-session-panel__title">项目对话</div>
+        <div>
+          <div class="chat-session-panel__title">项目对话</div>
+          <div class="chat-session-panel__subtitle">
+            {{ projects.length }} 个项目
+          </div>
+        </div>
+        <span class="chat-session-panel__hint">选择项目查看对话</span>
       </div>
 
       <div
@@ -263,7 +269,7 @@ defineExpose({
   height: 100%;
   max-height: 100%;
   min-height: 0;
-  padding: 14px;
+  padding: 16px 14px 14px;
   border: 1px solid rgba(226, 232, 240, 0.92);
   border-radius: 28px;
   background: linear-gradient(
@@ -381,17 +387,30 @@ defineExpose({
 .chat-session-panel__head {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: space-between;
   gap: 10px;
-  padding: 0 6px 10px;
+  padding: 0 6px 12px;
 }
 
 .chat-session-panel__title {
   color: #475569;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.chat-session-panel__subtitle {
+  margin-top: 3px;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.chat-session-panel__hint {
+  color: #94a3b8;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .chat-project-tree {
@@ -408,10 +427,10 @@ defineExpose({
 .chat-project-tree__list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   height: 100%;
   overflow: auto;
-  padding-right: 4px;
+  padding: 2px 4px 2px 0;
 }
 
 .chat-project-node {
@@ -423,11 +442,11 @@ defineExpose({
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 38px;
+  min-height: 46px;
   padding: 8px 10px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.46);
   color: #334155;
   text-align: left;
   cursor: pointer;
@@ -437,19 +456,22 @@ defineExpose({
 }
 
 .chat-project-node__button:hover {
-  background: rgba(15, 23, 42, 0.05);
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(255, 255, 255, 0.92);
   color: #0f172a;
 }
 
 .chat-project-node.is-active > .chat-project-node__button {
-  background: rgba(15, 23, 42, 0.07);
+  border-color: rgba(37, 99, 235, 0.2);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.98), #fff);
   color: #0f172a;
   font-weight: 600;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.08);
 }
 
 .chat-project-node__chevron {
   flex: 0 0 14px;
-  color: #94a3b8;
+  color: #64748b;
   font-size: 16px;
   line-height: 1;
   text-align: center;
@@ -460,6 +482,7 @@ defineExpose({
   min-width: 0;
   overflow: hidden;
   font-size: 13px;
+  font-weight: 500;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -470,7 +493,7 @@ defineExpose({
   min-width: 20px;
   padding: 2px 6px;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.08);
+  background: rgba(148, 163, 184, 0.14);
   color: #64748b;
   font-size: 11px;
   line-height: 1.3;
@@ -478,7 +501,9 @@ defineExpose({
 }
 
 .chat-project-node :deep(.chat-session-strip) {
-  margin: 3px 0 8px 22px;
+  margin: 4px 0 8px 18px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(148, 163, 184, 0.22);
 }
 
 .chat-project-node :deep(.chat-session-groups) {

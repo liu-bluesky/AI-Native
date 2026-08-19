@@ -121,8 +121,8 @@
 }
 
 .chat-shell {
-  gap: 16px;
-  padding: 76px max(20px, calc((100% - 1240px) / 2)) 18px;
+  gap: 20px;
+  padding: 64px max(18px, calc((100% - 1440px) / 2)) 16px;
 }
 
 .chat-project-switcher.is-empty {
