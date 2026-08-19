@@ -25,6 +25,7 @@
       <el-button
         class="chat-new-conversation-button"
         :loading="creatingSession"
+        :disabled="!hasSelectedProject"
         :icon="DocumentCopy"
         @click="emit('create-conversation')"
       >
@@ -43,59 +44,33 @@
     <div class="chat-session-panel">
       <div class="chat-session-panel__head">
         <div>
-          <div class="chat-session-panel__title">项目对话</div>
+          <div class="chat-session-panel__title">会话历史</div>
           <div class="chat-session-panel__subtitle">
-            {{ projects.length }} 个项目
+            {{ hasSelectedProject ? "当前项目" : "先选择一个项目" }}
           </div>
         </div>
-        <span class="chat-session-panel__hint">选择项目查看对话</span>
+        <span class="chat-session-panel__hint">
+          {{ hasSelectedProject ? "按时间排列" : "" }}
+        </span>
       </div>
 
       <div
         ref="projectSwitcherRef"
-        class="chat-project-tree"
+        class="chat-session-history"
         :loading="sessionsLoading"
       >
-        <div v-if="projects.length" class="chat-project-tree__list">
-          <section
-            v-for="project in projects"
-            :key="project.id"
-            class="chat-project-node"
-            :class="{
-              'is-active': selectedProjectId === project.id,
-              'is-expanded': isProjectExpanded(project.id),
-            }"
-          >
-            <button
-              type="button"
-              class="chat-project-node__button"
-              @click="toggleProject(project.id)"
-            >
-              <span class="chat-project-node__chevron">
-                {{ isProjectExpanded(project.id) ? "⌄" : "›" }}
-              </span>
-              <span class="chat-project-node__name">
-                {{ project.name || project.id }}
-              </span>
-              <span class="chat-project-node__count">
-                {{ projectSessionTotalLabel(project.id) }}
-              </span>
-            </button>
-
-            <ChatSessionList
-              v-if="isProjectExpanded(project.id)"
-              :loading="isProjectSessionsLoading(project.id)"
-              :groups="projectSessionGroups(project.id)"
-              :current-session-id="
-                selectedProjectId === project.id ? currentSessionId : ''
-              "
-              :deleting-session-id="deletingSessionId"
-              @select="emit('select-session', { projectId: project.id, sessionId: $event })"
-              @delete="emit('delete-session', { projectId: project.id, session: $event })"
-            />
-          </section>
+        <ChatSessionList
+          v-if="hasSelectedProject"
+          :loading="sessionsLoading"
+          :groups="sessionGroups"
+          :current-session-id="currentSessionId"
+          :deleting-session-id="deletingSessionId"
+          @select="emit('select-session', { sessionId: $event })"
+          @delete="emit('delete-session', { session: $event })"
+        />
+        <div v-else class="chat-session-history__empty">
+          请在右上方选择项目后查看会话
         </div>
-        <div v-else class="chat-project-tree__empty">暂无可访问项目</div>
       </div>
     </div>
 
@@ -117,13 +92,11 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue";
+import { ref } from "vue";
 import { DocumentCopy, Setting } from "@element-plus/icons-vue";
 import ChatSessionList from "@/modules/project-chat/components/sessions/ChatSessionList.vue";
 
 const props = defineProps({
-  selectedProjectId: { type: String, default: "" },
-  projects: { type: Array, default: () => [] },
   surfaceMark: { type: String, default: "" },
   surfaceName: { type: String, default: "" },
   surfaceMeta: { type: String, default: "" },
@@ -133,21 +106,15 @@ const props = defineProps({
   currentSessionId: { type: String, default: "" },
   sessionsLoading: { type: Boolean, default: false },
   sessionGroups: { type: Array, default: () => [] },
-  projectSessionGroupsMap: { type: Object, default: () => ({}) },
-  projectSessionLoadingMap: { type: Object, default: () => ({}) },
-  projectSessionCounts: { type: Object, default: () => ({}) },
   deletingSessionId: { type: String, default: "" },
   usernameInitial: { type: String, default: "" },
   username: { type: String, default: "" },
 });
 
 const emit = defineEmits([
-  "update:selectedProjectId",
   "open-settings",
-  "project-change",
   "create-conversation",
   "clear-current",
-  "toggle-project",
   "select-session",
   "delete-session",
   "logout",
@@ -155,103 +122,6 @@ const emit = defineEmits([
 
 const settingsButtonRef = ref(null);
 const projectSwitcherRef = ref(null);
-const expandedProjectIds = ref(new Set());
-
-const selectedProjectIdModel = computed({
-  get: () => props.selectedProjectId,
-  set: (value) => emit("update:selectedProjectId", value),
-});
-
-const selectedSessionTotalLabel = computed(() => {
-  const total = props.sessionGroups.reduce(
-    (sum, group) => sum + (Array.isArray(group?.items) ? group.items.length : 0),
-    0,
-  );
-  return total ? `${total}` : "0";
-});
-
-watch(
-  () => props.selectedProjectId,
-  (projectId) => {
-    const normalizedProjectId = String(projectId || "").trim();
-    if (!normalizedProjectId) return;
-    const next = new Set(expandedProjectIds.value);
-    next.add(normalizedProjectId);
-    expandedProjectIds.value = next;
-  },
-  { immediate: true },
-);
-
-watch(
-  () => props.projects,
-  (projects) => {
-    const validIds = new Set(
-      (Array.isArray(projects) ? projects : [])
-        .map((item) => String(item?.id || "").trim())
-        .filter(Boolean),
-    );
-    const next = new Set(
-      [...expandedProjectIds.value].filter((projectId) => validIds.has(projectId)),
-    );
-    const selected = String(props.selectedProjectId || "").trim();
-    if (selected && validIds.has(selected)) {
-      next.add(selected);
-    }
-    expandedProjectIds.value = next;
-  },
-  { immediate: true },
-);
-
-function selectProject(projectId) {
-  const normalizedProjectId = String(projectId || "").trim();
-  if (!normalizedProjectId) return;
-  selectedProjectIdModel.value = normalizedProjectId;
-  emit("project-change", normalizedProjectId);
-}
-
-function toggleProject(projectId) {
-  const normalizedProjectId = String(projectId || "").trim();
-  if (!normalizedProjectId) return;
-  const next = new Set(expandedProjectIds.value);
-  if (next.has(normalizedProjectId)) {
-    next.delete(normalizedProjectId);
-  } else {
-    next.add(normalizedProjectId);
-    emit("toggle-project", normalizedProjectId);
-  }
-  expandedProjectIds.value = next;
-  selectProject(normalizedProjectId);
-}
-
-function isProjectExpanded(projectId) {
-  return expandedProjectIds.value.has(String(projectId || "").trim());
-}
-
-function projectSessionGroups(projectId) {
-  const normalizedProjectId = String(projectId || "").trim();
-  if (normalizedProjectId === String(props.selectedProjectId || "").trim()) {
-    return props.sessionGroups;
-  }
-  const groups = props.projectSessionGroupsMap?.[normalizedProjectId];
-  return Array.isArray(groups) ? groups : [];
-}
-
-function isProjectSessionsLoading(projectId) {
-  const normalizedProjectId = String(projectId || "").trim();
-  if (normalizedProjectId === String(props.selectedProjectId || "").trim()) {
-    return props.sessionsLoading;
-  }
-  return Boolean(props.projectSessionLoadingMap?.[normalizedProjectId]);
-}
-
-function projectSessionTotalLabel(projectId) {
-  const normalizedProjectId = String(projectId || "").trim();
-  if (normalizedProjectId === String(props.selectedProjectId || "").trim()) {
-    return selectedSessionTotalLabel.value;
-  }
-  const count = Number(props.projectSessionCounts?.[normalizedProjectId] || 0);
-  return count ? `${count}` : "0";
-}
 
 // 父页的新手引导仍需要定位内部控件，组件只暴露定位锚点，不暴露业务状态。
 defineExpose({
@@ -413,117 +283,34 @@ defineExpose({
   white-space: nowrap;
 }
 
-.chat-project-tree {
+.chat-session-history {
   flex: 1;
   min-height: 0;
   position: relative;
 }
 
-.chat-project-tree :deep(.el-loading-mask) {
+.chat-session-history :deep(.el-loading-mask) {
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.72);
 }
 
-.chat-project-tree__list {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+.chat-session-history :deep(.chat-session-strip),
+.chat-session-history :deep(.chat-session-groups) {
   height: 100%;
-  overflow: auto;
-  padding: 2px 4px 2px 0;
 }
 
-.chat-project-node {
-  min-width: 0;
-}
-
-.chat-project-node__button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 46px;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.46);
-  color: #334155;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color 0.16s ease,
-    color 0.16s ease;
-}
-
-.chat-project-node__button:hover {
-  border-color: rgba(148, 163, 184, 0.24);
-  background: rgba(255, 255, 255, 0.92);
-  color: #0f172a;
-}
-
-.chat-project-node.is-active > .chat-project-node__button {
-  border-color: rgba(37, 99, 235, 0.2);
-  background: linear-gradient(135deg, rgba(239, 246, 255, 0.98), #fff);
-  color: #0f172a;
-  font-weight: 600;
-  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.08);
-}
-
-.chat-project-node__chevron {
-  flex: 0 0 14px;
-  color: #64748b;
-  font-size: 16px;
-  line-height: 1;
-  text-align: center;
-}
-
-.chat-project-node__name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-project-node__count {
-  flex-shrink: 0;
-  min-width: 20px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.14);
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.3;
-  text-align: center;
-}
-
-.chat-project-node :deep(.chat-session-strip) {
-  margin: 4px 0 8px 18px;
-  padding-left: 10px;
-  border-left: 1px solid rgba(148, 163, 184, 0.22);
-}
-
-.chat-project-node :deep(.chat-session-groups) {
-  gap: 8px;
-  height: auto;
-  overflow: visible;
-  padding-right: 0;
-}
-
-.chat-project-node :deep(.chat-session-group__title) {
-  padding-left: 4px;
-}
-
-.chat-project-tree__empty {
+.chat-session-history__empty {
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 160px;
+  padding: 24px;
+  border: 1px dashed rgba(148, 163, 184, 0.3);
+  border-radius: 16px;
   color: var(--page-text-soft, #7c8aa0);
   font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
 }
 
 .chat-sidebar-footer {
@@ -577,7 +364,7 @@ defineExpose({
   color: #8b8d93 !important;
 }
 
-@media (max-width: 1120px) {
+@media (max-width: 760px) {
   .chat-conversation-sidebar {
     order: 2;
     padding: 0;

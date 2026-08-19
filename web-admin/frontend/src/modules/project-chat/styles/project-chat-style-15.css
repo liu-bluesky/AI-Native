@@ -261,7 +261,7 @@
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 1120px) {
+@media (max-width: 760px) {
   .chat-layout {
     height: 100dvh;
     min-height: 0;

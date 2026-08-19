@@ -3,9 +3,20 @@
     <div ref="contextBarRef" class="chat-context-bar__surface">
       <div class="chat-context-bar__copy">
         <div class="chat-context-bar__eyebrow">AI Operating System</div>
-        <div class="chat-context-bar__title">
-          {{ hasSelectedProject ? projectLabel : surfaceName }}
-        </div>
+        <el-select
+          class="chat-context-bar__project-select"
+          :model-value="selectedProjectId"
+          filterable
+          placeholder="选择项目后开始对话"
+          @update:model-value="handleProjectChange"
+        >
+          <el-option
+            v-for="project in projects"
+            :key="project.id"
+            :label="project.name || project.id"
+            :value="project.id"
+          />
+        </el-select>
         <div class="chat-context-bar__meta">
           <span v-if="sessionSourceLabel">{{ sessionSourceLabel }}</span>
           <span>{{ modelSummary }}</span>
@@ -67,8 +78,8 @@ import { ref } from "vue";
 
 defineProps({
   hasSelectedProject: { type: Boolean, default: false },
-  projectLabel: { type: String, default: "" },
-  surfaceName: { type: String, default: "" },
+  projects: { type: Array, default: () => [] },
+  selectedProjectId: { type: String, default: "" },
   sessionSourceLabel: { type: String, default: "" },
   modelSummary: { type: String, default: "" },
   statusText: { type: String, default: "" },
@@ -83,10 +94,17 @@ const emit = defineEmits([
   "trust-workspace",
   "open-mcp",
   "open-skill-resource",
+  "project-change",
 ]);
 
 const guideButtonRef = ref(null);
 const contextBarRef = ref(null);
+
+function handleProjectChange(projectId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return;
+  emit("project-change", normalizedProjectId);
+}
 
 // 保留父页引导定位能力，只暴露 DOM 锚点，不把上下文栏内部结构上提。
 defineExpose({
@@ -138,15 +156,26 @@ defineExpose({
   text-transform: uppercase;
 }
 
-.chat-context-bar__title {
-  margin-top: 6px;
+.chat-context-bar__project-select {
+  display: block;
+  width: min(100%, 360px);
+  margin-top: 7px;
+}
+
+.chat-context-bar__project-select :deep(.el-select__wrapper) {
+  min-height: 40px;
+  padding: 4px 12px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: none;
+}
+
+.chat-context-bar__project-select :deep(.el-select__placeholder),
+.chat-context-bar__project-select :deep(.el-select__selected-item) {
   color: #0f172a;
-  font-size: clamp(24px, 2.7vw, 32px);
+  font-size: 15px;
   font-weight: 600;
-  line-height: 1.04;
-  letter-spacing: -0.03em;
-  font-family:
-    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 .chat-context-bar__meta {

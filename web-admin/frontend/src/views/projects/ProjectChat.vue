@@ -14,8 +14,6 @@
       <div class="chat-shell">
         <ProjectConversationSidebar
           ref="conversationSidebarRef"
-          v-model:selected-project-id="selectedProjectId"
-          :projects="projects"
           :surface-mark="chatSurfaceMark"
           :surface-name="chatSurfaceName"
           :surface-meta="chatSurfaceMeta"
@@ -25,15 +23,10 @@
           :current-session-id="currentChatSessionId"
           :sessions-loading="chatSessionsLoading"
           :session-groups="groupedChatSessions"
-          :project-session-groups-map="projectSessionGroupsMap"
-          :project-session-loading-map="projectSessionLoadingMap"
-          :project-session-counts="projectSessionCounts"
           :deleting-session-id="deletingChatSessionId"
           :username-initial="currentUsernameInitial"
           :username="currentUsername"
           @open-settings="openSettingsCenter"
-          @project-change="handleProjectCommand"
-          @toggle-project="loadProjectSessionsForSidebar"
           @create-conversation="handleCreateNewConversation"
           @clear-current="clearMessages"
           @select-session="selectChatSession"
@@ -45,8 +38,8 @@
           <ChatContextBar
             ref="chatContextBarHostRef"
             :has-selected-project="hasSelectedProject"
-            :project-label="currentProjectLabel"
-            :surface-name="chatSurfaceName"
+            :projects="projects"
+            :selected-project-id="selectedProjectId"
             :session-source-label="currentChatSessionSourceLabel"
             :model-summary="currentModelSummary"
             :status-text="chatHeaderStatusText"
@@ -58,6 +51,7 @@
             @trust-workspace="trustAgentRuntimeWorkspace"
             @open-mcp="openUnifiedMcpDialog"
             @open-skill-resource="openSkillResourceCenter"
+            @project-change="handleProjectCommand"
           />
           <div
             v-if="nativeExternalAgentApprovalBannerVisible"
@@ -9786,52 +9780,6 @@ const groupedChatSessions = computed(() => {
     label,
     items,
   }));
-});
-const projectSessionGroupsMap = computed(() => {
-  const result = {};
-  const selectedId = String(selectedProjectId.value || "").trim();
-  const groupedSessions = (sessions) => {
-    const groups = new Map();
-    for (const session of sessions || []) {
-      const label = resolveChatSessionGroupLabel(session);
-      if (!groups.has(label)) {
-        groups.set(label, []);
-      }
-      groups.get(label).push(session);
-    }
-    return Array.from(groups.entries()).map(([label, items]) => ({
-      label,
-      items,
-    }));
-  };
-  for (const [projectId, sessions] of Object.entries(
-    projectChatSessionsById.value || {},
-  )) {
-    result[projectId] = groupedSessions(sessions);
-  }
-  if (selectedId) {
-    result[selectedId] = groupedChatSessions.value;
-  }
-  return result;
-});
-const projectSessionLoadingMap = computed(() => ({
-  ...(projectChatSessionsLoadingById.value || {}),
-  [String(selectedProjectId.value || "").trim()]: chatSessionsLoading.value,
-}));
-const projectSessionCounts = computed(() => {
-  const result = {};
-  for (const [projectId, sessions] of Object.entries(
-    projectChatSessionsById.value || {},
-  )) {
-    result[projectId] = Array.isArray(sessions) ? sessions.length : 0;
-  }
-  const selectedId = String(selectedProjectId.value || "").trim();
-  if (selectedId) {
-    result[selectedId] = Array.isArray(chatSessions.value)
-      ? chatSessions.value.length
-      : 0;
-  }
-  return result;
 });
 const starterPrompts = computed(() => [
   "检查当前工作区状态并给出下一步",
@@ -28916,13 +28864,9 @@ async function syncModelProvidersFromServer() {
 
 function syncProjectFromRoute() {
   const { projectId: routeProjectId } = routeChatTarget();
-  const savedProjectId = readSelectedProjectId();
-  const initialProjectId = resolveAvailableProjectId(
-    routeProjectId || savedProjectId,
-  );
-  if (initialProjectId) {
+  const initialProjectId = resolveAvailableProjectId(routeProjectId);
+  if (routeProjectId && initialProjectId) {
     selectedProjectId.value = initialProjectId;
-    writeSelectedProjectId(initialProjectId);
     return initialProjectId;
   }
   clearSelectedProjectState();
@@ -29574,28 +29518,6 @@ function removeProjectChatSessionCacheItem(projectId, chatSessionId) {
       (item) => String(item?.id || "").trim() !== normalizedSessionId,
     ),
   );
-}
-
-async function loadProjectSessionsForSidebar(projectId, options = {}) {
-  const normalizedProjectId = String(projectId || "").trim();
-  if (!normalizedProjectId) return [];
-  if (normalizedProjectId === String(selectedProjectId.value || "").trim()) {
-    setProjectChatSessionsMemoryCache(normalizedProjectId, chatSessions.value);
-    return chatSessions.value;
-  }
-  if (
-    options.force !== true &&
-    Array.isArray(projectChatSessionsById.value?.[normalizedProjectId])
-  ) {
-    return projectChatSessionsById.value[normalizedProjectId];
-  }
-  const sessions = normalizeVisibleChatSessions(
-    (chatSessions.value || []).filter(
-      (item) => String(item?.project_id || "").trim() === normalizedProjectId,
-    ),
-  );
-  setProjectChatSessionsMemoryCache(normalizedProjectId, sessions);
-  return sessions;
 }
 
 function setGroupChatLiveStatus(eventData) {
@@ -34946,10 +34868,6 @@ onMounted(async () => {
     void hydrateNativeDesktopRuntimeInfo();
     void syncLocalFeishuBotListeners();
   }, 300);
-  const locallySelectedProjectId = readSelectedProjectId();
-  if (locallySelectedProjectId) {
-    selectedProjectId.value = locallySelectedProjectId;
-  }
   try {
     await Promise.all([
       fetchSystemConfig(),
