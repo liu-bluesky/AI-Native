@@ -386,7 +386,7 @@ const draggingDockAppId = ref("");
 const dockDropTargetId = ref("");
 const dockDragPreparing = ref(false);
 const suppressDockClickAppId = ref("");
-const dockRevealed = ref(true);
+const dockRevealed = ref(false);
 const dockRef = ref(null);
 const dockDragOffsetX = ref(0);
 const dockDragOffsetY = ref(0);
@@ -1725,15 +1725,16 @@ onBeforeUnmount(() => {
 
 .desktop-system__dock-trigger {
   position: fixed;
-  left: 0;
-  right: 0;
+  left: 50%;
   bottom: 0;
   z-index: 79;
+  width: 168px;
   height: 22px;
   display: flex;
   align-items: flex-end;
   justify-content: center;
   pointer-events: auto;
+  transform: translateX(-50%);
 }
 
 .desktop-system__dock-trigger-line {

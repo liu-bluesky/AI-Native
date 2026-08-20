@@ -20,6 +20,21 @@ assert.doesNotMatch(
   "desktop launcher must not remain anchored to the left edge",
 );
 assert.match(
+  desktopShell,
+  /const dockRevealed = ref\(false\);/,
+  "desktop dock must start hidden until the user reaches its trigger area",
+);
+assert.match(
+  desktopShell,
+  /\.desktop-system__dock-trigger\s*\{[^}]*left:\s*50%;[^}]*width:\s*168px;[^}]*transform:\s*translateX\(-50%\);/,
+  "desktop dock trigger must be limited to the centered bottom area",
+);
+assert.doesNotMatch(
+  desktopShell,
+  /\.desktop-system__dock-trigger\s*\{[^}]*left:\s*0;[^}]*right:\s*0;/,
+  "desktop dock trigger must not capture the full bottom edge",
+);
+assert.match(
   layout,
   /function resolveCenteredWindowBounds\([\s\S]*?\(viewportWidth - sizedBounds\.width\) \/ 2[\s\S]*?\(viewportHeight - sizedBounds\.height\) \/ 2/,
   "desktop windows must calculate default coordinates from the viewport center",
