@@ -50,8 +50,8 @@
       <div class="external-mcp-json__head">
         <span class="external-mcp-json__title">单个 MCP Server JSON</span>
         <div class="external-mcp-json__actions">
-          <el-button size="small" text @click="fillSseExample">
-            SSE 示例
+          <el-button size="small" text @click="fillStdioExample">
+            stdio 示例
           </el-button>
           <el-button size="small" text @click="formatJsonConfig">
             格式化
@@ -67,10 +67,11 @@
         :rows="14"
         resize="vertical"
         spellcheck="false"
-        placeholder='"query-center-project": {
-  "description": "统一查询 MCP 入口",
-  "type": "sse",
-  "url": "http://127.0.0.1:8000/mcp/query/sse?key=..."
+        placeholder='"local-mcp-server": {
+  "description": "本机 MCP Server",
+  "type": "stdio",
+  "command": "/absolute/path/to/mcp-server",
+  "args": ["--stdio"]
 }'
       />
       <div v-if="jsonPreviewText" class="external-mcp-json__preview">
@@ -321,12 +322,13 @@ function formatJsonConfig() {
   }
 }
 
-function fillSseExample() {
+function fillStdioExample() {
   jsonConfigText.value = JSON.stringify({
-    'query-center-project': {
-      description: '统一查询 MCP 入口。推荐先调用 query://usage-guide，再使用 search_ids、get_content、get_manual_content；项目手册可直接通过 MCP 获取，无需写入项目文件',
-      type: 'sse',
-      url: 'http://192.168.1.126:3000/mcp/query/sse?key=YOUR_API_KEY',
+    'local-mcp-server': {
+      description: '本机 MCP Server',
+      type: 'stdio',
+      command: '/absolute/path/to/mcp-server',
+      args: ['--stdio'],
     },
   }, null, 2)
 }

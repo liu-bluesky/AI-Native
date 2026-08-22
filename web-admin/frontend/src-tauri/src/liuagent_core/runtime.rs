@@ -2542,6 +2542,7 @@ fn prompt_stack_from_model_request(model_request: &ModelStepRequest) -> PromptSt
         temperature: None,
         model_runtime: None,
         ai_entry_file: None,
+        agent_directory: None,
         attachments: Vec::new(),
         media_tools: Vec::new(),
         mcp_config: json!({}),
@@ -11580,6 +11581,7 @@ mod tests {
             temperature: None,
             model_runtime: None,
             ai_entry_file: None,
+            agent_directory: None,
             attachments: Vec::new(),
             media_tools: Vec::new(),
             backend_context: None,
@@ -11626,8 +11628,9 @@ mod tests {
                 system_prompt_parts: Vec::new(),
                 temperature: None,
                 model_runtime: None,
-                ai_entry_file: None,
-                attachments: Vec::new(),
+            ai_entry_file: None,
+            agent_directory: None,
+            attachments: Vec::new(),
                 media_tools: Vec::new(),
                 mcp_config: json!({}),
                 backend_context: None,
@@ -13004,7 +13007,7 @@ mod tests {
             "mcpServers": {
                 "query": {
                     "type": "sse",
-                    "url": "http://127.0.0.1:8000/mcp/query/sse",
+                    "url": "http://127.0.0.1:9000/mcp/sse",
                     "enabled": false
                 }
             }
@@ -13024,12 +13027,12 @@ mod tests {
             "mcpServers": {
                 "disabled-query": {
                     "type": "sse",
-                    "url": "http://127.0.0.1:8000/mcp/query/sse",
+                    "url": "http://127.0.0.1:9000/mcp/sse",
                     "enabled": false
                 },
                 "enabled-query": {
                     "type": "sse",
-                    "url": "http://127.0.0.1:8001/mcp/query/sse",
+                    "url": "http://127.0.0.1:9001/mcp/sse",
                     "enabled": true
                 }
             }
@@ -13391,7 +13394,7 @@ mod tests {
             "mcpServers": {
                 "query": {
                     "type": "sse",
-                    "url": "http://127.0.0.1:8000/mcp/query/sse",
+                    "url": "http://127.0.0.1:9000/mcp/sse",
                     "enabled": false
                 }
             }
@@ -13781,8 +13784,9 @@ mod tests {
                 system_prompt_parts: Vec::new(),
                 temperature: None,
                 model_runtime: None,
-                ai_entry_file: None,
-                attachments: Vec::new(),
+            ai_entry_file: None,
+            agent_directory: None,
+            attachments: Vec::new(),
                 media_tools: Vec::new(),
                 backend_context: None,
                 mcp_config: json!({}),
@@ -14672,6 +14676,7 @@ mod tests {
             temperature: None,
             model_runtime: None,
             ai_entry_file: None,
+            agent_directory: None,
             attachments: Vec::new(),
             media_tools: Vec::new(),
             backend_context: None,
@@ -14715,6 +14720,7 @@ mod tests {
                 timeout_ms: None,
             }),
             ai_entry_file: None,
+            agent_directory: None,
             attachments: Vec::new(),
             media_tools: Vec::new(),
             backend_context: None,
@@ -15126,6 +15132,7 @@ mod tests {
             temperature: None,
             model_runtime: None,
             ai_entry_file: None,
+            agent_directory: None,
             media_tools: Vec::new(),
             attachments: vec![
                 LocalChatAttachment {
@@ -15222,6 +15229,7 @@ mod tests {
             temperature: None,
             model_runtime: None,
             ai_entry_file: None,
+            agent_directory: None,
             backend_context: None,
             media_tools: Vec::new(),
             attachments: vec![LocalChatAttachment {
@@ -16679,6 +16687,7 @@ mod tests {
                 timeout_ms: Some(5_000),
             }),
             ai_entry_file: None,
+            agent_directory: None,
             attachments: Vec::new(),
             media_tools: Vec::new(),
             backend_context: None,
@@ -16800,6 +16809,7 @@ mod tests {
                 timeout_ms: Some(5_000),
             }),
             ai_entry_file: None,
+            agent_directory: None,
             attachments: Vec::new(),
             media_tools: Vec::new(),
             backend_context: None,
@@ -18193,6 +18203,7 @@ mod tests {
             temperature: None,
             model_runtime: None,
             ai_entry_file: None,
+            agent_directory: None,
             attachments: Vec::new(),
             media_tools: Vec::new(),
             backend_context: None,
@@ -18340,6 +18351,7 @@ mod tests {
             temperature: None,
             model_runtime: None,
             ai_entry_file: None,
+            agent_directory: None,
             attachments: Vec::new(),
             media_tools: Vec::new(),
             backend_context: None,

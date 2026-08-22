@@ -513,6 +513,12 @@ import {
 } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
+import {
+  readAllLocalProjectRelations,
+  readLocalEntities,
+  removeLocalEntity,
+  upsertLocalEntity,
+} from "@/services/local-project-repository.js";
 import { formatDateTime, parseDateTime } from "@/utils/date.js";
 import { fetchDictionary } from "@/utils/dictionaries.js";
 import {
@@ -577,6 +583,88 @@ const form = reactive({
   extra_headers_text: "",
   shared_usernames: [],
 });
+const LOCAL_PROVIDER_ENTITY = "llm_providers";
+const LEGACY_PROVIDER_MODEL_SNAPSHOTS_KEY = "liuagent:cached-provider-models";
+
+function createLocalProviderId() {
+  const suffix =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `local-provider-${suffix}`;
+}
+
+function readLocalProviders() {
+  return readLocalEntities(LOCAL_PROVIDER_ENTITY).sort(
+    (left, right) =>
+      normalizeTimestamp(right?.updated_at || right?.created_at) -
+      normalizeTimestamp(left?.updated_at || left?.created_at),
+  );
+}
+
+function normalizeLegacyProvider(provider = {}) {
+  const id = String(provider?.id || provider?.provider_id || "").trim();
+  if (!id) return null;
+  const models = Array.isArray(provider?.models)
+    ? provider.models.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const modelConfigs = Array.isArray(provider?.model_configs)
+    ? provider.model_configs
+        .map((item) => ({
+          name: String(item?.name || item?.model_name || item?.model || "").trim(),
+          model_type: String(item?.model_type || "text_generation").trim(),
+        }))
+        .filter((item) => item.name)
+    : models.map((name) => ({ name, model_type: "text_generation" }));
+  return {
+    ...provider,
+    id,
+    name: String(provider?.name || provider?.label || id).trim(),
+    provider_type: String(provider?.provider_type || "openai-compatible").trim(),
+    base_url: String(provider?.base_url || provider?.baseUrl || "").trim(),
+    model_configs: modelConfigs,
+    default_model: String(
+      provider?.default_model || modelConfigs[0]?.name || "",
+    ).trim(),
+    enabled: provider?.enabled !== false,
+  };
+}
+
+function collectLegacyLocalProviders() {
+  const candidates = [];
+  const relations = readAllLocalProjectRelations();
+  Object.values(relations || {}).forEach((relation) => {
+    if (Array.isArray(relation?.providers)) candidates.push(...relation.providers);
+  });
+  try {
+    const snapshots = JSON.parse(
+      window.localStorage?.getItem(LEGACY_PROVIDER_MODEL_SNAPSHOTS_KEY) || "{}",
+    );
+    Object.values(snapshots?.scopes || {}).forEach((scope) => {
+      if (Array.isArray(scope?.providers)) candidates.push(...scope.providers);
+    });
+  } catch (error) {
+    console.warn("read legacy local provider snapshots failed", error);
+  }
+  return candidates.map(normalizeLegacyProvider).filter(Boolean);
+}
+
+function migrateLegacyLocalProviders() {
+  const existing = readLocalEntities(LOCAL_PROVIDER_ENTITY);
+  const existingIds = new Set(
+    existing.map((item) => String(item?.id || "").trim()).filter(Boolean),
+  );
+  const now = new Date().toISOString();
+  collectLegacyLocalProviders().forEach((provider) => {
+    if (existingIds.has(provider.id)) return;
+    upsertLocalEntity(LOCAL_PROVIDER_ENTITY, {
+      ...provider,
+      created_at: String(provider.created_at || now),
+      updated_at: String(provider.updated_at || now),
+    });
+    existingIds.add(provider.id);
+  });
+}
 
 const PROVIDER_INTERFACE_OPTIONS = [
   {
@@ -1106,10 +1194,10 @@ async function discoverModels() {
 async function fetchProviders() {
   loading.value = true;
   try {
-    const data = await api.get("/llm/providers");
-    providers.value = Array.isArray(data?.providers) ? data.providers : [];
-  } catch (e) {
-    ElMessage.error(e.detail || "加载模型供应商失败");
+    migrateLegacyLocalProviders();
+    providers.value = readLocalProviders();
+  } catch (error) {
+    console.error("load local model providers failed", error);
     providers.value = [];
   } finally {
     loading.value = false;
@@ -1117,37 +1205,11 @@ async function fetchProviders() {
 }
 
 async function fetchShareUserOptions() {
-  try {
-    const data = await api.get("/llm/providers/share-options");
-    const users = Array.isArray(data?.users) ? data.users : [];
-    shareUserOptions.value = users
-      .map((item) => {
-        const username = String(item?.username || "").trim();
-        if (!username) return null;
-        const role = String(item?.role || "").trim();
-        return {
-          username,
-          label: role ? `${username} (${role})` : username,
-        };
-      })
-      .filter(Boolean);
-  } catch (e) {
-    shareUserOptions.value = [];
-    ElMessage.error(e.detail || "加载共享用户失败");
-  }
+  shareUserOptions.value = [];
 }
 
 async function fetchModelTypeOptions() {
-  try {
-    const data = await fetchDictionary("llm_model_types");
-    const options = Array.isArray(data?.options) ? data.options : [];
-    if (options.length) {
-      modelTypeOptions.value = options;
-    }
-  } catch (e) {
-    modelTypeOptions.value = FALLBACK_MODEL_TYPE_OPTIONS;
-    ElMessage.error(e.detail || "加载模型类型失败");
-  }
+  modelTypeOptions.value = FALLBACK_MODEL_TYPE_OPTIONS;
 }
 
 async function submitForm() {
@@ -1201,20 +1263,26 @@ async function submitForm() {
 
   saving.value = true;
   try {
-    if (editingId.value) {
-      await api.patch(
-        `/llm/providers/${encodeURIComponent(editingId.value)}`,
-        payload,
-      );
-      ElMessage.success("更新成功");
-    } else {
-      await api.post("/llm/providers", payload);
-      ElMessage.success(
-        dialogMode.value === "duplicate" ? "复制创建成功" : "创建成功",
-      );
-    }
+    const existing = (providers.value || []).find(
+      (item) => String(item?.id || "").trim() === editingId.value,
+    );
+    const now = new Date().toISOString();
+    upsertLocalEntity(LOCAL_PROVIDER_ENTITY, {
+      ...(existing || {}),
+      ...payload,
+      id: editingId.value || createLocalProviderId(),
+      created_at: String(existing?.created_at || now),
+      updated_at: now,
+    });
+    ElMessage.success(
+      editingId.value
+        ? "本地供应商已更新"
+        : dialogMode.value === "duplicate"
+          ? "本地供应商已复制创建"
+          : "本地供应商已创建",
+    );
     showDialog.value = false;
-    fetchProviders();
+    await fetchProviders();
   } catch (e) {
     ElMessage.error(e.detail || "保存失败");
   } finally {
@@ -1278,7 +1346,13 @@ async function importMainstreamPresets() {
         skippedCount += 1;
         continue;
       }
-      await api.post("/llm/providers", buildPresetPayload(preset));
+      const now = new Date().toISOString();
+      upsertLocalEntity(LOCAL_PROVIDER_ENTITY, {
+        ...buildPresetPayload(preset),
+        id: createLocalProviderId(),
+        created_at: now,
+        updated_at: now,
+      });
       existingKeys.add(dedupeKey);
       createdCount += 1;
     }
@@ -1369,9 +1443,9 @@ async function removeProvider(row) {
     type: "warning",
   });
   try {
-    await api.delete(`/llm/providers/${encodeURIComponent(id)}`);
-    ElMessage.success("删除成功");
-    fetchProviders();
+    removeLocalEntity(LOCAL_PROVIDER_ENTITY, id);
+    ElMessage.success("本地供应商已删除");
+    await fetchProviders();
   } catch (e) {
     ElMessage.error(e.detail || "删除失败");
   }

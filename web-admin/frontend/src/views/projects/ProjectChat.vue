@@ -1642,8 +1642,6 @@
             :is-external-agent-mode="isExternalAgentMode"
             :provider-model-groups="providerModelGroups"
             :model-provider-offline="modelProviderOffline"
-            :model-provider-syncing="modelProviderSyncing"
-            :model-provider-sync-tooltip="modelProviderSyncTooltip"
             :upload-accept="uploadAccept"
             :attachment-supported="currentModelAttachmentSupported"
             :attachment-mode="currentModelAttachmentMode"
@@ -1671,7 +1669,7 @@
             @update:model-routing-mode="setModelRoutingMode"
             @update:model-role-selection="setModelRoleSelection"
             @update:manual-model-option-value="setManualModelOptionValue"
-            @sync-model-providers="syncModelProvidersFromServer"
+            @refresh-model-providers="refreshModelProviders"
             @stop-generation="stopGeneration"
             @send="doSend"
           >
@@ -1777,7 +1775,7 @@
       <el-form-item v-if="mcpServerDraft.type !== 'stdio'" label="URL">
         <el-input
           v-model="mcpServerDraft.url"
-          placeholder="http://127.0.0.1:8000/mcp/query/sse"
+          placeholder="http://127.0.0.1:PORT/mcp"
         />
       </el-form-item>
       <el-form-item label="请求头 JSON">
@@ -2102,14 +2100,7 @@
                     <strong class="settings-chat-quick-overview__value">{{
                       selectedEmployeeSummary
                     }}</strong>
-                    <span class="settings-chat-quick-overview__meta">
-                      {{
-                        projectChatSettings.employee_coordination_mode ===
-                        "manual"
-                          ? "手动保留当前工具池"
-                          : "允许系统自动协作"
-                      }}
-                    </span>
+                    <span class="settings-chat-quick-overview__meta">当前项目工具默认自动使用。</span>
                   </article>
                   <article class="settings-chat-quick-overview__card">
                     <span class="settings-chat-quick-overview__label">
@@ -2330,51 +2321,30 @@
                           <el-icon><CollectionTag /></el-icon>
                         </div>
                         <div class="settings-module-row__main">
-                          <strong>执行智能体</strong>
-                          <span>{{ selectedEmployeeSummary }}</span>
+                          <strong>智能体目录</strong>
+                          <span>桌面运行会从该目录读取项目智能体定义、提示词和脚本。</span>
                         </div>
                         <div class="settings-module-row__control">
-                          <el-select
-                            v-model="selectedEmployeeIds"
-                            multiple
-                            collapse-tags
-                            collapse-tags-tooltip
-                            filterable
+                          <el-input
+                            v-model="projectChatSettings.agent_directory"
                             clearable
-                            placeholder="留空自动分配"
-                            class="settings-module-row__select"
+                            placeholder="例如 /workspace/.ai-employee/agents"
                             :disabled="!selectedProjectId"
                           >
-                            <el-option
-                              v-for="item in projectEmployees"
-                              :key="item.id"
-                              :label="`${item.name || item.id}`"
-                              :value="item.id"
-                            />
-                          </el-select>
-                        </div>
-                      </article>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><CircleCheck /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>协作模式</strong>
-                          <span
-                            >决定智能体如何分工；当前对话统一使用系统模型执行。</span
-                          >
-                        </div>
-                        <div class="settings-module-row__control">
-                          <el-select
-                            v-model="
-                              projectChatSettings.employee_coordination_mode
-                            "
-                            class="settings-module-row__select"
-                            :disabled="!selectedProjectId"
-                          >
-                            <el-option label="自动协作" value="auto" />
-                            <el-option label="手动模式" value="manual" />
-                          </el-select>
+                            <template #append>
+                              <el-button
+                                :loading="agentDirectoryPicking"
+                                :disabled="
+                                  !selectedProjectId ||
+                                  skillDirectoryPicking ||
+                                  ruleDirectoryPicking
+                                "
+                                @click="pickChatRuntimeDirectory('agent')"
+                              >
+                                选择目录
+                              </el-button>
+                            </template>
+                          </el-input>
                         </div>
                       </article>
                       <article class="settings-module-row">
@@ -3371,6 +3341,16 @@ import {
 } from "@/modules/project-chat/mappers/terminalMappers.js";
 import { useProjectChatTaskTreeState } from "@/modules/project-chat/composables/useProjectChatTaskTreeState.js";
 import { useProjectChatTaskTreeActions } from "@/modules/project-chat/composables/useProjectChatTaskTreeActions.js";
+import {
+  getLocalProject,
+  getLocalProjectRelations,
+  isLocalProjectMode,
+  readLocalEntities,
+  readLocalProjects,
+  updateLocalProjectRelations,
+  upsertLocalEntity,
+  upsertLocalProject,
+} from "@/services/local-project-repository.js";
 import { HIGH_RISK_RULES } from "@/modules/project-chat/constants/highRiskRules.js";
 import {
   CHAT_PARAMETER_SECTION_CONFIG,
@@ -3443,6 +3423,7 @@ const modelProviderSyncing = ref(false);
 const pendingLocalOutboxCount = ref(0);
 const localOutboxSyncing = ref(false);
 const projectWorkspaceSaving = ref(false);
+const agentDirectoryPicking = ref(false);
 const skillDirectoryPicking = ref(false);
 const ruleDirectoryPicking = ref(false);
 const autoSaveState = ref("idle");
@@ -6337,13 +6318,8 @@ const localFeishuBotStatusText = computed(() => {
 });
 const localOfflineStatusText = computed(() => {
   if (localFeishuBotStatusText.value) return localFeishuBotStatusText.value;
-  if (modelProviderOffline.value) return "离线 · 本地模型";
-  if (projectListOffline.value) return "离线 · 本地项目";
   return "";
 });
-const modelProviderSyncTooltip = computed(() =>
-  modelProviderOffline.value ? "同步模型供应商配置" : "刷新模型供应商配置",
-);
 const chatHeaderStatusType = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "info";
   if (!isExternalAgentMode.value) return wsStatusType.value;
@@ -9803,6 +9779,18 @@ const composerPlaceholder = computed(() =>
 const composerHintText = computed(() => {
   if (isTerminalInteractionMode.value) {
     return "当前主输入框已切换为项目终端输入，Enter 发送";
+  }
+  if (
+    !composerSelectedModelTarget.value.providerId ||
+    !composerSelectedModelTarget.value.modelName
+  ) {
+    return "请先在项目对话设置中配置本地模型；未配置时无法启动本地运行。";
+  }
+  if (!projectWorkspacePath.value) {
+    return "请先在项目对话设置中配置本机工作区路径。";
+  }
+  if (!nativeDesktopBridgeAvailable.value) {
+    return "请在桌面客户端中启动本地运行环境。";
   }
   return "本地运行：模型请求和工具执行在桌面端发起";
 });
@@ -13354,10 +13342,8 @@ function focusAgentWorkflowOperation() {
 
 const showPauseGenerationButton = computed(
   () =>
-    (Boolean(getActiveRequestId()) ||
-      currentChatSessionLocalLiuAgentRunning.value ||
-      currentChatSessionNativeExternalAgentRunning.value) &&
     (chatLoading.value ||
+      Boolean(getActiveRequestId()) ||
       currentChatSessionLocalLiuAgentRunning.value ||
       currentChatSessionNativeExternalAgentRunning.value) &&
     !isAwaitingUserInteraction.value &&
@@ -15935,12 +15921,6 @@ function normalizeProjectChatSettings(raw) {
     normalizedSandboxMode === "read-only" && !sandboxModeExplicit
       ? CHAT_SETTINGS_DEFAULTS.connector_sandbox_mode
       : normalizedSandboxMode;
-  const coordinationMode = String(
-    source.employee_coordination_mode ||
-      CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
-  )
-    .trim()
-    .toLowerCase();
   const autoUseToolsExplicit = Boolean(source.auto_use_tools_explicit);
   return {
     ...CHAT_SETTINGS_DEFAULTS,
@@ -15958,6 +15938,9 @@ function normalizeProjectChatSettings(raw) {
       source.connector_workspace_path ||
         CHAT_SETTINGS_DEFAULTS.connector_workspace_path,
     ).trim(),
+    agent_directory: String(
+      source.agent_directory || CHAT_SETTINGS_DEFAULTS.agent_directory,
+    ).trim(),
     skill_directory: String(
       source.skill_directory || CHAT_SETTINGS_DEFAULTS.skill_directory,
     ).trim(),
@@ -15965,8 +15948,6 @@ function normalizeProjectChatSettings(raw) {
       source.rule_directory || CHAT_SETTINGS_DEFAULTS.rule_directory,
     ).trim(),
     selected_employee_ids: selectedEmployeeIds,
-    employee_coordination_mode:
-      coordinationMode === "manual" ? "manual" : "auto",
     auto_use_tools_explicit: autoUseToolsExplicit,
     auto_use_tools: autoUseToolsExplicit
       ? coerceBooleanSetting(
@@ -19473,13 +19454,47 @@ async function loadLocalLiuAgentOfflineProjects() {
   }
 }
 
+async function loadLocalProjectChatStoreProjects() {
+  try {
+    const sessions = await readLocalChatSessions("local-project-index");
+    return Array.from(
+      new Map(
+        (Array.isArray(sessions) ? sessions : [])
+          .map((session) => {
+            const projectId = String(session?.project_id || "").trim();
+            if (!projectId || projectId === GLOBAL_PROJECT_CHAT_LOCAL_PROJECT_ID) {
+              return null;
+            }
+            return [
+              projectId,
+              normalizeOfflineProjectListItem({
+                id: projectId,
+                name: String(session?.project_name || projectId).trim(),
+                last_chat_session_id: String(session?.id || "").trim(),
+                is_offline_cached: true,
+              }),
+            ];
+          })
+          .filter(Boolean),
+      ).values(),
+    ).filter(Boolean);
+  } catch (error) {
+    console.warn("load local project chat store projects failed", error);
+    return [];
+  }
+}
+
 async function resolveProjectListOfflineFallback(currentProjects = []) {
   const snapshotProjects = readProjectListOfflineSnapshot();
-  const offlineProjects = await loadLocalLiuAgentOfflineProjects();
+  const [offlineProjects, chatStoreProjects] = await Promise.all([
+    loadLocalLiuAgentOfflineProjects(),
+    loadLocalProjectChatStoreProjects(),
+  ]);
   return mergeOfflineProjectLists(
     markOfflineProjectList(currentProjects),
     markOfflineProjectList(snapshotProjects),
     markOfflineProjectList(offlineProjects),
+    markOfflineProjectList(chatStoreProjects),
     buildHintedOfflineProjects(),
   );
 }
@@ -22469,12 +22484,6 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
       normalizeStringList(selectedEmployeeIds.value || []).length === 1
         ? normalizeStringList(selectedEmployeeIds.value || [])[0]
         : undefined,
-    employee_coordination_mode: String(
-      projectChatSettings.value.employee_coordination_mode ||
-        CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
-    )
-      .trim()
-      .toLowerCase(),
     history: toHistoryRows(messages.value.slice(0, -1), historyLimit.value),
     provider_id: selectedProviderId.value || undefined,
     model_name: selectedModelName.value || undefined,
@@ -25781,10 +25790,40 @@ async function upsertProjectChatRequirementRecord({
   chatSessionId = "",
   ...payload
 } = {}) {
-  // 需求记录功能已移除；聊天会话与消息统一写入 project_chat_sessions/messages。
-  void chatSessionId;
-  void payload;
-  return null;
+  if (!isLocalProjectMode()) return null;
+  const normalizedProjectId = String(
+    payload.projectId || selectedProjectId.value || "",
+  ).trim();
+  const normalizedChatSessionId = String(
+    chatSessionId || payload.chat_session_id || currentChatSessionId.value || "",
+  ).trim();
+  const rootGoal = String(
+    payload.rootGoal || payload.root_goal || payload.title || "",
+  ).trim();
+  if (!normalizedProjectId || !rootGoal) return null;
+  const records = readLocalEntities(
+    `requirement_records_${normalizedProjectId}`,
+  );
+  const existing = records.find(
+    (item) =>
+      String(item.chat_session_id || item.chatSessionId || "").trim() ===
+      normalizedChatSessionId,
+  );
+  const record = {
+    ...(existing || {}),
+    ...payload,
+    id:
+      String(existing?.id || payload.id || "").trim() ||
+      `local-requirement-${normalizedProjectId}-${normalizedChatSessionId || Date.now()}`,
+    project_id: normalizedProjectId,
+    chat_session_id: normalizedChatSessionId,
+    root_goal: rootGoal,
+    title: String(payload.title || rootGoal).trim(),
+    updated_at: new Date().toISOString(),
+    created_at: String(existing?.created_at || new Date().toISOString()),
+  };
+  upsertLocalEntity(`requirement_records_${normalizedProjectId}`, record);
+  return record;
 }
 
 async function refreshPendingLocalLiuAgentOutboxCount({
@@ -28724,6 +28763,17 @@ async function fetchChatParameterOptions() {
 }
 
 async function fetchProjects() {
+  if (isLocalProjectMode()) {
+    const fallbackProjects = await resolveProjectListOfflineFallback(
+      readLocalProjects(),
+    );
+    projects.value = fallbackProjects;
+    projectListOffline.value = true;
+    if (!projects.value.length) {
+      clearSelectedProjectId();
+    }
+    return;
+  }
   const currentProjects = Array.isArray(projects.value)
     ? projects.value.filter((item) => String(item?.id || "").trim())
     : [];
@@ -28773,7 +28823,97 @@ async function fetchProjects() {
   }
 }
 
+async function fetchSelectedProject(projectId = "") {
+  const normalizedProjectId = String(
+    projectId || routeChatTarget().projectId || readSelectedProjectId() || "",
+  ).trim();
+  const currentProjects = Array.isArray(projects.value)
+    ? projects.value.filter((item) => String(item?.id || "").trim())
+    : [];
+  if (!normalizedProjectId) {
+    projects.value = [];
+    clearSelectedProjectId();
+    return;
+  }
+  if (isLocalProjectMode()) {
+    const localProjects = readLocalProjects()
+      .map(normalizeOfflineProjectListItem)
+      .filter(Boolean);
+    const fallbackProjects = await resolveProjectListOfflineFallback(
+      localProjects,
+    );
+    const project =
+      localProjects.find((item) => item.id === normalizedProjectId) ||
+      normalizeOfflineProjectListItem(getLocalProject(normalizedProjectId)) ||
+      fallbackProjects.find((item) => item.id === normalizedProjectId) ||
+      currentProjects.find((item) => item.id === normalizedProjectId) ||
+      null;
+    if (!project) {
+      throw new Error("本地项目不存在或尚未完成导入");
+    }
+    projects.value = mergeOfflineProjectLists(
+      localProjects,
+      fallbackProjects,
+      [project],
+    );
+    projectListOffline.value = true;
+    return;
+  }
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(normalizedProjectId)}`,
+    );
+    const project = normalizeOfflineProjectListItem(data?.project || data);
+    if (!project) throw new Error("项目不存在");
+    projects.value = [project];
+    saveProjectListOfflineSnapshot(projects.value);
+    projectListOffline.value = false;
+  } catch (err) {
+    const fallbackProjects = await resolveProjectListOfflineFallback(
+      currentProjects,
+    );
+    const fallbackProject = fallbackProjects.find(
+      (item) => String(item?.id || "").trim() === normalizedProjectId,
+    );
+    if (!fallbackProject) throw err;
+    projects.value = [fallbackProject];
+    projectListOffline.value = true;
+  }
+}
+
 async function fetchGlobalProviders() {
+  if (isLocalProjectMode()) {
+    const projectId = String(selectedProjectId.value || "").trim();
+    const localProviders = readLocalEntities("llm_providers").filter(
+      (item) => item?.enabled !== false,
+    );
+    if (localProviders.length) {
+      providers.value = localProviders;
+      const preferredProviderId = String(selectedProviderId.value || "").trim();
+      const selectedProvider =
+        localProviders.find((item) => String(item?.id || "").trim() === preferredProviderId) ||
+        localProviders[0];
+      selectedProviderId.value = String(selectedProvider?.id || "").trim();
+      const modelNames = normalizeProviderModelNames(
+        selectedProvider,
+        modelTypeOptions.value,
+      );
+      selectedModelName.value = modelNames.includes(selectedModelName.value)
+        ? selectedModelName.value
+        : String(selectedProvider?.default_model || modelNames[0] || "").trim();
+      defaultProviderId.value = selectedProviderId.value;
+      defaultModelName.value = selectedModelName.value;
+      manualModelOptionValue.value = buildModelOptionValue(
+        selectedProviderId.value,
+        selectedModelName.value,
+      );
+      saveProviderModelOfflineSnapshot(projectId || "global");
+    } else if (projectId) {
+      applyProviderModelOfflineSnapshot(projectId);
+    }
+    modelProviderOffline.value = false;
+    return;
+  }
   try {
     const providerData = await api.get("/llm/providers", {
       params: { enabled_only: true },
@@ -28838,7 +28978,7 @@ async function fetchGlobalProviders() {
   );
 }
 
-async function syncModelProvidersFromServer() {
+async function refreshModelProviders() {
   if (modelProviderSyncing.value) return;
   const projectId = String(selectedProjectId.value || "").trim();
   modelProviderSyncing.value = true;
@@ -28848,15 +28988,9 @@ async function syncModelProvidersFromServer() {
     } else {
       await fetchGlobalProviders();
     }
-    if (modelProviderOffline.value) {
-      ElMessage.warning("后端不可用，继续使用本地模型供应商缓存");
-      return;
-    }
-    saveProviderModelOfflineSnapshot(projectId || "global");
-    ElMessage.success("模型供应商配置已同步");
   } catch (err) {
     applyProviderModelOfflineSnapshot(projectId);
-    ElMessage.error(err?.detail || err?.message || "同步模型供应商失败");
+    ElMessage.error(err?.detail || err?.message || "加载模型供应商失败");
   } finally {
     modelProviderSyncing.value = false;
   }
@@ -28864,12 +28998,17 @@ async function syncModelProvidersFromServer() {
 
 function syncProjectFromRoute() {
   const { projectId: routeProjectId } = routeChatTarget();
-  const initialProjectId = resolveAvailableProjectId(routeProjectId);
-  if (routeProjectId && initialProjectId) {
+  const initialProjectId = resolveAvailableProjectId(
+    routeProjectId || selectedProjectId.value || readSelectedProjectId(),
+  );
+  if (initialProjectId) {
     selectedProjectId.value = initialProjectId;
+    writeSelectedProjectId(initialProjectId);
     return initialProjectId;
   }
-  clearSelectedProjectState();
+  if (routeProjectId || !projects.value.length) {
+    clearSelectedProjectState();
+  }
   return "";
 }
 
@@ -28964,6 +29103,109 @@ async function fetchProvidersByProject(projectId, options = {}) {
   }
   let hydrated = false;
   try {
+    if (isLocalProjectMode()) {
+      const relations = getLocalProjectRelations(normalizedProjectId);
+      const localProject = getLocalProject(normalizedProjectId) || {};
+      const localSettings =
+        relations.chat_settings && typeof relations.chat_settings === "object"
+          ? relations.chat_settings
+          : {};
+      const localEmployees = Array.isArray(relations.employees)
+        ? relations.employees
+        : [];
+      const localSkills = Array.isArray(relations.skills) ? relations.skills : [];
+      const localRules = Array.isArray(relations.rules) ? relations.rules : [];
+      const localTools = Array.isArray(relations.project_tools)
+        ? relations.project_tools
+        : [];
+      const settings = applyLocalConnectorRuntimeSettings({
+        ...CHAT_SETTINGS_DEFAULTS,
+        ...localSettings,
+        selected_employee_ids: Array.isArray(localSettings.selected_employee_ids)
+          ? localSettings.selected_employee_ids
+          : localEmployees.map((item) => String(item?.id || "").trim()).filter(Boolean),
+        agent_directory: localSettings.agent_directory || localProject.agent_directory || "",
+        skill_directory: localSettings.skill_directory || localProject.skill_directory || "",
+        rule_directory: localSettings.rule_directory || localProject.rule_directory || "",
+      });
+      projectChatSettings.value = settings;
+      projectEmployees.value = localEmployees;
+      selectedEmployeeIds.value = normalizeChatSelectedEmployeeIds(
+        settings.selected_employee_ids || [],
+        localEmployees.map((item) => String(item?.id || "").trim()).filter(Boolean),
+      );
+      const projectProviders = Array.isArray(relations.providers)
+        ? relations.providers
+        : [];
+      const localProviders = projectProviders.length
+        ? projectProviders
+        : readLocalEntities("llm_providers").filter(
+            (item) => item?.enabled !== false,
+          );
+      projectProviders.forEach((provider) => {
+        const providerId = String(provider?.id || provider?.provider_id || "").trim();
+        if (providerId) upsertLocalEntity("llm_providers", { ...provider, id: providerId });
+      });
+      if (localProviders.length) {
+        providers.value = localProviders;
+      } else {
+        applyProviderModelOfflineSnapshot(normalizedProjectId);
+      }
+      modelProviderOffline.value = false;
+      projectWorkspacePath.value = String(
+        localProject.workspace_path || relations.workspace_path || "",
+      ).trim();
+      projectWorkspaceDraft.value = projectWorkspacePath.value;
+      workspacePathDraft.value = projectWorkspacePath.value;
+      projectAiEntryFile.value = String(localProject.ai_entry_file || "").trim();
+      aiEntryFileDraft.value = projectAiEntryFile.value || DEFAULT_AI_ENTRY_FILE;
+      mcpModules.value = normalizeMcpModules({
+        system: { project_related: localTools },
+        local: { skills: localSkills, rules: localRules },
+      });
+      selectedProjectToolNames.value = normalizeStringList(
+        settings.enabled_project_tool_names || localTools.map((item) => item.tool_name),
+      );
+      const preferredProviderId = String(settings.provider_id || "").trim();
+      const selectedProvider =
+        providers.value.find((item) => item?.id === preferredProviderId) ||
+        providers.value[0] ||
+        null;
+      selectedProviderId.value = String(selectedProvider?.id || "").trim();
+      const availableModelNames = normalizeProviderModelNames(
+        selectedProvider,
+        modelTypeOptions.value,
+      );
+      const preferredModelName = String(settings.model_name || "").trim();
+      selectedModelName.value =
+        preferredModelName && availableModelNames.includes(preferredModelName)
+          ? preferredModelName
+          : String(
+              selectedProvider?.default_model || availableModelNames[0] || "",
+            ).trim();
+      defaultProviderId.value = selectedProviderId.value;
+      defaultModelName.value = selectedModelName.value;
+      manualModelOptionValue.value = buildModelOptionValue(
+        selectedProviderId.value,
+        selectedModelName.value,
+      );
+      externalAgentInfo.value = normalizeExternalAgentInfo({
+        workspace_path: projectWorkspacePath.value,
+        implemented: true,
+        ready: Boolean(projectWorkspacePath.value),
+      });
+      runtimeExternalTools.value = [];
+      externalMcpTotal.value = 0;
+      updateLocalProjectRelations(normalizedProjectId, {
+        employees: localEmployees,
+        skills: localSkills,
+        rules: localRules,
+        project_tools: localTools,
+        chat_settings: settings,
+      });
+      hydrated = true;
+      return;
+    }
     const data = await fetchProjectChatProviders(normalizedProjectId, {
       includeRuntimeExternalTools,
     });
@@ -29141,6 +29383,42 @@ async function fetchProvidersByProject(projectId, options = {}) {
 async function handleQuickCreateEmployee(payload) {
   employeeCreateSubmitting.value = true;
   try {
+    if (isLocalProjectMode()) {
+      const projectId = String(selectedProjectId.value || "").trim();
+      if (!projectId) throw new Error("请先选择项目");
+      const relations = getLocalProjectRelations(projectId);
+      const employeeId = `local-employee-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const employee = {
+        id: employeeId,
+        name: String(payload.name || "未命名智能体").trim(),
+        description: String(payload.description || "").trim(),
+        goal: String(payload.goal || "").trim(),
+        skills: Array.isArray(payload.skills) ? payload.skills : [],
+        project_id: projectId,
+        source: "local_project_chat",
+        created_at: new Date().toISOString(),
+      };
+      const employees = Array.isArray(relations.employees)
+        ? relations.employees.filter((item) => String(item?.id || "") !== employeeId)
+        : [];
+      employees.push(employee);
+      updateLocalProjectRelations(projectId, {
+        employees,
+        chat_settings: {
+          ...(relations.chat_settings || {}),
+          selected_employee_ids: [
+            ...new Set([
+              ...(relations.chat_settings?.selected_employee_ids || []),
+              employeeId,
+            ]),
+          ],
+        },
+      });
+      projectEmployees.value = employees;
+      selectedEmployeeIds.value = employees.map((item) => String(item.id));
+      ElMessage.success(`智能体「${employee.name}」已加入当前项目`);
+      return employee;
+    }
     const employeeRes = await createEmployeeFromDraftRequest({
       name: payload.name,
       description: payload.description || "",
@@ -29235,14 +29513,9 @@ function buildProjectChatSettingsPayload() {
     ).trim(),
     selected_employee_id: employeeIds.length === 1 ? employeeIds[0] : "",
     selected_employee_ids: employeeIds,
-    employee_coordination_mode: String(
-      projectChatSettings.value.employee_coordination_mode ||
-        CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
-    )
-      .trim()
-      .toLowerCase(),
     provider_id: String(selectedProviderId.value || "").trim(),
     model_name: String(selectedModelName.value || "").trim(),
+    connector_workspace_path: projectWorkspaceDraftNormalized.value,
     temperature: Number(
       temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
     ),
@@ -29353,6 +29626,40 @@ async function saveProjectChatSettings(silent = false) {
   settingsSaving.value = true;
   try {
     const payload = buildProjectChatSettingsPayload();
+    if (isLocalProjectMode()) {
+      const relations = getLocalProjectRelations(projectId);
+      const workspacePath = String(
+        payload.connector_workspace_path || projectWorkspacePath.value || "",
+      ).trim();
+      const localProject = getLocalProject(projectId) || { id: projectId };
+      updateLocalProjectRelations(projectId, {
+        ...relations,
+        workspace_path: workspacePath,
+        chat_settings: payload,
+        employees: projectEmployees.value,
+        project_tools: selectedProjectToolNames.value.map((toolName) => ({
+          tool_name: toolName,
+          enabled: true,
+        })),
+      });
+      upsertLocalProject({
+        ...localProject,
+        id: projectId,
+        workspace_path: workspacePath,
+        ai_entry_file: String(projectAiEntryFile.value || "").trim(),
+        agent_directory: String(payload.agent_directory || "").trim(),
+        skill_directory: String(payload.skill_directory || "").trim(),
+        rule_directory: String(payload.rule_directory || "").trim(),
+      });
+      projectWorkspacePath.value = workspacePath;
+      projectWorkspaceDraft.value = workspacePath;
+      workspacePathDraft.value = workspacePath;
+      applySavedProjectChatSettings(payload);
+      markAutoSaveSynced();
+      autoSaveState.value = "saved";
+      if (!silent) ElMessage.success("项目对话设置已保存到本机");
+      return;
+    }
     const data = await saveProjectChatSettingsRequest(projectId, payload);
     applySavedProjectChatSettings(data?.settings || payload);
     markAutoSaveSynced();
@@ -29599,11 +29906,12 @@ async function fetchChatSessions(
       ];
     }
     let remoteSessions = [];
-    if (!hasNativeDesktopBridge()) {
+    if (!isLocalProjectMode()) {
       try {
-        const data = await api.get("/projects/chat/global/sessions", {
-          params: { limit: 500 },
-        });
+        const data = await api.get(
+          `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
+          { params: { limit: 50 } },
+        );
         remoteSessions = normalizeVisibleChatSessions(data?.sessions || []);
       } catch (error) {
         console.warn("加载服务端项目聊天会话失败，回退本地会话", error);
@@ -29680,11 +29988,12 @@ async function refreshChatSessionListMetadata(projectId) {
     await readLocalChatSessions(normalizedProjectId),
   );
   let remoteSessions = [];
-  if (!hasNativeDesktopBridge()) {
+  if (!isLocalProjectMode()) {
     try {
-      const data = await api.get("/projects/chat/global/sessions", {
-        params: { limit: 500 },
-      });
+      const data = await api.get(
+        `/projects/${encodeURIComponent(normalizedProjectId)}/chat/sessions`,
+        { params: { limit: 50 } },
+      );
       remoteSessions = normalizeVisibleChatSessions(data?.sessions || []);
     } catch (error) {
       console.warn("刷新服务端项目聊天会话失败，保留本地会话", error);
@@ -29832,16 +30141,19 @@ async function fetchChatHistory(
   const previousScrollTop = Number(container?.scrollTop || 0);
   try {
     const [remoteHistoryResult, runtimePayload] = await Promise.all([
-      hasNativeDesktopBridge()
+      isLocalProjectMode()
         ? Promise.resolve({ ok: false, data: null })
         : api
-            .get("/projects/chat/global/history", {
+            .get(
+              `/projects/${encodeURIComponent(projectId)}/chat/history`,
+              {
               params: {
                 limit,
                 offset,
                 chat_session_id: normalizedSessionId,
               },
-            })
+              },
+            )
             .then((data) => ({ ok: true, data }))
             .catch((error) => ({ ok: false, error })),
       fetchPersistedChatRuntime(projectId, normalizedSessionId),
@@ -30023,13 +30335,15 @@ async function createChatSession(options = {}) {
         : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const chatSessionId = `chat-session-${String(randomId).replace(/[^A-Za-z0-9-]/g, "").slice(0, 48)}`;
     let data = null;
-    if (!hasNativeDesktopBridge()) {
-      data = await api.post("/projects/chat/global/sessions", {
-        project_id: projectId,
-        chat_session_id: chatSessionId,
-        title: title || "新对话",
-        source_context: sourceContext,
-      });
+    if (!isLocalProjectMode()) {
+      data = await api.post(
+        `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
+        {
+          chat_session_id: chatSessionId,
+          title: title || "新对话",
+          source_context: sourceContext,
+        },
+      );
     }
     const session = normalizeChatSession({
       ...(data?.session || {}),
@@ -30104,7 +30418,7 @@ async function updateChatSession(chatSessionId, options = {}) {
       throw new Error("更新会话失败");
     }
     let data = null;
-    if (!hasNativeDesktopBridge()) {
+    if (!isLocalProjectMode()) {
       data = await api.patch(
         `/projects/${encodeURIComponent(projectId)}/chat/sessions/${encodeURIComponent(normalizedSessionId)}`,
         {
@@ -31958,12 +32272,29 @@ async function pickChatRuntimeDirectory(kind) {
     return;
   }
 
-  const isSkillDirectory = kind === "skill";
-  const pickingState = isSkillDirectory
-    ? skillDirectoryPicking
-    : ruleDirectoryPicking;
-  const settingKey = isSkillDirectory ? "skill_directory" : "rule_directory";
-  const directoryLabel = isSkillDirectory ? "技能目录" : "规则目录";
+  const directoryConfig = {
+    agent: {
+      pickingState: agentDirectoryPicking,
+      settingKey: "agent_directory",
+      label: "智能体目录",
+      placeholder: "/workspace/.ai-employee/agents",
+    },
+    skill: {
+      pickingState: skillDirectoryPicking,
+      settingKey: "skill_directory",
+      label: "技能目录",
+      placeholder: "/workspace/.ai-employee/skills",
+    },
+    rule: {
+      pickingState: ruleDirectoryPicking,
+      settingKey: "rule_directory",
+      label: "规则目录",
+      placeholder: "/workspace/.ai-employee/rules",
+    },
+  }[kind];
+  if (!directoryConfig) return;
+  const { pickingState, settingKey, label: directoryLabel, placeholder } =
+    directoryConfig;
   const initialPath = String(
     projectChatSettings.value[settingKey] ||
       resolveNativeRuntimeWorkspacePath() ||
@@ -31974,9 +32305,7 @@ async function pickChatRuntimeDirectory(kind) {
   try {
     const pickedPath = await pickWorkspaceDirectory(initialPath, {
       title: `选择${directoryLabel} · ${String(currentProjectLabel.value || "").trim() || "AI 对话中心"}`,
-      placeholder: isSkillDirectory
-        ? "/workspace/.ai-employee/skills"
-        : "/workspace/.ai-employee/rules",
+      placeholder,
     });
     const normalizedPath = String(pickedPath || "").trim();
     if (!normalizedPath) {
@@ -32073,6 +32402,48 @@ async function saveProjectWorkspaceDirectory(
     const workspacePath = String(
       normalizedOverride ?? projectWorkspaceDraft.value ?? "",
     ).trim();
+    if (isLocalProjectMode()) {
+      const relations = getLocalProjectRelations(projectId);
+      const localProject = getLocalProject(projectId) || { id: projectId };
+      const nextSettings = applyLocalConnectorRuntimeSettings({
+        ...projectChatSettings.value,
+        connector_workspace_path: workspacePath,
+      });
+      updateLocalProjectRelations(projectId, {
+        ...relations,
+        workspace_path: workspacePath,
+        chat_settings: nextSettings,
+      });
+      upsertLocalProject({
+        ...localProject,
+        id: projectId,
+        workspace_path: workspacePath,
+      });
+      projectWorkspacePath.value = workspacePath;
+      projectWorkspaceDraft.value = workspacePath;
+      workspacePathDraft.value = workspacePath;
+      projectChatSettings.value = nextSettings;
+      projects.value = (projects.value || []).map((item) =>
+        String(item?.id || "").trim() === projectId
+          ? { ...item, workspace_path: workspacePath }
+          : item,
+      );
+      externalAgentWarmupKey.value = "";
+      externalAgentInfo.value = normalizeExternalAgentInfo({
+        ...externalAgentInfo.value,
+        ready: false,
+        session_id: "",
+        thread_id: "",
+        workspace_path: workspacePath,
+      });
+      markAutoSaveSynced();
+      if (!saveOptions.silent) {
+        ElMessage.success(
+          workspacePath ? "项目工作区路径已保存" : "已清空项目工作区路径",
+        );
+      }
+      return workspacePath;
+    }
     const data = await api.patch(`/projects/${encodeURIComponent(projectId)}`, {
       workspace_path: workspacePath,
     });
@@ -32133,6 +32504,28 @@ async function saveProjectAiEntryFile(aiEntryFileOverride = null) {
       normalizedOverride ?? aiEntryFileDraft.value ?? "",
       projectWorkspaceDraftNormalized.value || projectWorkspacePath.value,
     );
+    if (isLocalProjectMode()) {
+      const relations = getLocalProjectRelations(projectId);
+      const localProject = getLocalProject(projectId) || { id: projectId };
+      updateLocalProjectRelations(projectId, {
+        ...relations,
+        ai_entry_file: aiEntryFile,
+      });
+      upsertLocalProject({
+        ...localProject,
+        id: projectId,
+        ai_entry_file: aiEntryFile,
+      });
+      projectAiEntryFile.value = aiEntryFile;
+      aiEntryFileDraft.value = aiEntryFile;
+      projects.value = (projects.value || []).map((item) =>
+        String(item?.id || "").trim() === projectId
+          ? { ...item, ai_entry_file: aiEntryFile }
+          : item,
+      );
+      ElMessage.success(aiEntryFile ? "AI 入口文件已保存" : "已清空 AI 入口文件");
+      return;
+    }
     const data = await api.patch(
       `/projects/${encodeURIComponent(projectId)}/chat/ai-entry-file`,
       {
@@ -32418,18 +32811,15 @@ async function sendProjectChatRequest({
     skill_directory: String(
       projectChatSettings.value.skill_directory || "",
     ).trim(),
+    agent_directory: String(
+      projectChatSettings.value.agent_directory || "",
+    ).trim(),
     rule_directory: String(
       projectChatSettings.value.rule_directory || "",
     ).trim(),
     message: finalUserPrompt,
     employee_ids: employeeIds,
     employee_id: employeeIds.length === 1 ? employeeIds[0] : undefined,
-    employee_coordination_mode: String(
-      projectChatSettings.value.employee_coordination_mode ||
-        CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
-    )
-      .trim()
-      .toLowerCase(),
     history: historyRows,
     provider_id: String(providerId || "").trim() || undefined,
     model_name: String(modelName || "").trim() || undefined,
@@ -33231,19 +33621,37 @@ async function fetchLocalLiuAgentDesktopModelRuntime(providerId) {
   if (!normalizedProviderId) {
     throw new Error("请先在对话设置中选择本地运行使用的模型供应商");
   }
-  const data = await api.get(
-    `/llm/providers/${encodeURIComponent(normalizedProviderId)}/desktop-runtime`,
-  );
-  const runtime =
-    data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
-  const baseUrl = String(runtime.base_url || runtime.baseUrl || "").trim();
-  const apiKey = String(runtime.api_key || runtime.apiKey || "").trim();
+  const projectProviders = Array.isArray(
+    getLocalProjectRelations(selectedProjectId.value)?.providers,
+  )
+    ? getLocalProjectRelations(selectedProjectId.value).providers
+    : [];
+  const provider =
+    readLocalEntities("llm_providers").find(
+      (item) => String(item?.id || "").trim() === normalizedProviderId,
+    ) ||
+    projectProviders.find(
+      (item) =>
+        String(item?.id || item?.provider_id || "").trim() ===
+        normalizedProviderId,
+    ) ||
+    null;
+  if (!provider) {
+    throw new Error(`未找到本机模型供应商：${normalizedProviderId}`);
+  }
+  const baseUrl = String(provider.base_url || provider.baseUrl || "").trim();
+  const apiKey = String(provider.api_key || provider.apiKey || "").trim();
   if (!baseUrl || !apiKey) {
     throw new Error(
-      "当前模型供应商缺少 Base URL 或 API Key，桌面端无法本地调用模型",
+      "当前模型供应商缺少 Base URL 或 API Key，无法发起模型请求",
     );
   }
-  return runtime;
+  return {
+    base_url: baseUrl,
+    api_key: apiKey,
+    model_name: String(provider.default_model || "").trim(),
+    provider_type: String(provider.provider_type || "openai-compatible").trim(),
+  };
 }
 
 async function buildLocalLiuAgentModelRuntime(
@@ -33770,6 +34178,21 @@ function explainBlockedSend() {
   }
   if (!String(selectedProjectId.value || "").trim()) {
     ElMessage.warning("请先选择项目");
+    return;
+  }
+  if (
+    !composerSelectedModelTarget.value.providerId ||
+    !composerSelectedModelTarget.value.modelName
+  ) {
+    ElMessage.warning("请先在项目对话设置中选择本地模型后再发送");
+    return;
+  }
+  if (!projectWorkspacePath.value) {
+    ElMessage.warning("请先在项目对话设置中配置本机工作区路径");
+    return;
+  }
+  if (!hasNativeDesktopBridge()) {
+    ElMessage.warning("请使用桌面客户端启动本地 AI Runtime");
     return;
   }
   if (
@@ -34555,34 +34978,41 @@ async function loadSelectedProjectConversation(projectId) {
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
     if (projectListOffline.value) {
-      const offlineProject = (projects.value || []).find(
-        (item) => String(item?.id || "").trim() === normalizedProjectId,
-      );
-      const offlineChatSessionId = String(
-        offlineProject?.last_chat_session_id ||
-          offlineProject?.lastChatSessionId ||
-          currentChatSessionId.value ||
-          `offline-${normalizedProjectId}`,
-      ).trim();
-      chatSessions.value = [
+      let localChatSessionId = await fetchChatSessions(
+        normalizedProjectId,
+        routeChatSessionId || "",
         {
-          id: offlineChatSessionId,
-          title: "本地离线会话",
-          preview: "后端不可用，正在使用本地项目缓存",
-          message_count: messages.value.length,
-          source: "desktop_offline_cache",
-          created_at: "",
-          updated_at: "",
-          last_message_at: "",
+          allowFallback: !shouldCreateWindowSession,
+          useRemembered: !shouldCreateWindowSession,
         },
-      ];
-      currentChatSessionId.value = offlineChatSessionId;
-      rememberChatSession(normalizedProjectId, offlineChatSessionId);
+      );
+      if (shouldCreateWindowSession) {
+        clearRouteCreateChatSessionFlag();
+        if (localChatSessionId) {
+          replaceRouteWithChatSession(localChatSessionId);
+        } else {
+          const session = await createChatSession({
+            title: "新对话",
+            sourceContext: { source: "desktop_offline_cache" },
+          });
+          localChatSessionId = String(session?.id || "").trim();
+        }
+      }
+      if (!localChatSessionId) {
+        await resetEmptyConversationState();
+        return;
+      }
+      if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
+        return;
+      await fetchChatHistory(normalizedProjectId, localChatSessionId);
       await refreshPendingLocalLiuAgentOutboxCount({
         projectId: normalizedProjectId,
-        chatSessionId: offlineChatSessionId,
+        chatSessionId: localChatSessionId,
         workspacePath: localLiuAgentWorkspacePath(),
       });
+      await applyRouteMessageFocus();
+      await applyLocalRuntimeTaskRouteAction();
+      await applyProjectDeployDraftFromRoute();
       return;
     }
     const restoredTask = null;
@@ -34869,19 +35299,25 @@ onMounted(async () => {
     void syncLocalFeishuBotListeners();
   }, 300);
   try {
-    await Promise.all([
+    await fetchProjects();
+    syncProjectFromRoute();
+    if (String(selectedProjectId.value || "").trim()) {
+      await fetchSelectedProject(selectedProjectId.value);
+    }
+    loading.value = false;
+    void Promise.all([
       fetchSystemConfig(),
-      fetchProjects(),
       fetchModelTypeOptions(),
       fetchChatParameterOptions(),
       fetchGlobalProviders(),
-    ]);
-    syncProjectFromRoute();
-    await applyStatisticsAnalysisDraftFromRoute();
-    await applyPluginInstallDraftFromRoute();
-    await applyProjectDeployDraftFromRoute();
+    ]).catch((err) => {
+      console.warn("后台加载聊天配置失败", err);
+    });
+    void applyStatisticsAnalysisDraftFromRoute();
+    void applyPluginInstallDraftFromRoute();
+    void applyProjectDeployDraftFromRoute();
     if (!String(selectedProjectId.value || "").trim()) {
-      await fetchProvidersByProject("");
+      void fetchProvidersByProject("");
     }
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "初始化失败");

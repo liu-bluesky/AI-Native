@@ -1,5 +1,0 @@
-CREATE TABLE IF NOT EXISTS bot_connectors (
-    id TEXT PRIMARY KEY,
-    payload JSONB NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);

@@ -98,7 +98,7 @@
 
       <div class="login-panel__footer">
         <span class="login-panel__footer-text">还没有账号？</span>
-        <el-button text class="login-panel__link" @click="router.replace('/register')">
+        <el-button text class="login-panel__link" @click="openRegistration">
           去注册
         </el-button>
       </div>
@@ -121,6 +121,9 @@ import {
   setActiveServerOrigin,
   validateServerOrigin,
 } from "@/utils/server-profile.js";
+import { openNativeExternalUrl } from "@/utils/native-desktop-bridge.js";
+
+const EXTERNAL_REGISTRATION_URL = "https://token.ltllm.com/login";
 
 const route = useRoute();
 const router = useRouter();
@@ -193,6 +196,15 @@ watch(
 function selectServerProfile(item) {
   serverOriginDraft.value = item.origin;
   void applyServerOrigin();
+}
+
+async function openRegistration() {
+  try {
+    if (await openNativeExternalUrl(EXTERNAL_REGISTRATION_URL)) return;
+  } catch (_error) {
+    // Use the browser fallback outside the desktop shell.
+  }
+  window.open(EXTERNAL_REGISTRATION_URL, "_blank", "noopener,noreferrer");
 }
 
 async function checkServerStatus({ silent = false } = {}) {

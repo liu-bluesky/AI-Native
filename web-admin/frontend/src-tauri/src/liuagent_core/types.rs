@@ -52,6 +52,8 @@ pub struct LocalChatRequest {
     pub model_runtime: Option<LocalModelRuntimeConfig>,
     #[serde(default, alias = "ai_entry_file")]
     pub ai_entry_file: Option<String>,
+    #[serde(default, alias = "agent_directory")]
+    pub agent_directory: Option<String>,
     #[serde(default)]
     pub attachments: Vec<LocalChatAttachment>,
     #[serde(default)]
@@ -80,6 +82,7 @@ impl Default for LocalChatRequest {
             temperature: None,
             model_runtime: None,
             ai_entry_file: None,
+            agent_directory: None,
             attachments: Vec::new(),
             media_tools: Vec::new(),
             mcp_config: json!({}),

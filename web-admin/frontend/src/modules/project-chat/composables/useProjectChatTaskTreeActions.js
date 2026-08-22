@@ -13,7 +13,12 @@ import {
   rememberWorkSession,
   restoreTaskTreeSession,
   restoreWorkSession,
+  readLocalTaskTreeSnapshot,
+  writeLocalTaskTreeSnapshot,
+  readLocalWorkSessionSnapshot,
+  writeLocalWorkSessionSnapshot,
 } from "@/modules/project-chat/services/projectChatStorage.js";
+import { isLocalProjectMode } from "@/services/local-project-repository.js";
 import {
   buildOngoingTaskRestoreNotice,
   buildTaskTreeNodeUpdatePayload,
@@ -82,6 +87,10 @@ export function useProjectChatTaskTreeActions({
     const normalized = normalizeTaskTreePayload(payload);
     chatTaskTree.value = normalized;
     const projectId = String(selectedProjectId.value || "").trim();
+    const chatSessionId = String(payload?.chat_session_id || currentChatSessionId.value || "").trim();
+    if (isLocalProjectMode() && projectId && chatSessionId) {
+      writeLocalTaskTreeSnapshot(projectId, chatSessionId, payload);
+    }
     if (projectId) {
       if (normalized?.id && !isTaskTreeArchivedOrDone(normalized)) {
         rememberTaskTreeSession(projectId, normalized.id);
@@ -118,6 +127,9 @@ export function useProjectChatTaskTreeActions({
       return null;
     }
     currentWorkSessionId.value = normalized.session_id;
+    if (isLocalProjectMode()) {
+      writeLocalWorkSessionSnapshot(projectId, normalized.task_tree_chat_session_id, normalized);
+    }
     rememberWorkSession(projectId, normalized.session_id);
     const taskTree =
       options.taskTree && typeof options.taskTree === "object"
@@ -153,6 +165,21 @@ export function useProjectChatTaskTreeActions({
       return null;
     }
     try {
+      if (isLocalProjectMode()) {
+        const localSession = normalizeWorkSessionSummary(
+          readLocalWorkSessionSnapshot(normalizedProjectId, taskTreeChatSessionId),
+        );
+        if (localSession?.session_id) {
+          currentWorkSessionId.value = localSession.session_id;
+          rememberWorkSession(normalizedProjectId, localSession.session_id);
+          return localSession;
+        }
+        if (options.clearIfMissing !== false) {
+          currentWorkSessionId.value = "";
+          clearWorkSessionMemory(normalizedProjectId);
+        }
+        return null;
+      }
       const data = await fetchProjectChatWorkSessionsByTaskTree(
         normalizedProjectId,
         {
@@ -201,6 +228,18 @@ export function useProjectChatTaskTreeActions({
     }
     taskTreeLoading.value = true;
     try {
+      if (isLocalProjectMode()) {
+        const payload = normalizeTaskTreePayload(
+          readLocalTaskTreeSnapshot(normalizedProjectId, normalizedChatSessionId),
+        );
+        applyTaskTreePayload(payload);
+        if (payload?.id && !isTaskTreeArchivedOrDone(payload)) {
+          await syncOngoingWorkSessionFromTaskTree(normalizedProjectId, payload, {
+            silent: true,
+          });
+        }
+        return payload;
+      }
       const params = {};
       if (normalizedChatSessionId) {
         params.chat_session_id = normalizedChatSessionId;
@@ -230,6 +269,18 @@ export function useProjectChatTaskTreeActions({
     currentWorkSessionId.value = "";
     if (!normalizedProjectId) {
       return null;
+    }
+    if (isLocalProjectMode()) {
+      const chatSessionId = restoreChatSession(normalizedProjectId);
+      const payload = normalizeTaskTreePayload(
+        readLocalTaskTreeSnapshot(normalizedProjectId, chatSessionId),
+      );
+      if (!payload || isTaskTreeArchivedOrDone(payload)) return null;
+      const workSession = normalizeWorkSessionSummary(
+        readLocalWorkSessionSnapshot(normalizedProjectId, chatSessionId),
+      );
+      setOngoingTaskRestoreNotice(payload, workSession);
+      return { chatSessionId, taskTree: payload, workSession };
     }
     taskTreeLoading.value = true;
     try {
@@ -359,6 +410,15 @@ export function useProjectChatTaskTreeActions({
     }
     taskTreeSaving.value = true;
     try {
+      if (isLocalProjectMode()) {
+        writeLocalTaskTreeSnapshot(projectId, chatSessionId, null);
+        writeLocalWorkSessionSnapshot(projectId, chatSessionId, null);
+        clearTaskTreeSessionMemory(projectId);
+        clearWorkSessionMemory(projectId);
+        applyTaskTreePayload(null);
+        ElMessage.success("当前会话的本地任务推进已删除");
+        return;
+      }
       await deleteProjectChatTaskTree(projectId, chatSessionId);
       applyTaskTreePayload(null);
       ElMessage.success("当前会话的任务推进已删除");
@@ -397,6 +457,36 @@ export function useProjectChatTaskTreeActions({
     }
     taskTreeSaving.value = true;
     try {
+      if (isLocalProjectMode()) {
+        const currentTree = chatTaskTree.value;
+        const nextTree = currentTree
+          ? {
+              ...currentTree,
+              status: nextStatus,
+              current_node_id: setCurrentOnly
+                ? nodeId
+                : currentTree.current_node_id,
+              nodes: (currentTree.nodes || []).map((node) =>
+                String(node?.id || "") === nodeId
+                  ? {
+                      ...node,
+                      status: nextStatus,
+                      verification_result: verificationResult,
+                      summary_for_model: String(
+                        taskTreeSummaryDraft.value || "",
+                      ).trim(),
+                    }
+                  : node,
+              ),
+            }
+          : null;
+        if (nextTree) {
+          writeLocalTaskTreeSnapshot(projectId, chatSessionId, nextTree);
+          applyTaskTreePayload(nextTree);
+        }
+        ElMessage.success(setCurrentOnly ? "已切换本地执行节点" : "本地任务节点已更新");
+        return;
+      }
       const payload = buildTaskTreeNodeUpdatePayload({
         chatSessionId,
         setCurrentOnly,

@@ -2240,6 +2240,14 @@ import {
 } from "@/utils/runtime-url.js";
 import { setStoredProjectContextId } from "@/utils/desktop-shell.js";
 import { normalizeProviderModelNames } from "@/utils/llm-models.js";
+import {
+  getLocalProject,
+  isLocalProjectMode,
+  getLocalProjectRelations,
+  updateLocalProjectRelations,
+  readLocalEntities,
+  writeLocalEntities,
+} from "@/services/local-project-repository.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -4616,6 +4624,13 @@ function resetUserForm() {
 }
 
 async function fetchEmployees() {
+  if (isLocalProjectMode()) {
+    const relations = getLocalProjectRelations(projectId.value);
+    employeeOptions.value = Array.isArray(relations.employee_options)
+      ? relations.employee_options
+      : [];
+    return;
+  }
   try {
     const data = await api.get("/employees");
     employeeOptions.value = data.employees || [];
@@ -4625,6 +4640,14 @@ async function fetchEmployees() {
 }
 
 async function fetchRules() {
+  if (isLocalProjectMode()) {
+    const relations = getLocalProjectRelations(projectId.value);
+    ruleOptions.value = Array.isArray(relations.rule_options)
+      ? relations.rule_options
+      : [];
+    ensureUiRuleOptionCoverage();
+    return;
+  }
   try {
     const data = await api.get("/rules");
     ruleOptions.value = (data.rules || []).map((rule) => ({
@@ -4643,6 +4666,17 @@ async function fetchExperienceRuleOptions() {
   const effectiveProjectId = String(projectId.value || "").trim();
   if (!effectiveProjectId) {
     experienceRuleOptions.value = [];
+    return;
+  }
+  if (isLocalProjectMode()) {
+    const relations = getLocalProjectRelations(effectiveProjectId);
+    experienceRuleOptions.value = Array.isArray(relations.experience_rule_options)
+      ? relations.experience_rule_options
+          .map((item) => normalizeExperienceRuleOption(item))
+          .filter((item) => item.id)
+      : [];
+    ensureExperienceRuleOptionCoverage();
+    experienceRuleOptionsLoading.value = false;
     return;
   }
   experienceRuleOptionsLoading.value = true;
@@ -4665,6 +4699,28 @@ async function fetchExperienceRuleOptions() {
 async function fetchProject(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
   if (!effectiveProjectId) return;
+  if (isLocalProjectMode()) {
+    const localProject = getLocalProject(effectiveProjectId);
+    if (!localProject) {
+      throw new Error("本地未找到该项目，请先在本地项目列表中创建或导入");
+    }
+    if (effectiveProjectId !== projectId.value) return;
+    const relations = getLocalProjectRelations(effectiveProjectId);
+    project.value = {
+      ...localProject,
+      type: normalizeProjectType(localProject.type),
+      ui_rule_ids: normalizeStringList(
+        relations.ui_rule_ids || localProject.ui_rule_ids || [],
+      ),
+      experience_rule_ids: normalizeStringList(
+        relations.experience_rule_ids || localProject.experience_rule_ids || [],
+      ),
+    };
+    syncProjectDesktopWindowTitle();
+    ensureUiRuleOptionCoverage();
+    ensureExperienceRuleOptionCoverage();
+    return;
+  }
   const data = await api.get(`/projects/${effectiveProjectId}`);
   if (effectiveProjectId !== projectId.value) return;
   project.value = {
@@ -4727,6 +4783,14 @@ async function fetchRepositoryWorkspaceContext(
     };
     return;
   }
+  if (isLocalProjectMode()) {
+    repositoryWorkspace.value = {
+      path: String(project.value?.workspace_path || "").trim(),
+      source: "local_project_workspace",
+    };
+    repositoryWorkspaceLoading.value = false;
+    return;
+  }
   repositoryWorkspaceLoading.value = true;
   try {
     const data = await api.get(
@@ -4774,6 +4838,14 @@ async function fetchCodeRepositories(targetProjectId = projectId.value) {
     return;
   }
   repositoryLoading.value = true;
+  if (isLocalProjectMode()) {
+    const relations = getLocalProjectRelations(effectiveProjectId);
+    codeRepositories.value = Array.isArray(relations.code_repositories)
+      ? relations.code_repositories.map(normalizeCodeRepository).filter((item) => item.id)
+      : [];
+    repositoryLoading.value = false;
+    return;
+  }
   try {
     const data = await api.get(
       `/projects/${effectiveProjectId}/code-repositories`,
@@ -4798,6 +4870,13 @@ async function fetchExperienceProviders() {
     experienceProviderOptions.value = [];
     experienceSummaryProviderId.value = "";
     experienceSummaryModelName.value = "";
+    return;
+  }
+  if (isLocalProjectMode()) {
+    experienceProviderOptions.value = [];
+    experienceSummaryProviderId.value = "";
+    experienceSummaryModelName.value = "";
+    experienceProvidersLoading.value = false;
     return;
   }
   experienceProvidersLoading.value = true;
@@ -5216,6 +5295,13 @@ function openMemoryLinkedWorkSession() {
 async function fetchProjectUsers(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
   if (!effectiveProjectId) return;
+  if (isLocalProjectMode()) {
+    const relations = getLocalProjectRelations(effectiveProjectId);
+    projectUsers.value = Array.isArray(relations.users) ? relations.users : [];
+    userOptions.value = Array.isArray(relations.user_options) ? relations.user_options : [];
+    canManageProjectUsers.value = true;
+    return;
+  }
   const data = await api.get(`/projects/${effectiveProjectId}/users`);
   if (effectiveProjectId !== projectId.value) return;
   projectUsers.value = data.members || [];
@@ -5226,6 +5312,11 @@ async function fetchProjectUsers(targetProjectId = projectId.value) {
 async function fetchMembers(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
   if (!effectiveProjectId) return;
+  if (isLocalProjectMode()) {
+    const relations = getLocalProjectRelations(effectiveProjectId);
+    members.value = Array.isArray(relations.members) ? relations.members : [];
+    return;
+  }
   const data = await api.get(`/projects/${effectiveProjectId}/members`);
   if (effectiveProjectId !== projectId.value) return;
   members.value = data.members || [];
@@ -5279,8 +5370,11 @@ function normalizeProjectIdTarget(targetProjectId = projectId.value) {
 }
 
 async function fetchRequirementRecords(targetProjectId = projectId.value) {
-  void targetProjectId;
-  projectRequirementRecords.value = [];
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  projectRequirementRecords.value =
+    isLocalProjectMode() && effectiveProjectId
+      ? readLocalEntities(`requirement_records_${effectiveProjectId}`)
+      : [];
   projectTaskSessions.value = [];
   projectTaskTreeDetails.value = {};
   taskTreeStorageBackend.value = "";
@@ -6076,9 +6170,21 @@ async function refreshRequirementRecords() {
 }
 
 async function deleteRequirementRecords(recordIds, successLabel = "需求记录") {
-  void recordIds;
-  void successLabel;
-  return null;
+  if (!isLocalProjectMode()) return null;
+  const effectiveProjectId = String(projectId.value || "").trim();
+  const ids = new Set(
+    (Array.isArray(recordIds) ? recordIds : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean),
+  );
+  if (!effectiveProjectId || !ids.size) return null;
+  const records = readLocalEntities(`requirement_records_${effectiveProjectId}`);
+  const remaining = records.filter((item) => !ids.has(String(item.id || "")));
+  writeLocalEntities(`requirement_records_${effectiveProjectId}`, remaining);
+  projectRequirementRecords.value = remaining;
+  selectedRequirementRecordIds.value = [];
+  ElMessage.success(`已删除 ${records.length - remaining.length} 条${successLabel}`);
+  return remaining;
 }
 
 async function handleDeleteRequirementRecord(record) {
@@ -6170,7 +6276,12 @@ async function ensureOverviewTabData(
     return tabDataPromises.overview;
   }
   tabDataPromises.overview = (async () => {
-    await fetchRules();
+    if (!isLocalProjectMode()) {
+      await fetchRules();
+    } else {
+      ruleOptions.value = [];
+      experienceRuleOptions.value = [];
+    }
     setTabDataLoaded("overview", true);
   })().finally(() => {
     tabDataPromises.overview = null;
@@ -6190,6 +6301,14 @@ async function ensureAccessTabData(
     return tabDataPromises.access;
   }
   tabDataPromises.access = (async () => {
+    if (isLocalProjectMode()) {
+      projectUsers.value = [];
+      userOptions.value = [];
+      members.value = [];
+      employees.value = [];
+      setTabDataLoaded("access", true);
+      return;
+    }
     await Promise.all([
       fetchProjectUsers(targetProjectId),
       fetchMembers(targetProjectId),
@@ -6214,7 +6333,9 @@ async function ensureRepositoriesTabData(
     return tabDataPromises.repositories;
   }
   tabDataPromises.repositories = (async () => {
-    await fetchCodeRepositories(targetProjectId);
+    if (!isLocalProjectMode()) {
+      await fetchCodeRepositories(targetProjectId);
+    }
     setTabDataLoaded("repositories", true);
   })().finally(() => {
     tabDataPromises.repositories = null;
@@ -6234,6 +6355,13 @@ async function ensureMemoryTabData(
     return tabDataPromises.memory;
   }
   tabDataPromises.memory = (async () => {
+    if (isLocalProjectMode()) {
+      members.value = [];
+      projectRequirementRecords.value = [];
+      projectTaskSessions.value = [];
+      setTabDataLoaded("memory", true);
+      return;
+    }
     await Promise.all([
       fetchMembers(targetProjectId),
       fetchRequirementRecords(targetProjectId),
@@ -6279,8 +6407,15 @@ async function refresh(targetProjectId = projectId.value) {
   loading.value = true;
   try {
     await fetchProject(effectiveProjectId);
-    await fetchRepositoryWorkspaceContext(effectiveProjectId);
-    await restoreExperienceSummaryJob(effectiveProjectId);
+    if (!isLocalProjectMode()) {
+      await fetchRepositoryWorkspaceContext(effectiveProjectId);
+      await restoreExperienceSummaryJob(effectiveProjectId);
+    } else {
+      repositoryWorkspace.value = {
+        path: String(project.value?.workspace_path || "").trim(),
+        source: "local_project",
+      };
+    }
     await ensureProjectTabData(
       route.query.tab || activeProjectTab.value,
       effectiveProjectId,
@@ -6911,6 +7046,28 @@ async function saveCodeRepository() {
   }
   repositorySaving.value = true;
   try {
+    if (isLocalProjectMode()) {
+      const relations = getLocalProjectRelations(projectId.value);
+      const repository = normalizeCodeRepository({
+        ...payload,
+        id: editingRepositoryId.value || `local-repository-${Date.now()}`,
+        project_id: projectId.value,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      const repositories = Array.isArray(relations.code_repositories)
+        ? relations.code_repositories.filter((item) => item.id !== repository.id)
+        : [];
+      updateLocalProjectRelations(projectId.value, {
+        code_repositories: [...repositories, repository],
+      });
+      ElMessage.success(editingRepositoryId.value ? "代码仓库已更新" : "代码仓库已添加");
+      showRepositoryDialog.value = false;
+      resetRepositoryForm();
+      await fetchCodeRepositories();
+      setTabDataLoaded("repositories", true);
+      return;
+    }
     if (editingRepositoryId.value) {
       await api.put(
         `/projects/${projectId.value}/code-repositories/${editingRepositoryId.value}`,
@@ -6953,6 +7110,18 @@ async function deleteCodeRepository(repository) {
   }
   repositorySaving.value = true;
   try {
+    if (isLocalProjectMode()) {
+      const relations = getLocalProjectRelations(projectId.value);
+      updateLocalProjectRelations(projectId.value, {
+        code_repositories: (relations.code_repositories || []).filter(
+          (item) => String(item?.id || "") !== repositoryId,
+        ),
+      });
+      ElMessage.success("代码仓库已删除");
+      await fetchCodeRepositories();
+      setTabDataLoaded("repositories", true);
+      return;
+    }
     await api.delete(
       `/projects/${projectId.value}/code-repositories/${repositoryId}`,
     );
@@ -6985,6 +7154,16 @@ async function saveUiRuleBindings() {
   }
   uiRuleSaving.value = true;
   try {
+    if (isLocalProjectMode()) {
+      const ruleIds = normalizeStringList(uiRuleForm.value.rule_ids || []);
+      updateLocalProjectRelations(projectId.value, { ui_rule_ids: ruleIds });
+      if (project.value) {
+        project.value.ui_rule_ids = ruleIds;
+      }
+      ElMessage.success("UI 规则绑定已保存到本地");
+      showUiRuleDialog.value = false;
+      return;
+    }
     await api.put(`/projects/${projectId.value}`, {
       ui_rule_ids: normalizeStringList(uiRuleForm.value.rule_ids || []),
     });
@@ -7006,6 +7185,18 @@ async function saveExperienceRuleBindings() {
   }
   experienceRuleBindingSaving.value = true;
   try {
+    if (isLocalProjectMode()) {
+      const ruleIds = normalizeStringList(
+        experienceRuleBindingForm.value.rule_ids || [],
+      );
+      updateLocalProjectRelations(projectId.value, { experience_rule_ids: ruleIds });
+      if (project.value) {
+        project.value.experience_rule_ids = ruleIds;
+      }
+      ElMessage.success("经验规则绑定已保存到本地");
+      showExperienceRuleBindingDialog.value = false;
+      return;
+    }
     await api.put(`/projects/${projectId.value}`, {
       experience_rule_ids: normalizeStringList(
         experienceRuleBindingForm.value.rule_ids || [],
@@ -7024,6 +7215,16 @@ async function saveExperienceRuleBindings() {
 async function showProjectManual() {
   manualLoading.value = true;
   try {
+    if (isLocalProjectMode()) {
+      generatedManual.value = String(
+        project.value?.manual_template ||
+          project.value?.description ||
+          `项目「${project.value?.name || projectId.value}」的本地使用手册暂未生成。`,
+      );
+      manualDialogTitle.value = `项目使用手册: ${project.value?.name || projectId.value}`;
+      showManualDialog.value = true;
+      return;
+    }
     const data = await api.get(`/projects/${projectId.value}/manual-template`);
     generatedManual.value = data.template || "";
     manualDialogTitle.value = `项目使用手册: ${project.value?.name || projectId.value}`;

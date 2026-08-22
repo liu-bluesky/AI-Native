@@ -523,10 +523,6 @@
   white-space: nowrap;
 }
 
-.chat-model-sync-button {
-  flex: 0 0 auto;
-}
-
 .chat-model-offline-badge {
   flex: 0 0 auto;
   display: inline-flex;

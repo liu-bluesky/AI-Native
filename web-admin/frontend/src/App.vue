@@ -8,7 +8,12 @@ import { useRouter } from 'vue-router'
 
 import api from './utils/api.js'
 import { syncCurrentUser } from './utils/auth.js'
-import { authStateVersion, clearAuthSession, getStoredToken } from './utils/auth-storage.js'
+import {
+  authStateVersion,
+  clearAuthSession,
+  getStoredToken,
+  isExternalAuthSession,
+} from './utils/auth-storage.js'
 import {
   buildApiBaseUrl,
   getServerScopedStorageKey,
@@ -42,7 +47,7 @@ function stopOnlineHeartbeat() {
 }
 
 async function sendOnlineHeartbeat() {
-  if (!getStoredToken() || onlineHeartbeatPending) return
+  if (!getStoredToken() || isExternalAuthSession() || onlineHeartbeatPending) return
   onlineHeartbeatPending = true
   try {
     await api.post('/system/online-users/heartbeat', {
@@ -148,7 +153,12 @@ function scheduleLocalBotListenerSync() {
 }
 
 async function syncLocalBotListeners() {
-  if (!hasNativeDesktopBridge() || !getStoredToken() || localBotSyncPending) return
+  if (
+    !hasNativeDesktopBridge() ||
+    !getStoredToken() ||
+    isExternalAuthSession() ||
+    localBotSyncPending
+  ) return
   localBotSyncPending = true
   try {
     const configData = await readGlobalBotConnectorConfigFile()
@@ -256,8 +266,10 @@ onMounted(async () => {
     if (token) {
       try {
         await syncCurrentUser()
-        startOnlineHeartbeat()
-        scheduleLocalBotListenerSync()
+        if (!isExternalAuthSession()) {
+          startOnlineHeartbeat()
+          scheduleLocalBotListenerSync()
+        }
       } catch {
         clearAuthSession()
         stopOnlineHeartbeat()
@@ -283,6 +295,10 @@ watch(
       redirectToLoginIfNeeded()
       return
     }
+    if (isExternalAuthSession()) {
+      stopOnlineHeartbeat()
+      return
+    }
     startOnlineHeartbeat()
     scheduleLocalBotListenerSync()
   },
@@ -291,7 +307,7 @@ watch(
 watch(
   () => router.currentRoute.value.fullPath,
   () => {
-    if (getStoredToken()) {
+    if (getStoredToken() && !isExternalAuthSession()) {
       void sendOnlineHeartbeat()
     }
   },

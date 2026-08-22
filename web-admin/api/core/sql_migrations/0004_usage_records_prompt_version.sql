@@ -1,1 +1,0 @@
-ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS prompt_version TEXT NOT NULL DEFAULT '';

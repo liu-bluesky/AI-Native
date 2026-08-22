@@ -1,4 +1,5 @@
 import { canAccessPath } from "@/utils/permissions.js";
+import { isLocalFeatureEnabled } from "@/config/local-runtime.js";
 
 const PROJECT_CONTEXT_STORAGE_KEY = "project_id";
 export const DESKTOP_WALLPAPER_STORAGE_KEY = "desktop_wallpaper_config";
@@ -6,6 +7,16 @@ export const DESKTOP_WINDOW_SESSION_STORAGE_KEY = "desktop_window_session";
 const DESKTOP_DOCK_APP_IDS_STORAGE_KEY = "desktop_dock_app_ids";
 const DESKTOP_DOCK_ORDER_STORAGE_KEY = "desktop_dock_order";
 const DESKTOP_REQUIRED_DOCK_APP_IDS = ["chat", "tasks", "workbench", "settings-providers"];
+const REMOVED_DESKTOP_APP_IDS = new Set([
+  "market",
+  "settings-agent-templates",
+  "settings-skills",
+  "settings-skill-resources",
+  "settings-rules",
+  "settings-work-sessions",
+  "settings-dictionaries",
+  "settings-online-users",
+]);
 
 export const DESKTOP_WALLPAPER_PRESETS = [
   {
@@ -691,11 +702,17 @@ const DESKTOP_APP_ITEMS = [
 export const DESKTOP_DOCK_ITEMS = DESKTOP_REQUIRED_DOCK_APP_IDS
   .map((appId) => DESKTOP_APP_ITEMS.find((item) => item.id === appId))
   .filter(Boolean);
-export const DESKTOP_LAUNCHER_ITEMS = DESKTOP_APP_ITEMS.filter((item) => item.launcher);
+export const DESKTOP_LAUNCHER_ITEMS = DESKTOP_APP_ITEMS.filter(
+  (item) => item.launcher && !REMOVED_DESKTOP_APP_IDS.has(item.id),
+);
 export const DESKTOP_SETTINGS_ITEMS = DESKTOP_APP_ITEMS.filter(
-  (item) => item.category === "settings" && item.id !== "settings-home",
+  (item) =>
+    item.category === "settings" &&
+    item.id !== "settings-home" &&
+    !REMOVED_DESKTOP_APP_IDS.has(item.id),
 );
 const DESKTOP_OPTIONAL_DOCK_APP_IDS = DESKTOP_APP_ITEMS
+  .filter((item) => !REMOVED_DESKTOP_APP_IDS.has(item.id))
   .map((item) => item.id)
   .filter((appId) => !DESKTOP_REQUIRED_DOCK_APP_IDS.includes(appId));
 
@@ -706,7 +723,10 @@ function normalizeStoredDockAppIds(appIds = []) {
     .filter((item) => {
       if (!item || seen.has(item)) return false;
       if (DESKTOP_REQUIRED_DOCK_APP_IDS.includes(item)) return false;
-      if (!DESKTOP_APP_ITEMS.some((app) => app.id === item)) return false;
+      if (
+        REMOVED_DESKTOP_APP_IDS.has(item) ||
+        !DESKTOP_APP_ITEMS.some((app) => app.id === item)
+      ) return false;
       seen.add(item);
       return true;
     });
@@ -718,7 +738,10 @@ function normalizeStoredDockOrder(appIds = []) {
   for (const item of Array.isArray(appIds) ? appIds : []) {
     const appId = String(item || "").trim();
     if (!appId || seen.has(appId)) continue;
-    if (!DESKTOP_APP_ITEMS.some((app) => app.id === appId)) continue;
+    if (
+      REMOVED_DESKTOP_APP_IDS.has(appId) ||
+      !DESKTOP_APP_ITEMS.some((app) => app.id === appId)
+    ) continue;
     seen.add(appId);
     normalized.push(appId);
   }
@@ -945,11 +968,15 @@ export function resolveDesktopWallpaperAppearance(config = {}) {
 
 export function getDesktopAppById(appId) {
   const normalizedId = String(appId || "").trim();
+  if (REMOVED_DESKTOP_APP_IDS.has(normalizedId)) return getFallbackDesktopApp();
   return DESKTOP_APP_ITEMS.find((item) => item.id === normalizedId) || getFallbackDesktopApp();
 }
 
 export function canAccessDesktopApp(target) {
   const app = typeof target === "string" ? getDesktopAppById(target) : target;
+  if (REMOVED_DESKTOP_APP_IDS.has(String(app?.id || "").trim())) return false;
+  const featureId = String(app?.featureId || app?.id || "").trim();
+  if (!isLocalFeatureEnabled(featureId)) return false;
   return canAccessPath(app?.path || "");
 }
 
@@ -967,7 +994,9 @@ export function canPinDesktopApp(appId) {
 export function resolveDesktopAppMeta(pathname) {
   const normalizedPath = normalizeDesktopRoutePath(pathname);
   const activeItem =
-    DESKTOP_APP_ITEMS.find((item) => item.match?.(normalizedPath))
+    DESKTOP_APP_ITEMS.find(
+      (item) => !REMOVED_DESKTOP_APP_IDS.has(item.id) && item.match?.(normalizedPath),
+    )
     || getFallbackDesktopApp();
 
   return {

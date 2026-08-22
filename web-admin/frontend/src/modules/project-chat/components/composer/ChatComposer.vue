@@ -224,18 +224,6 @@
             <span v-if="modelProviderOffline" class="chat-model-offline-badge">
               离线
             </span>
-            <el-tooltip :content="modelProviderSyncTooltip" placement="top">
-              <el-button
-                class="chat-model-sync-button"
-                text
-                circle
-                :loading="modelProviderSyncing"
-                :disabled="chatLoading"
-                @click="$emit('sync-model-providers')"
-              >
-                <el-icon><Refresh /></el-icon>
-              </el-button>
-            </el-tooltip>
             <div
               v-if="!isChatSettingsDisplayReady"
               class="chat-model-pill is-loading"
@@ -341,6 +329,7 @@
       append-to-body
       destroy-on-close
       class="chat-model-routing-dialog"
+      @open="$emit('refresh-model-providers')"
     >
       <div class="chat-model-routing-dialog__intro">
         主模型是唯一对话入口，负责理解意图并通过结构化工具调用图片、视频和音频模型。
@@ -407,7 +396,6 @@ import {
   Document,
   Picture,
   Promotion,
-  Refresh,
   Setting,
   VideoPause,
 } from "@element-plus/icons-vue";
@@ -433,8 +421,6 @@ const props = defineProps([
   "isExternalAgentMode",
   "localAgentAuthLevel",
   "modelProviderOffline",
-  "modelProviderSyncing",
-  "modelProviderSyncTooltip",
   "modelRoutingMode",
   "modelRoutingRoles",
   "manualModelOptionValue",
@@ -471,7 +457,7 @@ const emit = defineEmits([
   "remove-file",
   "remove-context-ref",
   "send",
-  "sync-model-providers",
+  "refresh-model-providers",
   "stop-generation",
   "update:draftText",
   "update:inputFocused",

@@ -63,6 +63,7 @@ pub fn build_local_chat_request(request: BotChatRequest) -> LocalChatRequest {
         temperature: None,
         model_runtime: request.model_runtime,
         ai_entry_file: None,
+        agent_directory: None,
         attachments: request.attachments,
         media_tools: Vec::new(),
         mcp_config: with_bot_context(

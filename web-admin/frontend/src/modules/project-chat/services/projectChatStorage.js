@@ -118,6 +118,66 @@ function workSessionStorageKey(projectId) {
   return normalized ? `project_chat_work_session_${normalized}` : "";
 }
 
+function taskTreeSnapshotStorageKey(projectId, chatSessionId) {
+  const project = String(projectId || "").trim();
+  const session = String(chatSessionId || "").trim();
+  return project && session
+    ? `project_chat_task_tree_snapshot_${project}_${session}`
+    : "";
+}
+
+function workSessionSnapshotStorageKey(projectId, chatSessionId) {
+  const project = String(projectId || "").trim();
+  const session = String(chatSessionId || "").trim();
+  return project && session
+    ? `project_chat_work_session_snapshot_${project}_${session}`
+    : "";
+}
+
+export function readLocalTaskTreeSnapshot(projectId, chatSessionId) {
+  const key = taskTreeSnapshotStorageKey(projectId, chatSessionId);
+  if (typeof window === "undefined" || !key) return null;
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "null");
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeLocalTaskTreeSnapshot(projectId, chatSessionId, tree) {
+  const key = taskTreeSnapshotStorageKey(projectId, chatSessionId);
+  if (typeof window === "undefined" || !key) return null;
+  if (!tree || typeof tree !== "object") {
+    localStorage.removeItem(key);
+    return null;
+  }
+  localStorage.setItem(key, JSON.stringify(tree));
+  return tree;
+}
+
+export function readLocalWorkSessionSnapshot(projectId, chatSessionId) {
+  const key = workSessionSnapshotStorageKey(projectId, chatSessionId);
+  if (typeof window === "undefined" || !key) return null;
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "null");
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeLocalWorkSessionSnapshot(projectId, chatSessionId, session) {
+  const key = workSessionSnapshotStorageKey(projectId, chatSessionId);
+  if (typeof window === "undefined" || !key) return null;
+  if (!session || typeof session !== "object") {
+    localStorage.removeItem(key);
+    return null;
+  }
+  localStorage.setItem(key, JSON.stringify(session));
+  return session;
+}
+
 export function resolveCurrentUsername() {
   const profile = getStoredAuthProfile();
   return String(profile.username || "anonymous").trim() || "anonymous";

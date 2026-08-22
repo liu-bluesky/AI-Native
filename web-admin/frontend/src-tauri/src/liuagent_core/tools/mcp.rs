@@ -1418,7 +1418,7 @@ mod tests {
             "mcpServers": {
                 "query": {
                     "type": "sse",
-                    "url": "http://127.0.0.1:8000/mcp/query/sse",
+                    "url": "http://127.0.0.1:9000/mcp/sse",
                     "enabled": true
                 }
             }
@@ -1426,7 +1426,7 @@ mod tests {
         let server =
             resolve_server_config(&config, "query", &json!({})).expect("resolve http server");
         assert_eq!(server.transport, McpTransport::Sse);
-        assert_eq!(server.url, "http://127.0.0.1:8000/mcp/query/sse");
+        assert_eq!(server.url, "http://127.0.0.1:9000/mcp/sse");
     }
 
     #[test]

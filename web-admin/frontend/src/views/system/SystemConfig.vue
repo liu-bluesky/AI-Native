@@ -1385,7 +1385,7 @@
           <el-input v-model="mcpServerDraft.cwd" placeholder=". 或 /path/to/server" />
         </el-form-item>
         <el-form-item v-if="mcpServerDraft.type !== 'stdio'" label="URL">
-          <el-input v-model="mcpServerDraft.url" placeholder="http://127.0.0.1:8000/mcp/query/sse" />
+          <el-input v-model="mcpServerDraft.url" placeholder="http://127.0.0.1:PORT/mcp" />
         </el-form-item>
         <el-form-item label="请求头 JSON">
           <el-input
@@ -1572,7 +1572,7 @@ const DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = `# Unified Query MCP
 4.2 query-mcp 本地持久化必须使用唯一文件规范：每进程/窗口会话文件为 \`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json\`（每个 CLI 进程或窗口写自己的独立文件，避免多进程和多窗口冲突）；历史索引文件为 \`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json\`；需求记录文件为 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`。不要写入其他分叉会话状态文件。
 4.3 每个需求还必须单独维护 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`；一条需求一个对象，不要把多个需求混写到同一聚合文件。
 4.4 requirement 对象只记录需求内容和必要定位字段；不要把 \`workflow_skill\`、\`task_tree\`、\`current_task_node\`、\`task_branches\`、\`history\`、项目智能体上下文等过程结构写入需求记录。
-5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。
+5. 使用 SSE 或 HTTP MCP 服务时，按该服务自身的传输协议填写地址；项目上下文仅由明确传入的 project_id、chat_session_id 与 bind_project_context(...) 决定，不能依赖服务端默认状态。
 6. 仅在缺少明确的 project_id / employee_id / rule_id，或需要跨项目检索时，再调用 search_ids(keyword="<用户原始问题>")；已明确当前项目且在项目内执行时，可直接 get_manual_content、start_project_workflow 或进入本地实现。
 7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、智能体、规则 ID。
 7.0 项目型问题优先使用项目绑定智能体、规则和技能；先判断项目内现成能力能否闭环，只有项目能力不足时才自行补足。

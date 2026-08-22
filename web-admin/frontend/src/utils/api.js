@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-import { clearAuthSession, getStoredToken } from './auth-storage.js'
+import { clearAuthSession, getStoredToken, isExternalAuthSession } from './auth-storage.js'
 import { buildApiBaseUrl } from './server-profile.js'
 
 const api = axios.create({ baseURL: buildApiBaseUrl() })
@@ -85,7 +85,7 @@ function markDesktopBackendOffline(error) {
 api.interceptors.request.use((config) => {
   config.baseURL = buildApiBaseUrl()
   const token = getStoredToken()
-  if (token) {
+  if (token && !isExternalAuthSession()) {
     config.headers.Authorization = `Bearer ${token}`
   }
   const projectId = localStorage.getItem('project_id') || 'default'
@@ -99,7 +99,7 @@ api.interceptors.response.use(
     return res.data
   },
   (err) => {
-    if (err.response?.status === 401) {
+    if (err.response?.status === 401 && !isExternalAuthSession()) {
       clearAuthSession()
       redirectToLogin()
     }

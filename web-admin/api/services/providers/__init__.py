@@ -1,2 +1,0 @@
-"""External capability provider services."""
-

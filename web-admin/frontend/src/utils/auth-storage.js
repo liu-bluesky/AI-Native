@@ -108,6 +108,10 @@ export function getStoredToken() {
   return getStorageValue('token')
 }
 
+export function isExternalAuthSession() {
+  return getStoredToken().startsWith('external:')
+}
+
 export function hasStoredToken() {
   return Boolean(getStoredToken())
 }

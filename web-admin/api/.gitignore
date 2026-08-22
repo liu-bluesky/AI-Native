@@ -1,7 +1,0 @@
-.ace-tool/
-node_modules
-dist
-.env
-data
-.venv
-.runtime

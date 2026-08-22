@@ -668,6 +668,12 @@ import {
   fetchConfiguredRuntimeOrigin,
 } from "@/utils/runtime-url.js";
 import { resolveSettingsAwarePanelPath } from "@/utils/chat-settings-route.js";
+import {
+  isLocalProjectMode,
+  readLocalEntities,
+  removeLocalEntity,
+  upsertLocalEntity,
+} from "@/services/local-project-repository.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -953,6 +959,10 @@ function handleEmployeeAction(row, actionKey) {
 async function fetchList() {
   loading.value = true;
   try {
+    if (isLocalProjectMode()) {
+      employees.value = readLocalEntities("employees");
+      return;
+    }
     const { employees: list } = await api.get("/employees");
     employees.value = list;
   } catch {
@@ -1122,6 +1132,12 @@ async function handleDelete(row) {
   }
   await ElMessageBox.confirm(`确定删除智能体「${row.name}」？`, "确认");
   try {
+    if (isLocalProjectMode()) {
+      removeLocalEntity("employees", row.id);
+      employees.value = readLocalEntities("employees");
+      ElMessage.success("已从本地删除");
+      return;
+    }
     await api.delete(`/employees/${row.id}`);
     ElMessage.success("已删除");
     fetchList();
@@ -1144,6 +1160,13 @@ async function enableEmployeeMcp(row) {
   }
   try {
     loading.value = true;
+    if (isLocalProjectMode()) {
+      const updated = upsertLocalEntity("employees", { ...row, mcp_enabled: true });
+      employees.value = employees.value.map((item) => item.id === updated.id ? updated : item);
+      ElMessage.success("已在本地开启智能体 MCP 标记");
+      showEmployeeMcpConfig(updated);
+      return;
+    }
     await api.put(`/employees/${row.id}`, { mcp_enabled: true });
     ElMessage.success("已开启智能体 MCP 服务");
     await fetchList();
@@ -1167,6 +1190,13 @@ async function disableEmployeeMcp(row) {
   );
   try {
     loading.value = true;
+    if (isLocalProjectMode()) {
+      const updated = upsertLocalEntity("employees", { ...row, mcp_enabled: false });
+      employees.value = employees.value.map((item) => item.id === updated.id ? updated : item);
+      ElMessage.success("已在本地关闭智能体 MCP 标记");
+      if (currentEmployee.value?.id === row.id) showMcpConfig.value = false;
+      return;
+    }
     await api.put(`/employees/${row.id}`, { mcp_enabled: false });
     ElMessage.success("已关闭智能体 MCP 服务");
     await fetchList();
@@ -1188,6 +1218,12 @@ async function enableFeedbackUpgrade(row) {
   }
   try {
     loading.value = true;
+    if (isLocalProjectMode()) {
+      const updated = upsertLocalEntity("employees", { ...row, feedback_upgrade_enabled: true });
+      employees.value = employees.value.map((item) => item.id === updated.id ? updated : item);
+      ElMessage.success("已在本地开启反馈升级标记");
+      return;
+    }
     await api.put(`/employees/${row.id}`, { feedback_upgrade_enabled: true });
     ElMessage.success("已开启反馈升级");
     await fetchList();
@@ -1209,6 +1245,12 @@ async function disableFeedbackUpgrade(row) {
   );
   try {
     loading.value = true;
+    if (isLocalProjectMode()) {
+      const updated = upsertLocalEntity("employees", { ...row, feedback_upgrade_enabled: false });
+      employees.value = employees.value.map((item) => item.id === updated.id ? updated : item);
+      ElMessage.success("已在本地关闭反馈升级标记");
+      return;
+    }
     await api.put(`/employees/${row.id}`, { feedback_upgrade_enabled: false });
     ElMessage.success("已关闭反馈升级");
     await fetchList();

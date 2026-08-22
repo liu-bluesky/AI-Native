@@ -20,7 +20,6 @@ ai-employee/
 ├── agents/                    # 仓库级专用 Agent 角色说明
 ├── skills/                    # 本地/宿主技能目录，当前主要承载飞书技能体系
 ├── assets/                    # 静态资源
-├── feishu-archive-upload/     # 飞书归档上传相关资产
 ├── codeDocs/                  # 当前代码文档
 ├── .ai-employee/              # 本地 query-mcp、requirement、技能副本和运行状态
 ├── AGENTS.md                  # Codex/Agent 接入当前项目的强制规则
