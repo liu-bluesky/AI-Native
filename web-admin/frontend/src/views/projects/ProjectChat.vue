@@ -49,7 +49,6 @@
             @start-guide="startChatTour"
             @open-project-detail="openCurrentProjectDetail"
             @trust-workspace="trustAgentRuntimeWorkspace"
-            @open-mcp="openUnifiedMcpDialog"
             @open-skill-resource="openSkillResourceCenter"
             @project-change="handleProjectCommand"
           />
@@ -1719,14 +1718,6 @@
     </div>
   </div>
 
-  <UnifiedMcpAccessDialog
-    v-model="unifiedMcpDialogVisible"
-    title="统一 MCP 接入"
-    :project-id="mcpDialogProjectId"
-    :project-label="mcpDialogProjectLabel"
-    :chat-session-id="currentChatSessionId"
-  />
-
   <el-dialog
     v-model="mcpServerDialogVisible"
     :title="mcpServerDialogTitle"
@@ -2962,7 +2953,6 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { ElementEasyForm } from "element-easy-form";
 import "element-easy-form/dist/style.css";
 import ProjectEmployeeDraftCreateDialog from "@/components/ProjectEmployeeDraftCreateDialog.vue";
-import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
 import ChatComposer from "@/modules/project-chat/components/composer/ChatComposer.vue";
 import ChatMediaParameterPopover from "@/modules/project-chat/components/composer/ChatMediaParameterPopover.vue";
 import ChatMessageList from "@/modules/project-chat/components/messages/ChatMessageList.vue";
@@ -2986,7 +2976,6 @@ import {
   registerLocalAiTask,
   updateLocalAiTask,
 } from "@/utils/local-ai-task-store.js";
-import { fetchProjectMcpRuntimeCatalog } from "@/modules/project-chat/services/projectChatMcpRuntimeApi.js";
 // ============================================================
 // 权限、认证、字典、项目
 // ============================================================
@@ -3137,8 +3126,6 @@ import {
   SKILL_COMMAND,
   SKILL_COMMAND_ALIASES,
   STATISTICS_ANALYSIS_DRAFT_QUERY_KEY,
-  SYSTEM_MCP_COMMAND,
-  SYSTEM_MCP_COMMAND_ALIASES,
 } from "@/modules/project-chat/constants/projectChatConstants.js";
 import {
   escapeHtml,
@@ -3272,6 +3259,7 @@ import {
   consumeProjectDeployDraft,
   consumeStatisticsAnalysisDraft,
   formatMcpConfig,
+  findDeprecatedQueryMcpServerNames,
   formatWebToolsConfig,
   hasSeenGuideTour,
   markGuideTourSeen,
@@ -3524,7 +3512,6 @@ const employeeDraftAutoRuleGenerationSourceFilters = ref([
   "prompts_chat_curated",
 ]);
 const employeeDraftAutoRuleGenerationMaxCount = ref(3);
-const unifiedMcpDialogVisible = ref(false);
 const skillResourceDialogVisible = ref(false);
 const skillResourceDirectoryDraft = ref("");
 const skillResourceDirectoryPicking = ref(false);
@@ -3856,8 +3843,24 @@ function syncEffectiveMcpConfig() {
 async function reloadLocalMcpConfig(projectId = selectedProjectId.value) {
   const normalizedProjectId = String(projectId || "").trim();
   const workspacePath = localLiuAgentWorkspacePath();
+  const migratedServerNames = [];
   try {
-    const globalFile = await readGlobalMcpConfigFile();
+    let globalFile = await readGlobalMcpConfigFile();
+    const removedNames = findDeprecatedQueryMcpServerNames(
+      JSON.parse(String(globalFile?.content || "{}")),
+    );
+    if (removedNames.length) {
+      try {
+        globalFile = await writeGlobalMcpConfigFile(globalFile.config);
+        migratedServerNames.push(...removedNames.map((name) => `全局/${name}`));
+      } catch (err) {
+        console.warn("清理旧全局 Query MCP 配置后写回失败", err);
+        globalFile = {
+          ...globalFile,
+          content: formatMcpConfig(globalFile.config),
+        };
+      }
+    }
     globalMcpConfigText.value = String(
       globalFile?.content || formatMcpConfig({ mcpServers: {} }),
     );
@@ -3881,9 +3884,27 @@ async function reloadLocalMcpConfig(projectId = selectedProjectId.value) {
   }
 
   try {
-    const projectFile = await readProjectMcpConfigFile(workspacePath);
+    let projectFile = await readProjectMcpConfigFile(workspacePath);
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
+    const removedNames = findDeprecatedQueryMcpServerNames(
+      JSON.parse(String(projectFile?.content || "{}")),
+    );
+    if (removedNames.length) {
+      try {
+        projectFile = await writeProjectMcpConfigFile(
+          workspacePath,
+          projectFile.config,
+        );
+        migratedServerNames.push(...removedNames.map((name) => `项目/${name}`));
+      } catch (err) {
+        console.warn("清理旧项目 Query MCP 配置后写回失败", err);
+        projectFile = {
+          ...projectFile,
+          content: formatMcpConfig(projectFile.config),
+        };
+      }
+    }
     projectMcpConfigText.value = String(
       projectFile?.content || formatMcpConfig({ mcpServers: {} }),
     );
@@ -3898,6 +3919,11 @@ async function reloadLocalMcpConfig(projectId = selectedProjectId.value) {
     ElMessage.error(err?.message || "读取项目 MCP 配置文件失败");
   }
   syncEffectiveMcpConfig();
+  if (migratedServerNames.length) {
+    ElMessage.info(
+      `已移除不可用的旧 Query MCP 配置：${migratedServerNames.join("、")}`,
+    );
+  }
 }
 
 async function reloadLocalWebToolsConfig(projectId = selectedProjectId.value) {
@@ -5260,21 +5286,6 @@ const settingsMainCardRef = ref(null);
 const hasSelectedProject = computed(() =>
   Boolean(String(selectedProjectId.value || "").trim()),
 );
-const mcpDialogProjectId = computed(() => {
-  const activeProjectId = String(selectedProjectId.value || "").trim();
-  if (activeProjectId) return activeProjectId;
-  const routeProjectId = String(routeChatTarget().projectId || "").trim();
-  if (routeProjectId) return routeProjectId;
-  return readSelectedProjectId();
-});
-const mcpDialogProjectLabel = computed(() => {
-  const projectId = String(mcpDialogProjectId.value || "").trim();
-  if (!projectId) return "";
-  const matched = (projects.value || []).find(
-    (item) => String(item?.id || "").trim() === projectId,
-  );
-  return String(matched?.name || projectId).trim();
-});
 const chatSurface = computed(() => {
   return "local-runner";
 });
@@ -14152,17 +14163,6 @@ function buildAssistSlashCommand(actionId) {
 
 const composerSlashCommands = computed(() => {
   const commands = [
-    {
-      id: "system_mcp",
-      kind: "system_mcp",
-      command: SYSTEM_MCP_COMMAND,
-      aliases: SYSTEM_MCP_COMMAND_ALIASES,
-      label: "系统 MCP",
-      description:
-        "查看 Runtime MCP 服务目录和其中可调用的工具。",
-      assistActionId: "",
-      seedText: `${SYSTEM_MCP_COMMAND}`,
-    },
     {
       id: "skill",
       kind: "skill",
@@ -26300,77 +26300,6 @@ function isSystemMcpToolListPrompt(prompt) {
   );
 }
 
-function formatRuntimeMcpToolItem(item = {}, index = 0) {
-  const name = String(item?.name || "").trim();
-  const canonicalToolId = String(item?.canonical_tool_id || "").trim();
-  const serverId = String(item?.server_id || "").trim();
-  const domain = String(item?.domain || "").trim();
-  const description = String(item?.description || "").trim();
-  const meta = [
-    serverId ? `server_id=${serverId}` : "",
-    domain ? `domain=${domain}` : "",
-    canonicalToolId ? `canonical=${canonicalToolId}` : "",
-  ].filter(Boolean);
-  return [
-    `${index + 1}. ${name || "未命名工具"}`,
-    meta.length ? `   ${meta.join(" · ")}` : "",
-    description ? `   ${description}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function formatRuntimeMcpServerItem(item = {}, index = 0) {
-  const serverId = String(item?.server_id || "").trim();
-  const displayName = String(item?.display_name || serverId).trim();
-  const domain = String(item?.domain || "").trim();
-  const source = String(item?.source || "").trim();
-  const health = String(item?.health || "unknown").trim();
-  const toolCount = Number(item?.tool_count || 0);
-  const description = String(item?.description || "").trim();
-  return [
-    `${index + 1}. ${displayName || serverId || "未命名服务"}`,
-    `   server_id=${serverId || "-"} · domain=${domain || "-"} · source=${source || "-"} · health=${health} · tools=${toolCount}`,
-    description ? `   ${description}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function buildSystemMcpToolListContent(catalog = {}) {
-  const servers = Array.isArray(catalog?.servers) ? catalog.servers : [];
-  const tools = Array.isArray(catalog?.tools) ? catalog.tools : [];
-  const selectedServerId = String(catalog?.selected_server_id || "").trim();
-  const lines = [
-    "物理 MCP 连接：runtime",
-    `入口：${String(catalog?.endpoint || "").trim() || "/mcp/runtime/mcp"}`,
-    `逻辑服务：${Number(catalog?.server_count || servers.length)} 个 · 已注册工具：${Number(catalog?.tool_count || 0)} 个`,
-  ];
-  lines.push("");
-  lines.push("Server Catalog：");
-  if (servers.length) {
-    lines.push(...servers.map(formatRuntimeMcpServerItem));
-  } else {
-    lines.push("- 暂无逻辑 MCP 服务。");
-  }
-  if (selectedServerId) {
-    lines.push("");
-    lines.push(`Tool Index · ${selectedServerId}：`);
-    lines.push(
-      ...(tools.length
-        ? tools.map(formatRuntimeMcpToolItem)
-        : ["- 该服务当前没有可用工具。"]),
-    );
-  }
-  lines.push("");
-  lines.push(
-    selectedServerId
-      ? "说明：工具索引来自桌面 Runtime 实际注册结果。"
-      : "查看 Runtime MCP 服务目录和可调用工具。",
-  );
-  return lines.join("\n");
-}
-
 function formatBoundModuleItem(item = {}, index = 0) {
   const name = String(
     item?.name ||
@@ -26509,11 +26438,8 @@ function buildBoundRuleContent() {
   return lines.join("\n");
 }
 
-function buildDirectProjectBindingContent(kind, runtimeMcpCatalog = null) {
+function buildDirectProjectBindingContent(kind) {
   const normalizedKind = String(kind || "").trim();
-  if (normalizedKind === "system_mcp") {
-    return buildSystemMcpToolListContent(runtimeMcpCatalog || {});
-  }
   if (normalizedKind === "skill") return buildBoundSkillContent();
   if (normalizedKind === "agent") return buildBoundAgentContent();
   if (normalizedKind === "rule") return buildBoundRuleContent();
@@ -26627,31 +26553,8 @@ async function handleDirectProjectBindingSlashCommand(
   displayText,
 ) {
   const kind = String(slashCommand?.entry?.kind || "").trim();
-  if (!["system_mcp", "skill", "agent", "rule"].includes(kind)) return false;
-  let runtimeMcpCatalog = null;
-  if (kind === "system_mcp") {
-    const serverId = String(slashCommand?.prompt || "").trim();
-    try {
-      runtimeMcpCatalog = await fetchProjectMcpRuntimeCatalog(
-        selectedProjectId.value,
-        serverId,
-      );
-    } catch (error) {
-      const detail = error?.response?.data?.detail;
-      const message = String(
-        detail?.message || error?.message || "读取 Runtime MCP 服务目录失败",
-      ).trim();
-      runtimeMcpCatalog = {
-        endpoint: `/mcp/runtime/mcp?project_id=${encodeURIComponent(selectedProjectId.value)}`,
-        servers: [],
-        tools: [],
-        server_count: 0,
-        tool_count: 0,
-        selected_server_id: serverId,
-      };
-      runtimeMcpCatalog.error = message;
-    }
-  } else if (
+  if (!["skill", "agent", "rule"].includes(kind)) return false;
+  if (
     !projectToolModules.value.length &&
     !runtimeExternalTools.value.length
   ) {
@@ -26671,9 +26574,7 @@ async function handleDirectProjectBindingSlashCommand(
   const assistantMessage = {
     id: createLocalMessageId(),
     role: "assistant",
-    content: runtimeMcpCatalog?.error
-      ? `Runtime MCP 查询失败：${runtimeMcpCatalog.error}`
-      : buildDirectProjectBindingContent(kind, runtimeMcpCatalog),
+    content: buildDirectProjectBindingContent(kind),
     images: [],
     videos: [],
     attachments: [],
@@ -26695,8 +26596,7 @@ async function handleDirectProjectBindingSlashCommand(
     surface: chatSurface.value,
     slash_command: kind,
     direct_response: true,
-    direct_response_kind:
-      kind === "system_mcp" ? "runtime_mcp_catalog" : "project_binding_lookup",
+    direct_response_kind: "project_binding_lookup",
   };
   void persistDirectProjectChatMessage({
     chatSessionId: activeChatSessionId,
@@ -27040,10 +26940,6 @@ function openCurrentProjectDetail() {
       summary: "项目详情作为独立桌面窗口打开，避免在 AI 对话窗口里吞掉上下文。",
     },
   );
-}
-
-function openUnifiedMcpDialog() {
-  unifiedMcpDialogVisible.value = true;
 }
 
 function useWorkspaceAsSkillDirectory() {
@@ -28527,25 +28423,12 @@ function openComposerExecutionDetail() {
   openSettingsCenter("chat");
 }
 
-async function handleComposerExecutionPrimaryAction() {
+function handleComposerExecutionPrimaryAction() {
   if (!hasSelectedProject.value) {
     ElMessage.warning("请先选择项目");
     return;
   }
-  if (!isExternalAgentMode.value) {
-    openSettingsCenter("chat");
-    return;
-  }
-  if (
-    externalAgentDesktopRunnerRequired.value ||
-    !workspacePathConfigured.value ||
-    workspacePathDirty.value ||
-    !nativeDesktopBridgeAvailable.value
-  ) {
-    openSettingsCenter("chat");
-    return;
-  }
-  await runNativeRunnerSelfCheck({ silent: false });
+  openSettingsCenter("chat");
 }
 
 function closeSettingsCenter() {
@@ -29370,7 +29253,6 @@ async function fetchProvidersByProject(projectId, options = {}) {
       markAutoSaveSynced();
       projectSettingsHydratedProjectId.value = normalizedProjectId;
       autoSaveState.value = "saved";
-      scheduleExternalAgentStatusRefresh({ force: true });
       void refreshPendingLocalLiuAgentOutboxCount({
         projectId: normalizedProjectId,
         workspacePath: localLiuAgentWorkspacePath(),
@@ -34709,44 +34591,6 @@ async function doSend(options = {}) {
 }
 
 watch(
-  () =>
-    String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
-  () => {
-    const fallbackType = String(
-      externalAgentOptions.value[0]?.agent_type || "codex_cli",
-    ).trim();
-    const requestedType = String(
-      projectChatSettings.value.external_agent_type || fallbackType,
-    ).trim();
-    const option =
-      (externalAgentOptions.value || []).find(
-        (item) => item.agent_type === requestedType,
-      ) || {};
-    const nextType = String(option.agent_type || fallbackType).trim();
-    if (
-      nextType &&
-      nextType !==
-        String(projectChatSettings.value.external_agent_type || "").trim()
-    ) {
-      projectChatSettings.value.external_agent_type = nextType;
-    }
-    externalAgentWarmupKey.value = "";
-    externalAgentWarmupLoading.value = false;
-    externalAgentInfo.value = normalizeExternalAgentInfo({
-      ...externalAgentInfo.value,
-      ...option,
-      agent_type: nextType,
-      label: String(option.label || nextType).trim(),
-      ready: false,
-      session_id: "",
-      thread_id: "",
-    });
-    resetTerminalPanel();
-    scheduleExternalAgentStatusRefresh({ force: true });
-  },
-);
-
-watch(
   () => [
     Boolean(nativeExternalAgentSessionDetailVisible.value),
     String(nativeExternalAgentTerminalText.value || ""),
@@ -34759,25 +34603,6 @@ watch(
       el.scrollTop = el.scrollHeight;
     }
   },
-);
-
-watch(
-  () => [
-    String(selectedProjectId.value || "").trim(),
-    String(projectChatSettings.value.chat_mode || "").trim(),
-    String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
-    String(projectChatSettings.value.connector_workspace_path || "").trim(),
-    String(workspacePathDraftNormalized.value || "").trim(),
-    String(projectWorkspaceResolved.value || "").trim(),
-    nativeDesktopBridgeAvailable.value ? "native" : "web",
-    "local-runner",
-  ],
-  () => {
-    if (projectSettingsHydrating.value) return;
-    scheduleExternalAgentStatusRefresh();
-    void refreshNativeExternalAgentSessionRecords({ silent: true });
-  },
-  { immediate: true },
 );
 
 watch(

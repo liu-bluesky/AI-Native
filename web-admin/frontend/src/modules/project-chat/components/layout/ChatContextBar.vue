@@ -56,14 +56,6 @@
           size="small"
           plain
           class="chat-context-bar__action-button"
-          @click="emit('open-mcp')"
-        >
-          MCP 接入
-        </el-button>
-        <el-button
-          size="small"
-          plain
-          class="chat-context-bar__action-button"
           @click="emit('open-skill-resource')"
         >
           技能资源
@@ -92,7 +84,6 @@ const emit = defineEmits([
   "start-guide",
   "open-project-detail",
   "trust-workspace",
-  "open-mcp",
   "open-skill-resource",
   "project-change",
 ]);

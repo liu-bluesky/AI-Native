@@ -265,7 +265,7 @@ async function handleLogin() {
     emit('success')
     emit('update:modelValue', false)
     if (props.successPath) {
-      await router.replace(resolveSafeRedirectPath(props.successPath, '/market'))
+      await router.replace(resolveSafeRedirectPath(props.successPath, '/workbench'))
     }
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || '登录失败')

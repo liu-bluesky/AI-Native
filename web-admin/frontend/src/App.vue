@@ -230,9 +230,7 @@ function handleAuthStorageChange(event) {
 }
 
 function handleGlobalFeedbackShortcut(event) {
-  if (!event.altKey || !event.shiftKey || String(event.key).toLowerCase() !== 'f') return
-  event.preventDefault()
-  if (getStoredToken()) router.push('/feedback?mode=create&source=global_shortcut')
+  return
 }
 
 onMounted(async () => {

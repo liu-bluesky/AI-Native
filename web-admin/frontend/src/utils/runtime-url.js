@@ -1,4 +1,5 @@
 import api from '@/utils/api.js'
+import { isExternalAuthSession } from '@/utils/auth-storage.js'
 import { buildServerUrl, resolveServerOrigin } from '@/utils/server-profile.js'
 
 function normalizePath(pathname) {
@@ -24,6 +25,7 @@ export function setConfiguredRuntimeOrigin(origin) {
 }
 
 export async function fetchConfiguredRuntimeOrigin({ force = false } = {}) {
+  if (isExternalAuthSession()) return currentOrigin()
   if (!force && configuredRuntimeOrigin) return configuredRuntimeOrigin
   if (!force && configuredRuntimeOriginPromise) return configuredRuntimeOriginPromise
   configuredRuntimeOriginPromise = (async () => {

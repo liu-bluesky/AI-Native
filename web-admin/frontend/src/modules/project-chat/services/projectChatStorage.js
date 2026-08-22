@@ -29,13 +29,7 @@ const GUIDE_TOUR_STORAGE_PREFIX = "project_chat.guide_tour";
 const PROJECT_SELECTION_STORAGE_KEY = "project_id";
 const chatSessionWriteQueues = new Map();
 export const DEFAULT_LOCAL_MCP_CONFIG = {
-  mcpServers: {
-    "prompts.chat": {
-      type: "http",
-      url: "https://prompts.chat/api/mcp",
-      enabled: true,
-    },
-  },
+  mcpServers: {},
 };
 export const DEFAULT_WEB_TOOLS_CONFIG = {
   version: 1,
@@ -524,12 +518,65 @@ function normalizeMcpServerConfig(value) {
   return config;
 }
 
+function legacyQueryMcpEndpoint(value) {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return String(
+    source.url || source.endpoint || source.baseUrl || source.base_url || "",
+  ).trim();
+}
+
+export function isDeprecatedQueryMcpServer(name, config) {
+  const normalizedName = String(name || "").trim().toLowerCase();
+  if (
+    normalizedName === "query-center-project" ||
+    normalizedName === "query-center"
+  ) {
+    return true;
+  }
+  const endpoint = legacyQueryMcpEndpoint(config);
+  if (!endpoint) return false;
+  try {
+    const parsed = new URL(endpoint);
+    const path = parsed.pathname.replace(/\/+$/, "");
+    return path === "/mcp/query" || path === "/mcp/query/sse";
+  } catch {
+    return /\/mcp\/query(?:\/sse)?(?:[/?#]|$)/i.test(endpoint);
+  }
+}
+
+export function findDeprecatedQueryMcpServerNames(value) {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const rawServers = source.mcpServers || source.servers;
+  if (Array.isArray(rawServers)) {
+    return rawServers
+      .map((config, index) => ({
+        name: inferMcpServerName(config, index),
+        config,
+      }))
+      .filter(({ name, config }) => isDeprecatedQueryMcpServer(name, config))
+      .map(({ name }) => name)
+      .filter(Boolean);
+  }
+  if (!rawServers || typeof rawServers !== "object" || Array.isArray(rawServers)) {
+    return isDeprecatedQueryMcpServer("", source)
+      ? [inferMcpServerName(source, 0)]
+      : [];
+  }
+  return Object.entries(rawServers)
+    .filter(([name, config]) => isDeprecatedQueryMcpServer(name, config))
+    .map(([name]) => String(name || "").trim())
+    .filter(Boolean);
+}
+
 function normalizeMcpServersFromArray(items) {
   const servers = {};
   for (const [index, item] of items.entries()) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const config = normalizeMcpServerConfig(item);
     const baseName = inferMcpServerName(item, index);
+    if (isDeprecatedQueryMcpServer(baseName, config)) continue;
     let name = baseName;
     let suffix = 2;
     while (servers[name]) {
@@ -548,7 +595,9 @@ function normalizeMcpServersFromObject(rawServers) {
     if (!name || !rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) {
       continue;
     }
-    servers[name] = normalizeMcpServerConfig(rawConfig);
+    const config = normalizeMcpServerConfig(rawConfig);
+    if (isDeprecatedQueryMcpServer(name, config)) continue;
+    servers[name] = config;
   }
   return servers;
 }

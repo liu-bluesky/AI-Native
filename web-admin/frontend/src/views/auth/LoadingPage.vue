@@ -31,7 +31,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import api from '@/utils/api.js'
-import { getStoredToken } from '@/utils/auth-storage.js'
+import { getStoredToken, isExternalAuthSession } from '@/utils/auth-storage.js'
 
 const OFFLINE_DESKTOP_STARTUP_STORAGE_KEY = 'desktop_offline_startup'
 const DESKTOP_OFFLINE_MODE_STORAGE_KEY = 'desktop_offline_mode'
@@ -55,6 +55,11 @@ function markOfflineDesktopStartup() {
 
 async function checkStatus() {
   errorText.value = ''
+  if (isExternalAuthSession()) {
+    statusText.value = '正在打开本地工作台'
+    await router.replace('/workbench')
+    return
+  }
   statusText.value = '正在确认是否需要初始化'
   try {
     const status = await api.get('/init/status')

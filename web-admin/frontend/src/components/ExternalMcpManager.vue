@@ -53,6 +53,9 @@
           <el-button size="small" text @click="fillStdioExample">
             stdio 示例
           </el-button>
+          <el-button size="small" text @click="fillHttpExample">
+            本机 HTTP 示例
+          </el-button>
           <el-button size="small" text @click="formatJsonConfig">
             格式化
           </el-button>
@@ -329,6 +332,16 @@ function fillStdioExample() {
       type: 'stdio',
       command: '/absolute/path/to/mcp-server',
       args: ['--stdio'],
+    },
+  }, null, 2)
+}
+
+function fillHttpExample() {
+  jsonConfigText.value = JSON.stringify({
+    'local-http-mcp': {
+      description: '本机 HTTP MCP Server',
+      type: 'http',
+      url: 'http://127.0.0.1:PORT/mcp',
     },
   }, null, 2)
 }

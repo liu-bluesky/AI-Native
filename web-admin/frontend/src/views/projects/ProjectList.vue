@@ -363,12 +363,6 @@
       </template>
     </el-dialog>
 
-    <UnifiedMcpAccessDialog
-      v-model="showMcpDialog"
-      :title="`统一 MCP 接入: ${currentProject?.name || ''}`"
-      :project-id="currentProject?.id || ''"
-      :project-label="currentProject?.name || currentProject?.id || ''"
-    />
   </div>
 </template>
 
@@ -378,7 +372,6 @@ import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ProjectAppHeader from "@/components/project-workspace/ProjectAppHeader.vue";
 import ProjectAppSection from "@/components/project-workspace/ProjectAppSection.vue";
-import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
 import api from "@/utils/api.js";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import { hasPermission } from "@/utils/permissions.js";
@@ -456,12 +449,9 @@ const editForm = ref({
   feedback_upgrade_enabled: true,
 });
 
-const showMcpDialog = ref(false);
-const currentProject = ref(null);
 const PROJECT_ACTIONS = [
   { key: "detail", label: "详情", type: "primary", requiresManage: false },
   { key: "edit", label: "编辑", type: "warning", requiresManage: true },
-  { key: "access", label: "接入", type: "success", requiresManage: true },
   { key: "delete", label: "删除", type: "danger", requiresManage: true },
 ];
 
@@ -707,9 +697,6 @@ function handleProjectAction(project, actionKey) {
     case "edit":
       openEdit(project);
       return;
-    case "access":
-      showMcpConfig(project);
-      return;
     case "delete":
       void removeProject(project);
       return;
@@ -835,15 +822,6 @@ async function updateProject() {
   } finally {
     updating.value = false;
   }
-}
-
-function showMcpConfig(project) {
-  if (!canManageProject(project)) {
-    ElMessage.warning(manageBlockedMessage(project));
-    return;
-  }
-  currentProject.value = project;
-  showMcpDialog.value = true;
 }
 
 async function fetchProjects(options = {}) {

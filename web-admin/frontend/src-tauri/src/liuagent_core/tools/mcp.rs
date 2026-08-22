@@ -166,13 +166,9 @@ impl McpToolAnnotations {
 pub fn discover_mcp_tools(
     workspace_path: &str,
     mcp_config: &Value,
-    backend_api_base_url: &str,
-    backend_token: &str,
 ) -> Result<Vec<DiscoveredMcpTool>, ToolError> {
     let arguments = json!({
         "_mcp_config": mcp_config,
-        "_backend_api_base_url": backend_api_base_url,
-        "_backend_token": backend_token,
     });
     let root = resolve_workspace_root(workspace_path)?;
     let config = read_registry_config(&root, &arguments)?;
@@ -787,27 +783,7 @@ fn resolve_server_config(
         .unwrap_or("line-json")
         .trim()
         .to_ascii_lowercase();
-    let mut headers = parse_config_headers(&value)?;
-    let desktop_auth = value
-        .get("desktopAuth")
-        .or_else(|| value.get("desktop_auth"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if desktop_auth {
-        let token = arguments
-            .get("_backend_token")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .unwrap_or("");
-        if token.is_empty() {
-            return Err(ToolError::new(
-                "mcp.config_invalid",
-                format!("desktop-auth MCP server {name} requires backend login context"),
-            ));
-        }
-        headers.retain(|(key, _)| !key.eq_ignore_ascii_case("authorization"));
-        headers.push(("Authorization".to_string(), format!("Bearer {token}")));
-    }
+    let headers = parse_config_headers(&value)?;
     Ok(ServerConfig {
         name,
         transport,
@@ -1433,9 +1409,9 @@ mod tests {
     fn rejects_unknown_server_without_guessing() {
         let config = json!({
             "mcpServers": {
-                "runtime": {
+                "local-server": {
                     "type": "http",
-                    "url": "http://127.0.0.1:8000/mcp/runtime/mcp",
+                    "url": "http://127.0.0.1:9000/mcp",
                     "enabled": true
                 }
             }
@@ -1443,56 +1419,6 @@ mod tests {
         let error = resolve_server_config(&config, "default", &json!({})).unwrap_err();
         assert_eq!(error.code, "mcp.server_not_found");
         assert!(error.message.contains("default"));
-    }
-
-    #[test]
-    fn desktop_auth_server_uses_backend_login_token() {
-        let config = json!({
-            "mcpServers": {
-                "runtime": {
-                    "type": "http",
-                    "url": "/mcp/runtime/mcp?project_id=proj-657fe77f",
-                    "desktopAuth": true,
-                    "enabled": true
-                }
-            }
-        });
-        let server = resolve_server_config(
-            &config,
-            "runtime",
-            &json!({
-                "_backend_api_base_url": "http://127.0.0.1:8000/api",
-                "_backend_token": "login-token"
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            server.url,
-            "http://127.0.0.1:8000/mcp/runtime/mcp?project_id=proj-657fe77f"
-        );
-        assert!(server.headers.iter().any(|(key, value)| {
-            key.eq_ignore_ascii_case("authorization") && value == "Bearer login-token"
-        }));
-    }
-
-    #[test]
-    fn desktop_auth_server_requires_backend_login_token() {
-        let config = json!({
-            "mcpServers": {
-                "runtime": {
-                    "type": "http",
-                    "url": "/mcp/runtime/mcp?project_id=proj-657fe77f",
-                    "desktopAuth": true
-                }
-            }
-        });
-        let error = resolve_server_config(
-            &config,
-            "runtime",
-            &json!({"_backend_api_base_url": "http://127.0.0.1:8000/api"}),
-        )
-        .unwrap_err();
-        assert!(error.message.contains("requires backend login context"));
     }
 
     #[test]

@@ -14,7 +14,6 @@ export const LEGACY_CHAT_ALLOWED_FILE_TYPES = [
 
 export const CHAT_SETTINGS_DEFAULTS = {
   chat_mode: "system",
-  external_agent_type: "codex_cli",
   local_connector_id: "",
   connector_workspace_path: "",
   agent_directory: "",

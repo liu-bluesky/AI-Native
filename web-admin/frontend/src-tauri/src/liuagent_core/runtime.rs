@@ -9207,7 +9207,7 @@ fn build_model_request_with_history_and_task_profile(
     history: &[LocalChatMessage],
     task_profile_override: Option<TaskProfile>,
 ) -> Result<ModelStepRequest, ToolError> {
-    let effective_mcp_config = desktop_runtime_mcp_config(request);
+    let effective_mcp_config = request.mcp_config.clone();
     let runtime = request
         .model_runtime
         .clone()
@@ -9331,30 +9331,26 @@ fn build_model_request_with_history_and_task_profile(
     })
 }
 
-fn desktop_runtime_mcp_config(request: &LocalChatRequest) -> Value {
-    let project_id = request.project_id.trim();
-    let has_desktop_login = request
-        .backend_context
-        .as_ref()
-        .map(|context| !context.api_base_url.trim().is_empty() && !context.token.trim().is_empty())
-        .unwrap_or(false);
-    if !project_id.starts_with("proj-") || !has_desktop_login {
-        return json!({"mcpServers": {}});
+fn request_targets_configured_media_tool(request: &ModelStepRequest) -> bool {
+    let message = request.user_message.trim().to_lowercase();
+    if message.is_empty() {
+        return false;
     }
-
-    json!({
-        "mode": "runtime-v1",
-        "mcpServers": {
-            "runtime": {
-            "type": "http",
-            "url": format!("/mcp/runtime/mcp?project_id={project_id}"),
-            "enabled": true,
-            "desktopAuth": true,
-            "builtin": true,
-            "description": "系统管理的桌面 MCP Runtime。包含 system 能力域与当前项目可见的 integrations 服务目录。"
-            }
-        }
-    })
+    let has_tool = |name: &str| request.media_tools.iter().any(|tool| tool.name.trim() == name);
+    (has_tool("generate_image")
+        && [
+            "生成图片",
+            "生成图",
+            "画一张",
+            "绘制",
+            "image generation",
+            "generate image",
+            "create image",
+        ]
+        .iter()
+        .any(|keyword| message.contains(keyword)))
+        || (has_tool("edit_image")
+            && ["编辑图片", "修改图片", "修图", "edit image"].iter().any(|keyword| message.contains(keyword)))
 }
 
 fn hydrate_mcp_tool_snapshot(request: &mut ModelStepRequest) {
@@ -9362,25 +9358,11 @@ fn hydrate_mcp_tool_snapshot(request: &mut ModelStepRequest) {
         || !request.mcp_catalog_version.is_empty()
         || !request.mcp_discovery_error.is_empty()
         || !mcp_registry_configured(&request.workspace_path, &request.mcp_config)
+        || request_targets_configured_media_tool(request)
     {
         return;
     }
-    let backend_api_base_url = request
-        .backend_context
-        .as_ref()
-        .map(|context| context.api_base_url.as_str())
-        .unwrap_or("");
-    let backend_token = request
-        .backend_context
-        .as_ref()
-        .map(|context| context.token.as_str())
-        .unwrap_or("");
-    match discover_mcp_tools(
-        &request.workspace_path,
-        &request.mcp_config,
-        backend_api_base_url,
-        backend_token,
-    ) {
+    match discover_mcp_tools(&request.workspace_path, &request.mcp_config) {
         Ok(discovered) => {
             let selected = select_mcp_tools_for_goal(discovered, &request.user_message, 12);
             request.mcp_catalog_version = mcp_catalog_version(&selected);
@@ -13050,18 +13032,18 @@ mod tests {
         let mut request = test_model_request("查询当前项目绑定的智能体");
         request.mcp_config = json!({
             "mcpServers": {
-                "runtime": {
+                "local-catalog": {
                     "type": "http",
-                    "url": "http://127.0.0.1:8000/mcp/runtime/mcp?project_id=proj-test",
+                    "url": "http://127.0.0.1:9000/mcp",
                     "enabled": true
                 }
             }
         });
         let selected = DiscoveredMcpTool {
-            server: "runtime".to_string(),
-            server_id: "system".to_string(),
-            canonical_tool_id: "system.system.list_project_members".to_string(),
-            domain: "system".to_string(),
+            server: "local-catalog".to_string(),
+            server_id: "local".to_string(),
+            canonical_tool_id: "local.project.list_members".to_string(),
+            domain: "project".to_string(),
             name: "list_project_members".to_string(),
             description: "列出当前项目绑定的智能体".to_string(),
             input_schema: json!({
@@ -13224,18 +13206,18 @@ mod tests {
         let mut request = test_model_request("查询当前项目绑定的智能体");
         request.mcp_config = json!({
             "mcpServers": {
-                "runtime": {
+                "local-catalog": {
                     "type": "http",
-                    "url": "http://127.0.0.1:8000/mcp/runtime/mcp?project_id=proj-test",
+                    "url": "http://127.0.0.1:9000/mcp",
                     "enabled": true
                 }
             }
         });
         request.selected_mcp_tools = vec![DiscoveredMcpTool {
-            server: "runtime".to_string(),
-            server_id: "system".to_string(),
-            canonical_tool_id: "system.system.list_project_members".to_string(),
-            domain: "system".to_string(),
+            server: "local-catalog".to_string(),
+            server_id: "local".to_string(),
+            canonical_tool_id: "local.project.list_members".to_string(),
+            domain: "project".to_string(),
             name: "list_project_members".to_string(),
             description: "列出当前项目绑定的智能体".to_string(),
             input_schema: json!({"type": "object"}),
@@ -15852,12 +15834,20 @@ mod tests {
     }
 
     #[test]
-    fn desktop_project_request_mounts_single_runtime_mcp() {
+    fn desktop_project_request_uses_explicit_local_mcp_config() {
         let mut request = LocalChatRequest::default();
         request.project_id = "proj-657fe77f".to_string();
         request.workspace_path = ".".to_string();
         request.message = "查询项目成员".to_string();
-        request.mcp_config = json!({"mcpServers": {}});
+        request.mcp_config = json!({
+            "mcpServers": {
+                "local-mcp": {
+                    "type": "http",
+                    "url": "http://127.0.0.1:9000/mcp",
+                    "enabled": true
+                }
+            }
+        });
         request.backend_context = Some(LocalBackendContext {
             api_base_url: "http://127.0.0.1:8000/api".to_string(),
             token: "login-token".to_string(),
@@ -15866,12 +15856,8 @@ mod tests {
         let model_request = build_model_request(&request, "查询项目成员");
 
         assert_eq!(
-            model_request.mcp_config["mcpServers"]["runtime"]["url"],
-            "/mcp/runtime/mcp?project_id=proj-657fe77f"
-        );
-        assert_eq!(
-            model_request.mcp_config["mcpServers"]["runtime"]["desktopAuth"],
-            true
+            model_request.mcp_config["mcpServers"]["local-mcp"]["url"],
+            "http://127.0.0.1:9000/mcp"
         );
         assert_eq!(
             model_request.mcp_config["mcpServers"]
@@ -15886,16 +15872,16 @@ mod tests {
     }
 
     #[test]
-    fn desktop_project_request_does_not_mount_external_servers_directly() {
+    fn desktop_project_request_does_not_inject_backend_runtime_mcp() {
         let mut request = LocalChatRequest::default();
         request.project_id = "proj-657fe77f".to_string();
         request.workspace_path = ".".to_string();
         request.message = "查询项目成员".to_string();
         request.mcp_config = json!({
             "mcpServers": {
-                "external-docs": {
+                "local-mcp": {
                     "type": "http",
-                    "url": "https://example.com/mcp",
+                    "url": "http://127.0.0.1:9000/mcp",
                     "enabled": true
                 }
             }
@@ -15905,54 +15891,39 @@ mod tests {
             token: "login-token".to_string(),
         });
 
-        let config = desktop_runtime_mcp_config(&request);
+        let model_request = build_model_request(&request, "查询项目成员");
 
-        assert!(config["mcpServers"].get("external-docs").is_none());
+        assert!(model_request.mcp_config["mcpServers"].get("runtime").is_none());
         assert_eq!(
-            config["mcpServers"]["runtime"]["url"],
-            "/mcp/runtime/mcp?project_id=proj-657fe77f"
+            model_request.mcp_config["mcpServers"]["local-mcp"]["url"],
+            "http://127.0.0.1:9000/mcp"
         );
     }
 
     #[test]
-    fn internal_mcp_host_execution_receives_runtime_config_and_desktop_login_token() {
-        let tool = PlannedLocalTool {
-            tool_call_id: "call_project_mcp".to_string(),
-            name: "call_mcp_tool".to_string(),
-            arguments: json!({
-                "server": "runtime",
-                "tool": "get_project_employee_detail",
-                "arguments": {"employee_id": "emp-18b9cdfa"}
-            }),
-            summary: "query project employee".to_string(),
-        };
-        let backend_context = LocalBackendContext {
-            api_base_url: "http://127.0.0.1:8000/api".to_string(),
-            token: "login-token".to_string(),
-        };
-        let mcp_config = json!({
+    fn image_generation_skips_mcp_tool_discovery() {
+        let mut request = test_model_request("1girl 生成图片");
+        request.mcp_config = json!({
             "mcpServers": {
-                "runtime": {
+                "unavailable": {
                     "type": "http",
-                    "url": "/mcp/runtime/mcp?project_id=proj-657fe77f",
-                    "desktopAuth": true
+                    "url": "http://127.0.0.1:9/mcp",
+                    "enabled": true
                 }
             }
         });
+        request.media_tools = vec![LocalMediaToolConfig {
+            name: "generate_image".to_string(),
+            provider_id: "image-provider".to_string(),
+            model_name: "image-model".to_string(),
+        }];
 
-        let execution_args = tool_arguments_with_backend_context(
-            &tool,
-            "proj-657fe77f",
-            Some(&backend_context),
-            &mcp_config,
-            &[],
-            &[],
-            tool.arguments.clone(),
-        );
+        hydrate_mcp_tool_snapshot(&mut request);
 
-        assert_eq!(execution_args["_backend_token"], "login-token");
-        assert_eq!(execution_args["_mcp_config"], mcp_config);
+        assert!(request.selected_mcp_tools.is_empty());
+        assert!(request.mcp_discovery_error.is_empty());
     }
+
 
     #[test]
     fn tool_observation_compacts_large_read_file_content_for_model() {

@@ -2,7 +2,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import { getFallbackPath } from '@/utils/permissions.js'
 import { isChatSettingsRoutePath, resolveSettingsAwarePath } from '@/utils/chat-settings-route.js'
 import api from '@/utils/api.js'
-import { getStoredToken } from '@/utils/auth-storage.js'
+import { getStoredToken, isExternalAuthSession } from '@/utils/auth-storage.js'
 import { resolveServerOrigin } from '@/utils/server-profile.js'
 
 const SettingsCenterChatStub = { render: () => null }
@@ -20,58 +20,10 @@ const routes = [
     redirect: '/loading',
     children: [
       { path: 'workbench', component: () => import('../views/desktop/DesktopWorkbench.vue') },
-      { path: 'work-logs', component: () => import('../views/desktop/ProjectWorkLog.vue') },
-      { path: 'tasks', component: () => import('../views/tasks/TaskManager.vue') },
-      { path: 'settings-center', component: () => import('../views/desktop/SettingsLauncher.vue') },
-      { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
       { path: 'desktop', redirect: '/workbench' },
       { path: 'ai/chat', component: () => import('../views/projects/ProjectChat.vue') },
-      { path: 'ai/supervision', component: () => import('../views/desktop/AgentSupervision.vue') },
-      {
-        path: 'ai/chat/settings',
-        component: () => import('../views/projects/ProjectChat.vue'),
-        children: [
-          { path: '', redirect: '/ai/chat/settings/chat' },
-          { path: 'chat', component: SettingsCenterChatStub },
-          { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
-          { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
-          { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
-          { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
-          { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
-          { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
-          { path: 'statistics', component: () => import('../views/system/StatisticsDashboard.vue') },
-          { path: 'mcp-monitor', component: () => import('../views/system/McpMonitorManager.vue'), meta: { superAdminOnly: true } },
-          { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
-          { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
-          { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
-          { path: 'memory/:id', component: () => import('../views/memory/MemoryManager.vue') },
-          { path: 'usage/keys', component: () => import('../views/usage/ApiKeyList.vue') },
-          { path: 'users', component: () => import('../views/users/UserList.vue') },
-          { path: 'departments', component: () => import('../views/users/DepartmentManager.vue') },
-        ],
-      },
-      { path: 'users', component: () => import('../views/users/UserList.vue') },
-      { path: 'departments', component: () => import('../views/users/DepartmentManager.vue') },
-      { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
       { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
       { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
-      {
-        path: 'materials',
-        component: () => import('../views/projects/ProjectCreationWorkspace.vue'),
-        children: [
-          { path: '', redirect: { path: '/materials/voices' } },
-          { path: 'voices', component: () => import('../views/projects/ProjectVoiceLibrary.vue') },
-        ],
-      },
-      { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
-      { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
-      { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
-      { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
-      { path: 'statistics', component: () => import('../views/system/StatisticsDashboard.vue') },
-      { path: 'mcp-monitor', component: () => import('../views/system/McpMonitorManager.vue'), meta: { superAdminOnly: true } },
-      { path: 'memory/:id', component: () => import('../views/memory/MemoryManager.vue') },
-      { path: 'usage/keys', component: () => import('../views/usage/ApiKeyList.vue') },
-      { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
     ],
   },
 ]
@@ -95,6 +47,7 @@ export function markSystemInitialized() {
 }
 
 async function isSystemInitialized() {
+  if (isExternalAuthSession()) return true
   const currentOrigin = resolveServerOrigin()
   if (initializationStatusOrigin !== currentOrigin) {
     initializationStatus = null
