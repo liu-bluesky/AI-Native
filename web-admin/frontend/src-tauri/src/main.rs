@@ -39,6 +39,15 @@ struct ClipboardFileResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SavedResourceFileResult {
+    saved: bool,
+    cancelled: bool,
+    path: String,
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LocalFileReadResult {
     name: String,
     mime_type: String,
@@ -1661,6 +1670,59 @@ fn copy_resource_file_to_clipboard(
 }
 
 #[tauri::command]
+fn save_resource_file(
+    url: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    authorization_token: Option<String>,
+) -> Result<SavedResourceFileResult, String> {
+    let normalized_url = url.trim();
+    if normalized_url.is_empty() {
+        return Err("缺少要保存的文件地址".to_string());
+    }
+    let requested_mime_type = mime_type.unwrap_or_default();
+    let suggested_name = resolve_clipboard_file_name(
+        file_name.as_deref().unwrap_or(""),
+        normalized_url,
+        &requested_mime_type,
+    );
+    let Some(output_path) = rfd::FileDialog::new()
+        .set_title("保存资源")
+        .set_file_name(&suggested_name)
+        .save_file()
+    else {
+        return Ok(SavedResourceFileResult {
+            saved: false,
+            cancelled: true,
+            path: String::new(),
+            name: suggested_name,
+        });
+    };
+    let (bytes, _) = load_clipboard_resource(
+        normalized_url,
+        authorization_token.as_deref().unwrap_or(""),
+        &requested_mime_type,
+    )?;
+    if bytes.is_empty() {
+        return Err("文件内容为空".to_string());
+    }
+    if bytes.len() > 100 * 1024 * 1024 {
+        return Err("保存文件不能超过 100MB".to_string());
+    }
+    fs::write(&output_path, bytes).map_err(|err| format!("保存文件失败：{err}"))?;
+    let saved_name = output_path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or(suggested_name);
+    Ok(SavedResourceFileResult {
+        saved: true,
+        cancelled: false,
+        path: output_path.to_string_lossy().to_string(),
+        name: saved_name,
+    })
+}
+
+#[tauri::command]
 fn read_local_file(path: String) -> Result<LocalFileReadResult, String> {
     let target = PathBuf::from(path.trim());
     if target.as_os_str().is_empty() {
@@ -2925,6 +2987,7 @@ fn main() {
             write_global_ftp_credentials_file,
             open_external_url,
             copy_resource_file_to_clipboard,
+            save_resource_file,
             read_local_file,
             open_desktop_devtools,
             classify_runner_command,

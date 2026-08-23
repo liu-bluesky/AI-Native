@@ -105,6 +105,13 @@ const composerSource = readFileSync(
   ),
   "utf8",
 );
+const resourceContextMenuSource = readFileSync(
+  resolve(
+    scriptDir,
+    "../src/modules/project-chat/components/resource-context-menu/ResourceContextMenu.vue",
+  ),
+  "utf8",
+);
 const nativeBridgeSource = readFileSync(
   resolve(scriptDir, "../src/utils/native-desktop-bridge.js"),
   "utf8",
@@ -115,11 +122,16 @@ const tauriMainSource = readFileSync(
 );
 
 assert.match(projectChatSource, /@contextmenu\.prevent="openMessageContextMenu/);
-assert.match(projectChatSource, /添加到 liuAgent 对话/);
 assert.doesNotMatch(projectChatSource, /追加到当前会话/);
-assert.match(projectChatSource, /复制地址/);
-assert.match(projectChatSource, /复制文件本身/);
-assert.match(projectChatSource, /复制内容/);
+assert.match(projectChatSource, /<ResourceContextMenu/);
+assert.match(projectChatSource, /handleTeleportedResourceContextMenu/);
+assert.match(projectChatSource, /\.el-image-viewer__canvas img/);
+assert.match(resourceContextMenuSource, /添加到 liuAgent 对话/);
+assert.match(resourceContextMenuSource, /在新窗口打开/);
+assert.match(resourceContextMenuSource, /下载 \/ 另存为/);
+assert.match(resourceContextMenuSource, /复制地址/);
+assert.match(resourceContextMenuSource, /复制文件本身/);
+assert.match(resourceContextMenuSource, /复制内容/);
 assert.doesNotMatch(
   projectChatSource,
   /<small>\{\{ messageContextMenu\.label \}\}<\/small>/,
@@ -143,7 +155,10 @@ assert.match(composerSource, /clear-context-refs/);
 assert.match(composerSource, /remove-context-ref/);
 assert.match(nativeBridgeSource, /copyResourceFileToClipboard/);
 assert.match(nativeBridgeSource, /copy_resource_file_to_clipboard/);
+assert.match(nativeBridgeSource, /saveResourceFile/);
+assert.match(nativeBridgeSource, /save_resource_file/);
 assert.match(tauriMainSource, /fn copy_resource_file_to_clipboard/);
+assert.match(tauriMainSource, /fn save_resource_file/);
 assert.match(tauriMainSource, /copy_local_file_to_system_clipboard/);
 
 console.log("project chat context reference checks passed");

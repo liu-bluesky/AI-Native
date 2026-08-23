@@ -97,6 +97,26 @@ assert.match(
   "edit_image artifacts must be collected by the structured media renderer",
 );
 assert.match(
+  projectChatSource,
+  /buildPersistentUploadMediaUrls\([\s\S]*?persistentUploadImageUrls/,
+  "uploaded image previews must be materialized before message persistence",
+);
+assert.match(
+  projectChatSource,
+  /normalizePersistedMessageMediaUrls[\s\S]*?startsWith\("blob:"\)/,
+  "expired blob URLs must not be restored from persisted chat messages",
+);
+assert.match(
+  projectChatSource,
+  /mergeImageUrls,[\s\S]*?mergeMediaUrls,[\s\S]*?mergeVideoUrls/,
+  "historical message media normalization must import mergeMediaUrls",
+);
+assert.doesNotMatch(
+  projectChatSource,
+  /const imageUrls = mergeImageUrls\(\s*uploadFiles\.value[\s\S]*?\.map\(\(item\) => item\.url\)/,
+  "temporary upload preview URLs must never be stored as user message images",
+);
+assert.match(
   messageCssSource,
   /\.chat-layout \.message-text img\s*\{[\s\S]*?max-width:\s*100%;[\s\S]*?height:\s*auto;/,
   "inline markdown images must stay within the message bubble",

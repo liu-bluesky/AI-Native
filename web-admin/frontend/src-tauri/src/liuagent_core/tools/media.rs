@@ -103,13 +103,7 @@ fn execute_direct_image_tool(
     if prompt.is_empty() {
         return Err(ToolError::new("tool.schema_invalid", "图片提示词不能为空"));
     }
-    let mut body = json!({"model": model_name, "prompt": prompt, "n": 1});
-    if tool_name == "edit_image" {
-        body["images"] = arguments
-            .get("_reference_images")
-            .cloned()
-            .unwrap_or_else(|| json!([]));
-    }
+    let body = build_direct_image_request_body(tool_name, model_name, &prompt, arguments);
     let client = Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
@@ -172,6 +166,36 @@ fn execute_direct_image_tool(
         json!({"ok": true, "content": "图片生成成功", "artifacts": artifacts, "images": urls}),
         "图片生成成功".to_string(),
     ))
+}
+
+fn build_direct_image_request_body(
+    tool_name: &str,
+    model_name: &str,
+    prompt: &str,
+    arguments: &Value,
+) -> Value {
+    let mut body = json!({"model": model_name, "prompt": prompt, "n": 1});
+    if tool_name != "edit_image" {
+        return body;
+    }
+    let images = arguments
+        .get("_reference_images")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|reference| {
+            if reference.is_object() {
+                return Some(reference.clone());
+            }
+            reference
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|image_url| json!({"image_url": image_url}))
+        })
+        .collect::<Vec<_>>();
+    body["images"] = json!(images);
+    body
 }
 
 fn extract_image_artifacts(payload: &Value) -> Vec<Value> {
@@ -326,6 +350,29 @@ mod tests {
         assert_eq!(
             detail.as_deref(),
             Some(r#"{"code":"invalid_model","message":"provider rejected image request"}"#)
+        );
+    }
+
+    #[test]
+    fn edit_image_wraps_reference_urls_in_image_objects() {
+        let body = build_direct_image_request_body(
+            "edit_image",
+            "image-model",
+            "制作产品海报",
+            &json!({
+                "_reference_images": [
+                    "data:image/png;base64,abc",
+                    {"file_id": "file-123"}
+                ]
+            }),
+        );
+
+        assert_eq!(
+            body["images"],
+            json!([
+                {"image_url": "data:image/png;base64,abc"},
+                {"file_id": "file-123"}
+            ])
         );
     }
 }

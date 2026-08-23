@@ -2843,54 +2843,23 @@
     </div>
   </div>
 
-  <Teleport to="body">
-    <div
-      v-if="messageContextMenu.visible"
-      class="project-chat-context-menu"
-      :style="{
-        left: `${messageContextMenu.x}px`,
-        top: `${messageContextMenu.y}px`,
-      }"
-      role="menu"
-      @contextmenu.prevent
-    >
-      <button type="button" role="menuitem" @click="appendContextMenuSelection">
-        <span>添加到 liuAgent 对话</span>
-      </button>
-      <div
-        v-if="
-          contextMenuCanCopyAddress() ||
-          contextMenuCanCopyFile() ||
-          contextMenuCanCopyContent()
-        "
-        class="project-chat-context-menu__divider"
-      ></div>
-      <button
-        v-if="contextMenuCanCopyAddress()"
-        type="button"
-        role="menuitem"
-        @click="copyContextMenuAddress"
-      >
-        <span>复制地址</span>
-      </button>
-      <button
-        v-if="contextMenuCanCopyFile()"
-        type="button"
-        role="menuitem"
-        @click="copyContextMenuFile"
-      >
-        <span>复制文件本身</span>
-      </button>
-      <button
-        v-if="contextMenuCanCopyContent()"
-        type="button"
-        role="menuitem"
-        @click="copyContextMenuContent"
-      >
-        <span>复制内容</span>
-      </button>
-    </div>
-  </Teleport>
+  <ResourceContextMenu
+    :visible="messageContextMenu.visible"
+    :x="messageContextMenu.x"
+    :y="messageContextMenu.y"
+    :can-append="messageContextMenu.references.length > 0"
+    :can-open="contextMenuCanOpen()"
+    :can-download="contextMenuCanCopyFile()"
+    :can-copy-address="contextMenuCanCopyAddress()"
+    :can-copy-file="contextMenuCanCopyFile()"
+    :can-copy-content="contextMenuCanCopyContent()"
+    @append="appendContextMenuSelection"
+    @open="openContextMenuResource"
+    @download="downloadContextMenuResource"
+    @copy-address="copyContextMenuAddress"
+    @copy-file="copyContextMenuFile"
+    @copy-content="copyContextMenuContent"
+  />
 
   <el-tour
     v-model="chatTourVisible"
@@ -2965,6 +2934,7 @@ import TerminalApprovalDialog from "@/modules/project-chat/components/terminal/T
 import CodePreviewDialog from "@/modules/project-chat/components/code-preview/CodePreviewDialog.vue";
 import FileChangesDrawer from "@/modules/project-chat/components/file-changes/FileChangesDrawer.vue";
 import SkillResourceDialog from "@/modules/project-chat/components/skill-resource/SkillResourceDialog.vue";
+import ResourceContextMenu from "@/modules/project-chat/components/resource-context-menu/ResourceContextMenu.vue";
 import { useProjectChatComposer } from "@/modules/project-chat/composables/useProjectChatComposer.js";
 import { useProjectChatPendingRequests } from "@/modules/project-chat/composables/useProjectChatPendingRequests.js";
 import { useProjectChatNativeAgent } from "@/modules/project-chat/composables/useProjectChatNativeAgent.js";
@@ -3092,6 +3062,7 @@ import {
   writeNativeExternalAgentSessionInput,
   executeNativeLiuAgentTool,
   openNativeExternalUrl,
+  saveNativeResourceFile,
   nativeDragDropCssPoints,
   subscribeNativeDesktopDragDrop,
 } from "@/utils/native-desktop-bridge.js";
@@ -3177,6 +3148,7 @@ import {
   isImageFile,
   mergeAudioUrls,
   mergeImageUrls,
+  mergeMediaUrls,
   mergeVideoUrls,
   stripStructuredMediaDuplicatesFromMarkdown,
 } from "@/modules/project-chat/mappers/mediaMappers.js";
@@ -13889,8 +13861,9 @@ function normalizeRuntimeMessageSnapshot(row) {
     role: String(row.role || "assistant"),
     content: String(row.content || ""),
     answerId: String(row.answerId || row.answer_id || "").trim(),
-    images: Array.isArray(row.images) ? row.images.slice() : [],
-    videos: Array.isArray(row.videos) ? row.videos.slice() : [],
+    images: normalizePersistedMessageMediaUrls(row.images),
+    videos: normalizePersistedMessageMediaUrls(row.videos),
+    audios: normalizePersistedMessageMediaUrls(row.audios),
     attachments: Array.isArray(row.attachments) ? row.attachments.slice() : [],
     time: String(row.time || ""),
     displayMode: String(row.displayMode || ""),
@@ -13945,6 +13918,12 @@ function normalizeRuntimeMessageSnapshot(row) {
           : [],
     ),
   };
+}
+
+function normalizePersistedMessageMediaUrls(values) {
+  return mergeMediaUrls(values).filter(
+    (url) => !String(url || "").trim().startsWith("blob:"),
+  );
 }
 
 function buildNativeExternalAgentRuntimeSnapshotForSession(sessionId = "") {
@@ -22258,6 +22237,19 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
   const recoverySnapshot = recovery?.ok
     ? localLiuAgentResumeStateSnapshot(recovery)
     : "未读取到本地 checkpoint；请根据对话历史继续，并先核对已有结果。";
+  const recoveredResumeContext =
+    recovery?.state?.resume_context &&
+    typeof recovery.state.resume_context === "object"
+      ? recovery.state.resume_context
+      : recovery?.state?.resumeContext &&
+          typeof recovery.state.resumeContext === "object"
+        ? recovery.state.resumeContext
+        : {};
+  const recoveredAttachments = Array.isArray(
+    recoveredResumeContext?.attachments,
+  )
+    ? recoveredResumeContext.attachments
+    : [];
   const continuationPrompt = [
     "继续执行刚才未完成的桌面智能体任务。",
     `原始目标：${rootGoal}`,
@@ -22289,6 +22281,8 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
         ).trim(),
         local_liuagent_auto_resume_retry_number: autoResumeRetryNumber,
       },
+      attachments: recoveredAttachments,
+      mediaTools: localLiuAgentMediaTools.value,
       persistUserMessage: false,
       resumeFromCheckpoint: true,
       workspacePath,
@@ -26536,15 +26530,20 @@ function showMessageContextMenu(event, references = []) {
   const normalized = mergeContextReferences([], references);
   if (!normalized.length) return;
   const singleReference = normalized.length === 1 ? normalized[0] : null;
-  const copyActionCount = [
+  const resourceActionCount = [
     Boolean(singleReference?.url),
+    Boolean(singleReference?.url),
+    Boolean(
+      singleReference?.url &&
+        ["image", "video", "audio", "file"].includes(singleReference?.type),
+    ),
     Boolean(
       singleReference?.url &&
         ["image", "video", "audio", "file"].includes(singleReference?.type),
     ),
     normalized.some((item) => String(item?.content || "").trim()),
   ].filter(Boolean).length;
-  const menuHeight = 20 + (1 + copyActionCount) * 42;
+  const menuHeight = 20 + (1 + resourceActionCount) * 42;
   messageContextMenu.x = Math.max(
     8,
     Math.min(Number(event?.clientX || 0), Number(window.innerWidth || 0) - 228),
@@ -26715,6 +26714,10 @@ function contextMenuCanCopyAddress() {
   return Boolean(String(contextMenuSingleReference()?.url || "").trim());
 }
 
+function contextMenuCanOpen() {
+  return contextMenuCanCopyAddress();
+}
+
 function contextMenuCanCopyFile() {
   const reference = contextMenuSingleReference();
   return Boolean(
@@ -26762,6 +26765,22 @@ async function copyContextMenuContent() {
   }
 }
 
+async function openContextMenuResource() {
+  const url = String(contextMenuSingleReference()?.url || "").trim();
+  closeMessageContextMenu();
+  if (!url) return;
+  try {
+    if (hasNativeDesktopBridge() && /^https?:/i.test(url)) {
+      const opened = await openNativeExternalUrl(url);
+      if (opened) return;
+    }
+    const openedWindow = window.open(url, "_blank", "noopener,noreferrer");
+    if (!openedWindow) throw new Error("新窗口被阻止");
+  } catch (error) {
+    ElMessage.error(error?.message || "资源打开失败");
+  }
+}
+
 function contextReferenceFileName(reference = {}) {
   const url = String(reference?.url || "").trim();
   if (url && !url.startsWith("data:")) {
@@ -26771,12 +26790,29 @@ function contextReferenceFileName(reference = {}) {
       if (name && name.includes(".")) return name;
     } catch (_error) {}
   }
+  const mimeType = String(reference?.mimeType || "").toLowerCase();
+  const dataMimeType = url.startsWith("data:")
+    ? url.slice(5, url.indexOf(";") > 5 ? url.indexOf(";") : url.indexOf(","))
+    : "";
   const extension = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "video/webm": "webm",
+    "audio/mpeg": "mp3",
+    "application/pdf": "pdf",
     image: "png",
     video: "mp4",
     audio: "wav",
     file: "bin",
-  }[String(reference?.type || "").trim()];
+  }[dataMimeType || mimeType] ||
+    {
+      image: "png",
+      video: "mp4",
+      audio: "wav",
+      file: "bin",
+    }[String(reference?.type || "").trim()];
   return `liuagent-${String(reference?.type || "file").trim() || "file"}.${extension || "bin"}`;
 }
 
@@ -26812,20 +26848,80 @@ async function copyResourceBlobInBrowser(reference = {}) {
   ]);
 }
 
+async function downloadResourceInBrowser(reference = {}) {
+  const url = String(reference?.url || "").trim();
+  const authorizationToken = contextReferenceAuthorizationToken(reference);
+  const response = await fetch(url, {
+    headers: authorizationToken
+      ? { Authorization: `Bearer ${authorizationToken}` }
+      : undefined,
+  });
+  if (!response.ok) {
+    throw new Error(`文件下载失败（HTTP ${response.status}）`);
+  }
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = contextReferenceFileName(reference);
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
+async function downloadContextMenuResource() {
+  const reference = contextMenuSingleReference();
+  closeMessageContextMenu();
+  if (!reference) return;
+  try {
+    if (hasNativeDesktopBridge() && !String(reference.url).startsWith("blob:")) {
+      try {
+        const result = await saveNativeResourceFile({
+          url: reference.url,
+          fileName: contextReferenceFileName(reference),
+          mimeType: reference.mimeType,
+          authorizationToken: contextReferenceAuthorizationToken(reference),
+        });
+        if (result?.cancelled) return;
+        if (result?.saved) {
+          ElMessage.success(`文件已保存：${result.path}`);
+          return;
+        }
+      } catch (nativeError) {
+        console.warn("原生资源保存失败，尝试浏览器下载", nativeError);
+      }
+    }
+    await downloadResourceInBrowser(reference);
+    ElMessage.success("文件已开始下载");
+  } catch (error) {
+    ElMessage.error(error?.message || "文件下载失败");
+  }
+}
+
 async function copyContextMenuFile() {
   const reference = contextMenuSingleReference();
   closeMessageContextMenu();
   if (!reference) return;
   try {
-    const result = await copyNativeResourceFileToClipboard({
-      url: reference.url,
-      fileName: contextReferenceFileName(reference),
-      mimeType: reference.mimeType,
-      authorizationToken: contextReferenceAuthorizationToken(reference),
-    });
-    if (!result?.copied) {
-      await copyResourceBlobInBrowser(reference);
+    if (hasNativeDesktopBridge() && !String(reference.url).startsWith("blob:")) {
+      try {
+        const result = await copyNativeResourceFileToClipboard({
+          url: reference.url,
+          fileName: contextReferenceFileName(reference),
+          mimeType: reference.mimeType,
+          authorizationToken: contextReferenceAuthorizationToken(reference),
+        });
+        if (result?.copied) {
+          ElMessage.success("文件已复制，可直接粘贴");
+          return;
+        }
+      } catch (nativeError) {
+        console.warn("原生资源复制失败，尝试浏览器剪贴板", nativeError);
+      }
     }
+    await copyResourceBlobInBrowser(reference);
     ElMessage.success("文件已复制，可直接粘贴");
   } catch (error) {
     ElMessage.error(error?.message || "文件复制失败");
@@ -26844,8 +26940,27 @@ function clearComposerContextRefs() {
 
 function handleContextMenuGlobalPointerDown(event) {
   if (!messageContextMenu.visible) return;
-  if (event?.target?.closest?.(".project-chat-context-menu")) return;
+  if (event?.target?.closest?.(".resource-context-menu")) return;
   closeMessageContextMenu();
+}
+
+function handleTeleportedResourceContextMenu(event) {
+  const image = event?.target?.closest?.(
+    ".el-image-viewer__canvas img, .el-image-viewer__img",
+  );
+  if (!image) return;
+  const url = String(image.currentSrc || image.src || "").trim();
+  if (!url) return;
+  event.preventDefault();
+  event.stopPropagation();
+  showMessageContextMenu(event, [
+    {
+      type: "image",
+      url,
+      label: image.alt || "预览图片",
+      mimeType: "image/*",
+    },
+  ]);
 }
 
 function handleContextMenuGlobalKeydown(event) {
@@ -27056,6 +27171,84 @@ function readFileAsDataUrl(file) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function readBlobAsDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function materializePersistentMediaUrl(url) {
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl || !normalizedUrl.startsWith("blob:")) {
+    return normalizedUrl;
+  }
+  const response = await fetch(normalizedUrl);
+  if (!response.ok) {
+    throw new Error(`临时图片读取失败（HTTP ${response.status}）`);
+  }
+  const dataUrl = await readBlobAsDataUrl(await response.blob());
+  if (!dataUrl) throw new Error("临时图片转换失败");
+  return dataUrl;
+}
+
+async function materializePersistentContextReferences(references = []) {
+  return Promise.all(
+    (Array.isArray(references) ? references : []).map(async (reference) => {
+      if (
+        !reference ||
+        !["image", "video", "audio", "file"].includes(reference.type)
+      ) {
+        return reference;
+      }
+      return {
+        ...reference,
+        url: await materializePersistentMediaUrl(reference.url),
+      };
+    }),
+  );
+}
+
+async function buildPersistentUploadMediaUrls(
+  uploadItems = [],
+  localAttachments = [],
+  kind = "image",
+) {
+  const attachmentById = new Map(
+    (Array.isArray(localAttachments) ? localAttachments : []).map((attachment) => [
+      String(attachment?.attachmentId || "").trim(),
+      attachment,
+    ]),
+  );
+  const mediaItems = (Array.isArray(uploadItems) ? uploadItems : []).filter(
+    (item) => String(item?.kind || "").trim() === kind,
+  );
+  const urls = [];
+  for (const item of mediaItems) {
+    const attachment = attachmentById.get(
+      String(item?.attachmentId || "").trim(),
+    );
+    let persistentUrl = String(attachment?.dataUrl || "").trim();
+    if (!persistentUrl) {
+      const previewUrl = String(item?.url || "").trim();
+      if (previewUrl && !previewUrl.startsWith("blob:")) {
+        persistentUrl = previewUrl;
+      } else if (item?.raw) {
+        persistentUrl = await readFileAsDataUrl(item.raw);
+      } else {
+        persistentUrl = await materializePersistentMediaUrl(previewUrl);
+      }
+    }
+    if (!persistentUrl || persistentUrl.startsWith("blob:")) {
+      throw new Error(`${item?.name || "媒体附件"} 未生成可持久化地址`);
+    }
+    urls.push(persistentUrl);
+  }
+  return mergeMediaUrls(urls);
 }
 
 async function readFileAsByteArray(file) {
@@ -32783,7 +32976,15 @@ async function doSend(options = {}) {
   }
 
   const text = String(draftText.value || "").trim();
-  const activeContextRefs = mergeContextReferences([], composerContextRefs.value);
+  let activeContextRefs = [];
+  try {
+    activeContextRefs = await materializePersistentContextReferences(
+      mergeContextReferences([], composerContextRefs.value),
+    );
+  } catch (error) {
+    ElMessage.error(error?.message || "引用图片读取失败，请重新添加");
+    return;
+  }
   const contextReferencesPrompt = buildContextReferencesPrompt(activeContextRefs);
   let activeChatSessionId = String(currentChatSessionId.value || "").trim();
   const slashCommand = activeComposerToolCommand.value
@@ -32801,16 +33002,6 @@ async function doSend(options = {}) {
     return;
   }
   const historyRows = toHistoryRows(messages.value, historyLimit.value);
-  const imageUrls = mergeImageUrls(
-    uploadFiles.value
-      .filter((item) => item.kind === "image")
-      .map((item) => item.url)
-      .filter(Boolean),
-    activeContextRefs
-      .filter((item) => item.type === "image")
-      .map((item) => item.url)
-      .filter(Boolean),
-  );
   const attachmentNames = normalizeStringList([
     ...files.map((file) => String(file?.name || "").trim()).filter(Boolean),
     ...activeContextRefs
@@ -32823,6 +33014,32 @@ async function doSend(options = {}) {
     ...(await buildLocalLiuAgentAttachments(uploadFiles.value)),
     ...buildContextReferenceAttachments(activeContextRefs),
   ];
+  let persistentUploadImageUrls = [];
+  let persistentUploadAudioUrls = [];
+  try {
+    [persistentUploadImageUrls, persistentUploadAudioUrls] = await Promise.all([
+      buildPersistentUploadMediaUrls(
+        uploadFiles.value,
+        localLiuAgentAttachments,
+        "image",
+      ),
+      buildPersistentUploadMediaUrls(
+        uploadFiles.value,
+        localLiuAgentAttachments,
+        "audio",
+      ),
+    ]);
+  } catch (error) {
+    ElMessage.error(error?.message || "附件持久化失败，请重新选择文件");
+    return;
+  }
+  const imageUrls = mergeImageUrls(
+    persistentUploadImageUrls,
+    activeContextRefs
+      .filter((item) => item.type === "image")
+      .map((item) => item.url)
+      .filter(Boolean),
+  );
 
   let docsText = "";
 
@@ -33033,10 +33250,7 @@ async function doSend(options = {}) {
       .map((item) => item.url)
       .filter(Boolean),
     audios: mergeAudioUrls(
-      uploadFiles.value
-        .filter((item) => item.kind === "audio")
-        .map((item) => item.url)
-        .filter(Boolean),
+      persistentUploadAudioUrls,
       activeContextRefs
         .filter((item) => item.type === "audio")
         .map((item) => item.url)
@@ -33753,6 +33967,7 @@ onMounted(async () => {
   window.addEventListener("keydown", handleDesktopDevtoolsShortcut);
   window.addEventListener("pointerdown", handleContextMenuGlobalPointerDown);
   window.addEventListener("keydown", handleContextMenuGlobalKeydown);
+  window.addEventListener("contextmenu", handleTeleportedResourceContextMenu, true);
   window.addEventListener("scroll", closeMessageContextMenu, true);
   void hydrateNativeDesktopRuntimeInfo();
   void startNativeLiuAgentRuntimeEventSubscription();
@@ -33822,6 +34037,7 @@ onUnmounted(() => {
   window.removeEventListener("keydown", handleDesktopDevtoolsShortcut);
   window.removeEventListener("pointerdown", handleContextMenuGlobalPointerDown);
   window.removeEventListener("keydown", handleContextMenuGlobalKeydown);
+  window.removeEventListener("contextmenu", handleTeleportedResourceContextMenu, true);
   window.removeEventListener("scroll", closeMessageContextMenu, true);
   window.removeEventListener(
     DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME,
@@ -33959,42 +34175,6 @@ onUnmounted(() => {
 }
 .preview-audio {
   width: min(100%, 420px);
-}
-.project-chat-context-menu {
-  position: fixed;
-  z-index: 5000;
-  width: 220px;
-  padding: 6px;
-  border: 1px solid rgba(148, 163, 184, 0.32);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.2);
-  backdrop-filter: blur(14px);
-}
-.project-chat-context-menu button {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  padding: 9px 10px;
-  align-items: center;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #172033;
-  cursor: pointer;
-  text-align: left;
-}
-.project-chat-context-menu button:hover {
-  background: #eef4ff;
-}
-.project-chat-context-menu button span {
-  font-size: 13px;
-  font-weight: 600;
-}
-.project-chat-context-menu__divider {
-  height: 1px;
-  margin: 5px 4px;
-  background: #e2e8f0;
 }
 .chat-approval-banner {
   flex: 0 0 auto;

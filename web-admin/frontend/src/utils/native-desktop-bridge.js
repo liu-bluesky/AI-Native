@@ -42,6 +42,7 @@ const TAURI_COMMAND_NAMES = {
   writeGlobalFtpCredentialsFile: "write_global_ftp_credentials_file",
   openExternalUrl: "open_external_url",
   copyResourceFileToClipboard: "copy_resource_file_to_clipboard",
+  saveResourceFile: "save_resource_file",
   classifyRunnerCommand: "classify_runner_command",
   runRunnerCommand: "run_runner_command",
   recordRunnerPermissionDecision: "record_runner_permission_decision",
@@ -650,6 +651,17 @@ export async function copyNativeResourceFileToClipboard(options = {}) {
   const url = String(options?.url || "").trim();
   if (!url) throw new Error("缺少要复制的文件地址");
   return invokeNativeDesktopBridge("copyResourceFileToClipboard", {
+    url,
+    fileName: String(options?.fileName || "").trim(),
+    mimeType: String(options?.mimeType || "").trim(),
+    authorizationToken: String(options?.authorizationToken || "").trim(),
+  });
+}
+
+export async function saveNativeResourceFile(options = {}) {
+  const url = String(options?.url || "").trim();
+  if (!url) throw new Error("缺少要保存的文件地址");
+  return invokeNativeDesktopBridge("saveResourceFile", {
     url,
     fileName: String(options?.fileName || "").trim(),
     mimeType: String(options?.mimeType || "").trim(),

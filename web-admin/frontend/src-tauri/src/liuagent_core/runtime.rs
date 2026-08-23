@@ -832,7 +832,7 @@ fn start_local_chat_inner(
                 &base_model_request,
                 &relevant_context,
                 &context_model_runner,
-            )
+            )?
         }
     };
     let mut model_request = build_model_request_with_history_and_task_profile(
@@ -1462,6 +1462,18 @@ fn build_local_chat_requirement_record(
         ]),
     );
     record.insert("model_runtime".to_string(), agent_loop.audit_value());
+    record.insert(
+        "resume_context".to_string(),
+        json!({
+            "attachments": &model_request.attachments,
+            "media_tool_names": model_request
+                .media_tools
+                .iter()
+                .map(|tool| tool.name.trim())
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>()
+        }),
+    );
     record.insert("tool_results".to_string(), json!(tool_results));
     record.insert("operations".to_string(), operations);
     record.insert("conversation_lifecycle".to_string(), conversation_lifecycle);
@@ -4678,15 +4690,6 @@ fn run_agent_loop_with(
             .partition(|tool| tool.name.trim() == "update_execution_plan");
         let model_content = model_result.content.clone();
         model_steps.push(model_result.clone());
-        emit_progress_update_event(
-            event_sink,
-            runtime_session_id,
-            run_key,
-            model_steps.len(),
-            &model_result,
-            &current_planned_tools,
-            &request,
-        );
         emit_model_step_event(
             event_sink,
             runtime_session_id,
@@ -4756,9 +4759,29 @@ fn run_agent_loop_with(
                     tool_observation_content(&result, false, None, None),
                 ));
             }
+            request.task_tree = model_plan_tree.clone();
+            emit_progress_update_event(
+                event_sink,
+                runtime_session_id,
+                run_key,
+                model_steps.len(),
+                &model_result,
+                &current_planned_tools,
+                &request,
+            );
             if current_planned_tools.is_empty() {
                 continue;
             }
+        } else {
+            emit_progress_update_event(
+                event_sink,
+                runtime_session_id,
+                run_key,
+                model_steps.len(),
+                &model_result,
+                &current_planned_tools,
+                &request,
+            );
         }
         if current_planned_tools.is_empty() {
             if !pending_background_processes.is_empty() {
@@ -5390,7 +5413,12 @@ fn emit_progress_update_event(
     if planned_tool_count == 0 {
         return;
     }
-    let summary = progress_update_summary(result);
+    let plan_focus = current_execution_plan_focus(request);
+    let summary = if plan_focus.is_empty() {
+        progress_update_summary(result)
+    } else {
+        plan_focus.clone()
+    };
     if summary.trim().is_empty() {
         return;
     }
@@ -5420,7 +5448,11 @@ fn emit_progress_update_event(
                 "summary": summary,
                 "current_focus": current_focus,
                 "work_direction": current_focus,
-                "next_action": "",
+                "next_action": planned_tool_previews
+                    .first()
+                    .and_then(|item| item.get("summary"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
                 "goal_alignment": "model_generated_from_current_task_goal",
                 "tool_call_count": planned_tool_count,
                 "planned_tools": planned_tool_previews,
@@ -5438,6 +5470,19 @@ fn emit_progress_update_event(
             epoch_millis(),
         ));
     }
+}
+
+fn current_execution_plan_focus(request: &ModelStepRequest) -> String {
+    request
+        .task_tree
+        .as_ref()
+        .and_then(|tree| {
+            tree.nodes
+                .iter()
+                .find(|node| node.node_id == tree.current_node_id && node.node_type != "goal")
+        })
+        .map(|node| node.title.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn progress_update_summary(result: &ModelStepResult) -> String {
@@ -8910,6 +8955,14 @@ fn task_profile_risk(intent: &TaskIntent) -> String {
 
 fn task_profile_required_capabilities(intent: &TaskIntent, domains: &[String]) -> Vec<String> {
     let mut capabilities = Vec::new();
+    let is_media_task = domains.iter().any(|domain| domain == "media");
+    if is_media_task {
+        if matches!(intent, TaskIntent::Answer | TaskIntent::Design) {
+            push_unique(&mut capabilities, "model_response");
+        }
+        push_unique(&mut capabilities, "media_tool");
+        return capabilities;
+    }
     match intent {
         TaskIntent::Answer | TaskIntent::Design => {
             push_unique(&mut capabilities, "model_response");
@@ -8923,9 +8976,6 @@ fn task_profile_required_capabilities(intent: &TaskIntent, domains: &[String]) -
             push_unique(&mut capabilities, "file_write");
             push_unique(&mut capabilities, "command_test");
         }
-    }
-    if domains.iter().any(|domain| domain == "media") {
-        push_unique(&mut capabilities, "media_tool");
     }
     if domains.iter().any(|domain| domain == "deployment") {
         push_unique(&mut capabilities, "deployment_tool");
@@ -8981,6 +9031,13 @@ fn build_flow_routing_message() -> RuntimeModelMessage {
             "- design：用户要求设计、方案或架构讨论，先产出方案，不修改文件。",
             "- diagnose：用户要求查看、检查、排查或分析现状，只允许读取和验证。",
             "- execute：用户明确要求修复、修改、创建、实现、执行或继续执行任务。",
+            "domains 只能从 general、code、ui、media、security、deployment 中选择；可多选。",
+            "- media：根据用户期望的最终交付物判断，而不是匹配固定关键词或固定业务类型。只要用户期望最终得到可查看、下载或继续使用的图片、视频、音频等真实媒体资产，就必须使用 execute + media，并调用对应媒体工具。",
+            "- 图片产出不限于海报、主图、封面等示例；插画、照片、图表、界面效果图、场景图、素材、头像、Logo 或任何其他视觉结果，只要最终交付物是图片资产，都属于 execute + media。",
+            "- 用户提供参考图并要求基于它产出新的视觉结果或修改现有视觉结果，仍属于 execute + media，不是普通 design。",
+            "- 只有当用户期望的最终交付物本身是文字，例如提示词、文案、方案、分析、评价或操作说明时，才选择 answer/design + general；不要因为文字内容讨论了图片，就误判为图片产出。",
+            "示例：‘以这张产品照片制作竖版母婴电商海报’ => intent=execute, domains=[media]。",
+            "示例：‘帮我写一段生成母婴海报的提示词’ => intent=answer 或 design, domains=[general]。",
             "- 本轮用户的新要求优先于历史任务状态；历史上下文只能帮助理解。",
             "- 用户明确要求不要修改、只回答或只分析时，不得路由到 execute。",
             "- 无法确定时选择 answer，并在 ambiguities 中说明需要确认的内容。",
@@ -8991,16 +9048,19 @@ fn build_flow_routing_message() -> RuntimeModelMessage {
     )
 }
 
-fn parse_flow_routing_profile(result: &ModelStepResult, fallback: &TaskProfile) -> TaskProfile {
+fn parse_flow_routing_profile(
+    result: &ModelStepResult,
+    fallback: &TaskProfile,
+) -> Option<TaskProfile> {
     let raw = result.content.trim();
     let Some(start) = raw.find('{') else {
-        return fallback.clone();
+        return None;
     };
     let Some(end) = raw.rfind('}') else {
-        return fallback.clone();
+        return None;
     };
     let Ok(value) = serde_json::from_str::<Value>(&raw[start..=end]) else {
-        return fallback.clone();
+        return None;
     };
     let routed_intent = match value["intent"].as_str().unwrap_or("answer") {
         "design" => TaskIntent::Design,
@@ -9049,7 +9109,7 @@ fn parse_flow_routing_profile(result: &ModelStepResult, fallback: &TaskProfile) 
     {
         push_unique(&mut required_context, "planning_rules");
     }
-    TaskProfile {
+    Some(TaskProfile {
         version: "task-profile/v2".to_string(),
         intent: intent.clone(),
         domains: domains.clone(),
@@ -9095,14 +9155,14 @@ fn parse_flow_routing_profile(result: &ModelStepResult, fallback: &TaskProfile) 
         required_context,
         required_capabilities: task_profile_required_capabilities(&intent, &domains),
         source: "model_flow_router/v1".to_string(),
-    }
+    })
 }
 
 fn route_task_profile_with_model(
     base_request: &ModelStepRequest,
     relevant_context: &str,
     model_runner: &dyn Fn(&ModelStepRequest) -> ModelStepResult,
-) -> TaskProfile {
+) -> Result<TaskProfile, ToolError> {
     let fallback = build_task_profile(&base_request.user_message);
     let mut routing_request = base_request.with_messages(vec![
         build_flow_routing_message(),
@@ -9120,12 +9180,49 @@ fn route_task_profile_with_model(
         ),
     ]);
     routing_request.expose_tools = false;
-    let result = model_runner(&routing_request);
-    if !result.ok || !result.tool_calls.is_empty() {
-        fallback
-    } else {
-        parse_flow_routing_profile(&result, &fallback)
+    let first_result = model_runner(&routing_request);
+    if !first_result.ok {
+        return Err(ToolError::new(
+            if first_result.error_code.trim().is_empty() {
+                "model.flow_router_failed"
+            } else {
+                first_result.error_code.as_str()
+            },
+            if first_result.error.trim().is_empty() {
+                "流程路由模型调用失败"
+            } else {
+                first_result.error.as_str()
+            },
+        ));
     }
+    if first_result.tool_calls.is_empty() {
+        if let Some(profile) = parse_flow_routing_profile(&first_result, &fallback) {
+            return Ok(profile);
+        }
+    }
+    let mut repair_request = routing_request.with_messages(vec![
+        build_flow_routing_message(),
+        RuntimeModelMessage::simple(
+            "user",
+            format!(
+                "上一次路由输出不是有效 JSON。请重新判断，只返回完整 JSON。\n\n当前用户请求：{}\n\n相关历史上下文：{}\n\n无效输出：{}",
+                base_request.user_message.trim(),
+                if relevant_context.trim().is_empty() { "无" } else { relevant_context.trim() },
+                truncate_inline(&first_result.content, 1200)
+            ),
+        ),
+    ]);
+    repair_request.expose_tools = false;
+    let repaired_result = model_runner(&repair_request);
+    if repaired_result.ok && repaired_result.tool_calls.is_empty() {
+        if let Some(profile) = parse_flow_routing_profile(&repaired_result, &fallback) {
+            return Ok(profile);
+        }
+    }
+    Err(ToolError::new(
+        "model.flow_router_invalid",
+        "流程路由模型连续两次未返回有效 JSON，已停止本轮执行，避免静默降级为普通回答",
+    ))
 }
 
 fn render_dynamic_task_brief(profile: &TaskProfile) -> RuntimeModelMessage {
@@ -9506,6 +9603,23 @@ fn required_media_tool_name(request: &ModelStepRequest) -> Option<&'static str> 
     if ["编辑图片", "修改图片", "修改这张", "修图", "edit image"]
         .iter()
         .any(|keyword| text.contains(keyword))
+        || (request
+            .attachments
+            .iter()
+            .any(|attachment| attachment_is_image(attachment))
+            && [
+                "这张",
+                "该图",
+                "原图",
+                "参考图",
+                "以这",
+                "产品照片",
+                "保留产品",
+                "reference image",
+                "this image",
+            ]
+            .iter()
+            .any(|keyword| text.contains(keyword)))
     {
         return Some("edit_image");
     }
@@ -11657,6 +11771,48 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("\"path\":\"login.html\""));
+    }
+
+    #[test]
+    fn progress_update_uses_current_execution_plan_step() {
+        let mut request = test_model_request("修复图片工具链路");
+        let goal = build_task_goal("runtime-plan-progress", &request.user_message, &request);
+        request.task_tree = Some(planning::TaskTree::from_model_steps(
+            "runtime-plan-progress",
+            &goal,
+            &[
+                ("定位图片工具参数".to_string(), "completed".to_string()),
+                ("修复编辑请求体".to_string(), "in_progress".to_string()),
+                ("运行回归测试".to_string(), "pending".to_string()),
+            ],
+        ));
+        let events = RefCell::new(Vec::<Value>::new());
+        let sink = |event: Value| events.borrow_mut().push(event);
+        let result = test_model_result(
+            "接下来检查一些可能相关的目录。",
+            vec![PlannedLocalTool {
+                tool_call_id: "call-plan-progress".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": "src/image.rs"}),
+                summary: "读取图片实现".to_string(),
+            }],
+        );
+
+        emit_progress_update_event(
+            Some(&sink),
+            "runtime-plan-progress",
+            "chat-plan-progress",
+            1,
+            &result,
+            &result.tool_calls,
+            &request,
+        );
+
+        assert_eq!(events.borrow()[0]["payload"]["summary"], "修复编辑请求体");
+        assert_eq!(
+            events.borrow()[0]["payload"]["current_focus"],
+            "修复编辑请求体"
+        );
     }
 
     #[test]
@@ -17379,7 +17535,7 @@ mod tests {
             r#"{"intent":"execute","goal":"修复登录 Bug","domains":["code"],"targets":["登录"],"clarity_score":5,"ambiguities":[],"complexity":"simple","risk":"model_declared_write"}"#,
             Vec::new(),
         );
-        let routed = parse_flow_routing_profile(&result, &profile);
+        let routed = parse_flow_routing_profile(&result, &profile).unwrap();
         assert_eq!(routed.source, "model_flow_router/v1");
         assert_eq!(routed.intent, TaskIntent::Execute);
         assert!(routed
@@ -17395,7 +17551,7 @@ mod tests {
             Vec::new(),
         );
 
-        let routed = parse_flow_routing_profile(&result, &profile);
+        let routed = parse_flow_routing_profile(&result, &profile).unwrap();
 
         assert_eq!(routed.domains, vec!["media".to_string()]);
         assert!(routed
@@ -17453,12 +17609,83 @@ mod tests {
         edit_request.task_profile.goal = "编辑图片背景".to_string();
         assert_eq!(required_media_tool_name(&edit_request), Some("edit_image"));
 
+        let mut poster_request =
+            test_model_request("以这张凳子产品照片为唯一依据，制作竖版 4:5 母婴电商宣传海报");
+        poster_request.task_profile.required_capabilities = vec!["media_tool".to_string()];
+        poster_request.task_profile.goal = "制作母婴电商宣传海报".to_string();
+        poster_request.attachments = vec![LocalChatAttachment {
+            attachment_id: Some("stool-image".to_string()),
+            name: "stool.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            size: None,
+            kind: Some("image".to_string()),
+            routing_mode: Some("inline_image".to_string()),
+            extraction_status: Some("image_data_url".to_string()),
+            data_url: Some("data:image/png;base64,abc".to_string()),
+            extracted_text: None,
+            provider_file_id: None,
+            error: None,
+        }];
+        assert_eq!(
+            required_media_tool_name(&poster_request),
+            Some("edit_image")
+        );
+
         let mut transcription_request = test_model_request("转写这段音频");
         transcription_request.task_profile.required_capabilities = vec!["media_tool".to_string()];
         transcription_request.task_profile.goal = "生成音频转写文本".to_string();
         assert_eq!(
             required_media_tool_name(&transcription_request),
             Some("transcribe_audio")
+        );
+    }
+
+    #[test]
+    fn media_execution_capabilities_do_not_expose_workspace_tools() {
+        let capabilities =
+            task_profile_required_capabilities(&TaskIntent::Execute, &["media".to_string()]);
+
+        assert_eq!(capabilities, vec!["media_tool".to_string()]);
+    }
+
+    #[test]
+    fn flow_router_rules_distinguish_media_assets_from_media_copywriting() {
+        let message = build_flow_routing_message();
+
+        assert!(message.content.contains("最终交付物"));
+        assert!(message.content.contains("任何其他视觉结果"));
+        assert!(message.content.contains("对应媒体工具"));
+        assert!(message.content.contains("execute + media"));
+        assert!(message.content.contains("母婴电商海报"));
+        assert!(message.content.contains("最终交付物本身是文字"));
+        assert!(message.content.contains("提示词"));
+    }
+
+    #[test]
+    fn flow_router_retries_invalid_json_instead_of_falling_back_to_answer() {
+        let request = test_model_request("以这张产品照片制作母婴电商海报");
+        let call_count = Cell::new(0usize);
+        let runner = |_request: &ModelStepRequest| {
+            let index = call_count.get();
+            call_count.set(index + 1);
+            if index == 0 {
+                test_model_result("我认为这是一个图片任务。", Vec::new())
+            } else {
+                test_model_result(
+                    r#"{"intent":"execute","goal":"制作母婴电商海报","domains":["media"],"targets":["海报图片"],"clarity_score":5,"ambiguities":[],"complexity":"simple","risk":"model_declared_write","requires_confirmation":false}"#,
+                    Vec::new(),
+                )
+            }
+        };
+
+        let profile = route_task_profile_with_model(&request, "", &runner).unwrap();
+
+        assert_eq!(call_count.get(), 2);
+        assert_eq!(profile.intent, TaskIntent::Execute);
+        assert_eq!(profile.domains, vec!["media".to_string()]);
+        assert_eq!(
+            profile.required_capabilities,
+            vec!["media_tool".to_string()]
         );
     }
 
