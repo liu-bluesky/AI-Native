@@ -113,6 +113,7 @@
 
 <script setup>
 import { computed, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import {
   DESKTOP_WALLPAPER_PRESETS,
@@ -123,6 +124,7 @@ import {
 import { notifyDesktopWallpaperChange } from "@/utils/desktop-app-bridge.js";
 
 const presets = DESKTOP_WALLPAPER_PRESETS;
+const router = useRouter();
 const savedConfig = getDesktopWallpaperConfig();
 const draftConfig = reactive({
   mode: savedConfig.mode,
@@ -258,7 +260,7 @@ function applyConfig() {
     draftConfig.customImage = nextConfig.customImage;
     draftConfig.customLuminance = nextConfig.customLuminance;
     draftConfig.updatedAt = nextConfig.updatedAt;
-    notifyDesktopWallpaperChange();
+    notifyDesktopWallpaperChange(router);
     ElMessage.success("桌面背景已更新");
   } catch (err) {
     ElMessage.error(err?.message || "桌面背景保存失败，请更换更小的图片后重试");
@@ -280,7 +282,7 @@ function resetToPreset() {
     draftConfig.customImage = nextConfig.customImage;
     draftConfig.customLuminance = nextConfig.customLuminance;
     draftConfig.updatedAt = nextConfig.updatedAt;
-    notifyDesktopWallpaperChange();
+    notifyDesktopWallpaperChange(router);
     ElMessage.success("已恢复为系统预设背景");
   } catch (err) {
     ElMessage.error(err?.message || "恢复系统预设背景失败");

@@ -1,10 +1,10 @@
-import { createRouter, createWebHashHistory } from 'vue-router'
+import { createMemoryHistory, createRouter, createWebHashHistory } from 'vue-router'
 import { getFallbackPath } from '@/utils/permissions.js'
 import { isChatSettingsRoutePath, resolveSettingsAwarePath } from '@/utils/chat-settings-route.js'
 import { getStoredToken } from '@/utils/auth-storage.js'
 import { isLocalProjectMode } from '@/services/local-project-repository.js'
 
-const routes = [
+const createPublicRoutes = () => [
   { path: '/loading', component: () => import('../views/auth/LoadingPage.vue') },
   { path: '/init', component: () => import('../views/auth/InitPage.vue') },
   { path: '/intro', component: () => import('../views/public/IntroPage.vue') },
@@ -12,11 +12,9 @@ const routes = [
   { path: '/updates', component: () => import('../views/public/ChangelogPage.vue') },
   { path: '/login', component: () => import('../views/auth/LoginPage.vue') },
   { path: '/register', component: () => import('../views/auth/RegisterPage.vue') },
-  {
-    path: '/',
-    component: () => import('../views/Layout.vue'),
-    redirect: '/loading',
-    children: [
+]
+
+const createDesktopAppRoutes = () => [
       { path: 'workbench', component: () => import('../views/desktop/DesktopWorkbench.vue') },
       { path: 'work-logs', component: () => import('../views/desktop/ProjectWorkLog.vue') },
       { path: 'tasks', component: () => import('../views/tasks/TaskManager.vue') },
@@ -37,7 +35,6 @@ const routes = [
           { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
           { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
           { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
-          { path: 'statistics', component: () => import('../views/system/StatisticsDashboard.vue') },
           { path: 'mcp-monitor', component: () => import('../views/system/McpMonitorManager.vue'), meta: { superAdminOnly: true } },
           { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
           { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
@@ -52,7 +49,6 @@ const routes = [
       },
       { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
       { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
-      { path: 'materials/voices', component: () => import('../views/projects/ProjectVoiceLibrary.vue') },
       { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
       { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
       { path: 'employees/create', component: () => import('../views/employees/EmployeeCreate.vue') },
@@ -64,10 +60,28 @@ const routes = [
       { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
       { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
       { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
-      { path: 'statistics', component: () => import('../views/system/StatisticsDashboard.vue') },
       { path: 'mcp-monitor', component: () => import('../views/system/McpMonitorManager.vue'), meta: { superAdminOnly: true } },
-      { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
-    ],
+  { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
+]
+
+function createDesktopWindowRoutes() {
+  return [
+    ...createPublicRoutes(),
+    { path: '/', redirect: '/workbench' },
+    ...createDesktopAppRoutes().map((route) => ({
+      ...route,
+      path: `/${String(route.path || '').replace(/^\/+/, '')}`,
+    })),
+  ]
+}
+
+const routes = [
+  ...createPublicRoutes(),
+  {
+    path: '/',
+    component: () => import('../views/Layout.vue'),
+    redirect: '/loading',
+    children: createDesktopAppRoutes(),
   },
 ]
 
@@ -75,6 +89,18 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes,
 })
+
+export function createDesktopWindowRouter(windowId = '') {
+  const desktopRouter = createRouter({
+    history: createMemoryHistory(),
+    routes: createDesktopWindowRoutes(),
+  })
+  Object.defineProperty(desktopRouter, '__aiEmployeeDesktopWindow', {
+    value: { windowId: String(windowId || '').trim() },
+    configurable: true,
+  })
+  return desktopRouter
+}
 
 const PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
 const OFFLINE_DESKTOP_STARTUP_STORAGE_KEY = 'desktop_offline_startup'

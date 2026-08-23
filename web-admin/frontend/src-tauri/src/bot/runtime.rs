@@ -4,11 +4,7 @@ use crate::bot::types::{
     BotChannelPermission, BotChatRequest, BotConfirmationPolicy, BotDelegatedUserPermission,
     BotOAuthPermission, BotPermissionContract, BotRunnerPermission,
 };
-use crate::liuagent_core::{
-    self, LocalChatPromptPart, LocalChatRequest, LocalChatResult, ToolError,
-};
-
-const BOT_CONNECTOR_PROMPT_SOURCE: &str = "bot_connector.system_prompt";
+use crate::liuagent_core::{self, LocalChatRequest, LocalChatResult, ToolError};
 
 pub fn start_bot_chat_with_event_sink<F>(request: BotChatRequest, event_sink: F) -> LocalChatResult
 where
@@ -29,25 +25,10 @@ where
 }
 
 pub fn build_local_chat_request(request: BotChatRequest) -> LocalChatRequest {
-    let connector_prompt = request.connector.system_prompt.trim().to_string();
-    let mut system_prompt_parts = Vec::new();
-    if !connector_prompt.is_empty() {
-        system_prompt_parts.push(LocalChatPromptPart {
-            source: BOT_CONNECTOR_PROMPT_SOURCE.to_string(),
-            priority: Some(100),
-            content: connector_prompt,
-        });
-    }
-
-    let provider_id = first_non_empty([
-        request.provider_id.as_deref(),
-        Some(request.connector.provider_id.as_str()),
-    ]);
-    let model_name = first_non_empty([
-        request.model_name.as_deref(),
-        Some(request.connector.model_name.as_str()),
-    ]);
+    let provider_id = first_non_empty([request.provider_id.as_deref()]);
+    let model_name = first_non_empty([request.model_name.as_deref()]);
     let permission_contract = normalize_permission_contract(&request);
+    let workspace_selection = request.workspace_selection.clone();
 
     LocalChatRequest {
         project_id: request.project_id,
@@ -59,7 +40,7 @@ pub fn build_local_chat_request(request: BotChatRequest) -> LocalChatRequest {
         history: request.history,
         provider_id,
         model_name,
-        system_prompt_parts,
+        system_prompt_parts: Vec::new(),
         temperature: None,
         model_runtime: request.model_runtime,
         ai_entry_file: None,
@@ -71,15 +52,16 @@ pub fn build_local_chat_request(request: BotChatRequest) -> LocalChatRequest {
             json!({
                 "connector": request.connector,
                 "sourceContext": request.source_context,
+                "workspaceSelection": workspace_selection,
                 "permissionContract": permission_contract,
                 "runtime": {
                     "source": "tauri_bot_local_chat",
-                    "executionAuthority": "delegated_user_desktop_runner",
-                    "promptPolicy": "connector_system_prompt_only"
+                    "executionAuthority": "connector_desktop_runner",
+                    "role": "connector_controller"
                 }
             }),
         ),
-        backend_context: request.backend_context,
+        backend_context: None,
         permission_decision: request.permission_decision,
         resume_from_checkpoint: false,
     }
@@ -89,7 +71,6 @@ fn normalize_permission_contract(request: &BotChatRequest) -> BotPermissionContr
     let mut contract = request.permission_contract.clone().unwrap_or_default();
     let platform = request.connector.platform.trim();
     let connector_id = request.connector.connector_id.trim();
-    let owner_username = request.connector.owner_username.trim();
     let sandbox_mode = first_non_empty([
         Some(request.connector.sandbox_mode.as_str()),
         Some("workspace-write"),
@@ -109,11 +90,11 @@ fn normalize_permission_contract(request: &BotChatRequest) -> BotPermissionContr
     }
     if contract.delegated_user.username.trim().is_empty() {
         contract.delegated_user = BotDelegatedUserPermission {
-            username: owner_username.to_string(),
+            username: String::new(),
             project_id: request.project_id.clone(),
-            project_access: "owner_visible_projects_only".to_string(),
-            provider_access: "same_as_project_chat_user_provider_scope".to_string(),
-            tool_access: "same_as_desktop_project_chat_tools".to_string(),
+            project_access: "desktop_global_project_catalog_only".to_string(),
+            provider_access: "desktop_system_model_runtime".to_string(),
+            tool_access: "connector_authorized_desktop_tools".to_string(),
         };
     }
     if contract.runner.mode.trim().is_empty() {
@@ -188,6 +169,6 @@ fn with_bot_context(mcp_config: Value, bot_context: Value) -> Value {
         _ => Map::new(),
     };
     let mut object = object;
-    object.insert("_bot_context".to_string(), bot_context);
+    object.insert("botContext".to_string(), bot_context);
     Value::Object(object)
 }

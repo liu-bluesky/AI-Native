@@ -15,7 +15,9 @@ pub use types::BotChatRequest;
 #[cfg(test)]
 mod tests {
     use super::runtime::{build_local_chat_request, start_bot_chat_with_event_sink};
-    use super::types::{BotChatRequest, BotConnectorConfig, BotSourceContext};
+    use super::types::{
+        BotChatRequest, BotConnectorConfig, BotSourceContext, BotWorkspaceSelection,
+    };
     use serde_json::json;
 
     fn base_request() -> BotChatRequest {
@@ -26,16 +28,13 @@ mod tests {
             assistant_message_id: Some("assistant-1".to_string()),
             message: "列出项目".to_string(),
             workspace_path: "/tmp/workspace".to_string(),
+            workspace_selection: None,
             history: Vec::new(),
             connector: BotConnectorConfig {
                 connector_id: "conn-1".to_string(),
                 platform: "feishu".to_string(),
                 name: "飞书机器人".to_string(),
-                system_prompt: String::new(),
-                provider_id: "provider-from-connector".to_string(),
-                model_name: "model-from-connector".to_string(),
                 reply_identity: "bot".to_string(),
-                owner_username: "tester".to_string(),
                 sandbox_mode: "workspace-write".to_string(),
                 high_risk_tool_confirm: Some(true),
             },
@@ -53,69 +52,81 @@ mod tests {
             model_runtime: None,
             attachments: Vec::new(),
             mcp_config: json!({}),
-            backend_context: None,
             permission_decision: None,
         }
     }
 
     #[test]
-    fn configured_connector_prompt_is_the_only_bot_prompt() {
-        let mut request = base_request();
-        request.connector.system_prompt = "只回答项目问题".to_string();
+    fn connector_metadata_does_not_become_a_model_prompt() {
+        let local_request = build_local_chat_request(base_request());
 
-        let local_request = build_local_chat_request(request);
-
-        assert_eq!(local_request.system_prompt_parts.len(), 1);
-        assert_eq!(
-            local_request.system_prompt_parts[0].source,
-            "bot_connector.system_prompt"
-        );
-        assert_eq!(
-            local_request.system_prompt_parts[0].content,
-            "只回答项目问题"
-        );
-        assert_eq!(
-            local_request.provider_id.as_deref(),
-            Some("provider-from-connector")
-        );
-        assert_eq!(
-            local_request.model_name.as_deref(),
-            Some("model-from-connector")
-        );
+        assert!(local_request.system_prompt_parts.is_empty());
+        assert_eq!(local_request.provider_id.as_deref(), None);
+        assert_eq!(local_request.model_name.as_deref(), None);
     }
 
     #[test]
-    fn blank_connector_prompt_does_not_add_a_bot_prompt() {
+    fn connector_runtime_stays_prompt_free_without_custom_prompt() {
         let request = base_request();
 
         let local_request = build_local_chat_request(request);
 
         assert!(local_request.system_prompt_parts.is_empty());
         assert_eq!(
-            local_request.mcp_config["_bot_context"]["connector"]["connectorId"],
+            local_request.mcp_config["botContext"]["connector"]["connectorId"],
             "conn-1"
         );
         assert_eq!(
-            local_request.mcp_config["_bot_context"]["sourceContext"]["externalChatName"],
+            local_request.mcp_config["botContext"]["sourceContext"]["externalChatName"],
             "研发群"
         );
         assert_eq!(
-            local_request.mcp_config["_bot_context"]["permissionContract"]["channel"]["scope"],
+            local_request.mcp_config["botContext"]["permissionContract"]["channel"]["scope"],
             "transport_only"
         );
         assert_eq!(
-            local_request.mcp_config["_bot_context"]["permissionContract"]["delegatedUser"]
+            local_request.mcp_config["botContext"]["permissionContract"]["delegatedUser"]
                 ["username"],
-            "tester"
+            ""
         );
         assert_eq!(
-            local_request.mcp_config["_bot_context"]["permissionContract"]["runner"]["mode"],
+            local_request.mcp_config["botContext"]["permissionContract"]["delegatedUser"]
+                ["projectAccess"],
+            "desktop_global_project_catalog_only"
+        );
+        assert_eq!(
+            local_request.mcp_config["botContext"]["permissionContract"]["runner"]["mode"],
             "desktop_local_agent"
         );
         assert_eq!(
-            local_request.mcp_config["_bot_context"]["permissionContract"]["confirmations"]
+            local_request.mcp_config["botContext"]["permissionContract"]["confirmations"]
                 ["highRiskTools"],
             "confirm"
+        );
+        assert_eq!(
+            local_request.mcp_config["botContext"]["runtime"]["role"],
+            "connector_controller"
+        );
+    }
+
+    #[test]
+    fn selected_workspace_is_included_in_bot_runtime_context() {
+        let mut request = base_request();
+        request.workspace_selection = Some(BotWorkspaceSelection {
+            project_id: "proj-1".to_string(),
+            project_name: "CRM".to_string(),
+            workspace_path: "/tmp/workspace".to_string(),
+        });
+
+        let local_request = build_local_chat_request(request);
+
+        assert_eq!(
+            local_request.mcp_config["botContext"]["workspaceSelection"]["projectId"],
+            "proj-1"
+        );
+        assert_eq!(
+            local_request.mcp_config["botContext"]["workspaceSelection"]["workspacePath"],
+            "/tmp/workspace"
         );
     }
 

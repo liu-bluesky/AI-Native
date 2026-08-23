@@ -5,7 +5,6 @@ const LOCAL_FEATURES = Object.freeze({
   projects: true,
   workLogs: true,
   supervision: true,
-  statistics: true,
   mcpMonitor: true,
   voiceInput: true,
   voiceOutput: true,

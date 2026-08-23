@@ -76,7 +76,7 @@ import {
 } from "@/utils/desktop-app-bridge.js";
 
 const router = useRouter();
-const embeddedMode = isEmbeddedDesktopApp();
+const embeddedMode = isEmbeddedDesktopApp() || Boolean(router?.__aiEmployeeDesktopWindow?.windowId);
 
 function desktopIconStyle(app) {
   return {
@@ -105,7 +105,7 @@ function openApp(appId) {
 function pinApp(app) {
   requestDesktopPinApp(app.id, {
     title: app.label,
-  });
+  }, router);
 }
 
 const apps = computed(() =>

@@ -1,16 +1,12 @@
 <template>
-  <div v-if="isEmbeddedMode" class="embedded-layout">
-    <router-view />
-  </div>
-
   <DesktopSystemShell
-    v-else
     :dock-items="dockItems"
     :launcher-items="launcherItems"
     :windows="desktopWindows"
     :active-window-id="activeWindowId"
     :status-text="statusText"
     :show-launcher="launcherOpen"
+    :file-drop-window-id="fileDropWindowId"
     :wallpaper-appearance="wallpaperAppearance"
     @launch-app="handleLaunchApp"
     @focus-window="focusWindow"
@@ -27,12 +23,11 @@
   >
     <template #window="{ window }">
       <div class="layout-window-frame" :class="{ 'is-workbench': window.appId === 'workbench' }">
-        <iframe
-          class="layout-window-frame__iframe"
-          :src="window.embeddedUrl"
-          :title="window.title"
-          @focus="focusWindow(window.id)"
-          @load="handleWindowFrameLoad(window.id, $event)"
+        <DesktopWindowHost
+          :key="`${window.id}:${window.instanceKey || 0}`"
+          :window-id="window.id"
+          :source-path="window.sourcePath"
+          @route-change="handleDesktopWindowRouteChange(window.id, $event)"
         />
       </div>
     </template>
@@ -43,9 +38,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import DesktopSystemShell from "@/components/DesktopSystemShell.vue";
+import DesktopWindowHost from "@/components/DesktopWindowHost.vue";
 import { canAccessPath } from "@/utils/permissions.js";
 import {
-  buildEmbeddedAppUrl,
   canAccessDesktopApp,
   canPinDesktopApp,
   clearStoredDesktopWindowSession,
@@ -57,7 +52,6 @@ import {
   getStoredDesktopDockAppIds,
   getStoredDesktopDockOrder,
   getStoredDesktopWindowSession,
-  getStoredProjectContextId,
   resolveDesktopWallpaperAppearance,
   resolveDesktopAppMeta,
   resolveDesktopLaunchPath,
@@ -66,10 +60,15 @@ import {
   setStoredDesktopDockOrder,
 } from "@/utils/desktop-shell.js";
 import {
+  DESKTOP_BRIDGE_EVENT_NAME,
+  DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME,
   isDesktopBridgeMessage,
   normalizeDesktopBridgePath,
-  notifyDesktopRouteChange,
 } from "@/utils/desktop-app-bridge.js";
+import {
+  nativeDragDropCssPoints,
+  subscribeNativeDesktopDragDrop,
+} from "@/utils/native-desktop-bridge.js";
 
 const DESKTOP_HOME_PATH = "/workbench";
 const DESKTOP_SHELL_PATHS = new Set([DESKTOP_HOME_PATH, "/desktop"]);
@@ -91,7 +90,9 @@ const currentDesktopPath = ref(DESKTOP_HOME_PATH);
 const suppressNextRouteWindowSync = ref(false);
 const desktopSessionHydrated = ref(false);
 const DESKTOP_WINDOW_SESSION_VERSION = 1;
-const embeddedFrameListeners = new Map();
+let nativeDesktopDragDropUnlisten = null;
+let lastNativeDragDropWindowId = "";
+const fileDropWindowId = ref("");
 
 const dockItems = computed(() => {
   const itemsById = new Map();
@@ -123,15 +124,6 @@ const dockItems = computed(() => {
     seen.add(appId);
   }
   return orderedIds.map((appId) => itemsById.get(appId)).filter(Boolean);
-});
-
-const isEmbeddedMode = computed(() => {
-  if (typeof window === "undefined") return false;
-  return (
-    new URLSearchParams(window.location.search).get("embedded") === "1"
-    && window.parent
-    && window.parent !== window
-  );
 });
 
 const statusText = computed(() => {
@@ -181,47 +173,6 @@ function resetWindowMotion(window) {
     ...window,
     ...createWindowMotionState(),
   };
-}
-
-function detachEmbeddedFrameListeners(windowId) {
-  const targetId = String(windowId || "").trim();
-  if (!targetId) return;
-  const listenerEntry = embeddedFrameListeners.get(targetId);
-  if (!listenerEntry) return;
-  listenerEntry.doc?.removeEventListener("pointerdown", listenerEntry.handleInteract, true);
-  listenerEntry.doc?.removeEventListener("focusin", listenerEntry.handleInteract, true);
-  listenerEntry.frameWindow?.removeEventListener("focus", listenerEntry.handleInteract, true);
-  embeddedFrameListeners.delete(targetId);
-}
-
-function attachEmbeddedFrameListeners(windowId, iframeElement) {
-  const targetId = String(windowId || "").trim();
-  if (!targetId || !iframeElement?.contentWindow) return;
-  detachEmbeddedFrameListeners(targetId);
-
-  try {
-    const frameWindow = iframeElement.contentWindow;
-    const frameDocument = frameWindow.document;
-    const handleInteract = () => {
-      if (activeWindowId.value === targetId) return;
-      focusWindow(targetId);
-    };
-    frameDocument.addEventListener("pointerdown", handleInteract, true);
-    frameDocument.addEventListener("focusin", handleInteract, true);
-    frameWindow.addEventListener("focus", handleInteract, true);
-    embeddedFrameListeners.set(targetId, {
-      doc: frameDocument,
-      frameWindow,
-      handleInteract,
-    });
-  } catch {
-    detachEmbeddedFrameListeners(targetId);
-  }
-}
-
-function handleWindowFrameLoad(windowId, event) {
-  const iframeElement = event?.target;
-  attachEmbeddedFrameListeners(windowId, iframeElement);
 }
 
 function getDockTargetRect(appId) {
@@ -398,7 +349,7 @@ function createDesktopSessionSnapshot() {
 }
 
 function persistDesktopSession() {
-  if (typeof window === "undefined" || isEmbeddedMode.value || !desktopSessionHydrated.value) {
+  if (typeof window === "undefined" || !desktopSessionHydrated.value) {
     return;
   }
   if (!desktopWindows.value.length) {
@@ -448,7 +399,7 @@ function createRestoredWindow(rawWindow, index, usedIds) {
     eyebrow: String(rawWindow?.eyebrow || "").trim() || meta.appEyebrow,
     summary: String(rawWindow?.summary || "").trim() || meta.appSummary,
     sourcePath,
-    embeddedUrl: buildEmbeddedAppUrl(sourcePath, { windowId: nextId }),
+    instanceKey: 0,
     width: bounds.width,
     height: bounds.height,
     x: bounds.x,
@@ -515,7 +466,7 @@ function restoreDesktopSession() {
 watch(
   () => route.fullPath,
   (fullPath) => {
-    if (isEmbeddedMode.value || !desktopSessionHydrated.value) return;
+    if (!desktopSessionHydrated.value) return;
     if (suppressNextRouteWindowSync.value) {
       suppressNextRouteWindowSync.value = false;
       return;
@@ -526,7 +477,6 @@ watch(
 );
 
 function ensureDesktopHomeRoute() {
-  if (isEmbeddedMode.value) return;
   if (route.path === DESKTOP_HOME_PATH) return;
   suppressNextRouteWindowSync.value = true;
   void router.replace(DESKTOP_HOME_PATH);
@@ -551,7 +501,7 @@ function createWindowForPath(path, payload = {}) {
     eyebrow: String(payload.eyebrow || "").trim() || meta.appEyebrow,
     summary: String(payload.summary || "").trim() || meta.appSummary,
     sourcePath: path,
-    embeddedUrl: buildEmbeddedAppUrl(path, { windowId: id }),
+    instanceKey: 0,
     width: bounds.width,
     height: bounds.height,
     x: bounds.x,
@@ -576,7 +526,6 @@ function createWindowForPath(path, payload = {}) {
 }
 
 function syncRouteAsWindow(fullPath) {
-  if (isEmbeddedMode.value) return;
   const path = normalizeDesktopBridgePath(fullPath);
   if (
     !path
@@ -610,7 +559,6 @@ function syncRouteAsWindow(fullPath) {
           ? {
               ...item,
               sourcePath: path,
-              embeddedUrl: buildEmbeddedAppUrl(path, { windowId: existing.id }),
               title: meta.appName,
               eyebrow: meta.appEyebrow,
               summary: meta.appSummary,
@@ -678,7 +626,6 @@ function focusWindow(windowId, options = {}) {
 
 function closeWindow(windowId) {
   const targetId = String(windowId || "").trim();
-  detachEmbeddedFrameListeners(targetId);
   clearWindowMotionTimer(targetId);
   const remaining = desktopWindows.value.filter((item) => item.id !== targetId);
   if (remaining.length === desktopWindows.value.length) return;
@@ -781,10 +728,7 @@ function refreshWindow(windowId) {
     item.id === targetId
       ? {
           ...item,
-          embeddedUrl: buildEmbeddedAppUrl(item.sourcePath, {
-            windowId: item.id,
-            reloadKey: `${Date.now()}`,
-          }),
+          instanceKey: Number(item.instanceKey || 0) + 1,
         }
       : item,
   );
@@ -865,13 +809,6 @@ watch(
       if (projectId) {
         window.localStorage.setItem("project_id", projectId);
       }
-      return;
-    }
-    if (!normalizedPath.startsWith("/materials")) return;
-    const resolvedUrl = new URL(normalizedPath, window.location.origin);
-    const projectId = String(resolvedUrl.searchParams.get("project_id") || "").trim() || getStoredProjectContextId();
-    if (projectId) {
-      window.localStorage.setItem("project_id", projectId);
     }
   },
   { immediate: true },
@@ -936,9 +873,6 @@ function reorderDockApps(nextOrder) {
 }
 
 async function clearDesktopCache() {
-  for (const windowId of embeddedFrameListeners.keys()) {
-    detachEmbeddedFrameListeners(windowId);
-  }
   for (const windowId of windowMotionTimers.keys()) {
     clearWindowMotionTimer(windowId);
   }
@@ -961,7 +895,7 @@ async function clearDesktopCache() {
   ensureDesktopHomeRoute();
 }
 
-function updateWindowFromEmbeddedPath(path, payload = {}) {
+function updateWindowFromDesktopWindowPath(path, payload = {}) {
   const normalizedPath = normalizeDesktopBridgePath(path);
   if (!normalizedPath) return;
   if (
@@ -1024,7 +958,6 @@ function openPathAsWindow(path, payload = {}) {
               eyebrow: String(payload.eyebrow || "").trim() || nextMeta.appEyebrow,
               summary: String(payload.summary || "").trim() || nextMeta.appSummary,
               sourcePath: normalizedPath,
-              embeddedUrl: buildEmbeddedAppUrl(normalizedPath, { windowId: existing.id }),
             }
           : item,
       );
@@ -1038,6 +971,13 @@ function openPathAsWindow(path, payload = {}) {
   }
   createWindowForPath(normalizedPath, payload);
   return true;
+}
+
+function handleDesktopWindowRouteChange(windowId, detail = {}) {
+  updateWindowFromDesktopWindowPath(detail?.path, {
+    ...detail,
+    windowId,
+  });
 }
 
 function acknowledgeDesktopOpenPath(event, payload = {}, handled = true) {
@@ -1061,7 +1001,7 @@ function handleDesktopBridgeMessage(event) {
   if (!isDesktopBridgeMessage(event.data)) return;
   const { type, payload } = event.data;
   if (type === "route-change") {
-    updateWindowFromEmbeddedPath(payload?.path, payload);
+    updateWindowFromDesktopWindowPath(payload?.path, payload);
     return;
   }
   if (type === "open-path") {
@@ -1078,27 +1018,127 @@ function handleDesktopBridgeMessage(event) {
   }
 }
 
+function handleDesktopBridgeEvent(event) {
+  const detail = event?.detail;
+  if (!isDesktopBridgeMessage(detail)) return;
+  const { type, payload } = detail;
+  if (type === "route-change") {
+    updateWindowFromDesktopWindowPath(payload?.path, payload);
+    event.preventDefault();
+    return;
+  }
+  if (type === "open-path") {
+    if (openPathAsWindow(payload?.path, payload)) event.preventDefault();
+    return;
+  }
+  if (type === "pin-app") {
+    pinDockApp(payload?.appId);
+    event.preventDefault();
+    return;
+  }
+  if (type === "wallpaper-change") {
+    wallpaperConfig.value = getDesktopWallpaperConfig();
+    event.preventDefault();
+  }
+}
+
+function fallbackNativeDragDropWindowId() {
+  return (
+    lastNativeDragDropWindowId ||
+    activeWindowId.value ||
+    desktopWindows.value.find((item) => !item.minimized)?.id ||
+    ""
+  );
+}
+
+function resolveNativeDragDropWindowId(payload = {}) {
+  const type = String(payload?.type || "").trim();
+  if (type === "leave") {
+    return fallbackNativeDragDropWindowId();
+  }
+  if (typeof document === "undefined") return fallbackNativeDragDropWindowId();
+  const points = nativeDragDropCssPoints(payload?.position).filter(
+    (point) => Number.isFinite(point.x) && Number.isFinite(point.y),
+  );
+  if (!points.length) return fallbackNativeDragDropWindowId();
+  const availableWindowIds = new Set(
+    desktopWindows.value
+      .filter((item) => !item.minimized)
+      .map((item) => item.id),
+  );
+  for (const { x: pointX, y: pointY } of points) {
+    const hit = document.elementsFromPoint?.(pointX, pointY) || [];
+    for (const element of hit) {
+      const host = element?.closest?.(".desktop-system__window[data-window-id]");
+      const windowId = String(host?.dataset?.windowId || "").trim();
+      if (windowId && availableWindowIds.has(windowId)) return windowId;
+    }
+    for (const item of desktopWindows.value) {
+      if (item.minimized) continue;
+      const host = document.querySelector(`.desktop-system__window[data-window-id="${item.id}"]`);
+      const rect = host?.getBoundingClientRect?.();
+      if (
+        rect
+        && pointX >= rect.left
+        && pointX <= rect.right
+        && pointY >= rect.top
+        && pointY <= rect.bottom
+      ) {
+        return item.id;
+      }
+    }
+  }
+  return fallbackNativeDragDropWindowId();
+}
+
+function handleNativeDesktopDragDrop(payload = {}) {
+  const paths = Array.isArray(payload?.paths)
+    ? payload.paths.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  let type = String(payload?.type || "").trim();
+  if (!type) type = paths.length ? "drop" : "over";
+  const nextPayload = { ...payload, type, paths };
+  const windowId = resolveNativeDragDropWindowId(nextPayload);
+  if (!windowId) return;
+  if (type === "leave" || type === "drop") {
+    lastNativeDragDropWindowId = type === "drop" ? windowId : "";
+    fileDropWindowId.value = "";
+  } else {
+    lastNativeDragDropWindowId = windowId;
+    fileDropWindowId.value = windowId;
+  }
+  window.dispatchEvent(
+    new CustomEvent(DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME, {
+      detail: { windowId, payload: nextPayload },
+    }),
+  );
+}
+
 onMounted(() => {
   if (typeof window === "undefined") return;
-  if (isEmbeddedMode.value) return;
   restoreDesktopSession();
   desktopSessionHydrated.value = true;
   syncRouteAsWindow(route.fullPath);
   window.addEventListener("message", handleDesktopBridgeMessage);
+  window.addEventListener(DESKTOP_BRIDGE_EVENT_NAME, handleDesktopBridgeEvent);
   window.addEventListener("storage", handleStorageChange);
+  void subscribeNativeDesktopDragDrop(handleNativeDesktopDragDrop).then((unlisten) => {
+    nativeDesktopDragDropUnlisten = unlisten;
+  });
 });
 
 onBeforeUnmount(() => {
   if (typeof window === "undefined") return;
-  if (isEmbeddedMode.value) return;
-  for (const windowId of embeddedFrameListeners.keys()) {
-    detachEmbeddedFrameListeners(windowId);
-  }
   for (const windowId of windowMotionTimers.keys()) {
     clearWindowMotionTimer(windowId);
   }
   window.removeEventListener("message", handleDesktopBridgeMessage);
+  window.removeEventListener(DESKTOP_BRIDGE_EVENT_NAME, handleDesktopBridgeEvent);
   window.removeEventListener("storage", handleStorageChange);
+  if (nativeDesktopDragDropUnlisten) {
+    nativeDesktopDragDropUnlisten();
+    nativeDesktopDragDropUnlisten = null;
+  }
 });
 
 function handleStorageChange(event) {
@@ -1122,15 +1162,6 @@ function handleStorageChange(event) {
 }
 
 watch(
-  () => route.fullPath,
-  (fullPath) => {
-    if (!isEmbeddedMode.value) return;
-    notifyDesktopRouteChange(fullPath, resolveDesktopAppMeta(fullPath));
-  },
-  { immediate: true },
-);
-
-watch(
   [desktopWindows, activeWindowId, currentDesktopPath, nextWindowOrder],
   () => {
     persistDesktopSession();
@@ -1138,28 +1169,9 @@ watch(
   { deep: true },
 );
 
-watch(
-  desktopWindows,
-  (windows) => {
-    const activeIds = new Set(windows.map((item) => item.id));
-    for (const windowId of embeddedFrameListeners.keys()) {
-      if (!activeIds.has(windowId)) {
-        detachEmbeddedFrameListeners(windowId);
-      }
-    }
-  },
-  { deep: true },
-);
 </script>
 
 <style scoped>
-.embedded-layout {
-  height: 100vh;
-  overflow-y: auto;
-  overflow-x: hidden;
-  background: #f8fafc;
-}
-
 .layout-window-frame {
   min-height: 100%;
   height: 100%;
@@ -1168,13 +1180,9 @@ watch(
   background: rgba(255, 255, 255, 0.72);
 }
 
-.layout-window-frame__iframe {
+.layout-window-frame :deep(.desktop-window-host) {
   width: 100%;
   height: 100%;
-  border: 0;
   display: block;
-  background: #f8fafc;
-  backface-visibility: hidden;
-  transform: translateZ(0);
 }
 </style>

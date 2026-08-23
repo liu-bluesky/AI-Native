@@ -8,10 +8,12 @@ mod args;
 mod audit;
 mod definitions;
 mod file_change_review;
+mod ftp_credentials;
 mod gateway;
 mod paths;
 mod permission;
 mod planning;
+mod project_catalog;
 mod runtime;
 mod security;
 mod state;
@@ -24,9 +26,20 @@ pub use file_change_review::{
     accept_change, capture_baseline, list_changes, revert_change, review_diff_inputs,
     FileChangeReviewItem,
 };
+pub use ftp_credentials::{
+    credential_enabled, credential_id_of, credential_text, credential_u64,
+    find_global_ftp_credential, global_ftp_credentials_path, parse_ftp_credentials_content,
+    read_global_ftp_credentials, write_global_ftp_credentials, DesktopFtpCredentials,
+    FTP_CREDENTIALS_VERSION,
+};
 pub use gateway::prepare_agent_invocation;
 pub use paths::{
     desktop_runtime_root, ensure_desktop_runtime_migrated, normalize_local_backend_api_base_url,
+};
+pub use project_catalog::{
+    find_global_project_catalog_entry, global_project_catalog_path, parse_project_catalog_content,
+    read_global_project_catalog, write_global_project_catalog, DesktopProjectCatalog,
+    DesktopProjectCatalogEntry, PROJECT_CATALOG_VERSION,
 };
 pub use runtime::classify_local_permission_reply;
 pub use runtime::{
@@ -43,14 +56,14 @@ pub use tools::network::{
 };
 pub use types::{
     AgentInvocationRequest, AgentInvocationResult, LocalBackendContext, LocalChatAttachment,
-    LocalChatMessage, LocalChatPauseRequest, LocalChatPromptPart, LocalChatRequest,
-    LocalChatResult, LocalModelRuntimeConfig, LocalPermissionReplyResult,
-    LocalRuntimeEventsRequest, LocalRuntimeEventsResult, LocalRuntimeJobRequest,
-    LocalRuntimeJobResult, LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest,
-    LocalRuntimeOutboxResult, LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult,
-    OfflineCacheCleanupRequest, OfflineCacheLoadRequest, OfflineCacheResult,
-    OfflineCacheSaveRequest, PermissionDecisionInput, ProviderFileUploadRequest,
-    ProviderFileUploadResult, ToolDefinition, ToolError, ToolExecutionRequest, ToolExecutionResult,
+    LocalChatMessage, LocalChatPauseRequest, LocalChatRequest, LocalChatResult,
+    LocalModelRuntimeConfig, LocalPermissionReplyResult, LocalRuntimeEventsRequest,
+    LocalRuntimeEventsResult, LocalRuntimeJobRequest, LocalRuntimeJobResult,
+    LocalRuntimeOutboxAckRequest, LocalRuntimeOutboxRequest, LocalRuntimeOutboxResult,
+    LocalRuntimeRecoveryRequest, LocalRuntimeRecoveryResult, OfflineCacheCleanupRequest,
+    OfflineCacheLoadRequest, OfflineCacheResult, OfflineCacheSaveRequest, PermissionDecisionInput,
+    ProviderFileUploadRequest, ProviderFileUploadResult, ToolDefinition, ToolError,
+    ToolExecutionRequest, ToolExecutionResult,
 };
 
 use tools::command::{check_command_risk, run_command, run_command_with_output_sink_and_cancel};
@@ -60,7 +73,7 @@ use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
 use tools::media::execute_media_tool;
 use tools::network::{download_file, http_get, http_post, web_extract, web_search};
 use tools::process::process_tool;
-use tools::projects::{get_project, list_projects};
+use tools::projects::{get_project, list_bot_projects, list_projects, switch_project_workspace};
 pub fn execute_tool(request: ToolExecutionRequest) -> ToolExecutionResult {
     execute_tool_with_command_output_sink(request, None)
 }
@@ -149,7 +162,9 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
         "generate_image" | "edit_image" | "generate_video" | "generate_audio"
         | "transcribe_audio" => execute_media_tool(&name, &request.arguments),
         "list_projects" => list_projects(&request.arguments),
+        "list_bot_projects" => list_bot_projects(&request.arguments),
         "get_project" => get_project(&request.arguments),
+        "switch_project_workspace" => switch_project_workspace(&request.arguments),
         "get_project_deploy_options" => get_project_deploy_options(&request.arguments),
         "deploy_workspace_files_to_target" => deploy_workspace_files_to_target(
             &tool_call_id,
@@ -178,6 +193,16 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
 }
 
 fn direct_tool_disabled_reason(name: &str, arguments: &serde_json::Value) -> Option<String> {
+    if matches!(name, "list_bot_projects" | "switch_project_workspace")
+        && arguments
+            .get("_bot_request")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        return Some(
+            "Bot project/workspace tools are only available to Feishu bot sessions".to_string(),
+        );
+    }
     if !matches!(
         name,
         "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool"
@@ -224,7 +249,7 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 24);
+        assert_eq!(tools.len(), 26);
         assert!(tools.iter().any(|item| item.name == "read_file"));
         assert!(tools.iter().any(|item| item.name == "delete_file"));
         assert!(tools.iter().any(|item| item.name == "run_command"));
@@ -247,6 +272,10 @@ mod tests {
         assert!(tools.iter().any(|item| item.name == "web_extract"));
         assert!(tools.iter().any(|item| item.name == "list_projects"));
         assert!(tools.iter().any(|item| item.name == "get_project"));
+        assert!(tools.iter().any(|item| item.name == "list_bot_projects"));
+        assert!(tools
+            .iter()
+            .any(|item| item.name == "switch_project_workspace"));
         assert!(tools
             .iter()
             .any(|item| item.name == "get_project_deploy_options"));
@@ -467,11 +496,19 @@ mod tests {
             permission_decision: None,
         });
         assert!(waited.ok, "{}", waited.error);
-        assert_eq!(waited.content["status"], "exited");
-        assert!(waited.content["output_preview"]
-            .as_str()
-            .unwrap()
-            .contains("got:hello"));
+        let output_preview = match waited.content["status"].as_str() {
+            Some("exited") => waited.content["output_preview"]
+                .as_str()
+                .unwrap_or_default(),
+            Some("notified") => {
+                assert_eq!(waited.content["process_status"], "exited");
+                waited.content["notification"]["output_preview"]
+                    .as_str()
+                    .unwrap_or_default()
+            }
+            status => panic!("unexpected wait status: {status:?}"),
+        };
+        assert!(output_preview.contains("got:hello"));
 
         let logged = execute_tool(ToolExecutionRequest {
             tool_call_id: Some("call_process_log".to_string()),
@@ -675,6 +712,22 @@ mod tests {
                     }
                 }
             }),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "tool.disabled");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bot_project_tools_require_bot_execution_context() {
+        let dir = test_workspace("bot_project_tool_disabled");
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_bot_projects".to_string()),
+            name: "list_bot_projects".to_string(),
+            arguments: json!({}),
             workspace_path: dir.to_string_lossy().to_string(),
             permission_decision: None,
         });

@@ -3,6 +3,9 @@ import {
   isTauri as isTauriRuntime,
 } from "@tauri-apps/api/core";
 import { listen as listenTauriEvent } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const NATIVE_BRIDGE_NAMES = [
   "__AI_EMPLOYEE_DESKTOP__",
@@ -15,6 +18,8 @@ const TAURI_COMMAND_NAMES = {
   getRuntimeInfo: "get_runtime_info",
   listWorkspaceFiles: "list_workspace_files",
   readWorkspaceFile: "read_workspace_file",
+  readLocalFile: "read_local_file",
+  openDesktopDevtools: "open_desktop_devtools",
   previewWorkspaceDiff: "preview_workspace_diff",
   prepareWorkspaceFileWrite: "prepare_workspace_file_write",
   writeWorkspaceFile: "write_workspace_file",
@@ -31,6 +36,10 @@ const TAURI_COMMAND_NAMES = {
   writeProjectWebToolsConfigFile: "write_project_web_tools_config_file",
   readGlobalBotConnectorConfigFile: "read_global_bot_connector_config_file",
   writeGlobalBotConnectorConfigFile: "write_global_bot_connector_config_file",
+  readGlobalProjectCatalogFile: "read_global_project_catalog_file",
+  writeGlobalProjectCatalogFile: "write_global_project_catalog_file",
+  readGlobalFtpCredentialsFile: "read_global_ftp_credentials_file",
+  writeGlobalFtpCredentialsFile: "write_global_ftp_credentials_file",
   openExternalUrl: "open_external_url",
   copyResourceFileToClipboard: "copy_resource_file_to_clipboard",
   classifyRunnerCommand: "classify_runner_command",
@@ -48,14 +57,10 @@ const TAURI_COMMAND_NAMES = {
   liuagentStartLocalChat: "liuagent_start_local_chat",
   liuagentPauseLocalChat: "liuagent_pause_local_chat",
   liuagentClassifyPermissionReply: "liuagent_classify_permission_reply",
-  botStartLocalChat: "bot_start_local_chat",
   botStartFeishuLocalListener: "bot_start_feishu_local_listener",
   botStopFeishuLocalListener: "bot_stop_feishu_local_listener",
   botListFeishuLocalListeners: "bot_list_feishu_local_listeners",
-  botReplyFeishuMessage: "bot_reply_feishu_message",
   botScanFeishuChats: "bot_scan_feishu_chats",
-  botDownloadFeishuMessageResource: "bot_download_feishu_message_resource",
-  botGetFeishuMessage: "bot_get_feishu_message",
   liuagentPrepareAgentInvocation: "liuagent_prepare_agent_invocation",
   liuagentRecoverRuntimeState: "liuagent_recover_runtime_state",
   liuagentRefreshRuntimeJob: "liuagent_refresh_runtime_job",
@@ -608,6 +613,30 @@ export async function writeNativeGlobalBotConnectorConfigFile(content = "") {
   return normalizeConfigFileResult(result);
 }
 
+export async function readNativeGlobalProjectCatalogFile() {
+  const result = await invokeNativeDesktopBridge("readGlobalProjectCatalogFile");
+  return normalizeConfigFileResult(result);
+}
+
+export async function writeNativeGlobalProjectCatalogFile(content = "") {
+  const result = await invokeNativeDesktopBridge("writeGlobalProjectCatalogFile", {
+    content: String(content || ""),
+  });
+  return normalizeConfigFileResult(result);
+}
+
+export async function readNativeGlobalFtpCredentialsFile() {
+  const result = await invokeNativeDesktopBridge("readGlobalFtpCredentialsFile");
+  return normalizeConfigFileResult(result);
+}
+
+export async function writeNativeGlobalFtpCredentialsFile(content = "") {
+  const result = await invokeNativeDesktopBridge("writeGlobalFtpCredentialsFile", {
+    content: String(content || ""),
+  });
+  return normalizeConfigFileResult(result);
+}
+
 export async function openNativeExternalUrl(url = "") {
   const normalizedUrl = String(url || "").trim();
   if (!normalizedUrl) return false;
@@ -838,150 +867,6 @@ export async function classifyNativeLiuAgentPermissionReply(request = {}) {
       };
 }
 
-export async function startNativeBotLocalChat(request = {}) {
-  const projectId = String(request?.projectId || request?.project_id || "").trim();
-  const chatSessionId = String(
-    request?.chatSessionId || request?.chat_session_id || "",
-  ).trim();
-  const workspacePath = String(
-    request?.workspacePath || request?.workspace_path || "",
-  ).trim();
-  const message = String(request?.message || "").trim();
-  const connector =
-    request?.connector && typeof request.connector === "object"
-      ? request.connector
-      : {};
-  const connectorId = String(
-    connector.connectorId || connector.connector_id || request?.connectorId || "",
-  ).trim();
-  const platform = String(connector.platform || request?.platform || "").trim();
-  if (!projectId || !chatSessionId || !workspacePath || !message || !connectorId) {
-    return {
-      ok: false,
-      errorCode: "tool.schema_invalid",
-      error:
-        "projectId, chatSessionId, workspacePath, message and connector.connectorId are required",
-    };
-  }
-  const result = await invokeNativeDesktopBridge("botStartLocalChat", {
-    request: {
-      projectId,
-      chatSessionId,
-      messageId: String(request?.messageId || request?.message_id || "").trim(),
-      assistantMessageId: String(
-        request?.assistantMessageId || request?.assistant_message_id || "",
-      ).trim(),
-      message,
-      workspacePath,
-      history: Array.isArray(request?.history) ? request.history : [],
-      connector: {
-        connectorId,
-        platform,
-        name: String(connector.name || request?.connectorName || "").trim(),
-        systemPrompt: String(
-          connector.systemPrompt ||
-            connector.system_prompt ||
-            "",
-        ).trim(),
-        providerId: String(
-          connector.providerId ||
-            connector.provider_id ||
-            request?.providerId ||
-            request?.provider_id ||
-            "",
-        ).trim(),
-        modelName: String(
-          connector.modelName ||
-            connector.model_name ||
-            request?.modelName ||
-            request?.model_name ||
-            "",
-        ).trim(),
-        replyIdentity: String(
-          connector.replyIdentity || connector.reply_identity || "bot",
-        ).trim(),
-        ownerUsername: String(
-          connector.ownerUsername ||
-            connector.owner_username ||
-            request?.ownerUsername ||
-            request?.owner_username ||
-            "",
-        ).trim(),
-        sandboxMode: String(
-          connector.sandboxMode ||
-            connector.sandbox_mode ||
-            request?.sandboxMode ||
-            request?.sandbox_mode ||
-            "workspace-write",
-        ).trim(),
-        highRiskToolConfirm:
-          connector.highRiskToolConfirm ??
-          connector.high_risk_tool_confirm ??
-          request?.highRiskToolConfirm ??
-          request?.high_risk_tool_confirm ??
-          true,
-      },
-      sourceContext:
-        request?.sourceContext && typeof request.sourceContext === "object"
-          ? request.sourceContext
-          : request?.source_context && typeof request.source_context === "object"
-            ? request.source_context
-            : {},
-      permissionContract:
-        request?.permissionContract && typeof request.permissionContract === "object"
-          ? request.permissionContract
-          : request?.permission_contract &&
-              typeof request.permission_contract === "object"
-            ? request.permission_contract
-            : null,
-      providerId: String(request?.providerId || request?.provider_id || "").trim(),
-      modelName: String(request?.modelName || request?.model_name || "").trim(),
-      modelRuntime:
-        request?.modelRuntime && typeof request.modelRuntime === "object"
-          ? request.modelRuntime
-          : request?.model_runtime && typeof request.model_runtime === "object"
-            ? request.model_runtime
-            : null,
-      attachments: Array.isArray(request?.attachments)
-        ? request.attachments
-        : Array.isArray(request?.localAttachments)
-          ? request.localAttachments
-          : [],
-      mediaTools: Array.isArray(request?.mediaTools)
-        ? request.mediaTools
-        : Array.isArray(request?.media_tools)
-          ? request.media_tools
-          : [],
-      mcpConfig:
-        request?.mcpConfig && typeof request.mcpConfig === "object"
-          ? request.mcpConfig
-          : request?.mcp_config && typeof request.mcp_config === "object"
-            ? request.mcp_config
-            : null,
-      backendContext:
-        request?.backendContext && typeof request.backendContext === "object"
-          ? request.backendContext
-          : request?.backend_context && typeof request.backend_context === "object"
-            ? request.backend_context
-            : null,
-      permissionDecision:
-        request?.permissionDecision && typeof request.permissionDecision === "object"
-          ? request.permissionDecision
-          : request?.permission_decision &&
-              typeof request.permission_decision === "object"
-            ? request.permission_decision
-            : null,
-    },
-  });
-  return result && typeof result === "object"
-    ? result
-    : {
-        ok: false,
-        errorCode: "native_bridge.unavailable",
-        error: "native bot local chat runtime is unavailable",
-      };
-}
-
 export async function startNativeFeishuLocalBotListener(options = {}) {
   const connectorId = String(options?.connectorId || options?.connector_id || "").trim();
   if (!connectorId) {
@@ -990,15 +875,8 @@ export async function startNativeFeishuLocalBotListener(options = {}) {
   return invokeNativeDesktopBridge("botStartFeishuLocalListener", {
     request: {
       connectorId,
-      workspacePath: String(
-        options?.workspacePath || options?.workspace_path || "",
-      ).trim(),
-      ownerUsername: String(
-        options?.ownerUsername || options?.owner_username || "",
-      ).trim(),
       modelRuntime: options?.modelRuntime || options?.model_runtime || null,
       mcpConfig: options?.mcpConfig || options?.mcp_config || {},
-      backendContext: options?.backendContext || options?.backend_context || null,
       permissionDecision:
         options?.permissionDecision || options?.permission_decision || null,
     },
@@ -1016,73 +894,11 @@ export async function listNativeFeishuLocalBotListeners() {
   return Array.isArray(result) ? result : [];
 }
 
-export async function replyNativeFeishuBotMessage(options = {}) {
-  const messageId = String(options?.messageId || options?.message_id || "").trim();
-  const content = String(options?.content || "").trim();
-  if (!messageId || !content) {
-    throw new Error("飞书回复需要 messageId 和 content");
-  }
-  return invokeNativeDesktopBridge("botReplyFeishuMessage", {
-    request: {
-      messageId,
-      content,
-      contentFormat: String(
-        options?.contentFormat || options?.content_format || "text",
-      ).trim(),
-      replyIdentity: String(
-        options?.replyIdentity || options?.reply_identity || "bot",
-      ).trim(),
-      replyInThread: Boolean(options?.replyInThread || options?.reply_in_thread),
-      idempotencyKey: String(
-        options?.idempotencyKey || options?.idempotency_key || "",
-      ).trim(),
-      connectorId: String(
-        options?.connectorId || options?.connector_id || "",
-      ).trim(),
-    },
-  });
-}
-
 export async function scanNativeFeishuBotChats(options = {}) {
   return invokeNativeDesktopBridge("botScanFeishuChats", {
     request: {
-      identity: String(options?.identity || "bot").trim(),
       pageSize: Number(options?.pageSize || options?.page_size || 100) || 100,
       pageLimit: Number(options?.pageLimit || options?.page_limit || 10) || 10,
-    },
-  });
-}
-
-export async function downloadNativeFeishuMessageResource(options = {}) {
-  const messageId = String(options?.messageId || options?.message_id || "").trim();
-  const fileKey = String(options?.fileKey || options?.file_key || "").trim();
-  if (!messageId || !fileKey) {
-    throw new Error("下载飞书资源需要 messageId 和 fileKey");
-  }
-  return invokeNativeDesktopBridge("botDownloadFeishuMessageResource", {
-    request: {
-      messageId,
-      fileKey,
-      resourceType: String(
-        options?.resourceType || options?.resource_type || "image",
-      ).trim(),
-      identity: String(options?.identity || "bot").trim(),
-    },
-  });
-}
-
-export async function getNativeFeishuMessage(options = {}) {
-  const messageId = String(options?.messageId || options?.message_id || "").trim();
-  if (!messageId) {
-    throw new Error("读取飞书消息需要 messageId");
-  }
-  return invokeNativeDesktopBridge("botGetFeishuMessage", {
-    request: {
-      messageId,
-      identity: String(options?.identity || "bot").trim(),
-      downloadResources: Boolean(
-        options?.downloadResources || options?.download_resources,
-      ),
     },
   });
 }
@@ -1515,6 +1331,307 @@ export async function readNativeWorkspaceFile(options = {}) {
   return normalizeWorkspaceFileReadResult(result, { workspacePath, path });
 }
 
+export async function readNativeLocalFile(path = "") {
+  const normalizedPath = String(path || "").trim();
+  if (!normalizedPath) {
+    throw new Error("缺少本地文件路径");
+  }
+  const result = await invokeNativeDesktopBridge("readLocalFile", {
+    path: normalizedPath,
+  });
+  if (!result || typeof result !== "object") {
+    throw new Error(`桌面端未返回文件内容：${normalizedPath}`);
+  }
+  return {
+    name: String(result?.name || "").trim(),
+    mimeType: String(result?.mimeType || result?.mime_type || "").trim(),
+    size: Number(result?.size || 0) || 0,
+    bytes: Array.isArray(result?.bytes) ? result.bytes : [],
+  };
+}
+
+export async function openNativeDesktopDevtools() {
+  return invokeNativeDesktopBridge("openDesktopDevtools");
+}
+
+function toNativeDragDropPoint(value) {
+  if (Array.isArray(value)) {
+    const x = Number(value[0]);
+    const y = Number(value[1]);
+    return {
+      x: Number.isFinite(x) ? x : Number.NaN,
+      y: Number.isFinite(y) ? y : Number.NaN,
+    };
+  }
+  if (!value || typeof value !== "object") {
+    return { x: Number.NaN, y: Number.NaN };
+  }
+  const nested =
+    value.Physical ||
+    value.Logical ||
+    value.physical ||
+    value.logical ||
+    null;
+  const source = nested && typeof nested === "object" ? nested : value;
+  const x = Number(source.x);
+  const y = Number(source.y);
+  return {
+    x: Number.isFinite(x) ? x : Number.NaN,
+    y: Number.isFinite(y) ? y : Number.NaN,
+  };
+}
+
+function unwrapNativeDragDropSource(payload = {}, fallbackType = "") {
+  if (payload == null || typeof payload !== "object") {
+    return { type: String(fallbackType || "").trim() };
+  }
+  if (payload.enter && typeof payload.enter === "object") {
+    return { type: "enter", ...payload.enter };
+  }
+  if (payload.over && typeof payload.over === "object") {
+    return { type: "over", ...payload.over };
+  }
+  if (payload.drop && typeof payload.drop === "object") {
+    return { type: "drop", ...payload.drop };
+  }
+  if (payload.leave && typeof payload.leave === "object") {
+    return { type: "leave", ...payload.leave };
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(payload, "leave") &&
+    payload.leave == null
+  ) {
+    return { type: "leave" };
+  }
+  return payload;
+}
+
+export function normalizeNativeDragDropPayload(payload = {}, fallbackType = "") {
+  const source = unwrapNativeDragDropSource(payload, fallbackType);
+  const paths = Array.isArray(source.paths)
+    ? source.paths.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  let type = String(source.type || fallbackType || "").trim();
+  if (!type) {
+    type = paths.length ? "drop" : "over";
+  }
+  return {
+    type,
+    paths,
+    position: toNativeDragDropPoint(source.position),
+  };
+}
+
+export function nativeDragDropCssPoints(position = {}) {
+  if (typeof window === "undefined") return [];
+  const point = toNativeDragDropPoint(position);
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return [];
+  if (Math.abs(point.x) < 0.5 && Math.abs(point.y) < 0.5) return [];
+  const devicePixelRatio = Number(window.devicePixelRatio || 1) || 1;
+  const cssPoint = {
+    x: point.x / devicePixelRatio,
+    y: point.y / devicePixelRatio,
+  };
+  const points = [cssPoint];
+  if (
+    Math.abs(cssPoint.x - point.x) > 0.5 ||
+    Math.abs(cssPoint.y - point.y) > 0.5
+  ) {
+    points.push(point);
+  }
+  return points;
+}
+
+function currentNativeWindowLabel() {
+  try {
+    const label = String(getCurrentWebviewWindow()?.label || "").trim();
+    if (label) return label;
+  } catch (_error) {
+    // Ignore missing webview window handles outside Tauri.
+  }
+  try {
+    const label = String(getCurrentWindow()?.label || "").trim();
+    if (label) return label;
+  } catch (_error) {
+    // Ignore missing window handles outside Tauri.
+  }
+  return "main";
+}
+
+function currentNativeDragDropListenTargets() {
+  const label = currentNativeWindowLabel();
+  return [
+    { kind: "Any" },
+    { kind: "AnyLabel", label },
+    { kind: "WebviewWindow", label },
+    { kind: "Webview", label },
+    { kind: "Window", label },
+  ];
+}
+
+async function subscribeNativeDragDropSource(label, subscribe) {
+  try {
+    const unlisten = await subscribe();
+    return typeof unlisten === "function" ? unlisten : null;
+  } catch (error) {
+    console.warn(`订阅 ${label} 失败`, error);
+    return null;
+  }
+}
+
+const NATIVE_DRAG_LEAVE_GRACE_MS = 180;
+
+export async function subscribeNativeDesktopDragDrop(handler) {
+  if (typeof handler !== "function") {
+    return null;
+  }
+  const unlisteners = [];
+  const recentEvents = new Map();
+  let leaveTimer = null;
+  const cancelNativeDragLeaveTimer = () => {
+    if (leaveTimer == null) return;
+    clearTimeout(leaveTimer);
+    leaveTimer = null;
+  };
+  const forwardPayload = (payload, fallbackType = "") => {
+    try {
+      const normalizedPayload = normalizeNativeDragDropPayload(
+        payload,
+        fallbackType,
+      );
+      const type = String(normalizedPayload.type || "").trim();
+      const position = normalizedPayload.position || {};
+      const paths = Array.isArray(normalizedPayload.paths)
+        ? normalizedPayload.paths
+        : [];
+      if (type !== "leave") {
+        const signature = [
+          type,
+          paths.join(" "),
+          Math.round(Number(position.x || 0)),
+          Math.round(Number(position.y || 0)),
+        ].join(":");
+        const now = Date.now();
+        const previous = recentEvents.get(signature) || 0;
+        const isDuplicate = now - previous < 250;
+        if (!isDuplicate) {
+          recentEvents.set(signature, now);
+          if (recentEvents.size > 32) {
+            for (const [key, timestamp] of recentEvents) {
+              if (now - timestamp > 1000) recentEvents.delete(key);
+            }
+          }
+        }
+        cancelNativeDragLeaveTimer();
+        if (isDuplicate) return;
+        handler(normalizedPayload);
+        return;
+      }
+      if (leaveTimer != null) return;
+      leaveTimer = setTimeout(() => {
+        leaveTimer = null;
+        handler(normalizedPayload);
+      }, NATIVE_DRAG_LEAVE_GRACE_MS);
+    } catch (error) {
+      console.warn("处理原生文件拖放事件失败", error);
+    }
+  };
+
+  const addUnlistener = (unlisten) => {
+    if (typeof unlisten === "function") unlisteners.push(unlisten);
+  };
+
+  addUnlistener(
+    await subscribeNativeDragDropSource(
+      "WebviewWindow.onDragDropEvent",
+      async () =>
+        getCurrentWebviewWindow().onDragDropEvent((event) => {
+          forwardPayload(event?.payload);
+        }),
+    ),
+  );
+  addUnlistener(
+    await subscribeNativeDragDropSource("Webview.onDragDropEvent", async () =>
+      getCurrentWebview().onDragDropEvent((event) => {
+        forwardPayload(event?.payload);
+      }),
+    ),
+  );
+  addUnlistener(
+    await subscribeNativeDragDropSource("Window.onDragDropEvent", async () =>
+      getCurrentWindow().onDragDropEvent((event) => {
+        forwardPayload(event?.payload);
+      }),
+    ),
+  );
+  addUnlistener(
+    await subscribeNativeDragDropSource(
+      "WebviewWindow.desktop-file-drag-drop",
+      async () =>
+        getCurrentWebviewWindow().listen("desktop-file-drag-drop", (event) => {
+          forwardPayload(event?.payload);
+        }),
+    ),
+  );
+  addUnlistener(
+    await subscribeNativeDragDropSource("desktop-file-drag-drop", async () =>
+      listenTauriEvent("desktop-file-drag-drop", (event) => {
+        forwardPayload(event?.payload);
+      }),
+    ),
+  );
+  for (const target of currentNativeDragDropListenTargets()) {
+    addUnlistener(
+      await subscribeNativeDragDropSource(
+        `desktop-file-drag-drop:${target.kind}`,
+        async () =>
+          listenTauriEvent(
+            "desktop-file-drag-drop",
+            (event) => {
+              forwardPayload(event?.payload);
+            },
+            { target },
+          ),
+      ),
+    );
+  }
+  const rawDragEvents = [
+    ["tauri://drag-enter", "enter"],
+    ["tauri://drag-over", "over"],
+    ["tauri://drag-drop", "drop"],
+    ["tauri://drag-leave", "leave"],
+  ];
+  for (const [eventName, fallbackType] of rawDragEvents) {
+    for (const target of currentNativeDragDropListenTargets()) {
+      addUnlistener(
+        await subscribeNativeDragDropSource(
+          `${eventName}:${target.kind}`,
+          async () =>
+            listenTauriEvent(
+              eventName,
+              (event) => {
+                forwardPayload(event?.payload, fallbackType);
+              },
+              { target },
+            ),
+        ),
+      );
+    }
+  }
+
+  if (!unlisteners.length) return null;
+  return () => {
+    cancelNativeDragLeaveTimer();
+    for (const unlisten of unlisteners) {
+      try {
+        unlisten();
+      } catch (_error) {
+        // Ignore cleanup failures from a window that has already closed.
+      }
+    }
+  };
+}
+
 export async function previewNativeWorkspaceDiff(options = {}) {
   const workspacePath = String(
     options?.workspacePath || options?.workspace_path || "",
@@ -1689,50 +1806,6 @@ export async function subscribeNativeLiuAgentRuntimeEvents(handler) {
   if (!unlisteners.length) {
     return () => {};
   }
-  return () => {
-    for (const unlisten of unlisteners) {
-      try {
-        unlisten?.();
-      } catch (_error) {
-        // ignore cleanup errors
-      }
-    }
-  };
-}
-
-export async function subscribeNativeFeishuLocalBotEvents(handler) {
-  if (typeof handler !== "function") return () => {};
-  if (!hasNativeDesktopBridge()) return () => {};
-  const handleEvent = (event) => {
-    handler(event?.payload && typeof event.payload === "object" ? event.payload : {});
-  };
-  const unlisteners = [];
-  try {
-    unlisteners.push(await listenTauriEvent("bot-feishu-local-event", handleEvent));
-  } catch (_error) {
-    // keep fallback below
-  }
-  try {
-    unlisteners.push(await listenTauriEvent("bot://feishu-local-event", handleEvent));
-  } catch (_error) {
-    // keep primary listener if available
-  }
-  if (!unlisteners.length) {
-    const fallbackListen = resolveTauriEventListen();
-    if (fallbackListen) {
-      try {
-        unlisteners.push(await fallbackListen("bot-feishu-local-event", handleEvent));
-      } catch (_error) {
-        // ignore
-      }
-      try {
-        unlisteners.push(await fallbackListen("bot://feishu-local-event", handleEvent));
-      } catch (_error) {
-        // ignore
-      }
-    }
-  }
-  if (!unlisteners.length) return () => {};
   return () => {
     for (const unlisten of unlisteners) {
       try {

@@ -83,6 +83,7 @@ const TOOL_OBSERVATION_TEXT_PREVIEW_CHARS: usize = 6_000;
 const TOOL_OBSERVATION_MATCH_PREVIEW_CHARS: usize = 500;
 const TOOL_OBSERVATION_MAX_ARRAY_ITEMS: usize = 80;
 const TOOL_OBSERVATION_MAX_DEPTH: usize = 6;
+const DESKTOP_BOT_GLOBAL_PROJECT_ID: &str = "desktop-bot-global";
 
 static LOCAL_CHAT_PAUSE_REQUESTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -155,8 +156,6 @@ fn is_network_tool_interruption(
                 | "download_file"
                 | "web_search"
                 | "web_extract"
-                | "list_projects"
-                | "get_project"
                 | "get_project_deploy_options"
                 | "deploy_workspace_files_to_target"
                 | "list_mcp_tools"
@@ -4609,6 +4608,7 @@ fn run_agent_loop_with(
     let mut pending_background_processes = HashSet::<String>::new();
     let mut permission_cache = load_session_permission_cache(workspace_root, run_key);
     let active_workspace_root = RefCell::new(workspace_root.clone());
+    let active_project_id = RefCell::new(base_request.project_id.clone());
     let allow_project_workspace_switch = is_tauri_bot_local_chat_request(base_request);
     let stopped_reason: String;
     let mut awaiting_permission = false;
@@ -4618,7 +4618,9 @@ fn run_agent_loop_with(
             stopped_reason = "manual_pause".to_string();
             break;
         }
-        let request = base_request.with_messages(messages.clone());
+        let mut request = base_request.with_messages(messages.clone());
+        request.project_id = active_project_id.borrow().clone();
+        request.workspace_path = active_workspace_root.borrow().to_string_lossy().to_string();
         let model_step_index = model_steps.len() + 1;
         model_input_snapshots.push(build_task_processing_snapshot(
             runtime_session_id,
@@ -4641,13 +4643,14 @@ fn run_agent_loop_with(
                 .map(|usage| json!(usage))
                 .unwrap_or(Value::Null);
         }
+        let active_workspace_for_planning = active_workspace_root.borrow().clone();
         let all_planned_tools = rank_local_tool_candidates(
             plan_local_tools(run_key, &model_result)
                 .into_iter()
                 .map(|tool| {
                     compile_planned_tool_arguments(repair_planned_tool_arguments(
                         tool,
-                        workspace_root,
+                        &active_workspace_for_planning,
                     ))
                 })
                 .collect(),
@@ -4808,8 +4811,9 @@ fn run_agent_loop_with(
                     }
                 }
             }
+            let active_workspace_for_verification = active_workspace_root.borrow().clone();
             let acceptance_gate = evaluate_acceptance_gate(
-                workspace_root,
+                &active_workspace_for_verification,
                 request.task_goal.as_ref(),
                 &planned_tools,
                 &tool_results,
@@ -4963,9 +4967,11 @@ fn run_agent_loop_with(
                         if let Some(context) = request.backend_context.as_ref() {
                             routed_arguments["_backend_token"] = json!(context.token.trim());
                         }
+                        let active_workspace_path =
+                            active_workspace_root.borrow().to_string_lossy().to_string();
                         call_routed_mcp_tool(
                             &tool.tool_call_id,
-                            &request.workspace_path,
+                            &active_workspace_path,
                             &routed_arguments,
                             &route,
                             effective_permission_decision.as_ref(),
@@ -5041,9 +5047,10 @@ fn run_agent_loop_with(
             }
             if result.ok {
                 if allow_project_workspace_switch {
-                    if let Some(project_workspace_root) =
-                        project_workspace_root_from_tool_result(&tool.name, &result)
+                    if let Some((project_id, project_workspace_root)) =
+                        project_workspace_context_from_tool_result(&tool.name, &result)
                     {
+                        *active_project_id.borrow_mut() = project_id;
                         *active_workspace_root.borrow_mut() = project_workspace_root;
                     }
                 }
@@ -5236,8 +5243,11 @@ fn is_terminal_mcp_catalog_failure(result: &super::types::ToolExecutionResult) -
 }
 
 fn is_tauri_bot_local_chat_request(request: &ModelStepRequest) -> bool {
-    request
-        .mcp_config
+    is_tauri_bot_local_chat_config(&request.mcp_config)
+}
+
+fn is_tauri_bot_local_chat_config(mcp_config: &Value) -> bool {
+    mcp_config
         .get("botContext")
         .and_then(|context| context.get("runtime"))
         .and_then(|runtime| runtime.get("source"))
@@ -5246,24 +5256,30 @@ fn is_tauri_bot_local_chat_request(request: &ModelStepRequest) -> bool {
         .unwrap_or(false)
 }
 
-fn project_workspace_root_from_tool_result(
+fn project_workspace_context_from_tool_result(
     tool_name: &str,
     result: &super::types::ToolExecutionResult,
-) -> Option<PathBuf> {
-    if tool_name.trim() != "get_project" || !result.ok {
+) -> Option<(String, PathBuf)> {
+    if tool_name.trim() != "switch_project_workspace" || !result.ok {
         return None;
     }
-    let project = result
-        .content
-        .get("response")
-        .and_then(|response| response.get("project"))
-        .or_else(|| result.content.get("project"))?;
-    let workspace_path = json_string(project, &["workspace_path", "workspacePath"])?;
+    let project_id = json_string(&result.content, &["project_id", "projectId"])?;
+    let workspace_path = json_string(&result.content, &["workspace_path", "workspacePath"])?;
     let path = PathBuf::from(workspace_path.trim());
     if !path.is_absolute() {
         return None;
     }
-    path.canonicalize().ok().filter(|value| value.is_dir())
+    path.canonicalize()
+        .ok()
+        .filter(|value| value.is_dir())
+        .map(|path| (project_id, path))
+}
+
+fn project_workspace_root_from_tool_result(
+    tool_name: &str,
+    result: &super::types::ToolExecutionResult,
+) -> Option<PathBuf> {
+    project_workspace_context_from_tool_result(tool_name, result).map(|(_, path)| path)
 }
 
 fn json_string(value: &Value, keys: &[&str]) -> Option<String> {
@@ -5725,7 +5741,9 @@ fn tool_arguments_with_backend_context(
         let Some(object) = arguments.as_object_mut() else {
             return arguments;
         };
-        object.insert("project_id".to_string(), json!(project_id.trim()));
+        if !is_tauri_bot_local_chat_config(mcp_config) {
+            object.insert("project_id".to_string(), json!(project_id.trim()));
+        }
         object.insert(
             "_backend_api_base_url".to_string(),
             json!(normalize_local_backend_api_base_url(&context.api_base_url)),
@@ -5789,29 +5807,37 @@ fn tool_arguments_with_backend_context(
     }
     if !matches!(
         tool_name,
-        "list_projects"
-            | "get_project"
+        "list_bot_projects"
+            | "switch_project_workspace"
             | "get_project_deploy_options"
             | "deploy_workspace_files_to_target"
     ) {
         return arguments;
     }
-    let Some(context) = backend_context else {
-        return arguments;
-    };
     let Some(object) = arguments.as_object_mut() else {
         return arguments;
     };
-    if tool_name != "list_projects"
-        && object
-            .get("project_id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_none()
+    let is_bot_request = is_tauri_bot_local_chat_config(mcp_config);
+    if matches!(tool_name, "list_bot_projects" | "switch_project_workspace") {
+        if is_bot_request {
+            object.insert("_bot_request".to_string(), json!(true));
+        }
+        return arguments;
+    }
+    let Some(context) = backend_context else {
+        return arguments;
+    };
+    if object
+        .get("project_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
     {
         let normalized_project_id = project_id.trim();
-        if !normalized_project_id.is_empty() {
+        if !normalized_project_id.is_empty()
+            && (!is_bot_request || normalized_project_id != DESKTOP_BOT_GLOBAL_PROJECT_ID)
+        {
             object.insert("project_id".to_string(), json!(normalized_project_id));
         }
     }
@@ -9405,6 +9431,27 @@ fn build_desktop_local_context_message(request: &LocalChatRequest) -> Option<Run
     let project_id = request.project_id.trim();
     let chat_session_id = request.chat_session_id.trim();
     let workspace_path = request.workspace_path.trim();
+    let is_connector_request = is_tauri_bot_local_chat_config(&request.mcp_config);
+    let fallback_project_id = if is_connector_request && project_id == DESKTOP_BOT_GLOBAL_PROJECT_ID
+    {
+        ""
+    } else {
+        project_id
+    };
+    let selected_project_id = request
+        .mcp_config
+        .pointer("/botContext/workspaceSelection/projectId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_project_id);
+    let selected_project_name = request
+        .mcp_config
+        .pointer("/botContext/workspaceSelection/projectName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("");
     if project_id.is_empty() && chat_session_id.is_empty() && workspace_path.is_empty() {
         return None;
     }
@@ -9412,10 +9459,12 @@ fn build_desktop_local_context_message(request: &LocalChatRequest) -> Option<Run
         "桌面运行环境当前会话上下文：".to_string(),
         format!(
             "- project_id：{}",
-            if project_id.is_empty() {
+            if is_connector_request && selected_project_id.is_empty() {
+                "unknown"
+            } else if selected_project_id.is_empty() {
                 "unknown"
             } else {
-                project_id
+                selected_project_id
             }
         ),
         format!(
@@ -9434,8 +9483,25 @@ fn build_desktop_local_context_message(request: &LocalChatRequest) -> Option<Run
                 workspace_path
             }
         ),
-        "- 调用当前请求实际提供的项目级工具时，默认使用上述 project_id 和 chat_session_id。"
-            .to_string(),
+        if is_connector_request {
+            if selected_project_id.is_empty() {
+                "- 当前飞书会话尚未选择项目；收到项目查询或切换请求时，先调用 list_bot_projects，再按 project_id 调用 switch_project_workspace。"
+                    .to_string()
+            } else if selected_project_name.is_empty() {
+                format!(
+                    "- 当前飞书会话已选择项目 {}；如需切换项目，先调用 list_bot_projects，再按 project_id 调用 switch_project_workspace。",
+                    selected_project_id
+                )
+            } else {
+                format!(
+                    "- 当前飞书会话已选择项目 {}（{}）；如需切换项目，先调用 list_bot_projects，再按 project_id 调用 switch_project_workspace。",
+                    selected_project_id, selected_project_name
+                )
+            }
+        } else {
+            "- 调用当前请求实际提供的项目级工具时，默认使用上述 project_id 和 chat_session_id。"
+                .to_string()
+        },
     ]
     .join("\n");
     Some(RuntimeModelMessage::system(
@@ -9995,17 +10061,22 @@ fn tool_disabled_reason(
                 .to_string(),
         ),
         "list_projects" | "get_project" => {
-            let has_backend_context = request
-                .backend_context
-                .as_ref()
-                .map(|context| {
-                    !context.api_base_url.trim().is_empty() && !context.token.trim().is_empty()
-                })
-                .unwrap_or(false);
-            (!has_backend_context).then(|| {
-                "Project tools are disabled because no backend login context is available"
-                    .to_string()
-            })
+            if is_tauri_bot_local_chat_request(request) {
+                return Some(
+                    "Feishu bot sessions must use list_bot_projects and switch_project_workspace for project selection"
+                        .to_string(),
+                );
+            }
+            None
+        }
+        "list_bot_projects" | "switch_project_workspace" => {
+            if !is_tauri_bot_local_chat_request(request) {
+                return Some(
+                    "Bot project/workspace tools are only available to Feishu bot sessions"
+                        .to_string(),
+                );
+            }
+            None
         }
         "generate_image" | "edit_image" | "generate_video" | "generate_audio"
         | "transcribe_audio" => {
@@ -11186,27 +11257,171 @@ mod tests {
     }
 
     #[test]
-    fn extracts_project_workspace_root_from_get_project_result() {
+    fn extracts_project_workspace_root_only_from_switch_result() {
         let workspace = std::env::temp_dir().join(format!("runtime-project-{}", epoch_millis()));
         std::fs::create_dir_all(&workspace).expect("workspace dir");
         let result = super::super::types::ToolExecutionResult::ok(
-            "call_get_project".to_string(),
-            "get_project".to_string(),
+            "call_switch_project_workspace".to_string(),
+            "switch_project_workspace".to_string(),
             json!({
-                "response": {
-                    "project": {
-                        "id": "proj-b786c6f1",
-                        "workspace_path": workspace.to_string_lossy()
-                    }
-                }
+                "project_id": "proj-b786c6f1",
+                "workspace_path": workspace.to_string_lossy()
             }),
-            "已读取项目详情：浩成CRM".to_string(),
+            "已切换到项目工作区：浩成CRM".to_string(),
         );
 
-        let resolved = project_workspace_root_from_tool_result("get_project", &result)
-            .expect("workspace root");
+        let (project_id, resolved) =
+            project_workspace_context_from_tool_result("switch_project_workspace", &result)
+                .expect("workspace root");
+        assert_eq!(project_id, "proj-b786c6f1");
         assert_eq!(resolved, workspace.canonicalize().unwrap());
+        assert!(
+            project_workspace_root_from_tool_result("get_project", &result).is_none(),
+            "读取项目详情不能隐式变更当前工作区"
+        );
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn bot_project_tools_are_exposed_only_to_feishu_bot_sessions() {
+        let backend_context = LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "test-token".to_string(),
+        };
+        let mut desktop_request = test_model_request("列出项目");
+        desktop_request.backend_context = Some(backend_context.clone());
+
+        let desktop_tools = tool_definitions_for_request(&desktop_request);
+        assert!(desktop_tools
+            .iter()
+            .any(|tool| tool.name == "list_projects"));
+        assert!(desktop_tools.iter().any(|tool| tool.name == "get_project"));
+        assert!(!desktop_tools
+            .iter()
+            .any(|tool| tool.name == "list_bot_projects"));
+        assert!(!desktop_tools
+            .iter()
+            .any(|tool| tool.name == "switch_project_workspace"));
+
+        let desktop_offline_tools = tool_definitions_for_request(&test_model_request("列出项目"));
+        assert!(desktop_offline_tools
+            .iter()
+            .any(|tool| tool.name == "list_projects"));
+        assert!(desktop_offline_tools
+            .iter()
+            .any(|tool| tool.name == "get_project"));
+
+        let mut bot_request = desktop_request;
+        bot_request.backend_context = None;
+        bot_request.mcp_config = json!({
+            "botContext": {
+                "runtime": {
+                    "source": "tauri_bot_local_chat"
+                }
+            }
+        });
+        let bot_tools = tool_definitions_for_request(&bot_request);
+        assert!(bot_tools
+            .iter()
+            .any(|tool| tool.name == "list_bot_projects"));
+        assert!(bot_tools
+            .iter()
+            .any(|tool| tool.name == "switch_project_workspace"));
+        assert!(!bot_tools.iter().any(|tool| tool.name == "list_projects"));
+        assert!(!bot_tools.iter().any(|tool| tool.name == "get_project"));
+    }
+
+    #[test]
+    fn bot_workspace_switch_updates_following_model_step_context() {
+        let initial_workspace =
+            std::env::temp_dir().join(format!("runtime-bot-initial-{}", epoch_millis()));
+        let selected_workspace =
+            std::env::temp_dir().join(format!("runtime-bot-selected-{}", epoch_millis()));
+        std::fs::create_dir_all(&initial_workspace).unwrap();
+        std::fs::create_dir_all(&selected_workspace).unwrap();
+        let initial_workspace = initial_workspace.canonicalize().unwrap();
+        let selected_workspace = selected_workspace.canonicalize().unwrap();
+        let mut request = test_model_request("切换到 CRM 项目并继续处理");
+        request.project_id = "desktop-bot-global".to_string();
+        request.workspace_path = initial_workspace.to_string_lossy().to_string();
+        request.mcp_config = json!({
+            "botContext": {
+                "runtime": {
+                    "source": "tauri_bot_local_chat"
+                }
+            }
+        });
+        let model_call_count = Cell::new(0usize);
+        let selected_workspace_for_model = selected_workspace.clone();
+        let model_runner = |model_request: &ModelStepRequest| {
+            let call_index = model_call_count.get();
+            model_call_count.set(call_index + 1);
+            if call_index == 0 {
+                assert_eq!(model_request.project_id, "desktop-bot-global");
+                assert_eq!(
+                    model_request.workspace_path,
+                    initial_workspace.to_string_lossy()
+                );
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_switch_project".to_string(),
+                        name: "switch_project_workspace".to_string(),
+                        arguments: json!({"project_id": "proj-crm"}),
+                        summary: "switch project workspace".to_string(),
+                    }],
+                );
+            }
+
+            assert_eq!(call_index, 1);
+            assert_eq!(model_request.project_id, "proj-crm");
+            assert_eq!(
+                model_request.workspace_path,
+                selected_workspace_for_model.to_string_lossy()
+            );
+            test_model_result("已切换并继续处理项目。", Vec::new())
+        };
+        let selected_workspace_for_tool = selected_workspace.clone();
+        let tool_runner = |tool_request: ToolExecutionRequest| {
+            assert_eq!(tool_request.name, "switch_project_workspace");
+            assert_eq!(
+                tool_request.workspace_path,
+                initial_workspace.to_string_lossy()
+            );
+            assert_eq!(tool_request.arguments["project_id"], "proj-crm");
+            assert_eq!(tool_request.arguments["_bot_request"], true);
+            assert!(tool_request.arguments.get("_backend_token").is_none());
+            super::super::types::ToolExecutionResult::ok(
+                tool_request
+                    .tool_call_id
+                    .unwrap_or_else(|| "call_switch_project".to_string()),
+                tool_request.name,
+                json!({
+                    "project_id": "proj-crm",
+                    "workspace_path": selected_workspace_for_tool.to_string_lossy()
+                }),
+                "已切换到项目工作区：CRM".to_string(),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-bot-workspace-switch-test",
+            "runtime-bot-workspace-switch-test",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &initial_workspace,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok(), "{}", result.error());
+        assert_eq!(model_call_count.get(), 2);
+        assert_eq!(result.tool_results.len(), 1);
+        assert!(result.tool_results[0].ok);
+        let _ = std::fs::remove_dir_all(initial_workspace);
+        let _ = std::fs::remove_dir_all(selected_workspace);
     }
 
     #[test]
@@ -15514,9 +15729,11 @@ mod tests {
     fn legacy_local_backend_context_is_normalized_before_execution() {
         let tool = PlannedLocalTool {
             tool_call_id: "call_legacy_backend".to_string(),
-            name: "list_projects".to_string(),
-            arguments: json!({}),
-            summary: "list projects".to_string(),
+            name: "get_project_deploy_options".to_string(),
+            arguments: json!({
+                "project_id": "proj-test"
+            }),
+            summary: "read deploy options".to_string(),
         };
         let backend_context = LocalBackendContext {
             api_base_url: "http://127.0.0.1:3000/api".to_string(),
@@ -15627,13 +15844,43 @@ mod tests {
             tool.arguments.clone(),
         );
 
-        assert_eq!(
-            execution_args["_backend_api_base_url"],
-            "http://127.0.0.1:8000/api"
-        );
-        assert_eq!(execution_args["_backend_token"], "secret-token");
+        assert!(execution_args.get("_backend_api_base_url").is_none());
+        assert!(execution_args.get("_backend_token").is_none());
         assert!(execution_args.get("project_id").is_none());
         assert!(tool.arguments.get("_backend_token").is_none());
+    }
+
+    #[test]
+    fn bot_project_tools_receive_only_bot_marker_without_backend_context() {
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_switch_project".to_string(),
+            name: "switch_project_workspace".to_string(),
+            arguments: json!({"project_id": "proj-crm"}),
+            summary: "switch project workspace".to_string(),
+        };
+        let bot_context = json!({
+            "botContext": {
+                "runtime": {
+                    "source": "tauri_bot_local_chat"
+                }
+            }
+        });
+
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            "desktop-bot-global",
+            None,
+            &bot_context,
+            &[],
+            &[],
+            tool.arguments.clone(),
+        );
+
+        assert_eq!(execution_args["project_id"], "proj-crm");
+        assert_eq!(execution_args["_bot_request"], true);
+        assert!(execution_args.get("_backend_token").is_none());
+        assert!(tool.arguments.get("_backend_token").is_none());
+        assert!(tool.arguments.get("_bot_request").is_none());
     }
 
     #[test]
@@ -17544,6 +17791,38 @@ mod tests {
             .content
             .contains("workspace_path：/tmp/workspace"));
         assert_eq!(model_request.project_id, "proj-visible");
+    }
+
+    #[test]
+    fn unselected_feishu_bot_context_hides_internal_project_placeholder() {
+        let request = serde_json::from_value::<LocalChatRequest>(json!({
+            "projectId": "desktop-bot-global",
+            "chatSessionId": "chat-feishu-unselected",
+            "message": "列出项目",
+            "workspacePath": "/tmp/workspace",
+            "mcpConfig": {
+                "botContext": {
+                    "runtime": {
+                        "source": "tauri_bot_local_chat"
+                    },
+                    "workspaceSelection": null
+                }
+            }
+        }))
+        .unwrap();
+
+        let model_request = build_model_request(&request, "列出项目");
+        let context_message = model_request
+            .messages
+            .iter()
+            .find(|message| {
+                message.role == "system" && message.content.contains("桌面运行环境当前会话上下文")
+            })
+            .expect("desktop project context system message");
+
+        assert!(context_message.content.contains("project_id：unknown"));
+        assert!(context_message.content.contains("当前飞书会话尚未选择项目"));
+        assert!(!context_message.content.contains("desktop-bot-global"));
     }
 
     #[test]

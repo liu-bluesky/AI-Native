@@ -19,6 +19,9 @@ const liuagentDefinitions = read("src-tauri/src/liuagent_core/definitions.rs");
 const liuagentRuntime = read("src-tauri/src/liuagent_core/runtime.rs");
 const liuagentMod = read("src-tauri/src/liuagent_core/mod.rs");
 const liuagentPaths = read("src-tauri/src/liuagent_core/paths.rs");
+const liuagentProjectCatalog = read(
+  "src-tauri/src/liuagent_core/project_catalog.rs",
+);
 const liuagentProjectTools = read("src-tauri/src/liuagent_core/tools/projects.rs");
 const botFeishuSdkWorker = read("src-tauri/bot_workers/feishu_sdk_listener.py");
 const botFeishuSdkRequirements = read("src-tauri/bot_workers/requirements.txt");
@@ -28,6 +31,8 @@ const projectChat = read("src/views/projects/ProjectChat.vue");
 const botConnectorPage = read("src/views/system/SystemBotConnectors.vue");
 const botConnectorModule = read("src/components/system/BotPlatformConnectorModule.vue");
 const localModelRuntime = read("src/services/local-model-runtime.js");
+const localMainModelRuntime = read("src/services/local-main-model-runtime.js");
+const localProjectRepository = read("src/services/local-project-repository.js");
 const chatStorage = read("src/modules/project-chat/services/projectChatStorage.js");
 const shouldHandleEventMatch = botFeishu.match(
   /fn should_handle_event\([^)]*\) -> bool \{[\s\S]*?\n\}/,
@@ -45,9 +50,21 @@ assert.match(
 );
 
 assert.match(
+  liuagentProjectCatalog,
+  /pub fn global_project_catalog_path\(\) -> Result<PathBuf, String> \{[\s\S]*?desktop_runtime_root\(&home\)[\s\S]*?\.join\("projects"\)[\s\S]*?\.join\("catalog\.json"\)/,
+  "desktop-global project catalog must live under ~/.ai-employee/desktop-agent-runtime/projects/catalog.json",
+);
+
+assert.match(
   tauriMain,
   /fn global_bot_connector_config_path\(\) -> Result<PathBuf, String> \{[\s\S]*?desktop_runtime_root\(&home\)[\s\S]*?\.join\("bots"\)[\s\S]*?\.join\("connectors\.json"\)/,
   "global bot connector config must live under the desktop runtime bots directory",
+);
+
+assert.match(
+  tauriMain,
+  /fn read_global_project_catalog_file[\s\S]*?read_global_project_catalog[\s\S]*?fn write_global_project_catalog_file[\s\S]*?write_global_project_catalog/s,
+  "Tauri must expose the desktop-global project catalog independently of bot connector config",
 );
 
 assert.match(
@@ -58,14 +75,20 @@ assert.match(
 
 assert.match(
   appVue,
-  /buildLocalModelRuntime[\s\S]*syncLocalBotListeners[\s\S]*readGlobalBotConnectorConfigFile[\s\S]*startNativeFeishuLocalBotListener/s,
-  "desktop app shell must refresh local Feishu listeners from local model configuration without requiring ProjectChat to mount",
+  /resolveLocalMainModelRuntime[\s\S]*syncLocalBotListeners[\s\S]*readGlobalBotConnectorConfigFile[\s\S]*startNativeFeishuLocalBotListener/s,
+  "desktop app shell must refresh local Feishu listeners from the shared system main model without requiring ProjectChat to mount",
 );
 
 assert.match(
   appVue,
-  /function buildConnectorModelRuntime[\s\S]*if \(providerId\) \{[\s\S]*return buildLocalModelRuntime\(providerId, modelName\)[\s\S]*const existing = normalizeLocalModelRuntime/s,
-  "desktop bot listener sync must rebuild runtime from the selected provider/model before falling back to any stored runtime snapshot",
+  /function buildConnectorModelRuntime[\s\S]*return resolveLocalMainModelRuntime\(\)/s,
+  "desktop bot listener sync must rebuild runtime from the shared system main model",
+);
+
+assert.doesNotMatch(
+  appVue,
+  /function buildConnectorModelRuntime[\s\S]*(?:connector\.provider_id|connector\.model_name|connector\.model_runtime)/s,
+  "desktop bot listener sync must not use connector-specific model fields",
 );
 
 assert.match(
@@ -80,10 +103,22 @@ assert.doesNotMatch(
   "desktop bot listener sync must not call the backend desktop-runtime endpoint",
 );
 
+assert.doesNotMatch(
+  appVue,
+  /syncLocalProjectsToNativeCatalog/,
+  "bot listener and login lifecycle must not overwrite the desktop-global project catalog",
+);
+
 assert.match(
   chatStorage,
   /export function globalBotConnectorConfigPathLabel\(\) \{[\s\S]*?~\/\.ai-employee\/desktop-agent-runtime\/bots\/connectors\.json/,
   "frontend storage label must point to the local global bot connector config file",
+);
+
+assert.doesNotMatch(
+  chatStorage,
+  /project_workspaces|projectWorkspaces/,
+  "bot connector config storage must not persist project workspace choices",
 );
 
 assert.match(
@@ -92,22 +127,10 @@ assert.match(
   "bot connector page must read and write local global connector config through Tauri",
 );
 
-assert.match(
+assert.doesNotMatch(
   botConnectorPage,
-  /writeGlobalBotConnectorConfigFile[\s\S]*model_runtime/s,
-  "bot connector page must derive an optional model runtime snapshot from local provider configuration",
-);
-
-assert.match(
-  botConnectorPage,
-  /buildLocalModelRuntime[\s\S]*normalizeLocalModelRuntime/s,
-  "bot connector page must derive an optional model runtime snapshot from local provider configuration",
-);
-
-assert.match(
-  botConnectorPage,
-  /catch \{[\s\S]*model_runtime: null/s,
-  "bot connector save must not preserve a stale model_runtime snapshot when provider/model runtime rebuilding fails",
+  /buildLocalModelRuntime|normalizeLocalModelRuntime|model_runtime/s,
+  "bot connector page must not derive or persist a connector-specific model runtime",
 );
 
 assert.doesNotMatch(
@@ -124,14 +147,50 @@ assert.doesNotMatch(
 
 assert.match(
   botConnectorModule,
-  /readLocalModelProviders[\s\S]*fetchBotChatModelOptions[\s\S]*mergeBotChatProviders\(readLocalModelProviders\(\)\)/s,
-  "bot connector model selector must read local model providers",
+  /跟随系统主对话模型[\s\S]*机器人与系统主对话使用同一个模型渠道和模型选择/,
+  "bot connector module must show that bots follow the system main chat model",
 );
 
 assert.doesNotMatch(
   botConnectorModule,
-  /api\.get\(["']\/llm\/providers|import api from/,
-  "bot connector module must not call the backend provider list API",
+  /readLocalModelProviders|fetchBotChatModelOptions|mergeBotChatProviders|api\.get\(["']\/llm\/providers|import api from/,
+  "bot connector module must not load or show a separate model provider selector",
+);
+
+assert.doesNotMatch(
+  botConnectorModule,
+  /机器人提示词|system_prompt|prompt_policy|provider_id|model_name|model_runtime/,
+  "bot connector configuration must not expose a second agent prompt or model runtime",
+);
+
+assert.match(
+  botConnectorModule,
+  /项目来源[\s\S]*桌面项目目录/,
+  "bot connector configuration must identify the desktop project catalog as the project source",
+);
+
+assert.doesNotMatch(
+  botConnectorModule,
+  /机器人项目工作区|project_workspaces|projectWorkspaces|pickProjectWorkspace/,
+  "bot connector configuration must not expose project or workspace selection",
+);
+
+assert.match(
+  localProjectRepository,
+  /function mergeNativeProjectCatalogEntries[\s\S]*project\.workspace_path \|\| previous\.workspace_path[\s\S]*return \[\.\.\.merged\.values\(\)\]/s,
+  "desktop-global project catalog sync must preserve entries absent from the current browser cache",
+);
+
+assert.match(
+  localProjectRepository,
+  /function writeNativeProjectCatalog[\s\S]*readNativeGlobalProjectCatalogFile[\s\S]*mergeNativeProjectCatalogEntries\([\s\S]*parseNativeProjectCatalogEntries[\s\S]*writeNativeGlobalProjectCatalogFile[\s\S]*projects: mergedProjects/s,
+  "actual local project updates must merge entries into the desktop-global project catalog",
+);
+
+assert.match(
+  localProjectRepository,
+  /export function writeLocalProjects\(projects\) \{[\s\S]*scheduleNativeProjectCatalogSync\(normalized\)/,
+  "project changes must refresh the desktop-global project catalog",
 );
 
 assert.match(
@@ -141,21 +200,33 @@ assert.match(
 );
 
 assert.match(
-  botRuntime,
-  /const BOT_CONNECTOR_PROMPT_SOURCE: &str = "bot_connector\.system_prompt";/,
-  "bot runtime must identify connector.system_prompt as the only bot prompt source",
+  localMainModelRuntime,
+  /MAIN_PROVIDER_KEY = "default_ai_provider_id"[\s\S]*MAIN_MODEL_KEY = "default_ai_model_name"/s,
+  "shared local main model runtime must define canonical system main model keys",
+);
+
+assert.match(
+  localMainModelRuntime,
+  /main_chat_provider_id[\s\S]*mainChatProviderId[\s\S]*main_chat_model_name[\s\S]*mainChatModelName/s,
+  "shared local main model runtime must accept legacy system main model aliases",
+);
+
+assert.match(
+  localMainModelRuntime,
+  /export function resolveLocalMainModelRuntime[\s\S]*readLocalMainModelSelection[\s\S]*buildLocalModelRuntime[\s\S]*normalizeLocalModelRuntime/s,
+  "shared local main model runtime must build the desktop runtime from the system main model selection",
 );
 
 assert.match(
   botRuntime,
-  /let connector_prompt = request\.connector\.system_prompt\.trim\(\)\.to_string\(\);[\s\S]*?if !connector_prompt\.is_empty\(\) \{[\s\S]*?source: BOT_CONNECTOR_PROMPT_SOURCE\.to_string\(\)[\s\S]*?content: connector_prompt/,
-  "bot runtime must inject only a nonblank connector prompt",
+  /pub fn build_local_chat_request\(request: BotChatRequest\) -> LocalChatRequest \{[\s\S]*?system_prompt_parts: Vec::new\(\),/,
+  "bot runtime must pass through without injecting a connector-specific prompt",
 );
 
-assert.match(
+assert.doesNotMatch(
   botRuntime,
-  /let mut system_prompt_parts = Vec::new\(\);[\s\S]*?system_prompt_parts,/,
-  "bot runtime must use explicit prompt parts",
+  /connector_prompt|BOT_PROJECT_CONTEXT_PROMPT_SOURCE|bot_project_context\.policy/,
+  "bot runtime must not inject connector or project-routing prompt text",
 );
 
 assert.doesNotMatch(
@@ -172,26 +243,26 @@ assert.match(
 
 assert.match(
   botRuntime,
-  /"promptPolicy": "connector_system_prompt_only"/,
-  "bot runtime metadata must expose the connector-only prompt policy",
+  /"role": "connector_controller"/,
+  "bot runtime metadata must identify the bot as the connector controller",
 );
 
 assert.match(
   botMod,
-  /blank_connector_prompt_does_not_add_a_bot_prompt[\s\S]*assert!\(local_request\.system_prompt_parts\.is_empty\(\)\)/,
-  "bot unit tests must lock blank prompt behavior to no injected bot prompt",
+  /connector_metadata_does_not_become_a_model_prompt[\s\S]*system_prompt_parts\.is_empty\(\)/,
+  "bot unit tests must lock connector metadata out of model prompts",
 );
 
 assert.match(
   botMod,
-  /configured_connector_prompt_is_the_only_bot_prompt[\s\S]*bot_connector\.system_prompt/,
-  "bot unit tests must lock configured prompt behavior to connector.system_prompt",
+  /local_request\.mcp_config\["botContext"\][\s\S]*runtime[\s\S]*connector_controller/,
+  "bot unit tests must lock connector-controller runtime metadata",
 );
 
 assert.match(
   botRuntime,
-  /tool_access: "same_as_desktop_project_chat_tools"/,
-  "bot permission contract must grant the same tool surface as desktop project chat",
+  /project_access: "desktop_global_project_catalog_only"[\s\S]*tool_access: "connector_authorized_desktop_tools"/,
+  "bot permission contract must scope project access to the desktop-global catalog",
 );
 
 assert.match(
@@ -376,26 +447,20 @@ assert.match(
 
 assert.match(
   botFeishu,
-  /fn connector_model_runtime[\s\S]*model_runtime[\s\S]*modelRuntime[\s\S]*LocalModelRuntimeConfig/s,
-  "Feishu listener must restore a persisted desktop model runtime from the local connector config",
-);
-
-assert.match(
-  botFeishu,
   /listener-contexts\.json[\s\S]*persist_listener_context[\s\S]*start_persisted_local_listeners/s,
   "Feishu listener context must be persisted locally so enabled bots can restart with the desktop app",
 );
 
 assert.match(
   botFeishu,
-  /model_runtime: connector_model_runtime\(connector\)\.or\(context\.model_runtime\)/,
-  "Feishu persisted listener startup must prefer the latest connector model runtime over the previous listener context snapshot",
+  /model_runtime: context\.model_runtime/,
+  "Feishu persisted listener startup must use the shared main-model runtime snapshot",
 );
 
 assert.match(
   botFeishu,
-  /unwrap_or_else\(\|\| StoredFeishuListenerContext[\s\S]*default_bot_workspace_path/s,
-  "Feishu auto-start must not require a pre-existing listener-contexts.json file",
+  /unwrap_or_else\(\|\| StoredFeishuListenerContext \{[\s\S]*connector_id: connector_id\.clone\(\),[\s\S]*model_runtime: None,[\s\S]*mcp_config: load_global_mcp_config\(\),/s,
+  "Feishu auto-start must not require a pre-existing listener context or connector-owned workspace",
 );
 
 assert.match(
@@ -419,49 +484,134 @@ assert.doesNotMatch(
 assert.match(
   botFeishu,
   /const DESKTOP_BOT_GLOBAL_PROJECT_ID: &str = "desktop-bot-global";/,
-  "Feishu bot runtime must define a desktop-global virtual project",
+  "Feishu connector must use a neutral desktop-global runtime scope",
 );
 
 assert.match(
   botFeishu,
-  /let chat_session_id = bot_chat_session_id[\s\S]*?unwrap_or\(DESKTOP_BOT_GLOBAL_PROJECT_ID\)[\s\S]*?project_id: bound_project_id\.clone\(\)/s,
-  "Feishu bot runtime must use per-chat sessions and fall back to the desktop-global virtual project",
+  /fn catalog_bot_workspace_selection[\s\S]*find_global_project_catalog_entry[\s\S]*valid_bot_workspace_selection\(BotWorkspaceSelection \{[\s\S]*workspace_path: project\.workspace_path/s,
+  "Feishu connector must validate persisted chat selections against the desktop-global project catalog",
 );
 
-assert.match(
-  liuagentDefinitions,
-  /name: "list_projects"[\s\S]*真实项目列表[\s\S]*不要用 desktop-bot-global/,
-  "desktop bot tools must expose a backend-backed project list tool instead of treating desktop-bot-global as a real project",
+assert.doesNotMatch(
+  botFeishu,
+  /connector_project_workspaces|project_workspaces|projectWorkspaces/,
+  "Feishu connector must not load a connector-owned project workspace catalog",
 );
 
-assert.match(
-  liuagentDefinitions,
-  /name: "get_project"[\s\S]*读取当前桌面登录用户有权限访问的真实项目详情/,
-  "desktop bot tools must expose a backend-backed project detail tool",
-);
-
-assert.match(
-  liuagentRuntime,
-  /"list_projects" \| "get_project"[\s\S]*backend_context[\s\S]*Project tools are disabled because no backend login context is available/,
-  "project tools must be hidden when desktop backend login context is missing",
+assert.doesNotMatch(
+  botFeishu,
+  /StoredBotProjectBinding|load_bot_project_binding|persist_bot_project_binding|prefetch_bot_project_binding|project_ids_from_text|is_global_project_query/,
+  "Feishu connector must not bind, infer, or route projects before the main agent decides",
 );
 
 assert.match(
   liuagentRuntime,
-  /"list_projects"[\s\S]*"get_project"[\s\S]*"_backend_token"/,
-  "project tools must receive backend auth only at execution time",
+  /fn is_tauri_bot_local_chat_config[\s\S]*botContext[\s\S]*tauri_bot_local_chat/,
+  "shared runtime must recognize connector requests without changing the model agent",
+);
+
+assert.match(
+  liuagentRuntime,
+  /当前飞书会话尚未选择项目；收到项目查询或切换请求时，先调用 list_bot_projects，再按 project_id 调用 switch_project_workspace/,
+  "shared runtime must let the main agent choose from the desktop-global project catalog",
+);
+
+assert.match(
+  botFeishu,
+  /let chat_session_id = bot_chat_session_id[\s\S]*?load_bot_workspace_selection\(&context\.connector, &chat_session_id\)[\s\S]*?unwrap_or_else\(\|\| DESKTOP_BOT_GLOBAL_PROJECT_ID\.to_string\(\)\)[\s\S]*?project_id: project_id\.clone\(\)/s,
+  "Feishu connector must persist selections per chat while falling back to a neutral runtime scope",
+);
+
+assert.match(
+  liuagentDefinitions,
+  /name: "list_bot_projects"[\s\S]*不读取桌面当前登录用户[\s\S]*机器人连接器配置/s,
+  "bot project list definition must be independent of the desktop login user and connector config",
+);
+
+assert.match(
+  liuagentDefinitions,
+  /name: "switch_project_workspace"[\s\S]*桌面本机全局项目目录/s,
+  "bot workspace switch definition must use the desktop-global project catalog",
+);
+
+assert.match(
+  liuagentDefinitions,
+  /name: "list_projects"[\s\S]*本机全局项目目录[\s\S]*desktop-bot-global/,
+  "desktop project list must read the local global catalog and must not treat desktop-bot-global as a real project",
+);
+
+assert.match(
+  liuagentDefinitions,
+  /name: "get_project"[\s\S]*本机全局项目目录/,
+  "desktop project detail must read the local global catalog",
+);
+
+assert.doesNotMatch(
+  liuagentRuntime,
+  /Project tools are disabled because no backend login context is available/,
+  "desktop project tools must remain available without backend login context",
+);
+
+assert.match(
+  liuagentRuntime,
+  /"list_projects" \| "get_project" => \{[\s\S]*Feishu bot sessions must use list_bot_projects and switch_project_workspace for project selection[\s\S]*None/,
+  "Feishu bot sessions must keep using bot project tools instead of desktop list_projects",
+);
+
+assert.doesNotMatch(
+  liuagentRuntime,
+  /if !matches!\(\s*tool_name,\s*"list_projects"[\s\S]*"get_project"[\s\S]*"get_project_deploy_options"/s,
+  "list_projects/get_project must not receive backend auth at execution time",
 );
 
 assert.match(
   liuagentMod,
-  /use tools::projects::\{get_project, list_projects\};[\s\S]*"list_projects" => list_projects[\s\S]*"get_project" => get_project/s,
-  "project tools must be executed by the desktop liuagent runtime",
+  /use tools::projects::\{get_project, list_bot_projects, list_projects, switch_project_workspace\};[\s\S]*"list_bot_projects" => list_bot_projects[\s\S]*"switch_project_workspace" => switch_project_workspace/s,
+  "desktop liuagent runtime must execute the bot project and workspace tools",
 );
 
 assert.match(
   liuagentProjectTools,
-  /pub fn list_projects[\s\S]*backend_get_json[\s\S]*\/projects|fn projects_url[\s\S]*backend_url\(api_base_url, "projects"\)/s,
-  "list_projects must call the backend /api/projects endpoint",
+  /pub fn list_projects[\s\S]*list_catalog_projects[\s\S]*project_catalog\(\)\?/s,
+  "list_projects must read the desktop-global project catalog",
+);
+
+assert.match(
+  liuagentProjectTools,
+  /fn project_catalog\(\) -> Result<Vec<DesktopProjectCatalogEntry>, ToolError> \{[\s\S]*read_global_project_catalog/s,
+  "project tools must read the desktop-global project catalog at execution time",
+);
+
+assert.doesNotMatch(
+  liuagentProjectTools,
+  /backend_get_json|_backend_token|_backend_api_base_url/,
+  "desktop project tools must not query the backend or require a desktop login token",
+);
+
+assert.match(
+  liuagentRuntime,
+  /if matches!\(tool_name, "list_bot_projects" \| "switch_project_workspace"\) \{[\s\S]*if is_bot_request \{[\s\S]*"_bot_request"[\s\S]*return arguments/s,
+  "bot project tools must receive only the bot-session marker at execution time",
+);
+
+assert.doesNotMatch(
+  liuagentRuntime,
+  /_bot_project_workspaces|projectWorkspaces/,
+  "shared runtime must not pass connector-owned project workspace configuration to bot tools",
+);
+
+const switchBotProjectToolMatch = liuagentProjectTools.match(
+  /pub fn switch_project_workspace\(arguments: &Value\) -> Result<\(Value, String\), ToolError> \{[\s\S]*?\n\}\n\npub fn get_project/,
+);
+assert.ok(
+  switchBotProjectToolMatch,
+  "bot workspace switch implementation must be present",
+);
+assert.doesNotMatch(
+  switchBotProjectToolMatch[0],
+  /backend_get_json|_backend_token|_backend_api_base_url/,
+  "bot workspace switching must not query the backend or require a desktop login token",
 );
 
 assert.doesNotMatch(
@@ -520,8 +670,14 @@ assert.match(
 
 assert.match(
   bridge,
-  /botStartLocalChat: "bot_start_local_chat"[\s\S]*botStartFeishuLocalListener: "bot_start_feishu_local_listener"/,
-  "native bridge must expose Tauri bot chat and Feishu listener commands",
+  /readGlobalProjectCatalogFile: "read_global_project_catalog_file"[\s\S]*writeGlobalProjectCatalogFile: "write_global_project_catalog_file"[\s\S]*botStartFeishuLocalListener: "bot_start_feishu_local_listener"[\s\S]*botScanFeishuChats: "bot_scan_feishu_chats"/,
+  "native bridge must expose the desktop project catalog and desktop-owned Feishu listener commands",
+);
+
+assert.doesNotMatch(
+  bridge,
+  /bot_start_local_chat|bot_reply_feishu_message|bot_download_feishu_message_resource|bot_get_feishu_message|startNativeBotLocalChat|replyNativeFeishuBotMessage|downloadNativeFeishuMessageResource|getNativeFeishuMessage/,
+  "browser pages must not expose direct Feishu bot execution or message-control commands",
 );
 
 assert.match(
@@ -538,44 +694,14 @@ assert.doesNotMatch(
 
 assert.doesNotMatch(
   projectChat,
-  /subscribeNativeFeishuLocalBotEvents\(handleNativeFeishuLocalBotEvent\)/,
-  "ProjectChat must not be the required consumer for Feishu bot message events",
-);
-
-assert.match(
-  projectChat,
-  /function normalizeLocalFeishuBotEvent[\s\S]*event\.message[\s\S]*raw_content[\s\S]*mentions/s,
-  "ProjectChat must normalize official nested Feishu event.message payloads",
-);
-
-assert.match(
-  projectChat,
-  /function buildLocalFeishuBotAttachments[\s\S]*downloadNativeFeishuMessageResource/s,
-  "ProjectChat must pass Feishu resources into local bot chat as attachments",
-);
-
-assert.match(
-  projectChat,
-  /const localFeishuBotStatusText = computed[\s\S]*飞书监听失败[\s\S]*飞书监听已就绪/s,
-  "ProjectChat must surface local Feishu listener status instead of failing silently",
-);
-
-assert.match(
-  projectChat,
-  /function normalizeLocalFeishuBotStatusMessage[\s\S]*error\.message[\s\S]*error\.hint/s,
-  "ProjectChat must normalize Feishu local listener error envelopes for visible diagnostics",
+  /readGlobalBotConnectorConfigFile|startNativeBotLocalChat|syncLocalFeishuBotListeners|handleNativeFeishuLocalBotEvent|replyNativeFeishuBotMessage|downloadNativeFeishuMessageResource|getNativeFeishuMessage/,
+  "ProjectChat must not own Feishu bot listener, project selection, or message-control work",
 );
 
 assert.doesNotMatch(
   projectChat,
   /\/api\/bot-connectors|bot_local_chat|run_project_chat_once|external-agent\/tasks\/claim|completeDesktopBotRunnerTask|claimDesktopBotRunnerTaskOnce|desktopBotRunner/,
   "ProjectChat bot path must not call backend bot connector APIs, backend bot_local_chat, or the old backend desktop bot task queue",
-);
-
-assert.match(
-  botConnectorModule,
-  /未填写机器人提示词，运行时不会注入内置机器人提示词/,
-  "bot connector diagnostics must explain that blank prompt means no built-in bot prompt",
 );
 
 console.log("local bot runtime checks passed");

@@ -15,6 +15,8 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(debug_assertions)]
+use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri::{Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
@@ -35,6 +37,15 @@ struct ClipboardFileResult {
     copied: bool,
     path: String,
     name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalFileReadResult {
+    name: String,
+    mime_type: String,
+    size: u64,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -863,43 +874,6 @@ async fn liuagent_classify_permission_reply(
 }
 
 #[tauri::command]
-async fn bot_start_local_chat(
-    app: tauri::AppHandle,
-    request: bot::BotChatRequest,
-) -> liuagent_core::LocalChatResult {
-    let chat_session_id = request.chat_session_id.trim().to_string();
-    let live_events = Arc::new(Mutex::new(Vec::new()));
-    let live_events_for_worker = Arc::clone(&live_events);
-    let app_for_worker = app.clone();
-
-    match tauri::async_runtime::spawn_blocking(move || {
-        bot::start_bot_chat_with_event_sink(request, |event| {
-            if let Ok(mut items) = live_events_for_worker.lock() {
-                items.push(event.clone());
-            }
-            let _ = app_for_worker.emit("bot-runtime-event", event.clone());
-            let _ = app_for_worker.emit("bot://runtime-event", event);
-        })
-    })
-    .await
-    {
-        Ok(mut result) => {
-            if let Ok(items) = live_events.lock() {
-                result.runtime_events = items.clone();
-            }
-            result
-        }
-        Err(error) => liuagent_core::LocalChatResult::failed(
-            chat_session_id,
-            liuagent_core::ToolError::new(
-                "runtime.join_failed",
-                format!("bot local chat worker failed: {error}"),
-            ),
-        ),
-    }
-}
-
-#[tauri::command]
 fn bot_start_feishu_local_listener(
     app: tauri::AppHandle,
     request: bot::feishu::FeishuLocalListenerStartRequest,
@@ -920,31 +894,10 @@ fn bot_list_feishu_local_listeners() -> Vec<bot::feishu::FeishuLocalListenerStat
 }
 
 #[tauri::command]
-fn bot_reply_feishu_message(
-    request: bot::feishu::FeishuLocalReplyRequest,
-) -> Result<bot::feishu::FeishuLocalReplyResult, String> {
-    bot::feishu::reply_message(request)
-}
-
-#[tauri::command]
 fn bot_scan_feishu_chats(
     request: bot::feishu::FeishuChatScanRequest,
 ) -> Result<bot::feishu::FeishuChatScanResult, String> {
     bot::feishu::scan_chats(request)
-}
-
-#[tauri::command]
-fn bot_download_feishu_message_resource(
-    request: bot::feishu::FeishuResourceDownloadRequest,
-) -> Result<bot::feishu::FeishuResourceDownloadResult, String> {
-    bot::feishu::download_resource(request)
-}
-
-#[tauri::command]
-fn bot_get_feishu_message(
-    request: bot::feishu::FeishuMessageGetRequest,
-) -> Result<bot::feishu::FeishuMessageGetResult, String> {
-    bot::feishu::get_message(request)
 }
 
 #[tauri::command]
@@ -1593,6 +1546,64 @@ fn write_global_bot_connector_config_file(
 }
 
 #[tauri::command]
+fn read_global_project_catalog_file() -> Result<WebToolsConfigFileResult, String> {
+    let target = liuagent_core::global_project_catalog_path()?;
+    let catalog = liuagent_core::read_global_project_catalog()?;
+    let content = serde_json::to_string_pretty(&catalog)
+        .map_err(|err| format!("无法序列化全局项目目录：{err}"))?;
+    Ok(WebToolsConfigFileResult {
+        scope: "global".to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: target.exists(),
+        content: format!("{content}\n"),
+    })
+}
+
+#[tauri::command]
+fn write_global_project_catalog_file(content: String) -> Result<WebToolsConfigFileResult, String> {
+    let catalog = liuagent_core::parse_project_catalog_content(&content)?;
+    let catalog = liuagent_core::write_global_project_catalog(catalog)?;
+    let target = liuagent_core::global_project_catalog_path()?;
+    let content = serde_json::to_string_pretty(&catalog)
+        .map_err(|err| format!("无法序列化全局项目目录：{err}"))?;
+    Ok(WebToolsConfigFileResult {
+        scope: "global".to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: true,
+        content: format!("{content}\n"),
+    })
+}
+
+#[tauri::command]
+fn read_global_ftp_credentials_file() -> Result<WebToolsConfigFileResult, String> {
+    let target = liuagent_core::global_ftp_credentials_path()?;
+    let credentials = liuagent_core::read_global_ftp_credentials()?;
+    let content = serde_json::to_string_pretty(&credentials)
+        .map_err(|err| format!("无法序列化全局 FTP 连接：{err}"))?;
+    Ok(WebToolsConfigFileResult {
+        scope: "global".to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: target.exists(),
+        content: format!("{content}\n"),
+    })
+}
+
+#[tauri::command]
+fn write_global_ftp_credentials_file(content: String) -> Result<WebToolsConfigFileResult, String> {
+    let credentials = liuagent_core::parse_ftp_credentials_content(&content)?;
+    let credentials = liuagent_core::write_global_ftp_credentials(credentials)?;
+    let target = liuagent_core::global_ftp_credentials_path()?;
+    let content = serde_json::to_string_pretty(&credentials)
+        .map_err(|err| format!("无法序列化全局 FTP 连接：{err}"))?;
+    Ok(WebToolsConfigFileResult {
+        scope: "global".to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: true,
+        content: format!("{content}\n"),
+    })
+}
+
+#[tauri::command]
 fn open_external_url(url: String) -> Result<bool, String> {
     let normalized = url.trim();
     if normalized.is_empty() {
@@ -1649,6 +1660,92 @@ fn copy_resource_file_to_clipboard(
         path: output_path.to_string_lossy().to_string(),
         name: output_name,
     })
+}
+
+#[tauri::command]
+fn read_local_file(path: String) -> Result<LocalFileReadResult, String> {
+    let target = PathBuf::from(path.trim());
+    if target.as_os_str().is_empty() {
+        return Err("缺少本地文件路径".to_string());
+    }
+    if !target.exists() {
+        return Err("拖入的文件不存在".to_string());
+    }
+    if !target.is_file() {
+        return Err("拖入的路径不是文件".to_string());
+    }
+    let metadata = target
+        .metadata()
+        .map_err(|err| format!("无法读取文件信息：{err}"))?;
+    if metadata.len() > 100 * 1024 * 1024 {
+        return Err("文件超过 100MB，暂不支持上传".to_string());
+    }
+    let bytes = fs::read(&target).map_err(|err| format!("无法读取拖入文件：{err}"))?;
+    let name = target
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "dropped-file".to_string());
+    Ok(LocalFileReadResult {
+        mime_type: mime_type_for_path(&target).to_string(),
+        name,
+        size: metadata.len(),
+        bytes,
+    })
+}
+
+#[tauri::command]
+fn open_desktop_devtools(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        window.open_devtools();
+        return Ok(());
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = window;
+        Err("开发者工具仅在桌面调试构建中可用".to_string())
+    }
+}
+
+fn mime_type_for_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
+    }
 }
 
 fn load_clipboard_resource(
@@ -2689,6 +2786,48 @@ fn write_runner_permission_decisions(
     fs::write(path, content).map_err(|err| err.to_string())
 }
 
+fn desktop_file_drag_drop_payload(event: &tauri::DragDropEvent) -> Option<Value> {
+    match event {
+        tauri::DragDropEvent::Enter { paths, position } => Some(json!({
+            "type": "enter",
+            "paths": paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+            "position": { "x": position.x, "y": position.y },
+        })),
+        tauri::DragDropEvent::Over { position } => Some(json!({
+            "type": "over",
+            "paths": Vec::<String>::new(),
+            "position": { "x": position.x, "y": position.y },
+        })),
+        tauri::DragDropEvent::Drop { paths, position } => Some(json!({
+            "type": "drop",
+            "paths": paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+            "position": { "x": position.x, "y": position.y },
+        })),
+        tauri::DragDropEvent::Leave => Some(json!({
+            "type": "leave",
+            "paths": Vec::<String>::new(),
+        })),
+        _ => None,
+    }
+}
+
+fn emit_desktop_file_drag_drop<R: tauri::Runtime, E: tauri::Emitter<R>>(
+    emitter: &E,
+    payload: &Value,
+) {
+    #[cfg(debug_assertions)]
+    eprintln!("[desktop-file-drag-drop] {}", payload);
+    if let Err(error) = emitter.emit("desktop-file-drag-drop", payload) {
+        eprintln!("[desktop-file-drag-drop] event emit failed: {error}");
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(
@@ -2696,6 +2835,24 @@ fn main() {
                 .pubkey(DESKTOP_UPDATE_PUBLIC_KEY)
                 .build(),
         )
+        .on_window_event(|window, event| {
+            let tauri::WindowEvent::DragDrop(drag_event) = event else {
+                return;
+            };
+            if let Some(payload) = desktop_file_drag_drop_payload(drag_event) {
+                emit_desktop_file_drag_drop(window, &payload);
+                emit_desktop_file_drag_drop(&window.app_handle(), &payload);
+            }
+        })
+        .on_webview_event(|webview, event| {
+            let tauri::WebviewEvent::DragDrop(drag_event) = event else {
+                return;
+            };
+            if let Some(payload) = desktop_file_drag_drop_payload(drag_event) {
+                emit_desktop_file_drag_drop(webview, &payload);
+                emit_desktop_file_drag_drop(&webview.app_handle(), &payload);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_desktop_version,
             check_desktop_update,
@@ -2721,8 +2878,14 @@ fn main() {
             write_project_web_tools_config_file,
             read_global_bot_connector_config_file,
             write_global_bot_connector_config_file,
+            read_global_project_catalog_file,
+            write_global_project_catalog_file,
+            read_global_ftp_credentials_file,
+            write_global_ftp_credentials_file,
             open_external_url,
             copy_resource_file_to_clipboard,
+            read_local_file,
+            open_desktop_devtools,
             classify_runner_command,
             run_runner_command,
             record_runner_permission_decision,
@@ -2735,14 +2898,10 @@ fn main() {
             liuagent_start_local_chat,
             liuagent_pause_local_chat,
             liuagent_classify_permission_reply,
-            bot_start_local_chat,
             bot_start_feishu_local_listener,
             bot_stop_feishu_local_listener,
             bot_list_feishu_local_listeners,
-            bot_reply_feishu_message,
             bot_scan_feishu_chats,
-            bot_download_feishu_message_resource,
-            bot_get_feishu_message,
             liuagent_prepare_agent_invocation,
             liuagent_recover_runtime_state,
             liuagent_refresh_runtime_job,
@@ -2765,6 +2924,34 @@ fn main() {
             project_chat_store::agent_supervision_find_answer
         ])
         .setup(|app| {
+            #[cfg(debug_assertions)]
+            {
+                let app_handle = app.handle().clone();
+                let open_inspector = MenuItem::with_id(
+                    &app_handle,
+                    "open_web_inspector",
+                    "打开 Web Inspector",
+                    true,
+                    Some("CmdOrCtrl+Alt+I"),
+                )?;
+                let developer_menu = Submenu::with_id_and_items(
+                    &app_handle,
+                    "developer",
+                    "开发",
+                    true,
+                    &[&open_inspector],
+                )?;
+                let menu = Menu::default(&app_handle)?;
+                menu.append(&developer_menu)?;
+                app_handle.set_menu(menu)?;
+                app_handle.on_menu_event(|app_handle, event| {
+                    if event.id() == "open_web_inspector" {
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            window.open_devtools();
+                        }
+                    }
+                });
+            }
             bot::feishu::start_persisted_local_listeners(app.handle().clone());
             Ok(())
         })

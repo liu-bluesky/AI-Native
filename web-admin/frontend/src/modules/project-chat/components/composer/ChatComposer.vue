@@ -63,10 +63,14 @@
           'is-focused': inputFocusedModel,
           'is-dragover': isDragging,
         }"
-        @dragover.prevent="$emit('drag-over', $event)"
-        @dragleave.prevent="$emit('drag-leave', $event)"
-        @drop.prevent="$emit('drop-files', $event)"
+        @dragenter.prevent.stop="$emit('drag-over', $event)"
+        @dragover.prevent.stop="$emit('drag-over', $event)"
+        @dragleave.prevent.stop="$emit('drag-leave', $event)"
+        @drop.prevent.stop="$emit('drop-files', $event)"
       >
+        <div v-if="isDragging" class="chat-drop-hint" aria-hidden="true">
+          <span>释放上传图片或文件</span>
+        </div>
         <div v-if="contextRefs.length" class="composer-context-area">
           <div class="composer-context-area__header">
             <span>已追加 {{ contextRefs.length }} 项会话内容</span>
@@ -209,6 +213,52 @@
 
         <div class="input-footer">
           <div class="footer-left">
+            <el-upload
+              v-if="attachmentSupported"
+              class="composer-upload"
+              action="#"
+              :auto-upload="false"
+              :show-file-list="false"
+              :accept="uploadAccept"
+              :multiple="true"
+              :on-change="emitFileChange"
+              :disabled="isExternalAgentMode || !selectedProjectId"
+            >
+              <el-tooltip content="添加附件" placement="top">
+                <el-button
+                  class="plus-button"
+                  :class="{
+                    'is-ready':
+                      attachmentSupported &&
+                      selectedProjectId &&
+                      !isExternalAgentMode,
+                  }"
+                  text
+                  circle
+                  :disabled="isExternalAgentMode || !selectedProjectId"
+                >
+                  <el-icon><Plus /></el-icon>
+                </el-button>
+              </el-tooltip>
+            </el-upload>
+            <el-tooltip
+              v-else
+              :content="`当前模型不支持附件输入${attachmentModeLabel ? '（' + attachmentModeLabel + '）' : ''}`"
+              placement="top"
+            >
+              <el-button class="plus-button" text circle disabled>
+                <el-icon><Plus /></el-icon>
+              </el-button>
+            </el-tooltip>
+            <span
+              class="attachment-hint"
+              :class="{
+                'is-disabled': !attachmentSupported || !selectedProjectId,
+              }"
+            >
+              <el-icon><Document /></el-icon>
+              <span>{{ attachmentHintText }}</span>
+            </span>
             <el-button
               v-if="isChatSettingsDisplayReady"
               class="chat-model-routing-trigger"
@@ -230,47 +280,6 @@
             >
               项目配置加载中
             </div>
-            <el-upload
-              v-if="attachmentSupported"
-              action="#"
-              :auto-upload="false"
-              :show-file-list="false"
-              :accept="uploadAccept"
-              :multiple="true"
-              :on-change="emitFileChange"
-              :disabled="isExternalAgentMode || !selectedProjectId"
-            >
-              <el-tooltip content="添加图片" placement="top">
-                <el-button text circle>
-                  <el-icon><Picture /></el-icon>
-                </el-button>
-              </el-tooltip>
-            </el-upload>
-            <el-upload
-              v-if="attachmentSupported"
-              action="#"
-              :auto-upload="false"
-              :show-file-list="false"
-              :accept="uploadAccept"
-              :multiple="true"
-              :on-change="emitFileChange"
-              :disabled="isExternalAgentMode || !selectedProjectId"
-            >
-              <el-tooltip content="添加文档" placement="top">
-                <el-button text circle>
-                  <el-icon><Document /></el-icon>
-                </el-button>
-              </el-tooltip>
-            </el-upload>
-            <el-tooltip
-              v-else
-              :content="`当前模型不支持附件输入${attachmentModeLabel ? '（' + attachmentModeLabel + '）' : ''}`"
-              placement="top"
-            >
-              <el-button text circle disabled>
-                <el-icon><Document /></el-icon>
-              </el-button>
-            </el-tooltip>
             <slot name="media-parameters" />
             <div v-if="showLocalAgentAuthLevel" class="local-agent-auth-level">
               <span class="local-agent-auth-level__label">授权级别</span>
@@ -394,6 +403,7 @@ import { computed, ref } from "vue";
 import {
   Delete,
   Document,
+  Plus,
   Picture,
   Promotion,
   Setting,
@@ -499,6 +509,16 @@ const localAgentAuthLevelModel = computed({
   set: (value) => emit("update:localAgentAuthLevel", value),
 });
 
+const attachmentHintText = computed(() => {
+  if (!props.attachmentSupported) {
+    return `当前模型不支持附件${props.attachmentModeLabel ? `（${props.attachmentModeLabel}）` : ""}`;
+  }
+  if (!props.selectedProjectId) {
+    return "选择项目后可上传";
+  }
+  return "可上传文件";
+});
+
 function emitFileChange(uploadFile, uploadFiles) {
   emit("file-change", uploadFile, uploadFiles);
 }
@@ -518,7 +538,10 @@ function contextRefTypeLabel(type) {
 
 defineExpose({
   querySelector(selector) {
-    return inputWrapperRef.value?.querySelector?.(selector);
+    const inputWrapper = inputWrapperRef.value;
+    if (!inputWrapper) return null;
+    if (inputWrapper.matches?.(selector)) return inputWrapper;
+    return inputWrapper.querySelector?.(selector) || null;
   },
 });
 </script>

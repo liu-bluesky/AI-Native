@@ -102,6 +102,7 @@
               'is-maximized': window.maximized,
               'is-dragging': draggingWindowId === window.id,
               'is-resizing': resizingWindowId === window.id,
+              'is-file-drop-target': window.id === fileDropWindowId,
             }"
             :style="windowStyle(window)"
             @pointerdown="handleWindowPointerDown(window)"
@@ -161,6 +162,14 @@
               <div class="desktop-system__window-frame">
                 <slot name="window" :window="window" />
               </div>
+            </div>
+
+            <div
+              v-if="fileDropWindowId === window.id"
+              class="desktop-system__window-drop-overlay"
+              aria-hidden="true"
+            >
+              <span>释放到此窗口即可添加附件</span>
             </div>
 
             <template v-if="!window.maximized">
@@ -323,6 +332,10 @@ const props = defineProps({
   showLauncher: {
     type: Boolean,
     default: false,
+  },
+  fileDropWindowId: {
+    type: String,
+    default: "",
   },
   wallpaperAppearance: {
     type: Object,
@@ -1584,6 +1597,30 @@ onBeforeUnmount(() => {
 
 .desktop-system__window.is-resizing {
   transition: none;
+}
+
+.desktop-system__window.is-file-drop-target {
+  box-shadow:
+    0 0 0 2px rgba(37, 99, 235, 0.42),
+    0 30px 84px rgba(15, 23, 42, 0.16),
+    0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.desktop-system__window-drop-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 40;
+  grid-area: 1 / 1 / -1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border: 2px dashed rgba(37, 99, 235, 0.45);
+  border-radius: 22px;
+  background: rgba(239, 246, 255, 0.72);
+  color: #1d4ed8;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .desktop-system__window-bar {

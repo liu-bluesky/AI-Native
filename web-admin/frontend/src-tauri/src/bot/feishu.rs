@@ -1,5 +1,3 @@
-use base64::{engine::general_purpose, Engine as _};
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -12,10 +10,12 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::bot::types::{BotChatRequest, BotConnectorConfig, BotSourceContext};
+use crate::bot::types::{
+    BotChatRequest, BotConnectorConfig, BotSourceContext, BotWorkspaceSelection,
+};
 use crate::liuagent_core::{
-    execute_tool, LocalBackendContext, LocalChatMessage, LocalChatResult, LocalModelRuntimeConfig,
-    PermissionDecisionInput, ToolExecutionRequest,
+    find_global_project_catalog_entry, LocalChatMessage, LocalChatResult, LocalModelRuntimeConfig,
+    PermissionDecisionInput,
 };
 
 const FEISHU_SDK_WORKER_RELATIVE_PATH: &str = "bot_workers/feishu_sdk_listener.py";
@@ -38,15 +38,9 @@ fn processing_events() -> &'static Mutex<HashSet<String>> {
 pub struct FeishuLocalListenerStartRequest {
     pub connector_id: String,
     #[serde(default)]
-    pub workspace_path: String,
-    #[serde(default)]
-    pub owner_username: String,
-    #[serde(default)]
     pub model_runtime: Option<LocalModelRuntimeConfig>,
     #[serde(default)]
     pub mcp_config: Value,
-    #[serde(default)]
-    pub backend_context: Option<LocalBackendContext>,
     #[serde(default)]
     pub permission_decision: Option<PermissionDecisionInput>,
 }
@@ -55,14 +49,10 @@ pub struct FeishuLocalListenerStartRequest {
 #[serde(rename_all = "camelCase")]
 struct StoredFeishuListenerContext {
     connector_id: String,
-    workspace_path: String,
-    owner_username: String,
     #[serde(default)]
     model_runtime: Option<LocalModelRuntimeConfig>,
     #[serde(default)]
     mcp_config: Value,
-    #[serde(default)]
-    backend_context: Option<LocalBackendContext>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -78,7 +68,7 @@ struct StoredBotConversation {
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
-struct StoredBotProjectBinding {
+struct StoredBotWorkspaceSelection {
     version: u32,
     connector_id: String,
     chat_session_id: String,
@@ -124,20 +114,13 @@ struct StoredBotFullAccessGrant {
     updated_at_epoch_ms: u128,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FeishuLocalReplyRequest {
-    #[serde(default)]
-    pub connector_id: String,
+#[derive(Debug)]
+struct FeishuLocalReplyRequest {
     pub message_id: String,
     pub content: String,
-    #[serde(default)]
     pub content_format: String,
-    #[serde(default)]
     pub reply_identity: String,
-    #[serde(default)]
     pub reply_in_thread: bool,
-    #[serde(default)]
     pub idempotency_key: String,
 }
 
@@ -153,19 +136,9 @@ pub struct FeishuLocalListenerStatus {
     pub reason: String,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FeishuLocalReplyResult {
-    pub ok: bool,
-    pub stdout: String,
-    pub stderr: String,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeishuChatScanRequest {
-    #[serde(default)]
-    pub identity: String,
     #[serde(default)]
     pub page_size: u16,
     #[serde(default)]
@@ -183,50 +156,6 @@ pub struct FeishuChatScanResult {
     pub message: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FeishuResourceDownloadRequest {
-    pub message_id: String,
-    pub file_key: String,
-    #[serde(default)]
-    pub resource_type: String,
-    #[serde(default)]
-    pub identity: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FeishuResourceDownloadResult {
-    pub ok: bool,
-    pub local_path: String,
-    pub name: String,
-    pub size: u64,
-    pub data_url: String,
-    pub resource_type: String,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FeishuMessageGetRequest {
-    pub message_id: String,
-    #[serde(default)]
-    pub identity: String,
-    #[serde(default)]
-    pub download_resources: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FeishuMessageGetResult {
-    pub ok: bool,
-    pub message_id: String,
-    pub payload: Value,
-    pub stdout: String,
-    pub stderr: String,
-}
-
 struct FeishuListenerProcess {
     status: FeishuLocalListenerStatus,
     child: Child,
@@ -238,7 +167,6 @@ struct FeishuBotRuntimeContext {
     workspace_path: String,
     model_runtime: Option<LocalModelRuntimeConfig>,
     mcp_config: Value,
-    backend_context: Option<LocalBackendContext>,
     permission_decision: Option<PermissionDecisionInput>,
 }
 
@@ -260,8 +188,8 @@ fn global_bot_conversation_dir() -> Result<PathBuf, String> {
     Ok(global_bot_runtime_dir()?.join("conversations"))
 }
 
-fn global_bot_project_binding_dir() -> Result<PathBuf, String> {
-    Ok(global_bot_runtime_dir()?.join("project-bindings"))
+fn global_bot_workspace_selection_dir() -> Result<PathBuf, String> {
+    Ok(global_bot_runtime_dir()?.join("workspace-selections"))
 }
 
 fn global_bot_pending_approval_dir() -> Result<PathBuf, String> {
@@ -340,45 +268,6 @@ fn default_bot_workspace_path() -> PathBuf {
     path
 }
 
-fn resolve_bot_workspace_path(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return default_bot_workspace_path().to_string_lossy().to_string();
-    }
-    trimmed.to_string()
-}
-
-fn normalize_backend_api_base_url(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    let Ok(mut url) = Url::parse(trimmed) else {
-        return trimmed.trim_end_matches('/').to_string();
-    };
-    let is_local_host = matches!(
-        url.host_str(),
-        Some("127.0.0.1") | Some("localhost") | Some("::1")
-    );
-    let is_api_path = {
-        let path = url.path().trim_end_matches('/');
-        path == "/api" || path.starts_with("/api/")
-    };
-    if is_local_host && url.port() == Some(3000) && is_api_path {
-        let _ = url.set_port(Some(8000));
-    }
-    url.to_string().trim_end_matches('/').to_string()
-}
-
-fn normalize_backend_context(
-    backend_context: Option<LocalBackendContext>,
-) -> Option<LocalBackendContext> {
-    backend_context.map(|mut context| {
-        context.api_base_url = normalize_backend_api_base_url(&context.api_base_url);
-        context
-    })
-}
-
 fn load_local_bot_connectors() -> Result<Vec<Value>, String> {
     let path = global_bot_connector_config_path()?;
     let content =
@@ -420,23 +309,14 @@ fn load_stored_listener_contexts() -> Vec<StoredFeishuListenerContext> {
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|item| {
-            serde_json::from_value::<StoredFeishuListenerContext>(item)
-                .ok()
-                .map(|mut context| {
-                    context.backend_context = normalize_backend_context(context.backend_context);
-                    context
-                })
-        })
+        .filter_map(|item| serde_json::from_value::<StoredFeishuListenerContext>(item).ok())
         .collect()
 }
 
 fn persist_listener_context(context: StoredFeishuListenerContext) {
-    if context.connector_id.trim().is_empty() || context.workspace_path.trim().is_empty() {
+    if context.connector_id.trim().is_empty() {
         return;
     }
-    let mut context = context;
-    context.backend_context = normalize_backend_context(context.backend_context);
     let Ok(path) = global_bot_listener_context_path() else {
         return;
     };
@@ -481,23 +361,12 @@ fn connector_bool(connector: &Value, snake: &str, camel: &str, fallback: bool) -
         .unwrap_or(fallback)
 }
 
-fn connector_model_runtime(connector: &Value) -> Option<LocalModelRuntimeConfig> {
-    connector
-        .get("model_runtime")
-        .or_else(|| connector.get("modelRuntime"))
-        .and_then(|value| serde_json::from_value::<LocalModelRuntimeConfig>(value.clone()).ok())
-}
-
-fn connector_config_from_value(connector: &Value, owner_username: &str) -> BotConnectorConfig {
+fn connector_config_from_value(connector: &Value) -> BotConnectorConfig {
     BotConnectorConfig {
         connector_id: connector_field(connector, "id", "id"),
         platform: connector_field(connector, "platform", "platform"),
         name: connector_field(connector, "name", "name"),
-        system_prompt: connector_field(connector, "system_prompt", "systemPrompt"),
-        provider_id: connector_field(connector, "provider_id", "providerId"),
-        model_name: connector_field(connector, "model_name", "modelName"),
-        reply_identity: connector_field(connector, "reply_identity", "replyIdentity"),
-        owner_username: owner_username.trim().to_string(),
+        reply_identity: "bot".to_string(),
         sandbox_mode: connector_field(connector, "sandbox_mode", "sandboxMode"),
         high_risk_tool_confirm: Some(connector_bool(
             connector,
@@ -730,16 +599,11 @@ pub fn start_local_listener(
     if app_id.is_empty() || app_secret.is_empty() {
         return Err("飞书机器人缺少 App ID 或 App Secret".to_string());
     }
-    let backend_context = normalize_backend_context(request.backend_context.clone());
     let runtime_context = FeishuBotRuntimeContext {
-        connector: connector_config_from_value(&connector, request.owner_username.as_str()),
-        workspace_path: resolve_bot_workspace_path(&request.workspace_path),
-        model_runtime: request
-            .model_runtime
-            .clone()
-            .or_else(|| connector_model_runtime(&connector)),
+        connector: connector_config_from_value(&connector),
+        workspace_path: default_bot_workspace_path().to_string_lossy().to_string(),
+        model_runtime: request.model_runtime.clone(),
         mcp_config: request.mcp_config.clone(),
-        backend_context,
         permission_decision: request.permission_decision.clone(),
     };
     let worker_path = resolve_feishu_sdk_worker_path(&app)?;
@@ -794,11 +658,8 @@ pub fn start_local_listener(
     );
     persist_listener_context(StoredFeishuListenerContext {
         connector_id: status.connector_id.clone(),
-        workspace_path: status.workspace_path.clone(),
-        owner_username: runtime_context.connector.owner_username.clone(),
         model_runtime: runtime_context.model_runtime.clone(),
         mcp_config: runtime_context.mcp_config.clone(),
-        backend_context: runtime_context.backend_context.clone(),
     });
     Ok(status)
 }
@@ -879,19 +740,13 @@ pub fn start_persisted_local_listeners(app: AppHandle) {
                 .cloned()
                 .unwrap_or_else(|| StoredFeishuListenerContext {
                     connector_id: connector_id.clone(),
-                    workspace_path: default_bot_workspace_path().to_string_lossy().to_string(),
-                    owner_username: String::new(),
                     model_runtime: None,
                     mcp_config: load_global_mcp_config(),
-                    backend_context: None,
                 });
             let request = FeishuLocalListenerStartRequest {
                 connector_id: connector_id.clone(),
-                workspace_path: context.workspace_path,
-                owner_username: context.owner_username,
-                model_runtime: connector_model_runtime(connector).or(context.model_runtime),
+                model_runtime: context.model_runtime,
                 mcp_config: load_global_mcp_config(),
-                backend_context: normalize_backend_context(context.backend_context),
                 permission_decision: None,
             };
             if let Err(error) = start_local_listener(app.clone(), request) {
@@ -923,18 +778,10 @@ fn stop_stale_sdk_listener_processes() {
     }
 }
 
-pub fn reply_message(request: FeishuLocalReplyRequest) -> Result<FeishuLocalReplyResult, String> {
-    let connector_id = request.connector_id.trim().to_string();
-    if !connector_id.is_empty() {
-        return reply_message_with_connector(&connector_id, request);
-    }
-    Err("缺少机器人连接器 ID，无法使用飞书 SDK 回复".to_string())
-}
-
 fn reply_message_with_connector(
     connector_id: &str,
     request: FeishuLocalReplyRequest,
-) -> Result<FeishuLocalReplyResult, String> {
+) -> Result<(), String> {
     let message_id = request.message_id.trim();
     let content = request.content.trim();
     if message_id.is_empty() {
@@ -1003,11 +850,7 @@ fn reply_message_with_connector(
             }
         ));
     }
-    Ok(FeishuLocalReplyResult {
-        ok: true,
-        stdout,
-        stderr,
-    })
+    Ok(())
 }
 
 fn send_feishu_interactive_card(
@@ -1091,10 +934,7 @@ fn run_feishu_card_worker_command(
 }
 
 pub fn scan_chats(request: FeishuChatScanRequest) -> Result<FeishuChatScanResult, String> {
-    let identity = match request.identity.trim().to_ascii_lowercase().as_str() {
-        "user" => "user",
-        _ => "bot",
-    };
+    let identity = "bot";
     let page_size = request.page_size.clamp(1, 100).to_string();
     let page_limit = usize::from(request.page_limit.clamp(1, 20));
     let mut page_token = String::new();
@@ -1152,135 +992,6 @@ pub fn scan_chats(request: FeishuChatScanRequest) -> Result<FeishuChatScanResult
     })
 }
 
-pub fn download_resource(
-    request: FeishuResourceDownloadRequest,
-) -> Result<FeishuResourceDownloadResult, String> {
-    let message_id = request.message_id.trim();
-    let file_key = request.file_key.trim();
-    if message_id.is_empty() || file_key.is_empty() {
-        return Err("下载飞书资源需要 message_id 和 file_key".to_string());
-    }
-    let identity = match request.identity.trim().to_ascii_lowercase().as_str() {
-        "user" => "user",
-        _ => "bot",
-    };
-    let resource_type = match request.resource_type.trim().to_ascii_lowercase().as_str() {
-        "file" => "file",
-        _ => "image",
-    };
-    let root = std::env::temp_dir().join("ai-employee-feishu-resources");
-    std::fs::create_dir_all(&root).map_err(|err| format!("无法创建飞书资源目录：{err}"))?;
-    let output_name = safe_resource_filename(message_id, file_key, resource_type);
-    let mut command = Command::new("lark-cli");
-    command.current_dir(&root).args([
-        "im",
-        "+messages-resources-download",
-        "--as",
-        identity,
-        "--message-id",
-        message_id,
-        "--file-key",
-        file_key,
-        "--type",
-        resource_type,
-        "--output",
-        output_name.as_str(),
-        "--json",
-    ]);
-    let output = command
-        .output()
-        .map_err(|err| format!("无法执行 lark-cli 资源下载：{err}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
-        return Err(format!(
-            "lark-cli 飞书资源下载失败：{}",
-            if stderr.is_empty() {
-                stdout.as_str()
-            } else {
-                stderr.as_str()
-            }
-        ));
-    }
-    let local_path = resolve_downloaded_resource_path(&root, &output_name, &stdout);
-    let bytes = std::fs::read(&local_path).unwrap_or_default();
-    let size = u64::try_from(bytes.len()).unwrap_or(0);
-    let mime_type = infer_resource_mime_type(&local_path, resource_type);
-    let data_url = if bytes.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "data:{};base64,{}",
-            mime_type,
-            general_purpose::STANDARD.encode(bytes)
-        )
-    };
-    Ok(FeishuResourceDownloadResult {
-        ok: true,
-        local_path: local_path.to_string_lossy().to_string(),
-        name: local_path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or(output_name.as_str())
-            .to_string(),
-        size,
-        data_url,
-        resource_type: resource_type.to_string(),
-        stdout,
-        stderr,
-    })
-}
-
-pub fn get_message(request: FeishuMessageGetRequest) -> Result<FeishuMessageGetResult, String> {
-    let message_id = request.message_id.trim();
-    if message_id.is_empty() {
-        return Err("读取飞书消息需要 message_id".to_string());
-    }
-    let identity = match request.identity.trim().to_ascii_lowercase().as_str() {
-        "user" => "user",
-        _ => "bot",
-    };
-    let root = std::env::temp_dir().join("ai-employee-feishu-message-details");
-    std::fs::create_dir_all(&root).map_err(|err| format!("无法创建飞书消息详情目录：{err}"))?;
-    let mut command = Command::new("lark-cli");
-    command.current_dir(&root).args([
-        "im",
-        "+messages-mget",
-        "--as",
-        identity,
-        "--message-ids",
-        message_id,
-        "--json",
-    ]);
-    if request.download_resources {
-        command.arg("--download-resources");
-    }
-    let output = command
-        .output()
-        .map_err(|err| format!("无法执行 lark-cli 消息详情读取：{err}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
-        return Err(format!(
-            "lark-cli 飞书消息详情读取失败：{}",
-            if stderr.is_empty() {
-                stdout.as_str()
-            } else {
-                stderr.as_str()
-            }
-        ));
-    }
-    let payload = serde_json::from_str::<Value>(&stdout)
-        .map_err(|err| format!("飞书消息详情结果不是有效 JSON：{err}"))?;
-    Ok(FeishuMessageGetResult {
-        ok: true,
-        message_id: message_id.to_string(),
-        payload,
-        stdout,
-        stderr,
-    })
-}
-
 fn spawn_stdout_forwarder(
     app: AppHandle,
     status: FeishuLocalListenerStatus,
@@ -1296,23 +1007,13 @@ fn spawn_stdout_forwarder(
             }
             let event =
                 serde_json::from_str::<Value>(raw).unwrap_or_else(|_| json!({ "raw": raw }));
-            let payload = json!({
-                "connectorId": status.connector_id.as_str(),
-                "projectId": status.project_id.as_str(),
-                "chatSessionId": status.chat_session_id.as_str(),
-                "workspacePath": status.workspace_path.as_str(),
-                "event": event,
-                "source": "tauri_feishu_local_listener"
-            });
             append_listener_log(json!({
                 "kind": "event",
                 "connectorId": status.connector_id.as_str(),
-                "messageId": payload["event"].get("message_id").and_then(Value::as_str).unwrap_or(""),
-                "chatId": payload["event"].get("chat_id").and_then(Value::as_str).unwrap_or(""),
-                "chatType": payload["event"].get("chat_type").and_then(Value::as_str).unwrap_or("")
+                "messageId": event.get("message_id").and_then(Value::as_str).unwrap_or(""),
+                "chatId": event.get("chat_id").and_then(Value::as_str).unwrap_or(""),
+                "chatType": event.get("chat_type").and_then(Value::as_str).unwrap_or("")
             }));
-            let _ = app.emit("bot-feishu-local-event", payload.clone());
-            let _ = app.emit("bot://feishu-local-event", payload);
             let app_for_event = app.clone();
             let status_for_event = status.clone();
             let runtime_context_for_event = runtime_context.clone();
@@ -1450,28 +1151,15 @@ fn handle_local_feishu_event_inner(
     }
     let chat_session_id = bot_chat_session_id(&context.connector.connector_id, &event);
     let history = load_bot_conversation_history(&context.connector.connector_id, &chat_session_id);
-    let existing_project_binding =
-        load_bot_project_binding(&context.connector.connector_id, &chat_session_id).or_else(|| {
-            prefetch_bot_project_binding_from_context(
-                &context.connector.connector_id,
-                &chat_session_id,
-                &message,
-                &history,
-                context.backend_context.as_ref(),
-            )
-        });
-    let bound_project_id = existing_project_binding
+    let workspace_selection = load_bot_workspace_selection(&context.connector, &chat_session_id);
+    let project_id = workspace_selection
         .as_ref()
-        .map(|binding| binding.project_id.trim())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DESKTOP_BOT_GLOBAL_PROJECT_ID)
-        .to_string();
-    let bound_workspace_path = existing_project_binding
+        .map(|selection| selection.project_id.clone())
+        .unwrap_or_else(|| DESKTOP_BOT_GLOBAL_PROJECT_ID.to_string());
+    let workspace_path = workspace_selection
         .as_ref()
-        .map(|binding| binding.workspace_path.trim())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(context.workspace_path.as_str())
-        .to_string();
+        .map(|selection| selection.workspace_path.clone())
+        .unwrap_or_else(|| context.workspace_path.clone());
     let history_for_pending_approval = history.clone();
     let source_type =
         if value_string(&event, &["chat_type", "chatType"]).to_ascii_lowercase() == "p2p" {
@@ -1483,12 +1171,13 @@ fn handle_local_feishu_event_inner(
         bot_full_access_permission_decision(&context.connector.connector_id, &chat_session_id)
     });
     let request = BotChatRequest {
-        project_id: bound_project_id.clone(),
+        project_id: project_id.clone(),
         chat_session_id: chat_session_id.clone(),
         message_id: Some(message_id.clone()),
         assistant_message_id: Some(format!("bot-local-{}", epoch_millis())),
         message: message.clone(),
-        workspace_path: bound_workspace_path.clone(),
+        workspace_path: workspace_path.clone(),
+        workspace_selection: workspace_selection.clone(),
         history,
         connector: context.connector.clone(),
         source_context: BotSourceContext {
@@ -1500,12 +1189,11 @@ fn handle_local_feishu_event_inner(
             raw: event.clone(),
         },
         permission_contract: None,
-        provider_id: Some(context.connector.provider_id.clone()),
-        model_name: Some(context.connector.model_name.clone()),
+        provider_id: None,
+        model_name: None,
         model_runtime: context.model_runtime.clone(),
         attachments: Vec::new(),
         mcp_config: context.mcp_config.clone(),
-        backend_context: context.backend_context.clone(),
         permission_decision: request_permission_decision,
     };
 
@@ -1517,22 +1205,16 @@ fn handle_local_feishu_event_inner(
     let sent_progress_replies = Mutex::new(HashSet::<String>::new());
     let approval_card_sent = Arc::new(Mutex::new(false));
     let approval_card_sent_for_events = approval_card_sent.clone();
-    let discovered_project_binding = Arc::new(Mutex::new(None::<StoredBotProjectBinding>));
-    let discovered_project_binding_for_events = discovered_project_binding.clone();
-    let project_id_for_approval = bound_project_id.clone();
-    let workspace_path_for_approval = bound_workspace_path.clone();
+    let current_workspace_selection = Arc::new(Mutex::new(workspace_selection.clone()));
+    let current_workspace_selection_for_events = current_workspace_selection.clone();
+    let project_id_for_approval = project_id.clone();
+    let workspace_path_for_approval = workspace_path.clone();
     let user_message_for_approval = message.clone();
     let history_for_approval = history_for_pending_approval.clone();
     let result = crate::bot::start_bot_chat_with_event_sink(request, |event| {
-        let _ = app_for_events.emit("bot-runtime-event", event.clone());
-        let _ = app_for_events.emit("bot://runtime-event", event.clone());
-        if let Some(binding) = bot_project_binding_from_runtime_event(
-            &context_for_events.connector.connector_id,
-            &chat_session_id,
-            &event,
-        ) {
-            if let Ok(mut current) = discovered_project_binding_for_events.lock() {
-                *current = Some(binding);
+        if let Some(selection) = bot_workspace_selection_from_runtime_event(&event) {
+            if let Ok(mut current) = current_workspace_selection_for_events.lock() {
+                *current = Some(selection);
             }
         }
         if is_runtime_approval_required_event(&event) {
@@ -1564,13 +1246,25 @@ fn handle_local_feishu_event_inner(
                         format!("飞书授权说明发送失败：{error}").as_str(),
                     );
                 }
+                let approval_selection = current_workspace_selection_for_events
+                    .lock()
+                    .ok()
+                    .and_then(|selection| selection.clone());
+                let approval_project_id = approval_selection
+                    .as_ref()
+                    .map(|selection| selection.project_id.as_str())
+                    .unwrap_or(project_id_for_approval.as_str());
+                let approval_workspace_path = approval_selection
+                    .as_ref()
+                    .map(|selection| selection.workspace_path.as_str())
+                    .unwrap_or(workspace_path_for_approval.as_str());
                 match send_bot_approval_card_for_runtime_event(
                     &context_for_events,
                     &event_for_replies,
                     &message_id_for_replies,
                     &chat_session_id,
-                    &project_id_for_approval,
-                    &workspace_path_for_approval,
+                    approval_project_id,
+                    approval_workspace_path,
                     &user_message_for_approval,
                     &history_for_approval,
                     &event,
@@ -1623,6 +1317,18 @@ fn handle_local_feishu_event_inner(
             );
         }
     });
+    if let Some(selection) = bot_workspace_selection_from_result(&result) {
+        if let Err(error) =
+            persist_bot_workspace_selection(&context.connector, &chat_session_id, &selection)
+        {
+            emit_listener_status(
+                app,
+                status,
+                "warning",
+                format!("飞书机器人工作区选择写入失败：{error}").as_str(),
+            );
+        }
+    }
     if !result.ok {
         let waiting_for_feishu_approval = result.error_code.trim() == "permission.required"
             && approval_card_sent.lock().map(|sent| *sent).unwrap_or(false);
@@ -1665,7 +1371,6 @@ fn handle_local_feishu_event_inner(
     reply_message_with_connector(
         &context.connector.connector_id,
         FeishuLocalReplyRequest {
-            connector_id: context.connector.connector_id.clone(),
             message_id,
             content: reply_content.clone(),
             content_format: "text".to_string(),
@@ -1687,20 +1392,6 @@ fn handle_local_feishu_event_inner(
             format!("飞书机器人会话历史写入失败：{error}").as_str(),
         );
     }
-    let latest_project_binding = discovered_project_binding
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone());
-    if let Some(binding) = latest_project_binding {
-        if let Err(error) = persist_bot_project_binding(&binding) {
-            emit_listener_status(
-                app,
-                status,
-                "warning",
-                format!("飞书机器人项目绑定写入失败：{error}").as_str(),
-            );
-        }
-    }
     emit_listener_status(app, status, "replied", "桌面智能体已回复飞书消息");
     Ok(())
 }
@@ -1711,12 +1402,11 @@ fn reply_feishu_status_message(
     message_id: &str,
     content: &str,
     idempotency_suffix: &str,
-) -> Result<FeishuLocalReplyResult, String> {
+) -> Result<(), String> {
     let normalized_suffix = sanitize_id(idempotency_suffix);
     reply_message_with_connector(
         &context.connector.connector_id,
         FeishuLocalReplyRequest {
-            connector_id: context.connector.connector_id.clone(),
             message_id: message_id.to_string(),
             content: content.trim().to_string(),
             content_format: "text".to_string(),
@@ -1826,32 +1516,11 @@ fn bot_conversation_path(connector_id: &str, chat_session_id: &str) -> Result<Pa
     Ok(dir.join(file_name))
 }
 
-fn load_bot_project_binding(
+fn bot_workspace_selection_path(
     connector_id: &str,
     chat_session_id: &str,
-) -> Option<StoredBotProjectBinding> {
-    let path = bot_project_binding_path(connector_id, chat_session_id).ok()?;
-    let raw = std::fs::read_to_string(path).ok()?;
-    let binding = serde_json::from_str::<StoredBotProjectBinding>(&raw).ok()?;
-    valid_bot_project_binding(binding)
-}
-
-fn persist_bot_project_binding(binding: &StoredBotProjectBinding) -> Result<(), String> {
-    let binding = valid_bot_project_binding(binding.clone())
-        .ok_or_else(|| "项目绑定缺少有效 project_id 或 workspace_path".to_string())?;
-    let path = bot_project_binding_path(&binding.connector_id, &binding.chat_session_id)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("无法创建飞书机器人项目绑定目录 {}：{err}", parent.display()))?;
-    }
-    let content = serde_json::to_string_pretty(&binding)
-        .map_err(|err| format!("无法序列化飞书机器人项目绑定：{err}"))?;
-    std::fs::write(&path, content)
-        .map_err(|err| format!("无法写入飞书机器人项目绑定 {}：{err}", path.display()))
-}
-
-fn bot_project_binding_path(connector_id: &str, chat_session_id: &str) -> Result<PathBuf, String> {
-    let dir = global_bot_project_binding_dir()?;
+) -> Result<PathBuf, String> {
+    let dir = global_bot_workspace_selection_dir()?;
     let file_name = format!(
         "{}__{}.json",
         sanitize_id(connector_id),
@@ -1860,172 +1529,126 @@ fn bot_project_binding_path(connector_id: &str, chat_session_id: &str) -> Result
     Ok(dir.join(file_name))
 }
 
-fn prefetch_bot_project_binding_from_context(
-    connector_id: &str,
+fn load_bot_workspace_selection(
+    connector: &BotConnectorConfig,
     chat_session_id: &str,
-    message: &str,
-    history: &[LocalChatMessage],
-    backend_context: Option<&LocalBackendContext>,
-) -> Option<StoredBotProjectBinding> {
-    let backend_context = backend_context?;
-    let mut project_ids = project_ids_from_text(message);
-    for item in history.iter().rev() {
-        project_ids.extend(project_ids_from_text(&item.content));
-    }
-    let project_id = project_ids
-        .into_iter()
-        .find(|value| !value.trim().is_empty())?;
-    let result = execute_tool(ToolExecutionRequest {
-        tool_call_id: Some("prefetch_project_binding".to_string()),
-        name: "get_project".to_string(),
-        arguments: json!({
-            "project_id": project_id,
-            "_backend_api_base_url": backend_context.api_base_url,
-            "_backend_token": backend_context.token,
-        }),
-        workspace_path: String::new(),
-        permission_decision: None,
-    });
-    if !result.ok {
+) -> Option<BotWorkspaceSelection> {
+    let connector_id = connector.connector_id.trim();
+    let path = bot_workspace_selection_path(connector_id, chat_session_id).ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let record = serde_json::from_str::<StoredBotWorkspaceSelection>(&raw).ok()?;
+    if record.connector_id.trim() != connector_id
+        || record.chat_session_id.trim() != chat_session_id.trim()
+    {
         return None;
     }
-    bot_project_binding_from_project_content(connector_id, chat_session_id, &result.content)
-}
-
-fn bot_project_binding_from_runtime_event(
-    connector_id: &str,
-    chat_session_id: &str,
-    event: &Value,
-) -> Option<StoredBotProjectBinding> {
-    if event.get("type").and_then(Value::as_str).unwrap_or("") != "tool_result" {
-        return None;
-    }
-    let payload = event.get("payload")?;
-    if !payload.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-        return None;
-    }
-    let tool_name = payload
-        .get("tool_name")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let content = payload.get("content").unwrap_or(&Value::Null);
-    match tool_name {
-        "get_project" => {
-            bot_project_binding_from_project_content(connector_id, chat_session_id, content)
-        }
-        "list_projects" => {
-            bot_project_binding_from_project_list_content(connector_id, chat_session_id, content)
-        }
-        _ => None,
-    }
-}
-
-fn bot_project_binding_from_project_content(
-    connector_id: &str,
-    chat_session_id: &str,
-    content: &Value,
-) -> Option<StoredBotProjectBinding> {
-    let project = content
-        .get("response")
-        .and_then(|response| response.get("project"))
-        .or_else(|| content.get("project"))
-        .unwrap_or(content);
-    bot_project_binding_from_project_value(connector_id, chat_session_id, project)
-}
-
-fn bot_project_binding_from_project_list_content(
-    connector_id: &str,
-    chat_session_id: &str,
-    content: &Value,
-) -> Option<StoredBotProjectBinding> {
-    let projects = content
-        .get("response")
-        .and_then(|response| response.get("projects"))
-        .and_then(Value::as_array)
-        .or_else(|| content.get("projects").and_then(Value::as_array))?;
-    if projects.len() != 1 {
-        return None;
-    }
-    bot_project_binding_from_project_value(connector_id, chat_session_id, &projects[0])
-}
-
-fn bot_project_binding_from_project_value(
-    connector_id: &str,
-    chat_session_id: &str,
-    project: &Value,
-) -> Option<StoredBotProjectBinding> {
-    let project_id = value_string(project, &["id", "project_id", "projectId"]);
-    let project_name = value_string(project, &["name", "project_name", "projectName"]);
-    let workspace_path = value_string(project, &["workspace_path", "workspacePath"]);
-    valid_bot_project_binding(StoredBotProjectBinding {
-        version: 1,
-        connector_id: connector_id.trim().to_string(),
-        chat_session_id: chat_session_id.trim().to_string(),
-        project_id,
-        project_name,
-        workspace_path,
-        updated_at_epoch_ms: epoch_millis(),
+    catalog_bot_workspace_selection(BotWorkspaceSelection {
+        project_id: record.project_id,
+        project_name: record.project_name,
+        workspace_path: record.workspace_path,
     })
 }
 
-fn valid_bot_project_binding(binding: StoredBotProjectBinding) -> Option<StoredBotProjectBinding> {
-    let project_id = binding.project_id.trim();
-    let workspace_path = binding.workspace_path.trim();
+fn persist_bot_workspace_selection(
+    connector: &BotConnectorConfig,
+    chat_session_id: &str,
+    selection: &BotWorkspaceSelection,
+) -> Result<(), String> {
+    let selection = catalog_bot_workspace_selection(selection.clone())
+        .ok_or_else(|| "项目工作区不再属于桌面全局项目目录，无法保存选择".to_string())?;
+    let path = bot_workspace_selection_path(connector.connector_id.as_str(), chat_session_id)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "无法创建飞书机器人工作区选择目录 {}：{err}",
+                parent.display()
+            )
+        })?;
+    }
+    let record = StoredBotWorkspaceSelection {
+        version: 1,
+        connector_id: connector.connector_id.trim().to_string(),
+        chat_session_id: chat_session_id.trim().to_string(),
+        project_id: selection.project_id,
+        project_name: selection.project_name,
+        workspace_path: selection.workspace_path,
+        updated_at_epoch_ms: epoch_millis(),
+    };
+    let content = serde_json::to_string_pretty(&record)
+        .map_err(|err| format!("无法序列化飞书机器人工作区选择：{err}"))?;
+    std::fs::write(&path, content)
+        .map_err(|err| format!("无法写入飞书机器人工作区选择 {}：{err}", path.display()))
+}
+
+fn valid_bot_workspace_selection(
+    mut selection: BotWorkspaceSelection,
+) -> Option<BotWorkspaceSelection> {
+    let project_id = selection.project_id.trim();
+    let workspace_path = selection.workspace_path.trim();
     if project_id.is_empty() || workspace_path.is_empty() {
         return None;
     }
     let path = PathBuf::from(workspace_path);
-    if !path.is_absolute() || !path.is_dir() {
+    if !path.is_absolute() {
         return None;
     }
-    Some(StoredBotProjectBinding {
-        version: 1,
-        connector_id: binding.connector_id.trim().to_string(),
-        chat_session_id: binding.chat_session_id.trim().to_string(),
-        project_id: project_id.to_string(),
-        project_name: binding.project_name.trim().to_string(),
-        workspace_path: path.to_string_lossy().to_string(),
-        updated_at_epoch_ms: binding.updated_at_epoch_ms,
+    let canonical = path.canonicalize().ok()?;
+    if !canonical.is_dir() {
+        return None;
+    }
+    selection.project_id = project_id.to_string();
+    selection.project_name = selection.project_name.trim().to_string();
+    selection.workspace_path = canonical.to_string_lossy().to_string();
+    Some(selection)
+}
+
+fn catalog_bot_workspace_selection(
+    selection: BotWorkspaceSelection,
+) -> Option<BotWorkspaceSelection> {
+    let project_id = selection.project_id.trim();
+    if project_id.is_empty() {
+        return None;
+    }
+    let project = find_global_project_catalog_entry(project_id).ok()??;
+    valid_bot_workspace_selection(BotWorkspaceSelection {
+        project_id: project.id.trim().to_string(),
+        project_name: project.name.trim().to_string(),
+        workspace_path: project.workspace_path.trim().to_string(),
     })
 }
 
-fn project_ids_from_text(text: &str) -> Vec<String> {
-    let mut ids = Vec::new();
-    for token in text.split(|ch: char| {
-        ch.is_whitespace()
-            || matches!(
-                ch,
-                '`' | '\''
-                    | '"'
-                    | ','
-                    | '，'
-                    | '.'
-                    | '。'
-                    | ':'
-                    | '：'
-                    | ';'
-                    | '；'
-                    | '('
-                    | ')'
-                    | '（'
-                    | '）'
-                    | '['
-                    | ']'
-                    | '【'
-                    | '】'
-            )
-    }) {
-        let token = token.trim();
-        if token.starts_with("proj-")
-            && token
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-            && !ids.iter().any(|item| item == token)
-        {
-            ids.push(token.to_string());
-        }
+fn bot_workspace_selection_from_result(result: &LocalChatResult) -> Option<BotWorkspaceSelection> {
+    result
+        .tool_results
+        .iter()
+        .rev()
+        .find(|tool_result| tool_result.ok && tool_result.name.trim() == "switch_project_workspace")
+        .and_then(|tool_result| {
+            let content = &tool_result.content;
+            catalog_bot_workspace_selection(BotWorkspaceSelection {
+                project_id: value_string(content, &["project_id", "projectId"]),
+                project_name: value_string(content, &["project_name", "projectName"]),
+                workspace_path: value_string(content, &["workspace_path", "workspacePath"]),
+            })
+        })
+}
+
+fn bot_workspace_selection_from_runtime_event(event: &Value) -> Option<BotWorkspaceSelection> {
+    if event.get("type").and_then(Value::as_str) != Some("tool_result") {
+        return None;
     }
-    ids
+    let payload = event.get("payload")?;
+    if payload.get("ok").and_then(Value::as_bool) != Some(true)
+        || value_string(payload, &["tool_name", "toolName"]) != "switch_project_workspace"
+    {
+        return None;
+    }
+    let content = payload.get("content")?;
+    catalog_bot_workspace_selection(BotWorkspaceSelection {
+        project_id: value_string(content, &["project_id", "projectId"]),
+        project_name: value_string(content, &["project_name", "projectName"]),
+        workspace_path: value_string(content, &["workspace_path", "workspacePath"]),
+    })
 }
 
 fn is_feishu_card_action_event(event: &Value) -> bool {
@@ -2534,13 +2157,34 @@ fn resume_feishu_pending_approval(
         grant_scope: runtime_grant_scope,
         comment: Some("feishu_bot_card".to_string()),
     };
+    let workspace_selection = if pending.project_id.trim() == DESKTOP_BOT_GLOBAL_PROJECT_ID {
+        None
+    } else {
+        Some(
+            catalog_bot_workspace_selection(BotWorkspaceSelection {
+                project_id: pending.project_id.clone(),
+                project_name: String::new(),
+                workspace_path: pending.workspace_path.clone(),
+            })
+            .ok_or_else(|| "该待授权操作的项目工作区已不在桌面全局项目目录中".to_string())?,
+        )
+    };
+    let project_id = workspace_selection
+        .as_ref()
+        .map(|selection| selection.project_id.clone())
+        .unwrap_or_else(|| pending.project_id.clone());
+    let workspace_path = workspace_selection
+        .as_ref()
+        .map(|selection| selection.workspace_path.clone())
+        .unwrap_or_else(|| pending.workspace_path.clone());
     let request = BotChatRequest {
-        project_id: pending.project_id.clone(),
+        project_id: project_id.clone(),
         chat_session_id: pending.chat_session_id.clone(),
         message_id: Some(pending.external_message_id.clone()),
         assistant_message_id: Some(format!("bot-local-approval-{}", epoch_millis())),
         message: pending.user_message.clone(),
-        workspace_path: pending.workspace_path.clone(),
+        workspace_path: workspace_path.clone(),
+        workspace_selection,
         history: pending.history.clone(),
         connector: context.connector.clone(),
         source_context: BotSourceContext {
@@ -2552,12 +2196,11 @@ fn resume_feishu_pending_approval(
             raw: pending.original_event.clone(),
         },
         permission_contract: None,
-        provider_id: Some(context.connector.provider_id.clone()),
-        model_name: Some(context.connector.model_name.clone()),
+        provider_id: None,
+        model_name: None,
         model_runtime: context.model_runtime.clone(),
         attachments: Vec::new(),
         mcp_config: context.mcp_config.clone(),
-        backend_context: context.backend_context.clone(),
         permission_decision: Some(permission_decision),
     };
     let context_for_events = context.clone();
@@ -2565,8 +2208,6 @@ fn resume_feishu_pending_approval(
     let approval_card_sent = Arc::new(Mutex::new(false));
     let approval_card_sent_for_events = approval_card_sent.clone();
     let result = crate::bot::start_bot_chat_with_event_sink(request, |event| {
-        let _ = app.emit("bot-runtime-event", event.clone());
-        let _ = app.emit("bot://runtime-event", event.clone());
         if is_runtime_approval_required_event(&event) {
             let _ = reply_feishu_status_message(
                 &context_for_events,
@@ -2584,8 +2225,8 @@ fn resume_feishu_pending_approval(
                 &pending_for_events.original_event,
                 &pending_for_events.external_message_id,
                 &pending_for_events.chat_session_id,
-                &pending_for_events.project_id,
-                &pending_for_events.workspace_path,
+                &project_id,
+                &workspace_path,
                 &pending_for_events.user_message,
                 &pending_for_events.history,
                 &event,
@@ -2638,12 +2279,14 @@ fn resume_feishu_pending_approval(
             bot_result_status_summary(&result)
         ));
     }
+    if let Some(selection) = bot_workspace_selection_from_result(&result) {
+        persist_bot_workspace_selection(&context.connector, &pending.chat_session_id, &selection)?;
+    }
     let reply_content = bot_reply_content(&result);
     if !reply_content.trim().is_empty() {
         reply_message_with_connector(
             &context.connector.connector_id,
             FeishuLocalReplyRequest {
-                connector_id: context.connector.connector_id.clone(),
                 message_id: pending.external_message_id.clone(),
                 content: reply_content.clone(),
                 content_format: "text".to_string(),
@@ -3103,69 +2746,6 @@ fn extract_next_page_token(payload: &Value) -> String {
     .to_string()
 }
 
-fn safe_resource_filename(message_id: &str, file_key: &str, resource_type: &str) -> String {
-    let sanitize = |value: &str| {
-        value
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                    ch
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>()
-    };
-    format!(
-        "{}-{}-{}",
-        sanitize(resource_type),
-        sanitize(message_id),
-        sanitize(file_key)
-    )
-}
-
-fn resolve_downloaded_resource_path(root: &PathBuf, output_name: &str, stdout: &str) -> PathBuf {
-    if let Ok(payload) = serde_json::from_str::<Value>(stdout) {
-        for pointer in [
-            "/local_path",
-            "/path",
-            "/file_path",
-            "/data/local_path",
-            "/data/path",
-        ] {
-            if let Some(path) = payload.pointer(pointer).and_then(Value::as_str) {
-                let candidate = PathBuf::from(path);
-                return if candidate.is_absolute() {
-                    candidate
-                } else {
-                    root.join(candidate)
-                };
-            }
-        }
-    }
-    root.join(output_name)
-}
-
-fn infer_resource_mime_type(path: &PathBuf, resource_type: &str) -> &'static str {
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match extension.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "pdf" => "application/pdf",
-        "txt" | "md" => "text/plain",
-        "csv" => "text/csv",
-        "json" => "application/json",
-        _ if resource_type == "image" => "image/png",
-        _ => "application/octet-stream",
-    }
-}
-
 fn epoch_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3177,12 +2757,10 @@ fn epoch_millis() -> u128 {
 mod tests {
     use super::{
         append_bot_conversation_messages, approval_request_id_from_runtime_event,
-        bot_progress_reply_for_runtime_event, bot_project_binding_from_project_content,
-        bot_project_binding_from_runtime_event, bot_reply_content, card_action_value,
-        connector_model_runtime, epoch_millis, extract_chat_items, extract_next_page_token,
+        bot_progress_reply_for_runtime_event, bot_reply_content, card_action_value,
+        connector_config_from_value, extract_chat_items, extract_next_page_token,
         feishu_bot_approval_card, is_feishu_card_action_event, is_runtime_approval_required_event,
-        normalize_backend_api_base_url, project_ids_from_text, runtime_permission_decision_parts,
-        safe_resource_filename, should_handle_event, text_permission_decision,
+        runtime_permission_decision_parts, should_handle_event, text_permission_decision,
         trim_bot_conversation_history, validate_card_action_matches_pending,
         StoredBotPendingApproval,
     };
@@ -3197,6 +2775,18 @@ mod tests {
             name: "测试机器人".to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn connector_config_uses_bot_reply_identity() {
+        let connector = connector_config_from_value(&json!({
+            "id": "feishu-projects",
+            "platform": "feishu",
+            "reply_identity": "user"
+        }));
+
+        assert_eq!(connector.connector_id, "feishu-projects");
+        assert_eq!(connector.reply_identity, "bot");
     }
 
     #[test]
@@ -3237,38 +2827,6 @@ mod tests {
         assert_eq!(
             extract_next_page_token(&json!({"next_page_token": "n2"})),
             "n2"
-        );
-    }
-
-    #[test]
-    fn resource_filename_is_sanitized() {
-        assert_eq!(
-            safe_resource_filename("om/1", "img:abc", "image"),
-            "image-om_1-img_abc"
-        );
-    }
-
-    #[test]
-    fn legacy_vite_backend_url_is_migrated_to_api_port() {
-        assert_eq!(
-            normalize_backend_api_base_url("http://127.0.0.1:3000/api"),
-            "http://127.0.0.1:8000/api"
-        );
-        assert_eq!(
-            normalize_backend_api_base_url("http://localhost:3000/api/"),
-            "http://localhost:8000/api"
-        );
-    }
-
-    #[test]
-    fn non_legacy_backend_url_is_preserved() {
-        assert_eq!(
-            normalize_backend_api_base_url("https://example.test/api"),
-            "https://example.test/api"
-        );
-        assert_eq!(
-            normalize_backend_api_base_url("http://127.0.0.1:3001/api"),
-            "http://127.0.0.1:3001/api"
         );
     }
 
@@ -3374,89 +2932,6 @@ mod tests {
         assert_eq!(trimmed.len(), 4);
         assert_eq!(trimmed[0].content, "m4");
         assert_eq!(trimmed[3].content, "m7");
-    }
-
-    #[test]
-    fn project_ids_are_extracted_from_previous_bot_text() {
-        let ids = project_ids_from_text("项目 ID：`proj-b786c6f1`，名称：浩成CRM");
-        assert_eq!(ids, vec!["proj-b786c6f1"]);
-    }
-
-    #[test]
-    fn project_binding_requires_backend_project_workspace() {
-        let workspace = std::env::temp_dir().join(format!("feishu-binding-{}", epoch_millis()));
-        std::fs::create_dir_all(&workspace).expect("workspace dir");
-        let binding = bot_project_binding_from_project_content(
-            "feishu-test-bot",
-            "chat-1",
-            &json!({
-                "response": {
-                    "project": {
-                        "id": "proj-b786c6f1",
-                        "name": "浩成CRM",
-                        "workspace_path": workspace.to_string_lossy()
-                    }
-                }
-            }),
-        )
-        .expect("project binding");
-
-        assert_eq!(binding.project_id, "proj-b786c6f1");
-        assert_eq!(binding.project_name, "浩成CRM");
-        assert_eq!(binding.workspace_path, workspace.to_string_lossy());
-        let _ = std::fs::remove_dir_all(workspace);
-    }
-
-    #[test]
-    fn project_binding_is_discovered_from_get_project_tool_result_event() {
-        let workspace =
-            std::env::temp_dir().join(format!("feishu-binding-event-{}", epoch_millis()));
-        std::fs::create_dir_all(&workspace).expect("workspace dir");
-        let binding = bot_project_binding_from_runtime_event(
-            "feishu-test-bot",
-            "chat-1",
-            &json!({
-                "type": "tool_result",
-                "payload": {
-                    "tool_name": "get_project",
-                    "ok": true,
-                    "content": {
-                        "response": {
-                            "project": {
-                                "id": "proj-b786c6f1",
-                                "name": "浩成CRM",
-                                "workspace_path": workspace.to_string_lossy()
-                            }
-                        }
-                    }
-                }
-            }),
-        )
-        .expect("project binding");
-
-        assert_eq!(binding.project_id, "proj-b786c6f1");
-        assert_eq!(binding.workspace_path, workspace.to_string_lossy());
-        let _ = std::fs::remove_dir_all(workspace);
-    }
-
-    #[test]
-    fn parses_connector_embedded_model_runtime() {
-        let runtime = connector_model_runtime(&json!({
-            "modelRuntime": {
-                "mode": "direct-openai-compatible",
-                "providerId": "lmp-1",
-                "modelName": "gpt-test",
-                "baseUrl": "https://example.com/v1",
-                "apiKey": "sk-test"
-            }
-        }))
-        .expect("connector runtime should parse");
-
-        assert_eq!(runtime.mode.as_deref(), Some("direct-openai-compatible"));
-        assert_eq!(runtime.provider_id.as_deref(), Some("lmp-1"));
-        assert_eq!(runtime.model_name.as_deref(), Some("gpt-test"));
-        assert_eq!(runtime.base_url.as_deref(), Some("https://example.com/v1"));
-        assert_eq!(runtime.api_key.as_deref(), Some("sk-test"));
     }
 
     #[test]

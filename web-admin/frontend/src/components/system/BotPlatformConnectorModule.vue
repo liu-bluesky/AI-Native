@@ -5,7 +5,7 @@
         <p class="bot-connectors__eyebrow">Robot Hub</p>
         <h3>第三方机器人接入</h3>
         <p class="bot-connectors__desc">
-          把 QQ、飞书、微信等机器人配置保存到本机全局存储，支持同一平台添加多个机器人实例。机器人提示词只来自当前配置，业务处理由桌面智能体执行。
+          把 QQ、飞书、微信等机器人配置保存到本机全局存储，支持同一平台添加多个机器人实例。机器人只负责消息接入与回复，业务处理由桌面主智能体执行。
         </p>
       </div>
       <el-tag type="info" effect="plain">按机器人实例管理</el-tag>
@@ -110,6 +110,10 @@
           <div class="bot-card__meta-item">
             <span>接收入口</span>
             <strong>{{ connector.event_url || '暂未接入' }}</strong>
+          </div>
+          <div class="bot-card__meta-item">
+            <span>项目来源</span>
+            <strong>桌面项目目录</strong>
           </div>
         </div>
 
@@ -258,34 +262,10 @@
                 机器人消息只声明本地智能体运行目标；实际模型调用和工具执行应由桌面端本地智能体完成。
               </div>
             </el-form-item>
-            <el-form-item label="桌面本地智能体模型">
-              <el-select
-                v-model="selectedBotModelOptionValue"
-                filterable
-                clearable
-                :loading="loadingBotChatModelOptions"
-                placeholder="请选择回复使用的模型"
-              >
-                <el-option-group
-                  v-for="group in botProviderModelGroups"
-                  :key="group.providerId"
-                  :label="group.label"
-                >
-                  <el-option
-                    v-for="item in group.options"
-                    :key="item.value"
-                    :label="item.label"
-                    :value="item.value"
-                  >
-                    <span>{{ item.modelName }}</span>
-                    <span class="connector-dialog__model-provider">
-                      {{ item.providerLabel }}
-                    </span>
-                  </el-option>
-                </el-option-group>
-              </el-select>
+            <el-form-item label="对话模型">
+              <el-input model-value="跟随系统主对话模型" disabled />
               <div class="connector-dialog__hint">
-                这里保存桌面本地智能体要使用的模型目标；留空时由桌面端运行时按账号默认模型解析。
+                机器人与系统主对话使用同一个模型渠道和模型选择，不再单独配置。
               </div>
             </el-form-item>
             <el-form-item v-if="showVerificationTokenField" label="Verification Token">
@@ -317,27 +297,10 @@
               placeholder="简短说明这个机器人负责什么场景。"
             />
           </el-form-item>
-          <el-form-item label="机器人提示词">
-            <el-input
-              v-model="draft.system_prompt"
-              type="textarea"
-              :rows="10"
-              resize="vertical"
-              maxlength="4000"
-              show-word-limit
-              placeholder="选填。用于约束当前机器人在飞书群里回复时的身份、语气、边界和输出格式。"
-            />
-            <div class="connector-dialog__hint">
-              这个字段会作为当前机器人的系统提示词参与飞书群回复；保存后运行时只读取这里的内容。
-            </div>
-          </el-form-item>
           <el-form-item label="回复身份">
-            <el-select v-model="draft.reply_identity" placeholder="选择回复身份">
-              <el-option label="机器人" value="bot" />
-              <el-option label="当前登录人" value="user" />
-            </el-select>
+            <el-input model-value="机器人身份" disabled />
             <div class="connector-dialog__hint">
-              长连接接收消息仍使用机器人能力；最终回复统一通过 lark-cli 发送，可按场景选择机器人或已授权用户身份。
+              平台消息始终由该机器人应用回复，不使用桌面当前登录人身份。
             </div>
           </el-form-item>
           <el-form-item label="配置指南链接">
@@ -483,13 +446,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
 import { ElMessage } from "element-plus";
-import {
-  FALLBACK_MODEL_TYPE_OPTIONS,
-  normalizeProviderModelConfigs as normalizeLlmProviderModelConfigs,
-} from "@/utils/llm-models.js";
-import { readLocalModelProviders } from "@/services/local-model-runtime.js";
 import {
   hasNativeDesktopBridge,
   scanNativeFeishuBotChats,
@@ -522,7 +480,7 @@ const PLATFORM_PRESETS = [
     icon: "QQ",
     name: "QQ",
     subtitle: "QQ群与 QQ 机器人",
-    summary: "管理 QQ 机器人的凭证、项目归属和配置备注。",
+    summary: "管理 QQ 机器人的凭证和配置备注。",
     receive_modes: ["manual", "long_connection", "http_callback"],
     default_receive_mode: "manual",
     app_id_label: "QQ 机器人 App ID *",
@@ -535,7 +493,7 @@ const PLATFORM_PRESETS = [
     icon: "飞",
     name: "飞书",
     subtitle: "飞书应用机器人",
-    summary: "管理飞书机器人的凭证、项目归属、事件订阅和配置备注。",
+    summary: "管理飞书机器人的凭证、事件订阅和配置备注。",
     receive_modes: ["long_connection", "http_callback"],
     default_receive_mode: "long_connection",
     app_id_label: "飞书应用 App ID *",
@@ -548,7 +506,7 @@ const PLATFORM_PRESETS = [
     icon: "微",
     name: "微信",
     subtitle: "企业微信 / 微信机器人",
-    summary: "管理微信侧机器人的凭证、项目归属和配置备注。",
+    summary: "管理微信侧机器人的凭证和配置备注。",
     receive_modes: ["http_callback", "polling", "manual"],
     default_receive_mode: "http_callback",
     app_id_label: "微信应用 App ID *",
@@ -652,27 +610,15 @@ function normalizeConnector(item) {
     name: String(raw.name || "").trim().slice(0, 120),
     agent_name: "",
     description: String(raw.description || "").trim().slice(0, 280),
-    system_prompt: String(raw.system_prompt || "").trim().slice(0, 4000),
     chat_mode: normalizeChatMode(raw.chat_mode),
     external_agent_type: normalizeExternalAgentType(raw.external_agent_type),
-    provider_id: String(raw.provider_id || "").trim().slice(0, 120),
-    model_name: String(raw.model_name || "").trim().slice(0, 160),
-    model_runtime:
-      raw.model_runtime && typeof raw.model_runtime === "object"
-        ? { ...raw.model_runtime }
-        : raw.modelRuntime && typeof raw.modelRuntime === "object"
-          ? { ...raw.modelRuntime }
-          : null,
     app_id: String(raw.app_id || "").trim().slice(0, 160),
     app_secret: String(raw.app_secret || "").trim().slice(0, 200),
     verification_token: String(raw.verification_token || "").trim().slice(0, 200),
     encrypt_key: String(raw.encrypt_key || "").trim().slice(0, 200),
     event_receive_mode: normalizeReceiveMode(raw.event_receive_mode, preset),
     auto_start_worker: raw.auto_start_worker === true,
-    reply_identity: ["bot", "user"].includes(String(raw.reply_identity || "").trim().toLowerCase())
-      ? String(raw.reply_identity || "").trim().toLowerCase()
-      : "bot",
-    project_id: "",
+    reply_identity: "bot",
     guide_url: String(raw.guide_url || "").trim().slice(0, 500),
     sort_order: Math.min(999, Math.max(0, Number(raw.sort_order || 0) || 0)),
     scanned_chats: normalizeScannedChats(raw.scanned_chats || raw.scannedChats),
@@ -680,61 +626,7 @@ function normalizeConnector(item) {
   };
 }
 
-const botChatProviderOptions = ref([]);
-const loadingBotChatModelOptions = ref(false);
-const botChatProviderMap = computed(() =>
-  botChatProviderOptions.value.reduce((accumulator, item) => {
-    accumulator[String(item.id || "").trim()] = item;
-    return accumulator;
-  }, {}),
-);
-
-const botProviderModelGroups = computed(() =>
-  botChatProviderOptions.value
-    .map((provider) => {
-      const providerId = String(provider?.id || "").trim();
-      const providerLabel = String(provider?.name || providerId || "未命名供应商").trim();
-      const models = normalizeProviderModelConfigs(provider);
-      return {
-        providerId,
-        label: providerLabel,
-        options: models.map((item) => ({
-          value: `${providerId}::${item.name}`,
-          providerId,
-          providerLabel,
-          modelName: item.name,
-          modelType: item.model_type,
-          label: `${item.name} · ${providerLabel}`,
-        })),
-      };
-    })
-    .filter((group) => group.providerId && group.options.length),
-);
-
-const selectedBotModelOptionValue = computed({
-  get() {
-    const providerId = String(draft.value.provider_id || "").trim();
-    const modelName = String(draft.value.model_name || "").trim();
-    if (!providerId || !modelName) {
-      return "";
-    }
-    return `${providerId}::${modelName}`;
-  },
-  set(value) {
-    const normalized = String(value || "").trim();
-    if (!normalized) {
-      draft.value.provider_id = "";
-      draft.value.model_name = "";
-      return;
-    }
-    const separatorIndex = normalized.indexOf("::");
-    if (separatorIndex < 0) {
-      return;
-    }
-    draft.value.provider_id = normalized.slice(0, separatorIndex);
-    draft.value.model_name = normalized.slice(separatorIndex + 2);
-  },
-});
+const botMainModelLabel = computed(() => "跟随系统主对话模型");
 
 const normalizedConnectors = computed(() => {
   if (!Array.isArray(props.modelValue)) {
@@ -793,11 +685,8 @@ const draft = ref({
   name: "",
   agent_name: "",
   description: "",
-  system_prompt: "",
   chat_mode: "desktop_local_agent",
   external_agent_type: "codex_cli",
-  provider_id: "",
-  model_name: "",
   app_id: "",
   app_secret: "",
   verification_token: "",
@@ -805,7 +694,6 @@ const draft = ref({
   event_receive_mode: "manual",
   auto_start_worker: false,
   reply_identity: "bot",
-  project_id: "",
   guide_url: "",
   sort_order: 0,
 });
@@ -896,9 +784,6 @@ function openDialog(platform, connector = null) {
       name: `${preset.name}机器人${normalizedConnectors.value.filter((item) => item.platform === normalizedPlatform).length + 1}`,
       agent_name: "",
       description: "",
-      system_prompt: "",
-      provider_id: "",
-      model_name: "",
       app_id: "",
       app_secret: "",
       verification_token: "",
@@ -906,7 +791,6 @@ function openDialog(platform, connector = null) {
       event_receive_mode: preset.default_receive_mode || "manual",
       auto_start_worker: false,
       reply_identity: "bot",
-      project_id: "",
       guide_url: "",
       sort_order: nextSortOrder(normalizedPlatform),
     },
@@ -1014,13 +898,6 @@ function buildLocalDiagnosePayload(connector) {
         ? "如需多个飞书应用隔离，请先切换本机 lark-cli 应用配置，或后续接入原生 OpenAPI 长连接客户端。"
         : "",
     },
-    {
-      id: "prompt_policy",
-      ok: true,
-      title: "提示词来源",
-      message: item.system_prompt ? "运行时只使用当前机器人配置里的提示词" : "未填写机器人提示词，运行时不会注入内置机器人提示词",
-      action: "",
-    },
   ];
   return {
     ok: checks.every((check) => check.ok),
@@ -1057,7 +934,6 @@ async function buildLocalChatScanPayload(connector) {
       };
     }
     const result = await scanNativeFeishuBotChats({
-      identity: item.reply_identity || "bot",
       pageSize: 100,
       pageLimit: 10,
     });
@@ -1066,7 +942,7 @@ async function buildLocalChatScanPayload(connector) {
       chat_name: String(row.name || row.chat_name || row.chatName || "").trim(),
       chat_type: String(row.chat_mode || row.chat_type || row.chatMode || "group").trim(),
       chat_mode: String(row.chat_mode || row.chatMode || "").trim(),
-      source: `lark-cli --as ${result?.identity || item.reply_identity || "bot"}`,
+      source: `lark-cli --as ${result?.identity || "bot"}`,
     })).filter((row) => row.chat_id);
     return {
       status: "scanned",
@@ -1104,84 +980,13 @@ function scanStatusLabel(status) {
   return labels[normalized] || "群列表扫描未完成";
 }
 
-function normalizeProviderModelConfigs(provider) {
-  return normalizeLlmProviderModelConfigs(provider, FALLBACK_MODEL_TYPE_OPTIONS);
-}
-
-function normalizeBotChatProvider(provider) {
-  if (!provider || typeof provider !== "object" || Array.isArray(provider)) {
-    return null;
-  }
-  const id = String(provider.id || "").trim();
-  if (!id) {
-    return null;
-  }
-  const modelConfigs = normalizeProviderModelConfigs(provider);
-  return {
-    ...provider,
-    id,
-    name: String(provider.name || id).trim(),
-    provider_type: String(provider.provider_type || "").trim(),
-    default_model: String(provider.default_model || modelConfigs[0]?.name || "").trim(),
-    model_configs: modelConfigs,
-  };
-}
-
-function mergeBotChatProviders(providers) {
-  const merged = [];
-  const seen = new Set();
-  const add = (provider) => {
-    const normalized = normalizeBotChatProvider(provider);
-    if (!normalized || seen.has(normalized.id)) {
-      return;
-    }
-    seen.add(normalized.id);
-    merged.push(normalized);
-  };
-  (Array.isArray(providers) ? providers : []).forEach(add);
-  return merged;
-}
-
 function botChatModeLabel(connector) {
   return "桌面本地智能体";
 }
 
 function botChatModelLabel(connector) {
-  const providerId = String(connector?.provider_id || "").trim();
-  const modelName = String(connector?.model_name || "").trim();
-  if (!providerId) {
-    return "按账号默认";
-  }
-  const provider = botChatProviderMap.value[providerId] || null;
-  const providerName = String(provider?.name || providerId).trim();
-  const modelLabel = modelName || String(provider?.default_model || "").trim() || "模型默认";
-  return `${providerName} · ${modelLabel}`;
-}
-
-async function fetchBotChatModelOptions(options = {}) {
-  const preserveSelection = options.preserveSelection !== false;
-  const currentProviderId = String(draft.value.provider_id || "").trim();
-  const currentModelName = String(draft.value.model_name || "").trim();
-  loadingBotChatModelOptions.value = true;
-  try {
-    botChatProviderOptions.value = mergeBotChatProviders(readLocalModelProviders());
-    if (preserveSelection && currentProviderId) {
-      const provider = botChatProviderOptions.value.find((item) => item.id === currentProviderId);
-      if (!provider) {
-        draft.value.provider_id = "";
-        draft.value.model_name = "";
-      } else if (currentModelName) {
-        const modelNames = normalizeProviderModelConfigs(provider).map((item) => item.name);
-        if (!modelNames.includes(currentModelName)) {
-          draft.value.model_name = "";
-        }
-      }
-    }
-  } catch {
-    botChatProviderOptions.value = [];
-  } finally {
-    loadingBotChatModelOptions.value = false;
-  }
+  void connector;
+  return botMainModelLabel.value;
 }
 
 async function persistNextConnectors(nextConnectors, successMessage) {
@@ -1199,7 +1004,6 @@ async function saveDraft() {
     id: normalizeConnectorId(draft.value.id),
     platform: editingPlatform.value,
     agent_name: "",
-    project_id: "",
   });
   const duplicate = normalizedConnectors.value.find(
     (item) =>
@@ -1244,9 +1048,6 @@ async function duplicateConnector(connector) {
   );
 }
 
-onMounted(() => {
-  fetchBotChatModelOptions();
-});
 </script>
 
 <style scoped>
@@ -1626,5 +1427,6 @@ onMounted(() => {
   .bot-card__meta {
     grid-template-columns: 1fr;
   }
+
 }
 </style>

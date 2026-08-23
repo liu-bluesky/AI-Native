@@ -5,7 +5,8 @@
         <p class="page-header__eyebrow">FTP Connections</p>
         <h2>FTP 连接</h2>
         <p class="page-header__desc">
-          全局维护 FTP 服务器地址、端口和登录账户。部署配置只选择连接，不重复保存服务器和账号密码。
+          全局维护 FTP
+          服务器地址、端口和登录账户。部署配置只选择连接，不重复保存服务器和账号密码。
         </p>
       </div>
       <div class="page-header__actions">
@@ -16,7 +17,7 @@
 
     <section class="page-panel">
       <el-table :data="credentials" stripe class="ftp-table">
-        <el-table-column label="连接名称" min-width="180">
+        <el-table-column label="连接名称" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="ftp-table__main">
               <strong>{{ row.name || row.id }}</strong>
@@ -24,57 +25,97 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="服务器地址" min-width="170">
+        <el-table-column label="服务器地址" min-width="140" show-overflow-tooltip>
           <template #default="{ row }">{{ row.host || "-" }}</template>
         </el-table-column>
-        <el-table-column label="端口" width="100">
+        <el-table-column label="端口" width="80" align="center">
           <template #default="{ row }">{{ row.port || "21" }}</template>
         </el-table-column>
-        <el-table-column prop="username" label="登录账号" min-width="160" />
-        <el-table-column label="最大线程" width="110">
-          <template #default="{ row }">{{ row.max_upload_threads || 4 }}</template>
+        <el-table-column
+          prop="username"
+          label="登录账号"
+          min-width="120"
+          show-overflow-tooltip
+        />
+        <el-table-column label="最大线程" width="90" align="center">
+          <template #default="{ row }">{{
+            row.max_upload_threads || 4
+          }}</template>
         </el-table-column>
-        <el-table-column label="密码" width="110">
+        <el-table-column label="密码" width="90" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.has_password ? 'success' : 'warning'" effect="plain">
+            <el-tag
+              :type="row.has_password ? 'success' : 'warning'"
+              effect="plain"
+            >
               {{ row.has_password ? "已配置" : "未配置" }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="创建人" width="130">
+        <el-table-column
+          label="创建人"
+          width="100"
+          align="center"
+          show-overflow-tooltip
+        >
           <template #default="{ row }">{{ row.created_by || "-" }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="80" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.enabled === false ? 'info' : 'success'" effect="plain">
+            <el-tag
+              :type="row.enabled === false ? 'info' : 'success'"
+              effect="plain"
+            >
               {{ row.enabled === false ? "停用" : "启用" }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" :disabled="!row.can_manage" @click="openEditDialog(row)">编辑</el-button>
+            <el-button
+              size="small"
+              :disabled="!row.can_manage"
+              @click="openEditDialog(row)"
+              >编辑</el-button
+            >
             <el-popconfirm
               title="删除后部署配置中引用该连接的服务器将无法通过校验。"
               @confirm="deleteCredential(row)"
             >
               <template #reference>
-                <el-button size="small" type="danger" text :disabled="!row.can_manage">删除</el-button>
+                <el-button
+                  size="small"
+                  type="danger"
+                  text
+                  :disabled="!row.can_manage"
+                  >删除</el-button
+                >
               </template>
             </el-popconfirm>
           </template>
         </el-table-column>
       </el-table>
-      <el-empty v-if="!loading && !credentials.length" description="暂无 FTP 连接" :image-size="64" />
+      <el-empty
+        v-if="!loading && !credentials.length"
+        description="暂无 FTP 连接"
+        :image-size="64"
+      />
     </section>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑 FTP 连接' : '新增 FTP 连接'" width="560px">
+    <el-dialog
+      v-model="dialogVisible"
+      :title="editingId ? '编辑 FTP 连接' : '新增 FTP 连接'"
+      width="560px"
+    >
       <el-form label-position="top" class="credential-form">
         <el-form-item label="连接名称">
           <el-input v-model="draft.name" placeholder="生产 FTP" />
         </el-form-item>
         <el-form-item label="服务器地址（IP / 域名）">
-          <el-input v-model="draft.host" placeholder="ftp.example.com 或 10.0.0.1" />
+          <el-input
+            v-model="draft.host"
+            placeholder="ftp.example.com 或 10.0.0.1"
+          />
         </el-form-item>
         <el-form-item label="端口号">
           <el-input-number
@@ -106,10 +147,16 @@
             :step="1"
             class="credential-form__port"
           />
-          <div class="credential-form__hint">按上传目录根层的文件和文件夹生成任务，同时运行数量不超过此值。</div>
+          <div class="credential-form__hint">
+            按上传目录根层的文件和文件夹生成任务，同时运行数量不超过此值。
+          </div>
         </el-form-item>
         <el-form-item label="状态">
-          <el-switch v-model="draft.enabled" active-text="启用" inactive-text="停用" />
+          <el-switch
+            v-model="draft.enabled"
+            active-text="启用"
+            inactive-text="停用"
+          />
         </el-form-item>
         <el-alert
           v-if="testResult.message"
@@ -120,9 +167,13 @@
         />
       </el-form>
       <template #footer>
-        <el-button :loading="testing" :disabled="saving" @click="testCredential">检查本地配置</el-button>
+        <el-button :loading="testing" :disabled="saving" @click="testCredential"
+          >检查本地配置</el-button
+        >
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveCredential">保存</el-button>
+        <el-button type="primary" :loading="saving" @click="saveCredential"
+          >保存</el-button
+        >
       </template>
     </el-dialog>
   </div>
@@ -153,7 +204,10 @@ function createDraft(item = null) {
     port: item?.port ? Number(item.port) : null,
     username: String(item?.username || "").trim(),
     password: "",
-    max_upload_threads: Math.max(1, Math.min(32, Number(item?.max_upload_threads || 4))),
+    max_upload_threads: Math.max(
+      1,
+      Math.min(32, Number(item?.max_upload_threads || 4)),
+    ),
     enabled: item?.enabled !== false,
   };
 }
@@ -178,11 +232,12 @@ function findEditingCredential() {
 }
 
 function createCredentialId() {
-  const namePart = String(draft.value.name || "ftp")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "ftp";
+  const namePart =
+    String(draft.value.name || "ftp")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "ftp";
   return `local-ftp-${namePart}-${Date.now().toString(36)}`;
 }
 
@@ -212,7 +267,9 @@ function openEditDialog(item) {
 }
 
 function normalizePortForSubmit() {
-  return draft.value.port === null || draft.value.port === undefined || draft.value.port === ""
+  return draft.value.port === null ||
+    draft.value.port === undefined ||
+    draft.value.port === ""
     ? ""
     : String(Math.trunc(Number(draft.value.port)));
 }
@@ -227,7 +284,10 @@ function validatePortValue(normalizedPort) {
   return true;
 }
 
-function buildCredentialPayload({ requireName = false, requirePassword = false } = {}) {
+function buildCredentialPayload({
+  requireName = false,
+  requirePassword = false,
+} = {}) {
   const name = String(draft.value.name || "").trim();
   const host = String(draft.value.host || "").trim();
   const username = String(draft.value.username || "").trim();
@@ -287,7 +347,9 @@ async function saveCredential() {
   saving.value = true;
   try {
     const existing = findEditingCredential();
-    const password = String(payload.password || existing?.password || "").trim();
+    const password = String(
+      payload.password || existing?.password || "",
+    ).trim();
     if (!password) {
       ElMessage.warning("请填写 FTP 登录密码");
       return;
@@ -392,6 +454,10 @@ onBeforeUnmount(() => {
 
 .page-panel {
   padding: 18px;
+  /* grid 子项默认 min-width:auto 会被表格最小内容宽度撑开，
+     置为 0 让窄窗口时滚动收敛在表格内部而不是整个页面溢出。 */
+  min-width: 0;
+  overflow: hidden;
 }
 
 .ftp-table {

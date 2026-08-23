@@ -12,7 +12,7 @@
           </div>
         </div>
         <p class="page-header__desc">
-          这里只管理机器人凭证、可用模型、机器人提示词和配置说明。配置保存到本机全局存储，消息处理由桌面智能体按当前登录用户权限访问可见项目。
+          这里管理机器人凭证、连接配置和机器人可切换的项目工作区。配置保存到本机全局存储，项目选择不依赖桌面当前登录用户。
         </p>
       </div>
       <div class="page-header__actions">
@@ -41,10 +41,6 @@ import {
   readGlobalBotConnectorConfigFile,
   writeGlobalBotConnectorConfigFile,
 } from "@/modules/project-chat/services/projectChatStorage.js";
-import {
-  buildLocalModelRuntime,
-  normalizeLocalModelRuntime,
-} from "@/services/local-model-runtime.js";
 
 const SUPPORTED_PLATFORMS = ["qq", "feishu", "wechat"];
 
@@ -85,51 +81,13 @@ async function refreshPage() {
   }
 }
 
-function enrichConnectorModelRuntime(connector) {
-  const providerId = String(connector?.provider_id || connector?.providerId || "").trim();
-  const modelName = String(connector?.model_name || connector?.modelName || "").trim();
-  const existingRuntime = normalizeLocalModelRuntime(
-    connector?.model_runtime || connector?.modelRuntime,
-    providerId,
-    modelName,
-  );
-  if (!providerId) {
-    return {
-      ...connector,
-      model_runtime: existingRuntime,
-    };
-  }
-  try {
-    const runtime = buildLocalModelRuntime(providerId, modelName);
-    return {
-      ...connector,
-      provider_id: providerId,
-      model_name: runtime.modelName,
-      model_runtime: runtime,
-    };
-  } catch {
-    // Saving connector credentials and scanned chats must not depend on model setup.
-    return {
-      ...connector,
-      provider_id: providerId,
-      model_name: modelName,
-      model_runtime: null,
-    };
-  }
-}
-
-function enrichConnectorsForLocalRuntime(items) {
-  return (Array.isArray(items) ? items : []).map(enrichConnectorModelRuntime);
-}
-
 async function saveConnectors(nextItems) {
-    saving.value = true;
+  saving.value = true;
   try {
     const items = Array.isArray(nextItems) ? nextItems : connectors.value;
-    const enrichedItems = enrichConnectorsForLocalRuntime(items);
     const data = await writeGlobalBotConnectorConfigFile({
       ...DEFAULT_BOT_CONNECTOR_CONFIG,
-      connectors: enrichedItems,
+      connectors: items,
     });
     connectorConfigPath.value = String(data?.path || globalBotConnectorConfigPathLabel()).trim();
     connectors.value = Array.isArray(data?.config?.connectors)

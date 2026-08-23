@@ -41,6 +41,38 @@ defineProps({
 </script>
 
 <style scoped>
+.block {
+  min-width: 0;
+}
+
+.block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.block-header > * {
+  min-width: 0;
+}
+
+.block-eyebrow {
+  margin-bottom: 8px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.block-header h4 {
+  margin: 0;
+  color: #334155;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
 .project-workspace-block__description {
   margin: 8px 0 0;
   max-width: 60ch;

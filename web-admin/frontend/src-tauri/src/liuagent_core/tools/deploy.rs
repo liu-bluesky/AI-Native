@@ -1,12 +1,10 @@
 //! Project deploy tools.
 //!
-//! These tools let the desktop agent read deploy configuration and directly
-//! deploy workspace files. Credentials are supplied by the backend deploy
-//! settings, not by the model prompt.
+//! These tools let the desktop agent read local project deploy configuration
+//! and upload workspace files directly to FTP. Credentials come from the
+//! desktop FTP credentials file, not from the model prompt or project catalog.
 
 use chrono::Local;
-use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Url;
 use serde_json::{json, Value};
 use std::fs;
@@ -15,13 +13,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 use crate::liuagent_core::args::{bool_arg, number_arg, required_string_arg, string_arg};
 use crate::liuagent_core::permission::require_approval;
 use crate::liuagent_core::types::{PermissionDecisionInput, ToolError};
 use crate::liuagent_core::workspace::{
     resolve_workspace_child, resolve_workspace_root, workspace_relative_path,
+};
+use crate::liuagent_core::{
+    credential_enabled, credential_id_of, credential_text, credential_u64,
+    find_global_project_catalog_entry, read_global_ftp_credentials, DesktopProjectCatalogEntry,
 };
 
 const MAX_UPLOAD_BYTES: u64 = 200 * 1024 * 1024;
@@ -82,65 +83,9 @@ impl UploadSource {
 }
 
 pub fn get_project_deploy_options(arguments: &Value) -> Result<(Value, String), ToolError> {
-    let api_base_url = string_arg(arguments, "_backend_api_base_url", "");
-    let backend_token = string_arg(arguments, "_backend_token", "");
-    if api_base_url.is_empty() || backend_token.is_empty() {
-        return Err(ToolError::new(
-            "deploy.backend_context_missing",
-            "缺少后端连接上下文，不能读取项目部署配置",
-        ));
-    }
     let project_id = required_string_arg(arguments, "project_id")?;
-    let timeout_ms = number_arg(arguments, "timeout_ms", 30_000, 1_000, 120_000) as u64;
-    let endpoint = deploy_options_url(&api_base_url, &project_id)?;
-
-    let mut headers = HeaderMap::new();
-    let auth =
-        HeaderValue::from_str(&format!("Bearer {}", backend_token.trim())).map_err(|err| {
-            ToolError::new(
-                "tool.schema_invalid",
-                format!("invalid backend auth header: {err}"),
-            )
-        })?;
-    headers.insert(AUTHORIZATION, auth);
-    let client = Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .user_agent("liuAgent-desktop-local-runtime/0.1")
-        .build()
-        .map_err(|err| {
-            ToolError::new(
-                "tool.execution_failed",
-                format!("create http client failed: {err}"),
-            )
-        })?;
-    let response = client
-        .get(endpoint.clone())
-        .headers(headers)
-        .send()
-        .map_err(|err| {
-            ToolError::new(
-                "tool.execution_failed",
-                format!("read deploy options failed: {err}"),
-            )
-        })?;
-    let status = response.status().as_u16();
-    let text = response.text().map_err(|err| {
-        ToolError::new(
-            "tool.execution_failed",
-            format!("read deploy options response failed: {err}"),
-        )
-    })?;
-    let body = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({"raw": text}));
-    if !(200..300).contains(&status) {
-        return Err(ToolError::new(
-            "tool.execution_failed",
-            format!(
-                "read deploy options failed with HTTP {status}: {}",
-                safe_error_detail(&body)
-            ),
-        ));
-    }
-
+    let project = load_project_catalog_entry(&project_id)?;
+    let body = project_deploy_options_summary(&project.deploy_settings);
     let configured = body
         .get("configured")
         .and_then(Value::as_bool)
@@ -151,14 +96,14 @@ pub fn get_project_deploy_options(arguments: &Value) -> Result<(Value, String), 
         .map(Vec::len)
         .unwrap_or(0);
     let summary = if configured {
-        format!("已读取项目 {project_id} 的部署配置：{profile_count} 个环境档位")
+        format!("已读取项目 {project_id} 的本机部署配置：{profile_count} 个环境档位")
     } else {
-        format!("项目 {project_id} 未启用或未配置部署档位")
+        format!("项目 {project_id} 未启用或未配置本机部署档位")
     };
 
     Ok((
         json!({
-            "status": status,
+            "status": 200,
             "project_id": project_id,
             "response": body,
         }),
@@ -172,14 +117,6 @@ pub fn deploy_workspace_files_to_target(
     arguments: &Value,
     permission_decision: Option<&PermissionDecisionInput>,
 ) -> Result<(Value, String), ToolError> {
-    let api_base_url = string_arg(arguments, "_backend_api_base_url", "");
-    let backend_token = string_arg(arguments, "_backend_token", "");
-    if api_base_url.is_empty() || backend_token.is_empty() {
-        return Err(ToolError::new(
-            "deploy.backend_context_missing",
-            "缺少后端连接上下文，不能从桌面端直连部署",
-        ));
-    }
     let project_id = required_string_arg(arguments, "project_id")?;
     let workspace_root = resolve_workspace_root(workspace_path)?;
     let upload_source = upload_source_arg(&workspace_root, arguments)?;
@@ -211,15 +148,11 @@ pub fn deploy_workspace_files_to_target(
             .to_string()
     };
     let artifact_kind = string_arg(arguments, "artifact_kind", "source-bundle");
-    let version = string_arg(arguments, "version", "");
     let requirement = string_arg(arguments, "requirement", "");
     let plan = string_arg(arguments, "plan", "");
-    let chat_session_id = string_arg(arguments, "chat_session_id", "");
-    let task_tree_node_id = string_arg(arguments, "task_tree_node_id", "");
     let target_ids = target_ids_arg(arguments);
     let timeout_ms = number_arg(arguments, "timeout_ms", 600_000, 1_000, 1_800_000) as u64;
     let run_deploy_command = bool_arg(arguments, "run_deploy_command", true);
-    let manifest = upload_manifest_arg(arguments, &upload_source)?;
     let relative_path = upload_source.display_path().to_string();
 
     require_approval(
@@ -250,114 +183,40 @@ pub fn deploy_workspace_files_to_target(
         permission_decision,
     )?;
 
-    let mut headers = HeaderMap::new();
-    let auth =
-        HeaderValue::from_str(&format!("Bearer {}", backend_token.trim())).map_err(|err| {
-            ToolError::new(
-                "tool.schema_invalid",
-                format!("invalid backend auth header: {err}"),
-            )
-        })?;
-    headers.insert(AUTHORIZATION, auth);
-    let client = Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .user_agent("liuAgent-desktop-local-runtime/0.1")
-        .build()
-        .map_err(|err| {
-            ToolError::new(
-                "tool.execution_failed",
-                format!("create http client failed: {err}"),
-            )
-        })?;
-    let prepare_endpoint = direct_deploy_prepare_url(&api_base_url, &project_id)?;
-    let prepare_response = client
-        .post(prepare_endpoint)
-        .headers(headers.clone())
-        .json(&json!({
-            "profile": profile,
-            "component": component,
-            "target_ids": target_ids,
-        }))
-        .send()
-        .map_err(|err| {
-            ToolError::new(
-                "tool.execution_failed",
-                format!("prepare direct deploy failed: {err}"),
-            )
-        })?;
-    let prepare_status = prepare_response.status().as_u16();
-    let prepare_text = prepare_response.text().map_err(|err| {
-        ToolError::new(
-            "tool.execution_failed",
-            format!("read direct deploy prepare response failed: {err}"),
-        )
-    })?;
-    let prepare_body = serde_json::from_str::<Value>(&prepare_text)
-        .unwrap_or_else(|_| json!({"raw": prepare_text}));
-    if !(200..300).contains(&prepare_status) {
+    let project = load_project_catalog_entry(&project_id)?;
+    let credentials = read_global_ftp_credentials()
+        .map_err(|err| ToolError::new("tool.execution_failed", err))?
+        .credentials;
+    let prepared_targets = prepare_local_deploy_targets(
+        &project.deploy_settings,
+        &profile,
+        &component,
+        &target_ids,
+        &credentials,
+    )?;
+    if prepared_targets.is_empty() {
         return Err(ToolError::new(
-            "tool.execution_failed",
-            format!(
-                "prepare direct deploy failed with HTTP {prepare_status}: {}",
-                safe_error_detail(&prepare_body)
-            ),
+            "deploy.target_missing",
+            "没有可部署的服务器目标，请在项目详情绑定 FTP 连接和远端目录",
         ));
     }
-    let prepared_targets = prepare_body
-        .get("targets")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
     let mut upload_results = Vec::new();
-    for target in prepared_targets {
-        upload_results.push(upload_source_to_ftp(&upload_source, &target)?);
+    for target in &prepared_targets {
+        upload_results.push(upload_source_to_ftp(&upload_source, target)?);
     }
-
-    let complete_endpoint = direct_deploy_complete_url(&api_base_url, &project_id)?;
-    let response = client
-        .post(complete_endpoint)
-        .headers(headers)
-        .json(&json!({
-            "profile": profile,
-            "component": component,
-            "target_ids": target_ids,
-            "artifact_name": artifact_name,
-            "artifact_kind": artifact_kind,
-            "version": version,
-            "size": upload_source.size(),
-            "file_count": upload_source.file_count(),
-            "manifest": manifest,
-            "run_deploy_command": run_deploy_command,
-            "chat_session_id": chat_session_id,
-            "task_tree_node_id": task_tree_node_id,
-            "requirement": requirement,
-            "plan": plan,
-            "upload_results": upload_results,
-        }))
-        .send()
-        .map_err(|err| {
-            ToolError::new(
-                "tool.execution_failed",
-                format!("complete direct deploy failed: {err}"),
-            )
-        })?;
-    let status = response.status().as_u16();
-    let text = response.text().map_err(|err| {
-        ToolError::new(
-            "tool.execution_failed",
-            format!("read direct deploy completion failed: {err}"),
-        )
-    })?;
-    let body = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({"raw": text}));
-    if !(200..300).contains(&status) {
-        return Err(ToolError::new(
-            "tool.execution_failed",
-            format!(
-                "complete direct deploy failed with HTTP {status}: {}",
-                safe_error_detail(&body)
-            ),
-        ));
-    }
+    let body = complete_local_direct_deploy(
+        &project_id,
+        &profile,
+        &component,
+        &prepared_targets,
+        &upload_results,
+        run_deploy_command,
+        &artifact_name,
+        &artifact_kind,
+        upload_source.size(),
+        upload_source.file_count(),
+    );
+    let status = 200u16;
 
     let deployment_status = body.get("status").and_then(Value::as_str).unwrap_or("");
     let deployment_id = body.get("run_id").and_then(Value::as_str).unwrap_or("");
@@ -967,6 +826,409 @@ fn direct_deploy_summary(
     format!("{source_label} 已由桌面智能体发起直连部署，但没有返回部署执行记录；不能宣称部署完成")
 }
 
+fn load_project_catalog_entry(project_id: &str) -> Result<DesktopProjectCatalogEntry, ToolError> {
+    find_global_project_catalog_entry(project_id)
+        .map_err(|err| ToolError::new("tool.execution_failed", err))?
+        .ok_or_else(|| {
+            ToolError::new(
+                "deploy.project_missing",
+                format!("本机项目目录中找不到项目 {project_id}"),
+            )
+        })
+}
+
+fn json_text(value: &Value, keys: &[&str]) -> String {
+    for key in keys {
+        match value.get(*key) {
+            Some(Value::String(text)) => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.chars().take(1000).collect();
+                }
+            }
+            Some(Value::Number(number)) => return number.to_string(),
+            _ => {}
+        }
+    }
+    String::new()
+}
+
+fn json_array<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn nonempty(value: String, fallback: &str) -> String {
+    if value.is_empty() {
+        fallback.to_string()
+    } else {
+        value
+    }
+}
+
+fn json_enabled(value: &Value, default: bool) -> bool {
+    value
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(default)
+}
+
+fn nested_object<'a>(value: &'a Value, key: &str) -> &'a Value {
+    match value.get(key) {
+        Some(item) if item.is_object() => item,
+        _ => &Value::Null,
+    }
+}
+
+fn normalize_deploy_target(target: &Value, fallback_id: &str) -> Value {
+    let transport = nested_object(target, "transport");
+    let executor = nested_object(target, "remote_executor");
+    let id = nonempty(json_text(target, &["id"]), fallback_id);
+    let name = nonempty(json_text(target, &["name"]), &id);
+    let mut ftp_credential_id = json_text(target, &["ftp_credential_id", "ftpCredentialId"]);
+    if ftp_credential_id.is_empty() {
+        ftp_credential_id = json_text(transport, &["ftp_credential_id", "ftpCredentialId"]);
+    }
+    let mut remote_path = json_text(target, &["remote_path", "remotePath"]);
+    if remote_path.is_empty() {
+        remote_path = json_text(transport, &["remote_path", "remotePath"]);
+    }
+    let mut deploy_command = json_text(target, &["deploy_command", "deployCommand"]);
+    if deploy_command.is_empty() {
+        deploy_command = json_text(executor, &["deploy_command", "deployCommand"]);
+    }
+    let mut remote_command_mode = json_text(target, &["remote_command_mode"]);
+    if remote_command_mode.is_empty() {
+        remote_command_mode = json_text(executor, &["mode"]);
+    }
+    json!({
+        "id": id,
+        "name": name,
+        "enabled": json_enabled(target, true),
+        "ftp_credential_id": ftp_credential_id,
+        "remote_path": remote_path,
+        "deploy_command": deploy_command,
+        "remote_command_mode": remote_command_mode.to_ascii_lowercase(),
+    })
+}
+
+fn legacy_target_from_profile(profile: &Value) -> Value {
+    let transport = nested_object(profile, "transport");
+    let executor = nested_object(profile, "remote_executor");
+    normalize_deploy_target(
+        &json!({
+            "id": "primary",
+            "name": "主服务器",
+            "ftp_credential_id": json_text(transport, &["ftp_credential_id", "ftpCredentialId"]),
+            "remote_path": json_text(transport, &["remote_path", "remotePath"]),
+            "deploy_command": json_text(executor, &["deploy_command", "deployCommand"]),
+            "remote_command_mode": json_text(executor, &["mode"]),
+        }),
+        "primary",
+    )
+}
+
+fn profile_components(profile: &Value) -> Vec<Value> {
+    let raw = json_array(profile, "components");
+    if raw.is_empty() {
+        return vec![json!({
+            "id": "app",
+            "name": "默认服务",
+            "enabled": true,
+            "artifact_kind": nonempty(json_text(profile, &["artifact_kind"]), "source-bundle"),
+            "notify": nested_object(profile, "notify").clone(),
+            "targets": [legacy_target_from_profile(profile)],
+        })];
+    }
+    raw.to_vec()
+}
+
+fn project_deploy_options_summary(settings: &Value) -> Value {
+    if !settings.is_object() {
+        return json!({
+            "configured": false,
+            "reason": "invalid_deploy_settings",
+            "profiles": []
+        });
+    }
+    let enabled = json_enabled(settings, false);
+    let profiles_raw = json_array(settings, "profiles");
+    if !enabled || profiles_raw.is_empty() {
+        return json!({
+            "configured": false,
+            "reason": "deploy_settings_disabled_or_empty",
+            "enabled": enabled,
+            "profiles": []
+        });
+    }
+
+    let mut profiles = Vec::new();
+    for profile in profiles_raw {
+        let mut components = Vec::new();
+        for component in profile_components(profile) {
+            let targets = json_array(&component, "targets")
+                .iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let normalized = normalize_deploy_target(target, &format!("target-{}", index + 1));
+                    json!({
+                        "id": json_text(&normalized, &["id"]),
+                        "name": json_text(&normalized, &["name"]),
+                        "enabled": json_enabled(&normalized, true),
+                        "transport_mode": "ftp",
+                        "remote_path": json_text(&normalized, &["remote_path"]),
+                        "remote_command_mode": json_text(&normalized, &["remote_command_mode"]),
+                        "has_deploy_command": !json_text(&normalized, &["deploy_command"]).is_empty(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let notify = nested_object(&component, "notify");
+            components.push(json!({
+                "id": nonempty(json_text(&component, &["id"]), "app"),
+                "name": nonempty(json_text(&component, &["name"]), "app"),
+                "enabled": json_enabled(&component, true),
+                "artifact_kind": nonempty(json_text(&component, &["artifact_kind"]), "source-bundle"),
+                "notify_enabled": notify.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+                "targets": targets,
+            }));
+        }
+        let profile_notify = nested_object(profile, "notify");
+        let profile_id = json_text(profile, &["id"]);
+        profiles.push(json!({
+            "id": profile_id,
+            "name": nonempty(json_text(profile, &["name"]), &json_text(profile, &["id"])),
+            "environment": nonempty(json_text(profile, &["environment"]), &json_text(profile, &["id"])),
+            "enabled": json_enabled(profile, true),
+            "artifact_kind": nonempty(json_text(profile, &["artifact_kind"]), "source-bundle"),
+            "notify_enabled": profile_notify.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+            "components": components,
+        }));
+    }
+
+    json!({
+        "configured": true,
+        "enabled": true,
+        "default_profile": nonempty(
+            json_text(settings, &["default_profile", "defaultProfile"]),
+            &json_text(&profiles[0], &["id"]),
+        ),
+        "profiles": profiles,
+    })
+}
+
+fn resolve_ftp_credential<'a>(credentials: &'a [Value], credential_id: &str) -> Option<&'a Value> {
+    if credential_id.is_empty() {
+        return None;
+    }
+    let item = credentials
+        .iter()
+        .find(|item| credential_id_of(item) == credential_id)?;
+    if !credential_enabled(item) {
+        return None;
+    }
+    let host = credential_text(item, "host");
+    let username = credential_text(item, "username");
+    let password = credential_text(item, "password");
+    if host.trim().is_empty() || username.is_empty() || password.is_empty() {
+        return None;
+    }
+    let port = credential_u64(item, "port", 21);
+    if !(1..=65535).contains(&port) {
+        return None;
+    }
+    Some(item)
+}
+
+fn select_deploy_targets(
+    targets: &[Value],
+    target_ids: &[String],
+) -> Result<Vec<Value>, ToolError> {
+    if target_ids.is_empty() {
+        return Ok(targets
+            .iter()
+            .filter(|item| json_enabled(item, true))
+            .cloned()
+            .collect());
+    }
+    let mut selected = Vec::new();
+    let mut missing = Vec::new();
+    for target_id in target_ids {
+        match targets
+            .iter()
+            .find(|item| json_text(item, &["id"]) == *target_id)
+        {
+            Some(target) if json_enabled(target, true) => selected.push(target.clone()),
+            _ => missing.push(target_id.clone()),
+        }
+    }
+    if !missing.is_empty() {
+        return Err(ToolError::new(
+            "deploy.target_missing",
+            format!(
+                "deploy target not found or disabled: {}",
+                missing.join(", ")
+            ),
+        ));
+    }
+    Ok(selected)
+}
+
+fn prepare_local_deploy_targets(
+    settings: &Value,
+    profile_id: &str,
+    component_id: &str,
+    target_ids: &[String],
+    credentials: &[Value],
+) -> Result<Vec<Value>, ToolError> {
+    let profiles = json_array(settings, "profiles");
+    let wanted_profile = {
+        let trimmed = profile_id.trim();
+        if trimmed.is_empty() {
+            nonempty(
+                json_text(settings, &["default_profile", "defaultProfile"]),
+                "prod",
+            )
+        } else {
+            trimmed.to_string()
+        }
+    };
+    let profile = profiles
+        .iter()
+        .find(|item| json_text(item, &["id"]) == wanted_profile)
+        .ok_or_else(|| {
+            ToolError::new(
+                "deploy.profile_missing",
+                "deploy profile or component not found",
+            )
+        })?;
+    let components = profile_components(profile);
+    let wanted_component = {
+        let trimmed = component_id.trim();
+        if trimmed.is_empty() {
+            json_text(components.first().unwrap_or(&Value::Null), &["id"])
+        } else {
+            trimmed.to_string()
+        }
+    };
+    let component = components
+        .iter()
+        .find(|item| json_text(item, &["id"]) == wanted_component)
+        .ok_or_else(|| {
+            ToolError::new(
+                "deploy.profile_missing",
+                "deploy profile or component not found",
+            )
+        })?;
+    let normalized_targets = json_array(component, "targets")
+        .iter()
+        .enumerate()
+        .map(|(index, target)| normalize_deploy_target(target, &format!("target-{}", index + 1)))
+        .collect::<Vec<_>>();
+    let selected = select_deploy_targets(&normalized_targets, target_ids)?;
+    let mut prepared = Vec::new();
+    for target in selected {
+        let credential_id = json_text(&target, &["ftp_credential_id"]);
+        let remote_path = json_text(&target, &["remote_path"]);
+        let Some(credential) = resolve_ftp_credential(credentials, &credential_id) else {
+            return Err(ToolError::new(
+                "deploy.ftp_config_missing",
+                "部署目标缺少可用 FTP 连接或远端目录",
+            ));
+        };
+        if remote_path.is_empty() {
+            return Err(ToolError::new(
+                "deploy.ftp_config_missing",
+                "部署目标缺少可用 FTP 连接或远端目录",
+            ));
+        }
+        prepared.push(json!({
+            "id": json_text(&target, &["id"]),
+            "host": credential_text(credential, "host").trim(),
+            "port": credential_u64(credential, "port", 21).clamp(1, 65535),
+            "username": credential_text(credential, "username"),
+            "password": credential_text(credential, "password"),
+            "max_upload_threads": credential_u64(credential, "max_upload_threads", 4).clamp(1, 32),
+            "remote_path": remote_path,
+            "has_deploy_command": !json_text(&target, &["deploy_command"]).is_empty(),
+        }));
+    }
+    Ok(prepared)
+}
+
+fn complete_local_direct_deploy(
+    project_id: &str,
+    profile: &str,
+    component: &str,
+    prepared_targets: &[Value],
+    upload_results: &[Value],
+    run_deploy_command: bool,
+    artifact_name: &str,
+    artifact_kind: &str,
+    size: u64,
+    file_count: usize,
+) -> Value {
+    let upload_ok = !upload_results.is_empty()
+        && upload_results
+            .iter()
+            .all(|item| item.get("ok").and_then(Value::as_bool).unwrap_or(false));
+    let status = if upload_ok { "success" } else { "failed" };
+    let command_results = prepared_targets
+        .iter()
+        .filter(|item| {
+            item.get("has_deploy_command")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(|target| {
+            json!({
+                "ok": true,
+                "skipped": true,
+                "target_id": json_text(target, &["id"]),
+                "reason": "local_runtime_skips_remote_deploy_command",
+                "run_deploy_command_requested": run_deploy_command,
+            })
+        })
+        .collect::<Vec<_>>();
+    let stage = if !upload_ok {
+        "upload_failed"
+    } else if command_results.is_empty() {
+        "ftp_upload_completed"
+    } else {
+        "deploy_command_skipped"
+    };
+    let run_id = format!(
+        "direct-run-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|item| item.as_nanos())
+            .unwrap_or(0)
+    );
+    json!({
+        "status": status,
+        "deployment_confirmed_success": status == "success",
+        "stage": stage,
+        "run_id": run_id,
+        "project_id": project_id,
+        "profile": profile,
+        "component": component,
+        "artifact_name": artifact_name,
+        "artifact_kind": artifact_kind,
+        "size": size,
+        "file_count": file_count,
+        "upload_results": upload_results,
+        "command_results": command_results,
+        "deploy_command_skipped": !command_results.is_empty(),
+        "notify_result": {
+            "skipped": true,
+            "reason": "local_runtime_skips_backend_notify"
+        }
+    })
+}
+
+#[allow(dead_code)]
 fn deploy_options_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
     let base = Url::parse(api_base_url.trim()).map_err(|err| {
         ToolError::new(
@@ -994,14 +1256,17 @@ fn deploy_options_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolE
     })
 }
 
+#[allow(dead_code)]
 fn direct_deploy_prepare_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
     direct_deploy_phase_url(api_base_url, project_id, "direct-prepare")
 }
 
+#[allow(dead_code)]
 fn direct_deploy_complete_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
     direct_deploy_phase_url(api_base_url, project_id, "direct-complete")
 }
 
+#[allow(dead_code)]
 fn direct_deploy_phase_url(
     api_base_url: &str,
     project_id: &str,
@@ -1082,6 +1347,7 @@ fn string_list_arg(arguments: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn safe_error_detail(body: &Value) -> String {
     body.get("detail")
         .or_else(|| body.get("message"))
@@ -1110,6 +1376,30 @@ fn url_path_escape(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn sample_deploy_settings() -> Value {
+        json!({
+            "enabled": true,
+            "default_profile": "prod",
+            "profiles": [{
+                "id": "prod",
+                "name": "生产环境",
+                "components": [{
+                    "id": "app",
+                    "name": "默认服务",
+                    "targets": [{
+                        "id": "web",
+                        "name": "Web",
+                        "ftp_credential_id": "ftp-1",
+                        "host": "ftp.example.com",
+                        "password": "secret",
+                        "remote_path": "/www/site",
+                        "deploy_command": "./deploy.sh"
+                    }]
+                }]
+            }]
+        })
+    }
+
     #[test]
     fn direct_deploy_phase_urls_target_prepare_and_complete_endpoints() {
         let prepare = direct_deploy_prepare_url("http://127.0.0.1:8000/api", "proj-1").unwrap();
@@ -1136,6 +1426,106 @@ mod tests {
         let success = direct_deploy_summary("direct-run-1", "success", "selected files");
         assert!(success.contains("直接部署并确认成功"));
         assert!(success.contains("direct deployment direct-run-1 状态：success"));
+    }
+
+    #[test]
+    fn project_deploy_options_summary_hides_credentials() {
+        let summary = project_deploy_options_summary(&sample_deploy_settings());
+        let encoded = summary.to_string();
+
+        assert_eq!(summary["configured"], true);
+        assert_eq!(
+            summary["profiles"][0]["components"][0]["targets"][0]["remote_path"],
+            "/www/site"
+        );
+        assert_eq!(
+            summary["profiles"][0]["components"][0]["targets"][0]["has_deploy_command"],
+            true
+        );
+        assert!(!encoded.contains("secret"));
+        assert!(!encoded.contains("ftp-1"));
+        assert!(!encoded.contains("ftp.example.com"));
+        assert!(summary["profiles"][0]["components"][0]["targets"][0]
+            .get("ftp_credential_id")
+            .is_none());
+        assert!(summary["profiles"][0]["components"][0]["targets"][0]
+            .get("host")
+            .is_none());
+        assert!(summary["profiles"][0]["components"][0]["targets"][0]
+            .get("password")
+            .is_none());
+    }
+
+    #[test]
+    fn prepare_local_deploy_targets_resolves_ftp_credential() {
+        let credentials = vec![json!({
+            "id": "ftp-1",
+            "host": "ftp.example.com",
+            "port": 21,
+            "username": "deploy",
+            "password": "secret",
+            "max_upload_threads": 8,
+            "enabled": true
+        })];
+        let prepared = prepare_local_deploy_targets(
+            &sample_deploy_settings(),
+            "prod",
+            "app",
+            &[],
+            &credentials,
+        )
+        .unwrap();
+
+        assert_eq!(prepared.len(), 1);
+        assert_eq!(prepared[0]["id"], "web");
+        assert_eq!(prepared[0]["host"], "ftp.example.com");
+        assert_eq!(prepared[0]["port"], 21);
+        assert_eq!(prepared[0]["username"], "deploy");
+        assert_eq!(prepared[0]["password"], "secret");
+        assert_eq!(prepared[0]["remote_path"], "/www/site");
+        assert_eq!(prepared[0]["max_upload_threads"], 8);
+        assert_eq!(prepared[0]["has_deploy_command"], true);
+    }
+
+    #[test]
+    fn complete_local_direct_deploy_skips_remote_command_instead_of_blocking() {
+        let body = complete_local_direct_deploy(
+            "proj-1",
+            "prod",
+            "app",
+            &[json!({"id": "web", "has_deploy_command": true})],
+            &[json!({"ok": true, "target_id": "web"})],
+            true,
+            "site",
+            "source-bundle",
+            12,
+            1,
+        );
+
+        assert_eq!(body["status"], "success");
+        assert_eq!(body["deployment_confirmed_success"], true);
+        assert_eq!(body["deploy_command_skipped"], true);
+        assert_eq!(body["command_results"][0]["skipped"], true);
+        assert_eq!(
+            body["command_results"][0]["reason"],
+            "local_runtime_skips_remote_deploy_command"
+        );
+    }
+
+    #[test]
+    fn get_project_deploy_options_does_not_require_backend_token() {
+        let error = get_project_deploy_options(&json!({
+            "project_id": "missing-local-project"
+        }))
+        .unwrap_err();
+
+        assert_ne!(error.code, "deploy.backend_context_missing");
+        assert!(
+            error.code == "deploy.project_missing" || error.code == "tool.execution_failed",
+            "unexpected error code: {} {}",
+            error.code,
+            error.message
+        );
     }
 
     #[test]

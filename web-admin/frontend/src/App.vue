@@ -10,7 +10,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   authStateVersion,
   getStoredToken,
-  isExternalAuthSession,
 } from './utils/auth-storage.js'
 import {
   getServerScopedStorageKey,
@@ -32,9 +31,8 @@ import {
   downloadDesktopUpdate,
 } from './utils/desktop-updater.js'
 import {
-  buildLocalModelRuntime,
-  normalizeLocalModelRuntime,
-} from './services/local-model-runtime.js'
+  resolveLocalMainModelRuntime,
+} from './services/local-main-model-runtime.js'
 
 const router = useRouter()
 let onlineHeartbeatTimer = null
@@ -77,29 +75,17 @@ function connectorEnabledForLocalFeishu(connector = {}) {
 }
 
 function buildConnectorModelRuntime(connector = {}) {
-  const providerId = connectorString(connector.provider_id || connector.providerId)
-  const modelName = connectorString(
-    connector.model_name || connector.modelName,
-  )
-  if (providerId) {
-    try {
-      return buildLocalModelRuntime(providerId, modelName)
-    } catch (error) {
-      throw new Error(
-        `机器人模型供应商未配置本地运行时：${providerId}（${connectorString(
-          error?.message,
-          "请先配置本地模型",
-        )}）`,
-      )
-    }
+  void connector
+  try {
+    return resolveLocalMainModelRuntime()
+  } catch (error) {
+    throw new Error(
+      `系统主对话模型未配置可用运行时（${connectorString(
+        error?.message,
+        "请先在主对话模型设置中配置模型",
+      )}）`,
+    )
   }
-  const existing = normalizeLocalModelRuntime(
-    connector?.model_runtime || connector?.modelRuntime,
-    providerId,
-    modelName,
-  )
-  if (existing) return existing
-  return null
 }
 
 function emitLocalBotRuntimeDiagnostic(connector, error) {
@@ -155,8 +141,6 @@ function scheduleLocalBotListenerSync() {
 async function syncLocalBotListeners() {
   if (
     !hasNativeDesktopBridge() ||
-    !getStoredToken() ||
-    isExternalAuthSession() ||
     localBotSyncPending
   ) return
   localBotSyncPending = true
@@ -167,11 +151,10 @@ async function syncLocalBotListeners() {
       : []
     const enabled = connectors.filter(connectorEnabledForLocalFeishu)
     const runnable = resolveRunnableLocalBotListeners(enabled)
-    const enabledIds = new Set(runnable.map((item) => item.connectorId).filter(Boolean))
     const listeners = await listNativeFeishuLocalBotListeners()
     for (const listener of Array.isArray(listeners) ? listeners : []) {
       const connectorId = connectorString(listener?.connectorId || listener?.connector_id)
-      if (!connectorId || enabledIds.has(connectorId)) continue
+      if (!connectorId) continue
       try {
         await stopNativeFeishuLocalBotListener(connectorId)
       } catch (err) {
@@ -188,11 +171,6 @@ async function syncLocalBotListeners() {
       try {
         await startNativeFeishuLocalBotListener({
           connectorId,
-          workspacePath: '',
-          ownerUsername: connectorString(
-            window.localStorage?.getItem(getServerScopedStorageKey('username')) ||
-              window.localStorage?.getItem('username'),
-          ),
           modelRuntime,
           mcpConfig,
           permissionDecision: null,
@@ -285,24 +263,14 @@ onMounted(async () => {
     void checkForDesktopUpdate()
   }
 
-  if (getStoredToken() && !isExternalAuthSession()) {
-    scheduleLocalBotListenerSync()
-  }
+  scheduleLocalBotListenerSync()
 })
 
 watch(
   () => [authStateVersion.value, serverProfileVersion.value],
   () => {
-    if (!getStoredToken()) {
-      stopOnlineHeartbeat()
-      redirectToLoginIfNeeded()
-      return
-    }
     stopOnlineHeartbeat()
-    if (!isExternalAuthSession()) {
-      scheduleLocalBotListenerSync()
-      return
-    }
+    scheduleLocalBotListenerSync()
   },
 )
 

@@ -85,7 +85,6 @@ const DESKTOP_APP_ICON_THEMES = {
   "work-logs": ["#14b8a6", "#0f766e"],
   projects: ["#38bdf8", "#0f766e"],
   "project-detail": ["#60a5fa", "#4f46e5"],
-  voices: ["#34d399", "#059669"],
   market: ["#fb7185", "#f97316"],
   "settings-home": ["#94a3b8", "#475569"],
   "settings-user": ["#818cf8", "#4f46e5"],
@@ -97,7 +96,6 @@ const DESKTOP_APP_ICON_THEMES = {
   "settings-system": ["#64748b", "#1e293b"],
   "settings-changelog": ["#fb923c", "#ea580c"],
   "settings-work-sessions": ["#38bdf8", "#2563eb"],
-  "settings-statistics": ["#f97316", "#ea580c"],
   "settings-dictionaries": ["#a78bfa", "#6d28d9"],
   "settings-providers": ["#06b6d4", "#0891b2"],
   "settings-wallpaper": ["#67e8f9", "#0ea5e9"],
@@ -263,34 +261,6 @@ const DESKTOP_APP_ITEMS = [
     match: (path) => String(path || "").startsWith("/ai/supervision"),
   }),
   createApp({
-    id: "user-feedback",
-    label: "用户反馈",
-    shortLabel: "FB",
-    path: "/feedback",
-    summary: "提交产品体验、系统 Bug 与 AI 问题，并查看处理进度。",
-    eyebrow: "User Feedback",
-    width: 1180,
-    height: 820,
-    launcher: true,
-    category: "workspace",
-    categoryLabel: "工作应用",
-    match: (path) => String(path || "") === "/feedback",
-  }),
-  createApp({
-    id: "feedback-admin",
-    label: "反馈处理中心",
-    shortLabel: "FC",
-    path: "/admin/feedback",
-    summary: "统一受理、分派、流转并回复用户反馈。",
-    eyebrow: "Feedback Operations",
-    width: 1320,
-    height: 860,
-    launcher: true,
-    category: "workspace",
-    categoryLabel: "工作应用",
-    match: (path) => String(path || "").startsWith("/admin/feedback"),
-  }),
-  createApp({
     id: "workbench",
     label: "工作台",
     shortLabel: "WB",
@@ -347,29 +317,17 @@ const DESKTOP_APP_ITEMS = [
   }),
   createApp({
     id: "project-detail",
-    label: "项目详情",
-    shortLabel: "PD",
+    label: "文件夹设置",
+    shortLabel: "FS",
     path: "/projects",
-    summary: "查看单个项目的详情、成员、规则与工作轨迹。",
-    eyebrow: "Project Workspace",
+    summary: "管理文件夹显示名称和本机路径。",
+    eyebrow: "Folder Settings",
     width: 1180,
     height: 800,
     launcher: false,
     match: (path) =>
       /^\/projects\/[^/]+/.test(String(path || "")) ||
       /^\/ai\/chat\/settings\/projects\/[^/]+/.test(String(path || "")),
-  }),
-  createApp({
-    id: "voices",
-    label: "音色",
-    shortLabel: "VC",
-    path: "/materials/voices",
-    summary: "创建、试听和管理项目音色。",
-    eyebrow: "Voice Studio",
-    width: 1180,
-    height: 780,
-    dock: true,
-    match: (path) => String(path || "").startsWith("/materials"),
   }),
   createApp({
     id: "market",
@@ -477,7 +435,7 @@ const DESKTOP_APP_ITEMS = [
     path: "/system/ftp-credentials",
     summary: "维护部署使用的全局 FTP 登录账户。",
     eyebrow: "FTP Credentials",
-    width: 1080,
+    width: 1240,
     height: 760,
     launcher: false,
     category: "settings",
@@ -525,20 +483,6 @@ const DESKTOP_APP_ITEMS = [
     category: "settings",
     categoryLabel: "设置应用",
     match: (path) => String(path || "").startsWith("/work-sessions"),
-  }),
-  createApp({
-    id: "settings-statistics",
-    label: "统计",
-    shortLabel: "ST",
-    path: "/statistics",
-    summary: "直接在工作台里看 MCP 活跃度、会话闭环和当前观测盲区。",
-    eyebrow: "Operations Insight",
-    width: 1220,
-    height: 820,
-    launcher: true,
-    category: "workspace",
-    categoryLabel: "工作应用",
-    match: (path) => String(path || "").startsWith("/statistics"),
   }),
   createApp({
     id: "settings-dictionaries",
@@ -928,9 +872,6 @@ export function resolveDesktopLaunchPath(appId) {
   const projectId = getStoredProjectContextId();
   if (app.id === "chat" && projectId) {
     return `/ai/chat?project_id=${encodeURIComponent(projectId)}`;
-  }
-  if (app.id === "voices" && projectId) {
-    return `/materials/voices?project_id=${encodeURIComponent(projectId)}`;
   }
   return app.path;
 }

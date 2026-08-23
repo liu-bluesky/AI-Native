@@ -54,7 +54,7 @@ import {
 } from "@/utils/desktop-app-bridge.js";
 
 const router = useRouter();
-const embeddedMode = isEmbeddedDesktopApp();
+const embeddedMode = isEmbeddedDesktopApp() || Boolean(router?.__aiEmployeeDesktopWindow?.windowId);
 const apps = computed(() =>
   DESKTOP_SETTINGS_ITEMS.filter((item) => canAccessDesktopApp(item)),
 );
@@ -83,7 +83,7 @@ function openApp(app) {
 function pinApp(app) {
   requestDesktopPinApp(app.id, {
     title: app.label,
-  });
+  }, router);
 }
 </script>
 

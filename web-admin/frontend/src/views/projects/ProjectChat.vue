@@ -1,5 +1,18 @@
 <template>
-  <div v-if="!isSettingsCenterRoute" class="chat-layout" v-loading="loading">
+  <div
+    v-if="!isSettingsCenterRoute"
+    ref="chatLayoutRef"
+    class="chat-layout"
+    :class="{ 'is-file-dragover': isDragging }"
+    v-loading="loading"
+    @dragenter.prevent="handleDragOver"
+    @dragover.prevent="handleDragOver"
+    @dragleave="handleDragLeave"
+    @drop.prevent="handleDrop"
+  >
+    <div v-if="isDragging" class="chat-window-drop-overlay" aria-hidden="true">
+      <span>释放到此窗口即可添加附件</span>
+    </div>
     <div
       class="chat-layout__ambient chat-layout__ambient--left"
       aria-hidden="true"
@@ -43,7 +56,6 @@
             :session-source-label="currentChatSessionSourceLabel"
             :model-summary="currentModelSummary"
             :status-text="chatHeaderStatusText"
-            :offline-status-text="localOfflineStatusText"
             :can-trust-workspace="canTrustAgentRuntimeWorkspace"
             :workspace-trust-saving="workspaceTrustSaving"
             @start-guide="startChatTour"
@@ -2993,7 +3005,10 @@ import {
 import { extractTextFromFile } from "@/utils/file-extractor.js";
 import { resolveServerOrigin } from "@/utils/server-profile.js";
 import { formatRelativeDateTime } from "@/utils/date.js";
-import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
+import {
+  DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME,
+  openRouteInDesktop,
+} from "@/utils/desktop-app-bridge.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   ATTACHMENT_MODE_LABELS,
@@ -3049,7 +3064,9 @@ import {
   pauseNativeLiuAgentLocalChat,
   prepareNativeExternalAgentLaunch,
   prepareNativeWorkspaceFileWrite,
+  openNativeDesktopDevtools,
   previewNativeWorkspaceDiff,
+  readNativeLocalFile,
   readNativeWorkspaceFile,
   revertNativeWorkspaceFileChange,
   writeNativeWorkspaceFile,
@@ -3065,20 +3082,14 @@ import {
   warmupNativeExternalAgentSession as warmupNativeExternalAgentSessionCommand,
   subscribeNativeExternalAgentSessionEvents,
   subscribeNativeLiuAgentRuntimeEvents,
-  subscribeNativeFeishuLocalBotEvents,
-  subscribeNativeFeishuLocalBotStatus,
-  startNativeBotLocalChat,
-  startNativeFeishuLocalBotListener,
   startNativeLiuAgentLocalChat,
   classifyNativeLiuAgentPermissionReply,
-  stopNativeFeishuLocalBotListener,
-  replyNativeFeishuBotMessage,
-  downloadNativeFeishuMessageResource,
-  getNativeFeishuMessage,
   uploadNativeLiuAgentProviderFile,
   writeNativeExternalAgentSessionInput,
   executeNativeLiuAgentTool,
   openNativeExternalUrl,
+  nativeDragDropCssPoints,
+  subscribeNativeDesktopDragDrop,
 } from "@/utils/native-desktop-bridge.js";
 import {
   buildChatSettingsRoute,
@@ -3110,7 +3121,6 @@ import {
   RULE_COMMAND_ALIASES,
   SKILL_COMMAND,
   SKILL_COMMAND_ALIASES,
-  STATISTICS_ANALYSIS_DRAFT_QUERY_KEY,
 } from "@/modules/project-chat/constants/projectChatConstants.js";
 import {
   escapeHtml,
@@ -3225,7 +3235,6 @@ import {
   clearWorkSessionMemory,
   consumePluginInstallDraft,
   consumeProjectDeployDraft,
-  consumeStatisticsAnalysisDraft,
   markChatSessionDeleted,
   formatMcpConfig,
   findDeprecatedQueryMcpServerNames,
@@ -3237,7 +3246,6 @@ import {
   rememberChatSession,
   parseMcpConfigText,
   parseWebToolsConfigText,
-  readGlobalBotConnectorConfigFile,
   readGlobalMcpConfigFile,
   readPreferredLocalConnectorId,
   readPreferredLocalWorkspacePath,
@@ -3303,14 +3311,19 @@ import { useProjectChatTaskTreeActions } from "@/modules/project-chat/composable
 import {
   getLocalProject,
   getLocalProjectRelations,
+  getWorkspaceFolderName,
   isLocalProjectMode,
+  isProjectNamePlaceholder,
   readLocalEntities,
   readLocalProjects,
   updateLocalProjectRelations,
   upsertLocalEntity,
   upsertLocalProject,
 } from "@/services/local-project-repository.js";
-import { readLocalSystemConfig } from "@/services/local-system-config.js";
+import {
+  readLocalSystemConfig,
+  writeLocalSystemConfig,
+} from "@/services/local-system-config.js";
 import { HIGH_RISK_RULES } from "@/modules/project-chat/constants/highRiskRules.js";
 import {
   CHAT_PARAMETER_SECTION_CONFIG,
@@ -3393,7 +3406,6 @@ const projectSettingsHydratedProjectId = ref("");
 
 const projects = ref([]);
 const providers = ref([]);
-const botPlatformConnectors = ref([]);
 const projectEmployees = ref([]);
 const externalAgentInfo = ref({
   agent_type: "codex_cli",
@@ -3497,7 +3509,8 @@ const aiContextDialogPayload = ref(null);
 const aiContextDialogError = ref("");
 let handleLocalMcpConfigUpdated = null;
 let handleLocalWebToolsConfigUpdated = null;
-let handleLocalBotConnectorsConfigUpdated = null;
+let handleLocalProjectsUpdated = null;
+let handleLocalProjectsStorage = null;
 
 const selectedProjectId = ref("");
 let selectedProjectConversationLoadingKey = "";
@@ -5188,13 +5201,6 @@ let nativeExternalAgentSessionEventUnlisten = null;
 const ignoredNativeExternalAgentSessionIds = new Set();
 let externalAgentBridgeTaskPollTimer = null;
 let externalAgentBridgeTaskRunning = false;
-const localFeishuBotListenerIds = new Set();
-const localFeishuBotProcessingEventIds = new Set();
-let localFeishuBotListenerContextKey = "";
-let localFeishuBotEventUnlisten = null;
-let localFeishuBotStatusUnlisten = null;
-const localFeishuBotStatuses = ref({});
-const localFeishuBotStatusWarningKeys = new Set();
 const nativeExternalAgentSessionRecords = ref([]);
 const nativeExternalAgentSessionRecordsLoading = ref(false);
 const selectedNativeExternalAgentRecordId = ref("");
@@ -6261,33 +6267,6 @@ const chatHeaderStatusText = computed(() => {
   if (externalAgentInfo.value.ready) return "已就绪";
   return "未就绪";
 });
-const localFeishuBotStatusText = computed(() => {
-  const statuses = Object.entries(localFeishuBotStatuses.value || {}).map(
-    ([connectorId, status]) => ({
-      connectorId,
-      state: String(status?.state || "")
-        .trim()
-        .toLowerCase(),
-      message: String(status?.message || "").trim(),
-    }),
-  );
-  if (!statuses.length) return "";
-  const failed = statuses.find((item) =>
-    ["error", "exited", "failed"].includes(item.state),
-  );
-  if (failed) {
-    const detail = failed.message.replace(/\s+/g, " ").slice(0, 90);
-    return detail ? `飞书监听失败：${detail}` : "飞书监听失败";
-  }
-  if (statuses.some((item) => item.state === "ready")) return "飞书监听已就绪";
-  if (statuses.some((item) => item.state === "starting"))
-    return "飞书监听启动中";
-  return "";
-});
-const localOfflineStatusText = computed(() => {
-  if (localFeishuBotStatusText.value) return localFeishuBotStatusText.value;
-  return "";
-});
 const chatHeaderStatusType = computed(() => {
   if (!isChatSettingsDisplayReady.value) return "info";
   if (!isExternalAgentMode.value) return wsStatusType.value;
@@ -6482,6 +6461,29 @@ const nativeWorkspaceStatusLabel = computed(() => {
 
 function resolveNativeRuntimeWorkspacePath() {
   return executionWorkspacePath.value;
+}
+
+const workspacePathAvailabilityCache = new Map();
+
+async function isProjectWorkspaceAvailable(project) {
+  const workspacePath = String(project?.workspace_path || "").trim();
+  if (!workspacePath) return true;
+  if (!hasNativeDesktopBridge()) return true;
+  if (workspacePathAvailabilityCache.has(workspacePath)) {
+    return workspacePathAvailabilityCache.get(workspacePath);
+  }
+  try {
+    const status = await detectNativeExecutors({ workspacePath });
+    const workspace = status?.workspace;
+    const available = Boolean(
+      workspace?.configured && workspace?.exists && workspace?.isDirectory,
+    );
+    workspacePathAvailabilityCache.set(workspacePath, available);
+    return available;
+  } catch {
+    workspacePathAvailabilityCache.set(workspacePath, false);
+    return false;
+  }
 }
 
 function resolveNativeAgentOptionByType(agentType = "") {
@@ -9046,7 +9048,15 @@ const currentProjectLabel = computed(() => {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) return "未选择";
   const matched = (projects.value || []).find((item) => item.id === projectId);
-  return String(matched?.name || projectId);
+  const localProject = getLocalProject(projectId);
+  for (const candidate of [matched?.name, localProject?.name]) {
+    const name = String(candidate || "").trim();
+    if (!isProjectNamePlaceholder(name, projectId)) return name;
+  }
+  const workspacePath = String(
+    matched?.workspace_path || localProject?.workspace_path || "",
+  ).trim();
+  return getWorkspaceFolderName(workspacePath) || "未命名文件夹";
 });
 const skillResourceDirectoryStored = computed(() =>
   readPreferredSkillResourceDirectory(selectedProjectId.value),
@@ -9505,61 +9515,6 @@ const currentChatSession = computed(
 const currentChatSessionSourceLabel = computed(() =>
   formatChatSessionSourceLabel(currentChatSession.value),
 );
-function normalizeBotPlatformConnector(item) {
-  const raw =
-    item && typeof item === "object" && !Array.isArray(item) ? item : {};
-  return {
-    id: String(raw.id || "").trim(),
-    enabled: raw.enabled !== false,
-    platform: String(raw.platform || "")
-      .trim()
-      .toLowerCase(),
-    name: String(raw.name || "").trim(),
-    agent_name: String(raw.agent_name || "").trim(),
-    description: String(raw.description || "").trim(),
-    system_prompt: String(raw.system_prompt || raw.systemPrompt || "").trim(),
-    chat_mode: "desktop_local_agent",
-    external_agent_type: ["codex_cli", "hermes", "claude_code"].includes(
-      String(raw.external_agent_type || raw.externalAgentType || "")
-        .trim()
-        .toLowerCase(),
-    )
-      ? String(raw.external_agent_type || raw.externalAgentType || "")
-          .trim()
-          .toLowerCase()
-      : "codex_cli",
-    provider_id: String(raw.provider_id || raw.providerId || "").trim(),
-    model_name: String(raw.model_name || raw.modelName || "").trim(),
-    app_id: String(raw.app_id || "").trim(),
-    app_secret: String(raw.app_secret || "").trim(),
-    verification_token: String(
-      raw.verification_token || raw.verificationToken || "",
-    ).trim(),
-    encrypt_key: String(raw.encrypt_key || raw.encryptKey || "").trim(),
-    event_receive_mode: String(
-      raw.event_receive_mode || raw.eventReceiveMode || "manual",
-    )
-      .trim()
-      .toLowerCase(),
-    auto_start_worker: raw.auto_start_worker ?? raw.autoStartWorker ?? false,
-    reply_identity: ["bot", "user"].includes(
-      String(raw.reply_identity || raw.replyIdentity || "")
-        .trim()
-        .toLowerCase(),
-    )
-      ? String(raw.reply_identity || raw.replyIdentity || "")
-          .trim()
-          .toLowerCase()
-      : "bot",
-    project_id: String(raw.project_id || "").trim(),
-    sandbox_mode: String(
-      raw.sandbox_mode || raw.connector_sandbox_mode || "workspace-write",
-    )
-      .trim()
-      .toLowerCase(),
-    high_risk_tool_confirm: raw.high_risk_tool_confirm !== false,
-  };
-}
 const autoSaveStatusText = computed(() => {
   if (!selectedProjectId.value) return "未选择项目";
   if (projectSettingsHydrating.value) return "正在同步项目配置...";
@@ -11553,820 +11508,6 @@ function stopNativeLiuAgentRuntimeEventSubscription() {
   }
 }
 
-function localBotRunnerResultContent(result = {}) {
-  return String(
-    result?.assistantContent ||
-      result?.assistant_content ||
-      result?.summary ||
-      result?.userVisibleErrorSummary ||
-      result?.user_visible_error_summary ||
-      result?.error ||
-      "",
-  ).trim();
-}
-
-function localBotRunnerPlainObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value
-    : {};
-}
-
-function localBotRunnerString(...values) {
-  for (const value of values) {
-    const normalized = String(value || "").trim();
-    if (normalized) return normalized;
-  }
-  return "";
-}
-
-function findLocalBotConnectorForRequest(request = {}) {
-  const connector = localBotRunnerPlainObject(request.connector);
-  const connectorId = localBotRunnerString(
-    connector.connectorId,
-    connector.connector_id,
-    request.connectorId,
-    request.connector_id,
-  );
-  if (!connectorId) return null;
-  return (
-    (botPlatformConnectors.value || []).find(
-      (item) => String(item?.id || "").trim() === connectorId,
-    ) || null
-  );
-}
-
-async function buildLocalBotRunnerModelRuntime(request = {}) {
-  const connector = localBotRunnerPlainObject(request.connector);
-  const existingRuntime =
-    request.modelRuntime && typeof request.modelRuntime === "object"
-      ? request.modelRuntime
-      : request.model_runtime && typeof request.model_runtime === "object"
-        ? request.model_runtime
-        : null;
-  if (existingRuntime) return existingRuntime;
-
-  const providerId = localBotRunnerString(
-    request.providerId,
-    request.provider_id,
-    connector.providerId,
-    connector.provider_id,
-  );
-  const requestedModelName = localBotRunnerString(
-    request.modelName,
-    request.model_name,
-    connector.modelName,
-    connector.model_name,
-  );
-  if (!providerId) return buildLocalLiuAgentModelRuntime();
-
-  const runtime = await fetchLocalLiuAgentDesktopModelRuntime(providerId);
-  const modelName = localBotRunnerString(
-    requestedModelName,
-    runtime.model_name,
-    runtime.modelName,
-    runtime.default_model,
-    runtime.defaultModel,
-  );
-  if (!modelName) {
-    throw new Error(`机器人模型供应商缺少可用模型名：${providerId}`);
-  }
-  return {
-    mode: "direct-openai-compatible",
-    providerId,
-    modelName,
-    baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
-    apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
-    temperature: Number(
-      temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
-    ),
-  };
-}
-
-async function enrichLocalBotRunnerRequest(request = {}, workspacePath = "") {
-  const normalizedRequest = localBotRunnerPlainObject(request);
-  const localConnector = findLocalBotConnectorForRequest(normalizedRequest);
-  const requestConnector = localBotRunnerPlainObject(
-    normalizedRequest.connector,
-  );
-  const connectorId = localBotRunnerString(
-    requestConnector.connectorId,
-    requestConnector.connector_id,
-    normalizedRequest.connectorId,
-    normalizedRequest.connector_id,
-  );
-  if (connectorId && !localConnector) {
-    throw new Error(`本机全局机器人配置中找不到连接器：${connectorId}`);
-  }
-  if (localConnector) {
-    normalizedRequest.connector = {
-      ...requestConnector,
-      connectorId: localConnector.id,
-      connector_id: localConnector.id,
-      platform: localConnector.platform,
-      name: localConnector.name,
-      systemPrompt: localConnector.system_prompt,
-      system_prompt: localConnector.system_prompt,
-      providerId: localConnector.provider_id,
-      provider_id: localConnector.provider_id,
-      modelName: localConnector.model_name,
-      model_name: localConnector.model_name,
-      replyIdentity: localConnector.reply_identity,
-      reply_identity: localConnector.reply_identity,
-      ownerUsername: localBotRunnerString(
-        requestConnector.ownerUsername,
-        requestConnector.owner_username,
-        normalizedRequest.ownerUsername,
-        normalizedRequest.owner_username,
-        currentUsername.value,
-      ),
-      owner_username: localBotRunnerString(
-        requestConnector.ownerUsername,
-        requestConnector.owner_username,
-        normalizedRequest.ownerUsername,
-        normalizedRequest.owner_username,
-        currentUsername.value,
-      ),
-      sandboxMode: localConnector.sandbox_mode,
-      sandbox_mode: localConnector.sandbox_mode,
-      highRiskToolConfirm: localConnector.high_risk_tool_confirm,
-      high_risk_tool_confirm: localConnector.high_risk_tool_confirm,
-    };
-    normalizedRequest.providerId = localConnector.provider_id;
-    normalizedRequest.provider_id = localConnector.provider_id;
-    normalizedRequest.modelName = localConnector.model_name;
-    normalizedRequest.model_name = localConnector.model_name;
-  }
-  const requestMcpConfig = localBotRunnerPlainObject(
-    normalizedRequest.mcpConfig || normalizedRequest.mcp_config,
-  );
-  normalizedRequest.mcpConfig = mergeMcpConfigs(
-    effectiveMcpConfig.value,
-    requestMcpConfig,
-  );
-  if (!normalizedRequest.modelRuntime && !normalizedRequest.model_runtime) {
-    normalizedRequest.modelRuntime =
-      await buildLocalBotRunnerModelRuntime(normalizedRequest);
-  }
-  normalizedRequest.workspacePath = localBotRunnerString(
-    normalizedRequest.workspacePath,
-    normalizedRequest.workspace_path,
-    workspacePath,
-  );
-  if (
-    !normalizedRequest.permissionDecision &&
-    !normalizedRequest.permission_decision
-  ) {
-    normalizedRequest.permissionDecision = localLiuAgentFullAccessEnabled(
-      normalizedRequest.workspacePath,
-    )
-      ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
-      : null;
-  }
-  return normalizedRequest;
-}
-
-function localFeishuBotEventString(value, ...fallbacks) {
-  for (const item of [value, ...fallbacks]) {
-    const normalized = String(item || "").trim();
-    if (normalized) return normalized;
-  }
-  return "";
-}
-
-function escapeRegExp(value) {
-  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function localFeishuBotConnectorById(connectorId) {
-  const normalizedId = String(connectorId || "").trim();
-  if (!normalizedId) return null;
-  return (
-    (botPlatformConnectors.value || []).find(
-      (item) => String(item?.id || "").trim() === normalizedId,
-    ) || null
-  );
-}
-
-function parseLocalFeishuJsonObject(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) return value;
-  const text = String(value || "").trim();
-  if (!text || !text.startsWith("{")) return {};
-  try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-function normalizeLocalFeishuBotStatusMessage(message = "") {
-  const raw = String(message || "").trim();
-  if (!raw) return "";
-  const parsed = parseLocalFeishuJsonObject(raw);
-  const error =
-    parsed?.error && typeof parsed.error === "object" ? parsed.error : {};
-  const parts = [
-    localFeishuBotEventString(error.message, parsed.message),
-    localFeishuBotEventString(error.hint, parsed.hint),
-  ].filter(Boolean);
-  return (parts.length ? parts.join("；") : raw).replace(/\s+/g, " ").trim();
-}
-
-function localFeishuArray(...values) {
-  for (const value of values) {
-    if (Array.isArray(value)) return value;
-  }
-  return [];
-}
-
-function localFeishuSenderId(sender = {}) {
-  if (!sender || typeof sender !== "object") return "";
-  const senderId = sender.sender_id || sender.senderId || sender.id || {};
-  if (senderId && typeof senderId === "object") {
-    return localFeishuBotEventString(
-      senderId.open_id,
-      senderId.openId,
-      senderId.user_id,
-      senderId.userId,
-      senderId.union_id,
-      senderId.unionId,
-    );
-  }
-  return localFeishuBotEventString(senderId);
-}
-
-function normalizeLocalFeishuBotEvent(rawEvent = {}) {
-  const root = rawEvent && typeof rawEvent === "object" ? rawEvent : {};
-  const event =
-    root.event && typeof root.event === "object" ? root.event : root;
-  const message =
-    event.message && typeof event.message === "object" ? event.message : event;
-  const sender =
-    event.sender && typeof event.sender === "object"
-      ? event.sender
-      : message.sender && typeof message.sender === "object"
-        ? message.sender
-        : {};
-  const rawContent = localFeishuBotEventString(
-    message.content,
-    event.content,
-    root.content,
-  );
-  const parsedContent = parseLocalFeishuJsonObject(rawContent);
-  const text = localFeishuBotEventString(
-    parsedContent.text,
-    parsedContent.content,
-    message.text,
-    event.text,
-    root.text,
-    rawContent.startsWith("{") ? "" : rawContent,
-  );
-  const mentions = localFeishuArray(
-    message.mentions,
-    event.mentions,
-    root.mentions,
-    parsedContent.mentions,
-    message.message_mentions,
-    event.message_mentions,
-    root.message_mentions,
-  );
-  return {
-    ...root,
-    ...event,
-    ...message,
-    content: text,
-    text,
-    raw_content: rawContent,
-    parsed_content: parsedContent,
-    mentions,
-    message_mentions: mentions,
-    message_id: localFeishuBotEventString(
-      message.message_id,
-      message.messageId,
-      event.message_id,
-      event.messageId,
-      root.message_id,
-      root.messageId,
-      root.id,
-    ),
-    event_id: localFeishuBotEventString(
-      root.event_id,
-      root.eventId,
-      event.event_id,
-      event.eventId,
-      message.message_id,
-      message.messageId,
-    ),
-    chat_id: localFeishuBotEventString(
-      message.chat_id,
-      message.chatId,
-      event.chat_id,
-      event.chatId,
-      root.chat_id,
-      root.chatId,
-    ),
-    chat_type: localFeishuBotEventString(
-      message.chat_type,
-      message.chatType,
-      event.chat_type,
-      event.chatType,
-      root.chat_type,
-      root.chatType,
-    ),
-    chat_name: localFeishuBotEventString(
-      message.chat_name,
-      message.chatName,
-      event.chat_name,
-      event.chatName,
-      root.chat_name,
-      root.chatName,
-    ),
-    thread_id: localFeishuBotEventString(
-      message.thread_id,
-      message.threadId,
-      event.thread_id,
-      event.threadId,
-      root.thread_id,
-      root.threadId,
-    ),
-    sender_id: localFeishuSenderId(sender),
-    raw_event: root,
-  };
-}
-
-function handleNativeFeishuLocalBotStatus(payload = {}) {
-  const connectorId = localFeishuBotEventString(
-    payload.connectorId,
-    payload.connector_id,
-  );
-  if (!connectorId) return;
-  const state = localFeishuBotEventString(payload.state, "log");
-  const message = normalizeLocalFeishuBotStatusMessage(
-    localFeishuBotEventString(payload.message),
-  );
-  localFeishuBotStatuses.value = {
-    ...(localFeishuBotStatuses.value || {}),
-    [connectorId]: {
-      state,
-      message,
-      updatedAt: new Date().toISOString(),
-    },
-  };
-  if (["error", "exited"].includes(state)) {
-    localFeishuBotListenerIds.delete(connectorId);
-    const warningKey = `${connectorId}:${state}:${message}`;
-    if (!localFeishuBotStatusWarningKeys.has(warningKey)) {
-      localFeishuBotStatusWarningKeys.add(warningKey);
-      ElMessage.warning(
-        message
-          ? `飞书机器人监听${state === "exited" ? "已退出" : "失败"}：${message}`
-          : "飞书机器人监听失败",
-      );
-    }
-  }
-}
-
-function normalizeLocalFeishuBotMessage(connector, event = {}) {
-  let content = localFeishuBotEventString(
-    event.content,
-    event.text,
-    event.message,
-  );
-  const names = [connector?.name, connector?.agent_name, connector?.id]
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
-  for (const name of names) {
-    content = content
-      .replace(new RegExp(`^@?${escapeRegExp(name)}[\\s:：,，]*`, "i"), "")
-      .trim();
-  }
-  return content;
-}
-
-function localFeishuBotMentionedByEvent(event = {}) {
-  const mentions = Array.isArray(event.mentions)
-    ? event.mentions
-    : Array.isArray(event.message_mentions)
-      ? event.message_mentions
-      : [];
-  return mentions.some((mention) => {
-    const type = String(
-      mention?.type || mention?.mention_type || "",
-    ).toLowerCase();
-    return type.includes("bot") || type.includes("app");
-  });
-}
-
-function shouldHandleLocalFeishuBotEvent(connector, event = {}) {
-  if (!connector || connector.enabled === false) return false;
-  if (
-    String(connector.platform || "")
-      .trim()
-      .toLowerCase() !== "feishu"
-  )
-    return false;
-  const chatType = String(event.chat_type || event.chatType || "")
-    .trim()
-    .toLowerCase();
-  if (chatType === "p2p") return true;
-  if (localFeishuBotMentionedByEvent(event)) return true;
-  const content = localFeishuBotEventString(
-    event.content,
-    event.text,
-    event.message,
-  );
-  const mentionTargets = [connector.name, connector.agent_name, connector.id]
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
-  return mentionTargets.some((target) =>
-    content.toLowerCase().includes(target.toLowerCase()),
-  );
-}
-
-function resolveLocalFeishuBotBoundSessionId(connector, event = {}) {
-  const chatId = localFeishuBotEventString(event.chat_id, event.chatId);
-  const connectorId = String(connector?.id || "").trim();
-  if (!chatId || !connectorId) return "";
-  const matched = (chatSessions.value || []).find((session) => {
-    const source = normalizeChatSourceContext(session || {});
-    return (
-      String(source.platform || "")
-        .trim()
-        .toLowerCase() === "feishu" &&
-      String(source.connector_id || source.connectorId || "").trim() ===
-        connectorId &&
-      String(source.external_chat_id || source.externalChatId || "").trim() ===
-        chatId
-    );
-  });
-  return String(matched?.id || "").trim();
-}
-
-async function ensureLocalFeishuBotChatSession(connector, event = {}) {
-  const existing = resolveLocalFeishuBotBoundSessionId(connector, event);
-  if (existing) return existing;
-  const chatId = localFeishuBotEventString(event.chat_id, event.chatId);
-  if (!chatId) return String(currentChatSessionId.value || "").trim();
-  const sourceContext = {
-    platform: "feishu",
-    connector_id: String(connector?.id || "").trim(),
-    connector_name: String(connector?.name || "").trim(),
-    external_chat_id: chatId,
-    external_chat_name: localFeishuBotEventString(
-      event.chat_name,
-      event.chatName,
-      chatId,
-    ),
-    source_type:
-      String(event.chat_type || "")
-        .trim()
-        .toLowerCase() === "p2p"
-        ? "private_message"
-        : "group_message",
-  };
-  const created = await createChatSession({
-    switchTo: false,
-    title:
-      sourceContext.external_chat_name ||
-      `${connector?.name || "飞书"}机器人对话`,
-    sourceContext,
-  });
-  return String(created?.id || "").trim();
-}
-
-function collectLocalFeishuResourceRefs(value, refs = []) {
-  if (!value || refs.length >= 8) return refs;
-  if (Array.isArray(value)) {
-    for (const item of value) collectLocalFeishuResourceRefs(item, refs);
-    return refs;
-  }
-  if (typeof value === "string") {
-    const parsed = parseLocalFeishuJsonObject(value);
-    if (Object.keys(parsed).length) {
-      collectLocalFeishuResourceRefs(parsed, refs);
-    }
-    const matches = value.match(/\b(?:img|file)_[A-Za-z0-9._-]+\b/g) || [];
-    for (const fileKey of matches) {
-      if (refs.length >= 8) break;
-      if (refs.some((item) => item.fileKey === fileKey)) continue;
-      refs.push({
-        fileKey,
-        resourceType: /^file_/i.test(fileKey) ? "file" : "image",
-        label: fileKey,
-      });
-    }
-    return refs;
-  }
-  if (typeof value !== "object") return refs;
-  const fileKey = localFeishuBotEventString(
-    value.file_key,
-    value.fileKey,
-    value.image_key,
-    value.imageKey,
-    value.key,
-  );
-  if (fileKey && /^(img|file)_/i.test(fileKey)) {
-    const resourceType =
-      String(value.type || value.resource_type || value.resourceType || "")
-        .toLowerCase()
-        .includes("file") || /^file_/i.test(fileKey)
-        ? "file"
-        : "image";
-    if (!refs.some((item) => item.fileKey === fileKey)) {
-      refs.push({
-        fileKey,
-        resourceType,
-        label: localFeishuBotEventString(value.name, value.label, fileKey),
-      });
-    }
-  }
-  for (const item of Object.values(value)) {
-    collectLocalFeishuResourceRefs(item, refs);
-  }
-  return refs;
-}
-
-async function enrichLocalFeishuBotEventForResources(
-  event = {},
-  messageId = "",
-  identity = "bot",
-) {
-  if (collectLocalFeishuResourceRefs(event).length || !messageId) {
-    return event;
-  }
-  try {
-    const result = await getNativeFeishuMessage({
-      messageId,
-      identity,
-      downloadResources: true,
-    });
-    const payload =
-      result?.payload && typeof result.payload === "object"
-        ? result.payload
-        : {};
-    return {
-      ...event,
-      message_detail: payload,
-    };
-  } catch (error) {
-    console.warn("fetch feishu message detail for resources failed", error);
-    return event;
-  }
-}
-
-function dataUrlMimeType(dataUrl = "") {
-  const matched = String(dataUrl || "").match(/^data:([^;,]+)[;,]/);
-  return matched?.[1] || "";
-}
-
-async function buildLocalFeishuBotAttachments(
-  event = {},
-  messageId = "",
-  identity = "bot",
-) {
-  const eventWithDetail = await enrichLocalFeishuBotEventForResources(
-    event,
-    messageId,
-    identity,
-  );
-  const refs = collectLocalFeishuResourceRefs(eventWithDetail);
-  const attachments = [];
-  for (const [index, ref] of refs.entries()) {
-    try {
-      const result = await downloadNativeFeishuMessageResource({
-        messageId,
-        fileKey: ref.fileKey,
-        resourceType: ref.resourceType,
-        identity,
-      });
-      const dataUrl = String(result?.dataUrl || result?.data_url || "").trim();
-      const name = String(result?.name || ref.label || ref.fileKey).trim();
-      attachments.push({
-        attachmentId: `feishu_${messageId}_${index}`,
-        name,
-        mimeType: dataUrlMimeType(dataUrl),
-        size: Number(result?.size || 0) || 0,
-        kind: ref.resourceType === "image" ? "image" : "file",
-        routingMode:
-          ref.resourceType === "image" ? "inline_image" : "local_extract",
-        extractionStatus: dataUrl ? "image_data_url" : "metadata_only",
-        dataUrl,
-        extractedText: String(
-          result?.localPath || result?.local_path || "",
-        ).trim()
-          ? `飞书资源已下载到本机：${String(result?.localPath || result?.local_path || "").trim()}`
-          : "",
-        providerFileId: "",
-        error: "",
-      });
-    } catch (error) {
-      attachments.push({
-        attachmentId: `feishu_${messageId}_${index}`,
-        name: ref.label || ref.fileKey,
-        mimeType: "",
-        size: 0,
-        kind: ref.resourceType,
-        routingMode: "local_extract",
-        extractionStatus: "error",
-        dataUrl: "",
-        extractedText: "",
-        providerFileId: "",
-        error: error?.message || "飞书资源下载失败",
-      });
-    }
-  }
-  return attachments;
-}
-
-async function handleNativeFeishuLocalBotEvent(payload = {}) {
-  const rawEvent =
-    payload?.event && typeof payload.event === "object" ? payload.event : {};
-  const event = normalizeLocalFeishuBotEvent(rawEvent);
-  const connectorId = localFeishuBotEventString(
-    payload.connectorId,
-    payload.connector_id,
-    event.connector_id,
-  );
-  const connector = localFeishuBotConnectorById(connectorId);
-  const eventId = localFeishuBotEventString(
-    event.event_id,
-    event.message_id,
-    event.id,
-  );
-  const eventKey = `${connectorId}:${eventId || JSON.stringify(event).slice(0, 160)}`;
-  if (!connector || localFeishuBotProcessingEventIds.has(eventKey)) return;
-  if (!shouldHandleLocalFeishuBotEvent(connector, event)) return;
-
-  const projectId = localFeishuBotEventString(
-    payload.projectId,
-    selectedProjectId.value,
-  );
-  const chatSessionId = await ensureLocalFeishuBotChatSession(connector, event);
-  const workspacePath = localFeishuBotEventString(
-    payload.workspacePath,
-    localLiuAgentWorkspacePath(),
-  );
-  const message = normalizeLocalFeishuBotMessage(connector, event);
-  const messageId = localFeishuBotEventString(event.message_id, event.id);
-  if (!projectId || !chatSessionId || !workspacePath || !message || !messageId)
-    return;
-
-  localFeishuBotProcessingEventIds.add(eventKey);
-  try {
-    const attachments = await buildLocalFeishuBotAttachments(
-      event,
-      messageId,
-      connector.reply_identity || "bot",
-    );
-    const request = {
-      projectId,
-      chatSessionId,
-      messageId,
-      assistantMessageId: `bot-local-${Date.now().toString(36)}`,
-      message,
-      workspacePath,
-      connector: {
-        connectorId: connector.id,
-        platform: connector.platform,
-        name: connector.name,
-        systemPrompt: connector.system_prompt,
-        providerId: connector.provider_id,
-        modelName: connector.model_name,
-        replyIdentity: connector.reply_identity,
-        ownerUsername: String(currentUsername.value || "").trim(),
-        sandboxMode: connector.sandbox_mode,
-        highRiskToolConfirm: connector.high_risk_tool_confirm,
-      },
-      attachments,
-      sourceContext: {
-        source_type:
-          String(event.chat_type || "")
-            .trim()
-            .toLowerCase() === "p2p"
-            ? "private_message"
-            : "group_message",
-        platform: "feishu",
-        connector_id: connector.id,
-        external_chat_id: localFeishuBotEventString(event.chat_id),
-        external_chat_name: localFeishuBotEventString(
-          event.chat_name,
-          event.chatName,
-        ),
-        external_message_id: messageId,
-        sender_id: localFeishuBotEventString(event.sender_id),
-        chat_type: localFeishuBotEventString(event.chat_type),
-        runtime_migration_status: "desktop_frontend_local_listener",
-        execution_authority: "delegated_user_desktop_runner",
-        raw: rawEvent,
-      },
-      mcpConfig: effectiveMcpConfig.value,
-    };
-    const result = await startNativeBotLocalChat(
-      await enrichLocalBotRunnerRequest(request, workspacePath),
-    );
-    const replyContent = localBotRunnerResultContent(result);
-    if (replyContent) {
-      await replyNativeFeishuBotMessage({
-        messageId,
-        content: replyContent,
-        contentFormat: "markdown",
-        replyIdentity: connector.reply_identity || "bot",
-        replyInThread: Boolean(event.thread_id || event.threadId),
-        idempotencyKey: `desktop-bot-reply-${messageId}`,
-      });
-    }
-  } catch (error) {
-    console.warn("handle local feishu bot event failed", error);
-  } finally {
-    window.setTimeout(() => {
-      localFeishuBotProcessingEventIds.delete(eventKey);
-    }, 60_000);
-  }
-}
-
-async function syncLocalFeishuBotListeners() {
-  if (!hasNativeDesktopBridge()) return;
-  const runtimeInfo = await getNativeRuntimeInfo().catch(() => null);
-  const workspacePath = String(
-    runtimeInfo?.defaultWorkspacePath ||
-      runtimeInfo?.default_workspace_path ||
-      localLiuAgentWorkspacePath() ||
-      "",
-  ).trim();
-  const contextKey = ["desktop-bot-global", workspacePath].join("|");
-  if (
-    localFeishuBotListenerContextKey &&
-    localFeishuBotListenerContextKey !== contextKey
-  ) {
-    for (const connectorId of Array.from(localFeishuBotListenerIds)) {
-      try {
-        await stopNativeFeishuLocalBotListener(connectorId);
-      } catch (error) {
-        console.warn("restart local feishu bot listener failed", error);
-      }
-    }
-    localFeishuBotListenerIds.clear();
-  }
-  localFeishuBotListenerContextKey = contextKey;
-
-  if (!localFeishuBotStatusUnlisten) {
-    localFeishuBotStatusUnlisten = await subscribeNativeFeishuLocalBotStatus(
-      handleNativeFeishuLocalBotStatus,
-    );
-  }
-
-  const enabledConnectorIds = new Set(
-    (botPlatformConnectors.value || [])
-      .filter((connector) => {
-        return (
-          connector?.enabled !== false &&
-          connector?.auto_start_worker === true &&
-          String(connector?.platform || "")
-            .trim()
-            .toLowerCase() === "feishu" &&
-          String(connector?.event_receive_mode || "")
-            .trim()
-            .toLowerCase() === "long_connection" &&
-          String(connector?.id || "").trim()
-        );
-      })
-      .map((connector) => String(connector.id).trim()),
-  );
-
-  for (const connectorId of Array.from(localFeishuBotListenerIds)) {
-    if (enabledConnectorIds.has(connectorId)) continue;
-    try {
-      await stopNativeFeishuLocalBotListener(connectorId);
-    } catch (error) {
-      console.warn("stop local feishu bot listener failed", error);
-    } finally {
-      localFeishuBotListenerIds.delete(connectorId);
-    }
-  }
-
-  for (const connectorId of enabledConnectorIds) {
-    if (localFeishuBotListenerIds.has(connectorId)) continue;
-    try {
-      const connector = localFeishuBotConnectorById(connectorId);
-      const modelRuntime = await buildLocalBotRunnerModelRuntime({ connector });
-      await startNativeFeishuLocalBotListener({
-        connectorId,
-        workspacePath,
-        ownerUsername: currentUsername.value,
-        modelRuntime,
-        mcpConfig: globalMcpConfig.value,
-        permissionDecision: localLiuAgentFullAccessEnabled(workspacePath)
-          ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
-          : null,
-      });
-      localFeishuBotListenerIds.add(connectorId);
-    } catch (error) {
-      console.warn("start local feishu bot listener failed", error);
-    }
-  }
-}
 
 function localLiuAgentUserMessageFromRuntimeEvents(events = []) {
   const event = (Array.isArray(events) ? events : []).find((item) => {
@@ -14179,6 +13320,17 @@ const messageContextMenu = reactive({
 });
 const inputFocused = ref(false);
 const isDragging = ref(false);
+const chatLayoutRef = ref(null);
+let nativeDesktopDragDropUnlisten = null;
+const desktopWindowId = String(
+  router?.__aiEmployeeDesktopWindow?.windowId || "",
+).trim();
+
+function reportNativeDesktopDragDropDiagnostic(message, type = "info") {
+  if (!import.meta.env.DEV) return;
+  const notify = ElMessage[type] || ElMessage.info;
+  notify(message);
+}
 const {
   rememberChatSessionComposerState,
   rememberCurrentChatSessionComposerState,
@@ -19076,20 +18228,34 @@ function readRememberedLocalLiuAgentWorkspacePath() {
   }
 }
 
+function resolveOfflineProjectName(item = {}, id = "", workspacePath = "") {
+  const candidates = [
+    item?.name,
+    item?.project_name,
+    item?.projectName,
+    item?.project_label,
+    item?.projectLabel,
+  ];
+  for (const candidate of candidates) {
+    const name = String(candidate || "").trim();
+    if (!isProjectNamePlaceholder(name, id)) return name;
+  }
+  return getWorkspaceFolderName(workspacePath);
+}
+
 function normalizeOfflineProjectListItem(item = {}) {
   const id = String(
     item?.id || item?.project_id || item?.projectId || "",
   ).trim();
   if (!id) return null;
+  const workspacePath = String(
+    item?.workspace_path || item?.workspacePath || "",
+  ).trim();
   return {
     ...item,
     id,
-    name: String(
-      item?.name || item?.project_label || item?.projectLabel || id,
-    ).trim(),
-    workspace_path: String(
-      item?.workspace_path || item?.workspacePath || "",
-    ).trim(),
+    name: resolveOfflineProjectName(item, id, workspacePath),
+    workspace_path: workspacePath,
     is_offline_cached: Boolean(item?.is_offline_cached),
   };
 }
@@ -19274,16 +18440,33 @@ function markOfflineProjectList(list = []) {
 }
 
 function mergeOfflineProjectLists(...lists) {
-  const merged = [];
-  const seen = new Set();
+  const merged = new Map();
   lists.flat().forEach((item) => {
     const normalized = normalizeOfflineProjectListItem(item);
     const id = String(normalized?.id || "").trim();
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    merged.push(normalized);
+    if (!id) return;
+    const existing = merged.get(id);
+    if (!existing) {
+      merged.set(id, normalized);
+      return;
+    }
+    const workspacePath = String(
+      existing.workspace_path || normalized.workspace_path || "",
+    ).trim();
+    merged.set(id, {
+      ...normalized,
+      ...existing,
+      id,
+      name:
+        resolveOfflineProjectName(existing, id, workspacePath) ||
+        resolveOfflineProjectName(normalized, id, workspacePath),
+      workspace_path: workspacePath,
+      is_offline_cached: Boolean(
+        existing.is_offline_cached || normalized.is_offline_cached,
+      ),
+    });
   });
-  return merged;
+  return [...merged.values()];
 }
 
 function offlineProjectIdHints() {
@@ -19298,7 +18481,6 @@ function offlineProjectIdHints() {
 function buildHintedOfflineProjects() {
   return offlineProjectIdHints().map((id) => ({
     id,
-    name: id,
     is_offline_cached: true,
   }));
 }
@@ -19350,7 +18532,10 @@ async function loadLocalProjectChatStoreProjects() {
               projectId,
               normalizeOfflineProjectListItem({
                 id: projectId,
-                name: String(session?.project_name || projectId).trim(),
+                name: String(session?.project_name || "").trim(),
+                workspace_path: String(
+                  session?.workspace_path || session?.workspacePath || "",
+                ).trim(),
                 last_chat_session_id: String(session?.id || "").trim(),
                 is_offline_cached: true,
               }),
@@ -19408,13 +18593,18 @@ async function saveLocalLiuAgentProjectOfflineCache({
     return;
   try {
     rememberLocalLiuAgentWorkspacePath(normalizedWorkspacePath);
+    const projectLabel = String(
+      currentProjectLabel.value ||
+        getWorkspaceFolderName(normalizedWorkspacePath) ||
+        "",
+    ).trim();
     await saveNativeLiuAgentOfflineCache({
       workspacePath: normalizedWorkspacePath,
       cacheKind: "project",
       projectId: normalizedProjectId,
       payload: {
         project_id: normalizedProjectId,
-        name: currentProjectLabel.value || normalizedProjectId,
+        name: projectLabel,
         workspace_path: normalizedWorkspacePath,
         last_chat_session_id: String(
           chatSessionId || currentChatSessionId.value || "",
@@ -19463,6 +18653,7 @@ async function saveLocalLiuAgentSessionOfflineCache({
       workspacePath: normalizedWorkspacePath,
     });
     await saveNativeLiuAgentOfflineCache({
+      // The project ID scopes the cache; it is not a display name.
       workspacePath: normalizedWorkspacePath,
       cacheKind: "session",
       projectId: normalizedProjectId,
@@ -19470,7 +18661,11 @@ async function saveLocalLiuAgentSessionOfflineCache({
       payload: {
         project_id: normalizedProjectId,
         chat_session_id: normalizedChatSessionId,
-        project_label: currentProjectLabel.value || normalizedProjectId,
+        project_label: String(
+          currentProjectLabel.value ||
+            getWorkspaceFolderName(normalizedWorkspacePath) ||
+            "",
+        ).trim(),
         workspace_path: normalizedWorkspacePath,
         root_goal: String(rootGoal || "").trim(),
         status,
@@ -25460,26 +24655,6 @@ async function focusChatComposerTextarea() {
   }
 }
 
-async function applyStatisticsAnalysisDraftFromRoute() {
-  const draftKey = String(
-    route.query[STATISTICS_ANALYSIS_DRAFT_QUERY_KEY] || "",
-  ).trim();
-  if (!draftKey) return;
-  const payload = consumeStatisticsAnalysisDraft(draftKey);
-  const prompt = String(payload?.prompt || "").trim();
-  if (prompt) {
-    draftText.value = String(draftText.value || "").trim()
-      ? `${String(draftText.value || "").trim()}\n\n${prompt}`
-      : prompt;
-    scrollToBottom();
-    await focusChatComposerTextarea();
-    ElMessage.success("统计分析请求已填入输入框");
-  }
-  const nextQuery = { ...route.query };
-  delete nextQuery[STATISTICS_ANALYSIS_DRAFT_QUERY_KEY];
-  await router.replace({ query: nextQuery });
-}
-
 async function applyPluginInstallDraftFromRoute() {
   const draftKey = String(
     route.query[PLUGIN_INSTALL_DRAFT_QUERY_KEY] || "",
@@ -26042,18 +25217,18 @@ function buildPackageDeployCommandPrompt(commandPrompt) {
       "未填写；如果目标环境、打包命令或部署命令不明确，先向用户确认，不要直接执行。",
     "",
     "部署配置读取：",
-    "- 第一步必须调用 get_project_deploy_options 读取当前项目的后端部署配置；不要让用户自己去查询项目部署配置。",
+    "- 第一步必须调用 get_project_deploy_options 读取当前项目的本机部署配置；不要让用户自己去查询项目部署配置。",
     projectId
       ? `- 调用 get_project_deploy_options 时使用 project_id=${projectId}。`
       : "- 调用 get_project_deploy_options 必须携带当前选中项目的 project_id。",
     "- 读取后必须把可选 profile、target、component 以及每个 target 的 remote_path、artifact_kind、是否存在 deploy_command、notify_enabled 摘要列给用户选择。",
     "- 用户未明确指定 profile / target / component 时，先基于已读取的配置提示用户选择；不要默认部署到生产环境。",
-    "- get_project_deploy_options configured=false、没有可选 profile/target，或当前桌面工具集中没有读取部署配置/直连部署能力时，直接报告 blocked / missing，并说明需要在项目部署配置里补齐什么。",
+    "- get_project_deploy_options configured=false、没有可选 profile/target，或当前桌面工具集中没有读取部署配置/直连部署能力时，直接报告 blocked / missing，并说明需要在项目详情的部署配置里补齐什么。",
     "",
     "执行边界：",
     "- 部署方式必须由已读取的项目部署配置决定；不要扫描、读取或复用历史发布配置、CI 配置、本地凭据、远端脚本或环境变量作为执行依据。",
-    "- 桌面智能体部署主流程使用 deploy_workspace_files_to_target：桌面 AI 负责判断是否需要本机打包、选择要部署的原文件/目录/文件清单，并调用后端原子能力上传到配置目标、执行已配置 deploy_command、按配置通知。",
-    "- deploy_workspace_files_to_target 不创建部署产物记录；后端只使用项目部署配置里的凭据、远端目录、deploy_command 和通知配置。",
+    "- 桌面智能体部署主流程使用 deploy_workspace_files_to_target：桌面 AI 负责判断是否需要本机打包、选择要部署的原文件/目录/文件清单，并由本机运行时直连上传到已绑定的 FTP 目标。远端 deploy_command 会被跳过，而不是因为缺少后端执行器而阻塞。",
+    "- deploy_workspace_files_to_target 不创建部署产物记录；本机只使用项目部署配置里绑定的 FTP 连接、远端目录、deploy_command 和通知配置。",
     "- 只有用户明确说“只上传到部署产物/部署产物模块/保存 artifact”时，才使用 upload_deploy_artifact；普通“部署/上传部署/新代码部署”不要走部署产物模块。",
     "- 上传/部署规则是“原文件是什么就是什么”：单个 HTML/CSS/JS/图片等文件就原样部署该文件；目录就按目录内原文件逐个部署；多个文件就用 artifact_paths 逐个部署原文件。",
     "- 禁止为了部署多个静态文件而自行创建 zip/tar；静态站点、多 HTML/CSS/JS/图片文件或用户要求“直接上传这些文件”时，必须把目录传给 deploy_workspace_files_to_target 的 artifact_path，或把文件清单传给 artifact_paths，并设置 artifact_root 保留正确相对路径。",
@@ -26061,7 +25236,7 @@ function buildPackageDeployCommandPrompt(commandPrompt) {
     "- deploy_workspace_files_to_target 返回 deployment_confirmed_success=true 且 status=success 时，才允许回复“部署成功/部署完成”。",
     "- 如果 deployment_confirmed_success=false，或 status 为空、blocked、failed、queued 或非 success，只能回复“已执行到对应阶段，但未确认部署成功/未完成部署”，并说明真实状态。",
     "- 已有 artifact_id / 部署产物上下文时，除非用户明确要求部署已有服务端产物，否则不要复用历史 artifact；桌面智能体部署应基于本轮选择的 workspace 原文件执行。",
-    "- 不得读取、索要或输出 FTP/SSH/Token 等服务器凭据；凭据只由后端项目部署配置使用。",
+    "- 不得读取、索要或输出 FTP/SSH/Token 等服务器凭据；凭据只由本机 FTP 连接和项目部署配置使用。",
     "- 需要执行本机打包命令时，必须先明确命令内容、工作目录、目标环境、影响范围、产物路径和可恢复性。",
     "- 涉及部署、发布、覆盖远端目录、执行远端命令等外部系统写入时，必须先取得用户明确授权。",
     "- 用户说“直接部署 / 新代码部署 / 上传部署”且没有限定“只上传”时，调用 deploy_workspace_files_to_target 完成直连部署；不要只上传不部署。",
@@ -27131,16 +26306,154 @@ function handleDragOver() {
   isDragging.value = true;
 }
 
-function handleDragLeave() {
+function handleDragLeave(event) {
+  const current = event?.currentTarget;
+  if (!current?.classList?.contains("chat-layout")) return;
+  const related = event?.relatedTarget;
+  if (related && current.contains?.(related)) return;
   isDragging.value = false;
+}
+
+const recentDroppedFileKeys = new Map();
+
+function rememberDroppedFileKey(name, size) {
+  const key = `${String(name || "").trim()}::${Number(size || 0)}`;
+  const now = Date.now();
+  const previous = recentDroppedFileKeys.get(key) || 0;
+  if (now - previous < 1000) return false;
+  recentDroppedFileKeys.set(key, now);
+  if (recentDroppedFileKeys.size > 32) {
+    for (const [itemKey, timestamp] of recentDroppedFileKeys) {
+      if (now - timestamp > 1000) recentDroppedFileKeys.delete(itemKey);
+    }
+  }
+  return true;
+}
+
+function ingestDroppedBrowserFile(file) {
+  if (!file) return;
+  const name = String(file.name || "").trim() || "dropped-file";
+  if (!rememberDroppedFileKey(name, file.size)) return;
+  handleFileChange({ raw: file, name });
 }
 
 function handleDrop(e) {
   isDragging.value = false;
-  const files = e.dataTransfer?.files;
-  if (!files || files.length === 0) return;
-  for (let i = 0; i < files.length; i++) {
-    handleFileChange({ raw: files[i], name: files[i].name });
+  const dataTransfer = e?.dataTransfer;
+  const files = Array.from(dataTransfer?.files || []);
+  if (files.length > 0) {
+    files.forEach((file) => ingestDroppedBrowserFile(file));
+    return;
+  }
+  const items = Array.from(dataTransfer?.items || []);
+  if (!items.length) return;
+  for (const item of items) {
+    if (item.kind !== "file") continue;
+    ingestDroppedBrowserFile(item.getAsFile());
+  }
+}
+
+function nativeDragHitsThisChat(payload = {}) {
+  if (!desktopWindowId) return true;
+  const points = nativeDragDropCssPoints(payload?.position);
+  if (!points.length) return true;
+  const root = chatLayoutRef.value;
+  const rect = root?.getBoundingClientRect?.();
+  if (!rect) return true;
+  return points.some(
+    (point) =>
+      point.x >= rect.left &&
+      point.x <= rect.right &&
+      point.y >= rect.top &&
+      point.y <= rect.bottom,
+  );
+}
+
+async function handleNativeDragDropEvent(payload = {}, options = {}) {
+  const type = String(payload?.type || "").trim();
+  const paths = Array.isArray(payload.paths) ? payload.paths : [];
+  const fromShell = Boolean(options.fromShell);
+  const hits = fromShell || nativeDragHitsThisChat(payload);
+  if (type === "enter" || type === "drop") {
+    console.debug("[ProjectChat] Tauri drag/drop", {
+      type,
+      pathCount: paths.length,
+      position: payload.position || null,
+      windowLevel: true,
+      fromShell,
+      hits,
+    });
+  }
+  if (type === "leave") {
+    isDragging.value = false;
+    return;
+  }
+  if (!hits) {
+    return;
+  }
+  if (type === "enter" || type === "over") {
+    if (type === "enter") {
+      reportNativeDesktopDragDropDiagnostic("已收到 Tauri 原生拖入事件");
+    }
+    isDragging.value = true;
+    return;
+  }
+  if (type !== "drop") return;
+  isDragging.value = false;
+  if (!paths.length) {
+    reportNativeDesktopDragDropDiagnostic(
+      "已收到 Tauri 释放事件，但没有文件路径",
+      "warning",
+    );
+    return;
+  }
+  reportNativeDesktopDragDropDiagnostic(
+    `已收到 Tauri 释放事件，正在读取 ${paths.length} 个文件`,
+    "success",
+  );
+  for (const path of paths) {
+    const normalizedPath = String(path || "").trim();
+    if (!normalizedPath) continue;
+    try {
+      const fileData = await readNativeLocalFile(normalizedPath);
+      const name =
+        fileData.name ||
+        normalizedPath.split("/").pop() ||
+        normalizedPath.split("\\").pop() ||
+        "dropped-file";
+      const rawFile = new File([new Uint8Array(fileData.bytes)], name, {
+        type: fileData.mimeType || "application/octet-stream",
+      });
+      ingestDroppedBrowserFile(rawFile);
+    } catch (err) {
+      ElMessage.error(String(err?.message || err || "文件拖放失败").trim());
+    }
+  }
+}
+
+function handleDesktopWindowFileDragDrop(event) {
+  const detail = event?.detail || {};
+  const targetWindowId = String(detail?.windowId || "").trim();
+  if (desktopWindowId && targetWindowId && targetWindowId !== desktopWindowId) {
+    return;
+  }
+  void handleNativeDragDropEvent(detail?.payload || {}, { fromShell: true });
+}
+
+async function handleDesktopDevtoolsShortcut(event) {
+  const key = String(event?.key || "").toLowerCase();
+  const isDevtoolsShortcut =
+    key === "f12" ||
+    (event?.metaKey && event?.altKey && key === "i") ||
+    (event?.ctrlKey && event?.shiftKey && key === "i");
+  if (!isDevtoolsShortcut || !hasNativeDesktopBridge()) return;
+  event.preventDefault();
+  try {
+    await openNativeDesktopDevtools();
+  } catch (err) {
+    const message = String(err?.message || err || "打开桌面开发者工具失败").trim();
+    console.warn("打开桌面开发者工具失败", err);
+    ElMessage.error(message);
   }
 }
 
@@ -27169,7 +26482,21 @@ function handleEditorKeydown(event) {
 }
 
 function handlePaste(event) {
-  if (!event.clipboardData || !event.clipboardData.items) return;
+  if (!event.clipboardData) return;
+
+  const files = event.clipboardData.files;
+  if (files && files.length > 0) {
+    event.preventDefault();
+    for (let i = 0; i < files.length; i++) {
+      handleFileChange({
+        raw: files[i],
+        name: files[i].name || `clipboard_file_${i + 1}`,
+      });
+    }
+    return;
+  }
+
+  if (!event.clipboardData.items) return;
 
   const items = event.clipboardData.items;
   for (let i = 0; i < items.length; i++) {
@@ -28318,21 +27645,6 @@ async function fetchSystemConfig() {
       Number(config?.employee_auto_rule_generation_max_count || 3),
     ),
   );
-  await reloadLocalBotConnectorConfig();
-}
-
-async function reloadLocalBotConnectorConfig() {
-  try {
-    const data = await readGlobalBotConnectorConfigFile();
-    botPlatformConnectors.value = Array.isArray(data?.config?.connectors)
-      ? data.config.connectors.map(normalizeBotPlatformConnector)
-      : [];
-    void syncLocalFeishuBotListeners();
-  } catch (err) {
-    console.warn("读取本机机器人连接器配置失败", err);
-    botPlatformConnectors.value = [];
-    void syncLocalFeishuBotListeners();
-  }
 }
 
 async function fetchModelTypeOptions() {
@@ -28422,12 +27734,18 @@ async function fetchSelectedProject(projectId = "") {
 
 async function fetchGlobalProviders() {
   const projectId = String(selectedProjectId.value || "").trim();
+  const systemConfig = readLocalSystemConfig();
   const localProviders = readLocalEntities("llm_providers").filter(
     (item) => item?.enabled !== false,
   );
   if (localProviders.length) {
     providers.value = localProviders;
-    const preferredProviderId = String(selectedProviderId.value || "").trim();
+    const preferredProviderId = String(
+      systemConfig.default_ai_provider_id ||
+        systemConfig.main_chat_provider_id ||
+        selectedProviderId.value ||
+        "",
+    ).trim();
     const selectedProvider =
       localProviders.find((item) => String(item?.id || "").trim() === preferredProviderId) ||
       localProviders[0];
@@ -28436,12 +27754,24 @@ async function fetchGlobalProviders() {
       selectedProvider,
       modelTypeOptions.value,
     );
-    selectedModelName.value = modelNames.includes(selectedModelName.value)
-      ? selectedModelName.value
-      : String(selectedProvider?.default_model || modelNames[0] || "").trim();
+    const preferredModelName = String(
+      systemConfig.default_ai_model_name ||
+        systemConfig.main_chat_model_name ||
+        selectedModelName.value ||
+        "",
+    ).trim();
+    selectedModelName.value = modelNames.includes(preferredModelName)
+      ? preferredModelName
+      : modelNames.includes(selectedModelName.value)
+        ? selectedModelName.value
+        : String(selectedProvider?.default_model || modelNames[0] || "").trim();
     defaultProviderId.value = selectedProviderId.value;
     defaultModelName.value = selectedModelName.value;
     manualModelOptionValue.value = buildModelOptionValue(
+      selectedProviderId.value,
+      selectedModelName.value,
+    );
+    syncSharedMainModelSelection(
       selectedProviderId.value,
       selectedModelName.value,
     );
@@ -28474,9 +27804,9 @@ async function refreshModelProviders() {
   }
 }
 
-function syncProjectFromRoute() {
+async function syncProjectFromRoute() {
   const { projectId: routeProjectId } = routeChatTarget();
-  const initialProjectId = resolveAvailableProjectId(
+  const initialProjectId = await resolveAvailableProjectId(
     routeProjectId || selectedProjectId.value || readSelectedProjectId(),
   );
   if (initialProjectId) {
@@ -28493,7 +27823,7 @@ function syncProjectFromRoute() {
 async function handleProjectCreated(event) {
   const createdProjectId = String(event?.detail?.projectId || "").trim();
   await fetchProjects();
-  const nextProjectId = resolveAvailableProjectId(
+  const nextProjectId = await resolveAvailableProjectId(
     createdProjectId || readSelectedProjectId(),
   );
   if (!nextProjectId) return;
@@ -28502,6 +27832,28 @@ async function handleProjectCreated(event) {
     return;
   }
   selectedProjectId.value = nextProjectId;
+}
+
+async function refreshLocalProjectCatalog() {
+  const currentProjectId = String(selectedProjectId.value || "").trim();
+  await fetchProjects();
+  if (!currentProjectId) return;
+  const latestProject = getLocalProject(currentProjectId);
+  if (!latestProject) return;
+  const workspacePath = String(latestProject.workspace_path || "").trim();
+  if (workspacePath === String(projectWorkspacePath.value || "").trim()) {
+    return;
+  }
+  projectWorkspacePath.value = workspacePath;
+  projectWorkspaceDraft.value = workspacePath;
+  workspacePathDraft.value = workspacePath;
+  externalAgentInfo.value = normalizeExternalAgentInfo({
+    ...externalAgentInfo.value,
+    workspace_path: workspacePath,
+    ready: Boolean(workspacePath),
+  });
+  reloadLocalMcpConfig(currentProjectId);
+  reloadLocalWebToolsConfig(currentProjectId);
 }
 
 async function fetchProvidersByProject(projectId) {
@@ -28617,7 +27969,13 @@ async function fetchProvidersByProject(projectId) {
       selectedProjectToolNames.value = normalizeStringList(
         settings.enabled_project_tool_names || localTools.map((item) => item.tool_name),
       );
-      const preferredProviderId = String(settings.provider_id || "").trim();
+      const systemConfig = readLocalSystemConfig();
+      const preferredProviderId = String(
+        settings.provider_id ||
+          systemConfig.default_ai_provider_id ||
+          systemConfig.main_chat_provider_id ||
+          "",
+      ).trim();
       const selectedProvider =
         providers.value.find((item) => item?.id === preferredProviderId) ||
         providers.value[0] ||
@@ -28627,7 +27985,12 @@ async function fetchProvidersByProject(projectId) {
         selectedProvider,
         modelTypeOptions.value,
       );
-      const preferredModelName = String(settings.model_name || "").trim();
+      const preferredModelName = String(
+        settings.model_name ||
+          systemConfig.default_ai_model_name ||
+          systemConfig.main_chat_model_name ||
+          "",
+      ).trim();
       selectedModelName.value =
         preferredModelName && availableModelNames.includes(preferredModelName)
           ? preferredModelName
@@ -28637,6 +28000,10 @@ async function fetchProvidersByProject(projectId) {
       defaultProviderId.value = selectedProviderId.value;
       defaultModelName.value = selectedModelName.value;
       manualModelOptionValue.value = buildModelOptionValue(
+        selectedProviderId.value,
+        selectedModelName.value,
+      );
+      syncSharedMainModelSelection(
         selectedProviderId.value,
         selectedModelName.value,
       );
@@ -28857,6 +28224,18 @@ function buildProjectChatSettingsPayload() {
   });
 }
 
+function syncSharedMainModelSelection(providerId = "", modelName = "") {
+  const normalizedProviderId = String(providerId || "").trim();
+  const normalizedModelName = String(modelName || "").trim();
+  writeLocalSystemConfig({
+    ...readLocalSystemConfig(),
+    default_ai_provider_id: normalizedProviderId,
+    default_ai_model_name: normalizedModelName,
+    main_chat_provider_id: normalizedProviderId,
+    main_chat_model_name: normalizedModelName,
+  });
+}
+
 const autoSaveFingerprint = computed(() => {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId || projectSettingsHydrating.value) return "";
@@ -28980,6 +28359,10 @@ async function saveProjectChatSettings(silent = false) {
       skill_directory: String(payload.skill_directory || "").trim(),
       rule_directory: String(payload.rule_directory || "").trim(),
     });
+    syncSharedMainModelSelection(
+      selectedProviderId.value,
+      selectedModelName.value,
+    );
     projectWorkspacePath.value = workspacePath;
     projectWorkspaceDraft.value = workspacePath;
     workspacePathDraft.value = workspacePath;
@@ -32847,85 +32230,51 @@ async function sendLocalLiuAgentChatRequest({
   return result;
 }
 
-async function fetchLocalLiuAgentDesktopModelRuntime(providerId) {
-  const normalizedProviderId = String(providerId || "").trim();
-  if (!normalizedProviderId) {
-    throw new Error("请先在对话设置中选择本地运行使用的模型供应商");
-  }
-  const projectProviders = Array.isArray(
-    getLocalProjectRelations(selectedProjectId.value)?.providers,
-  )
-    ? getLocalProjectRelations(selectedProjectId.value).providers
-    : [];
-  const provider =
-    readLocalEntities("llm_providers").find(
-      (item) => String(item?.id || "").trim() === normalizedProviderId,
-    ) ||
-    projectProviders.find(
-      (item) =>
-        String(item?.id || item?.provider_id || "").trim() ===
-        normalizedProviderId,
-    ) ||
-    null;
-  if (!provider) {
-    throw new Error(`未找到本机模型供应商：${normalizedProviderId}`);
-  }
-  const baseUrl = String(provider.base_url || provider.baseUrl || "").trim();
-  const apiKey = String(provider.api_key || provider.apiKey || "").trim();
-  if (!baseUrl || !apiKey) {
-    throw new Error(
-      "当前模型供应商缺少 Base URL 或 API Key，无法发起模型请求",
-    );
-  }
-  return {
-    base_url: baseUrl,
-    api_key: apiKey,
-    model_name: String(provider.default_model || "").trim(),
-    provider_type: String(provider.provider_type || "openai-compatible").trim(),
-  };
-}
-
 async function buildLocalLiuAgentModelRuntime(
   providerIdOverride = "",
   modelNameOverride = "",
 ) {
+  void providerIdOverride;
+  void modelNameOverride;
   const providerId = String(
-    providerIdOverride ||
-      selectedProviderId.value ||
-      defaultProviderId.value ||
-      "",
+    selectedProviderId.value || defaultProviderId.value || "",
   ).trim();
   const modelName = String(
-    modelNameOverride ||
-      selectedModelName.value ||
-      defaultModelName.value ||
-      "",
+    selectedModelName.value || defaultModelName.value || "",
   ).trim();
-  const runtime = await fetchLocalLiuAgentDesktopModelRuntime(providerId);
-  const resolvedModelName = String(
-    modelName ||
-      runtime.model_name ||
-      runtime.modelName ||
-      runtime.default_model ||
-      runtime.defaultModel ||
-      "",
-  ).trim();
-  if (!resolvedModelName) {
-    throw new Error(
-      [
-        "当前模型供应商没有可用模型名，已停止发送模型网关请求。",
-        `providerId=${providerId || "-"}`,
-        `selectedModel=${modelName || "-"}`,
-        `runtimeDefaultModel=${String(runtime.default_model || runtime.defaultModel || "-").trim() || "-"}`,
-      ].join("\n"),
-    );
+  if (!providerId || !modelName) {
+    throw new Error("请先在主对话模型中选择可用的模型供应商和模型");
   }
   return {
     mode: "direct-openai-compatible",
     providerId,
-    modelName: resolvedModelName,
-    baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
-    apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
+    modelName,
+    baseUrl: String(
+      (
+        providers.value.find(
+          (item) => String(item?.id || "").trim() === providerId,
+        ) || {}
+      ).base_url ||
+        (
+          providers.value.find(
+            (item) => String(item?.id || "").trim() === providerId,
+          ) || {}
+        ).baseUrl ||
+        "",
+    ).trim(),
+    apiKey: String(
+      (
+        providers.value.find(
+          (item) => String(item?.id || "").trim() === providerId,
+        ) || {}
+      ).api_key ||
+        (
+          providers.value.find(
+            (item) => String(item?.id || "").trim() === providerId,
+          ) || {}
+        ).apiKey ||
+        "",
+    ).trim(),
     temperature: Number(
       temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
     ),
@@ -34004,15 +33353,24 @@ function clearSelectedProjectState() {
   chatSessions.value = [];
 }
 
-function resolveAvailableProjectId(preferredId = "") {
+async function resolveAvailableProjectId(preferredId = "") {
   const normalizedPreferred = String(preferredId || "").trim();
-  if (
-    normalizedPreferred &&
-    (projects.value || []).some((item) => item.id === normalizedPreferred)
-  ) {
+  const candidates = Array.isArray(projects.value)
+    ? projects.value.filter((item) => String(item?.id || "").trim())
+    : [];
+  const preferredProject = normalizedPreferred
+    ? candidates.find((item) => item.id === normalizedPreferred) || null
+    : null;
+  if (preferredProject && (await isProjectWorkspaceAvailable(preferredProject))) {
     return normalizedPreferred;
   }
-  return String(projects.value[0]?.id || "").trim();
+  for (const project of candidates) {
+    if (!project?.id || project.id === normalizedPreferred) continue;
+    if (await isProjectWorkspaceAvailable(project)) {
+      return project.id;
+    }
+  }
+  return preferredProject ? normalizedPreferred : String(candidates[0]?.id || "").trim();
 }
 
 async function loadSelectedProjectConversation(projectId) {
@@ -34162,7 +33520,6 @@ watch(selectedProjectId, async (value) => {
   projectSettingsHydratedProjectId.value = "";
   reloadLocalMcpConfig(projectId);
   reloadLocalWebToolsConfig(projectId);
-  reloadLocalBotConnectorConfig();
   if (projectId) {
     writeSelectedProjectId(projectId);
   } else {
@@ -34192,7 +33549,7 @@ watch(selectedProjectId, async (value) => {
       String(err?.detail || "").includes("Project access denied");
     if (isAccessError) {
       await fetchProjects();
-      const fallbackProjectId = resolveAvailableProjectId();
+      const fallbackProjectId = await resolveAvailableProjectId();
       if (fallbackProjectId && fallbackProjectId !== projectId) {
         selectedProjectId.value = fallbackProjectId;
         writeSelectedProjectId(fallbackProjectId);
@@ -34290,7 +33647,7 @@ watch(
     if (currentKey === previousKey) return;
     const activeProjectId = String(selectedProjectId.value || "").trim();
     if (routeProjectId && routeProjectId !== activeProjectId) {
-      selectedProjectId.value = resolveAvailableProjectId(routeProjectId);
+      selectedProjectId.value = await resolveAvailableProjectId(routeProjectId);
       return;
     }
     if (!activeProjectId) return;
@@ -34306,14 +33663,6 @@ watch(
     }
     await applyRouteMessageFocus();
     await applyLocalRuntimeTaskRouteAction();
-  },
-);
-
-watch(
-  () => String(route.query[STATISTICS_ANALYSIS_DRAFT_QUERY_KEY] || "").trim(),
-  async (draftKey, previousKey) => {
-    if (!draftKey || draftKey === previousKey) return;
-    await applyStatisticsAnalysisDraftFromRoute();
   },
 );
 
@@ -34337,16 +33686,36 @@ onMounted(async () => {
   loading.value = true;
   reloadLocalMcpConfig(selectedProjectId.value);
   reloadLocalWebToolsConfig(selectedProjectId.value);
-  await reloadLocalBotConnectorConfig();
+  window.addEventListener(
+    DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME,
+    handleDesktopWindowFileDragDrop,
+  );
+  nativeDesktopDragDropUnlisten = await subscribeNativeDesktopDragDrop(
+    (payload) => {
+      void handleNativeDragDropEvent(payload);
+    },
+  );
+  if (nativeDesktopDragDropUnlisten) {
+    reportNativeDesktopDragDropDiagnostic("桌面文件拖放监听已启用");
+  } else if (!desktopWindowId) {
+    reportNativeDesktopDragDropDiagnostic(
+      "桌面文件拖放监听未启用：当前页面未连接到 Tauri",
+      "warning",
+    );
+  }
   handleLocalMcpConfigUpdated = () => {
     reloadLocalMcpConfig(selectedProjectId.value);
   };
   handleLocalWebToolsConfigUpdated = () => {
     reloadLocalWebToolsConfig(selectedProjectId.value);
   };
-  handleLocalBotConnectorsConfigUpdated = async () => {
-    await reloadLocalBotConnectorConfig();
-    await syncLocalFeishuBotListeners();
+  handleLocalProjectsUpdated = () => {
+    void refreshLocalProjectCatalog();
+  };
+  handleLocalProjectsStorage = (event) => {
+    if (event?.key === "local_projects_cache") {
+      handleLocalProjectsUpdated?.();
+    }
   };
   window.addEventListener(
     "local-mcp-config-updated",
@@ -34357,11 +33726,13 @@ onMounted(async () => {
     handleLocalWebToolsConfigUpdated,
   );
   window.addEventListener(
-    "local-bot-connectors-config-updated",
-    handleLocalBotConnectorsConfigUpdated,
+    "local-projects-updated",
+    handleLocalProjectsUpdated,
   );
+  window.addEventListener("storage", handleLocalProjectsStorage);
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.addEventListener("keydown", handleWorkingStatusKeydown);
+  window.addEventListener("keydown", handleDesktopDevtoolsShortcut);
   window.addEventListener("pointerdown", handleContextMenuGlobalPointerDown);
   window.addEventListener("keydown", handleContextMenuGlobalKeydown);
   window.addEventListener("scroll", closeMessageContextMenu, true);
@@ -34369,11 +33740,10 @@ onMounted(async () => {
   void startNativeLiuAgentRuntimeEventSubscription();
   window.setTimeout(() => {
     void hydrateNativeDesktopRuntimeInfo();
-    void syncLocalFeishuBotListeners();
   }, 300);
   try {
     await fetchProjects();
-    syncProjectFromRoute();
+    await syncProjectFromRoute();
     if (String(selectedProjectId.value || "").trim()) {
       await fetchSelectedProject(selectedProjectId.value);
     }
@@ -34386,7 +33756,6 @@ onMounted(async () => {
     ]).catch((err) => {
       console.warn("后台加载聊天配置失败", err);
     });
-    void applyStatisticsAnalysisDraftFromRoute();
     void applyPluginInstallDraftFromRoute();
     void applyProjectDeployDraftFromRoute();
     if (!String(selectedProjectId.value || "").trim()) {
@@ -34401,9 +33770,7 @@ onMounted(async () => {
   if (!isSettingsCenterRoute.value) {
     void startChatTour(false);
   }
-  await applyStatisticsAnalysisDraftFromRoute();
   await applyProjectDeployDraftFromRoute();
-  void syncLocalFeishuBotListeners();
 });
 
 onUnmounted(() => {
@@ -34421,42 +33788,40 @@ onUnmounted(() => {
     );
     handleLocalWebToolsConfigUpdated = null;
   }
-  if (handleLocalBotConnectorsConfigUpdated) {
+  if (handleLocalProjectsUpdated) {
     window.removeEventListener(
-      "local-bot-connectors-config-updated",
-      handleLocalBotConnectorsConfigUpdated,
+      "local-projects-updated",
+      handleLocalProjectsUpdated,
     );
-    handleLocalBotConnectorsConfigUpdated = null;
+    handleLocalProjectsUpdated = null;
+  }
+  if (handleLocalProjectsStorage) {
+    window.removeEventListener("storage", handleLocalProjectsStorage);
+    handleLocalProjectsStorage = null;
   }
   window.removeEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.removeEventListener("keydown", handleWorkingStatusKeydown);
+  window.removeEventListener("keydown", handleDesktopDevtoolsShortcut);
   window.removeEventListener("pointerdown", handleContextMenuGlobalPointerDown);
   window.removeEventListener("keydown", handleContextMenuGlobalKeydown);
   window.removeEventListener("scroll", closeMessageContextMenu, true);
+  window.removeEventListener(
+    DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME,
+    handleDesktopWindowFileDragDrop,
+  );
+  if (nativeDesktopDragDropUnlisten) {
+    try {
+      nativeDesktopDragDropUnlisten();
+    } catch (error) {
+      console.warn("解除桌面拖放事件订阅失败", error);
+    }
+    nativeDesktopDragDropUnlisten = null;
+  }
   clearExternalAgentStatusRefreshTimer();
   stopExternalAgentBridgeTaskPolling();
   stopNativeExternalAgentSessionPolling();
   stopNativeExternalAgentSessionEventSubscription();
   stopNativeLiuAgentRuntimeEventSubscription();
-  localFeishuBotListenerIds.clear();
-  localFeishuBotListenerContextKey = "";
-  if (localFeishuBotEventUnlisten) {
-    try {
-      localFeishuBotEventUnlisten();
-    } catch (_error) {
-      // ignore cleanup errors
-    }
-    localFeishuBotEventUnlisten = null;
-  }
-  if (localFeishuBotStatusUnlisten) {
-    try {
-      localFeishuBotStatusUnlisten();
-    } catch (_error) {
-      // ignore cleanup errors
-    }
-    localFeishuBotStatusUnlisten = null;
-  }
-  localFeishuBotStatuses.value = {};
   if (localLiuAgentRuntimeEventPollTimer) {
     window.clearInterval(localLiuAgentRuntimeEventPollTimer);
     localLiuAgentRuntimeEventPollTimer = null;
@@ -34550,6 +33915,25 @@ onUnmounted(() => {
 ></style>
 
 <style scoped>
+.chat-layout.is-file-dragover {
+  box-shadow: inset 0 0 0 3px rgba(37, 99, 235, 0.38);
+}
+
+.chat-window-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border: 2px dashed rgba(37, 99, 235, 0.45);
+  border-radius: 20px;
+  background: rgba(239, 246, 255, 0.72);
+  color: #1d4ed8;
+  font-size: 16px;
+  font-weight: 700;
+}
 .message-audios {
   display: grid;
   gap: 8px;

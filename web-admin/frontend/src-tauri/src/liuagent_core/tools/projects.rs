@@ -1,324 +1,359 @@
-//! Backend project tools for the desktop local runtime.
+//! Local project catalog tools for the desktop runtime.
 //!
-//! These tools keep read-only project metadata access in the desktop runtime
-//! while preserving backend auth and data-scope checks.
+//! Desktop chat reads the same global project catalog as the project list UI.
+//! Feishu bot sessions keep using list_bot_projects / switch_project_workspace.
 
-use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
-use reqwest::Url;
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::path::PathBuf;
 
 use crate::liuagent_core::args::{number_arg, required_string_arg, string_arg};
-use crate::liuagent_core::normalize_local_backend_api_base_url;
 use crate::liuagent_core::types::ToolError;
+use crate::liuagent_core::{read_global_project_catalog, DesktopProjectCatalogEntry};
 
 pub fn list_projects(arguments: &Value) -> Result<(Value, String), ToolError> {
-    let api_base_url =
-        normalize_local_backend_api_base_url(&string_arg(arguments, "_backend_api_base_url", ""));
-    let backend_token = string_arg(arguments, "_backend_token", "");
-    if api_base_url.is_empty() || backend_token.is_empty() {
-        return Err(ToolError::new(
-            "projects.backend_context_missing",
-            "缺少后端登录上下文，不能读取真实项目列表",
-        ));
-    }
+    list_catalog_projects(arguments, project_catalog()?, 20)
+}
 
+pub fn list_bot_projects(arguments: &Value) -> Result<(Value, String), ToolError> {
+    list_catalog_projects(arguments, project_catalog()?, 50)
+}
+
+fn list_catalog_projects(
+    arguments: &Value,
+    projects: Vec<DesktopProjectCatalogEntry>,
+    default_page_size: i64,
+) -> Result<(Value, String), ToolError> {
     let page = number_arg(arguments, "page", 1, 1, 10_000);
-    let page_size = number_arg(arguments, "page_size", 20, 1, 100);
+    let page_size = number_arg(arguments, "page_size", default_page_size, 1, 100);
     let name = string_arg(arguments, "name", "");
-    let created_by = string_arg(arguments, "created_by", "");
-    let timeout_ms = number_arg(arguments, "timeout_ms", 30_000, 1_000, 120_000) as u64;
-    let endpoint = projects_url(&api_base_url, page, page_size, &name, &created_by)?;
-
-    let body = backend_get_json(endpoint, &backend_token, timeout_ms, "读取项目列表失败")?;
-    let total = body
-        .get("total")
-        .and_then(Value::as_i64)
-        .or_else(|| {
-            body.get("pagination")
-                .and_then(|pagination| pagination.get("total"))
-                .and_then(Value::as_i64)
+    let keyword = name.to_lowercase();
+    let filtered = projects
+        .iter()
+        .filter(|project| {
+            keyword.is_empty()
+                || [
+                    project.id.as_str(),
+                    project.name.as_str(),
+                    project.description.as_str(),
+                ]
+                .iter()
+                .any(|value| value.to_lowercase().contains(keyword.as_str()))
         })
-        .unwrap_or_else(|| {
-            body.get("projects")
-                .and_then(Value::as_array)
-                .map(|items| items.len() as i64)
-                .unwrap_or(0)
-        });
-    let count = body
-        .get("projects")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
+        .collect::<Vec<_>>();
+    let total = filtered.len();
+    let offset = ((page - 1) as usize).saturating_mul(page_size as usize);
+    let items = filtered
+        .into_iter()
+        .skip(offset)
+        .take(page_size as usize)
+        .map(|project| {
+            json!({
+                "project_id": project.id,
+                "name": project.name,
+                "description": project.description,
+                "workspace_path": project.workspace_path,
+                "workspace_status": workspace_status(project.workspace_path.as_str()),
+            })
+        })
+        .collect::<Vec<_>>();
+    let count = items.len();
 
     Ok((
         json!({
             "page": page,
             "page_size": page_size,
             "name": name,
-            "created_by": created_by,
-            "total": total,
+            "projects": items,
             "count": count,
-            "response": body,
+            "total": total,
+            "note": "项目列表来自桌面本机全局项目目录，与项目页面同源，不依赖后端登录或机器人连接器配置；workspace_status=ready 表示该工作区可切换。",
         }),
-        format!("已读取当前登录用户可见项目：本页 {count} 个，总计 {total} 个"),
+        format!("已读取桌面项目目录：本页 {count} 个，总计 {total} 个"),
+    ))
+}
+
+pub fn switch_project_workspace(arguments: &Value) -> Result<(Value, String), ToolError> {
+    switch_project_workspace_from_catalog(arguments, project_catalog()?)
+}
+
+fn switch_project_workspace_from_catalog(
+    arguments: &Value,
+    projects: Vec<DesktopProjectCatalogEntry>,
+) -> Result<(Value, String), ToolError> {
+    let requested_project_id = required_string_arg(arguments, "project_id")?;
+    let project = projects
+        .into_iter()
+        .find(|item| item.id == requested_project_id)
+        .ok_or_else(|| {
+            ToolError::new(
+                "projects.bot_project_not_found",
+                "桌面全局项目目录中没有该 project_id",
+            )
+        })?;
+    let workspace_path = resolve_workspace_path(project.workspace_path.as_str())?;
+    let project_name = if project.name.is_empty() {
+        requested_project_id.clone()
+    } else {
+        project.name
+    };
+
+    Ok((
+        json!({
+            "project_id": requested_project_id,
+            "project_name": project_name,
+            "workspace_path": workspace_path.to_string_lossy()
+        }),
+        format!(
+            "已切换到项目工作区：{}",
+            if project_name.is_empty() {
+                requested_project_id.as_str()
+            } else {
+                project_name.as_str()
+            }
+        ),
     ))
 }
 
 pub fn get_project(arguments: &Value) -> Result<(Value, String), ToolError> {
-    let api_base_url =
-        normalize_local_backend_api_base_url(&string_arg(arguments, "_backend_api_base_url", ""));
-    let backend_token = string_arg(arguments, "_backend_token", "");
-    if api_base_url.is_empty() || backend_token.is_empty() {
-        return Err(ToolError::new(
-            "projects.backend_context_missing",
-            "缺少后端登录上下文，不能读取项目详情",
-        ));
-    }
+    get_project_from_catalog(arguments, project_catalog()?)
+}
 
+fn get_project_from_catalog(
+    arguments: &Value,
+    projects: Vec<DesktopProjectCatalogEntry>,
+) -> Result<(Value, String), ToolError> {
     let project_id = required_string_arg(arguments, "project_id")?;
-    let timeout_ms = number_arg(arguments, "timeout_ms", 30_000, 1_000, 120_000) as u64;
-    let endpoint = project_detail_url(&api_base_url, &project_id)?;
-    let body = backend_get_json(endpoint, &backend_token, timeout_ms, "读取项目详情失败")?;
-    let members_endpoint = project_members_url(&api_base_url, &project_id)?;
-    let members_body = backend_get_json(
-        members_endpoint,
-        &backend_token,
-        timeout_ms,
-        "读取项目绑定智能体失败",
-    )?;
-    let bound_agents = members_body
-        .get("members")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let active_bound_agent_count = bound_agents
-        .iter()
-        .filter(|item| item.get("enabled").and_then(Value::as_bool).unwrap_or(true))
-        .count();
-    let project_name = body
-        .get("project")
-        .and_then(|project| project.get("name"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(project_id.as_str());
+    let project = projects
+        .into_iter()
+        .find(|item| item.id == project_id)
+        .ok_or_else(|| {
+            ToolError::new("projects.not_found", "桌面全局项目目录中没有该 project_id")
+        })?;
+    let workspace_status = workspace_status(project.workspace_path.as_str());
+    let project_name = if project.name.is_empty() {
+        project_id.clone()
+    } else {
+        project.name.clone()
+    };
 
     Ok((
         json!({
             "project_id": project_id,
-            "bound_agent_count": bound_agents.len(),
-            "active_bound_agent_count": active_bound_agent_count,
-            "bound_agents": bound_agents,
-            "agent_binding_note": "selected_employee_ids 为空表示当前对话自动分配，不表示项目未绑定智能体。",
-            "response": body,
+            "name": project_name,
+            "description": project.description,
+            "workspace_path": project.workspace_path,
+            "workspace_status": workspace_status,
+            "bound_agent_count": 0,
+            "active_bound_agent_count": 0,
+            "bound_agents": [],
+            "agent_binding_note": "本机项目目录不保存项目绑定智能体；bound_agent_count 为 0 只表示目录里没有这份数据，不代表项目未绑定智能体。selected_employee_ids 为空表示当前对话自动分配。",
+            "project": {
+                "id": project.id,
+                "name": project_name,
+                "description": project.description,
+                "workspace_path": project.workspace_path,
+                "workspace_status": workspace_status,
+            },
         }),
-        format!("已读取项目详情：{project_name}"),
+        format!("已读取本机项目详情：{project_name}"),
     ))
 }
 
-fn backend_get_json(
-    endpoint: Url,
-    backend_token: &str,
-    timeout_ms: u64,
-    failure_message: &str,
-) -> Result<Value, ToolError> {
-    let mut headers = HeaderMap::new();
-    let auth =
-        HeaderValue::from_str(&format!("Bearer {}", backend_token.trim())).map_err(|err| {
+fn project_catalog() -> Result<Vec<DesktopProjectCatalogEntry>, ToolError> {
+    read_global_project_catalog()
+        .map(|catalog| catalog.projects)
+        .map_err(|error| {
             ToolError::new(
-                "tool.schema_invalid",
-                format!("invalid backend auth header: {err}"),
+                "projects.catalog_unavailable",
+                format!("无法读取桌面全局项目目录：{error}"),
             )
-        })?;
-    headers.insert(AUTHORIZATION, auth);
-    let client = Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .user_agent("liuAgent-desktop-local-runtime/0.1")
-        .build()
-        .map_err(|err| {
-            ToolError::new(
-                "tool.execution_failed",
-                format!("create http client failed: {err}"),
-            )
-        })?;
-    let response = client
-        .get(endpoint)
-        .headers(headers)
-        .send()
-        .map_err(|err| {
-            ToolError::new("tool.execution_failed", format!("{failure_message}: {err}"))
-        })?;
-    let status = response.status().as_u16();
-    let text = response.text().map_err(|err| {
-        ToolError::new("tool.execution_failed", format!("读取后端响应失败: {err}"))
-    })?;
-    let body = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({"raw": text}));
-    if !(200..300).contains(&status) {
+        })
+}
+
+fn workspace_status(raw: &str) -> &'static str {
+    if raw.is_empty() {
+        return "not_configured";
+    }
+    let path = PathBuf::from(raw.trim());
+    if !path.is_absolute() {
+        return "invalid";
+    }
+    match path.canonicalize() {
+        Ok(path) if path.is_dir() => "ready",
+        Ok(_) => "not_directory",
+        Err(_) => "unavailable",
+    }
+}
+
+fn resolve_workspace_path(raw: &str) -> Result<PathBuf, ToolError> {
+    let workspace_path = raw.trim();
+    if workspace_path.is_empty() {
         return Err(ToolError::new(
-            "tool.execution_failed",
-            format!(
-                "{failure_message}，HTTP {status}: {}",
-                safe_error_detail(&body)
-            ),
+            "projects.workspace_not_configured",
+            "该机器人项目没有配置本机工作区，无法切换",
         ));
     }
-    Ok(body)
-}
-
-fn projects_url(
-    api_base_url: &str,
-    page: i64,
-    page_size: i64,
-    name: &str,
-    created_by: &str,
-) -> Result<Url, ToolError> {
-    let mut endpoint = backend_url(api_base_url, "projects")?;
-    {
-        let mut query = endpoint.query_pairs_mut();
-        query.append_pair("page", &page.to_string());
-        query.append_pair("page_size", &page_size.to_string());
-        if !name.trim().is_empty() {
-            query.append_pair("name", name.trim());
-        }
-        if !created_by.trim().is_empty() {
-            query.append_pair("created_by", created_by.trim());
-        }
+    let path = PathBuf::from(workspace_path);
+    if !path.is_absolute() {
+        return Err(ToolError::new(
+            "projects.workspace_invalid",
+            "项目工作区必须是绝对路径",
+        ));
     }
-    Ok(endpoint)
-}
-
-fn project_detail_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
-    backend_url(
-        api_base_url,
-        format!("projects/{}", url_path_escape(project_id)).as_str(),
-    )
-}
-
-fn project_members_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {
-    backend_url(
-        api_base_url,
-        format!("projects/{}/members", url_path_escape(project_id)).as_str(),
-    )
-}
-
-fn backend_url(api_base_url: &str, path: &str) -> Result<Url, ToolError> {
-    let normalized_api_base_url = normalize_local_backend_api_base_url(api_base_url);
-    let base = Url::parse(&normalized_api_base_url).map_err(|err| {
+    let canonical = path.canonicalize().map_err(|err| {
         ToolError::new(
-            "tool.schema_invalid",
-            format!("invalid api_base_url: {err}"),
+            "projects.workspace_unavailable",
+            format!("项目工作区不可访问：{err}"),
         )
     })?;
-    if !matches!(base.scheme(), "http" | "https") {
+    if !canonical.is_dir() {
         return Err(ToolError::new(
-            "tool.schema_invalid",
-            "api_base_url must use http or https",
+            "projects.workspace_not_directory",
+            "项目工作区不是目录",
         ));
     }
-    let clean_base = base.as_str().trim_end_matches('/');
-    let clean_path = path.trim_start_matches('/');
-    Url::parse(&format!("{clean_base}/{clean_path}"))
-        .map_err(|err| ToolError::new("tool.schema_invalid", format!("invalid backend url: {err}")))
-}
-
-fn safe_error_detail(body: &Value) -> String {
-    body.get("detail")
-        .or_else(|| body.get("message"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| body.as_str().unwrap_or("request failed"))
-        .chars()
-        .take(1000)
-        .collect()
-}
-
-fn url_path_escape(value: &str) -> String {
-    value
-        .bytes()
-        .flat_map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                vec![byte as char]
-            }
-            _ => format!("%{byte:02X}").chars().collect(),
-        })
-        .collect()
+    Ok(canonical)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
 
-    #[test]
-    fn project_urls_migrate_legacy_local_frontend_port() {
-        assert_eq!(
-            backend_url("http://127.0.0.1:3000/api", "projects")
-                .unwrap()
-                .as_str(),
-            "http://127.0.0.1:8000/api/projects"
-        );
+    fn sample_catalog(workspace: &std::path::Path) -> Vec<DesktopProjectCatalogEntry> {
+        vec![
+            DesktopProjectCatalogEntry {
+                id: "proj-workspace-test".to_string(),
+                name: "CRM".to_string(),
+                description: "客户关系管理".to_string(),
+                workspace_path: workspace.to_string_lossy().to_string(),
+                deploy_settings: json!({}),
+            },
+            DesktopProjectCatalogEntry {
+                id: "proj-no-workspace".to_string(),
+                name: "营销云".to_string(),
+                description: "未配置工作区".to_string(),
+                workspace_path: String::new(),
+                deploy_settings: json!({}),
+            },
+        ]
     }
 
     #[test]
-    fn get_project_includes_bound_agents_from_members_endpoint() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
-            for expected_path in ["/projects/proj-657fe77f", "/projects/proj-657fe77f/members"] {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut buffer = [0_u8; 4096];
-                let read = stream.read(&mut buffer).unwrap();
-                let request = String::from_utf8_lossy(&buffer[..read]);
-                assert!(request.starts_with(&format!("GET {expected_path} ")));
-                assert!(request
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer test-token"));
+    fn desktop_and_bot_project_lists_read_the_same_catalog() {
+        let workspace = std::env::temp_dir().join(format!(
+            "liuagent-list-projects-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let catalog = sample_catalog(&workspace);
+        let arguments = json!({});
+        let (projects, list_summary) =
+            list_catalog_projects(&arguments, catalog.clone(), 20).unwrap();
 
-                let body = if expected_path.ends_with("/members") {
-                    json!({
-                        "members": [{
-                            "project_id": "proj-657fe77f",
-                            "employee_id": "emp-18b9cdfa",
-                            "employee_name": "前端架构与跨端攻坚专家",
-                            "enabled": true
-                        }]
-                    })
-                } else {
-                    json!({"project": {"id": "proj-657fe77f", "name": "南京嘉华"}})
-                }
-                .to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                stream.write_all(response.as_bytes()).unwrap();
-            }
-        });
+        assert_eq!(projects["total"], 2);
+        assert_eq!(projects["count"], 2);
+        assert_eq!(projects["projects"][0]["project_id"], "proj-workspace-test");
+        assert_eq!(projects["projects"][0]["name"], "CRM");
+        assert_eq!(projects["projects"][0]["workspace_status"], "ready");
+        assert_eq!(
+            projects["projects"][0]["workspace_path"],
+            workspace.to_string_lossy().as_ref()
+        );
+        assert_eq!(projects["projects"][1]["project_id"], "proj-no-workspace");
+        assert_eq!(
+            projects["projects"][1]["workspace_status"],
+            "not_configured"
+        );
+        assert_eq!(projects["projects"][1]["workspace_path"], "");
+        assert!(list_summary.contains("桌面项目目录"));
+        assert!(projects["note"]
+            .as_str()
+            .unwrap()
+            .contains("与项目页面同源"));
 
-        let arguments = json!({
-            "project_id": "proj-657fe77f",
-            "_backend_api_base_url": format!("http://{address}"),
-            "_backend_token": "test-token"
-        });
-        let (result, summary) = get_project(&arguments).unwrap();
-        server.join().unwrap();
+        let (filtered, _) =
+            list_catalog_projects(&json!({ "name": "营销" }), catalog.clone(), 20).unwrap();
+        assert_eq!(filtered["total"], 1);
+        assert_eq!(filtered["projects"][0]["project_id"], "proj-no-workspace");
 
-        assert_eq!(result["bound_agent_count"], 1);
-        assert_eq!(result["active_bound_agent_count"], 1);
-        assert_eq!(result["bound_agents"][0]["employee_id"], "emp-18b9cdfa");
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn get_project_reads_catalog_without_backend_context() {
+        let workspace = std::env::temp_dir().join(format!(
+            "liuagent-get-project-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let catalog = sample_catalog(&workspace);
+        let (result, summary) = get_project_from_catalog(
+            &json!({ "project_id": "proj-workspace-test" }),
+            catalog.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(result["project_id"], "proj-workspace-test");
+        assert_eq!(result["name"], "CRM");
+        assert_eq!(result["description"], "客户关系管理");
+        assert_eq!(result["workspace_status"], "ready");
+        assert_eq!(result["bound_agent_count"], 0);
+        assert_eq!(result["active_bound_agent_count"], 0);
+        assert_eq!(result["bound_agents"], json!([]));
         assert!(result["agent_binding_note"]
             .as_str()
             .unwrap()
-            .contains("自动分配"));
-        assert_eq!(summary, "已读取项目详情：南京嘉华");
+            .contains("本机项目目录不保存项目绑定智能体"));
+        assert_eq!(summary, "已读取本机项目详情：CRM");
+
+        let missing =
+            get_project_from_catalog(&json!({ "project_id": "unknown" }), catalog).unwrap_err();
+        assert_eq!(missing.code, "projects.not_found");
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn bot_project_tools_use_desktop_project_catalog_without_backend_context() {
+        let workspace = std::env::temp_dir().join(format!(
+            "liuagent-switch-project-workspace-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let canonical_workspace = workspace.canonicalize().unwrap();
+        let catalog = sample_catalog(&workspace);
+        let arguments = json!({ "project_id": "proj-workspace-test" });
+        let (projects, list_summary) =
+            list_catalog_projects(&arguments, catalog.clone(), 50).unwrap();
+        assert_eq!(projects["total"], 2);
+        assert_eq!(projects["projects"][0]["project_id"], "proj-workspace-test");
+        assert_eq!(projects["projects"][0]["workspace_status"], "ready");
+        assert!(list_summary.contains("桌面项目目录"));
+
+        let result = switch_project_workspace_from_catalog(&arguments, catalog.clone());
+        let (result, summary) = result.unwrap();
+
+        assert_eq!(result["project_id"], "proj-workspace-test");
+        assert_eq!(result["project_name"], "CRM");
+        assert_eq!(
+            result["workspace_path"],
+            canonical_workspace.to_string_lossy().as_ref()
+        );
+        assert!(result.get("project").is_none());
+        assert_eq!(summary, "已切换到项目工作区：CRM");
+
+        let missing =
+            switch_project_workspace_from_catalog(&json!({ "project_id": "unknown" }), catalog)
+                .unwrap_err();
+        assert_eq!(missing.code, "projects.bot_project_not_found");
+        let _ = std::fs::remove_dir_all(workspace);
     }
 }

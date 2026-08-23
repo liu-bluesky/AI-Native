@@ -1,6 +1,7 @@
 <template>
   <ProjectWorkspaceBlock eyebrow="Deploy" title="部署配置">
     <template #actions>
+      <el-button @click="openFtpCredentials">管理 FTP 连接</el-button>
       <el-button :loading="validating" @click="validateSettings">校验配置</el-button>
       <el-button
         type="primary"
@@ -265,24 +266,44 @@
                 <strong>服务器目标</strong>
                 <p>凭据只选择全局 FTP 连接，不在项目中保存账号密码。</p>
               </div>
-              <el-button :disabled="!canManageProject" @click="addTarget">新增服务器</el-button>
+              <div class="deploy-settings-panel__target-actions">
+                <el-button @click="openFtpCredentials">管理 FTP 连接</el-button>
+                <el-button :disabled="!canManageProject" @click="addTarget">新增服务器</el-button>
+              </div>
             </div>
 
-            <el-table :data="activeComponent.targets" stripe class="deploy-settings-panel__targets">
-              <el-table-column label="目标 ID" min-width="130">
-                <template #default="{ row }"><el-input v-model="row.id" size="small" /></template>
-              </el-table-column>
-              <el-table-column label="名称" min-width="140">
-                <template #default="{ row }"><el-input v-model="row.name" size="small" /></template>
-              </el-table-column>
-              <el-table-column label="FTP 连接" min-width="230">
-                <template #default="{ row }">
+            <el-alert
+              v-if="!ftpLoading && !ftpOptions.length"
+              title="还没有全局 FTP 连接。请先新增连接，再把服务器目标绑定到该连接。"
+              type="warning"
+              :closable="false"
+              show-icon
+              class="deploy-settings-panel__notice"
+            >
+              <el-button type="primary" size="small" @click="openFtpCredentials">新增 FTP 连接</el-button>
+            </el-alert>
+
+            <div
+              v-for="(row, index) in activeComponent.targets"
+              :key="`${row.id || 'target'}-${index}`"
+              class="deploy-settings-panel__target-card"
+            >
+              <div class="deploy-settings-panel__grid two-columns">
+                <el-form-item label="目标 ID">
+                  <el-input v-model="row.id" />
+                </el-form-item>
+                <el-form-item label="名称">
+                  <el-input v-model="row.name" />
+                </el-form-item>
+              </div>
+              <el-form-item label="FTP 连接">
+                <div class="deploy-settings-panel__ftp-bind">
                   <el-select
                     v-model="row.ftp_credential_id"
-                    size="small"
                     filterable
+                    clearable
                     :loading="ftpLoading"
-                    placeholder="选择全局 FTP 连接"
+                    :placeholder="ftpOptions.length ? '选择全局 FTP 连接' : '暂无 FTP 连接，请先新增'"
                   >
                     <el-option
                       v-for="credential in ftpOptions"
@@ -292,29 +313,26 @@
                       :disabled="credential.disabled"
                     />
                   </el-select>
-                </template>
-              </el-table-column>
-              <el-table-column label="远端目录" min-width="190">
-                <template #default="{ row }">
-                  <el-input v-model="row.remote_path" size="small" placeholder="/opt/app" />
-                </template>
-              </el-table-column>
-              <el-table-column label="部署命令" min-width="220">
-                <template #default="{ row }">
-                  <el-input v-model="row.deploy_command" size="small" placeholder="./deploy.sh up" />
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="76" fixed="right">
-                <template #default="{ $index }">
-                  <el-button
-                    text
-                    type="danger"
-                    :disabled="!canManageProject || activeComponent.targets.length <= 1"
-                    @click="removeTarget($index)"
-                  >删除</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
+                  <el-button @click="openFtpCredentials">管理连接</el-button>
+                </div>
+              </el-form-item>
+              <el-form-item label="远端目录">
+                <el-input v-model="row.remote_path" placeholder="/opt/app" />
+              </el-form-item>
+              <el-form-item label="部署命令">
+                <el-input v-model="row.deploy_command" placeholder="./deploy.sh up" />
+              </el-form-item>
+              <div class="deploy-settings-panel__notify-actions">
+                <el-button
+                  text
+                  type="danger"
+                  :disabled="!canManageProject || activeComponent.targets.length <= 1"
+                  @click="removeTarget(index)"
+                >
+                  删除服务器
+                </el-button>
+              </div>
+            </div>
           </section>
         </section>
       </div>
@@ -338,14 +356,23 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import ProjectWorkspaceBlock from "@/components/project-workspace/ProjectWorkspaceBlock.vue";
 import { readGlobalBotConnectorConfigFile } from "@/modules/project-chat/services/projectChatStorage.js";
+import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import {
   getLocalProject,
+  getLocalProjectRelations,
+  pickDeploySettings,
   readLocalEntities,
+  syncLocalFtpCredentialsToNative,
+  syncLocalProjectsToNativeCatalog,
+  updateLocalProjectRelations,
   upsertLocalProject,
 } from "@/services/local-project-repository.js";
+
+const router = useRouter();
 
 const props = defineProps({
   projectId: { type: String, required: true },
@@ -436,18 +463,56 @@ function safeId(value, fallback) {
   return String(value || "").trim().replace(/\s+/g, "-") || fallback;
 }
 
+function defaultFtpCredentialId() {
+  const enabled = ftpCredentials.value.filter((item) => item.enabled !== false && item.id);
+  return String((enabled[0] || ftpCredentials.value[0] || {}).id || "").trim();
+}
+
 function createDefaultTarget(index = 1) {
   return {
     id: `target-${index}`,
     name: `服务器 ${index}`,
     enabled: true,
     transport_mode: "ftp",
-    ftp_credential_id: "",
+    ftp_credential_id: defaultFtpCredentialId(),
     remote_path: "",
     deploy_command: "",
     remote_executor: {},
     health_check: {},
   };
+}
+
+function applyDefaultFtpCredentials() {
+  const credentialId = defaultFtpCredentialId();
+  if (!credentialId) return;
+  for (const profile of form.value.profiles || []) {
+    for (const component of profile.components || []) {
+      for (const target of component.targets || []) {
+        if (!String(target.ftp_credential_id || "").trim()) {
+          target.ftp_credential_id = credentialId;
+        }
+      }
+    }
+  }
+}
+
+function openFtpCredentials() {
+  void openRouteInDesktop(router, "/system/ftp-credentials", {
+    mode: "new-window",
+    appId: "settings-ftp-credentials",
+    title: "FTP 连接",
+    eyebrow: "Settings",
+  });
+}
+
+function resolveDeploySettings() {
+  const candidates = [
+    props.project?.deploy_settings,
+    props.project?.deploySettings,
+    getLocalProjectRelations(props.projectId)?.deploy_settings,
+    getLocalProject(props.projectId)?.deploy_settings,
+  ];
+  return candidates.reduce((best, item) => pickDeploySettings(item, best), {});
 }
 
 function createDefaultComponent(index = 0) {
@@ -682,6 +747,8 @@ async function fetchFtpCredentials() {
       username: String(item?.username || "").trim(),
       enabled: item?.enabled !== false,
     })).filter((item) => item.id);
+    applyDefaultFtpCredentials();
+    void syncLocalFtpCredentialsToNative();
   } finally {
     ftpLoading.value = false;
   }
@@ -877,11 +944,15 @@ async function saveSettings() {
     if (!project) {
       throw new Error("本地项目不存在，无法保存部署配置");
     }
+    const settings = normalizeSettings(form.value);
     upsertLocalProject({
       ...project,
-      deploy_settings: normalizeSettings(form.value),
+      deploy_settings: settings,
       updated_at: new Date().toISOString(),
     });
+    updateLocalProjectRelations(props.projectId, { deploy_settings: settings });
+    const latest = getLocalProject(props.projectId);
+    syncFromProject(pickDeploySettings(latest?.deploy_settings, settings));
     ElMessage.success("部署配置已保存");
     emit("project-updated");
   } catch (error) {
@@ -891,7 +962,14 @@ async function saveSettings() {
   }
 }
 
-watch(() => props.project?.deploy_settings, (settings) => syncFromProject(settings || {}), { immediate: true });
+watch(
+  () => [props.projectId, props.project?.deploy_settings],
+  () => {
+    syncFromProject(resolveDeploySettings());
+    applyDefaultFtpCredentials();
+  },
+  { immediate: true },
+);
 
 function handleLocalEntityUpdate(event) {
   if (String(event?.detail?.entityName || "").trim() === "ftp_credentials") {
@@ -899,14 +977,22 @@ function handleLocalEntityUpdate(event) {
   }
 }
 
+function handleRelationsUpdated() {
+  syncFromProject(resolveDeploySettings());
+  applyDefaultFtpCredentials();
+}
+
 onMounted(() => {
   void Promise.all([fetchFtpCredentials(), fetchNotifyOptions()]);
+  void syncLocalProjectsToNativeCatalog();
   window.addEventListener("local-entities-updated", handleLocalEntityUpdate);
+  window.addEventListener("local-project-relations-updated", handleRelationsUpdated);
   window.addEventListener("local-bot-connectors-config-updated", fetchNotifyOptions);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("local-entities-updated", handleLocalEntityUpdate);
+  window.removeEventListener("local-project-relations-updated", handleRelationsUpdated);
   window.removeEventListener("local-bot-connectors-config-updated", fetchNotifyOptions);
 });
 </script>
@@ -1053,9 +1139,35 @@ onBeforeUnmount(() => {
   margin-bottom: 14px;
 }
 
-.deploy-settings-panel__notify-actions {
+.deploy-settings-panel__notify-actions,
+.deploy-settings-panel__target-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.deploy-settings-panel__target-card {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  background: var(--el-fill-color-extra-light);
+}
+
+.deploy-settings-panel__ftp-bind {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.deploy-settings-panel__ftp-bind :deep(.el-select) {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.deploy-settings-panel__ftp-bind > .el-button {
+  flex: 0 0 auto;
 }
 
 .deploy-settings-panel__switches {

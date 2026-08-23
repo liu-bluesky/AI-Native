@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::liuagent_core::{
-    LocalBackendContext, LocalChatAttachment, LocalChatMessage, LocalModelRuntimeConfig,
-    PermissionDecisionInput,
+    LocalChatAttachment, LocalChatMessage, LocalModelRuntimeConfig, PermissionDecisionInput,
 };
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -13,19 +12,22 @@ pub struct BotConnectorConfig {
     pub platform: String,
     pub name: String,
     #[serde(default)]
-    pub system_prompt: String,
-    #[serde(default)]
-    pub provider_id: String,
-    #[serde(default)]
-    pub model_name: String,
-    #[serde(default)]
     pub reply_identity: String,
-    #[serde(default)]
-    pub owner_username: String,
     #[serde(default)]
     pub sandbox_mode: String,
     #[serde(default)]
     pub high_risk_tool_confirm: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BotWorkspaceSelection {
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub project_name: String,
+    #[serde(default)]
+    pub workspace_path: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -143,6 +145,8 @@ pub struct BotChatRequest {
     pub message: String,
     pub workspace_path: String,
     #[serde(default)]
+    pub workspace_selection: Option<BotWorkspaceSelection>,
+    #[serde(default)]
     pub history: Vec<LocalChatMessage>,
     pub connector: BotConnectorConfig,
     #[serde(default)]
@@ -156,6 +160,5 @@ pub struct BotChatRequest {
     pub attachments: Vec<LocalChatAttachment>,
     #[serde(default)]
     pub mcp_config: Value,
-    pub backend_context: Option<LocalBackendContext>,
     pub permission_decision: Option<PermissionDecisionInput>,
 }

@@ -19,7 +19,6 @@ import {
 import {
   PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX,
   PROJECT_DEPLOY_DRAFT_STORAGE_PREFIX,
-  STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX,
 } from "@/modules/project-chat/constants/projectChatConstants.js";
 import {
   cloneJson,
@@ -387,19 +386,6 @@ function consumeJsonDraft(storageKey, expectedPrefix, normalizePayload) {
     }
     return null;
   }
-}
-
-export function consumeStatisticsAnalysisDraft(storageKey) {
-  return consumeJsonDraft(
-    storageKey,
-    STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX,
-    (parsed) => ({
-      prompt: String(parsed.prompt || "").trim(),
-      scope: String(parsed.scope || "").trim(),
-      project_id: String(parsed.project_id || "").trim(),
-      link: String(parsed.link || "").trim(),
-    }),
-  );
 }
 
 export function consumePluginInstallDraft(storageKey) {
@@ -858,21 +844,7 @@ export function normalizeBotConnectorItem(value) {
     name: String(raw.name || "").trim().slice(0, 120),
     agent_name: "",
     description: String(raw.description || "").trim().slice(0, 280),
-    system_prompt: String(raw.system_prompt || raw.systemPrompt || "").trim().slice(0, 4000),
     chat_mode: "desktop_local_agent",
-    external_agent_type: ["codex_cli", "hermes", "claude_code"].includes(
-      String(raw.external_agent_type || raw.externalAgentType || "").trim().toLowerCase(),
-    )
-      ? String(raw.external_agent_type || raw.externalAgentType || "").trim().toLowerCase()
-      : "codex_cli",
-    provider_id: String(raw.provider_id || raw.providerId || "").trim().slice(0, 120),
-    model_name: String(raw.model_name || raw.modelName || "").trim().slice(0, 160),
-    model_runtime:
-      raw.model_runtime && typeof raw.model_runtime === "object"
-        ? cloneJson(raw.model_runtime)
-        : raw.modelRuntime && typeof raw.modelRuntime === "object"
-          ? cloneJson(raw.modelRuntime)
-          : null,
     app_id: String(raw.app_id || raw.appId || "").trim().slice(0, 160),
     app_secret: String(raw.app_secret || raw.appSecret || "").trim().slice(0, 200),
     verification_token: String(raw.verification_token || raw.verificationToken || "")
@@ -883,12 +855,7 @@ export function normalizeBotConnectorItem(value) {
       .trim()
       .toLowerCase(),
     auto_start_worker: raw.auto_start_worker ?? raw.autoStartWorker ?? false,
-    reply_identity: ["bot", "user"].includes(
-      String(raw.reply_identity || raw.replyIdentity || "").trim().toLowerCase(),
-    )
-      ? String(raw.reply_identity || raw.replyIdentity || "").trim().toLowerCase()
-      : "bot",
-    project_id: "",
+    reply_identity: "bot",
     guide_url: String(raw.guide_url || raw.guideUrl || "").trim().slice(0, 500),
     sort_order: Math.min(999, Math.max(0, Number(raw.sort_order || raw.sortOrder || 0) || 0)),
     sandbox_mode: String(raw.sandbox_mode || raw.sandboxMode || "workspace-write")

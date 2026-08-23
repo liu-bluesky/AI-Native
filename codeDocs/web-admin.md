@@ -232,8 +232,7 @@ web-admin/frontend/
 - AI 对话设置中心：`/ai/chat/settings/...`
 - 用户权限：`/users`、`/departments`、`/roles`、`/user/settings`
 - 项目：`/projects`、`/projects/:id`
-- 素材创作工作台：`/materials`、`/materials/studio`、`/materials/voices`、`/materials/works`
-- 系统：`/system/config`、`/system/bot-connectors`、`/statistics`、`/online-users`、`/mcp-monitor`、`/dictionaries`
+- 系统：`/system/config`、`/system/bot-connectors`、`/online-users`、`/mcp-monitor`、`/dictionaries`
 - 员工：`/employees`、`/employees/create`、`/employees/:id`
 - 技能：`/skills`、`/skill-resources`
 - 规则：`/rules`

@@ -425,7 +425,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "list_projects",
-            description: "列出当前桌面登录用户在后端有权限访问的真实项目列表。用户询问“项目列表 / 有哪些项目 / 列出项目”时优先使用本工具；不要用 desktop-bot-global 或本地 workspace 目录缓存冒充真实项目列表。",
+            description: "列出桌面本机全局项目目录中的项目，与项目页面同源，不依赖后端登录。用户询问“项目列表 / 有哪些项目 / 列出项目”时优先使用本工具；不要把 desktop-bot-global 当成真实项目。",
             action: "project.list",
             risk: "low",
             requires_approval: false,
@@ -435,15 +435,13 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "page": {"type": "number", "default": 1},
                     "page_size": {"type": "number", "default": 20},
-                    "name": {"type": "string", "description": "按项目名称关键词过滤，可选"},
-                    "created_by": {"type": "string", "description": "按创建人过滤，可选"},
-                    "timeout_ms": {"type": "number", "default": 30000}
+                    "name": {"type": "string", "description": "按项目 ID、名称或说明关键词过滤，可选"}
                 }
             }),
         },
         ToolDefinition {
             name: "get_project",
-            description: "读取当前桌面登录用户有权限访问的真实项目详情及项目绑定智能体清单。回答项目绑定几个/哪些智能体时，必须使用 bound_agent_count / bound_agents；selected_employee_ids 为空仅表示自动分配。",
+            description: "读取桌面本机全局项目目录中的项目详情，包含名称、描述和工作区状态。本机目录不保存项目绑定智能体；bound_agent_count 为 0 只表示目录没有这份数据。selected_employee_ids 为空仅表示自动分配。",
             action: "project.read",
             risk: "low",
             requires_approval: false,
@@ -451,15 +449,45 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string"},
-                    "timeout_ms": {"type": "number", "default": 30000}
+                    "project_id": {"type": "string"}
+                },
+                "required": ["project_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "list_bot_projects",
+            description: "仅飞书机器人会话可用。列出桌面本机全局项目目录中的项目和工作区，不读取桌面当前登录用户、后端 Token 或机器人连接器配置。返回项目 ID、名称、描述和工作区状态；选择项目后必须调用 switch_project_workspace，不能根据名称猜测或直接使用任意本机路径。",
+            action: "bot.project.list",
+            risk: "low",
+            requires_approval: false,
+            scope: "bot",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "page": {"type": "number", "default": 1},
+                    "page_size": {"type": "number", "default": 50},
+                    "name": {"type": "string", "description": "按项目 ID、名称或说明关键词过滤，可选"}
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "switch_project_workspace",
+            description: "仅飞书机器人会话可用。按 project_id 从桌面本机全局项目目录中选择项目，并切换本轮及后续飞书会话使用的本机工作区。工具只接受项目 ID，不接受工作区路径；只有项目目录记录的绝对路径在本机可访问且是目录时才会成功。",
+            action: "bot.workspace.switch",
+            risk: "low",
+            requires_approval: false,
+            scope: "bot",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"}
                 },
                 "required": ["project_id"]
             }),
         },
         ToolDefinition {
             name: "get_project_deploy_options",
-            description: "读取当前项目后端部署配置摘要（脱敏），包含可选 profile、component、target、remote_path、artifact_kind、是否存在 deploy_command、notify_enabled。部署/发布/上线类任务必须先调用该工具，再让用户选择环境和目标；该工具只读，不上传、不部署、不返回服务器凭据。",
+            description: "读取当前项目本机部署配置摘要（脱敏），包含可选 profile、component、target、remote_path、artifact_kind、是否存在 deploy_command、notify_enabled。部署/发布/上线类任务必须先调用该工具，再让用户选择环境和目标；该工具只读，不上传、不部署、不返回服务器凭据。",
             action: "deploy.options.read",
             risk: "low",
             requires_approval: false,
@@ -475,7 +503,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "deploy_workspace_files_to_target",
-            description: "桌面智能体直连部署主工具。由桌面 AI 先调用 get_project_deploy_options 读取配置并让用户选择 profile/component/target 后，由桌面运行时直接把 workspace 内的原文件、目录或文件清单上传到目标 FTP 服务器，文件不经过业务后端中转；后端仅负责权限校验、提供本次部署连接配置、执行已配置 deploy_command、发送配置通知和接收结果。FTP 凭据不会进入模型上下文或工具结果。上传目录时按根层文件和文件夹生成任务，实际并发受 FTP 连接的最大上传线程数限制。只有本工具返回 deployment_confirmed_success=true/status=success 时，才允许回复部署成功。",
+            description: "桌面智能体直连部署主工具。由桌面 AI 先调用 get_project_deploy_options 读取本机部署配置并让用户选择 profile/component/target 后，由桌面运行时直接把 workspace 内的原文件、目录或文件清单上传到目标 FTP 服务器。连接配置来自本机项目目录和全局 FTP 连接文件，不经过业务后端中转；本机运行时会跳过远端 deploy_command，而不是因为缺少后端执行器而阻塞。FTP 凭据不会进入模型上下文或工具结果。上传目录时按根层文件和文件夹生成任务，实际并发受 FTP 连接的最大上传线程数限制。只有本工具返回 deployment_confirmed_success=true/status=success 时，才允许回复部署成功。",
             action: "deploy.direct.upload",
             risk: "high",
             requires_approval: true,
