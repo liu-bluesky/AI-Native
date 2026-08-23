@@ -90,11 +90,20 @@ export function normalizeWorkSessionSummary(raw) {
   if (!raw || typeof raw !== "object") return null;
   const sessionId = String(raw.session_id || "").trim();
   if (!sessionId) return null;
+  const events = Array.isArray(raw.events)
+    ? raw.events
+    : Array.isArray(raw.runtime_events)
+      ? raw.runtime_events
+      : [];
   return {
+    ...raw,
     session_id: sessionId,
+    project_id: String(raw.project_id || "").trim(),
+    project_name: String(raw.project_name || "").trim(),
     latest_status: String(raw.latest_status || "")
       .trim()
       .toLowerCase(),
+    latest_event_type: String(raw.latest_event_type || "").trim(),
     goal: String(raw.goal || "").trim(),
     task_tree_session_id: String(raw.task_tree_session_id || "").trim(),
     task_tree_chat_session_id: String(
@@ -109,6 +118,23 @@ export function normalizeWorkSessionSummary(raw) {
     steps: Array.isArray(raw.steps)
       ? raw.steps.map((item) => String(item || "").trim()).filter(Boolean)
       : [],
+    event_types: Array.isArray(raw.event_types)
+      ? raw.event_types.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    changed_files: Array.isArray(raw.changed_files)
+      ? raw.changed_files.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    verification: Array.isArray(raw.verification)
+      ? raw.verification.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    risks: Array.isArray(raw.risks)
+      ? raw.risks.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    next_steps: Array.isArray(raw.next_steps)
+      ? raw.next_steps.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    events,
+    event_count: Number(raw.event_count ?? events.length ?? 0),
   };
 }
 

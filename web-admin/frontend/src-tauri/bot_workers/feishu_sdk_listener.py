@@ -59,10 +59,37 @@ def plain(value: Any, depth: int = 0) -> Any:
     return str(value)
 
 
+def field(source: Any, *keys: str) -> Any:
+    if isinstance(source, dict):
+        for key in keys:
+            if key in source:
+                value = source[key]
+                if value not in (None, ""):
+                    return value
+        return None
+    for key in keys:
+        value = getattr(source, key, None)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def first_field(sources: tuple[Any, ...], *keys: str) -> Any:
+    for source in sources:
+        value = field(source, *keys)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def pick_text(*values: Any) -> str:
     for value in values:
         if value is None:
             continue
+        if isinstance(value, dict):
+            value = field(value, "text", "content", "value")
+            if value is None:
+                continue
         text = str(value).strip()
         if text:
             return text
@@ -72,10 +99,7 @@ def pick_text(*values: Any) -> str:
 def nested(source: Any, *keys: str) -> Any:
     current = source
     for key in keys:
-        if isinstance(current, dict):
-            current = current.get(key)
-        else:
-            current = getattr(current, key, None)
+        current = field(current, key)
         if current is None:
             return None
     return current
@@ -90,6 +114,48 @@ def normalize_feishu_uuid(value: str, *, fallback_prefix: str = "feishu") -> str
         return normalized
     seed = hashlib.sha256(normalized.encode("utf-8")).hexdigest() if normalized else os.urandom(16).hex()
     return f"{fallback_prefix}-{seed}"[:FEISHU_OPEN_API_UUID_MAX_LENGTH]
+
+
+def event_shape_diagnostic(data: Any) -> str:
+    raw = plain(data)
+    if not isinstance(raw, dict):
+        return json.dumps(
+            {
+                "input_type": type(data).__name__,
+                "root_keys": [],
+                "event_keys": [],
+                "message_keys": [],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    event = field(raw, "event")
+    if not isinstance(event, dict):
+        event = raw if any(
+            key in raw
+            for key in (
+                "message",
+                "sender",
+                "message_id",
+                "messageId",
+                "chat_id",
+                "chatId",
+            )
+        ) else {}
+    message = field(event, "message")
+    if not isinstance(message, dict):
+        message = event
+    return json.dumps(
+        {
+            "input_type": type(data).__name__,
+            "root_keys": sorted(str(key) for key in raw.keys()),
+            "event_keys": sorted(str(key) for key in event.keys()),
+            "message_keys": sorted(str(key) for key in message.keys()),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
 def sdk_response_error_detail(response: Any) -> str:
@@ -115,14 +181,42 @@ def sdk_response_error_detail(response: Any) -> str:
 
 def normalize_message_event(data: Any, connector_id: str) -> dict[str, Any]:
     raw = plain(data)
-    event = raw.get("event") if isinstance(raw, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    header = field(raw, "header")
+    if not isinstance(header, dict):
+        header = {}
+    event = field(raw, "event")
     if not isinstance(event, dict):
         event = {}
-    message = event.get("message") if isinstance(event.get("message"), dict) else event
-    sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
-    sender_id = sender.get("sender_id") if isinstance(sender.get("sender_id"), dict) else {}
-    header = raw.get("header") if isinstance(raw, dict) and isinstance(raw.get("header"), dict) else {}
-    content = pick_text(message.get("content"), event.get("content"))
+    if not event and any(
+        key in raw
+        for key in (
+            "message",
+            "sender",
+            "message_id",
+            "messageId",
+            "chat_id",
+            "chatId",
+        )
+    ):
+        event = raw
+    message = field(event, "message")
+    if not isinstance(message, dict):
+        message = event
+    sender = field(event, "sender")
+    if not isinstance(sender, dict):
+        sender = field(message, "sender")
+    if not isinstance(sender, dict):
+        sender = {}
+    sender_id = field(sender, "sender_id", "senderId")
+    if not isinstance(sender_id, dict):
+        sender_id = {}
+    body = field(message, "body")
+    if not isinstance(body, dict):
+        body = {}
+
+    content = pick_text(first_field((message, body, event, raw), "content", "text"))
     text = content
     if content.startswith("{"):
         try:
@@ -133,27 +227,67 @@ def normalize_message_event(data: Any, connector_id: str) -> dict[str, Any]:
             text = content
 
     return {
-        "type": pick_text(header.get("event_type"), "im.message.receive_v1"),
-        "event_id": pick_text(header.get("event_id"), event.get("event_id"), message.get("message_id")),
-        "message_id": pick_text(message.get("message_id"), event.get("message_id")),
-        "id": pick_text(message.get("message_id"), event.get("message_id")),
-        "message_type": pick_text(message.get("message_type"), event.get("message_type")),
-        "chat_id": pick_text(message.get("chat_id"), event.get("chat_id")),
-        "chat_type": pick_text(message.get("chat_type"), event.get("chat_type")),
-        "mentions": plain(message.get("mentions") or event.get("mentions") or []),
+        "type": pick_text(
+            first_field((header, raw, event), "event_type", "eventType"),
+            "im.message.receive_v1",
+        ),
+        "event_id": pick_text(
+            first_field(
+                (header, raw, event, message),
+                "event_id",
+                "eventId",
+                "message_id",
+                "messageId",
+            )
+        ),
+        "message_id": pick_text(
+            first_field((message, event, raw), "message_id", "messageId", "id")
+        ),
+        "id": pick_text(
+            first_field((message, event, raw), "message_id", "messageId", "id")
+        ),
+        "message_type": pick_text(
+            first_field(
+                (message, event, raw),
+                "message_type",
+                "messageType",
+                "msg_type",
+                "msgType",
+            )
+        ),
+        "chat_id": pick_text(first_field((message, event, raw), "chat_id", "chatId")),
+        "chat_type": pick_text(
+            first_field((message, event, raw), "chat_type", "chatType")
+        ),
+        "mentions": plain(
+            first_field((message, event, raw), "mentions", "message_mentions") or []
+        ),
         "content": text,
         "raw_content": content,
         "sender_id": pick_text(
-            sender_id.get("open_id"),
-            sender_id.get("user_id"),
-            sender_id.get("union_id"),
+            field(sender_id, "open_id", "openId"),
+            field(sender_id, "user_id", "userId"),
+            field(sender_id, "union_id", "unionId"),
+            field(sender, "open_id", "openId"),
+            field(sender, "user_id", "userId"),
             nested(sender, "sender_id"),
         ),
-        "create_time": pick_text(message.get("create_time"), event.get("create_time")),
-        "timestamp": pick_text(header.get("create_time")),
+        "create_time": pick_text(
+            first_field((message, event, raw), "create_time", "createTime")
+        ),
+        "timestamp": pick_text(
+            first_field((header, raw, event), "create_time", "createTime")
+        ),
         "connector_id": connector_id,
         "raw": raw,
     }
+
+
+def message_payload_has_signal(payload: dict[str, Any]) -> bool:
+    return any(
+        str(payload.get(key) or "").strip()
+        for key in ("event_id", "message_id", "chat_id", "chat_type", "content")
+    )
 
 
 def main() -> int:
@@ -343,9 +477,21 @@ def main() -> int:
             "raw": raw,
         }
 
+    seen_empty_event_shapes: set[str] = set()
+
     def on_message(data: P2ImMessageReceiveV1) -> None:
         try:
             payload = normalize_message_event(data, connector_id)
+            if not message_payload_has_signal(payload):
+                diagnostic = event_shape_diagnostic(data)
+                if diagnostic not in seen_empty_event_shapes:
+                    seen_empty_event_shapes.add(diagnostic)
+                    print(
+                        f"[feishu-sdk] event-shape {diagnostic}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                return
             print(json.dumps(payload, ensure_ascii=False), flush=True)
         except Exception as exc:
             emit_error(

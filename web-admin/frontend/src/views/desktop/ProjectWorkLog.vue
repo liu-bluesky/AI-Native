@@ -249,7 +249,7 @@
           <div class="work-log-panel__title work-log-panel__title--table">
             <div>
               <span>日志记录</span>
-              <p>这里只显示本模块写入后端的真实生成记录，内容来自项目工作会话。</p>
+              <p>这里只显示本地保存的生成记录，内容来自项目工作会话。</p>
             </div>
             <button type="button" class="work-log-link" :disabled="loadingRecords" @click="loadRecords">
               {{ loadingRecords ? "刷新中" : "刷新记录" }}
@@ -311,10 +311,19 @@
 import { ElMessage } from "element-plus";
 import { computed, onMounted, reactive, ref, watch } from "vue";
 
-import api from "@/utils/api.js";
 import { formatRelativeDateTime } from "@/utils/date.js";
 import { runDesktopAgentTextTask } from "@/utils/desktop-agent-runtime.js";
-import { fetchAllVisibleProjects } from "@/utils/projects.js";
+import {
+  getLocalProjectRelations,
+  readLocalEntities,
+  readLocalProjects,
+  removeLocalEntity,
+  upsertLocalEntity,
+} from "@/services/local-project-repository.js";
+import {
+  readLocalTaskTreeSnapshots,
+  readLocalWorkSessionSnapshots,
+} from "@/modules/project-chat/services/projectChatStorage.js";
 
 const activeTab = ref("templates");
 const loadingProjects = ref(false);
@@ -466,13 +475,6 @@ function resetDateRange() {
   form.endDate = endDate;
 }
 
-function resolveProjectItems(payload) {
-  if (Array.isArray(payload?.projects)) return payload.projects;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload)) return payload;
-  return [];
-}
-
 function hasDateRange() {
   return Boolean(String(form.startDate || "").trim() && String(form.endDate || "").trim());
 }
@@ -482,11 +484,7 @@ async function loadProjects(force = false) {
   loadingProjects.value = true;
   errorText.value = "";
   try {
-    let items = await fetchAllVisibleProjects();
-    if (!items.length) {
-      const metaPayload = await api.get("/work-sessions/meta");
-      items = resolveProjectItems(metaPayload);
-    }
+    const items = readLocalProjects();
     projectOptions.value = items
       .map((item) => ({
         id: String(item?.id || "").trim(),
@@ -618,13 +616,24 @@ async function loadModelOptions() {
   if (loadingModelOptions.value) return;
   loadingModelOptions.value = true;
   try {
-    const projectId = selectedProjectIds.value[0] || "proj-d16591a6";
-    const data = await api.get(
-      `/projects/${encodeURIComponent(projectId)}/chat/providers`,
-      { params: { include_runtime_external_tools: false } },
-    );
+    const providersById = new Map();
+    const addProvider = (provider) => {
+      const providerId = String(
+        provider?.id || provider?.provider_id || "",
+      ).trim();
+      if (!providerId) return;
+      providersById.set(providerId, { ...provider, id: providerId });
+    };
+    readLocalEntities("llm_providers").forEach(addProvider);
+    selectedProjectIds.value.forEach((projectId) => {
+      const relations = getLocalProjectRelations(projectId);
+      (Array.isArray(relations.providers) ? relations.providers : []).forEach(
+        addProvider,
+      );
+    });
+    const providers = Array.from(providersById.values());
     const options = [];
-    for (const provider of Array.isArray(data?.providers) ? data.providers : []) {
+    for (const provider of providers) {
       const providerId = String(provider?.id || "").trim();
       if (!providerId) continue;
       const providerName = String(provider?.name || providerId).trim();
@@ -639,7 +648,18 @@ async function loadModelOptions() {
       }
     }
     modelOptions.value = options;
-    const defaultValue = resolveModelOptionValue(data?.default_provider_id, data?.default_model_name);
+    const defaultProvider = providers.find(
+      (provider) => provider?.is_default || provider?.default,
+    );
+    const defaultModelName = String(
+      defaultProvider?.default_model ||
+        defaultProvider?.default_model_name ||
+        "",
+    ).trim();
+    const defaultValue = resolveModelOptionValue(
+      defaultProvider?.id,
+      defaultModelName,
+    );
     selectedModelOptionValue.value = options.some((item) => item.value === defaultValue)
       ? defaultValue
       : options[0]?.value || "";
@@ -686,14 +706,7 @@ async function loadTemplates() {
   loadingTemplates.value = true;
   errorText.value = "";
   try {
-    const data = await api.get("/projects/_global/work-log-templates");
-    mergeTemplates(data?.items || []);
-  } catch (err) {
-    if (Number(err?.status || 0) === 404) {
-      mergeTemplates([]);
-      return;
-    }
-    errorText.value = err?.detail || err?.message || "加载日志模板失败";
+    mergeTemplates(readLocalEntities("work_log_templates"));
   } finally {
     loadingTemplates.value = false;
   }
@@ -732,17 +745,17 @@ async function saveTemplate(template) {
   savingTemplateValue.value = value;
   errorText.value = "";
   try {
-    const payload = {
+    const saved = upsertLocalEntity("work_log_templates", {
+      id: value,
+      value,
       label,
       description: String(draft.description || "").trim(),
-    };
-    const saved = await api.put(
-      `/projects/_global/work-log-templates/${encodeURIComponent(value)}`,
-      payload,
-    );
+      created_at: String(template?.created_at || new Date().toISOString()),
+      updated_at: new Date().toISOString(),
+    });
     const nextTemplate = {
       ...template,
-      ...(saved?.item || payload),
+      ...saved,
       value,
     };
     templates.value = templates.value.map((item) =>
@@ -761,11 +774,8 @@ async function loadRecords() {
   loadingRecords.value = true;
   errorText.value = "";
   try {
-    const data = await api.get("/projects/_global/work-logs", {
-      params: { limit: 50 },
-    });
     const deduped = new Map();
-    for (const item of Array.isArray(data?.items) ? data.items : []) {
+    for (const item of readLocalEntities("work_logs")) {
       const id = String(item?.id || "").trim();
       if (!id || deduped.has(id)) continue;
       deduped.set(id, normalizeRecord(item));
@@ -786,11 +796,15 @@ async function loadRecords() {
 
 function normalizeRecord(record) {
   const projectNames = Array.isArray(record?.projectNames)
-    ? record.projectNames.map((item) => String(item || "").trim()).filter(Boolean)
-    : [];
+    ? record.projectNames
+    : Array.isArray(record?.project_names)
+      ? record.project_names
+      : [];
   const projectLabel = String(record?.projectLabel || "").trim()
     || projectNames.join("、")
-    || String(record?.projectName || record?.project_id || "").trim();
+    || String(
+      record?.projectName || record?.project_name || record?.project_id || "",
+    ).trim();
   return {
     ...record,
     projectLabel,
@@ -805,14 +819,13 @@ function inDateRange(value, startDate, endDate) {
 }
 
 async function fetchWorkSessions(projectId, startDate, endDate) {
-  const data = await api.get(`/projects/${encodeURIComponent(projectId)}/work-sessions`, {
-    params: { limit: 200 },
-  });
-  return Array.isArray(data?.items)
-    ? data.items.filter((item) =>
-        inDateRange(item?.updated_at || item?.created_at, startDate, endDate),
-      )
-    : [];
+  return readLocalWorkSessionSnapshots(projectId).filter((item) =>
+    inDateRange(
+      item?.updated_at || item?.updatedAt || item?.created_at || item?.createdAt,
+      startDate,
+      endDate,
+    ),
+  );
 }
 
 function resolveRequirementRound(record) {
@@ -829,10 +842,14 @@ function resolveRequirementTime(record) {
 }
 
 async function fetchRequirementRecords(projectId, startDate, endDate) {
-  void projectId;
-  void startDate;
-  void endDate;
-  return [];
+  return readLocalEntities(`requirement_records_${String(projectId || "").trim()}`).filter(
+    (item) =>
+      inDateRange(
+        item?.updated_at || item?.updatedAt || item?.created_at || item?.createdAt,
+        startDate,
+        endDate,
+      ),
+  );
 }
 
 function normalizePlainText(value, fallback = "") {
@@ -967,7 +984,7 @@ function buildDraftText(projectPayloads) {
     `项目：${projectLabel || "未选择项目"}`,
     `模板：${resolveLabel(templates, form.template)}`,
     form.extraNotes ? `补充说明：${form.extraNotes}` : "",
-    `总记录数量：工作会话 ${totalSessionCount} 条。`,
+    `总记录数量：需求 ${totalRequirementCount} 条，工作会话 ${totalSessionCount} 条。`,
     "以下原始数据已按项目分组；生成时必须把每个项目下的事项归入对应项目，不能跨项目合并或挪用。",
     payloads
       .map((item) => buildProjectDraftText(item.project, item.sessions || [], item.requirementRecords || []))
@@ -1076,19 +1093,16 @@ async function generateWorkLog() {
       model_name: selectedModel.modelName,
       content,
     };
-    const saved = await api.post(
-      `/projects/${encodeURIComponent(projectIds[0])}/work-logs`,
-      recordPayload,
-    );
-    const savedRecord = normalizeRecord(saved?.item || {
-      id: `work-log-${projectIds.join("-")}-${Date.now()}`,
+    const savedRecord = normalizeRecord(upsertLocalEntity("work_logs", {
+      id: `work-log-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       ...recordPayload,
-      projectId: projectIds[0],
-      projectName: projectNames.join("、"),
+      project_id: projectIds[0],
+      project_name: projectNames.join("、"),
+      project_names: projectNames,
       projectLabel: projectNames.join("、"),
       templateLabel: recordPayload.template_label,
-      createdAt: new Date().toISOString(),
-    });
+      created_at: new Date().toISOString(),
+    }));
     records.value = [
       savedRecord,
       ...records.value.filter((item) => item.id !== savedRecord.id),
@@ -1145,7 +1159,7 @@ async function deleteRecord(record) {
   deletingRecordId.value = recordId;
   errorText.value = "";
   try {
-    await api.delete(`/projects/_global/work-logs/${encodeURIComponent(recordId)}`);
+    removeLocalEntity("work_logs", recordId);
     records.value = records.value.filter((item) => item.id !== recordId);
   } catch (err) {
     errorText.value = err?.detail || err?.message || "删除日志记录失败";

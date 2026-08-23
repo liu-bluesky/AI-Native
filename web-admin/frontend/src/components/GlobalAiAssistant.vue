@@ -18,6 +18,7 @@
 
           <div class="assistant-header__actions">
             <el-button
+              v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
               circle
               text
               :icon="Setting"
@@ -29,6 +30,7 @@
               @click="toggleAssistantSettingsPanel"
             />
             <el-button
+              v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
               circle
               text
               :icon="Headset"
@@ -62,7 +64,11 @@
           </div>
         </header>
 
-        <section class="assistant-call-entry" :class="voiceSurfaceStateClass">
+        <section
+          v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
+          class="assistant-call-entry"
+          :class="voiceSurfaceStateClass"
+        >
           <div class="assistant-call-entry__copy">
             <span class="assistant-call-entry__badge">{{
               voiceUiState.label
@@ -149,6 +155,7 @@
               class="assistant-message__actions"
             >
               <button
+                v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
                 type="button"
                 class="assistant-message__icon-button"
                 :class="{ 'is-active': isSpeakingMessage(message) }"
@@ -277,6 +284,7 @@
     </transition>
 
     <el-dialog
+      v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
       v-model="settingsDialogOpen"
       class="assistant-settings-dialog"
       width="min(720px, calc(100vw - 24px))"
@@ -505,7 +513,6 @@ import {
 } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import AssistantVoiceDiagnosticsPanel from "@/components/AssistantVoiceDiagnosticsPanel.vue";
-import api from "@/utils/api.js";
 import {
   authStateVersion,
   getStoredAuthProfile,
@@ -526,8 +533,13 @@ import {
   startNativeLiuAgentLocalChat,
   subscribeNativeLiuAgentRuntimeEvents,
 } from "@/utils/native-desktop-bridge.js";
-import { buildApiBaseUrl, resolveServerOrigin } from "@/utils/server-profile.js";
-import { createGlobalAssistantWsClient } from "@/utils/ws-chat.js";
+import {
+  LOCAL_SYSTEM_CONFIG_STORAGE_KEY,
+  LOCAL_SYSTEM_CONFIG_UPDATED_EVENT,
+  readLocalSystemConfig,
+} from "@/services/local-system-config.js";
+import { buildLocalModelRuntime } from "@/services/local-model-runtime.js";
+import { GLOBAL_ASSISTANT_BUILD_FEATURES } from "@/config/buildFeatures.js";
 
 const FALLBACK_OPEN_WIDTH = 1080;
 const GLOBAL_ASSISTANT_STORAGE_PREFIX = "global_ai_assistant.";
@@ -546,8 +558,8 @@ const SPEECH_PREVIEW_MESSAGE_ID = "__speech_preview__";
 const SPEECH_AUDIO_CACHE_LIMIT = 24;
 const SPEECH_VOICE_RETRY_DELAY_MS = 700;
 const SPEECH_VOICE_MAX_RETRIES = 6;
-const SYSTEM_CONFIG_UPDATED_EVENT = "system-config-updated";
-const SYSTEM_CONFIG_UPDATED_STORAGE_KEY = "system-config-updated";
+const SYSTEM_CONFIG_UPDATED_EVENT = LOCAL_SYSTEM_CONFIG_UPDATED_EVENT;
+const SYSTEM_CONFIG_UPDATED_STORAGE_KEY = LOCAL_SYSTEM_CONFIG_STORAGE_KEY;
 const GLOBAL_ASSISTANT_LOCAL_PROJECT_ID = "global-assistant";
 const ASSISTANT_FAB_DRAG_THRESHOLD_PX = 6;
 const ASSISTANT_FAB_DESKTOP_OFFSET_PX = 20;
@@ -736,7 +748,9 @@ const voiceRuntimeAvailable = computed(() =>
   Boolean(voiceRuntime.value?.available),
 );
 const voiceGreetingEnabled = computed(
-  () => voiceRuntime.value?.greeting_enabled !== false,
+  () =>
+    GLOBAL_ASSISTANT_BUILD_FEATURES.greeting &&
+    voiceRuntime.value?.greeting_enabled === true,
 );
 const voiceGreetingText = computed(
   () =>
@@ -1935,7 +1949,10 @@ function resolveAssistantSpeechVoice() {
 }
 
 function assistantSpeechPlaybackSupported() {
-  return backendSpeechPlaybackEnabled.value || browserSpeechPlaybackSupported();
+  return (
+    GLOBAL_ASSISTANT_BUILD_FEATURES.voice &&
+    (backendSpeechPlaybackEnabled.value || browserSpeechPlaybackSupported())
+  );
 }
 
 function cleanupAssistantAudioPlayback() {
@@ -2019,9 +2036,7 @@ async function requestSystemSpeechPlayback(text) {
   if (!normalizedText) {
     throw new Error("语音内容为空");
   }
-  return api.post("/projects/chat/global/voice-output/system-speech", {
-    text: normalizedText,
-  });
+  throw new Error("本机没有系统级语音播放执行器");
 }
 
 async function fetchSpeechAudioBlob(text) {
@@ -2039,18 +2054,9 @@ async function fetchSpeechAudioBlob(text) {
   if (cacheKey && speechAudioPendingRequests.has(cacheKey)) {
     return speechAudioPendingRequests.get(cacheKey);
   }
-  const requestPromise = (async () => {
-    const payload = await api.post(
-      "/projects/chat/global/voice-output/speech",
-      { text: normalizedText },
-      { responseType: "blob" },
-    );
-    const audioBlob = normalizeSpeechAudioBlob(payload);
-    if (cacheKey) {
-      rememberSpeechAudioBlob(cacheKey, audioBlob);
-    }
-    return audioBlob;
-  })().finally(() => {
+  const requestPromise = Promise.reject(
+    new Error("本机没有后端语音合成执行器"),
+  ).finally(() => {
     if (cacheKey) {
       speechAudioPendingRequests.delete(cacheKey);
     }
@@ -2073,21 +2079,7 @@ async function fetchGreetingAudioBlob() {
   if (speechAudioPendingRequests.has(cacheKey)) {
     return speechAudioPendingRequests.get(cacheKey);
   }
-  const requestPromise = (async () => {
-    try {
-      const payload = await api.get(
-        "/projects/chat/global/voice-output/greeting-audio",
-        { responseType: "blob" },
-      );
-      const audioBlob = normalizeSpeechAudioBlob(payload);
-      rememberSpeechAudioBlob(cacheKey, audioBlob);
-      return audioBlob;
-    } catch (err) {
-      const status = Number(err?.status || err?.response?.status || 0);
-      if (status === 404) return null;
-      throw err;
-    }
-  })().finally(() => {
+  const requestPromise = Promise.resolve(null).finally(() => {
     speechAudioPendingRequests.delete(cacheKey);
   });
   speechAudioPendingRequests.set(cacheKey, requestPromise);
@@ -2751,16 +2743,6 @@ function toHistoryRows(list) {
     );
 }
 
-function buildDesktopBackendApiBaseUrl() {
-  const baseUrl = String(buildApiBaseUrl() || "").trim();
-  if (/^https?:\/\//i.test(baseUrl)) return baseUrl;
-  const origin = String(resolveServerOrigin() || "").trim();
-  if (/^https?:\/\//i.test(origin)) {
-    return `${origin.replace(/\/+$/, "")}/${baseUrl.replace(/^\/+/, "")}`;
-  }
-  return baseUrl;
-}
-
 async function resolveGlobalAssistantLocalWorkspacePath() {
   const runtimeInfo = await getNativeRuntimeInfo();
   return String(runtimeInfo?.defaultWorkspacePath || "").trim();
@@ -2771,17 +2753,7 @@ async function fetchGlobalAssistantDesktopModelRuntime(providerId) {
   if (!normalizedProviderId) {
     throw new Error("请先在系统配置的全局助手中选择聊天模型供应商");
   }
-  const data = await api.get(
-    `/llm/providers/${encodeURIComponent(normalizedProviderId)}/desktop-runtime`,
-  );
-  const runtime =
-    data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
-  const baseUrl = String(runtime.base_url || runtime.baseUrl || "").trim();
-  const apiKey = String(runtime.api_key || runtime.apiKey || "").trim();
-  if (!baseUrl || !apiKey) {
-    throw new Error("当前全局助手聊天模型缺少桌面端 Base URL 或 API Key");
-  }
-  return runtime;
+  return buildLocalModelRuntime(normalizedProviderId);
 }
 
 async function buildGlobalAssistantLocalModelRuntime() {
@@ -2792,10 +2764,7 @@ async function buildGlobalAssistantLocalModelRuntime() {
   const runtime = await fetchGlobalAssistantDesktopModelRuntime(providerId);
   const modelName = String(
     configuredModelName ||
-      runtime.model_name ||
       runtime.modelName ||
-      runtime.default_model ||
-      runtime.defaultModel ||
       "",
   ).trim();
   if (!modelName) {
@@ -2805,9 +2774,9 @@ async function buildGlobalAssistantLocalModelRuntime() {
     mode: "direct-openai-compatible",
     providerId,
     modelName,
-    baseUrl: String(runtime.base_url || runtime.baseUrl || "").trim(),
-    apiKey: String(runtime.api_key || runtime.apiKey || "").trim(),
-    temperature: 0.1,
+    baseUrl: String(runtime.baseUrl || "").trim(),
+    apiKey: String(runtime.apiKey || "").trim(),
+    temperature: runtime.temperature ?? 0.1,
   };
 }
 
@@ -2945,10 +2914,6 @@ async function runGlobalAssistantLocalChat({
     ],
     temperature: modelRuntime.temperature,
     modelRuntime,
-    backendContext: {
-      apiBaseUrl: buildDesktopBackendApiBaseUrl(),
-      token: getStoredToken(),
-    },
   };
   let result = null;
   let nextRequest = baseRequest;
@@ -3190,58 +3155,54 @@ async function initializeAssistant() {
 }
 
 async function fetchAssistantConfig() {
-  try {
-    const data = await api.get("/system-config");
-    const config =
-      data?.config && typeof data.config === "object" ? data.config : {};
-    globalAssistantEnabled.value = config.global_assistant_enabled !== false;
-    globalAssistantChatProviderId.value = String(
-      config.global_assistant_chat_provider_id || "",
-    ).trim();
-    globalAssistantChatModelName.value = String(
-      config.global_assistant_chat_model_name || "",
-    ).trim();
-    globalAssistantSystemPrompt.value = String(
-      config.global_assistant_system_prompt || "",
-    ).trim();
-  } catch {
-    globalAssistantEnabled.value = true;
-    globalAssistantChatProviderId.value = "";
-    globalAssistantChatModelName.value = "";
-    globalAssistantSystemPrompt.value = "";
-  }
+  const config = readLocalSystemConfig();
+  globalAssistantEnabled.value = config.global_assistant_enabled !== false;
+  globalAssistantChatProviderId.value = String(
+    config.global_assistant_chat_provider_id || "",
+  ).trim();
+  globalAssistantChatModelName.value = String(
+    config.global_assistant_chat_model_name || "",
+  ).trim();
+  globalAssistantSystemPrompt.value = String(
+    config.global_assistant_system_prompt || "",
+  ).trim();
 }
 
 async function fetchVoiceRuntime() {
   voiceRuntimeLoading.value = true;
   try {
-    const data = await api.get("/projects/chat/global/voice-input/runtime");
-    const runtime =
-      data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
+    const config = readLocalSystemConfig();
+    const configured =
+      GLOBAL_ASSISTANT_BUILD_FEATURES.voice &&
+      Boolean(config.voice_input_enabled);
     voiceRuntime.value = {
-      enabled: Boolean(runtime.enabled),
-      available: Boolean(runtime.available),
-      mode: String(runtime.mode || "").trim(),
-      reason: String(runtime.reason || "").trim(),
-      global_assistant_enabled: runtime.global_assistant_enabled !== false,
-      provider_id: String(runtime.provider_id || "").trim(),
-      provider_name: String(runtime.provider_name || "").trim(),
-      model_name: String(runtime.model_name || "").trim(),
-      greeting_enabled: Boolean(runtime.greeting_enabled),
+      enabled: false,
+      available: false,
+      mode: "disabled",
+      reason: configured
+        ? "本机语音转写执行器尚未实现，已禁用语音输入。"
+        : "本机未配置语音转写执行器，已禁用语音输入。",
+      global_assistant_enabled: config.global_assistant_enabled !== false,
+      provider_id: String(config.voice_input_provider_id || "").trim(),
+      provider_name: "",
+      model_name: String(config.voice_input_model_name || "").trim(),
+      greeting_enabled:
+        GLOBAL_ASSISTANT_BUILD_FEATURES.greeting &&
+        config.global_assistant_greeting_enabled === true,
       greeting_text:
-        String(runtime.greeting_text || "").trim() ||
+        String(config.global_assistant_greeting_text || "").trim() ||
         DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
       transcription_prompt:
-        String(runtime.transcription_prompt || "").trim() ||
+        String(config.global_assistant_transcription_prompt || "").trim() ||
         DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT,
-      wake_phrase:
-        String(runtime.wake_phrase || "你好助手").trim() || "你好助手",
+      wake_phrase: String(config.global_assistant_wake_phrase || "你好助手").trim() ||
+        "你好助手",
       idle_timeout_sec: Math.max(
         3,
-        Math.min(30, Number(runtime.idle_timeout_sec || 5) || 5),
+        Math.min(30, Number(config.global_assistant_idle_timeout_sec || 5) || 5),
       ),
     };
-    globalAssistantEnabled.value = runtime.global_assistant_enabled !== false;
+    globalAssistantEnabled.value = config.global_assistant_enabled !== false;
   } catch (err) {
     voiceRuntime.value = {
       enabled: false,
@@ -3266,22 +3227,22 @@ async function fetchVoiceRuntime() {
 async function fetchSpeechRuntime() {
   speechRuntimeLoading.value = true;
   try {
-    const data = await api.get("/projects/chat/global/voice-output/runtime");
-    const runtime =
-      data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
+    const config = readLocalSystemConfig();
     speechRuntime.value = {
-      enabled: Boolean(runtime.enabled),
-      available: Boolean(runtime.available),
-      mode: String(runtime.mode || "").trim(),
-      reason: String(runtime.reason || "").trim(),
-      provider_id: String(runtime.provider_id || "").trim(),
-      provider_name: String(runtime.provider_name || "").trim(),
-      model_name: String(runtime.model_name || "").trim(),
-      voice: String(runtime.voice || "").trim(),
-      greeting_audio_available: Boolean(runtime.greeting_audio_available),
-      greeting_audio_signature: String(
-        runtime.greeting_audio_signature || "",
-      ).trim(),
+      enabled: false,
+      available: false,
+      mode: "browser",
+      reason: !GLOBAL_ASSISTANT_BUILD_FEATURES.voice
+        ? "全局助手语音由当前构建配置关闭。"
+        : config.voice_output_enabled
+        ? "本机语音合成执行器尚未实现，将使用浏览器语音播放。"
+        : "本机未配置语音合成执行器，将使用浏览器语音播放。",
+      provider_id: String(config.voice_output_provider_id || "").trim(),
+      provider_name: "",
+      model_name: String(config.voice_output_model_name || "").trim(),
+      voice: String(config.voice_output_voice || "").trim(),
+      greeting_audio_available: false,
+      greeting_audio_signature: "",
     };
   } catch (err) {
     speechRuntime.value = {
@@ -3387,48 +3348,7 @@ function maybePlayAssistantGreetingForVoiceStart() {
 }
 
 async function ensureWsClient() {
-  if (wsClient.value?.isOpen()) {
-    return wsClient.value;
-  }
-
-  disconnectWs("reconnect");
-  const token = getStoredToken();
-  if (!token) {
-    throw new Error("登录状态已失效");
-  }
-
-  const client = createGlobalAssistantWsClient({
-    token,
-    onOpen: () => {
-      wsConnected.value = true;
-    },
-    onMessage: (payload) => {
-      void handleSocketMessage(payload);
-    },
-    onError: () => {
-      wsConnected.value = false;
-      handleVoiceSocketDisconnect("语音连接已断开，请重新录音");
-    },
-    onClose: (event) => {
-      const code = Number(event?.code || 1000);
-      wsClient.value = null;
-      wsConnected.value = false;
-      if (code !== 1000) {
-        handleVoiceSocketDisconnect(
-          String(event?.reason || "").trim() || `连接关闭(${code})`,
-        );
-      }
-      if (code !== 1000) {
-        rejectPendingRequests(
-          String(event?.reason || "").trim() || `连接关闭(${code})`,
-        );
-      }
-    },
-  });
-  wsClient.value = client;
-  await client.ready;
-  wsConnected.value = true;
-  return client;
+  throw new Error("本机语音转写执行器未实现，已停止使用远程语音接口");
 }
 
 function disconnectWs(reason = "") {
@@ -4365,30 +4285,9 @@ function buildVoiceWavBlob(pcmBytes, sampleRate) {
 }
 
 async function transcribeVoiceVadUtterance(samples, sourceSampleRate) {
-  if (!samples?.length) return "";
-  const normalizedSamples = downsampleAudioBuffer(
-    samples,
-    Number(sourceSampleRate || VOICE_TARGET_SAMPLE_RATE),
-    VOICE_TARGET_SAMPLE_RATE,
-  );
-  const pcmBytes = float32ToPcm16Bytes(
-    normalizeVoiceSamples(normalizedSamples),
-  );
-  if (!pcmBytes.length) return "";
-  const formData = new FormData();
-  formData.append(
-    "audio",
-    buildVoiceWavBlob(pcmBytes, VOICE_TARGET_SAMPLE_RATE),
-    "global-assistant-utterance.wav",
-  );
-  formData.append("language", "zh");
-  formData.append("prompt", voiceTranscriptionPrompt.value);
-  formData.append("is_final", "true");
-  const payload = await api.post(
-    "/projects/chat/global/voice-input/transcriptions",
-    formData,
-  );
-  return sanitizeVoiceTranscriptText(payload?.text || "");
+  void samples;
+  void sourceSampleRate;
+  throw new Error("本机语音转写执行器尚未实现");
 }
 
 function sanitizeVoiceTranscriptText(text) {

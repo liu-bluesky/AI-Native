@@ -121,6 +121,18 @@ web-admin/
 - Rust 工具链：编译 `src-tauri/` 下的 Rust 代码。
 - 当前操作系统所需的 Tauri 编译环境。
 - Python 3.10+：需要同时启动后端 API 时使用。
+- 飞书机器人还需要一个安装了 `lark-oapi` 的 Python 环境。
+
+首次启用飞书长连接时，在 `web-admin/frontend/src-tauri/` 执行：
+
+```bash
+cd bot_workers
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+桌面端会自动优先使用 `bot_workers/.venv/bin/python`。如果使用其他 Python
+环境，请设置 `AI_EMPLOYEE_FEISHU_PYTHON` 指向该环境的 Python 可执行文件。
 
 如果普通前端页面可以启动，但 `npm run tauri:dev` 失败，通常先检查 Rust 和操作系统编译环境，而不是检查 Vue 代码。
 

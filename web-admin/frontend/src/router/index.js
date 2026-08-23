@@ -1,16 +1,14 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { getFallbackPath } from '@/utils/permissions.js'
 import { isChatSettingsRoutePath, resolveSettingsAwarePath } from '@/utils/chat-settings-route.js'
-import api from '@/utils/api.js'
-import { getStoredToken, isExternalAuthSession } from '@/utils/auth-storage.js'
-import { resolveServerOrigin } from '@/utils/server-profile.js'
-
-const SettingsCenterChatStub = { render: () => null }
+import { getStoredToken } from '@/utils/auth-storage.js'
+import { isLocalProjectMode } from '@/services/local-project-repository.js'
 
 const routes = [
   { path: '/loading', component: () => import('../views/auth/LoadingPage.vue') },
   { path: '/init', component: () => import('../views/auth/InitPage.vue') },
   { path: '/intro', component: () => import('../views/public/IntroPage.vue') },
+  { path: '/market', component: () => import('../views/public/MarketPage.vue') },
   { path: '/updates', component: () => import('../views/public/ChangelogPage.vue') },
   { path: '/login', component: () => import('../views/auth/LoginPage.vue') },
   { path: '/register', component: () => import('../views/auth/RegisterPage.vue') },
@@ -20,10 +18,55 @@ const routes = [
     redirect: '/loading',
     children: [
       { path: 'workbench', component: () => import('../views/desktop/DesktopWorkbench.vue') },
+      { path: 'work-logs', component: () => import('../views/desktop/ProjectWorkLog.vue') },
+      { path: 'tasks', component: () => import('../views/tasks/TaskManager.vue') },
+      { path: 'settings-center', component: () => import('../views/desktop/SettingsLauncher.vue') },
+      { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
       { path: 'desktop', redirect: '/workbench' },
       { path: 'ai/chat', component: () => import('../views/projects/ProjectChat.vue') },
+      { path: 'ai/supervision', component: () => import('../views/desktop/AgentSupervision.vue') },
+      {
+        path: 'ai/chat/settings',
+        component: () => import('../views/projects/ProjectChat.vue'),
+        children: [
+          { path: '', redirect: '/ai/chat/settings/chat' },
+          { path: 'chat', component: { render: () => null } },
+          { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
+          { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
+          { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
+          { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
+          { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
+          { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
+          { path: 'statistics', component: () => import('../views/system/StatisticsDashboard.vue') },
+          { path: 'mcp-monitor', component: () => import('../views/system/McpMonitorManager.vue'), meta: { superAdminOnly: true } },
+          { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
+          { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
+          { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
+          { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
+          { path: 'employees/create', component: () => import('../views/employees/EmployeeCreate.vue') },
+          { path: 'employees/:id/edit', component: () => import('../views/employees/EmployeeEdit.vue') },
+          { path: 'employees/:id/usage', component: () => import('../views/employees/EmployeeUsage.vue') },
+          { path: 'employees/:id', component: () => import('../views/employees/EmployeeDetail.vue') },
+          { path: 'memory/:id', component: () => import('../views/memory/MemoryManager.vue') },
+        ],
+      },
       { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
       { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
+      { path: 'materials/voices', component: () => import('../views/projects/ProjectVoiceLibrary.vue') },
+      { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
+      { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
+      { path: 'employees/create', component: () => import('../views/employees/EmployeeCreate.vue') },
+      { path: 'employees/:id/edit', component: () => import('../views/employees/EmployeeEdit.vue') },
+      { path: 'employees/:id/usage', component: () => import('../views/employees/EmployeeUsage.vue') },
+      { path: 'employees/:id', component: () => import('../views/employees/EmployeeDetail.vue') },
+      { path: 'memory/:id', component: () => import('../views/memory/MemoryManager.vue') },
+      { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
+      { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
+      { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
+      { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
+      { path: 'statistics', component: () => import('../views/system/StatisticsDashboard.vue') },
+      { path: 'mcp-monitor', component: () => import('../views/system/McpMonitorManager.vue'), meta: { superAdminOnly: true } },
+      { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
     ],
   },
 ]
@@ -33,42 +76,16 @@ const router = createRouter({
   routes,
 })
 
-const PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/updates', '/login', '/register'])
+const PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
 const OFFLINE_DESKTOP_STARTUP_STORAGE_KEY = 'desktop_offline_startup'
-const DESKTOP_OFFLINE_MODE_STORAGE_KEY = 'desktop_offline_mode'
-let initializationStatus = null
-let initializationStatusPromise = null
-let initializationStatusOrigin = ''
 let pendingOfflineDesktopStartup = false
 
 export function markSystemInitialized() {
-  initializationStatus = true
-  initializationStatusPromise = null
+  // Initialization belongs to the removed server-side setup flow.
 }
 
 async function isSystemInitialized() {
-  if (isExternalAuthSession()) return true
-  const currentOrigin = resolveServerOrigin()
-  if (initializationStatusOrigin !== currentOrigin) {
-    initializationStatus = null
-    initializationStatusPromise = null
-    initializationStatusOrigin = currentOrigin
-  }
-  if (initializationStatus !== null) {
-    return initializationStatus
-  }
-  if (!initializationStatusPromise) {
-    initializationStatusPromise = api
-      .get('/init/status')
-      .then(({ initialized, setup_required: setupRequired }) => {
-        initializationStatus = setupRequired === true ? false : Boolean(initialized)
-        return initializationStatus
-      })
-      .finally(() => {
-        initializationStatusPromise = null
-      })
-  }
-  return initializationStatusPromise
+  return isLocalProjectMode()
 }
 
 function hasOfflineDesktopChatEntry() {
@@ -95,20 +112,12 @@ function consumeOfflineDesktopStartupFlag() {
   }
 }
 
-function isDesktopOfflineMode() {
-  try {
-    return window.sessionStorage?.getItem(DESKTOP_OFFLINE_MODE_STORAGE_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
 function isEmbeddedDesktopRoute(routeLocation = {}) {
   try {
-    return (
+    const embedded =
       String(routeLocation?.query?.embedded || '').trim() === '1' ||
       new URLSearchParams(window.location.search).get('embedded') === '1'
-    )
+    return embedded && window.parent && window.parent !== window
   } catch {
     return false
   }
@@ -158,10 +167,10 @@ router.beforeEach(async (to, from) => {
 
   const token = getStoredToken()
   const isPublic = PUBLIC_PATHS.has(normalizedPath)
-  const bypassDesktopFallbacks = backendUnavailableForRoute || isDesktopOfflineMode()
   const allowOfflineDesktopShell =
-    skipStartupStatusCheck && (normalizedPath === '/workbench' || isEmbeddedDesktopRoute(to))
+    skipStartupStatusCheck && normalizedPath === '/workbench' && Boolean(token)
   const allowOfflineDesktopLocalApp =
+    Boolean(token) &&
     (normalizedPath.startsWith('/ai/chat') || normalizedPath.startsWith('/ai/supervision'))
     && hasOfflineDesktopChatEntry()
 
@@ -169,7 +178,11 @@ router.beforeEach(async (to, from) => {
     return '/login'
   }
 
-  if (token && (normalizedPath === '/login' || normalizedPath === '/register')) {
+  if (
+    token &&
+    !isEmbeddedDesktopRoute(to) &&
+    (normalizedPath === '/login' || normalizedPath === '/register')
+  ) {
     return getFallbackPath()
   }
 
@@ -178,13 +191,13 @@ router.beforeEach(async (to, from) => {
   }
 
   if (
-    !bypassDesktopFallbacks &&
+    !backendUnavailableForRoute &&
     isChatSettingsRoutePath(from.path) &&
     !isChatSettingsRoutePath(to.path) &&
     to.path.startsWith('/') &&
-    to.path !== '/ai/chat'
-    && to.path !== '/ai/supervision'
-    && to.path !== '/workbench'
+    to.path !== '/ai/chat' &&
+    to.path !== '/ai/supervision' &&
+    to.path !== '/workbench'
   ) {
     const rewritten = resolveSettingsAwarePath(from.path, to.path, to.path)
     if (rewritten !== to.path) {

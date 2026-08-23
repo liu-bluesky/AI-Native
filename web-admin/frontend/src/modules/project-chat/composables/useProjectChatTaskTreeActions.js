@@ -1,54 +1,24 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
-  deleteProjectChatTaskTree,
-  fetchProjectChatOngoingTaskTree,
-  fetchProjectChatTaskTree,
-  fetchProjectChatWorkSessionsByTaskTree,
-  updateProjectChatTaskTreeNode,
-} from "@/modules/project-chat/services/projectChatTaskTreeApi.js";
-import {
   clearTaskTreeSessionMemory,
   clearWorkSessionMemory,
   rememberTaskTreeSession,
   rememberWorkSession,
-  restoreTaskTreeSession,
-  restoreWorkSession,
+  restoreChatSession,
   readLocalTaskTreeSnapshot,
   writeLocalTaskTreeSnapshot,
   readLocalWorkSessionSnapshot,
   writeLocalWorkSessionSnapshot,
 } from "@/modules/project-chat/services/projectChatStorage.js";
-import { isLocalProjectMode } from "@/services/local-project-repository.js";
 import {
   buildOngoingTaskRestoreNotice,
-  buildTaskTreeNodeUpdatePayload,
   isTaskTreeArchivedOrDone,
   normalizeTaskTreeNodeDraft,
   normalizeTaskTreePayload,
   normalizeWorkSessionSummary,
-  resolveTaskTreeEventPayload,
   resolveTaskTreeNodeDraft,
   validateTaskTreeNodeSave,
 } from "@/modules/project-chat/mappers/taskTreeMappers.js";
-
-function createFallbackWorkSessionSummary(taskTree, chatSessionId, sessionId) {
-  const normalizedSessionId = String(sessionId || "").trim();
-  if (!normalizedSessionId) {
-    return null;
-  }
-  return {
-    session_id: normalizedSessionId,
-    latest_status: "",
-    goal: "",
-    task_tree_session_id: String(taskTree?.id || "").trim(),
-    task_tree_chat_session_id: String(chatSessionId || "").trim(),
-    task_node_title: String(taskTree?.current_node?.title || "").trim(),
-    updated_at: String(taskTree?.updated_at || taskTree?.created_at || "").trim(),
-    created_at: String(taskTree?.created_at || "").trim(),
-    phases: [],
-    steps: [],
-  };
-}
 
 export function useProjectChatTaskTreeActions({
   chatTaskTree,
@@ -88,7 +58,7 @@ export function useProjectChatTaskTreeActions({
     chatTaskTree.value = normalized;
     const projectId = String(selectedProjectId.value || "").trim();
     const chatSessionId = String(payload?.chat_session_id || currentChatSessionId.value || "").trim();
-    if (isLocalProjectMode() && projectId && chatSessionId) {
+    if (projectId && chatSessionId) {
       writeLocalTaskTreeSnapshot(projectId, chatSessionId, payload);
     }
     if (projectId) {
@@ -126,15 +96,35 @@ export function useProjectChatTaskTreeActions({
     if (!projectId || !normalized?.session_id) {
       return null;
     }
-    currentWorkSessionId.value = normalized.session_id;
-    if (isLocalProjectMode()) {
-      writeLocalWorkSessionSnapshot(projectId, normalized.task_tree_chat_session_id, normalized);
-    }
-    rememberWorkSession(projectId, normalized.session_id);
     const taskTree =
       options.taskTree && typeof options.taskTree === "object"
         ? options.taskTree
         : displayedChatTaskTree.value;
+    const taskTreeChatSessionId = String(
+      normalized.task_tree_chat_session_id ||
+        raw?.task_tree_chat_session_id ||
+        raw?.chat_session_id ||
+        taskTree?.chat_session_id ||
+        currentChatSessionId.value ||
+        "",
+    ).trim();
+    const localSession = {
+      ...normalized,
+      task_tree_chat_session_id: taskTreeChatSessionId,
+      task_tree_session_id: String(
+        normalized.task_tree_session_id || taskTree?.id || "",
+      ).trim(),
+      goal: String(
+        normalized.goal || taskTree?.root_goal || taskTree?.title || "",
+      ).trim(),
+    };
+    currentWorkSessionId.value = normalized.session_id;
+    writeLocalWorkSessionSnapshot(
+      projectId,
+      taskTreeChatSessionId,
+      localSession,
+    );
+    rememberWorkSession(projectId, normalized.session_id);
     const noticeSessionId = String(
       ongoingTaskRestoreNotice.value?.chat_session_id || "",
     ).trim();
@@ -144,9 +134,9 @@ export function useProjectChatTaskTreeActions({
       taskChatSessionId &&
       noticeSessionId === taskChatSessionId
     ) {
-      setOngoingTaskRestoreNotice(taskTree, normalized);
+      setOngoingTaskRestoreNotice(taskTree, localSession);
     }
-    return normalized;
+    return localSession;
   }
 
   async function syncOngoingWorkSessionFromTaskTree(
@@ -155,9 +145,8 @@ export function useProjectChatTaskTreeActions({
     options = {},
   ) {
     const normalizedProjectId = String(projectId || "").trim();
-    const taskTreeSessionId = String(taskTree?.id || "").trim();
     const taskTreeChatSessionId = String(taskTree?.chat_session_id || "").trim();
-    if (!normalizedProjectId || !taskTreeSessionId) {
+    if (!normalizedProjectId || !String(taskTree?.id || "").trim()) {
       if (options.clearIfMissing !== false) {
         currentWorkSessionId.value = "";
         clearWorkSessionMemory(normalizedProjectId);
@@ -165,34 +154,16 @@ export function useProjectChatTaskTreeActions({
       return null;
     }
     try {
-      if (isLocalProjectMode()) {
-        const localSession = normalizeWorkSessionSummary(
-          readLocalWorkSessionSnapshot(normalizedProjectId, taskTreeChatSessionId),
-        );
-        if (localSession?.session_id) {
-          currentWorkSessionId.value = localSession.session_id;
-          rememberWorkSession(normalizedProjectId, localSession.session_id);
-          return localSession;
-        }
-        if (options.clearIfMissing !== false) {
-          currentWorkSessionId.value = "";
-          clearWorkSessionMemory(normalizedProjectId);
-        }
-        return null;
-      }
-      const data = await fetchProjectChatWorkSessionsByTaskTree(
-        normalizedProjectId,
-        {
-          taskTreeSessionId,
+      const localSession = normalizeWorkSessionSummary(
+        readLocalWorkSessionSnapshot(
+          normalizedProjectId,
           taskTreeChatSessionId,
-          limit: 1,
-        },
+        ),
       );
-      const workSession = normalizeWorkSessionSummary(data?.items?.[0]);
-      if (workSession?.session_id) {
-        currentWorkSessionId.value = workSession.session_id;
-        rememberWorkSession(normalizedProjectId, workSession.session_id);
-        return workSession;
+      if (localSession?.session_id) {
+        currentWorkSessionId.value = localSession.session_id;
+        rememberWorkSession(normalizedProjectId, localSession.session_id);
+        return localSession;
       }
       if (options.clearIfMissing !== false) {
         currentWorkSessionId.value = "";
@@ -228,24 +199,12 @@ export function useProjectChatTaskTreeActions({
     }
     taskTreeLoading.value = true;
     try {
-      if (isLocalProjectMode()) {
-        const payload = normalizeTaskTreePayload(
-          readLocalTaskTreeSnapshot(normalizedProjectId, normalizedChatSessionId),
-        );
-        applyTaskTreePayload(payload);
-        if (payload?.id && !isTaskTreeArchivedOrDone(payload)) {
-          await syncOngoingWorkSessionFromTaskTree(normalizedProjectId, payload, {
-            silent: true,
-          });
-        }
-        return payload;
-      }
-      const params = {};
-      if (normalizedChatSessionId) {
-        params.chat_session_id = normalizedChatSessionId;
-      }
-      const data = await fetchProjectChatTaskTree(normalizedProjectId, params);
-      const payload = normalizeTaskTreePayload(data?.task_tree);
+      const payload = normalizeTaskTreePayload(
+        readLocalTaskTreeSnapshot(
+          normalizedProjectId,
+          normalizedChatSessionId,
+        ),
+      );
       applyTaskTreePayload(payload);
       if (payload?.id && !isTaskTreeArchivedOrDone(payload)) {
         await syncOngoingWorkSessionFromTaskTree(normalizedProjectId, payload, {
@@ -270,88 +229,22 @@ export function useProjectChatTaskTreeActions({
     if (!normalizedProjectId) {
       return null;
     }
-    if (isLocalProjectMode()) {
+    taskTreeLoading.value = true;
+    try {
       const chatSessionId = restoreChatSession(normalizedProjectId);
       const payload = normalizeTaskTreePayload(
         readLocalTaskTreeSnapshot(normalizedProjectId, chatSessionId),
       );
-      if (!payload || isTaskTreeArchivedOrDone(payload)) return null;
+      if (!payload || isTaskTreeArchivedOrDone(payload)) {
+        clearOngoingTaskRestoreNotice();
+        return null;
+      }
       const workSession = normalizeWorkSessionSummary(
         readLocalWorkSessionSnapshot(normalizedProjectId, chatSessionId),
       );
       setOngoingTaskRestoreNotice(payload, workSession);
       return { chatSessionId, taskTree: payload, workSession };
-    }
-    taskTreeLoading.value = true;
-    try {
-      const ongoing = await fetchProjectChatOngoingTaskTree(normalizedProjectId);
-      const ongoingTaskTree = normalizeTaskTreePayload(ongoing?.task_tree);
-      const ongoingChatSessionId = String(
-        ongoing?.chat_session_id || ongoingTaskTree?.chat_session_id || "",
-      ).trim();
-      if (
-        ongoing?.can_continue &&
-        ongoingTaskTree?.id &&
-        ongoingChatSessionId &&
-        !isTaskTreeArchivedOrDone(ongoingTaskTree)
-      ) {
-        const ongoingSessionId = String(
-          ongoing?.session_id || ongoing?.work_session?.session_id || "",
-        ).trim();
-        const workSession =
-          normalizeWorkSessionSummary(ongoing?.work_session) ||
-          createFallbackWorkSessionSummary(
-            ongoingTaskTree,
-            ongoingChatSessionId,
-            ongoingSessionId,
-          );
-        setOngoingTaskRestoreNotice(ongoingTaskTree, workSession);
-        return {
-          chatSessionId: ongoingChatSessionId,
-          taskTree: ongoingTaskTree,
-          workSession,
-        };
-      }
-
-      // 远端没有 ongoing 记录时，只使用本项目记住的 task_tree_session_id 兜回当前任务。
-      const taskSessionId = restoreTaskTreeSession(normalizedProjectId);
-      if (!taskSessionId) {
-        return null;
-      }
-      const data = await fetchProjectChatTaskTree(normalizedProjectId, {
-        session_id: taskSessionId,
-      });
-      const payload = normalizeTaskTreePayload(data?.task_tree);
-      if (!payload?.id || isTaskTreeArchivedOrDone(payload)) {
-        clearTaskTreeSessionMemory(normalizedProjectId);
-        clearWorkSessionMemory(normalizedProjectId);
-        currentWorkSessionId.value = "";
-        return null;
-      }
-      const chatSessionId = String(payload.chat_session_id || "").trim();
-      if (!chatSessionId) {
-        clearTaskTreeSessionMemory(normalizedProjectId);
-        clearWorkSessionMemory(normalizedProjectId);
-        currentWorkSessionId.value = "";
-        return null;
-      }
-      const workSession = createFallbackWorkSessionSummary(
-        payload,
-        chatSessionId,
-        restoreWorkSession(normalizedProjectId),
-      );
-      setOngoingTaskRestoreNotice(payload, workSession);
-      return {
-        chatSessionId,
-        taskTree: payload,
-        workSession,
-      };
     } catch (err) {
-      if (Number(err?.status || 0) === 404) {
-        clearTaskTreeSessionMemory(normalizedProjectId);
-        clearWorkSessionMemory(normalizedProjectId);
-        currentWorkSessionId.value = "";
-      }
       if (!options.silent) {
         ElMessage.error(err?.detail || err?.message || "恢复进行中任务失败");
       }
@@ -410,18 +303,12 @@ export function useProjectChatTaskTreeActions({
     }
     taskTreeSaving.value = true;
     try {
-      if (isLocalProjectMode()) {
-        writeLocalTaskTreeSnapshot(projectId, chatSessionId, null);
-        writeLocalWorkSessionSnapshot(projectId, chatSessionId, null);
-        clearTaskTreeSessionMemory(projectId);
-        clearWorkSessionMemory(projectId);
-        applyTaskTreePayload(null);
-        ElMessage.success("当前会话的本地任务推进已删除");
-        return;
-      }
-      await deleteProjectChatTaskTree(projectId, chatSessionId);
+      writeLocalTaskTreeSnapshot(projectId, chatSessionId, null);
+      writeLocalWorkSessionSnapshot(projectId, chatSessionId, null);
+      clearTaskTreeSessionMemory(projectId);
+      clearWorkSessionMemory(projectId);
       applyTaskTreePayload(null);
-      ElMessage.success("当前会话的任务推进已删除");
+      ElMessage.success("当前会话的本地任务推进已删除");
     } catch (err) {
       ElMessage.error(err?.detail || err?.message || "删除任务推进失败");
     } finally {
@@ -457,50 +344,33 @@ export function useProjectChatTaskTreeActions({
     }
     taskTreeSaving.value = true;
     try {
-      if (isLocalProjectMode()) {
-        const currentTree = chatTaskTree.value;
-        const nextTree = currentTree
-          ? {
-              ...currentTree,
-              status: nextStatus,
-              current_node_id: setCurrentOnly
-                ? nodeId
-                : currentTree.current_node_id,
-              nodes: (currentTree.nodes || []).map((node) =>
-                String(node?.id || "") === nodeId
-                  ? {
-                      ...node,
-                      status: nextStatus,
-                      verification_result: verificationResult,
-                      summary_for_model: String(
-                        taskTreeSummaryDraft.value || "",
-                      ).trim(),
-                    }
-                  : node,
-              ),
-            }
-          : null;
-        if (nextTree) {
-          writeLocalTaskTreeSnapshot(projectId, chatSessionId, nextTree);
-          applyTaskTreePayload(nextTree);
-        }
-        ElMessage.success(setCurrentOnly ? "已切换本地执行节点" : "本地任务节点已更新");
-        return;
+      const currentTree = chatTaskTree.value;
+      const nextTree = currentTree
+        ? {
+            ...currentTree,
+            status: nextStatus,
+            current_node_id: setCurrentOnly
+              ? nodeId
+              : currentTree.current_node_id,
+            nodes: (currentTree.nodes || []).map((node) =>
+              String(node?.id || "") === nodeId
+                ? {
+                    ...node,
+                    status: nextStatus,
+                    verification_result: verificationResult,
+                    summary_for_model: String(
+                      taskTreeSummaryDraft.value || "",
+                    ).trim(),
+                  }
+                : node,
+            ),
+          }
+        : null;
+      if (nextTree) {
+        writeLocalTaskTreeSnapshot(projectId, chatSessionId, nextTree);
+        applyTaskTreePayload(nextTree);
       }
-      const payload = buildTaskTreeNodeUpdatePayload({
-        chatSessionId,
-        setCurrentOnly,
-        status: nextStatus,
-        verificationResult,
-        summaryForModel: taskTreeSummaryDraft.value,
-      });
-      const data = await updateProjectChatTaskTreeNode(
-        projectId,
-        nodeId,
-        payload,
-      );
-      applyTaskTreePayload(resolveTaskTreeEventPayload(data));
-      ElMessage.success(setCurrentOnly ? "已切换当前执行节点" : "任务节点已更新");
+      ElMessage.success(setCurrentOnly ? "已切换本地执行节点" : "本地任务节点已更新");
     } catch (err) {
       ElMessage.error(err?.detail || err?.message || "更新任务节点失败");
     } finally {

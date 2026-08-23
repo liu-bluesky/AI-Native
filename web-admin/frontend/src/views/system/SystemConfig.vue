@@ -71,7 +71,7 @@
           <template #label>
             <span class="system-config-tab-label">
               <span class="system-config-tab-label__title">技能生态</span>
-              <span class="system-config-tab-label__meta">站点、官网与 registry</span>
+              <span class="system-config-tab-label__meta">站点与官网联系方式</span>
             </span>
           </template>
         </el-tab-pane>
@@ -261,7 +261,10 @@
 
           <el-form label-position="top" class="switch-form">
             <div class="employee-skill-site-card voice-config-card">
-              <div class="voice-config-section">
+              <div
+                v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
+                class="voice-config-section"
+              >
                 <div class="voice-config-section__head">
                   <div class="employee-skill-site-card__title">统一开放范围</div>
                   <div class="switch-desc">
@@ -311,7 +314,10 @@
                 </div>
               </div>
 
-              <div class="voice-config-divider" />
+              <div
+                v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
+                class="voice-config-divider"
+              />
 
                 <div class="voice-config-section">
                   <div class="voice-config-section__head">
@@ -384,9 +390,15 @@
                 </div>
               </div>
 
-              <div class="voice-config-divider" />
+              <div
+                v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
+                class="voice-config-divider"
+              />
 
-              <div class="voice-config-section">
+              <div
+                v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
+                class="voice-config-section"
+              >
                 <div class="voice-config-section__head">
                   <div class="employee-skill-site-card__title">语音输入</div>
                   <div class="switch-desc">
@@ -396,12 +408,12 @@
 
                 <div class="switch-card">
                   <div>
-                    <div class="switch-title">启用语音输入</div>
+                    <div class="switch-title">构建配置状态</div>
                     <div class="switch-desc">
-                      开启后，助手录音会走后端转写接口。
+                      语音输入由打包时的构建配置决定，不提供用户运行时开关。
                     </div>
                   </div>
-                  <el-switch v-model="form.voice_input_enabled" />
+                  <span class="field-desc">已编入</span>
                 </div>
 
                 <el-alert
@@ -451,9 +463,15 @@
                 </div>
               </div>
 
-              <div class="voice-config-divider" />
+              <div
+                v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
+                class="voice-config-divider"
+              />
 
-              <div class="voice-config-section">
+              <div
+                v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.voice"
+                class="voice-config-section"
+              >
                 <div class="voice-config-section__head">
                   <div class="employee-skill-site-card__title">语音播报</div>
                   <div class="switch-desc">
@@ -463,12 +481,12 @@
 
                 <div class="switch-card">
                   <div>
-                    <div class="switch-title">启用语音播报</div>
+                    <div class="switch-title">构建配置状态</div>
                     <div class="switch-desc">
-                      开启后，AI 助手的“语音播放”会优先走系统配置的后端语音模型，不再依赖浏览器内置声音。
+                      语音播报由打包时的构建配置决定，不提供用户运行时开关。
                     </div>
                   </div>
-                  <el-switch v-model="form.voice_output_enabled" />
+                  <span class="field-desc">已编入</span>
                 </div>
 
                 <el-alert
@@ -563,36 +581,40 @@
                   </div>
                 </el-form-item>
 
-                <div class="voice-config-divider" />
+                <div v-if="GLOBAL_ASSISTANT_BUILD_FEATURES.greeting">
+                  <div class="voice-config-divider" />
 
-                <div class="voice-config-section__head">
-                  <div class="employee-skill-site-card__title">首次欢迎语</div>
-                  <div class="switch-desc">
-                    用户第一次进入系统页面时，全局助手会用这段文案做自我介绍，并准备进入默认实时通话状态。
-                  </div>
-                </div>
-
-                <div class="switch-card">
-                  <div>
-                    <div class="switch-title">启用首次欢迎语</div>
+                  <div class="voice-config-section__head">
+                    <div class="employee-skill-site-card__title">首次欢迎语</div>
                     <div class="switch-desc">
-                      关闭后，全局助手仍会自动准备实时通话，但不主动做欢迎介绍。
+                      用户第一次进入系统页面时，全局助手会用这段文案做自我介绍，并准备进入默认实时通话状态。
                     </div>
                   </div>
-                  <el-switch v-model="form.global_assistant_greeting_enabled" />
-                </div>
 
-                <el-form-item label="欢迎语内容">
-                  <el-input
-                    v-model="form.global_assistant_greeting_text"
-                    type="textarea"
-                    :rows="4"
-                    resize="vertical"
-                    maxlength="1000"
-                    show-word-limit
-                    placeholder="例如：你好，我是系统状态助手，我会默认保持实时通话，随时帮你观察当前页面和系统状态。"
-                  />
-                </el-form-item>
+                  <div class="switch-card">
+                    <div>
+                      <div class="switch-title">构建配置状态</div>
+                      <div class="switch-desc">
+                        欢迎语由打包时的构建配置决定，不提供用户运行时开关。
+                      </div>
+                    </div>
+                    <span class="field-desc">
+                      {{ GLOBAL_ASSISTANT_BUILD_FEATURES.greeting ? "已编入" : "未编入" }}
+                    </span>
+                  </div>
+
+                  <el-form-item label="欢迎语内容">
+                    <el-input
+                      v-model="form.global_assistant_greeting_text"
+                      type="textarea"
+                      :rows="4"
+                      resize="vertical"
+                      maxlength="1000"
+                      show-word-limit
+                      placeholder="例如：你好，我是系统状态助手，我会默认保持实时通话，随时帮你观察当前页面和系统状态。"
+                    />
+                  </el-form-item>
+                </div>
 
                 <el-form-item label="助手系统提示词">
                   <el-input
@@ -814,86 +836,6 @@
                     />
                   </el-form-item>
                 </div>
-              </div>
-            </div>
-          </el-form>
-        </section>
-
-        <section v-show="activeTab === 'ecosystem'" class="panel">
-          <div class="panel-head">
-            <div>
-              <p class="panel-kicker">Registry</p>
-              <h3>技能资源源</h3>
-              <p>配置外部技能 registry，安装时再动态换取真实下载地址。</p>
-            </div>
-          </div>
-
-          <el-form label-position="top" class="switch-form">
-            <div class="employee-skill-site-card">
-              <div class="switch-card">
-                <div>
-                  <div class="switch-title">启用 Vett Registry</div>
-                  <div class="switch-desc">
-                    开启后，前端“技能资源”页面会通过该源搜索和安装技能。
-                  </div>
-                </div>
-                <el-switch v-model="form.skill_registry_sources.vett.enabled" />
-              </div>
-
-              <div class="employee-skill-site-card__grid registry-grid">
-                <el-form-item label="Base URL">
-                  <el-input
-                    v-model="form.skill_registry_sources.vett.base_url"
-                    placeholder="https://vett.sh/api/v1"
-                  />
-                </el-form-item>
-                <el-form-item label="超时 (ms)">
-                  <el-input-number
-                    v-model="form.skill_registry_sources.vett.timeout_ms"
-                    :min="1000"
-                    :max="60000"
-                    :step="1000"
-                  />
-                </el-form-item>
-              </div>
-
-              <div class="registry-risk-grid">
-                <el-form-item label="允许安装风险">
-                  <el-checkbox-group v-model="form.skill_registry_sources.vett.risk_policy.allow">
-                    <el-checkbox
-                      v-for="item in RISK_LEVEL_OPTIONS"
-                      :key="`allow-${item}`"
-                      :value="item"
-                    >
-                      {{ item }}
-                    </el-checkbox>
-                  </el-checkbox-group>
-                </el-form-item>
-                <el-form-item label="需人工确认">
-                  <el-checkbox-group v-model="form.skill_registry_sources.vett.risk_policy.review">
-                    <el-checkbox
-                      v-for="item in RISK_LEVEL_OPTIONS"
-                      :key="`review-${item}`"
-                      :value="item"
-                    >
-                      {{ item }}
-                    </el-checkbox>
-                  </el-checkbox-group>
-                </el-form-item>
-                <el-form-item label="直接拦截">
-                  <el-checkbox-group v-model="form.skill_registry_sources.vett.risk_policy.deny">
-                    <el-checkbox
-                      v-for="item in RISK_LEVEL_OPTIONS"
-                      :key="`deny-${item}`"
-                      :value="item"
-                    >
-                      {{ item }}
-                    </el-checkbox>
-                  </el-checkbox-group>
-                </el-form-item>
-              </div>
-              <div class="field-desc">
-                这里保存的是 registry API 地址，不是最终 artifact 下载地址。实际下载链接会在安装时实时换取。
               </div>
             </div>
           </el-form>
@@ -1434,11 +1376,19 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
-import api from "@/utils/api.js";
 import {
   executeNativeLiuAgentTool,
   getNativeRuntimeInfo,
 } from "@/utils/native-desktop-bridge.js";
+import {
+  readLocalSystemConfig,
+  writeLocalSystemConfig,
+} from "@/services/local-system-config.js";
+import { readLocalModelProviders } from "@/services/local-model-runtime.js";
+import {
+  readLocalEntities,
+  readLocalProjects,
+} from "@/services/local-project-repository.js";
 import { resolveSettingsAwarePath } from "@/utils/chat-settings-route.js";
 import {
   DEFAULT_LOCAL_MCP_CONFIG,
@@ -1448,6 +1398,7 @@ import {
   mergeMcpConfigs,
   writeGlobalMcpConfigFile,
 } from "@/modules/project-chat/services/projectChatStorage.js";
+import { GLOBAL_ASSISTANT_BUILD_FEATURES } from "@/config/buildFeatures.js";
 const DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT =
   "你好，我是系统状态助手。我会默认保持实时通话，随时帮你观察当前页面、系统状态和功能是否可用。";
 const DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT = `你是系统状态助手。
@@ -1461,18 +1412,6 @@ const DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT = `你是系统状态助手。
 执行 click、fill、select 前，如果页面里是图标按钮或存在多个相邻按钮，先用 query_dom 查看候选元素，并优先使用 data-testid、id、aria-label、title 这些唯一标识来构造 selector；不要猜测或使用过宽的 .el-button、button:nth-child(...) 之类 selector。`;
 const DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT =
   "请严格逐字转写用户原话，只输出识别到的中文文本；不要补充、不要改写、不要总结、不要猜测、不要重复上一句；听不清就留空。";
-const DEFAULT_SKILL_REGISTRY_SOURCES = {
-  vett: {
-    enabled: true,
-    base_url: "https://vett.sh/api/v1",
-    timeout_ms: 10000,
-    risk_policy: {
-      allow: ["none", "low", "medium"],
-      review: ["high"],
-      deny: ["critical"],
-    },
-  },
-};
 const DEFAULT_BOT_PLATFORM_CONNECTORS = [];
 const DEFAULT_PUBLIC_CONTACT_CHANNELS = [];
 const DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT =
@@ -1619,9 +1558,11 @@ const EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS = [
     value: "prompts_chat_curated",
   },
 ];
-const RISK_LEVEL_OPTIONS = ["none", "low", "medium", "high", "critical"];
 const SYSTEM_CONFIG_UPDATED_EVENT = "system-config-updated";
 const SYSTEM_CONFIG_UPDATED_STORAGE_KEY = "system-config-updated";
+const GLOBAL_ASSISTANT_MODEL_TYPES = ["text_generation", "multimodal_chat"];
+const VOICE_INPUT_MODEL_TYPES = ["audio_transcription"];
+const VOICE_OUTPUT_MODEL_TYPES = ["audio_generation"];
 function cloneConfig(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -1654,18 +1595,18 @@ const form = ref({
   employee_auto_rule_generation_prompt:
     DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT,
   employee_external_skill_sites: [],
-  voice_input_enabled: false,
+  voice_input_enabled: GLOBAL_ASSISTANT_BUILD_FEATURES.voice,
   voice_input_provider_id: "",
   voice_input_model_name: "",
   voice_input_allowed_usernames: [],
   voice_input_allowed_role_ids: [],
-  voice_output_enabled: false,
+  voice_output_enabled: GLOBAL_ASSISTANT_BUILD_FEATURES.voice,
   voice_output_provider_id: "",
   voice_output_model_name: "",
   voice_output_voice: "",
   voice_output_reminder_volume: 40,
   global_assistant_enabled: true,
-  global_assistant_greeting_enabled: true,
+  global_assistant_greeting_enabled: GLOBAL_ASSISTANT_BUILD_FEATURES.greeting,
   global_assistant_greeting_text: DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
   global_assistant_chat_provider_id: "",
   global_assistant_chat_model_name: "",
@@ -1687,7 +1628,6 @@ const form = ref({
   query_mcp_desktop_agent_profile_template:
     DEFAULT_QUERY_MCP_DESKTOP_AGENT_PROFILE_TEMPLATE,
   chat_style_hints: cloneConfig(DEFAULT_CHAT_STYLE_HINTS),
-  skill_registry_sources: cloneConfig(DEFAULT_SKILL_REGISTRY_SOURCES),
   mcp_config_text: formatMcpConfig(DEFAULT_LOCAL_MCP_CONFIG),
 });
 const globalMcpConfigPath = ref("~/.ai-employee/mcp.json");
@@ -1991,66 +1931,6 @@ function normalizeBotPlatformConnectors(value) {
   );
 }
 
-function normalizeRiskLevelList(value, fallback = []) {
-  if (!Array.isArray(value)) {
-    return [...fallback];
-  }
-  const items = [];
-  const seen = new Set();
-  for (const rawItem of value) {
-    const item = String(rawItem || "").trim().toLowerCase();
-    if (!item || seen.has(item)) {
-      continue;
-    }
-    seen.add(item);
-    items.push(item);
-  }
-  return items.length ? items : [...fallback];
-}
-
-function normalizeSkillRegistrySources(value) {
-  const defaults = cloneConfig(DEFAULT_SKILL_REGISTRY_SOURCES);
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return defaults;
-  }
-  const rawVett =
-    value.vett && typeof value.vett === "object" && !Array.isArray(value.vett)
-      ? value.vett
-      : {};
-  const rawPolicy =
-    rawVett.risk_policy &&
-    typeof rawVett.risk_policy === "object" &&
-    !Array.isArray(rawVett.risk_policy)
-      ? rawVett.risk_policy
-      : {};
-  return {
-    vett: {
-      enabled: rawVett.enabled !== false,
-      base_url:
-        String(rawVett.base_url || defaults.vett.base_url).trim() ||
-        defaults.vett.base_url,
-      timeout_ms: Math.min(
-        60000,
-        Math.max(1000, Number(rawVett.timeout_ms || defaults.vett.timeout_ms)),
-      ),
-      risk_policy: {
-        allow: normalizeRiskLevelList(
-          rawPolicy.allow,
-          defaults.vett.risk_policy.allow,
-        ),
-        review: normalizeRiskLevelList(
-          rawPolicy.review,
-          defaults.vett.risk_policy.review,
-        ),
-        deny: normalizeRiskLevelList(
-          rawPolicy.deny,
-          defaults.vett.risk_policy.deny,
-        ),
-      },
-    },
-  };
-}
-
 function normalizeStringList(value) {
   return Array.isArray(value)
     ? Array.from(
@@ -2201,6 +2081,57 @@ function ensureVoiceOutputModelSelection() {
   ).trim();
 }
 
+function readLocalProviderOptions(modelTypes) {
+  const allowedTypes = new Set(
+    (Array.isArray(modelTypes) ? modelTypes : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean),
+  );
+  return readLocalModelProviders()
+    .map((provider) => {
+      const modelConfigs = (Array.isArray(provider?.model_configs)
+        ? provider.model_configs
+        : []
+      ).filter((item) => allowedTypes.has(String(item?.model_type || "").trim()));
+      if (!modelConfigs.length) return null;
+      const configuredDefaultModel = String(provider?.default_model || "").trim();
+      return {
+        ...provider,
+        model_configs: modelConfigs,
+        default_model: modelConfigs.some(
+          (item) => String(item?.name || "").trim() === configuredDefaultModel,
+        )
+          ? configuredDefaultModel
+          : String(modelConfigs[0]?.name || "").trim(),
+      };
+    })
+    .filter(Boolean);
+}
+
+function readLocalVoiceUserOptions() {
+  return readLocalEntities("users")
+    .map((item) => {
+      const username = String(item?.username || item?.id || "").trim();
+      return username ? { ...item, username } : null;
+    })
+    .filter(Boolean);
+}
+
+function readLocalVoiceRoleOptions() {
+  return readLocalEntities("roles")
+    .map((item) => {
+      const id = String(item?.id || item?.role_id || "").trim();
+      return id
+        ? {
+            ...item,
+            id,
+            name: String(item?.name || item?.label || id).trim(),
+          }
+        : null;
+    })
+    .filter(Boolean);
+}
+
 async function fetchVoiceOutputVoices(providerId = form.value.voice_output_provider_id) {
   const normalizedProviderId = String(providerId || "").trim();
   if (!normalizedProviderId) {
@@ -2210,15 +2141,9 @@ async function fetchVoiceOutputVoices(providerId = form.value.voice_output_provi
   }
   voiceOutputVoiceCatalogLoading.value = true;
   try {
-    const data = await api.get("/system-config/voice-output/voices", {
-      params: { provider_id: normalizedProviderId },
-    });
-    voiceOutputVoiceOptions.value = Array.isArray(data?.items) ? data.items : [];
-    voiceOutputVoiceCatalogMessage.value = String(data?.message || "");
-  } catch (err) {
     voiceOutputVoiceOptions.value = [];
     voiceOutputVoiceCatalogMessage.value =
-      err?.detail || err?.message || "读取播报音色失败，请稍后重试";
+      "本地模式不提供云端音色目录，请直接输入供应商支持的 voice id。";
   } finally {
     voiceOutputVoiceCatalogLoading.value = false;
   }
@@ -2283,7 +2208,7 @@ function applyConfigToForm(config, options = {}) {
     employee_external_skill_sites: normalizeEmployeeExternalSkillSites(
       payload.employee_external_skill_sites,
     ),
-    voice_input_enabled: !!payload.voice_input_enabled,
+    voice_input_enabled: GLOBAL_ASSISTANT_BUILD_FEATURES.voice,
     voice_input_provider_id: String(payload.voice_input_provider_id || ""),
     voice_input_model_name: String(payload.voice_input_model_name || ""),
     voice_input_allowed_usernames: normalizeStringList(
@@ -2292,7 +2217,7 @@ function applyConfigToForm(config, options = {}) {
     voice_input_allowed_role_ids: normalizeStringList(
       payload.voice_input_allowed_role_ids,
     ),
-    voice_output_enabled: !!payload.voice_output_enabled,
+    voice_output_enabled: GLOBAL_ASSISTANT_BUILD_FEATURES.voice,
     voice_output_provider_id: String(payload.voice_output_provider_id || ""),
     voice_output_model_name: String(payload.voice_output_model_name || ""),
     voice_output_voice: String(payload.voice_output_voice || ""),
@@ -2302,7 +2227,7 @@ function applyConfigToForm(config, options = {}) {
     ),
     global_assistant_enabled: payload.global_assistant_enabled !== false,
     global_assistant_greeting_enabled:
-      payload.global_assistant_greeting_enabled !== false,
+      GLOBAL_ASSISTANT_BUILD_FEATURES.greeting,
     global_assistant_greeting_text: String(
       payload.global_assistant_greeting_text ||
         DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
@@ -2362,9 +2287,6 @@ function applyConfigToForm(config, options = {}) {
         DEFAULT_QUERY_MCP_DESKTOP_AGENT_PROFILE_TEMPLATE,
     ),
     chat_style_hints: normalizeChatStyleHints(payload.chat_style_hints),
-    skill_registry_sources: normalizeSkillRegistrySources(
-      payload.skill_registry_sources,
-    ),
     mcp_config_text: String(
       form.value.mcp_config_text || formatMcpConfig(DEFAULT_LOCAL_MCP_CONFIG),
     ),
@@ -2813,51 +2735,27 @@ async function refreshMcpSkills() {
 }
 
 async function fetchVoiceInputOptions() {
-  try {
-    const data = await api.get("/system-config/voice-input/options");
-    voiceProviderOptions.value = Array.isArray(data?.providers)
-      ? data.providers
-      : [];
-    voiceUserOptions.value = Array.isArray(data?.users) ? data.users : [];
-    voiceRoleOptions.value = Array.isArray(data?.roles) ? data.roles : [];
-    ensureVoiceModelSelection();
-  } catch (err) {
-    voiceProviderOptions.value = [];
-    voiceUserOptions.value = [];
-    voiceRoleOptions.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载语音输入配置选项失败");
-  }
+  voiceProviderOptions.value = readLocalProviderOptions(
+    VOICE_INPUT_MODEL_TYPES,
+  );
+  voiceUserOptions.value = readLocalVoiceUserOptions();
+  voiceRoleOptions.value = readLocalVoiceRoleOptions();
+  ensureVoiceModelSelection();
 }
 
 async function fetchGlobalAssistantChatOptions() {
-  try {
-    const data = await api.get("/system-config/global-assistant-chat/options");
-    globalAssistantChatProviderOptions.value = Array.isArray(data?.providers)
-      ? data.providers
-      : [];
-    ensureGlobalAssistantChatModelSelection();
-  } catch (err) {
-    globalAssistantChatProviderOptions.value = [];
-    ElMessage.error(
-      err?.detail || err?.message || "加载全局助手对话模型选项失败",
-    );
-  }
+  globalAssistantChatProviderOptions.value = readLocalProviderOptions(
+    GLOBAL_ASSISTANT_MODEL_TYPES,
+  );
+  ensureGlobalAssistantChatModelSelection();
 }
 
 async function fetchVoiceOutputOptions() {
-  try {
-    const data = await api.get("/system-config/voice-output/options");
-    voiceOutputProviderOptions.value = Array.isArray(data?.providers)
-      ? data.providers
-      : [];
-    ensureVoiceOutputModelSelection();
-    await fetchVoiceOutputVoices();
-  } catch (err) {
-    voiceOutputProviderOptions.value = [];
-    voiceOutputVoiceOptions.value = [];
-    voiceOutputVoiceCatalogMessage.value = "";
-    ElMessage.error(err?.detail || err?.message || "加载语音播报配置选项失败");
-  }
+  voiceOutputProviderOptions.value = readLocalProviderOptions(
+    VOICE_OUTPUT_MODEL_TYPES,
+  );
+  ensureVoiceOutputModelSelection();
+  await fetchVoiceOutputVoices();
 }
 
 async function refreshAllPanels() {
@@ -2877,8 +2775,7 @@ async function refreshAllPanels() {
 async function fetchConfig() {
   loading.value = true;
   try {
-    const data = await api.get("/system-config");
-    applyConfigToForm(data?.config);
+    applyConfigToForm(readLocalSystemConfig());
     await Promise.all([
       refreshMcpSkills(),
       fetchGlobalAssistantChatOptions(),
@@ -2893,19 +2790,12 @@ async function fetchConfig() {
 }
 
 async function fetchProjectOptions() {
-  try {
-    const data = await api.get("/projects");
-    projectOptions.value = Array.isArray(data?.projects)
-      ? data.projects
-          .map((item) => ({
-            value: String(item?.id || "").trim(),
-            label: String(item?.name || item?.id || "").trim(),
-          }))
-          .filter((item) => item.value && item.label)
-      : [];
-  } catch {
-    projectOptions.value = [];
-  }
+  projectOptions.value = readLocalProjects()
+    .map((item) => ({
+      value: String(item?.id || "").trim(),
+      label: String(item?.name || item?.id || "").trim(),
+    }))
+    .filter((item) => item.value && item.label);
 }
 
 function normalizeSystemConfigTab(value) {
@@ -2945,7 +2835,7 @@ async function saveConfig() {
     globalMcpConfigPath.value = String(
       savedMcpConfig?.path || "~/.ai-employee/mcp.json",
     ).trim();
-    const data = await api.patch("/system-config", {
+    const savedConfig = writeLocalSystemConfig({
       enable_project_manual_generation:
         !!form.value.enable_project_manual_generation,
       enable_employee_manual_generation:
@@ -2974,7 +2864,7 @@ async function saveConfig() {
       employee_external_skill_sites: normalizeEmployeeExternalSkillSites(
         form.value.employee_external_skill_sites,
       ),
-      voice_input_enabled: Boolean(form.value.voice_input_enabled),
+      voice_input_enabled: GLOBAL_ASSISTANT_BUILD_FEATURES.voice,
       voice_input_provider_id: String(form.value.voice_input_provider_id || ""),
       voice_input_model_name: String(form.value.voice_input_model_name || ""),
       voice_input_allowed_usernames: normalizeStringList(
@@ -2983,7 +2873,7 @@ async function saveConfig() {
       voice_input_allowed_role_ids: normalizeStringList(
         form.value.voice_input_allowed_role_ids,
       ),
-      voice_output_enabled: Boolean(form.value.voice_output_enabled),
+      voice_output_enabled: GLOBAL_ASSISTANT_BUILD_FEATURES.voice,
       voice_output_provider_id: String(form.value.voice_output_provider_id || ""),
       voice_output_model_name: String(form.value.voice_output_model_name || ""),
       voice_output_voice: String(form.value.voice_output_voice || "").trim(),
@@ -2995,9 +2885,8 @@ async function saveConfig() {
         ),
       ),
       global_assistant_enabled: Boolean(form.value.global_assistant_enabled),
-      global_assistant_greeting_enabled: Boolean(
-        form.value.global_assistant_greeting_enabled,
-      ),
+      global_assistant_greeting_enabled:
+        GLOBAL_ASSISTANT_BUILD_FEATURES.greeting,
       global_assistant_greeting_text: String(
         form.value.global_assistant_greeting_text || "",
       ).trim(),
@@ -3056,14 +2945,11 @@ async function saveConfig() {
           DEFAULT_QUERY_MCP_DESKTOP_AGENT_PROFILE_TEMPLATE,
       ),
       chat_style_hints: normalizeChatStyleHints(form.value.chat_style_hints),
-      skill_registry_sources: normalizeSkillRegistrySources(
-        form.value.skill_registry_sources,
-      ),
     });
-    applyConfigToForm(data?.config, {
+    applyConfigToForm(savedConfig, {
       preservePrompt: true,
     });
-    broadcastSystemConfigUpdated(data?.config || {}, {
+    broadcastSystemConfigUpdated(savedConfig, {
       localMcpConfigChanged: true,
     });
     await Promise.all([

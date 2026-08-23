@@ -5,10 +5,9 @@
     <header class="workbench-app__hero">
       <div class="workbench-app__hero-copy">
         <div class="workbench-app__eyebrow">AI Desktop</div>
-        <h1>工作台现在直接看统计。</h1>
+        <h1>从这里进入当前项目工作。</h1>
         <p>
-          这里不只负责打开应用，也负责快速进入关键观测入口。统计已经从设置区挪回工作台，方便直接判断
-          MCP 活跃度、会话推进和当前观测盲区。
+          仅保留 AI 对话和项目两个入口，避免已下线的设置、市场和统计模块继续生成无效路由。
         </p>
         <div class="workbench-app__actions">
           <button
@@ -21,21 +20,21 @@
           <button
             type="button"
             class="workbench-app__secondary"
-            @click="openApp('settings-statistics')"
+            @click="openApp('projects')"
           >
-            打开统计
+            打开项目
           </button>
         </div>
       </div>
 
       <aside class="workbench-app__hero-panel">
-        <div class="workbench-app__hero-panel-label">New in Workbench</div>
-        <strong>把判断系统状态的入口放回主工作流。</strong>
-        <p>优先看哪条 MCP 链路在工作、哪些会话没有闭环、当前统计还缺什么。</p>
+        <div class="workbench-app__hero-panel-label">Project Workspace</div>
+        <strong>只保留当前实际可用的工作入口。</strong>
+        <p>从项目选择上下文，再进入 AI 对话完成当前工作。</p>
         <ul class="workbench-app__hero-points">
-          <li>直接打开统计而不是先绕去设置中心</li>
-          <li>先看“有结论的数据”，再看原始明细</li>
-          <li>把数据盲区显式写出来，避免误判</li>
+          <li>项目入口用于选择和维护当前项目</li>
+          <li>AI 对话用于执行当前项目内的工作</li>
+          <li>已删除模块不会再出现在工作台中</li>
         </ul>
       </aside>
     </header>
@@ -67,6 +66,7 @@ import { useRouter } from "vue-router";
 import {
   canAccessDesktopApp,
   DESKTOP_LAUNCHER_ITEMS,
+  getDesktopAppById,
   resolveDesktopLaunchPath,
 } from "@/utils/desktop-shell.js";
 import {
@@ -90,7 +90,7 @@ function desktopIconStyle(app) {
 }
 
 function openApp(appId) {
-  const app = DESKTOP_LAUNCHER_ITEMS.find((item) => item.id === appId);
+  const app = getDesktopAppById(appId);
   if (!app || !canAccessDesktopApp(app)) return;
   const launchPath = resolveDesktopLaunchPath(app.id);
   void openRouteInDesktop(router, launchPath, {

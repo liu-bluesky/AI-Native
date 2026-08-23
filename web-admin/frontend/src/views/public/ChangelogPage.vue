@@ -1,407 +1,336 @@
 <template>
-  <div class="updates-page" v-loading="loading">
-    <div class="updates-page__ambient updates-page__ambient--left" aria-hidden="true" />
-    <div class="updates-page__ambient updates-page__ambient--right" aria-hidden="true" />
-    <div class="updates-page__mesh" aria-hidden="true" />
-
-    <header class="updates-nav">
-      <button type="button" class="updates-brand" @click="router.push('/intro')">
-        <span class="updates-brand__mark">AI</span>
-        <span class="updates-brand__body">
-          <span class="updates-brand__name">AI 智能体工厂</span>
-          <span class="updates-brand__meta">产品变更记录</span>
+  <div class="update-page">
+    <header class="update-header">
+      <button type="button" class="update-brand" @click="router.push('/intro')">
+        <span class="update-brand__mark" aria-hidden="true">AI</span>
+        <span class="update-brand__copy">
+          <strong>AI 智能体工厂</strong>
+          <span>桌面端</span>
         </span>
       </button>
 
-      <nav class="updates-nav__links" aria-label="更新日志导航">
-        <button type="button" class="updates-nav__anchor" @click="scrollToSection('latest')">
-          最新发布
-        </button>
-        <button type="button" class="updates-nav__anchor" @click="scrollToSection('timeline')">
-          时间线
-        </button>
-      </nav>
-
-      <div class="updates-nav__actions">
-        <el-button text class="updates-nav__link" @click="router.push('/intro')">返回首页</el-button>
-        <el-button type="primary" class="updates-nav__primary" @click="handlePrimaryAction">
-          {{ authenticated ? '进入工作台' : '立即开始' }}
+      <div class="update-header__actions">
+        <el-button text class="update-header__back" @click="router.push('/intro')">
+          <el-icon><ArrowLeft /></el-icon>
+          返回首页
+        </el-button>
+        <el-button
+          v-if="authenticated"
+          type="primary"
+          class="update-header__workspace"
+          @click="router.push('/ai/chat')"
+        >
+          进入工作台
         </el-button>
       </div>
     </header>
 
-    <main class="updates-main">
-      <section class="updates-hero">
-        <div class="updates-hero__copy">
-          <h1 class="updates-hero__title">更新日志</h1>
-        </div>
-
-        <div id="latest" class="updates-hero__surface">
-          <template v-if="latestRelease">
-            <div class="release-spotlight__title">{{ latestRelease.title }}</div>
-            <div class="release-spotlight__meta">
-              <span v-if="latestRelease.version">{{ latestRelease.version }}</span>
-              <span>{{ latestRelease.date || '持续更新' }}</span>
-            </div>
-
-            <div class="release-spotlight__list" v-if="latestHighlights.length">
-              <span v-for="(item, index) in latestHighlights" :key="`highlight-${index}`">
-                {{ item }}
-              </span>
-            </div>
-          </template>
-
-          <template v-else>
-            <div class="release-spotlight__title">暂无更新</div>
-          </template>
+    <main class="update-main">
+      <section class="update-intro">
+        <div class="update-intro__eyebrow">软件更新</div>
+        <h1>版本更新</h1>
+        <p>检查当前版本，下载对应系统的最新版本。</p>
+        <div class="update-platform" :class="{ 'update-platform--desktop': isDesktop }">
+          <el-icon><Monitor /></el-icon>
+          <span>{{ isDesktop ? '桌面应用' : '浏览器访问' }}</span>
         </div>
       </section>
 
-      <section v-if="errorMessage" class="updates-status">
-        <el-alert
-          :title="errorMessage"
-          type="warning"
-          :closable="false"
-          show-icon
-        />
-      </section>
+      <section class="update-panel" aria-live="polite">
+        <div class="update-panel__heading">
+          <div class="update-panel__status-icon" :class="`is-${status}`">
+            <el-icon size="22">
+              <CircleCheck v-if="status === 'latest'" />
+              <Download v-else-if="status === 'available'" />
+              <WarningFilled v-else-if="status === 'error'" />
+              <Monitor v-else />
+            </el-icon>
+          </div>
+          <div class="update-panel__heading-copy">
+            <span class="update-panel__eyebrow">UPDATE STATUS</span>
+            <h2>{{ statusLabel }}</h2>
+          </div>
+          <el-tag :type="statusTagType" effect="plain" class="update-panel__tag">
+            {{ statusLabel }}
+          </el-tag>
+        </div>
 
-      <section id="timeline" class="timeline-section">
-        <template v-if="releaseSections.length">
-          <article
-            v-for="(section, index) in releaseSections"
-            :key="section.id"
-            class="timeline-card"
-            :style="{ '--card-delay': `${index * 80}ms` }"
+        <div class="update-version-grid">
+          <div class="update-version">
+            <span class="update-version__label">当前版本</span>
+            <strong>{{ currentVersion || '未读取' }}</strong>
+            <span class="update-version__hint">本机已安装版本</span>
+          </div>
+          <div class="update-version update-version--latest">
+            <span class="update-version__label">最新版本</span>
+            <strong>{{ latestVersion }}</strong>
+            <span class="update-version__hint">{{ latestVersionHint }}</span>
+          </div>
+        </div>
+
+        <div v-if="status === 'available'" class="update-release">
+          <div class="update-release__heading">
+            <div>
+              <span class="update-release__eyebrow">NEW RELEASE</span>
+              <h3>发现新版本 {{ availableUpdate.version }}</h3>
+            </div>
+            <span v-if="availableUpdate.pubDate" class="update-release__date">{{ formatDate(availableUpdate.pubDate) }}</span>
+          </div>
+          <p v-if="availableUpdate.notes" class="update-release__notes">{{ availableUpdate.notes }}</p>
+          <p v-else class="update-release__notes update-release__notes--muted">本次版本没有附加更新说明。</p>
+        </div>
+
+        <div v-if="status === 'error' || status === 'unavailable'" class="update-message" :class="`update-message--${status}`">
+          <el-icon><WarningFilled /></el-icon>
+          <span>{{ errorMessage }}</span>
+        </div>
+
+        <div v-if="status === 'unsupported'" class="update-message update-message--info">
+          <el-icon><Monitor /></el-icon>
+          <span>请打开桌面应用检查和安装版本更新。</span>
+        </div>
+
+        <div class="update-actions">
+          <el-button
+            class="update-check-button"
+            :loading="checking"
+            :disabled="downloading || !canCheck"
+            @click="checkForUpdate({ manual: true })"
           >
-            <div class="timeline-card__rail">
-              <span class="timeline-card__index">{{ String(index + 1).padStart(2, '0') }}</span>
-              <span class="timeline-card__line" aria-hidden="true" />
-            </div>
+            <el-icon v-if="!checking"><Refresh /></el-icon>
+            {{ checking ? '正在检查' : '检查版本更新' }}
+          </el-button>
+          <el-button
+            v-if="status === 'available'"
+            type="primary"
+            class="update-install-button"
+            :loading="downloading"
+            :disabled="checking"
+            @click="confirmAndDownload(availableUpdate, { manual: true })"
+          >
+            <el-icon v-if="!downloading"><Download /></el-icon>
+            {{ downloading ? '正在打开下载' : '下载更新' }}
+          </el-button>
+        </div>
 
-            <div class="timeline-card__body">
-              <div class="timeline-card__head">
-                <div>
-                  <h2 class="timeline-card__title">{{ section.title }}</h2>
-                </div>
-                <div class="timeline-card__meta">
-                  <span v-if="section.version">{{ section.version }}</span>
-                  <span>{{ section.date || '未填写日期' }}</span>
-                </div>
-              </div>
-
-              <div class="timeline-card__blocks">
-                <template v-for="(block, blockIndex) in section.blocks" :key="`${section.id}-${blockIndex}`">
-                  <h3 v-if="block.type === 'subheading'" class="timeline-block__title">
-                    {{ block.text }}
-                  </h3>
-                  <p v-else-if="block.type === 'paragraph'" class="timeline-block__text">
-                    {{ block.text }}
-                  </p>
-                  <div v-else-if="block.type === 'note'" class="timeline-block__note">
-                    {{ block.text }}
-                  </div>
-                  <ul v-else-if="block.type === 'list'" class="timeline-block__list">
-                    <li v-for="(item, itemIndex) in block.items" :key="`${section.id}-${blockIndex}-${itemIndex}`">
-                      {{ item }}
-                    </li>
-                  </ul>
-                </template>
-              </div>
-            </div>
-          </article>
-        </template>
-
-        <div v-else class="timeline-empty">
-          <el-empty description="暂无记录" :image-size="72" />
+        <div v-if="lastCheckedAt" class="update-panel__footer">
+          <span>上次检查：{{ lastCheckedAt }}</span>
         </div>
       </section>
 
+      <section class="update-info-strip">
+        <div class="update-info-strip__icon" aria-hidden="true">
+          <el-icon><InfoFilled /></el-icon>
+        </div>
+        <div>
+          <strong>版本更新服务</strong>
+          <p>发布新版本后，客户端启动时会自动检查；确认后将在系统浏览器中下载对应版本。</p>
+        </div>
+      </section>
     </main>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowLeft, CircleCheck, Download, InfoFilled, Monitor, Refresh, WarningFilled } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
-import api from '@/utils/api.js'
 import { authStateVersion, hasStoredToken } from '@/utils/auth-storage.js'
+import {
+  canUseDesktopUpdater,
+  checkDesktopUpdate,
+  getDesktopVersion,
+  downloadDesktopUpdate,
+  resolveDesktopUpdateEndpoint,
+} from '@/utils/desktop-updater.js'
+import { hasNativeDesktopBridge } from '@/utils/native-desktop-bridge.js'
 
 const router = useRouter()
-
-const loading = ref(false)
+const loading = ref(true)
+const checking = ref(false)
+const downloading = ref(false)
+const status = ref('checking')
+const currentVersion = ref('')
+const availableUpdate = ref(null)
 const errorMessage = ref('')
-const entries = ref([])
+const lastCheckedAt = ref('')
 
 const authenticated = computed(() => {
   authStateVersion.value
   return hasStoredToken()
 })
 
-const releaseSections = computed(() =>
-  (Array.isArray(entries.value) ? entries.value : []).map((entry, index) =>
-    normalizeRelease(entry, index),
-  ),
-)
-
-const latestRelease = computed(() => releaseSections.value[0] || null)
-
-const latestHighlights = computed(() => extractHighlights(latestRelease.value, 2))
-
-function normalizeDateLabel(value) {
-  const raw = String(value || '').trim()
-  if (!raw) {
-    return ''
-  }
-  const normalized = raw.replace(/[/.]/g, '-')
-  const date = new Date(`${normalized}T00:00:00`)
-  if (Number.isNaN(date.getTime())) {
-    return raw
-  }
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(date)
+const isDesktop = computed(() => hasNativeDesktopBridge())
+const canCheck = computed(() => Boolean(isDesktop.value && canUseDesktopUpdater()))
+const latestVersion = computed(() => {
+  if (availableUpdate.value?.version) return availableUpdate.value.version
+  if (status.value === 'latest') return currentVersion.value || '已是最新'
+  return '--'
+})
+const latestVersionHint = computed(() => {
+  if (status.value === 'available') return '有可下载版本'
+  if (status.value === 'latest') return '当前已是最新版本'
+  if (status.value === 'checking') return '正在获取版本信息'
+  return '等待检查'
+})
+const statusLabel = computed(() => {
+  if (!isDesktop.value) return '不支持浏览器更新'
+  if (status.value === 'checking') return '正在检查版本'
+  if (status.value === 'available') return '有可用更新'
+  if (status.value === 'latest') return '已是最新版本'
+  if (status.value === 'unsupported') return '桌面更新不可用'
+  if (status.value === 'unavailable') return '未配置服务地址'
+  if (status.value === 'error') return '检查失败'
+  return '等待检查'
+})
+const statusTagType = computed(() => {
+  if (status.value === 'latest') return 'success'
+  if (status.value === 'available') return 'warning'
+  if (status.value === 'error' || status.value === 'unavailable') return 'danger'
+  return 'info'
+})
+function formatDate(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value || '')
+  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
 }
 
-function appendContentBlocks(blocks, value) {
-  const source = String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
-  if (!source) {
-    return
-  }
-  let paragraphBuffer = []
-  let listBuffer = []
-
-  const flushParagraph = () => {
-    if (!paragraphBuffer.length) {
-      return
-    }
-    blocks.push({
-      type: 'paragraph',
-      text: paragraphBuffer.join(' '),
-    })
-    paragraphBuffer = []
-  }
-
-  const flushList = () => {
-    if (!listBuffer.length) {
-      return
-    }
-    blocks.push({
-      type: 'list',
-      items: [...listBuffer],
-    })
-    listBuffer = []
-  }
-
-  for (const rawLine of source.split('\n')) {
-    const line = rawLine.trim()
-    if (!line) {
-      flushParagraph()
-      flushList()
-      continue
-    }
-
-    const headingMatch = line.match(/^(#{1,3})\s+(.+)$/)
-    if (headingMatch) {
-      flushParagraph()
-      flushList()
-      blocks.push({ type: 'subheading', text: headingMatch[2].trim() })
-      continue
-    }
-
-    const listMatch = line.match(/^[-*]\s+(.+)$/)
-    if (listMatch) {
-      flushParagraph()
-      listBuffer.push(listMatch[1].trim())
-      continue
-    }
-
-    const noteMatch = line.match(/^>\s+(.+)$/)
-    if (noteMatch) {
-      flushParagraph()
-      flushList()
-      blocks.push({ type: 'note', text: noteMatch[1].trim() })
-      continue
-    }
-
-    paragraphBuffer.push(line)
-  }
-
-  flushParagraph()
-  flushList()
+function formatError(error) {
+  const detail = String(error?.detail || error?.message || error || '').trim()
+  return detail || '检查版本更新失败，请稍后重试。'
 }
 
-function resolveTitle(entry) {
-  const title = String(entry?.title || '').trim()
-  if (title) {
-    return title
-  }
-  const version = String(entry?.version || '').trim()
-  if (version) {
-    return version
-  }
-  return '未命名更新'
+function markChecked() {
+  lastCheckedAt.value = new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date())
 }
 
-function normalizeRelease(entry, index) {
-  const blocks = []
-  const summary = String(entry?.summary || '').trim()
-  if (summary) {
-    blocks.push({ type: 'paragraph', text: summary })
-  }
-  appendContentBlocks(blocks, entry?.content)
-  return {
-    id: String(entry?.id || `release-${index + 1}`),
-    title: resolveTitle(entry),
-    version: String(entry?.version || '').trim(),
-    date: normalizeDateLabel(entry?.release_date),
-    blocks,
-  }
-}
-
-function extractHighlights(section, limit = 3) {
-  if (!section?.blocks?.length) {
-    return []
-  }
-  const items = []
-  for (const block of section.blocks) {
-    if (block.type === 'list') {
-      items.push(...block.items)
-    } else if (block.type === 'paragraph' || block.type === 'note') {
-      items.push(block.text)
-    }
-    if (items.length >= limit) {
-      break
-    }
-  }
-  return items.slice(0, limit)
-}
-
-function scrollToSection(id) {
-  const element = document.getElementById(id)
-  if (!element) {
-    return
-  }
-  element.scrollIntoView({
-    behavior: 'smooth',
-    block: 'start',
-  })
-}
-
-function handlePrimaryAction() {
-  router.push(authenticated.value ? '/ai/chat' : '/register')
-}
-
-async function fetchPublicChangelog() {
-  loading.value = true
-  errorMessage.value = ''
+function wasPrompted(version) {
   try {
-    const data = await api.get('/changelog-entries/public')
-    entries.value = Array.isArray(data?.items) ? data.items : []
-  } catch (err) {
-    entries.value = []
-    errorMessage.value = err?.detail || err?.message || '加载更新日志失败'
+    return window.sessionStorage.getItem(`desktop_update_prompted:${version}`) === '1'
+  } catch {
+    return false
+  }
+}
+
+function markPrompted(version) {
+  try {
+    window.sessionStorage.setItem(`desktop_update_prompted:${version}`, '1')
+  } catch {
+    // Session storage is optional; the status page remains usable without it.
+  }
+}
+
+async function confirmAndDownload(update, options = {}) {
+  const version = String(update?.version || '').trim()
+  if (!version || downloading.value) return
+  if (!options.manual && wasPrompted(version)) return
+  markPrompted(version)
+  try {
+    const notes = String(update?.notes || '').trim()
+    const message = notes ? `发现新版本 ${version}\n\n${notes}` : `发现新版本 ${version}`
+    await ElMessageBox.confirm(message, '版本更新', {
+      type: 'info',
+      confirmButtonText: '打开下载',
+      cancelButtonText: '稍后处理',
+      distinguishCancelAndClose: true,
+    })
+  } catch {
+    return
+  }
+
+  downloading.value = true
+  try {
+    await downloadDesktopUpdate(update)
+    ElMessage.success('已打开系统浏览器，请下载对应版本的安装包')
+  } catch (error) {
+    ElMessage.error(formatError(error))
   } finally {
+    downloading.value = false
+  }
+}
+
+async function checkForUpdate(options = {}) {
+  if (checking.value || downloading.value) return
+  const manual = Boolean(options.manual)
+  checking.value = true
+  loading.value = !manual && !currentVersion.value
+  availableUpdate.value = null
+  errorMessage.value = ''
+  status.value = isDesktop.value ? 'checking' : 'unsupported'
+
+  try {
+    if (!isDesktop.value) return
+    if (!currentVersion.value) {
+      currentVersion.value = await getDesktopVersion() || ''
+    }
+    const endpoint = resolveDesktopUpdateEndpoint()
+    if (!endpoint) {
+      status.value = 'unavailable'
+      errorMessage.value = '未找到后台服务地址，请先配置服务器地址。'
+      return
+    }
+    if (!canUseDesktopUpdater()) {
+      status.value = 'unavailable'
+      errorMessage.value = '桌面更新功能暂不可用，请重启应用后重试。'
+      return
+    }
+    const update = await checkDesktopUpdate()
+    if (update?.currentVersion && !currentVersion.value) {
+      currentVersion.value = update.currentVersion
+    }
+    availableUpdate.value = update?.version ? update : null
+    markChecked()
+    if (availableUpdate.value) {
+      status.value = 'available'
+      if (!manual) {
+        await confirmAndDownload(availableUpdate.value)
+      }
+    } else {
+      status.value = 'latest'
+      if (manual) ElMessage.success('当前已是最新版本')
+    }
+  } catch (error) {
+    status.value = 'error'
+    errorMessage.value = formatError(error)
+    if (manual) ElMessage.error(errorMessage.value)
+  } finally {
+    checking.value = false
     loading.value = false
   }
 }
 
 onMounted(() => {
-  document.title = 'AI 智能体工厂 | 更新日志'
-  fetchPublicChangelog()
+  document.title = 'AI 智能体工厂 | 版本更新'
+  void checkForUpdate()
 })
+
 </script>
 
 <style scoped>
-.updates-page {
-  --page-bg:
-    radial-gradient(circle at 16% 2%, rgba(125, 211, 252, 0.18), transparent 24%),
-    radial-gradient(circle at 88% 12%, rgba(249, 168, 212, 0.14), transparent 22%),
-    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 42%, #edf2f7 100%);
-  --page-text: #0f172a;
-  --page-text-muted: #526173;
-  --page-text-soft: #8291a4;
-  --page-border: rgba(15, 23, 42, 0.08);
-  --page-surface: rgba(255, 255, 255, 0.74);
-  --page-surface-strong: rgba(255, 255, 255, 0.86);
-  --page-shadow: 0 24px 64px rgba(15, 23, 42, 0.08);
-  --page-shadow-soft: 0 14px 34px rgba(15, 23, 42, 0.06);
-  --page-radius-xl: 34px;
-  --page-radius-lg: 24px;
-  --page-radius-md: 18px;
-  --page-radius-pill: 999px;
-  --page-transition: 260ms ease;
-  position: relative;
+ .update-page {
   min-height: 100dvh;
-  overflow: clip;
-  color: var(--page-text);
-  background: var(--page-bg);
+  color: #182230;
+  background: #f5f7fa;
 }
 
-.updates-page__ambient,
-.updates-page__mesh {
-  position: absolute;
-  pointer-events: none;
-}
-
-.updates-page__ambient {
-  width: 28rem;
-  height: 28rem;
-  border-radius: 50%;
-  filter: blur(72px);
-  opacity: 0.76;
-}
-
-.updates-page__ambient--left {
-  top: -10rem;
-  left: -12rem;
-  background: rgba(125, 211, 252, 0.34);
-}
-
-.updates-page__ambient--right {
-  top: 5rem;
-  right: -10rem;
-  background: rgba(251, 191, 36, 0.16);
-}
-
-.updates-page__mesh {
-  inset: 0;
-  opacity: 0.34;
-  background:
-    linear-gradient(rgba(15, 23, 42, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
-  background-size: 88px 88px;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.78), transparent 84%);
-}
-
-.updates-nav,
-.updates-main {
-  position: relative;
-  z-index: 1;
-  width: min(1180px, calc(100% - 40px));
-  margin: 0 auto;
-}
-
-.updates-nav {
-  position: sticky;
-  top: 12px;
-  z-index: 8;
+ .update-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  padding: 14px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.78);
-  border-radius: var(--page-radius-pill);
-  background: rgba(248, 250, 252, 0.6);
-  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.06);
-  backdrop-filter: blur(18px);
+  gap: 20px;
+  min-height: 68px;
+  padding: 12px clamp(20px, 5vw, 72px);
+  border-bottom: 1px solid #e4e9ef;
+  background: #ffffff;
 }
 
-.updates-brand {
+ .update-brand {
   display: inline-flex;
   align-items: center;
   gap: 12px;
@@ -413,420 +342,388 @@ onMounted(() => {
   cursor: pointer;
 }
 
-.updates-brand__mark {
+ .update-brand__mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 34px;
   height: 34px;
-  border-radius: 11px;
-  background: #0f172a;
-  color: #fff;
+  border-radius: 8px;
+  background: #1f2937;
+  color: #ffffff;
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-}
-
-.updates-brand__body {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.updates-brand__name,
-.updates-hero__title,
-.release-spotlight__title,
-.timeline-card__title,
-.updates-cta__title {
-  font-family: 'Avenir Next', 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-}
-
-.updates-brand__name {
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.1;
-}
-
-.updates-brand__meta {
-  margin-top: 2px;
-  color: var(--page-text-muted);
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.updates-nav__links,
-.updates-nav__actions {
-  display: flex;
-  align-items: center;
-}
-
-.updates-nav__links {
-  gap: 8px;
-  padding: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  border-radius: var(--page-radius-pill);
-  background: rgba(255, 255, 255, 0.48);
-  backdrop-filter: blur(14px);
-}
-
-.updates-nav__anchor {
-  min-height: 34px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: var(--page-radius-pill);
-  background: transparent;
-  color: var(--page-text-muted);
-  font-size: 13px;
-  cursor: pointer;
-  transition:
-    color var(--page-transition),
-    background-color var(--page-transition);
-}
-
-.updates-nav__anchor:hover {
-  background: rgba(255, 255, 255, 0.82);
-  color: var(--page-text);
-}
-
-.updates-nav__actions {
-  gap: 10px;
-}
-
-.updates-nav__link {
-  color: var(--page-text);
-}
-
-.updates-nav__primary {
-  --el-button-bg-color: #0f172a;
-  --el-button-border-color: #0f172a;
-  --el-button-hover-bg-color: #1e293b;
-  --el-button-hover-border-color: #1e293b;
-  --el-button-active-bg-color: #020617;
-  --el-button-active-border-color: #020617;
-  box-shadow: var(--page-shadow-soft);
-}
-
-.updates-main {
-  padding: 28px 0 56px;
-}
-
-.updates-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 420px);
-  gap: 24px;
-  align-items: stretch;
-  padding-top: 28px;
-}
-
-.updates-hero__copy,
-.updates-hero__surface,
-.timeline-card,
-.updates-status,
-.timeline-empty {
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 30px;
-  background: var(--page-surface);
-  box-shadow: var(--page-shadow-soft);
-  backdrop-filter: blur(20px);
-}
-
-.updates-hero__copy,
-.updates-hero__surface {
-  position: relative;
-  overflow: hidden;
-}
-
-.updates-hero__copy,
-.updates-hero__surface {
-  padding: 30px;
-}
-
-.updates-hero__copy::before,
-.updates-hero__surface::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at top right, rgba(255, 255, 255, 0.72), transparent 32%),
-    linear-gradient(180deg, rgba(125, 211, 252, 0.08), transparent 48%);
-}
-
-.updates-hero__eyebrow,
-.release-spotlight__eyebrow,
-.timeline-card__eyebrow {
-  color: var(--page-text-soft);
-  font-size: 12px;
-  line-height: 1;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.updates-hero__title {
-  max-width: 10em;
-  margin: 18px 0 0;
-  font-size: clamp(48px, 6vw, 82px);
-  line-height: 0.95;
-  letter-spacing: -0.07em;
-  text-wrap: balance;
-}
-
-.updates-hero__text,
-.release-spotlight__summary,
-.timeline-block__text,
-.updates-cta__text {
-  color: var(--page-text-muted);
-  font-size: 16px;
-  line-height: 1.8;
-}
-
-.updates-hero__text {
-  max-width: 340px;
-  margin: 20px 0 0;
-}
-
-.release-spotlight__title {
-  margin-top: 18px;
-  font-size: clamp(28px, 4vw, 42px);
-  line-height: 1.04;
-  letter-spacing: -0.04em;
-}
-
-.release-spotlight__meta,
-.timeline-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
-  color: var(--page-text-soft);
-  font-size: 13px;
-}
-
-.release-spotlight__meta span,
-.timeline-card__meta span,
-.release-spotlight__list span {
-  display: inline-flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 0 14px;
-  border-radius: var(--page-radius-pill);
-  background: rgba(255, 255, 255, 0.62);
-  border: 1px solid rgba(255, 255, 255, 0.84);
-}
-
-.release-spotlight__summary {
-  margin: 18px 0 0;
-}
-
-.release-spotlight__list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 24px;
-}
-
-.updates-status {
-  margin-top: 24px;
-  padding: 18px;
-}
-
-.timeline-section {
-  display: grid;
-  gap: 18px;
-  margin-top: 24px;
-}
-
-.timeline-card {
-  display: grid;
-  grid-template-columns: 86px minmax(0, 1fr);
-  gap: 0;
-  padding: 0;
-  overflow: hidden;
-  animation: cardFadeUp 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
-  animation-delay: var(--card-delay);
-}
-
-.timeline-card__rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 30px 0 24px;
-  background: rgba(255, 255, 255, 0.34);
-}
-
-.timeline-card__index {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 16px;
-  background: #0f172a;
-  color: #fff;
-  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.08em;
 }
 
-.timeline-card__line {
-  flex: 1;
-  width: 1px;
-  margin-top: 14px;
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.44), rgba(15, 23, 42, 0.08));
-}
-
-.timeline-card__body {
-  padding: 28px 30px 30px;
-}
-
-.timeline-card__head {
+ .update-brand__copy {
   display: flex;
+  flex-direction: column;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
+  gap: 2px;
+  min-width: 0;
 }
 
-.timeline-card__title {
-  margin: 14px 0 0;
-  font-size: clamp(24px, 3.2vw, 34px);
-  line-height: 1.08;
-  letter-spacing: -0.04em;
+ .update-brand__copy strong {
+  font-size: 15px;
+  font-weight: 650;
 }
 
-.timeline-card__blocks {
-  margin-top: 20px;
+ .update-brand__copy span {
+  color: #8390a0;
+  font-size: 12px;
 }
 
-.timeline-card__blocks > * + * {
-  margin-top: 14px;
-}
-
-.timeline-block__title {
-  margin: 6px 0 0;
-  font-size: 17px;
-  line-height: 1.3;
-}
-
-.timeline-block__text {
-  margin: 0;
-}
-
-.timeline-block__note {
-  display: inline-flex;
+ .update-header__actions {
+  display: flex;
   align-items: center;
-  min-height: 38px;
-  padding: 0 14px;
-  border-radius: 14px;
-  background: rgba(15, 23, 42, 0.05);
-  color: var(--page-text-muted);
-  font-size: 14px;
+  gap: 8px;
 }
 
-.timeline-block__list {
+ .update-header__back {
+  color: #5f6b7a;
+}
+
+ .update-header__workspace {
+  --el-button-bg-color: #1f2937;
+  --el-button-border-color: #1f2937;
+  --el-button-hover-bg-color: #374151;
+  --el-button-hover-border-color: #374151;
+}
+
+ .update-main {
   display: grid;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  grid-template-columns: minmax(250px, 0.76fr) minmax(0, 1.45fr);
+  gap: 28px;
+  width: min(1120px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 56px 0 64px;
 }
 
-.timeline-block__list li {
-  position: relative;
-  padding: 14px 16px 14px 42px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.58);
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  color: var(--page-text);
+ .update-intro {
+  align-self: start;
+  padding: 18px 0;
+}
+
+ .update-intro__eyebrow,
+ .update-panel__eyebrow,
+ .update-release__eyebrow {
+  color: #8a96a5;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.update-intro h1 {
+  margin: 18px 0 16px;
+  color: #17202c;
+  font-size: 56px;
+  font-weight: 680;
+  line-height: 1.02;
+  letter-spacing: 0;
+}
+
+ .update-intro p {
+  max-width: 300px;
+  margin: 0;
+  color: #627083;
+  font-size: 15px;
   line-height: 1.7;
 }
 
-.timeline-block__list li::before {
-  content: '';
-  position: absolute;
-  top: 22px;
-  left: 18px;
-  width: 10px;
-  height: 10px;
+ .update-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 28px;
+  color: #7f8b99;
+  font-size: 12px;
+}
+
+ .update-platform--desktop {
+  color: #2563a8;
+}
+
+ .update-panel {
+  min-width: 0;
+  padding: clamp(22px, 4vw, 36px);
+  border: 1px solid #e1e7ee;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 16px 42px rgba(31, 41, 55, 0.07);
+}
+
+ .update-panel__heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+ .update-panel__status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 8px;
+  background: #eef2f6;
+  color: #718096;
+}
+
+ .update-panel__status-icon.is-latest {
+  background: #ecfdf3;
+  color: #17804b;
+}
+
+ .update-panel__status-icon.is-available {
+  background: #fff7e6;
+  color: #b76a00;
+}
+
+ .update-panel__status-icon.is-error,
+ .update-panel__status-icon.is-unavailable {
+  background: #fff1f0;
+  color: #c2413b;
+}
+
+ .update-panel__heading-copy {
+  min-width: 0;
+}
+
+ .update-panel__heading-copy h2 {
+  margin: 5px 0 0;
+  color: #17202c;
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+ .update-panel__tag {
+  margin-left: auto;
+}
+
+ .update-version-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 28px;
+}
+
+ .update-version {
+  display: flex;
+  flex-direction: column;
+  min-height: 130px;
+  padding: 18px;
+  border: 1px solid #e7ebf0;
+  border-radius: 8px;
+  background: #fafbfd;
+}
+
+ .update-version--latest {
+  border-color: #d7e7f7;
+  background: #f5faff;
+}
+
+ .update-version__label {
+  color: #778496;
+  font-size: 12px;
+}
+
+ .update-version strong {
+  margin-top: 12px;
+  color: #17202c;
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+ .update-version__hint {
+  margin-top: auto;
+  color: #8c98a7;
+  font-size: 12px;
+}
+
+ .update-release {
+  margin-top: 22px;
+  padding: 20px;
+  border-left: 3px solid #e0a11a;
+  background: #fffaf0;
+}
+
+ .update-release__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+ .update-release h3 {
+  margin: 8px 0 0;
+  color: #3a2b0e;
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+ .update-release__date {
+  flex: 0 0 auto;
+  color: #8e7441;
+  font-size: 12px;
+}
+
+ .update-release__notes {
+  margin: 14px 0 0;
+  color: #604c24;
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+ .update-release__notes--muted {
+  color: #8e7441;
+}
+
+ .update-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 20px;
+  padding: 12px 14px;
+  border: 1px solid #dbe4ee;
+  color: #526174;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+ .update-message--error,
+ .update-message--unavailable {
+  border-color: #f2c7c3;
+  background: #fff8f7;
+  color: #a53b36;
+}
+
+ .update-message--info {
+  background: #f5f9fd;
+  color: #35658d;
+}
+
+ .update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+ .update-check-button {
+  min-width: 156px;
+}
+
+ .update-install-button {
+  min-width: 132px;
+  --el-button-bg-color: #2563a8;
+  --el-button-border-color: #2563a8;
+  --el-button-hover-bg-color: #1d4f86;
+  --el-button-hover-border-color: #1d4f86;
+}
+
+ .update-panel__footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  color: #9aa5b2;
+  font-size: 12px;
+}
+
+ .update-info-strip {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding-top: 24px;
+  border-top: 1px solid #e4e9ef;
+  color: #607083;
+}
+
+ .update-info-strip__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   border-radius: 50%;
-  background: #38bdf8;
-  box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.12);
+  background: #e9f2fb;
+  color: #3973a7;
 }
 
-.timeline-empty {
-  padding: 36px;
+ .update-info-strip strong {
+  color: #354255;
+  font-size: 13px;
 }
 
-@keyframes cardFadeUp {
-  from {
-    opacity: 0;
-    transform: translate3d(0, 20px, 0);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
+ .update-info-strip p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
-@media (max-width: 980px) {
-  .updates-nav {
-    flex-wrap: wrap;
+ @media (max-width: 780px) {
+  .update-header {
+    align-items: flex-start;
+    padding: 12px 16px;
   }
 
-  .updates-hero {
+  .update-header__actions {
+    gap: 0;
+  }
+
+  .update-header__workspace {
+    display: none;
+  }
+
+  .update-header__back {
+    padding-right: 0;
+  }
+
+  .update-main {
+    display: block;
+    width: min(100% - 28px, 620px);
+    padding: 34px 0 44px;
+  }
+
+  .update-intro {
+    padding: 8px 0 28px;
+  }
+
+  .update-intro h1 {
+    margin-top: 14px;
+    font-size: 44px;
+  }
+
+  .update-version-grid {
     grid-template-columns: 1fr;
   }
 
-}
-
-@media (max-width: 720px) {
-  .updates-nav,
-  .updates-main {
-    width: min(1180px, calc(100% - 24px));
-  }
-
-  .updates-nav {
-    gap: 12px;
-    padding: 12px;
-    border-radius: 26px;
-  }
-
-  .updates-nav__links,
-  .updates-nav__actions {
-    width: 100%;
-    justify-content: space-between;
-  }
-
-  .updates-nav__links {
-    order: 3;
-  }
-
-  .updates-hero__copy,
-  .updates-hero__surface,
-  .timeline-card__body,
-  .timeline-empty {
-    padding: 22px;
-  }
-
-  .timeline-card {
-    grid-template-columns: 1fr;
-  }
-
-  .timeline-card__rail {
-    flex-direction: row;
-    justify-content: flex-start;
-    gap: 14px;
-    padding: 20px 22px 0;
-    background: transparent;
-  }
-
-  .timeline-card__line {
-    height: 1px;
-    width: auto;
-    margin-top: 0;
-  }
-
-  .timeline-card__head {
+  .update-panel__footer {
     flex-direction: column;
+  }
+
+  .update-release__heading {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .update-actions {
+    flex-direction: column-reverse;
+  }
+
+  .update-actions .el-button {
+    width: 100%;
+    margin-left: 0;
   }
 }
 </style>

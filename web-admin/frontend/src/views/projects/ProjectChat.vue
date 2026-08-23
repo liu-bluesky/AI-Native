@@ -1932,22 +1932,12 @@
 
   <SkillResourceDialog
     v-model="skillResourceDialogVisible"
-    v-model:search-query="skillResourceSearchQuery"
     :workspace-path-resolved="workspacePathResolved"
     :directory-resolved="skillResourceDirectoryResolved"
     :directory-picking="skillResourceDirectoryPicking"
-    :search-loading="skillResourceSearchLoading"
-    :search-results="skillResourceSearchResults"
-    :resolved-queries="skillResourceSearchResolvedQueries"
-    :sites="skillResourceSites"
-    :installing-slug="skillResourceInstallingSlug"
     @use-workspace="useWorkspaceAsSkillDirectory"
     @pick-directory="pickSkillResourceDirectory"
     @copy-directory="copySkillResourceDirectory"
-    @search="searchSkillResources"
-    @reset-search="resetSkillResourceSearch"
-    @install-site="installSkillResource"
-    @copy-site="copySkillResourceSite"
   />
 
   <div
@@ -2970,7 +2960,6 @@ import { useProjectChatWorkspaceFiles } from "@/modules/project-chat/composables
 import { useProjectChatSettings } from "@/modules/project-chat/composables/useProjectChatSettings.js";
 import { useProjectChatTerminal } from "@/modules/project-chat/composables/useProjectChatTerminal.js";
 import { useProjectChatTransport } from "@/modules/project-chat/composables/useProjectChatTransport.js";
-import api from "@/utils/api.js";
 import {
   getLocalAiTask,
   registerLocalAiTask,
@@ -2986,7 +2975,6 @@ import {
   getStoredToken,
 } from "@/utils/auth-storage.js";
 import { fetchDictionary } from "@/utils/dictionaries.js";
-import { fetchAllVisibleProjects } from "@/utils/projects.js";
 import {
   Delete,
   DocumentCopy,
@@ -3003,11 +2991,7 @@ import {
   ArrowUp,
 } from "@element-plus/icons-vue";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
-import { buildRuntimeUrl } from "@/utils/runtime-url.js";
-import {
-  buildApiBaseUrl,
-  resolveServerOrigin,
-} from "@/utils/server-profile.js";
+import { resolveServerOrigin } from "@/utils/server-profile.js";
 import { formatRelativeDateTime } from "@/utils/date.js";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -3037,6 +3021,7 @@ import {
   readModelRoleTarget,
   writeModelRoleTarget,
 } from "@/modules/project-chat/services/modelRouting.js";
+import { isMediaBuildFeatureEnabled } from "@/config/buildFeatures.js";
 import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
@@ -3138,20 +3123,7 @@ import {
   buildHtmlPreviewSrcdoc,
   buildVuePreviewSrcdoc,
 } from "@/modules/project-chat/services/projectChatCodePreview.js";
-import {
-  installVettSkillResource,
-  searchSkillResourceItems,
-} from "@/modules/project-chat/services/projectChatSkillResources.js";
-import { submitAgentRuntimePermissionActionRequest } from "@/modules/project-chat/services/projectChatAgentRuntimeApi.js";
-import {
-  createEmployeeFromDraft as createEmployeeFromDraftRequest,
-  fetchEmployeeDraftCatalog,
-  generateEmployeeDraft,
-} from "@/modules/project-chat/services/projectChatEmployeeDraftApi.js";
-import {
-  fetchProjectChatProviders,
-  saveProjectChatSettings as saveProjectChatSettingsRequest,
-} from "@/modules/project-chat/services/projectChatSettingsApi.js";
+import { fetchEmployeeDraftCatalog } from "@/modules/project-chat/services/projectChatEmployeeDraftApi.js";
 import {
   formatAgentRuntimeEventPhase,
   formatAgentRuntimeEventSummary,
@@ -3246,18 +3218,15 @@ import {
   writePersistedChatRuntime as writeLocalPersistedChatRuntime,
 } from "@/modules/project-chat/services/projectChatRuntimeStorage.js";
 import {
-  listProjectWorkspaceFiles,
-  readProjectWorkspaceFile,
-  saveProjectWorkspaceFile,
-} from "@/modules/project-chat/services/projectChatWorkspaceApi.js";
-import {
   clearChatSessionMemory,
+  clearChatSessionDeleted,
   clearSelectedProjectId,
   clearTaskTreeSessionMemory,
   clearWorkSessionMemory,
   consumePluginInstallDraft,
   consumeProjectDeployDraft,
   consumeStatisticsAnalysisDraft,
+  markChatSessionDeleted,
   formatMcpConfig,
   findDeprecatedQueryMcpServerNames,
   formatWebToolsConfig,
@@ -3274,12 +3243,14 @@ import {
   readPreferredLocalWorkspacePath,
   readPreferredSkillResourceDirectory,
   readGlobalWebToolsConfigFile,
+  readAllLocalChatSessions,
   readLocalChatSessions,
   readProjectMcpConfigFile,
   readProjectWebToolsConfigFile,
   readSelectedProjectId,
   resolveCurrentUsername,
   restoreChatSession,
+  isChatSessionDeleted,
   writePreferredLocalConnectorId,
   writePreferredLocalWorkspacePath,
   writePreferredSkillResourceDirectory,
@@ -3339,6 +3310,7 @@ import {
   upsertLocalEntity,
   upsertLocalProject,
 } from "@/services/local-project-repository.js";
+import { readLocalSystemConfig } from "@/services/local-system-config.js";
 import { HIGH_RISK_RULES } from "@/modules/project-chat/constants/highRiskRules.js";
 import {
   CHAT_PARAMETER_SECTION_CONFIG,
@@ -3481,7 +3453,6 @@ const mcpModules = ref({
   },
 });
 const runtimeExternalTools = ref([]);
-const runtimeExternalToolsRefreshingProjectIds = new Set();
 const messages = ref([]);
 const activeComposerPlan = ref(null);
 const composerPlanExpanded = ref(true);
@@ -3503,7 +3474,6 @@ const employeeDraftDialogVisible = ref(false);
 const employeeDraftDialogLoading = ref(false);
 const employeeDraftDialogPayload = ref(null);
 const employeeDraftDialogItem = ref(null);
-const employeeDraftExternalSkillSites = ref([]);
 const employeeDraftAutoCreateSkills = ref(true);
 const employeeDraftAutoCreateRules = ref(true);
 const employeeDraftAddToProject = ref(false);
@@ -3515,11 +3485,6 @@ const employeeDraftAutoRuleGenerationMaxCount = ref(3);
 const skillResourceDialogVisible = ref(false);
 const skillResourceDirectoryDraft = ref("");
 const skillResourceDirectoryPicking = ref(false);
-const skillResourceSearchQuery = ref("");
-const skillResourceSearchResults = ref([]);
-const skillResourceSearchResolvedQueries = ref([]);
-const skillResourceSearchLoading = ref(false);
-const skillResourceInstallingSlug = ref("");
 const projectWorkspacePicking = ref(false);
 const codePreviewVisible = ref(false);
 const codePreviewTitle = ref("代码预览");
@@ -4899,7 +4864,8 @@ function buildLocalLiuAgentSystemPromptParts() {
       content: [
         "主模型与媒体工具职责：",
         "- 你是主对话模型，负责理解用户意图、结合当前会话上下文并决定是否调用工具。",
-        "- generate_image、edit_image、generate_video、generate_audio、transcribe_audio 是媒体模型工具，不是主对话模型；只有用户明确要求对应的生成、编辑、转换或转写时才调用。",
+        "- generate_image、edit_image、generate_video、generate_audio、transcribe_audio 是统一媒体工具协议，不是主对话模型；系统会通过当前供应商适配器连接已选择的媒体模型。只有用户明确要求对应的生成、编辑、转换或转写时才调用。",
+        "- 不同供应商的原生接口、参数和能力可能不同；工具协议负责统一调用语义，适配器负责转换请求和响应。不要假设所有供应商都支持相同的图片编辑、视频编辑、语音或转写能力。",
         "- 附件上下文或会话引用中已经列出的图片、视频、音频和文件，均视为用户已经提供；不得声称当前对话中没有这些内容，也不得要求用户重复上传。",
         "- 用户要求从零生成图片时调用 generate_image；仅当用户明确要求参考某张现有图片生成时，才把附件上下文中的资产 ID 填入 reference_asset_ids。",
         "- 用户要求修改现有图片时必须调用 edit_image，并把要修改图片的资产 ID 填入 input_asset_ids；不得改用 run_command、Python、Pillow、OpenCV 或其他本地脚本静默处理。",
@@ -4915,15 +4881,6 @@ function buildLocalLiuAgentSystemPromptParts() {
   ].filter((part) => part.content);
 }
 
-function buildLocalLiuAgentBackendApiBaseUrl() {
-  const baseUrl = String(buildApiBaseUrl() || "").trim();
-  if (/^https?:\/\//i.test(baseUrl)) return baseUrl;
-  const origin = String(resolveServerOrigin() || "").trim();
-  if (/^https?:\/\//i.test(origin)) {
-    return `${origin.replace(/\/+$/, "")}/${baseUrl.replace(/^\/+/, "")}`;
-  }
-  return baseUrl;
-}
 const activeMcpSource = ref("system");
 const activeSettingsPanel = ref("chat");
 const activeSystemScope = ref("project_related");
@@ -5926,7 +5883,7 @@ const workspaceFileReadOnly = computed(
 const workspaceFileBridgeLabel = computed(() =>
   nativeDesktopBridgeAvailable.value
     ? "桌面端原生只读文件桥：可浏览目录和预览 1MB 内文本文件，写入仍需后续权限流程。"
-    : "服务端工作区文件接口：沿用当前项目工作区读写能力。",
+    : "本机工作区文件能力：沿用当前项目工作区读写能力。",
 );
 const canPreviewWorkspaceDiff = computed(() => canReviewWorkspaceChanges.value);
 const workspaceDiffTargetLabel = computed(() =>
@@ -6704,67 +6661,6 @@ async function refreshNativeRunnerPermissionRecords() {
   }
 }
 
-async function recordDesktopAuditEvent(payload = {}) {
-  const projectId = String(selectedProjectId.value || "").trim();
-  if (!projectId) return null;
-  const taskTree =
-    displayedChatTaskTree.value &&
-    typeof displayedChatTaskTree.value === "object"
-      ? displayedChatTaskTree.value
-      : null;
-  const selectedNode =
-    taskTreeSelectedNode.value && typeof taskTreeSelectedNode.value === "object"
-      ? taskTreeSelectedNode.value
-      : null;
-  const chatSessionId = String(
-    currentChatSessionId.value || taskTree?.chat_session_id || "",
-  ).trim();
-  const taskTreeChatSessionId = String(
-    taskTree?.chat_session_id || chatSessionId || "",
-  ).trim();
-  const body = {
-    session_id: String(currentWorkSessionId.value || "").trim(),
-    chat_session_id: chatSessionId,
-    task_tree_session_id: String(taskTree?.id || "").trim(),
-    task_tree_chat_session_id: taskTreeChatSessionId,
-    task_node_id: String(payload.task_node_id ?? selectedNode?.id ?? "").trim(),
-    task_node_title: String(
-      payload.task_node_title ?? selectedNode?.title ?? "",
-    ).trim(),
-    event_type: String(payload.event_type || "desktop_audit").trim(),
-    phase: String(payload.phase || "desktop_runtime").trim(),
-    step: String(payload.step || "").trim(),
-    status: String(payload.status || "done").trim(),
-    goal: String(
-      payload.goal || taskTree?.root_goal || taskTree?.title || "",
-    ).trim(),
-    content: String(payload.content || "").trim(),
-    facts: Array.isArray(payload.facts) ? payload.facts : [],
-    changed_files: Array.isArray(payload.changed_files)
-      ? payload.changed_files
-      : [],
-    verification: Array.isArray(payload.verification)
-      ? payload.verification
-      : [],
-    risks: Array.isArray(payload.risks) ? payload.risks : [],
-    next_steps: Array.isArray(payload.next_steps) ? payload.next_steps : [],
-  };
-  try {
-    const data = await api.post(
-      `/projects/${encodeURIComponent(projectId)}/chat/desktop-audit-events`,
-      body,
-    );
-    applyWorkSessionPayload(data?.session, {
-      projectId,
-      taskTree,
-    });
-    return data;
-  } catch (err) {
-    console.warn("record desktop audit event failed", err);
-    return null;
-  }
-}
-
 async function recordNativeTerminalApprovalDecision(choice, prompt) {
   if (!hasNativeDesktopBridge()) return;
   const normalizedChoice = String(choice || "").trim();
@@ -6793,20 +6689,6 @@ async function recordNativeTerminalApprovalDecision(choice, prompt) {
       riskLevel: "approval_required",
     });
     await refreshNativeRunnerPermissionRecords();
-    void recordDesktopAuditEvent({
-      event_type: "desktop_runner_permission_decision",
-      step: "Runner 权限决定",
-      status: decision === "reject" ? "rejected" : "done",
-      content: `桌面端记录 Runner 权限决定：${runnerPermissionDecisionLabel({
-        decision,
-      })}${title ? ` · ${title}` : ""}`,
-      facts: [
-        `decision=${decision}`,
-        workspacePath ? `workspace=${workspacePath}` : "",
-        title ? `prompt=${title}` : "",
-      ].filter(Boolean),
-      risks: decision === "reject" ? ["用户拒绝本次终端执行授权"] : [],
-    });
   } catch (err) {
     ElMessage.warning(err?.message || "Runner 审批记录写入失败");
   }
@@ -8873,24 +8755,6 @@ async function startNativeExternalAgentSession(
     }).catch((err) => {
       console.warn("record native external agent permission failed", err);
     });
-    void recordDesktopAuditEvent({
-      event_type: "desktop_external_agent_session_start",
-      step: "Runner 会话启动",
-      status: snapshot.status === "running" ? "running" : "failed",
-      content: `${snapshot.label || agentLabel} 会话：${
-        snapshot.summary || "已启动"
-      }`,
-      facts: [
-        `agent=${snapshot.agentType || agentType}`,
-        `session=${snapshot.sessionId || ""}`,
-        `status=${snapshot.status || ""}`,
-        workspacePath ? `workspace=${workspacePath}` : "",
-      ].filter(Boolean),
-      risks:
-        snapshot.status === "running"
-          ? []
-          : [snapshot.blockedReason || "Runner 会话未启动"],
-    });
     if (snapshot.status === "running") {
       ElMessage.success("Runner 已启动");
       void pollNativeExternalAgentSession(snapshot.sessionId);
@@ -9184,11 +9048,6 @@ const currentProjectLabel = computed(() => {
   const matched = (projects.value || []).find((item) => item.id === projectId);
   return String(matched?.name || projectId);
 });
-const skillResourceSites = computed(() =>
-  (employeeDraftExternalSkillSites.value || [])
-    .map(normalizeEmployeeDraftExternalSkillSite)
-    .filter((item) => item.title && item.url),
-);
 const skillResourceDirectoryStored = computed(() =>
   readPreferredSkillResourceDirectory(selectedProjectId.value),
 );
@@ -11844,12 +11703,6 @@ async function enrichLocalBotRunnerRequest(request = {}, workspacePath = "") {
     effectiveMcpConfig.value,
     requestMcpConfig,
   );
-  if (!normalizedRequest.backendContext && !normalizedRequest.backend_context) {
-    normalizedRequest.backendContext = {
-      apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
-      token: getStoredToken(),
-    };
-  }
   if (!normalizedRequest.modelRuntime && !normalizedRequest.model_runtime) {
     normalizedRequest.modelRuntime =
       await buildLocalBotRunnerModelRuntime(normalizedRequest);
@@ -12504,10 +12357,6 @@ async function syncLocalFeishuBotListeners() {
         ownerUsername: currentUsername.value,
         modelRuntime,
         mcpConfig: globalMcpConfig.value,
-        backendContext: {
-          apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
-          token: getStoredToken(),
-        },
         permissionDecision: localLiuAgentFullAccessEnabled(workspacePath)
           ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
           : null,
@@ -12866,10 +12715,6 @@ async function restoreLocalLiuAgentRuntimeState(
       modelRuntime,
       aiEntryFile: String(projectAiEntryFile.value || "").trim(),
       mcpConfig: effectiveMcpConfig.value,
-      backendContext: {
-        apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
-        token: getStoredToken(),
-      },
     };
     const normalizedPermissionRequest = {
       ...permissionRequest,
@@ -13890,7 +13735,10 @@ function filterProviderModelGroups(modelTypes = []) {
 }
 
 const modelRoutingRoles = computed(() =>
-  MODEL_ROLE_CONFIGS.map((role) => {
+  MODEL_ROLE_CONFIGS.filter(
+    (role) =>
+      !role.buildFeature || isMediaBuildFeatureEnabled(role.buildFeature),
+  ).map((role) => {
     const savedTarget = readModelRoleTarget(projectChatSettings.value, role.id);
     const target =
       role.id === "main"
@@ -13957,10 +13805,28 @@ const localLiuAgentMediaTools = computed(() =>
     ["audio_generation", "generate_audio"],
     ["audio_transcription", "transcribe_audio"],
   ]
+    .filter(([roleId]) => {
+      const role = MODEL_ROLE_CONFIGS.find((item) => item.id === roleId);
+      return !role?.buildFeature || isMediaBuildFeatureEnabled(role.buildFeature);
+    })
     .map(([roleId, name]) => ({
       name,
       ...readModelRoleTarget(projectChatSettings.value, roleId),
     }))
+    .map((item) => {
+      const provider = (providers.value || []).find(
+        (candidate) => String(candidate?.id || "").trim() === String(item.providerId || "").trim(),
+      );
+      return {
+        ...item,
+        baseUrl: String(provider?.base_url || provider?.baseUrl || "").trim(),
+        apiKey: String(provider?.api_key || provider?.apiKey || "").trim(),
+        extraHeaders:
+          provider?.extra_headers && typeof provider.extra_headers === "object"
+            ? provider.extra_headers
+            : {},
+      };
+    })
     .filter((item) => item.providerId && item.modelName),
 );
 
@@ -14214,16 +14080,6 @@ const composerSlashCommands = computed(() => {
       assistActionId: "",
     },
     {
-      id: "stats_report",
-      kind: "stats_report",
-      command: PROJECT_STATS_COMMAND,
-      aliases: PROJECT_STATS_COMMAND_ALIASES,
-      label: "项目统计报表",
-      description:
-        "把当前项目统计 AI 报表注入聊天，让模型继续分析优化方向和升级重点。",
-      assistActionId: "",
-    },
-    {
       id: "lark_cli",
       kind: "lark_cli",
       command: LARK_CLI_COMMAND,
@@ -14387,6 +14243,10 @@ function chatSessionMessageCacheKey(projectId, chatSessionId) {
 function getCachedChatRuntime(projectId, chatSessionId) {
   const key = chatSessionMessageCacheKey(projectId, chatSessionId);
   if (!key) return null;
+  if (isChatSessionDeleted(projectId, chatSessionId)) {
+    chatSessionRuntimeCache.delete(key);
+    return null;
+  }
   const payload = chatSessionRuntimeCache.get(key);
   return payload && typeof payload === "object" ? payload : null;
 }
@@ -14394,6 +14254,7 @@ function getCachedChatRuntime(projectId, chatSessionId) {
 function rememberCachedChatRuntime(projectId, chatSessionId, payload) {
   const key = chatSessionMessageCacheKey(projectId, chatSessionId);
   if (!key || !payload || typeof payload !== "object") return;
+  if (isChatSessionDeleted(projectId, chatSessionId)) return;
   chatSessionRuntimeCache.set(key, payload);
 }
 
@@ -14573,6 +14434,10 @@ function isCurrentChatSession(projectId, chatSessionId) {
 function rememberChatSessionMessages(projectId, chatSessionId, rows) {
   const key = chatSessionMessageCacheKey(projectId, chatSessionId);
   if (!key || !Array.isArray(rows)) return;
+  if (isChatSessionDeleted(projectId, chatSessionId)) {
+    chatSessionMessageCache.delete(key);
+    return;
+  }
   chatSessionMessageCache.set(key, rows);
 }
 
@@ -14586,6 +14451,10 @@ function rememberCurrentChatSessionMessages() {
 function getRememberedChatSessionMessages(projectId, chatSessionId) {
   const key = chatSessionMessageCacheKey(projectId, chatSessionId);
   if (!key) return null;
+  if (isChatSessionDeleted(projectId, chatSessionId)) {
+    chatSessionMessageCache.delete(key);
+    return null;
+  }
   const rows = chatSessionMessageCache.get(key);
   return Array.isArray(rows) ? rows : null;
 }
@@ -14801,9 +14670,15 @@ async function readPersistedChatRuntime(projectId, chatSessionId) {
 }
 
 function writePersistedChatRuntime(projectId, chatSessionId, payload) {
-  rememberCachedChatRuntime(projectId, chatSessionId, payload);
+  if (isChatSessionDeleted(projectId, chatSessionId)) {
+    return Promise.resolve(false);
+  }
   return writeLocalPersistedChatRuntime(projectId, chatSessionId, payload)
-    .then(() => true)
+    .then((saved) => {
+      if (saved !== true) return false;
+      rememberCachedChatRuntime(projectId, chatSessionId, payload);
+      return true;
+    })
     .catch((error) => {
       console.error("persist desktop chat runtime failed", error);
       return false;
@@ -14827,6 +14702,9 @@ async function clearPersistedChatRuntime(projectId, chatSessionId = "") {
 async function fetchPersistedChatRuntime(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
+    return null;
+  }
   const cachedPayload = getCachedChatRuntime(
     normalizedProjectId,
     normalizedChatSessionId,
@@ -14974,11 +14852,25 @@ function listNativeExternalAgentRuntimeSnapshotsForCurrentProject() {
     .filter(Boolean);
 }
 
-function buildPersistedChatRuntimePayload() {
+function buildPersistedChatRuntimePayload(options = {}) {
+  const replaceMessages = options?.replaceMessages === true;
+  const runtimeRows = Array.isArray(options?.rows)
+    ? options.rows
+    : messages.value || [];
+  const deletedMessageIds = Array.from(
+    new Set(
+      (Array.isArray(options?.deletedMessageIds)
+        ? options.deletedMessageIds
+        : []
+      )
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    ),
+  );
   const activeIndex = Number(activeTerminalMirrorAssistantIndex.value ?? -1);
   const activeRow =
-    activeIndex >= 0 && activeIndex < messages.value.length
-      ? messages.value[activeIndex]
+    activeIndex >= 0 && activeIndex < runtimeRows.length
+      ? runtimeRows[activeIndex]
       : null;
   const composerPlanState = getComposerPlanState(
     selectedProjectId.value,
@@ -14987,7 +14879,11 @@ function buildPersistedChatRuntimePayload() {
   return {
     version: 1,
     updated_at: new Date().toISOString(),
-    messages: (messages.value || [])
+    ...(replaceMessages ? { replace_messages: true } : {}),
+    ...(deletedMessageIds.length
+      ? { deleted_message_ids: deletedMessageIds }
+      : {}),
+    messages: runtimeRows
       .map(normalizeRuntimeMessageSnapshot)
       .filter(Boolean),
     composer_plan: composerPlanState.plan,
@@ -15056,12 +14952,41 @@ function mergeHistoryRowWithRuntimeSnapshot(historyRow, runtimeRow) {
   };
 }
 
+function persistedRuntimeDeletedMessageIds(runtimePayload) {
+  const values = [
+    ...(Array.isArray(runtimePayload?.deleted_message_ids)
+      ? runtimePayload.deleted_message_ids
+      : []),
+    ...(Array.isArray(runtimePayload?.deletedMessageIds)
+      ? runtimePayload.deletedMessageIds
+      : []),
+  ];
+  return new Set(
+    values
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
+}
+
+function filterDeletedPersistedRows(rows, deletedMessageIds) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  if (!(deletedMessageIds instanceof Set) || !deletedMessageIds.size) {
+    return sourceRows;
+  }
+  return sourceRows.filter((row) => {
+    const id = String(row?.id || "").trim();
+    return !id || !deletedMessageIds.has(id);
+  });
+}
+
 function applyPersistedChatRuntimeRows(historyRows, runtimePayload) {
-  const rows = Array.isArray(historyRows) ? historyRows : [];
+  const deletedMessageIds = persistedRuntimeDeletedMessageIds(runtimePayload);
+  const rows = filterDeletedPersistedRows(historyRows, deletedMessageIds);
   const runtimeRows = Array.isArray(runtimePayload?.messages)
     ? runtimePayload.messages
         .map(normalizeRuntimeMessageSnapshot)
         .filter(Boolean)
+        .filter((row) => !deletedMessageIds.has(row.id))
     : [];
   if (!runtimeRows.length) return rows;
   const runtimeById = new Map(runtimeRows.map((item) => [item.id, item]));
@@ -15318,6 +15243,7 @@ function schedulePersistChatRuntime() {
   const projectId = String(selectedProjectId.value || "").trim();
   const chatSessionId = String(currentChatSessionId.value || "").trim();
   if (!projectId || !chatSessionId) return;
+  if (isChatSessionDeleted(projectId, chatSessionId)) return;
   markChatRuntimeDirty(projectId, chatSessionId);
   if (chatRuntimePersistTimer) {
     clearTimeout(chatRuntimePersistTimer);
@@ -15349,40 +15275,101 @@ function persistCurrentChatRuntimeNow(
   const normalizedChatSessionId = String(
     chatSessionId || currentChatSessionId.value || "",
   ).trim();
-  if (!normalizedProjectId || !normalizedChatSessionId) return;
-  if (!isCurrentChatSession(normalizedProjectId, normalizedChatSessionId))
-    return;
+  if (!normalizedProjectId || !normalizedChatSessionId) {
+    return Promise.resolve(false);
+  }
+  if (
+    isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)
+  ) {
+    return Promise.resolve(false);
+  }
+  if (!isCurrentChatSession(normalizedProjectId, normalizedChatSessionId)) {
+    return Promise.resolve(false);
+  }
   if (
     options.onlyIfDirty === true &&
     !isChatRuntimeDirty(normalizedProjectId, normalizedChatSessionId)
   ) {
-    return false;
+    return Promise.resolve(false);
   }
   if (chatRuntimePersistTimer) {
     clearTimeout(chatRuntimePersistTimer);
     chatRuntimePersistTimer = null;
   }
-  const payload = buildPersistedChatRuntimePayload();
+  const payload = buildPersistedChatRuntimePayload({
+    replaceMessages: options.replaceMessages === true,
+    rows: options.rows,
+    deletedMessageIds: options.deletedMessageIds,
+  });
+  const persistedRows = Array.isArray(payload.messages)
+    ? payload.messages
+    : [];
   const runtimeKey = chatSessionMessageCacheKey(
     normalizedProjectId,
     normalizedChatSessionId,
   );
   dirtyChatRuntimeSessionKeys.delete(runtimeKey);
-  void writePersistedChatRuntime(
+  return writePersistedChatRuntime(
     normalizedProjectId,
     normalizedChatSessionId,
     payload,
   ).then((saved) => {
-    if (!saved) {
+    if (saved !== true) {
       dirtyChatRuntimeSessionKeys.add(runtimeKey);
+      return false;
     }
+    let metadataRows = persistedRows;
+    const deletedMessageIds = Array.isArray(options.deletedMessageIds)
+      ? options.deletedMessageIds
+      : [];
+    if (options.replaceMessages === true || deletedMessageIds.length > 0) {
+      return readPersistedChatRuntime(
+        normalizedProjectId,
+        normalizedChatSessionId,
+      )
+        .then((persistedPayload) => {
+          if (persistedPayload && typeof persistedPayload === "object") {
+            rememberCachedChatRuntime(
+              normalizedProjectId,
+              normalizedChatSessionId,
+              persistedPayload,
+            );
+            const fullRows = Array.isArray(persistedPayload.messages)
+              ? persistedPayload.messages
+                  .map(normalizeRuntimeMessageSnapshot)
+                  .filter(Boolean)
+              : [];
+            if (
+              fullRows.length > 0 ||
+              persistedPayload.messages_authoritative === true
+            ) {
+              metadataRows = fullRows;
+            }
+          }
+        })
+        .catch((error) => {
+          console.warn("read persisted chat runtime after mutation failed", error);
+        })
+        .then(() => {
+          syncLocalChatSessionMetadata(
+            normalizedProjectId,
+            normalizedChatSessionId,
+            metadataRows,
+          );
+          return true;
+        });
+    }
+    syncLocalChatSessionMetadata(
+      normalizedProjectId,
+      normalizedChatSessionId,
+      metadataRows,
+    );
+    return true;
+  }).catch((error) => {
+    dirtyChatRuntimeSessionKeys.add(runtimeKey);
+    console.error("persist current chat runtime failed", error);
+    return false;
   });
-  syncLocalChatSessionMetadata(
-    normalizedProjectId,
-    normalizedChatSessionId,
-    messages.value,
-  );
-  return true;
 }
 
 const chatHistoryHasMore = computed(() => {
@@ -16414,14 +16401,12 @@ async function openExternalUrlViaSystem(url) {
     const opened = await openNativeExternalUrl(normalizedUrl);
     if (opened) return true;
   } catch (_err) {
-    // Fall through to the server-side opener when the desktop bridge is unavailable.
+    // Continue with the browser fallback when the desktop bridge is unavailable.
   }
   try {
-    const response = await api.post("/projects/external-url/open", {
-      url: normalizedUrl,
-    });
-    return Boolean(response?.opened);
-  } catch (err) {
+    const opened = window.open(normalizedUrl, "_blank", "noopener,noreferrer");
+    return Boolean(opened);
+  } catch (_err) {
     return false;
   }
 }
@@ -16450,19 +16435,19 @@ async function openWorkspaceDirectory(path = "") {
   }
   workspaceFileTreeLoading.value = true;
   try {
-    const data = nativeDesktopBridgeAvailable.value
-      ? await listNativeWorkspaceFiles({
-          workspacePath: projectWorkspaceResolved.value,
-          path: String(path || "").trim(),
-        })
-      : await listProjectWorkspaceFiles(projectId, path);
+    nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
+    if (!nativeDesktopBridgeAvailable.value) {
+      throw new Error("本地工作区文件仅支持桌面客户端");
+    }
+    const data = await listNativeWorkspaceFiles({
+      workspacePath: projectWorkspaceResolved.value,
+      path: String(path || "").trim(),
+    });
     workspaceFileTreePath.value = String(data?.path || "").trim();
     workspaceFileItems.value = Array.isArray(data?.items) ? data.items : [];
-    if (nativeDesktopBridgeAvailable.value) {
-      void refreshWorkspaceDiffPreview({
-        path: activeWorkspaceFilePath.value || "",
-      });
-    }
+    void refreshWorkspaceDiffPreview({
+      path: activeWorkspaceFilePath.value || "",
+    });
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "加载工作区文件失败");
   } finally {
@@ -16629,30 +16614,6 @@ async function refreshWorkspaceDiffPreview(options = {}) {
       path: targetPath,
     });
     workspaceDiffPreview.value = data;
-    const summaryLine = String(data?.summary || data?.status || "")
-      .split(/\r?\n/)
-      .map((item) => item.trim())
-      .find(Boolean);
-    void recordDesktopAuditEvent({
-      event_type: "desktop_workspace_diff_preview",
-      step: targetPath ? "预览文件差异" : "预览工作区差异",
-      status: data?.available === false ? "unavailable" : "done",
-      content: `桌面端只读预览工作区差异${targetPath ? `：${targetPath}` : ""}${
-        summaryLine ? ` · ${summaryLine}` : ""
-      }`,
-      changed_files: targetPath ? [targetPath] : [],
-      verification: [
-        `available=${data?.available === false ? "false" : "true"}`,
-        `truncated=${data?.truncated ? "true" : "false"}`,
-        Number.isFinite(Number(data?.exitCode))
-          ? `exitCode=${Number(data.exitCode)}`
-          : "",
-      ].filter(Boolean),
-      risks:
-        data?.available === false
-          ? [String(data?.reason || "").trim()].filter(Boolean)
-          : [],
-    });
   } catch (err) {
     workspaceDiffPreview.value = {
       available: false,
@@ -16662,16 +16623,6 @@ async function refreshWorkspaceDiffPreview(options = {}) {
       status: "",
       truncated: false,
     };
-    void recordDesktopAuditEvent({
-      event_type: "desktop_workspace_diff_preview",
-      step: targetPath ? "预览文件差异" : "预览工作区差异",
-      status: "failed",
-      content: `桌面端工作区差异预览失败${targetPath ? `：${targetPath}` : ""}`,
-      changed_files: targetPath ? [targetPath] : [],
-      risks: [String(err?.message || "读取工作区差异失败").trim()].filter(
-        Boolean,
-      ),
-    });
   } finally {
     workspaceDiffLoading.value = false;
   }
@@ -16683,33 +16634,20 @@ async function openWorkspaceFile(path = "") {
   if (!projectId || !normalizedPath) return;
   workspaceFileLoading.value = true;
   try {
-    const data = nativeDesktopBridgeAvailable.value
-      ? await readNativeWorkspaceFile({
-          workspacePath: projectWorkspaceResolved.value,
-          path: normalizedPath,
-        })
-      : await readProjectWorkspaceFile(projectId, normalizedPath);
+    nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
+    if (!nativeDesktopBridgeAvailable.value) {
+      throw new Error("本地工作区文件仅支持桌面客户端");
+    }
+    const data = await readNativeWorkspaceFile({
+      workspacePath: projectWorkspaceResolved.value,
+      path: normalizedPath,
+    });
     activeWorkspaceFilePath.value = String(data?.path || normalizedPath).trim();
     workspaceFileDraft.value = String(data?.content || "");
     workspaceFileOriginal.value = workspaceFileDraft.value;
-    if (nativeDesktopBridgeAvailable.value) {
-      void recordDesktopAuditEvent({
-        event_type: "desktop_workspace_file_read",
-        step: "只读预览工作区文件",
-        status: "done",
-        content: `桌面端只读预览工作区文件：${activeWorkspaceFilePath.value}`,
-        changed_files: [activeWorkspaceFilePath.value],
-        verification: [
-          `bytes=${Number(data?.size || workspaceFileDraft.value.length || 0)}`,
-          data?.truncated ? "truncated=true" : "truncated=false",
-        ],
-      });
-    }
-    if (nativeDesktopBridgeAvailable.value) {
-      void refreshWorkspaceDiffPreview({
-        path: activeWorkspaceFilePath.value,
-      });
-    }
+    void refreshWorkspaceDiffPreview({
+      path: activeWorkspaceFilePath.value,
+    });
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "读取工作区文件失败");
   } finally {
@@ -16750,25 +16688,8 @@ async function prepareDesktopWorkspaceFileWrite(path) {
     const reason = String(preparation?.reason || "").trim();
     const riskLevel = String(preparation?.riskLevel || "medium").trim();
     const changed = Boolean(preparation?.changed);
-    const facts = [
-      `risk=${riskLevel}`,
-      `changed=${changed ? "true" : "false"}`,
-      `exists=${preparation?.exists ? "true" : "false"}`,
-      `currentSize=${Number(preparation?.currentSize || 0)}`,
-      `nextSize=${Number(preparation?.nextSize || 0)}`,
-      `currentLines=${Number(preparation?.currentLineCount || 0)}`,
-      `nextLines=${Number(preparation?.nextLineCount || 0)}`,
-    ];
     if (!changed) {
       ElMessage.info("文件内容没有变化，无需写入。");
-      void recordDesktopAuditEvent({
-        event_type: "desktop_workspace_file_write_prepare",
-        step: "准备写入工作区文件",
-        status: "skipped",
-        content: summary || `桌面端准备写入：${normalizedPath}`,
-        changed_files: [normalizedPath],
-        facts,
-      });
       return true;
     }
     await ElMessageBox.confirm(
@@ -16815,15 +16736,6 @@ async function prepareDesktopWorkspaceFileWrite(path) {
       },
     };
     workspaceFileOriginal.value = workspaceFileDraft.value;
-    void recordDesktopAuditEvent({
-      event_type: "desktop_workspace_file_write_prepare",
-      step: "准备写入工作区文件",
-      status: "approval_recorded",
-      content: summary || `桌面端准备写入：${normalizedPath}`,
-      changed_files: [normalizedPath],
-      facts,
-      verification: ["write_executed=true", "approval_recorded=true"],
-    });
     ElMessage.success("文件已确认保存");
     await revealWorkspaceFileChangesAfterMutation(
       projectWorkspaceResolved.value,
@@ -16842,27 +16754,9 @@ async function prepareDesktopWorkspaceFileWrite(path) {
         riskLevel: "medium",
       }).catch(() => null);
       await refreshNativeRunnerPermissionRecords();
-      void recordDesktopAuditEvent({
-        event_type: "desktop_workspace_file_write_prepare",
-        step: "准备写入工作区文件",
-        status: "rejected",
-        content: `用户取消桌面端写入前确认：${normalizedPath}`,
-        changed_files: [normalizedPath],
-        risks: ["用户取消写入前确认"],
-      });
       return false;
     }
     ElMessage.error(err?.message || "准备写入确认失败");
-    void recordDesktopAuditEvent({
-      event_type: "desktop_workspace_file_write_prepare",
-      step: "准备写入工作区文件",
-      status: "failed",
-      content: `桌面端写入前确认失败：${normalizedPath}`,
-      changed_files: [normalizedPath],
-      risks: [String(err?.message || "准备写入确认失败").trim()].filter(
-        Boolean,
-      ),
-    });
     return false;
   } finally {
     workspaceFileSaving.value = false;
@@ -16909,25 +16803,12 @@ async function saveActiveWorkspaceFile() {
   const projectId = String(selectedProjectId.value || "").trim();
   const path = String(activeWorkspaceFilePath.value || "").trim();
   if (!projectId || !path) return;
-  if (workspaceFileReadOnly.value) {
-    await prepareDesktopWorkspaceFileWrite(path);
+  nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
+  if (!nativeDesktopBridgeAvailable.value) {
+    ElMessage.warning("本地工作区文件仅支持桌面客户端");
     return;
   }
-  workspaceFileSaving.value = true;
-  try {
-    const data = await saveProjectWorkspaceFile(projectId, {
-      path,
-      content: workspaceFileDraft.value,
-    });
-    activeWorkspaceFilePath.value = String(data?.path || path).trim();
-    workspaceFileOriginal.value = workspaceFileDraft.value;
-    await openWorkspaceDirectory(workspaceFileTreePath.value);
-    ElMessage.success("文件已保存");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "保存工作区文件失败");
-  } finally {
-    workspaceFileSaving.value = false;
-  }
+  await prepareDesktopWorkspaceFileWrite(path);
 }
 
 async function startTerminalMirror(options = {}) {
@@ -19456,7 +19337,7 @@ async function loadLocalLiuAgentOfflineProjects() {
 
 async function loadLocalProjectChatStoreProjects() {
   try {
-    const sessions = await readLocalChatSessions("local-project-index");
+    const sessions = await readAllLocalChatSessions();
     return Array.from(
       new Map(
         (Array.isArray(sessions) ? sessions : [])
@@ -22852,10 +22733,6 @@ async function submitCurrentLocalLiuAgentPermissionReplyIfNeeded(text = "") {
       ),
       modelRuntime: await buildLocalLiuAgentModelRuntime(),
       mcpConfig: effectiveMcpConfig.value,
-      backendContext: {
-        apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
-        token: getStoredToken(),
-      },
     };
     classification = await classifyNativeLiuAgentPermissionReply({
       ...fallbackPayload,
@@ -23682,184 +23559,46 @@ function agentRuntimePermissionActionValue(actionKey) {
   return mapping[String(actionKey || "").trim()] || "";
 }
 
-function markAgentRuntimePermissionActionPending(operation, action) {
-  const meta =
-    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
-  const row =
-    findMessageRowByAgentRuntimePermission(
-      meta.run_id,
-      meta.call_id,
-      meta.command_signature,
-    ) || findMessageRowByOperationId(operation?.id);
-  if (!row) return null;
-  const nextSummary =
-    action === "deny"
-      ? "正在拒绝本次工具调用"
-      : "已提交授权，运行时正在继续执行";
-  updateAgentRuntimePermissionOperations(row, meta.run_id, meta.call_id, {
-    phase: "running",
-    summary: nextSummary,
-    detail: String(operation?.detail || "").trim(),
-    actionType: "none",
-    meta,
-  });
-  return upsertMessageOperation(row, {
-    ...operation,
-    phase: "running",
-    summary: nextSummary,
-    detail: String(operation?.detail || "").trim(),
-    actionType: "none",
-  });
-}
-
-function restoreAgentRuntimePermissionAction(operation) {
-  const meta =
-    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
-  const row =
-    findMessageRowByAgentRuntimePermission(
-      meta.run_id,
-      meta.call_id,
-      meta.command_signature,
-    ) || findMessageRowByOperationId(operation?.id);
-  if (!row) return;
-  updateAgentRuntimePermissionOperations(row, meta.run_id, meta.call_id, {
-    phase: "waiting_user",
-    summary:
-      String(operation?.summary || "").trim() ||
-      "等待你选择本次工具调用的授权范围",
-    actionType: "approve",
-    meta,
-  });
-  upsertMessageOperation(row, {
-    ...operation,
-    phase: "waiting_user",
-    summary:
-      String(operation?.summary || "").trim() ||
-      "等待你选择本次工具调用的授权范围",
-    actionType: "approve",
-  });
-}
-
 async function submitAgentRuntimePermissionAction(operation, actionKey) {
   const action = agentRuntimePermissionActionValue(actionKey);
-  const projectId = String(selectedProjectId.value || "").trim();
   const currentOperation = latestAgentRuntimePermissionOperation(operation);
   const meta =
-    currentOperation?.meta && typeof currentOperation.meta === "object"
-      ? currentOperation.meta
-      : {};
-  const decision =
-    meta.permission_decision && typeof meta.permission_decision === "object"
-      ? meta.permission_decision
-      : {};
-  const runId = String(meta.run_id || decision.run_id || "").trim();
-  const callId = String(meta.call_id || decision.call_id || "").trim();
-  const toolName = String(meta.tool_name || decision.tool_name || "").trim();
-  if (!projectId || !action || !runId || !callId || !toolName) {
+  currentOperation?.meta && typeof currentOperation.meta === "object"
+    ? currentOperation.meta
+    : {};
+  if (!action) {
     ElMessage.warning("缺少权限上下文，无法继续");
     return;
   }
-  const originalOperation = { ...currentOperation };
   const row =
     findMessageRowByAgentRuntimePermission(
-      runId,
-      callId,
+      meta.run_id,
+      meta.call_id,
       meta.command_signature,
     ) || findMessageRowByOperationId(currentOperation.id);
-  markAgentRuntimePermissionActionPending(currentOperation, action);
-  try {
-    const response = await submitAgentRuntimePermissionActionRequest(
-      projectId,
-      {
-        action,
-        run_id: runId,
-        call_id: callId,
-        tool_name: toolName,
-        args:
-          meta.tool_args && typeof meta.tool_args === "object"
-            ? meta.tool_args
-            : {},
-        chat_session_id: String(
-          meta.chat_session_id || currentChatSessionId.value || "",
-        ).trim(),
-        assistant_message_id: String(
-          meta.assistant_message_id || row?.id || "",
-        ).trim(),
-      },
-    );
-    const resume =
-      response?.resume && typeof response.resume === "object"
-        ? response.resume
-        : null;
-    const resumed = Boolean(resume?.resumed);
-    const observations = Array.isArray(resume?.observations)
-      ? resume.observations
-      : [];
-    const observationSummary = observations
-      .map((item) => String(item?.summary || item?.status || "").trim())
-      .filter(Boolean)
-      .join("\n");
-    const continuationContent = agentRuntimeResumeFinalContent(resume);
-    const continuation = continuationContent ? resume?.continuation : null;
-    const missingFinalAnswer = agentRuntimeResumeMissingFinalAnswer(resume);
-    const resumeDetail =
-      continuationContent ||
-      (missingFinalAnswer
-        ? agentRuntimeMissingFinalAnswerMessage()
-        : observationSummary);
-    const currentRow =
-      findMessageRowByAgentRuntimePermission(
-        runId,
-        callId,
-        meta.command_signature,
-      ) ||
-      findMessageRowByOperationId(currentOperation.id) ||
-      row;
-    upsertMessageOperation(currentRow, {
+  const summary =
+    action === "deny"
+      ? "已拒绝旧服务端工具调用"
+      : "旧服务端运行时授权已移除";
+  const detail =
+    "该授权来自已移除的服务端 Agent Runtime，无法继续执行。请使用桌面本地 Agent 的授权卡片重新发起任务。";
+  if (row) {
+    updateAgentRuntimePermissionOperations(row, meta.run_id, meta.call_id, {
+      phase: "blocked",
+      summary,
+      detail,
+      actionType: "none",
+      meta,
+    });
+    upsertMessageOperation(row, {
       ...currentOperation,
-      phase: action === "deny" ? "blocked" : "completed",
-      summary:
-        action === "deny"
-          ? "已拒绝，本次工具调用不会执行"
-          : resumed
-            ? continuation
-              ? "已保存授权并继续运行"
-              : missingFinalAnswer
-                ? "工具已执行，但模型未返回最终回答"
-                : "已保存授权并恢复执行"
-            : "已保存授权，等待运行时继续执行",
-      detail: resumeDetail,
+      phase: "blocked",
+      summary,
+      detail,
       actionType: "none",
     });
-    const assistantMessage =
-      response?.assistant_message &&
-      typeof response.assistant_message === "object"
-        ? response.assistant_message
-        : null;
-    if (assistantMessage) {
-      applyRealtimeChatMessagePayload({
-        chat_session_id: String(
-          meta.chat_session_id || currentChatSessionId.value || "",
-        ).trim(),
-        message: assistantMessage,
-      });
-    }
-    applyAgentRuntimeResumeToAssistantMessage(currentRow, resume, { runId });
-    ElMessage.success(
-      action === "deny"
-        ? "已拒绝"
-        : resumed
-          ? continuation
-            ? "已继续运行"
-            : missingFinalAnswer
-              ? "工具已执行，但模型未返回最终回答"
-              : "已恢复执行"
-          : "已保存授权",
-    );
-  } catch (err) {
-    restoreAgentRuntimePermissionAction(originalOperation);
-    ElMessage.error(err?.detail || err?.message || "保存授权失败");
   }
+  ElMessage.warning(detail);
 }
 
 function applyAgentRuntimePermissionActionResult(eventData = {}) {
@@ -24422,8 +24161,6 @@ function canViewAiRequestContext(item) {
 
 async function openAiRequestContextDialog(item) {
   if (!canViewAiRequestContext(item)) return;
-  const projectId = String(selectedProjectId.value || "").trim();
-  const chatSessionId = String(currentChatSessionId.value || "").trim();
   const messageId = String(item?.id || "").trim();
   aiContextDialogVisible.value = true;
   aiContextDialogLoading.value = true;
@@ -24431,22 +24168,22 @@ async function openAiRequestContextDialog(item) {
   aiContextDialogMessageId.value = messageId;
   aiContextDialogPayload.value = null;
   try {
-    const data = await api.get(
-      `/projects/${encodeURIComponent(projectId)}/chat/history/messages/${encodeURIComponent(messageId)}/ai-context`,
-      {
-        params: { chat_session_id: chatSessionId },
-      },
-    );
+    const sourceContext =
+      item?.source_context && typeof item.source_context === "object"
+        ? item.source_context
+        : item?.sourceContext && typeof item.sourceContext === "object"
+          ? item.sourceContext
+          : {};
     aiContextDialogPayload.value =
-      data?.ai_context && typeof data.ai_context === "object"
-        ? data.ai_context
+      sourceContext.ai_request_context &&
+      typeof sourceContext.ai_request_context === "object"
+        ? sourceContext.ai_request_context
         : null;
     if (!aiContextDialogPayload.value) {
       aiContextDialogError.value = "这条消息没有可查看的 AI 请求上下文";
     }
   } catch (err) {
-    aiContextDialogError.value =
-      err?.detail || err?.message || "读取 AI 请求上下文失败";
+    aiContextDialogError.value = err?.message || "读取本地 AI 请求上下文失败";
   } finally {
     aiContextDialogLoading.value = false;
   }
@@ -24903,6 +24640,28 @@ function countUserMessagesBefore(messageIndex) {
   return count;
 }
 
+function findConversationRoundEnd(startIndex, rows = messages.value) {
+  const normalizedStartIndex = Number(startIndex);
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  if (
+    !Number.isInteger(normalizedStartIndex) ||
+    normalizedStartIndex < 0 ||
+    normalizedStartIndex >= sourceRows.length
+  ) {
+    return -1;
+  }
+  for (
+    let index = normalizedStartIndex + 1;
+    index < sourceRows.length;
+    index += 1
+  ) {
+    if (String(sourceRows[index]?.role || "").trim() === "user") {
+      return index;
+    }
+  }
+  return sourceRows.length;
+}
+
 function messageHasReplayUnsupportedAssets(item) {
   return (
     (Array.isArray(item?.attachments) && item.attachments.length > 0) ||
@@ -24938,11 +24697,25 @@ function resolveDeleteTarget(messageIndex) {
   if (role === "user") {
     const messageId = String(item?.id || "").trim();
     if (!messageId) return null;
+    const startIndex = normalizedIndex;
+    const endIndex = findConversationRoundEnd(startIndex);
+    if (endIndex < 0) return null;
+    const roundRows = messages.value.slice(startIndex, endIndex);
     return {
-      mode: "truncate",
+      mode: "round",
       item,
       index: normalizedIndex,
       messageId,
+      sourceIndex: normalizedIndex,
+      startIndex,
+      endIndex,
+      startMessageId: messageId,
+      nextRoundStartMessageId: String(
+        messages.value[endIndex]?.id || "",
+      ).trim(),
+      messageIds: roundRows
+        .map((row) => String(row?.id || "").trim())
+        .filter(Boolean),
       fallbackUserContent: String(item?.content || "").trim(),
       fallbackUserTurnIndex: countUserMessagesBefore(normalizedIndex),
     };
@@ -24950,45 +24723,76 @@ function resolveDeleteTarget(messageIndex) {
   const source = resolveMessageSource(normalizedIndex);
   const sourceMessageId = String(source?.item?.id || "").trim();
   if (!source || !sourceMessageId) return null;
+  const startIndex = source.index;
+  const endIndex = findConversationRoundEnd(startIndex);
+  if (endIndex < 0) return null;
+  const roundRows = messages.value.slice(startIndex, endIndex);
+  const nextRoundStartMessageId = String(
+    messages.value[endIndex]?.id || "",
+  ).trim();
   return {
-    mode: "truncate",
+    mode: "round",
     item,
     index: normalizedIndex,
     messageId: sourceMessageId,
     sourceIndex: source.index,
+    startIndex,
+    endIndex,
+    startMessageId: sourceMessageId,
+    nextRoundStartMessageId,
+    messageIds: roundRows
+      .map((row) => String(row?.id || "").trim())
+      .filter(Boolean),
     fallbackUserContent: String(source?.item?.content || "").trim(),
     fallbackUserTurnIndex: countUserMessagesBefore(source.index),
   };
 }
 
-function getDeleteActionTooltip(item) {
-  const role = String(item?.role || "").trim();
-  return role === "user" ? "删除此条及后续" : "删除这轮对话";
+function getDeleteActionTooltip() {
+  return "删除此轮对话";
 }
 
-function buildDeleteMessageConfirmText(item) {
-  const role = String(item?.role || "").trim();
-  if (role === "user") {
-    return "确认删除这条消息及其后续内容吗？删除后不可恢复。";
-  }
-  return "确认删除这条 AI 回复所在整轮对话吗？会同时删除对应提问与后续内容。";
+function buildDeleteMessageConfirmText() {
+  return "确认删除这轮对话吗？只会删除当前提问及对应 AI 回复，不会影响后面的对话。删除后不可恢复。";
 }
 
 function applyDeleteTargetLocally(target) {
   if (!target) return;
-  const role = String(target?.item?.role || "").trim();
-  const sliceIndex =
-    role === "user"
-      ? Number(target?.index)
-      : Number(target?.sourceIndex ?? target?.index);
-  if (!Number.isInteger(sliceIndex) || sliceIndex < 0) return;
-  messages.value = messages.value.slice(0, sliceIndex);
+  const rows = Array.isArray(messages.value) ? messages.value : [];
+  const startMessageId = String(target?.startMessageId || "").trim();
+  const nextRoundStartMessageId = String(
+    target?.nextRoundStartMessageId || "",
+  ).trim();
+  let startIndex = Number(target?.startIndex ?? target?.sourceIndex);
+  if (startMessageId) {
+    const currentIndex = rows.findIndex(
+      (row) => String(row?.id || "").trim() === startMessageId,
+    );
+    if (currentIndex >= 0) startIndex = currentIndex;
+  }
+  if (!Number.isInteger(startIndex) || startIndex < 0) return;
+
+  let endIndex = -1;
+  if (nextRoundStartMessageId) {
+    const nextRoundIndex = rows.findIndex(
+      (row) => String(row?.id || "").trim() === nextRoundStartMessageId,
+    );
+    if (nextRoundIndex > startIndex) endIndex = nextRoundIndex;
+  }
+  if (endIndex < 0) {
+    endIndex = findConversationRoundEnd(startIndex, rows);
+  }
+  if (endIndex <= startIndex) return;
+  messages.value = [
+    ...rows.slice(0, startIndex),
+    ...rows.slice(endIndex),
+  ];
   chatHistoryLoadedCount.value = messages.value.length;
 }
 
 function buildDeleteSuccessText(item) {
-  const role = String(item?.role || "").trim();
-  return role === "user" ? "消息已删除" : "该轮对话已删除";
+  void item;
+  return "该轮对话已删除";
 }
 
 function buildDeleteErrorText(item) {
@@ -25068,10 +24872,28 @@ async function truncateConversationFromSource(source) {
   if (!source) return;
   const projectId = String(selectedProjectId.value || "").trim();
   const chatSessionId = String(currentChatSessionId.value || "").trim();
+  const previousMessages = messages.value;
+  const previousLoadedCount = chatHistoryLoadedCount.value;
   applyReplaySourceTruncateLocally(source);
   if (projectId && chatSessionId) {
+    const remainingMessageIds = new Set(
+      messages.value.map((item) => String(item?.id || "").trim()).filter(Boolean),
+    );
+    const deletedMessageIds = previousMessages
+      .map((item) => String(item?.id || "").trim())
+      .filter((id) => id && !remainingMessageIds.has(id));
     rememberCurrentChatSessionMessages();
-    persistCurrentChatRuntimeNow(projectId, chatSessionId);
+    const saved = await persistCurrentChatRuntimeNow(
+      projectId,
+      chatSessionId,
+      { replaceMessages: true, deletedMessageIds },
+    );
+    if (saved !== true) {
+      messages.value = previousMessages;
+      chatHistoryLoadedCount.value = previousLoadedCount;
+      rememberCurrentChatSessionMessages();
+      throw new Error("截断对话未能保存，请稍后重试");
+    }
   }
 }
 
@@ -25103,10 +24925,34 @@ async function deleteMessageAt(messageIndex) {
   }
   const projectId = String(selectedProjectId.value || "").trim();
   const chatSessionId = String(currentChatSessionId.value || "").trim();
+  const previousMessages = messages.value;
+  const previousLoadedCount = chatHistoryLoadedCount.value;
   try {
     applyDeleteTargetLocally(target);
+    const remainingMessageIds = new Set(
+      messages.value.map((item) => String(item?.id || "").trim()).filter(Boolean),
+    );
+    const deletedMessageIds = previousMessages
+      .map((item) => String(item?.id || "").trim())
+      .filter((id) => id && !remainingMessageIds.has(id));
     rememberCurrentChatSessionMessages();
-    persistCurrentChatRuntimeNow(projectId, chatSessionId);
+    const saved = await persistCurrentChatRuntimeNow(
+      projectId,
+      chatSessionId,
+      {
+        // 普通删除只记录被删消息的 ID，不能把当前分页结果当成全量快照，
+        // 否则未加载的历史消息也会被 native merge 当成“已删除”。
+        replaceMessages: false,
+        deletedMessageIds,
+        rows: messages.value,
+      },
+    );
+    if (saved !== true) {
+      messages.value = previousMessages;
+      chatHistoryLoadedCount.value = previousLoadedCount;
+      rememberCurrentChatSessionMessages();
+      throw new Error("删除消息未能保存，请稍后重试");
+    }
     ElMessage.success(buildDeleteSuccessText(item));
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || buildDeleteErrorText(item));
@@ -26141,23 +25987,7 @@ async function fetchProjectStatsAiReport(projectId) {
   if (!normalizedProjectId) {
     throw new Error("缺少项目 ID，无法加载统计 AI 报表");
   }
-  const response = await api.get("/statistics/overview", {
-    params: {
-      days: PROJECT_STATS_REPORT_DAYS,
-      project_id: normalizedProjectId,
-    },
-  });
-  const report = response?.ai_report || null;
-  const markdown = String(report?.markdown || "").trim();
-  if (!markdown) {
-    throw new Error("当前项目暂无可读取的统计 AI 报表");
-  }
-  return {
-    days: Number(response?.days || PROJECT_STATS_REPORT_DAYS),
-    summary: String(report?.summary || "").trim(),
-    conclusion: String(report?.conclusion || "").trim(),
-    markdown,
-  };
+  throw new Error("本地模式暂未实现项目统计报表，已移除远端统计接口");
 }
 
 function buildProjectStatsCommandPrompt({
@@ -26987,88 +26817,6 @@ async function copySkillResourceDirectory() {
     ElMessage.success("技能目录路径已复制");
   } catch {
     ElMessage.error("复制路径失败");
-  }
-}
-
-async function copySkillResourceSite(site) {
-  const url = String(site?.url || "").trim();
-  if (!url) {
-    ElMessage.warning("当前站点没有可复制地址");
-    return;
-  }
-  try {
-    await writeClipboardText(url);
-    ElMessage.success("站点地址已复制");
-  } catch {
-    ElMessage.error("复制地址失败");
-  }
-}
-
-async function searchSkillResources() {
-  const query = String(skillResourceSearchQuery.value || "").trim();
-  if (!query) {
-    skillResourceSearchResults.value = [];
-    skillResourceSearchResolvedQueries.value = [];
-    return;
-  }
-  skillResourceSearchLoading.value = true;
-  try {
-    const { resolvedQueries, results } = await searchSkillResourceItems(query, {
-      externalSkillSites: employeeDraftExternalSkillSites.value,
-      preferredSites: skillResourceSites.value,
-    });
-    skillResourceSearchResolvedQueries.value = resolvedQueries;
-    skillResourceSearchResults.value = results;
-  } catch (err) {
-    skillResourceSearchResults.value = [];
-    skillResourceSearchResolvedQueries.value = [];
-    ElMessage.error(err?.detail || err?.message || "搜索技能资源失败");
-  } finally {
-    skillResourceSearchLoading.value = false;
-  }
-}
-
-function resetSkillResourceSearch() {
-  skillResourceSearchQuery.value = "";
-  skillResourceSearchResults.value = [];
-  skillResourceSearchResolvedQueries.value = [];
-}
-
-async function installSkillResource(site) {
-  const slug = String(site?.slug || "").trim();
-  const version = String(site?.version || "").trim();
-  const installDir = String(skillResourceDirectoryResolved.value || "").trim();
-  if (!slug || !version) {
-    ElMessage.warning("当前技能资源缺少可安装版本");
-    return;
-  }
-  if (!installDir) {
-    ElMessage.warning("请先选择本地技能目录");
-    return;
-  }
-  if (site?.requiresReview) {
-    await ElMessageBox.confirm(
-      `技能「${site.title || slug}」被标记为需要人工确认，确定继续安装？`,
-      "高风险确认",
-      { type: "warning" },
-    );
-  }
-  skillResourceInstallingSlug.value = slug;
-  try {
-    const result = await installVettSkillResource(slug, {
-      version,
-      installDir,
-    });
-    const resolvedInstallDir = String(result?.install_dir || installDir).trim();
-    ElMessage.success(
-      resolvedInstallDir
-        ? `技能已下载到本地技能目录：${resolvedInstallDir}`
-        : "技能已下载到本地技能目录",
-    );
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "下载技能资源失败");
-  } finally {
-    skillResourceInstallingSlug.value = "";
   }
 }
 
@@ -28545,51 +28293,32 @@ function handleExternalModulesChanged(modules) {
 }
 
 async function fetchSystemConfig() {
-  try {
-    const data = await api.get("/system-config");
-    if (data?.config?.chat_upload_max_limit) {
-      maxUploadLimit.value = Number(data.config.chat_upload_max_limit);
-    }
-    desktopAgentGlobalPrompt.value = String(
-      data?.config?.desktop_agent_global_prompt || "",
-    );
-    await reloadLocalBotConnectorConfig();
-    employeeDraftAutoRuleGenerationEnabled.value =
-      !Object.prototype.hasOwnProperty.call(
-        data?.config || {},
-        "employee_auto_rule_generation_enabled",
-      ) || !!data?.config?.employee_auto_rule_generation_enabled;
-    employeeDraftAutoRuleGenerationSourceFilters.value = normalizeStringList(
-      data?.config?.employee_auto_rule_generation_source_filters || [
-        "prompts_chat_curated",
-      ],
-      8,
-    );
-    employeeDraftExternalSkillSites.value = (
-      Array.isArray(data?.config?.employee_external_skill_sites)
-        ? data.config.employee_external_skill_sites
-        : []
-    )
-      .map(normalizeEmployeeDraftExternalSkillSite)
-      .filter((item) => item.url && item.title);
-    employeeDraftAutoRuleGenerationMaxCount.value = Math.min(
-      6,
-      Math.max(
-        1,
-        Number(data?.config?.employee_auto_rule_generation_max_count || 3),
-      ),
-    );
-  } catch (err) {
-    console.error("加载系统配置失败", err);
-    employeeDraftAutoRuleGenerationEnabled.value = true;
-    employeeDraftAutoRuleGenerationSourceFilters.value = [
-      "prompts_chat_curated",
-    ];
-    employeeDraftExternalSkillSites.value = [];
-    employeeDraftAutoRuleGenerationMaxCount.value = 3;
-    await reloadLocalBotConnectorConfig();
-    desktopAgentGlobalPrompt.value = "";
+  const config = readLocalSystemConfig();
+  if (config?.chat_upload_max_limit) {
+    maxUploadLimit.value = Number(config.chat_upload_max_limit);
   }
+  desktopAgentGlobalPrompt.value = String(
+    config?.desktop_agent_global_prompt || "",
+  );
+  employeeDraftAutoRuleGenerationEnabled.value =
+    !Object.prototype.hasOwnProperty.call(
+      config || {},
+      "employee_auto_rule_generation_enabled",
+    ) || !!config?.employee_auto_rule_generation_enabled;
+  employeeDraftAutoRuleGenerationSourceFilters.value = normalizeStringList(
+    config?.employee_auto_rule_generation_source_filters || [
+      "prompts_chat_curated",
+    ],
+    8,
+  );
+  employeeDraftAutoRuleGenerationMaxCount.value = Math.min(
+    6,
+    Math.max(
+      1,
+      Number(config?.employee_auto_rule_generation_max_count || 3),
+    ),
+  );
+  await reloadLocalBotConnectorConfig();
 }
 
 async function reloadLocalBotConnectorConfig() {
@@ -28646,62 +28375,12 @@ async function fetchChatParameterOptions() {
 }
 
 async function fetchProjects() {
-  if (isLocalProjectMode()) {
-    const fallbackProjects = await resolveProjectListOfflineFallback(
-      readLocalProjects(),
-    );
-    projects.value = fallbackProjects;
-    projectListOffline.value = true;
-    if (!projects.value.length) {
-      clearSelectedProjectId();
-    }
-    return;
-  }
-  const currentProjects = Array.isArray(projects.value)
-    ? projects.value.filter((item) => String(item?.id || "").trim())
-    : [];
-  try {
-    const onlineProjects = (await fetchAllVisibleProjects())
-      .map(normalizeOfflineProjectListItem)
-      .filter(Boolean);
-    if (onlineProjects.length) {
-      projects.value = onlineProjects;
-      saveProjectListOfflineSnapshot(projects.value);
-      projectListOffline.value = false;
-    } else {
-      const fallbackProjects =
-        await resolveProjectListOfflineFallback(currentProjects);
-      if (fallbackProjects.length) {
-        projects.value = fallbackProjects;
-        saveProjectListOfflineSnapshot(projects.value);
-        projectListOffline.value = true;
-      } else {
-        projects.value = [];
-        projectListOffline.value = false;
-      }
-    }
-  } catch (err) {
-    const fallbackProjects =
-      await resolveProjectListOfflineFallback(currentProjects);
-    if (fallbackProjects.length) {
-      projects.value = fallbackProjects;
-      saveProjectListOfflineSnapshot(projects.value);
-      projectListOffline.value = true;
-    } else {
-      projectListOffline.value = true;
-      throw err;
-    }
-  }
+  const fallbackProjects = await resolveProjectListOfflineFallback(
+    readLocalProjects(),
+  );
+  projects.value = fallbackProjects;
+  projectListOffline.value = true;
   if (!projects.value.length) {
-    clearSelectedProjectId();
-    return;
-  }
-  const savedProjectId = readSelectedProjectId();
-  if (
-    savedProjectId &&
-    !(projects.value || []).some((item) => item.id === savedProjectId)
-  ) {
-    if (projectListOffline.value) return;
     clearSelectedProjectId();
   }
 }
@@ -28718,143 +28397,59 @@ async function fetchSelectedProject(projectId = "") {
     clearSelectedProjectId();
     return;
   }
-  if (isLocalProjectMode()) {
-    const localProjects = readLocalProjects()
-      .map(normalizeOfflineProjectListItem)
-      .filter(Boolean);
-    const fallbackProjects = await resolveProjectListOfflineFallback(
-      localProjects,
-    );
-    const project =
-      localProjects.find((item) => item.id === normalizedProjectId) ||
-      normalizeOfflineProjectListItem(getLocalProject(normalizedProjectId)) ||
-      fallbackProjects.find((item) => item.id === normalizedProjectId) ||
-      currentProjects.find((item) => item.id === normalizedProjectId) ||
-      null;
-    if (!project) {
-      throw new Error("本地项目不存在或尚未完成导入");
-    }
-    projects.value = mergeOfflineProjectLists(
-      localProjects,
-      fallbackProjects,
-      [project],
-    );
-    projectListOffline.value = true;
-    return;
+  const localProjects = readLocalProjects()
+    .map(normalizeOfflineProjectListItem)
+    .filter(Boolean);
+  const fallbackProjects = await resolveProjectListOfflineFallback(
+    localProjects,
+  );
+  const project =
+    localProjects.find((item) => item.id === normalizedProjectId) ||
+    normalizeOfflineProjectListItem(getLocalProject(normalizedProjectId)) ||
+    fallbackProjects.find((item) => item.id === normalizedProjectId) ||
+    currentProjects.find((item) => item.id === normalizedProjectId) ||
+    null;
+  if (!project) {
+    throw new Error("本地项目不存在或尚未完成导入");
   }
-  try {
-    const data = await api.get(
-      `/projects/${encodeURIComponent(normalizedProjectId)}`,
-    );
-    const project = normalizeOfflineProjectListItem(data?.project || data);
-    if (!project) throw new Error("项目不存在");
-    projects.value = [project];
-    saveProjectListOfflineSnapshot(projects.value);
-    projectListOffline.value = false;
-  } catch (err) {
-    const fallbackProjects = await resolveProjectListOfflineFallback(
-      currentProjects,
-    );
-    const fallbackProject = fallbackProjects.find(
-      (item) => String(item?.id || "").trim() === normalizedProjectId,
-    );
-    if (!fallbackProject) throw err;
-    projects.value = [fallbackProject];
-    projectListOffline.value = true;
-  }
+  projects.value = mergeOfflineProjectLists(
+    localProjects,
+    fallbackProjects,
+    [project],
+  );
+  projectListOffline.value = true;
 }
 
 async function fetchGlobalProviders() {
-  if (isLocalProjectMode()) {
-    const projectId = String(selectedProjectId.value || "").trim();
-    const localProviders = readLocalEntities("llm_providers").filter(
-      (item) => item?.enabled !== false,
-    );
-    if (localProviders.length) {
-      providers.value = localProviders;
-      const preferredProviderId = String(selectedProviderId.value || "").trim();
-      const selectedProvider =
-        localProviders.find((item) => String(item?.id || "").trim() === preferredProviderId) ||
-        localProviders[0];
-      selectedProviderId.value = String(selectedProvider?.id || "").trim();
-      const modelNames = normalizeProviderModelNames(
-        selectedProvider,
-        modelTypeOptions.value,
-      );
-      selectedModelName.value = modelNames.includes(selectedModelName.value)
-        ? selectedModelName.value
-        : String(selectedProvider?.default_model || modelNames[0] || "").trim();
-      defaultProviderId.value = selectedProviderId.value;
-      defaultModelName.value = selectedModelName.value;
-      manualModelOptionValue.value = buildModelOptionValue(
-        selectedProviderId.value,
-        selectedModelName.value,
-      );
-      saveProviderModelOfflineSnapshot(projectId || "global");
-    } else if (projectId) {
-      applyProviderModelOfflineSnapshot(projectId);
-    }
-    modelProviderOffline.value = false;
-    return;
-  }
-  try {
-    const providerData = await api.get("/llm/providers", {
-      params: { enabled_only: true },
-    });
-    const list = Array.isArray(providerData?.providers)
-      ? providerData.providers
-      : [];
-    providers.value = list;
-    modelProviderOffline.value = false;
-    globalDefaultProviderId.value = String(
-      list.find((item) => Boolean(item?.is_default))?.id || list[0]?.id || "",
-    ).trim();
-    const provider =
-      list.find((item) => item.id === globalDefaultProviderId.value) ||
-      list[0] ||
-      {};
-    const models = normalizeProviderModelNames(
-      provider,
-      modelTypeOptions.value,
-    );
-    globalDefaultModelName.value = String(
-      provider?.default_model || models[0] || "",
-    ).trim();
-    defaultProviderId.value = globalDefaultProviderId.value;
-    defaultModelName.value = globalDefaultModelName.value;
-
-    const currentProviderValid = list.some(
-      (item) =>
-        String(item?.id || "").trim() ===
-        String(selectedProviderId.value || "").trim(),
-    );
-    if (!currentProviderValid) {
-      selectedProviderId.value = globalDefaultProviderId.value;
-    }
+  const projectId = String(selectedProjectId.value || "").trim();
+  const localProviders = readLocalEntities("llm_providers").filter(
+    (item) => item?.enabled !== false,
+  );
+  if (localProviders.length) {
+    providers.value = localProviders;
+    const preferredProviderId = String(selectedProviderId.value || "").trim();
     const selectedProvider =
-      list.find((item) => item.id === selectedProviderId.value) || provider;
-    const selectedModels = normalizeProviderModelNames(
+      localProviders.find((item) => String(item?.id || "").trim() === preferredProviderId) ||
+      localProviders[0];
+    selectedProviderId.value = String(selectedProvider?.id || "").trim();
+    const modelNames = normalizeProviderModelNames(
       selectedProvider,
       modelTypeOptions.value,
     );
-    if (
-      !selectedModelName.value ||
-      !selectedModels.includes(String(selectedModelName.value || "").trim())
-    ) {
-      selectedModelName.value = String(
-        selectedProvider?.default_model ||
-          selectedModels[0] ||
-          globalDefaultModelName.value ||
-          "",
-      ).trim();
-    }
-    saveProviderModelOfflineSnapshot("global");
-  } catch (err) {
-    console.warn("加载全局模型供应商失败，保留本地离线状态", err);
-    applyProviderModelOfflineSnapshot(
-      String(selectedProjectId.value || "").trim(),
+    selectedModelName.value = modelNames.includes(selectedModelName.value)
+      ? selectedModelName.value
+      : String(selectedProvider?.default_model || modelNames[0] || "").trim();
+    defaultProviderId.value = selectedProviderId.value;
+    defaultModelName.value = selectedModelName.value;
+    manualModelOptionValue.value = buildModelOptionValue(
+      selectedProviderId.value,
+      selectedModelName.value,
     );
+    saveProviderModelOfflineSnapshot(projectId || "global");
+  } else if (projectId) {
+    applyProviderModelOfflineSnapshot(projectId);
   }
+  modelProviderOffline.value = false;
   projectChatSettings.value = applyLocalConnectorRuntimeSettings(
     projectChatSettings.value,
     String(selectedProjectId.value || "").trim(),
@@ -28909,40 +28504,8 @@ async function handleProjectCreated(event) {
   selectedProjectId.value = nextProjectId;
 }
 
-async function refreshRuntimeExternalToolsInBackground(projectId) {
+async function fetchProvidersByProject(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
-  if (!normalizedProjectId) return;
-  if (runtimeExternalToolsRefreshingProjectIds.has(normalizedProjectId)) return;
-  runtimeExternalToolsRefreshingProjectIds.add(normalizedProjectId);
-  try {
-    const data = await fetchProjectChatProviders(normalizedProjectId, {
-      includeRuntimeExternalTools: true,
-    });
-    if (normalizedProjectId !== String(selectedProjectId.value || "").trim()) {
-      return;
-    }
-    mcpModules.value = normalizeMcpModules(data.mcp_modules || {});
-    runtimeExternalTools.value = normalizeRuntimeExternalTools(
-      data?.runtime_external_tools || [],
-    );
-    externalMcpTotal.value = Number(
-      data?.mcp_modules?.summary?.external_total ||
-        mcpModules.value?.external?.modules?.length ||
-        0,
-    );
-  } catch (err) {
-    console.warn("后台刷新外部 MCP 工具失败，首屏保持可用", err);
-  } finally {
-    runtimeExternalToolsRefreshingProjectIds.delete(normalizedProjectId);
-  }
-}
-
-async function fetchProvidersByProject(projectId, options = {}) {
-  const normalizedProjectId = String(projectId || "").trim();
-  const includeRuntimeExternalTools =
-    options.includeRuntimeExternalTools !== false;
-  const refreshRuntimeExternalTools =
-    options.refreshRuntimeExternalTools === true;
   projectSettingsHydrating.value = true;
   if (
     projectSettingsHydratedProjectId.value &&
@@ -29039,7 +28602,12 @@ async function fetchProvidersByProject(projectId, options = {}) {
         localProject.workspace_path || relations.workspace_path || "",
       ).trim();
       projectWorkspaceDraft.value = projectWorkspacePath.value;
-      workspacePathDraft.value = projectWorkspacePath.value;
+      workspacePathDraft.value = String(
+        projectWorkspacePath.value || settings.connector_workspace_path || "",
+      ).trim();
+      if (!projectWorkspaceDraft.value && workspacePathDraft.value) {
+        projectWorkspaceDraft.value = workspacePathDraft.value;
+      }
       projectAiEntryFile.value = String(localProject.ai_entry_file || "").trim();
       aiEntryFileDraft.value = projectAiEntryFile.value || DEFAULT_AI_ENTRY_FILE;
       mcpModules.value = normalizeMcpModules({
@@ -29089,123 +28657,7 @@ async function fetchProvidersByProject(projectId, options = {}) {
       hydrated = true;
       return;
     }
-    const data = await fetchProjectChatProviders(normalizedProjectId, {
-      includeRuntimeExternalTools,
-    });
-    const rawSettings =
-      data?.chat_settings && typeof data.chat_settings === "object"
-        ? data.chat_settings
-        : {};
-    providers.value = data.providers || [];
-    modelProviderOffline.value = false;
-    const settings = applyLocalConnectorRuntimeSettings(rawSettings);
-    projectChatSettings.value = settings;
-    projectEmployees.value = data.employees || [];
-    externalAgentInfo.value = normalizeExternalAgentInfo({
-      ...(data?.external_agent && typeof data.external_agent === "object"
-        ? data.external_agent
-        : {}),
-      workspace_access:
-        data?.workspace_access ||
-        data?.external_agent?.workspace_access ||
-        undefined,
-    });
-    projectWorkspacePath.value = String(
-      data?.project_workspace_path || "",
-    ).trim();
-    projectWorkspaceDraft.value = projectWorkspacePath.value;
-    projectAiEntryFile.value = String(data?.project_ai_entry_file || "").trim();
-    aiEntryFileDraft.value = projectAiEntryFile.value || DEFAULT_AI_ENTRY_FILE;
-    workspacePathDraft.value = String(
-      projectWorkspacePath.value ||
-        settings.connector_workspace_path ||
-        data?.workspace_path ||
-        data?.external_agent?.workspace_path ||
-        "",
-    ).trim();
-    mcpModules.value = normalizeMcpModules(data.mcp_modules || {});
-    runtimeExternalTools.value = normalizeRuntimeExternalTools(
-      data?.runtime_external_tools || [],
-    );
-    externalMcpTotal.value = Number(
-      data?.mcp_modules?.summary?.external_total ||
-        mcpModules.value?.external?.modules?.length ||
-        0,
-    );
-    if (
-      activeComposerAssist.value &&
-      !composerAssistActions.value.some(
-        (item) => item.id === activeComposerAssist.value,
-      )
-    ) {
-      activeComposerAssist.value = "";
-    }
-    syncSelectedProjectTools(mcpModules.value?.system?.project_related || []);
-
-    const availableToolNames = new Set(
-      projectToolModules.value
-        .map((item) => String(item?.tool_name || "").trim())
-        .filter(Boolean),
-    );
-    const savedToolNames = normalizeStringList(
-      settings.enabled_project_tool_names || [],
-    ).filter((name) => availableToolNames.has(name));
-    const hasSavedToolSelection = Array.isArray(
-      rawSettings?.enabled_project_tool_names,
-    );
-    if (hasSavedToolSelection) {
-      selectedProjectToolNames.value = savedToolNames;
-    }
-
-    const allEmployeeIds = projectEmployees.value
-      .map((item) => String(item?.id || "").trim())
-      .filter(Boolean);
-    selectedEmployeeIds.value = normalizeChatSelectedEmployeeIds(
-      settings.selected_employee_ids || [],
-      allEmployeeIds,
-    );
-
-    defaultProviderId.value = String(data.default_provider_id || "");
-    defaultModelName.value = String(data.default_model_name || "");
-
-    const preferredProviderId = String(settings.provider_id || "").trim();
-    const hasPreferredProvider = providers.value.some(
-      (item) => item.id === preferredProviderId,
-    );
-    selectedProviderId.value = hasPreferredProvider
-      ? preferredProviderId
-      : defaultProviderId.value;
-
-    const providerModels = normalizeProviderModelNames(
-      providers.value.find((item) => item.id === selectedProviderId.value),
-      modelTypeOptions.value,
-    );
-    const preferredModelName = String(settings.model_name || "").trim();
-    if (preferredModelName && providerModels.includes(preferredModelName)) {
-      selectedModelName.value = preferredModelName;
-    } else {
-      selectedModelName.value = String(
-        defaultModelName.value || providerModels[0] || "",
-      );
-    }
-    manualModelOptionValue.value = buildModelOptionValue(
-      selectedProviderId.value,
-      selectedModelName.value,
-    );
-
-    systemPrompt.value = "";
-    temperature.value = Number(
-      settings.temperature ?? CHAT_SETTINGS_DEFAULTS.temperature,
-    );
-    saveProviderModelOfflineSnapshot(normalizedProjectId);
-    hydrated = true;
-    if (
-      !includeRuntimeExternalTools &&
-      refreshRuntimeExternalTools &&
-      normalizedProjectId === String(selectedProjectId.value || "").trim()
-    ) {
-      void refreshRuntimeExternalToolsInBackground(normalizedProjectId);
-    }
+    throw new Error("当前版本仅支持本地项目数据");
   } catch (err) {
     const offlineProject = (projects.value || []).find(
       (item) =>
@@ -29265,113 +28717,109 @@ async function fetchProvidersByProject(projectId, options = {}) {
 async function handleQuickCreateEmployee(payload) {
   employeeCreateSubmitting.value = true;
   try {
-    if (isLocalProjectMode()) {
-      const projectId = String(selectedProjectId.value || "").trim();
-      if (!projectId) throw new Error("请先选择项目");
-      const relations = getLocalProjectRelations(projectId);
-      const employeeId = `local-employee-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const employee = {
-        id: employeeId,
-        name: String(payload.name || "未命名智能体").trim(),
-        description: String(payload.description || "").trim(),
-        goal: String(payload.goal || "").trim(),
-        skills: Array.isArray(payload.skills) ? payload.skills : [],
-        project_id: projectId,
-        source: "local_project_chat",
-        created_at: new Date().toISOString(),
-      };
-      const employees = Array.isArray(relations.employees)
-        ? relations.employees.filter((item) => String(item?.id || "") !== employeeId)
-        : [];
-      employees.push(employee);
-      updateLocalProjectRelations(projectId, {
-        employees,
-        chat_settings: {
-          ...(relations.chat_settings || {}),
-          selected_employee_ids: [
-            ...new Set([
-              ...(relations.chat_settings?.selected_employee_ids || []),
-              employeeId,
-            ]),
-          ],
-        },
-      });
-      projectEmployees.value = employees;
-      selectedEmployeeIds.value = employees.map((item) => String(item.id));
-      ElMessage.success(`智能体「${employee.name}」已加入当前项目`);
-      return employee;
-    }
-    const employeeRes = await createEmployeeFromDraftRequest({
-      name: payload.name,
-      description: payload.description || "",
-      goal: payload.goal || "",
-      tone: payload.tone || "professional",
-      verbosity: payload.verbosity || "concise",
-      language: payload.language || "zh-CN",
+    const projectId = String(selectedProjectId.value || "").trim();
+    if (!projectId) throw new Error("请先选择项目");
+    const relations = getLocalProjectRelations(projectId);
+    const employeeId = `local-employee-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const employee = {
+      id: employeeId,
+      name: String(payload.name || "未命名智能体").trim(),
+      description: String(payload.description || "").trim(),
+      goal: String(payload.goal || "").trim(),
+      tone: String(payload.tone || "professional").trim(),
+      verbosity: String(payload.verbosity || "concise").trim(),
+      language: String(payload.language || "zh-CN").trim(),
       skills: Array.isArray(payload.skills) ? payload.skills : [],
       rule_ids: Array.isArray(payload.rule_ids) ? payload.rule_ids : [],
-      rule_titles: Array.isArray(payload.rule_titles)
-        ? payload.rule_titles
-        : [],
-      rule_domains: Array.isArray(payload.rule_domains)
-        ? payload.rule_domains
-        : [],
-      rule_drafts: Array.isArray(payload.rule_drafts)
-        ? payload.rule_drafts
-        : [],
-      style_hints: Array.isArray(payload.style_hints)
-        ? payload.style_hints
-        : [],
+      rule_titles: Array.isArray(payload.rule_titles) ? payload.rule_titles : [],
+      rule_domains: Array.isArray(payload.rule_domains) ? payload.rule_domains : [],
+      rule_drafts: Array.isArray(payload.rule_drafts) ? payload.rule_drafts : [],
+      style_hints: Array.isArray(payload.style_hints) ? payload.style_hints : [],
       default_workflow: Array.isArray(payload.default_workflow)
         ? payload.default_workflow
         : [],
-      tool_usage_policy: payload.tool_usage_policy || "",
-      auto_evolve: true,
-      evolve_threshold: 0.8,
-      feedback_upgrade_enabled: false,
-      mcp_enabled: true,
-      memory_scope: payload.memory_scope || "project",
+      tool_usage_policy: String(payload.tool_usage_policy || "").trim(),
+      memory_scope: String(payload.memory_scope || "project").trim(),
       memory_retention_days: Number(payload.memory_retention_days || 90),
-      auto_create_missing_skills: payload.auto_create_missing_skills !== false,
-      auto_create_missing_rules: payload.auto_create_missing_rules !== false,
-    });
-    const employee = employeeRes?.employee || {};
-    const createdSkills = Array.isArray(employeeRes?.created_skills)
-      ? employeeRes.created_skills
+      auto_evolve: true,
+      mcp_enabled: true,
+      project_id: projectId,
+      source: "local_project_chat",
+      created_at: new Date().toISOString(),
+    };
+
+    const employees = Array.isArray(relations.employees)
+      ? relations.employees.filter((item) => String(item?.id || "") !== employeeId)
       : [];
-    const createdRules = Array.isArray(employeeRes?.created_rules)
-      ? employeeRes.created_rules
-      : [];
-    const employeeId = String(employee.id || "").trim();
-    const projectId = String(selectedProjectId.value || "").trim();
-    if (payload.add_to_current_project && projectId && employeeId) {
-      await api.post(`/projects/${encodeURIComponent(projectId)}/members`, {
-        employee_id: employeeId,
-        role: "member",
-        enabled: true,
+    employees.push(employee);
+
+    const skills = Array.isArray(relations.skills) ? [...relations.skills] : [];
+    for (const rawSkill of Array.isArray(payload.skills) ? payload.skills : []) {
+      const skillId = String(rawSkill?.id || rawSkill || "").trim();
+      if (!skillId || skills.some((item) => String(item?.id || item?.name || "").trim() === skillId)) {
+        continue;
+      }
+      skills.push({
+        id: skillId,
+        name: String(rawSkill?.name || skillId).trim(),
+        source: "local_project_chat",
+      });
+      upsertLocalEntity("skills", {
+        id: skillId,
+        name: String(rawSkill?.name || skillId).trim(),
+        source: "local_project_chat",
       });
     }
-    if (projectId) {
-      await fetchProvidersByProject(projectId);
-      if (payload.add_to_current_project && employeeId) {
-        selectedEmployeeIds.value = [employeeId];
-      }
+
+    const rules = Array.isArray(relations.rules) ? [...relations.rules] : [];
+    for (const rawRule of Array.isArray(payload.rule_drafts) ? payload.rule_drafts : []) {
+      const title = String(rawRule?.title || "").trim();
+      if (!title) continue;
+      const ruleId = String(rawRule?.id || `local-rule-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`).trim();
+      const rule = {
+        id: ruleId,
+        title,
+        domain: String(rawRule?.domain || "").trim(),
+        content: String(rawRule?.content || "").trim(),
+        source: "local_project_chat",
+      };
+      rules.push(rule);
+      upsertLocalEntity("rules", rule);
     }
-    if (createdSkills.length || createdRules.length) {
-      await ensureEmployeeDraftCatalog(true);
-    }
-    const createdParts = [];
-    if (createdSkills.length) {
-      createdParts.push(`技能 ${createdSkills.length} 个`);
-    }
-    if (createdRules.length) {
-      createdParts.push(`规则 ${createdRules.length} 条`);
-    }
-    ElMessage.success(
-      payload.add_to_current_project && projectId
-        ? `智能体「${employee.name || employeeId}」已创建并加入当前项目${createdParts.length ? `，自动补齐${createdParts.join("、")}` : ""}`
-        : `智能体「${employee.name || employeeId}」创建成功${createdParts.length ? `，自动补齐${createdParts.join("、")}` : ""}`,
-    );
+
+    upsertLocalEntity("employees", employee);
+    updateLocalProjectRelations(projectId, {
+      employees,
+      skills,
+      rules,
+      chat_settings: {
+        ...(relations.chat_settings || {}),
+        selected_employee_ids: [
+          ...new Set([
+            ...(relations.chat_settings?.selected_employee_ids || []),
+            employeeId,
+          ]),
+        ],
+      },
+    });
+    projectEmployees.value = employees;
+    selectedEmployeeIds.value = employees.map((item) => String(item.id));
+    employeeDraftCatalog.value = {
+      ...employeeDraftCatalog.value,
+      skills: skills.map((skill) => ({
+        id: String(skill?.id || "").trim(),
+        name: String(skill?.name || skill?.id || "").trim(),
+        description: String(skill?.description || "").trim(),
+        tags: Array.isArray(skill?.tags) ? skill.tags : [],
+      })),
+      rules: rules.map((rule) => ({
+        id: String(rule?.id || "").trim(),
+        title: String(rule?.title || rule?.id || "").trim(),
+        domain: String(rule?.domain || "").trim(),
+      })),
+      loaded_at: Date.now(),
+    };
+    ElMessage.success(`智能体「${employee.name}」已加入当前项目`);
     return employee;
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "创建智能体失败");
@@ -29508,52 +28956,37 @@ async function saveProjectChatSettings(silent = false) {
   settingsSaving.value = true;
   try {
     const payload = buildProjectChatSettingsPayload();
-    if (isLocalProjectMode()) {
-      const relations = getLocalProjectRelations(projectId);
-      const workspacePath = String(
-        payload.connector_workspace_path || projectWorkspacePath.value || "",
-      ).trim();
-      const localProject = getLocalProject(projectId) || { id: projectId };
-      updateLocalProjectRelations(projectId, {
-        ...relations,
-        workspace_path: workspacePath,
-        chat_settings: payload,
-        employees: projectEmployees.value,
-        project_tools: selectedProjectToolNames.value.map((toolName) => ({
-          tool_name: toolName,
-          enabled: true,
-        })),
-      });
-      upsertLocalProject({
-        ...localProject,
-        id: projectId,
-        workspace_path: workspacePath,
-        ai_entry_file: String(projectAiEntryFile.value || "").trim(),
-        agent_directory: String(payload.agent_directory || "").trim(),
-        skill_directory: String(payload.skill_directory || "").trim(),
-        rule_directory: String(payload.rule_directory || "").trim(),
-      });
-      projectWorkspacePath.value = workspacePath;
-      projectWorkspaceDraft.value = workspacePath;
-      workspacePathDraft.value = workspacePath;
-      applySavedProjectChatSettings(payload);
-      markAutoSaveSynced();
-      autoSaveState.value = "saved";
-      if (!silent) ElMessage.success("项目对话设置已保存到本机");
-      return;
-    }
-    const data = await saveProjectChatSettingsRequest(projectId, payload);
-    applySavedProjectChatSettings(data?.settings || payload);
+    const relations = getLocalProjectRelations(projectId);
+    const workspacePath = String(
+      payload.connector_workspace_path || projectWorkspacePath.value || "",
+    ).trim();
+    const localProject = getLocalProject(projectId) || { id: projectId };
+    updateLocalProjectRelations(projectId, {
+      ...relations,
+      workspace_path: workspacePath,
+      chat_settings: payload,
+      employees: projectEmployees.value,
+      project_tools: selectedProjectToolNames.value.map((toolName) => ({
+        tool_name: toolName,
+        enabled: true,
+      })),
+    });
+    upsertLocalProject({
+      ...localProject,
+      id: projectId,
+      workspace_path: workspacePath,
+      ai_entry_file: String(projectAiEntryFile.value || "").trim(),
+      agent_directory: String(payload.agent_directory || "").trim(),
+      skill_directory: String(payload.skill_directory || "").trim(),
+      rule_directory: String(payload.rule_directory || "").trim(),
+    });
+    projectWorkspacePath.value = workspacePath;
+    projectWorkspaceDraft.value = workspacePath;
+    workspacePathDraft.value = workspacePath;
+    applySavedProjectChatSettings(payload);
     markAutoSaveSynced();
     autoSaveState.value = "saved";
-    autoSaveUpdatedAt.value = new Date().toLocaleTimeString("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    if (!silent) {
-      ElMessage.success("项目对话设置已保存");
-    }
+    if (!silent) ElMessage.success("项目对话设置已保存到本机");
   } catch (err) {
     autoSaveState.value = "error";
     if (!silent) {
@@ -29567,6 +29000,10 @@ async function saveProjectChatSettings(silent = false) {
 function upsertChatSessionFromRealtime(sessionPayload) {
   const session = normalizeChatSession(sessionPayload || {});
   if (!session.id) return null;
+  const projectId = String(
+    session?.project_id || selectedProjectId.value || "",
+  ).trim();
+  if (isChatSessionDeleted(projectId, session.id)) return null;
   if (isEmptyManualChatSession(session)) {
     return null;
   }
@@ -29603,18 +29040,33 @@ function isEmptyManualChatSession(session) {
   ).trim();
 }
 
-function normalizeVisibleChatSessions(rawSessions) {
+function normalizeVisibleChatSessions(rawSessions, fallbackProjectId = "") {
+  const normalizedFallbackProjectId = String(fallbackProjectId || "").trim();
   return sortChatSessionsByStablePosition(
     (Array.isArray(rawSessions) ? rawSessions : [])
       .map(normalizeChatSession)
-      .filter((session) => session.id),
+      .filter((session) => {
+        if (!session.id) return false;
+        const projectId =
+          String(session?.project_id || "").trim() ||
+          normalizedFallbackProjectId;
+        return !isChatSessionDeleted(projectId, session.id);
+      }),
   );
 }
 
 function setProjectChatSessionsMemoryCache(projectId, sessions) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
-  const normalizedSessions = sortChatSessionsByStablePosition(sessions);
+  const normalizedSessions = sortChatSessionsByStablePosition(
+    (Array.isArray(sessions) ? sessions : []).filter(
+      (session) =>
+        !isChatSessionDeleted(
+          String(session?.project_id || "").trim() || normalizedProjectId,
+          String(session?.id || "").trim(),
+        ),
+    ),
+  );
   projectChatSessionsById.value = {
     ...(projectChatSessionsById.value || {}),
     [normalizedProjectId]: normalizedSessions,
@@ -29646,6 +29098,7 @@ function syncLocalChatSessionMetadata(projectId, chatSessionId, rows) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId || !normalizedSessionId) return;
+  if (isChatSessionDeleted(normalizedProjectId, normalizedSessionId)) return;
   const sourceSessions =
     normalizedProjectId === String(selectedProjectId.value || "").trim()
       ? chatSessions.value
@@ -29696,16 +29149,26 @@ function syncLocalChatSessionMetadata(projectId, chatSessionId, rows) {
   setProjectChatSessionsCache(normalizedProjectId, nextSessions);
 }
 
-function removeProjectChatSessionCacheItem(projectId, chatSessionId) {
+function removeChatSessionFromVisibleState(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId || !normalizedSessionId) return;
+
+  const removeSession = (item) =>
+    String(item?.id || "").trim() !== normalizedSessionId;
+  if (normalizedProjectId === String(selectedProjectId.value || "").trim()) {
+    chatSessions.value = (chatSessions.value || []).filter(removeSession);
+    setProjectChatSessionsMemoryCache(
+      normalizedProjectId,
+      chatSessions.value,
+    );
+    return;
+  }
+
   const current = projectChatSessionsById.value?.[normalizedProjectId] || [];
-  setProjectChatSessionsCache(
+  setProjectChatSessionsMemoryCache(
     normalizedProjectId,
-    current.filter(
-      (item) => String(item?.id || "").trim() !== normalizedSessionId,
-    ),
+    current.filter(removeSession),
   );
 }
 
@@ -29767,10 +29230,12 @@ async function fetchChatSessions(
     const preferred = String(preferredSessionId || "").trim() || remembered;
     let storedSessions = normalizeVisibleChatSessions(
       await readLocalChatSessions(projectId),
+      projectId,
     );
     if (
       routeChatTarget().localRuntimeTask &&
       preferred &&
+      !isChatSessionDeleted(projectId, preferred) &&
       !storedSessions.some((session) => String(session?.id || "").trim() === preferred)
     ) {
       storedSessions = [
@@ -29787,18 +29252,7 @@ async function fetchChatSessions(
         ...storedSessions,
       ];
     }
-    let remoteSessions = [];
-    if (!isLocalProjectMode()) {
-      try {
-        const data = await api.get(
-          `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
-          { params: { limit: 50 } },
-        );
-        remoteSessions = normalizeVisibleChatSessions(data?.sessions || []);
-      } catch (error) {
-        console.warn("加载服务端项目聊天会话失败，回退本地会话", error);
-      }
-    }
+    const remoteSessions = [];
     const mergedSessions = new Map(
       storedSessions.map((session) => [String(session.id || "").trim(), session]),
     );
@@ -29806,9 +29260,10 @@ async function fetchChatSessions(
       const sessionId = String(session.id || "").trim();
       if (sessionId) mergedSessions.set(sessionId, session);
     });
-    const allSessions = normalizeVisibleChatSessions([
-      ...mergedSessions.values(),
-    ]);
+    const allSessions = normalizeVisibleChatSessions(
+      [...mergedSessions.values()],
+      projectId,
+    );
     const sessionsByProject = allSessions.reduce((groups, session) => {
       const sessionProjectId = String(session?.project_id || "").trim();
       if (sessionProjectId) (groups[sessionProjectId] ||= []).push(session);
@@ -29821,6 +29276,7 @@ async function fetchChatSessions(
     }
     chatSessions.value = normalizeVisibleChatSessions(
       sessionsByProject[String(projectId || "").trim()] || [],
+      projectId,
     );
     const excludedSessionIds = new Set(
       (Array.isArray(options.excludeSessionIds)
@@ -29868,19 +29324,9 @@ async function refreshChatSessionListMetadata(projectId) {
   }
   const localSessions = normalizeVisibleChatSessions(
     await readLocalChatSessions(normalizedProjectId),
+    normalizedProjectId,
   );
-  let remoteSessions = [];
-  if (!isLocalProjectMode()) {
-    try {
-      const data = await api.get(
-        `/projects/${encodeURIComponent(normalizedProjectId)}/chat/sessions`,
-        { params: { limit: 50 } },
-      );
-      remoteSessions = normalizeVisibleChatSessions(data?.sessions || []);
-    } catch (error) {
-      console.warn("刷新服务端项目聊天会话失败，保留本地会话", error);
-    }
-  }
+  const remoteSessions = [];
   const mergedSessions = new Map(
     localSessions.map((session) => [String(session.id || "").trim(), session]),
   );
@@ -29888,9 +29334,10 @@ async function refreshChatSessionListMetadata(projectId) {
     const sessionId = String(session.id || "").trim();
     if (sessionId) mergedSessions.set(sessionId, session);
   });
-  const allSessions = normalizeVisibleChatSessions([
-    ...mergedSessions.values(),
-  ]);
+  const allSessions = normalizeVisibleChatSessions(
+    [...mergedSessions.values()],
+    normalizedProjectId,
+  );
   const sessionsByProject = allSessions.reduce((groups, session) => {
     const sessionProjectId = String(session?.project_id || "").trim();
     if (sessionProjectId) (groups[sessionProjectId] ||= []).push(session);
@@ -29903,6 +29350,7 @@ async function refreshChatSessionListMetadata(projectId) {
   }
   const nextSessions = normalizeVisibleChatSessions(
     sessionsByProject[normalizedProjectId] || [],
+    normalizedProjectId,
   );
   chatSessions.value = nextSessions;
   setProjectChatSessionsMemoryCache(normalizedProjectId, nextSessions);
@@ -29953,6 +29401,18 @@ async function fetchChatHistory(
     return;
   }
   const normalizedSessionId = String(chatSessionId || "").trim();
+  if (isChatSessionDeleted(projectId, normalizedSessionId)) {
+    if (
+      !append &&
+      String(currentChatSessionId.value || "").trim() === normalizedSessionId
+    ) {
+      currentChatSessionId.value = "";
+      messages.value = [];
+      chatHistoryLoadedCount.value = 0;
+      chatHistoryReachedEnd.value = false;
+    }
+    return;
+  }
   if (!append) {
     persistCurrentChatRuntimeBeforeSessionSwitch(
       projectId,
@@ -30002,7 +29462,7 @@ async function fetchChatHistory(
   const hasImmediateRows = Array.isArray(immediateRows);
   if (!append) {
     activeChatHistoryLoadingKey = loadingKey;
-    // 本地缓存只作为首屏占位，最终仍要等待服务端历史完成校准。
+    // 本地缓存只作为首屏占位，最终仍要完成本地持久化历史校准。
     chatHistoryLoading.value = true;
     if (hasImmediateRows) {
       await applyChatMessagesWithoutPersisting(immediateRows);
@@ -30023,21 +29483,7 @@ async function fetchChatHistory(
   const previousScrollTop = Number(container?.scrollTop || 0);
   try {
     const [remoteHistoryResult, runtimePayload] = await Promise.all([
-      isLocalProjectMode()
-        ? Promise.resolve({ ok: false, data: null })
-        : api
-            .get(
-              `/projects/${encodeURIComponent(projectId)}/chat/history`,
-              {
-              params: {
-                limit,
-                offset,
-                chat_session_id: normalizedSessionId,
-              },
-              },
-            )
-            .then((data) => ({ ok: true, data }))
-            .catch((error) => ({ ok: false, error })),
+      Promise.resolve({ ok: false, data: null }),
       fetchPersistedChatRuntime(projectId, normalizedSessionId),
     ]);
     if (
@@ -30049,7 +29495,7 @@ async function fetchChatHistory(
     const remoteRows = remoteHistoryResult.ok
       ? (remoteHistoryResult.data?.messages || []).map(mapHistoryMessage)
       : [];
-    // 服务端接口已经按 offset/limit 返回当前页，不能再次按 offset 截切。
+    // 本地持久化历史已按 offset/limit 截取，不能再次重复截切。
     const localRows = applyPersistedChatRuntimeRows([], runtimePayload);
     const historyRows = remoteHistoryResult.ok
       ? remoteRows
@@ -30216,17 +29662,7 @@ async function createChatSession(options = {}) {
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const chatSessionId = `chat-session-${String(randomId).replace(/[^A-Za-z0-9-]/g, "").slice(0, 48)}`;
-    let data = null;
-    if (!isLocalProjectMode()) {
-      data = await api.post(
-        `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
-        {
-          chat_session_id: chatSessionId,
-          title: title || "新对话",
-          source_context: sourceContext,
-        },
-      );
-    }
+    const data = null;
     const session = normalizeChatSession({
       ...(data?.session || {}),
       id: data?.session?.id || chatSessionId,
@@ -30243,7 +29679,7 @@ async function createChatSession(options = {}) {
     if (!session.id) {
       throw new Error("创建会话失败");
     }
-    await writeLocalChatSessions(projectId, [session]);
+    clearChatSessionDeleted(projectId, session.id);
     chatSessions.value = [
       session,
       ...chatSessions.value.filter((item) => item.id !== session.id),
@@ -30299,18 +29735,9 @@ async function updateChatSession(chatSessionId, options = {}) {
     if (!session.id) {
       throw new Error("更新会话失败");
     }
-    let data = null;
-    if (!isLocalProjectMode()) {
-      data = await api.patch(
-        `/projects/${encodeURIComponent(projectId)}/chat/sessions/${encodeURIComponent(normalizedSessionId)}`,
-        {
-          title: session.title,
-          source_context: session.source_context || {},
-        },
-      );
-    }
+    const data = null;
     const persistedSession = normalizeChatSession(data?.session || session);
-    await writeLocalChatSessions(projectId, [persistedSession]);
+    clearChatSessionDeleted(projectId, persistedSession.id);
     chatSessions.value = [
       persistedSession,
       ...chatSessions.value.filter((item) => item.id !== persistedSession.id),
@@ -30324,87 +29751,6 @@ async function updateChatSession(chatSessionId, options = {}) {
     ElMessage.error(err?.detail || err?.message || "更新会话失败");
     return null;
   }
-}
-
-const LOCAL_CONNECTOR_RUNTIME_PORTS = Array.from(
-  { length: 21 },
-  (_item, index) => 3931 + index,
-);
-
-async function readLocalConnectorError(response, fallbackMessage) {
-  try {
-    const payload = await response.json();
-    return (
-      String(
-        payload?.detail || payload?.message || fallbackMessage || "",
-      ).trim() || fallbackMessage
-    );
-  } catch (_error) {
-    return fallbackMessage;
-  }
-}
-
-async function resolveBrowserConnectorRuntimeUrl() {
-  for (const port of LOCAL_CONNECTOR_RUNTIME_PORTS) {
-    const baseUrl = `http://127.0.0.1:${port}`;
-    try {
-      const response = await fetch(`${baseUrl}/health`, {
-        method: "GET",
-        cache: "no-store",
-      });
-      if (response.ok) {
-        return baseUrl;
-      }
-    } catch (_error) {
-      // try next port
-    }
-  }
-  throw new Error("未检测到本机 Local Connector，请先启动桌面连接器");
-}
-
-async function requestWorkspacePickSession(connectorId) {
-  return api.post(
-    `/local-connectors/${encodeURIComponent(connectorId)}/workspace-pick/session`,
-  );
-}
-
-async function pickWorkspaceViaLocalConnector(connectorId, options = {}) {
-  const normalizedConnectorId = String(connectorId || "").trim();
-  if (!normalizedConnectorId) {
-    throw new Error("缺少本地连接器 ID");
-  }
-  const data = await requestWorkspacePickSession(normalizedConnectorId);
-  const session = data?.workspace_pick || {};
-  const sessionId = String(session.session_id || "").trim();
-  const sessionToken = String(session.session_token || "").trim();
-  const platformUrl = String(session.platform_url || "").trim();
-  if (!sessionId || !sessionToken || !platformUrl) {
-    throw new Error("服务端没有返回可用的目录选择会话");
-  }
-  const runtimeUrl = await resolveBrowserConnectorRuntimeUrl();
-  const response = await fetch(`${runtimeUrl}/workspace/pick`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      platform_url: platformUrl,
-      session_id: sessionId,
-      session_token: sessionToken,
-      title:
-        String(options?.title || "").trim() ||
-        `选择项目工作区目录 · ${String(currentProjectLabel.value || "").trim() || "AI 对话中心"}`,
-      initial_path: String(
-        options?.initialPath || resolveNativeRuntimeWorkspacePath() || "",
-      ).trim(),
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(
-      await readLocalConnectorError(response, "本机目录选择失败"),
-    );
-  }
-  return response.json();
 }
 
 async function handleCreateNewConversation() {
@@ -30523,20 +29869,22 @@ async function deleteChatSession(payload) {
   } catch {
     return;
   }
+  const previousSessions = isSelectedProject
+    ? [...(chatSessions.value || [])]
+    : [...(projectChatSessionsById.value?.[projectId] || [])];
+  const isCurrentSession =
+    isSelectedProject && currentChatSessionId.value === chatSessionId;
+  let persistedDeletionCompleted = false;
   deletingChatSessionId.value = chatSessionId;
   try {
-    if (isSelectedProject) {
-      chatSessions.value = chatSessions.value.filter(
-        (item) => item.id !== chatSessionId,
-      );
-      setProjectChatSessionsCache(projectId, chatSessions.value);
-    } else {
-      removeProjectChatSessionCacheItem(projectId, chatSessionId);
-    }
-    await clearPersistedChatRuntime(projectId, chatSessionId);
+    // 删除单条会话必须走 native 的精确删除；这里仅更新内存列表，
+    // 避免用一个可能不完整的数组覆盖整个项目的会话存储。
+    markChatSessionDeleted(projectId, chatSessionId);
+    const deletion = clearPersistedChatRuntime(projectId, chatSessionId);
+    removeChatSessionFromVisibleState(projectId, chatSessionId);
+    await deletion;
+    persistedDeletionCompleted = true;
     forgetChatSessionMessages(projectId, chatSessionId);
-    const isCurrentSession =
-      isSelectedProject && currentChatSessionId.value === chatSessionId;
     if (isCurrentSession) {
       clearChatSessionMemory(projectId);
       clearTaskTreeSessionMemory(projectId);
@@ -30559,6 +29907,15 @@ async function deleteChatSession(payload) {
     }
     ElMessage.success("历史对话已删除");
   } catch (err) {
+    if (!persistedDeletionCompleted) {
+      clearChatSessionDeleted(projectId, chatSessionId);
+      if (isSelectedProject) {
+        chatSessions.value = previousSessions;
+        setProjectChatSessionsMemoryCache(projectId, previousSessions);
+      } else {
+        setProjectChatSessionsMemoryCache(projectId, previousSessions);
+      }
+    }
     ElMessage.error(err?.detail || err?.message || "删除历史对话失败");
   } finally {
     deletingChatSessionId.value = "";
@@ -30588,14 +29945,18 @@ async function clearMessages() {
   } catch {
     return;
   }
+  const previousSessions = [...(chatSessions.value || [])];
+  const previousMessages = messages.value;
+  const previousLoadedCount = chatHistoryLoadedCount.value;
+  let persistedDeletionCompleted = false;
   try {
+    markChatSessionDeleted(projectId, chatSessionId);
+    const deletion = clearPersistedChatRuntime(projectId, chatSessionId);
     messages.value = [];
     chatHistoryLoadedCount.value = 0;
-    chatSessions.value = chatSessions.value.filter(
-      (item) => item.id !== chatSessionId,
-    );
-    setProjectChatSessionsCache(projectId, chatSessions.value);
-    await clearPersistedChatRuntime(projectId, chatSessionId);
+    removeChatSessionFromVisibleState(projectId, chatSessionId);
+    await deletion;
+    persistedDeletionCompleted = true;
     forgetChatSessionMessages(projectId, chatSessionId);
     clearChatSessionMemory(projectId);
     clearTaskTreeSessionMemory(projectId);
@@ -30616,6 +29977,13 @@ async function clearMessages() {
     }
     ElMessage.success("当前会话已清空");
   } catch (err) {
+    if (!persistedDeletionCompleted) {
+      clearChatSessionDeleted(projectId, chatSessionId);
+      chatSessions.value = previousSessions;
+      setProjectChatSessionsMemoryCache(projectId, previousSessions);
+      messages.value = previousMessages;
+      chatHistoryLoadedCount.value = previousLoadedCount;
+    }
     ElMessage.error(err?.detail || err?.message || "清空当前会话失败");
   }
 }
@@ -32326,38 +31694,7 @@ async function saveProjectWorkspaceDirectory(
       }
       return workspacePath;
     }
-    const data = await api.patch(`/projects/${encodeURIComponent(projectId)}`, {
-      workspace_path: workspacePath,
-    });
-    const persisted = String(
-      data?.project?.workspace_path || workspacePath,
-    ).trim();
-    projectWorkspacePath.value = persisted;
-    projectWorkspaceDraft.value = persisted;
-    workspacePathDraft.value = persisted;
-    projectChatSettings.value = applyLocalConnectorRuntimeSettings({
-      ...projectChatSettings.value,
-      connector_workspace_path: persisted,
-    });
-    projects.value = (projects.value || []).map((item) =>
-      String(item?.id || "").trim() === projectId
-        ? { ...item, workspace_path: persisted }
-        : item,
-    );
-    externalAgentWarmupKey.value = "";
-    externalAgentInfo.value = normalizeExternalAgentInfo({
-      ...externalAgentInfo.value,
-      ready: false,
-      session_id: "",
-      thread_id: "",
-      workspace_path: persisted,
-    });
-    if (!saveOptions.silent) {
-      ElMessage.success(
-        persisted ? "项目工作区路径已保存" : "已清空项目工作区路径",
-      );
-    }
-    return persisted;
+    return workspacePath;
   } catch (err) {
     if (!saveOptions.silent) {
       ElMessage.error(err?.detail || err?.message || "保存项目工作区路径失败");
@@ -32408,21 +31745,7 @@ async function saveProjectAiEntryFile(aiEntryFileOverride = null) {
       ElMessage.success(aiEntryFile ? "AI 入口文件已保存" : "已清空 AI 入口文件");
       return;
     }
-    const data = await api.patch(
-      `/projects/${encodeURIComponent(projectId)}/chat/ai-entry-file`,
-      {
-        ai_entry_file: aiEntryFile,
-      },
-    );
-    const persisted = String(data?.ai_entry_file || aiEntryFile).trim();
-    projectAiEntryFile.value = persisted;
-    aiEntryFileDraft.value = persisted;
-    projects.value = (projects.value || []).map((item) =>
-      String(item?.id || "").trim() === projectId
-        ? { ...item, ai_entry_file: persisted }
-        : item,
-    );
-    ElMessage.success(persisted ? "AI 入口文件已保存" : "已清空 AI 入口文件");
+    throw new Error("项目 AI 入口文件仅支持本地项目");
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "保存 AI 入口文件失败");
   } finally {
@@ -32433,20 +31756,11 @@ async function saveProjectAiEntryFile(aiEntryFileOverride = null) {
 async function fetchDefaultAiEntryFileContent(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return "";
-  const data = await api.get("/projects/query-mcp/runtime", {
-    params: {
-      project_id: normalizedProjectId,
-      chat_session_id:
-        String(currentChatSessionId.value || "").trim() || undefined,
-    },
-  });
-  const runtime =
-    data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
-  const prompts = Array.isArray(runtime.cli_prompts) ? runtime.cli_prompts : [];
-  const desktopPrompt = prompts.find(
-    (item) => String(item?.key || "").trim() === "desktop-agent",
-  );
-  return String(desktopPrompt?.prompt || runtime.cli_prompt || "").trim();
+  return String(
+    readLocalSystemConfig().desktop_agent_global_prompt ||
+      desktopAgentGlobalPrompt.value ||
+      "",
+  ).trim();
 }
 
 async function createDefaultAiEntryFile() {
@@ -32471,14 +31785,21 @@ async function createDefaultAiEntryFile() {
         rethrow: true,
       });
     }
+    nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
+    if (!nativeDesktopBridgeAvailable.value) {
+      throw new Error("创建 AIENTRY.md 仅支持桌面客户端");
+    }
     try {
-      await readProjectWorkspaceFile(projectId, DEFAULT_AI_ENTRY_FILE);
+      await readNativeWorkspaceFile({
+        workspacePath,
+        path: DEFAULT_AI_ENTRY_FILE,
+      });
       await saveProjectAiEntryFile(DEFAULT_AI_ENTRY_FILE);
       ElMessage.success(`${DEFAULT_AI_ENTRY_FILE} 已存在，已设为 AI 入口文件`);
       return;
     } catch (err) {
-      const status = Number(err?.response?.status || err?.status || 0);
-      if (status && status !== 404) {
+      const message = String(err?.message || err?.detail || "");
+      if (!/not found|no such file|不存在/i.test(message)) {
         throw err;
       }
     }
@@ -32486,7 +31807,8 @@ async function createDefaultAiEntryFile() {
     if (!content) {
       throw new Error("统一 MCP 接入提示词为空，无法创建 AIENTRY.md");
     }
-    const saved = await saveProjectWorkspaceFile(projectId, {
+    const saved = await writeNativeWorkspaceFile({
+      workspacePath,
       path: DEFAULT_AI_ENTRY_FILE,
       content,
     });
@@ -32501,7 +31823,7 @@ async function createDefaultAiEntryFile() {
   }
 }
 
-/** 保存项目工作区路径配置到服务端，同步更新本地运行时上下文和执行工作区路径 */
+/** 保存项目工作区路径到本机，同步更新本地运行时上下文和执行工作区路径 */
 async function saveProjectWorkspacePath(workspacePathOverride = null) {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) {
@@ -32529,13 +31851,10 @@ async function saveProjectWorkspacePath(workspacePathOverride = null) {
       return;
     }
     workspacePathDraft.value = workspacePath;
+    projectWorkspaceDraft.value = workspacePath;
     clearAutoSaveTimer();
     autoSaveState.value = "saving";
-    const payload = buildProjectChatSettingsPayload();
-    const data = await saveProjectChatSettingsRequest(projectId, payload);
-    projectChatSettings.value = applyLocalConnectorRuntimeSettings(
-      data?.settings || payload,
-    );
+    await saveProjectChatSettings(true);
     await fetchProvidersByProject(projectId);
     markAutoSaveSynced();
     autoSaveState.value = "saved";
@@ -32635,6 +31954,40 @@ async function sendProjectChatRequest({
   providerId = selectedProviderId.value || defaultProviderId.value || "",
   modelName = selectedModelName.value || defaultModelName.value || "",
 }) {
+  if (!isExternalAgentMode.value) {
+    const normalizedProjectId = String(projectId || "").trim();
+    const normalizedChatSessionId = String(activeChatSessionId || "").trim();
+    const localUserMessage = {
+      id: String(userMessageId || createLocalMessageId()).trim(),
+      role: "user",
+      content: String(finalUserPrompt || "").trim(),
+      images: [],
+      videos: [],
+      attachments: Array.isArray(attachmentNames) ? attachmentNames : [],
+      time: nowText(),
+    };
+    const localResult = await sendLocalLiuAgentChatRequest({
+      projectId: normalizedProjectId,
+      activeChatSessionId: normalizedChatSessionId,
+      userMessage: localUserMessage,
+      assistantMessage,
+      finalUserPrompt,
+      historyRows,
+      displayUserMessageContent: localUserMessage.content,
+      sourceContext: activeSessionSourceContext,
+      attachments: [],
+      mediaTools: [],
+      persistUserMessage: Boolean(userMessageId),
+      providerId,
+      modelName,
+    });
+    return {
+      requestId: String(localResult?.sessionId || localResult?.session_id || "").trim(),
+      cancelled: Boolean(localResult?.cancelled),
+      localResult,
+    };
+  }
+
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const client = await ensureWsClient(projectId);
   const requestChatMode = "system";
@@ -32916,10 +32269,6 @@ async function sendLocalLiuAgentChatRequest({
     mcpConfig: effectiveMcpConfig.value,
     attachments,
     mediaTools,
-    backendContext: {
-      apiBaseUrl: buildLocalLiuAgentBackendApiBaseUrl(),
-      token: getStoredToken(),
-    },
     permissionDecision: localLiuAgentFullAccessEnabled(workspacePath)
       ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
       : null,
@@ -33844,103 +33193,6 @@ async function stopGeneration() {
   ElMessage.warning("当前没有可暂停的生成任务");
 }
 
-async function generateEmployeeDraftWithoutProject() {
-  const text = String(draftText.value || "").trim();
-  if (!text) {
-    ElMessage.warning("请先描述你要创建的智能体");
-    return;
-  }
-  const userMessage = {
-    id: createLocalMessageId(),
-    role: "user",
-    content: text,
-    images: [],
-    videos: [],
-    attachments: [],
-    time: nowText(),
-  };
-  const assistantMessage = {
-    id: createLocalMessageId(),
-    role: "assistant",
-    content: "",
-    images: [],
-    videos: [],
-    attachments: [],
-    displayMode: "",
-    terminalLog: [],
-    processExpanded: false,
-    audit: null,
-    taskTreeAudit: null,
-    processLog: [],
-    statusNotes: [],
-    operations: [],
-    time: nowText(),
-  };
-
-  const history = messages.value
-    .slice(-6)
-    .map((item) => ({
-      role: String(item?.role || "assistant"),
-      content: String(item?.content || ""),
-    }))
-    .filter(
-      (item) =>
-        ["user", "assistant"].includes(item.role) && item.content.trim(),
-    );
-
-  messages.value.push(userMessage);
-  messages.value.push(assistantMessage);
-  beginComposerPlanForChatSession(
-    selectedProjectId.value,
-    currentChatSessionId.value,
-    assistantMessage.id,
-  );
-  applyMessageExecutionTiming(assistantMessage, { startedAt: Date.now() });
-
-  const assistantIndex = messages.value.length - 1;
-  chatLoading.value = true;
-  startWorkingStatusTimer(assistantMessage.id);
-  resetDraft();
-  scrollToBottom();
-
-  try {
-    await ensureEmployeeDraftCatalog();
-    const response = await generateEmployeeDraft({
-      message: String(
-        [text, "", buildEmployeeDraftAssistContext()]
-          .filter(Boolean)
-          .join("\n"),
-      ),
-      history,
-      provider_id: String(
-        selectedProviderId.value || defaultProviderId.value || "",
-      ).trim(),
-      model_name: String(
-        selectedModelName.value || defaultModelName.value || "",
-      ).trim(),
-      temperature: Number(
-        temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
-      ),
-      system_prompt:
-        "你是 AI 智能体架构师。请根据用户需求和现有技能、规则目录生成智能体草稿。先给一句简短说明，最后必须附带严格 JSON 的 ```employee-draft``` 代码块；如果能明确整理出可直接落地的智能体规则，请输出 rule_drafts 数组，每项包含 title、domain、content。",
-    });
-    messages.value[assistantIndex].content = String(
-      response?.content || "未生成智能体草稿。",
-    ).trim();
-    await autoCreateEmployeeFromDraftMessage(messages.value[assistantIndex], {
-      resetAssist: true,
-    });
-  } catch (err) {
-    messages.value[assistantIndex].content =
-      `请求失败：${err?.message || "未知错误"}`;
-    ElMessage.error(err?.detail || err?.message || "生成智能体草稿失败");
-  } finally {
-    finishMessageExecutionTiming(messages.value[assistantIndex]);
-    chatLoading.value = false;
-    scrollToBottom();
-  }
-}
-
 async function sendGlobalChatWithoutProject() {
   const text = String(draftText.value || "").trim();
   if (!text) {
@@ -34150,7 +33402,7 @@ async function doSend(options = {}) {
     !selectedProjectId.value &&
     activeComposerAssistMeta.value?.id === "employee_create"
   ) {
-    await generateEmployeeDraftWithoutProject();
+    ElMessage.warning("请先选择项目后再创建智能体");
     return;
   }
 
@@ -34796,10 +34048,7 @@ async function loadSelectedProjectConversation(projectId) {
   selectedProjectConversationLoadingKey = loadingKey;
   agentStatusExpanded.value = false;
   try {
-    await fetchProvidersByProject(normalizedProjectId, {
-      includeRuntimeExternalTools: false,
-      refreshRuntimeExternalTools: true,
-    });
+    await fetchProvidersByProject(normalizedProjectId);
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
     if (projectListOffline.value) {
@@ -34884,7 +34133,6 @@ async function loadSelectedProjectConversation(projectId) {
       return;
     }
     await fetchChatHistory(normalizedProjectId, chatSessionId);
-    void ensureWsClient(normalizedProjectId).catch(() => {});
     void restoreOngoingTaskFromServer(normalizedProjectId, { silent: true })
       .then((ongoingTask) => {
         if (

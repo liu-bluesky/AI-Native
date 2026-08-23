@@ -16,7 +16,7 @@ const reloadFunction = projectChatSource.match(
 assert.ok(reloadFunction, "project chat must define reloadLocalMcpConfig");
 assert.match(
   reloadFunction,
-  /const globalFile = await readGlobalMcpConfigFile\(\)/,
+  /(?:const|let) globalFile = await readGlobalMcpConfigFile\(\)/,
   "project chat must load the global MCP file independently",
 );
 assert.match(
@@ -26,7 +26,7 @@ assert.match(
 );
 assert.match(
   reloadFunction,
-  /const projectFile = await readProjectMcpConfigFile\(workspacePath\)/,
+  /(?:const|let) projectFile = await readProjectMcpConfigFile\(workspacePath\)/,
   "project MCP loading must remain scoped to a resolved workspace",
 );
 assert.doesNotMatch(

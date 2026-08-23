@@ -21,7 +21,6 @@ const composerComponentPath = resolve(
   "../src/modules/project-chat/components/composer/ChatComposer.vue",
 );
 const tauriMainPath = resolve(scriptDir, "../src-tauri/src/main.rs");
-const apiProjectsPath = resolve(scriptDir, "../../api/routers/projects.py");
 const source = readFileSync(componentPath, "utf8");
 const restoreLocalLiuAgentRuntimeStateSource =
   source.match(
@@ -35,11 +34,10 @@ const pendingRequestsSource = readFileSync(pendingRequestsComposablePath, "utf8"
 const terminalSource = readFileSync(terminalComposablePath, "utf8");
 const composerSource = readFileSync(composerComponentPath, "utf8");
 const tauriSource = readFileSync(tauriMainPath, "utf8");
-const apiProjectsSource = readFileSync(apiProjectsPath, "utf8");
 
 assert.match(
   source,
-  /function stopGeneration\(\)[\s\S]*?cancelActiveLocalLiuAgentRun\(\)[\s\S]*?const currentRequestId = getActiveRequestId\(\);[\s\S]*?if \(currentChatSessionNativeExternalAgentRunning\.value\)/,
+  /function stopGeneration\(\)[\s\S]*?cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?const currentRequestId = getActiveRequestId\(\);[\s\S]*?if \(currentChatSessionNativeExternalAgentRunning\.value\)/,
   "stopGeneration must cancel local liuAgent first, then active pending request before Runner fallback",
 );
 
@@ -51,13 +49,13 @@ assert.match(
 
 assert.match(
   source,
-  /async function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?await pauseNativeLiuAgentLocalChat\(\{[\s\S]*?projectId:[\s\S]*?chatSessionId,[\s\S]*?workspacePath:[\s\S]*?reason: "manual_pause"[\s\S]*?pauseOpenMessageOperations\(row\);[\s\S]*?summary: "任务已暂停，可以继续执行"[\s\S]*?phase: "blocked"[\s\S]*?local_liuagent_recoverable: "true"[\s\S]*?local_liuagent_resuming: "false"/,
+  /async function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?await pauseNativeLiuAgentLocalChat\(\{[\s\S]*?projectId:[\s\S]*?chatSessionId,[\s\S]*?workspacePath:[\s\S]*?reason: "manual_pause"[\s\S]*?pauseOpenMessageOperations\(row\);[\s\S]*?summary: "任务已暂停，可以继续执行"[\s\S]*?phase: "blocked"[\s\S]*?local_liuagent_recoverable: "true"[\s\S]*?local_liuagent_resuming: "false"/,
   "pausing a local task must synchronously checkpoint and expose recovery without a safe-boundary wait",
 );
 
 assert.doesNotMatch(
   source,
-  /async function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?clearLocalLiuAgentPendingPermissionsForChatSession/,
+  /async function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?clearLocalLiuAgentPendingPermissionsForChatSession/,
   "pausing must preserve pending permission state instead of converting it into another business action",
 );
 
@@ -69,7 +67,7 @@ assert.match(
 
 assert.doesNotMatch(
   source,
-  /async function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?row\.content\s*=/,
+  /async function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?row\.content\s*=/,
   "pausing a local task must not overwrite assistant content or execution details",
 );
 
@@ -81,19 +79,19 @@ assert.match(
 
 assert.match(
   source,
-  /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?status: "paused",[\s\S]*?rootGoal:[\s\S]*?String\(run\.rootGoal \|\| ""\)\.trim\(\)/,
+  /function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?status: "paused",[\s\S]*?rootGoal:[\s\S]*?String\(run\.rootGoal \|\| ""\)\.trim\(\)/,
   "pausing a local task must preserve its original goal and write paused status",
 );
 
 assert.doesNotMatch(
   source,
-  /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?status: "blocked",[\s\S]*?rootGoal: message,/,
+  /function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?status: "blocked",[\s\S]*?rootGoal: message,/,
   "pausing a local task must not overwrite its goal with the stop message",
 );
 
 assert.match(
   source,
-  /function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?queuedFollowupMessages\.value = \[\];[\s\S]*?activeFollowupAssistantMessageId = "";/,
+  /function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?queuedFollowupMessages\.value = \[\];[\s\S]*?activeFollowupAssistantMessageId = "";/,
   "pausing a local task must detach queued followups from the paused card",
 );
 
@@ -387,8 +385,8 @@ assert.doesNotMatch(
 
 assert.match(
   source,
-  /async function deleteMessageAt\(messageIndex\)[\s\S]*?applyDeleteTargetLocally\(target\);[\s\S]*?rememberCurrentChatSessionMessages\(\);[\s\S]*?persistCurrentChatRuntimeNow\(projectId, chatSessionId\);[\s\S]*?ElMessage\.success\(buildDeleteSuccessText\(item\)\);/,
-  "message delete must update the desktop-local runtime directly",
+  /async function deleteMessageAt\(messageIndex\)[\s\S]*?applyDeleteTargetLocally\(target\);[\s\S]*?rememberCurrentChatSessionMessages\(\);[\s\S]*?const saved = await persistCurrentChatRuntimeNow\([\s\S]*?replaceMessages: false[\s\S]*?deletedMessageIds[\s\S]*?ElMessage\.success\(buildDeleteSuccessText\(item\)\);/,
+  "message delete must await a tombstone-aware desktop-local runtime write",
 );
 
 if (/fn cancel_external_agent_session\(/.test(tauriSource)) {
@@ -423,10 +421,10 @@ if (/fn cancel_external_agent_session\(/.test(tauriSource)) {
   );
 }
 
-assert.match(
-  apiProjectsSource,
-  /if str\(payload\.get\("type"\)[\s\S]*?== "cancel":[\s\S]*?cancel_events\[request_id\]\.set\(\)[\s\S]*?task = active_tasks\.get\(request_id\)[\s\S]*?task\.cancel\(\)/,
-  "backend websocket cancel handling must cancel the active task, not only set the cooperative event",
+assert.doesNotMatch(
+  source,
+  /api\.(?:get|post|put|patch|delete)\([\s\S]*?(?:pause|resume|cancel)/,
+  "local project chat pause and resume must not call removed backend endpoints",
 );
 
 function createHarness() {

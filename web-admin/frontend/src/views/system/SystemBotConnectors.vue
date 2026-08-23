@@ -34,7 +34,6 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
-import api from "@/utils/api";
 import BotPlatformConnectorModule from "@/components/system/BotPlatformConnectorModule.vue";
 import {
   DEFAULT_BOT_CONNECTOR_CONFIG,
@@ -42,6 +41,10 @@ import {
   readGlobalBotConnectorConfigFile,
   writeGlobalBotConnectorConfigFile,
 } from "@/modules/project-chat/services/projectChatStorage.js";
+import {
+  buildLocalModelRuntime,
+  normalizeLocalModelRuntime,
+} from "@/services/local-model-runtime.js";
 
 const SUPPORTED_PLATFORMS = ["qq", "feishu", "wechat"];
 
@@ -82,74 +85,48 @@ async function refreshPage() {
   }
 }
 
-async function fetchDesktopModelRuntime(providerId) {
-  const normalizedProviderId = String(providerId || "").trim();
-  if (!normalizedProviderId) return null;
-  const data = await api.get(
-    `/llm/providers/${encodeURIComponent(normalizedProviderId)}/desktop-runtime`,
-  );
-  const runtime =
-    data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
-  const baseUrl = String(runtime.base_url || runtime.baseUrl || "").trim();
-  const apiKey = String(runtime.api_key || runtime.apiKey || "").trim();
-  if (!baseUrl || !apiKey) {
-    throw new Error("当前模型供应商缺少 Base URL 或 API Key，桌面端无法本地调用模型");
-  }
-  return runtime;
-}
-
-async function enrichConnectorModelRuntime(connector) {
+function enrichConnectorModelRuntime(connector) {
   const providerId = String(connector?.provider_id || connector?.providerId || "").trim();
   const modelName = String(connector?.model_name || connector?.modelName || "").trim();
+  const existingRuntime = normalizeLocalModelRuntime(
+    connector?.model_runtime || connector?.modelRuntime,
+    providerId,
+    modelName,
+  );
   if (!providerId) {
     return {
       ...connector,
+      model_runtime: existingRuntime,
+    };
+  }
+  try {
+    const runtime = buildLocalModelRuntime(providerId, modelName);
+    return {
+      ...connector,
+      provider_id: providerId,
+      model_name: runtime.modelName,
+      model_runtime: runtime,
+    };
+  } catch {
+    // Saving connector credentials and scanned chats must not depend on model setup.
+    return {
+      ...connector,
+      provider_id: providerId,
+      model_name: modelName,
       model_runtime: null,
     };
   }
-  const runtime = await fetchDesktopModelRuntime(providerId);
-  const resolvedModelName = String(
-    modelName ||
-      runtime?.model_name ||
-      runtime?.modelName ||
-      runtime?.default_model ||
-      runtime?.defaultModel ||
-      "",
-  ).trim();
-  if (!resolvedModelName) {
-    throw new Error(`机器人模型供应商缺少可用模型名：${providerId}`);
-  }
-  return {
-    ...connector,
-    provider_id: providerId,
-    model_name: resolvedModelName,
-    model_runtime: {
-      mode: "direct-openai-compatible",
-      providerId,
-      modelName: resolvedModelName,
-      baseUrl: String(runtime?.base_url || runtime?.baseUrl || "").trim(),
-      apiKey: String(runtime?.api_key || runtime?.apiKey || "").trim(),
-      temperature:
-        Number.isFinite(Number(runtime?.temperature)) && runtime?.temperature !== ""
-          ? Number(runtime.temperature)
-          : null,
-    },
-  };
 }
 
-async function enrichConnectorsForLocalRuntime(items) {
-  const nextItems = [];
-  for (const item of Array.isArray(items) ? items : []) {
-    nextItems.push(await enrichConnectorModelRuntime(item));
-  }
-  return nextItems;
+function enrichConnectorsForLocalRuntime(items) {
+  return (Array.isArray(items) ? items : []).map(enrichConnectorModelRuntime);
 }
 
 async function saveConnectors(nextItems) {
-  saving.value = true;
+    saving.value = true;
   try {
     const items = Array.isArray(nextItems) ? nextItems : connectors.value;
-    const enrichedItems = await enrichConnectorsForLocalRuntime(items);
+    const enrichedItems = enrichConnectorsForLocalRuntime(items);
     const data = await writeGlobalBotConnectorConfigFile({
       ...DEFAULT_BOT_CONNECTOR_CONFIG,
       connectors: enrichedItems,

@@ -80,15 +80,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
-import api from "@/utils/api.js";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import {
   getStoredProjectContextId,
   setStoredProjectContextId,
 } from "@/utils/desktop-shell.js";
+import { getLocalProject } from "@/services/local-project-repository.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -122,19 +121,13 @@ function getProjectTypeLabel(value) {
   );
 }
 
-async function fetchProject() {
+function fetchProject() {
   const currentProjectId = projectId.value;
   if (!currentProjectId) {
     project.value = {};
     return;
   }
-  try {
-    const data = await api.get(`/projects/${currentProjectId}`);
-    project.value = data.project || {};
-  } catch (err) {
-    project.value = {};
-    ElMessage.error(err?.detail || err?.message || "加载项目信息失败");
-  }
+  project.value = getLocalProject(currentProjectId) || { id: currentProjectId };
 }
 
 function ensureProjectQuery() {
@@ -203,6 +196,11 @@ onMounted(() => {
   }
   ensureProjectQuery();
   void fetchProject();
+  window.addEventListener("local-projects-updated", fetchProject);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("local-projects-updated", fetchProject);
 });
 </script>
 

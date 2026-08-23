@@ -127,7 +127,11 @@ const dockItems = computed(() => {
 
 const isEmbeddedMode = computed(() => {
   if (typeof window === "undefined") return false;
-  return new URLSearchParams(window.location.search).get("embedded") === "1";
+  return (
+    new URLSearchParams(window.location.search).get("embedded") === "1"
+    && window.parent
+    && window.parent !== window
+  );
 });
 
 const statusText = computed(() => {
@@ -439,7 +443,7 @@ function createRestoredWindow(rawWindow, index, usedIds) {
   });
   return {
     id: nextId,
-    appId: String(rawWindow?.appId || "").trim() || meta.appId,
+    appId: meta.appId,
     title: String(rawWindow?.title || "").trim() || meta.appName,
     eyebrow: String(rawWindow?.eyebrow || "").trim() || meta.appEyebrow,
     summary: String(rawWindow?.summary || "").trim() || meta.appSummary,

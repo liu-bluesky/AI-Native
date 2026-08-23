@@ -112,16 +112,14 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import api from "@/utils/api.js";
 import { markSystemInitialized } from "@/router/index.js";
 import { getStoredToken } from "@/utils/auth-storage.js";
-import { resolveServerOrigin } from "@/utils/server-profile.js";
 
 const router = useRouter();
 const formRef = ref(null);
 const loading = ref(false);
 const checkingStatus = ref(false);
-const activeServerOrigin = computed(() => resolveServerOrigin() || "当前网页服务");
+const activeServerOrigin = computed(() => "本地桌面");
 
 const form = reactive({
   username: "admin",
@@ -150,10 +148,6 @@ const rules = {
   ],
 };
 
-function isSetupRequired(payload = {}) {
-  return payload.setup_required === true || payload.initialized === false;
-}
-
 async function redirectInitializedSystem(message = "") {
   markSystemInitialized();
   if (message) {
@@ -165,10 +159,7 @@ async function redirectInitializedSystem(message = "") {
 async function checkInitStatus() {
   checkingStatus.value = true;
   try {
-    const status = await api.get("/init/status");
-    if (!isSetupRequired(status)) {
-      await redirectInitializedSystem("系统已初始化，请直接登录");
-    }
+    await redirectInitializedSystem("本地桌面模式不需要服务端初始化");
   } finally {
     checkingStatus.value = false;
   }
@@ -176,26 +167,7 @@ async function checkInitStatus() {
 
 async function handleSubmit() {
   if (checkingStatus.value) return;
-  await formRef.value.validate();
-  loading.value = true;
-  try {
-    await api.post("/init/setup", {
-      username: "admin",
-      display_name: form.displayName.trim(),
-      password: form.password,
-    });
-    markSystemInitialized();
-    ElMessage.success("初始化成功，请使用 admin 登录");
-    router.replace("/login");
-  } catch (e) {
-    if (String(e?.detail || e?.message || "").includes("Already initialized")) {
-      await redirectInitializedSystem("系统已初始化，请直接登录");
-      return;
-    }
-    ElMessage.error(e.detail || "初始化失败");
-  } finally {
-    loading.value = false;
-  }
+  await redirectInitializedSystem("本地桌面模式不需要服务端初始化");
 }
 
 onMounted(() => {

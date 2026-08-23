@@ -26,11 +26,18 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQxMUQ3NjhBMEYzMjI3RTIKUldUaUp6SVBpbllkUVNNdzVwVmFuZ1dmV2xFdzc1amtiWE9LTEFOeUI4aVBDalBUZ1Y2b1VnSEYK",
+      "dangerousInsecureTransportProtocol": true
+    }
+  },
   "bundle": {
-    "active": false,
+    "active": true,
     "targets": "all",
     "resources": [
-      "bot_workers/feishu_sdk_listener.py"
+      "bot_workers/feishu_sdk_listener.py",
+      "bot_workers/requirements.txt"
     ],
     "icon": []
   }

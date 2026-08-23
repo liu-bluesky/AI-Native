@@ -62,7 +62,6 @@ const proxyConfig = {
   changeOrigin: true,
   ws: true,
 }
-console.log('first', proxyTarget)
 export default defineConfig({
   plugins: [vue()],
   resolve: {

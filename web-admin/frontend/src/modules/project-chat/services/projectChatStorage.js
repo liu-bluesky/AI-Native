@@ -1,13 +1,15 @@
 import { getStoredAuthProfile } from "@/utils/auth-storage.js";
 import {
+  deleteNativeProjectChatSession,
   hasNativeDesktopBridge,
+  listAllNativeProjectChatSessions,
   listNativeProjectChatSessions,
   readNativeGlobalBotConnectorConfigFile,
   readNativeGlobalMcpConfigFile,
   readNativeGlobalWebToolsConfigFile,
   readNativeProjectMcpConfigFile,
   readNativeProjectWebToolsConfigFile,
-  replaceNativeProjectChatSessions,
+  upsertNativeProjectChatSession,
   writeNativeGlobalBotConnectorConfigFile,
   writeNativeGlobalMcpConfigFile,
   writeNativeGlobalWebToolsConfigFile,
@@ -28,6 +30,7 @@ const LOCAL_CONNECTOR_STORAGE_PREFIX = "project_chat.local_connector";
 const GUIDE_TOUR_STORAGE_PREFIX = "project_chat.guide_tour";
 const PROJECT_SELECTION_STORAGE_KEY = "project_id";
 const chatSessionWriteQueues = new Map();
+const deletedChatSessionKeys = new Set();
 export const DEFAULT_LOCAL_MCP_CONFIG = {
   mcpServers: {},
 };
@@ -72,34 +75,139 @@ function chatSessionStorageKey(projectId) {
   return normalized ? `project_chat_session_${normalized}` : "";
 }
 
-export async function readLocalChatSessions(projectId) {
+function chatSessionIdentityKey(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
-  if (!normalizedProjectId) return [];
-  await (chatSessionWriteQueues.get(normalizedProjectId) || Promise.resolve());
-  return listNativeProjectChatSessions(
-    normalizedProjectId,
-    resolveCurrentUsername(),
-  );
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  return normalizedProjectId && normalizedChatSessionId
+    ? `${normalizedProjectId}::${normalizedChatSessionId}`
+    : "";
 }
 
-export async function writeLocalChatSessions(projectId, sessions) {
+export function markChatSessionDeleted(projectId, chatSessionId) {
+  const key = chatSessionIdentityKey(projectId, chatSessionId);
+  if (key) deletedChatSessionKeys.add(key);
+}
+
+export function clearChatSessionDeleted(projectId, chatSessionId) {
+  const key = chatSessionIdentityKey(projectId, chatSessionId);
+  if (key) deletedChatSessionKeys.delete(key);
+}
+
+export function isChatSessionDeleted(projectId, chatSessionId) {
+  const key = chatSessionIdentityKey(projectId, chatSessionId);
+  return Boolean(key && deletedChatSessionKeys.has(key));
+}
+
+export function enqueueChatSessionStorageOperation(projectId, operation) {
   const normalizedProjectId = String(projectId || "").trim();
-  if (!normalizedProjectId) return 0;
-  const rows = Array.isArray(sessions) ? sessions.filter((item) => item?.id) : [];
-  const previous = chatSessionWriteQueues.get(normalizedProjectId) || Promise.resolve();
-  const next = previous.catch(() => undefined).then(() =>
-    replaceNativeProjectChatSessions(
-      normalizedProjectId,
-      resolveCurrentUsername(),
-      rows,
-    ),
-  );
+  const previous =
+    chatSessionWriteQueues.get(normalizedProjectId) || Promise.resolve();
+  const next = previous.catch(() => undefined).then(operation);
   chatSessionWriteQueues.set(normalizedProjectId, next);
   return next.finally(() => {
     if (chatSessionWriteQueues.get(normalizedProjectId) === next) {
       chatSessionWriteQueues.delete(normalizedProjectId);
     }
   });
+}
+
+export async function readLocalChatSessions(projectId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return [];
+  await (chatSessionWriteQueues.get(normalizedProjectId) || Promise.resolve());
+  const sessions = await listNativeProjectChatSessions(
+    normalizedProjectId,
+    resolveCurrentUsername(),
+  );
+  return sessions.filter((session) => {
+    const sessionProjectId =
+      String(session?.project_id || "").trim() || normalizedProjectId;
+    if (sessionProjectId !== normalizedProjectId) return false;
+    return !isChatSessionDeleted(
+      sessionProjectId,
+      String(session?.id || "").trim(),
+    );
+  });
+}
+
+export async function readAllLocalChatSessions() {
+  return listAllNativeProjectChatSessions(resolveCurrentUsername());
+}
+
+export async function writeLocalChatSessions(projectId, sessions) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return 0;
+  const rows = (Array.isArray(sessions) ? sessions : [])
+    .filter((item) => item && typeof item === "object" && item.id)
+    .map((item) => {
+      const sessionProjectId = String(
+        item?.project_id || item?.projectId || "",
+      ).trim();
+      if (sessionProjectId && sessionProjectId !== normalizedProjectId) {
+        return null;
+      }
+      return {
+        ...item,
+        project_id: normalizedProjectId,
+      };
+    })
+    .filter(Boolean);
+  return enqueueChatSessionStorageOperation(
+    normalizedProjectId,
+    async () => {
+      const activeRows = rows.filter((item) => {
+        return !isChatSessionDeleted(
+          normalizedProjectId,
+          String(item?.id || "").trim(),
+        );
+      });
+      const username = resolveCurrentUsername();
+      let written = 0;
+      for (const session of activeRows) {
+        const saved = await upsertNativeProjectChatSession(
+          normalizedProjectId,
+          username,
+          session,
+        );
+        if (saved !== true) {
+          throw new Error("桌面端会话存储命令不可用，请重启桌面端");
+        }
+        written += 1;
+      }
+      return written;
+    },
+  );
+}
+
+export function deleteLocalChatSession(projectId, chatSessionId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId || !normalizedChatSessionId) {
+    return Promise.resolve(false);
+  }
+  markChatSessionDeleted(normalizedProjectId, normalizedChatSessionId);
+  return enqueueChatSessionStorageOperation(
+    normalizedProjectId,
+    async () => {
+      try {
+        const deleted = await deleteNativeProjectChatSession(
+          normalizedProjectId,
+          normalizedChatSessionId,
+          resolveCurrentUsername(),
+        );
+        if (deleted !== true) {
+          throw new Error("桌面端会话删除命令不可用，请重启桌面端");
+        }
+        return true;
+      } catch (error) {
+        clearChatSessionDeleted(
+          normalizedProjectId,
+          normalizedChatSessionId,
+        );
+        throw error;
+      }
+    },
+  );
 }
 
 function taskTreeSessionStorageKey(projectId) {
@@ -170,6 +278,43 @@ export function writeLocalWorkSessionSnapshot(projectId, chatSessionId, session)
   }
   localStorage.setItem(key, JSON.stringify(session));
   return session;
+}
+
+function readLocalSnapshotCollection(prefix, projectId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (typeof window === "undefined" || !normalizedProjectId) return [];
+  const keyPrefix = `${prefix}_${normalizedProjectId}_`;
+  const rows = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index) || "";
+    if (!key.startsWith(keyPrefix)) continue;
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || "null");
+      if (!value || typeof value !== "object") continue;
+      rows.push({
+        ...value,
+        project_id: normalizedProjectId,
+        chat_session_id: key.slice(keyPrefix.length),
+      });
+    } catch {
+      // Ignore a malformed local snapshot and keep the remaining records readable.
+    }
+  }
+  return rows;
+}
+
+export function readLocalTaskTreeSnapshots(projectId) {
+  return readLocalSnapshotCollection(
+    "project_chat_task_tree_snapshot",
+    projectId,
+  );
+}
+
+export function readLocalWorkSessionSnapshots(projectId) {
+  return readLocalSnapshotCollection(
+    "project_chat_work_session_snapshot",
+    projectId,
+  );
 }
 
 export function resolveCurrentUsername() {

@@ -5,19 +5,15 @@
 <script setup>
 import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
-import api from './utils/api.js'
-import { syncCurrentUser } from './utils/auth.js'
 import {
   authStateVersion,
-  clearAuthSession,
   getStoredToken,
   isExternalAuthSession,
 } from './utils/auth-storage.js'
 import {
-  buildApiBaseUrl,
   getServerScopedStorageKey,
-  resolveServerOrigin,
   serverProfileVersion,
 } from './utils/server-profile.js'
 import {
@@ -30,54 +26,39 @@ import {
   startNativeFeishuLocalBotListener,
   stopNativeFeishuLocalBotListener,
 } from './utils/native-desktop-bridge.js'
+import {
+  canUseDesktopUpdater,
+  checkDesktopUpdate,
+  downloadDesktopUpdate,
+} from './utils/desktop-updater.js'
+import {
+  buildLocalModelRuntime,
+  normalizeLocalModelRuntime,
+} from './services/local-model-runtime.js'
 
 const router = useRouter()
-const ONLINE_HEARTBEAT_INTERVAL_MS = 60 * 1000
 let onlineHeartbeatTimer = null
-let onlineHeartbeatPending = false
 let localBotSyncTimer = null
 let localBotSyncPending = false
+let desktopUpdateCheckStarted = false
 const AUTH_PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
+
+function isEmbeddedDesktopRoute(routeLocation = {}) {
+  try {
+    const embedded =
+      String(routeLocation?.query?.embedded || '').trim() === '1' ||
+      new URLSearchParams(window.location.search).get('embedded') === '1'
+    return embedded && window.parent && window.parent !== window
+  } catch {
+    return false
+  }
+}
 
 function stopOnlineHeartbeat() {
   if (onlineHeartbeatTimer !== null) {
     window.clearInterval(onlineHeartbeatTimer)
     onlineHeartbeatTimer = null
   }
-}
-
-async function sendOnlineHeartbeat() {
-  if (!getStoredToken() || isExternalAuthSession() || onlineHeartbeatPending) return
-  onlineHeartbeatPending = true
-  try {
-    await api.post('/system/online-users/heartbeat', {
-      current_path: router.currentRoute.value.fullPath || router.currentRoute.value.path || '',
-    })
-  } catch (err) {
-    if (Number(err?.status || 0) !== 401) {
-      console.debug('online heartbeat failed', err)
-    }
-  } finally {
-    onlineHeartbeatPending = false
-  }
-}
-
-function startOnlineHeartbeat() {
-  stopOnlineHeartbeat()
-  void sendOnlineHeartbeat()
-  onlineHeartbeatTimer = window.setInterval(() => {
-    void sendOnlineHeartbeat()
-  }, ONLINE_HEARTBEAT_INTERVAL_MS)
-}
-
-function buildDesktopBackendApiBaseUrl() {
-  const baseUrl = String(buildApiBaseUrl() || '').trim()
-  if (/^https?:\/\//i.test(baseUrl)) return baseUrl
-  const origin = String(resolveServerOrigin() || '').trim()
-  if (/^https?:\/\//i.test(origin)) {
-    return `${origin.replace(/\/+$/, '')}/${baseUrl.replace(/^\/+/, '')}`
-  }
-  return baseUrl
 }
 
 function connectorString(value, fallback = '') {
@@ -95,50 +76,69 @@ function connectorEnabledForLocalFeishu(connector = {}) {
   )
 }
 
-async function fetchDesktopModelRuntime(providerId) {
-  const normalizedProviderId = connectorString(providerId)
-  if (!normalizedProviderId) return null
-  const data = await api.get(
-    `/llm/providers/${encodeURIComponent(normalizedProviderId)}/desktop-runtime`,
-  )
-  const runtime = data?.runtime && typeof data.runtime === 'object' ? data.runtime : {}
-  const baseUrl = connectorString(runtime.base_url || runtime.baseUrl)
-  const apiKey = connectorString(runtime.api_key || runtime.apiKey)
-  if (!baseUrl || !apiKey) {
-    throw new Error(`机器人模型供应商缺少桌面运行时：${normalizedProviderId}`)
-  }
-  return runtime
-}
-
-async function buildConnectorModelRuntime(connector = {}) {
-  const existing =
-    connector?.model_runtime && typeof connector.model_runtime === 'object'
-      ? connector.model_runtime
-      : connector?.modelRuntime && typeof connector.modelRuntime === 'object'
-        ? connector.modelRuntime
-        : null
-  if (existing?.baseUrl || existing?.base_url) return existing
+function buildConnectorModelRuntime(connector = {}) {
   const providerId = connectorString(connector.provider_id || connector.providerId)
-  if (!providerId) return null
-  const runtime = await fetchDesktopModelRuntime(providerId)
   const modelName = connectorString(
     connector.model_name || connector.modelName,
-    runtime?.model_name || runtime?.modelName || runtime?.default_model || runtime?.defaultModel,
   )
-  if (!modelName) {
-    throw new Error(`机器人模型供应商缺少可用模型名：${providerId}`)
+  if (providerId) {
+    try {
+      return buildLocalModelRuntime(providerId, modelName)
+    } catch (error) {
+      throw new Error(
+        `机器人模型供应商未配置本地运行时：${providerId}（${connectorString(
+          error?.message,
+          "请先配置本地模型",
+        )}）`,
+      )
+    }
   }
-  return {
-    mode: 'direct-openai-compatible',
+  const existing = normalizeLocalModelRuntime(
+    connector?.model_runtime || connector?.modelRuntime,
     providerId,
     modelName,
-    baseUrl: connectorString(runtime.base_url || runtime.baseUrl),
-    apiKey: connectorString(runtime.api_key || runtime.apiKey),
-    temperature:
-      Number.isFinite(Number(runtime.temperature)) && runtime.temperature !== ''
-        ? Number(runtime.temperature)
-        : null,
+  )
+  if (existing) return existing
+  return null
+}
+
+function emitLocalBotRuntimeDiagnostic(connector, error) {
+  const detail = {
+    connectorId: connectorString(connector?.id),
+    message: connectorString(error?.message || error, "机器人未启动：缺少本地模型运行时"),
   }
+  console.warn("skip desktop feishu bot listener without local model runtime", detail)
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("local-bot-runtime-diagnostic", { detail }),
+    )
+  }
+}
+
+function resolveRunnableLocalBotListeners(connectors) {
+  const runnable = []
+  for (const connector of Array.isArray(connectors) ? connectors : []) {
+    const connectorId = connectorString(connector?.id)
+    if (!connectorId) continue
+    try {
+      const modelRuntime = buildConnectorModelRuntime(connector)
+      if (!modelRuntime) {
+        emitLocalBotRuntimeDiagnostic(connector)
+        continue
+      }
+      runnable.push({ connector, connectorId, modelRuntime })
+    } catch (error) {
+      emitLocalBotRuntimeDiagnostic(connector, error)
+    }
+  }
+  return runnable
+}
+
+function connectorRuntimeLabel(connector) {
+  return connectorString(
+    connector?.name || connector?.id,
+    "未命名机器人",
+  )
 }
 
 function scheduleLocalBotListenerSync() {
@@ -166,7 +166,8 @@ async function syncLocalBotListeners() {
       ? configData.config.connectors
       : []
     const enabled = connectors.filter(connectorEnabledForLocalFeishu)
-    const enabledIds = new Set(enabled.map((item) => connectorString(item.id)).filter(Boolean))
+    const runnable = resolveRunnableLocalBotListeners(enabled)
+    const enabledIds = new Set(runnable.map((item) => item.connectorId).filter(Boolean))
     const listeners = await listNativeFeishuLocalBotListeners()
     for (const listener of Array.isArray(listeners) ? listeners : []) {
       const connectorId = connectorString(listener?.connectorId || listener?.connector_id)
@@ -182,11 +183,9 @@ async function syncLocalBotListeners() {
     const mcpConfig = mcpData?.config && typeof mcpData.config === 'object'
       ? mcpData.config
       : {}
-    for (const connector of enabled) {
-      const connectorId = connectorString(connector.id)
-      if (!connectorId) continue
+    for (const item of runnable) {
+      const { connector, connectorId, modelRuntime } = item
       try {
-        const modelRuntime = await buildConnectorModelRuntime(connector)
         await startNativeFeishuLocalBotListener({
           connectorId,
           workspacePath: '',
@@ -196,14 +195,13 @@ async function syncLocalBotListeners() {
           ),
           modelRuntime,
           mcpConfig,
-          backendContext: {
-            apiBaseUrl: buildDesktopBackendApiBaseUrl(),
-            token: getStoredToken(),
-          },
           permissionDecision: null,
         })
       } catch (err) {
-        console.warn('start desktop feishu bot listener failed', err)
+        console.warn(
+          `start desktop feishu bot listener failed for ${connectorRuntimeLabel(connector)}`,
+          err,
+        )
       }
     }
   } finally {
@@ -233,55 +231,62 @@ function handleGlobalFeedbackShortcut(event) {
   return
 }
 
+async function checkForDesktopUpdate() {
+  if (
+    desktopUpdateCheckStarted ||
+    router.currentRoute.value.path === '/updates' ||
+    !canUseDesktopUpdater()
+  ) return
+  desktopUpdateCheckStarted = true
+  try {
+    const update = await checkDesktopUpdate()
+    const version = String(update?.version || '').trim()
+    if (!version) return
+    const promptKey = `desktop_update_prompted:${version}`
+    try {
+      if (window.sessionStorage.getItem(promptKey) === '1') return
+      window.sessionStorage.setItem(promptKey, '1')
+    } catch {
+      // Session storage is optional; the update prompt can still continue.
+    }
+    const notes = String(update?.notes || '').trim()
+    const message = notes ? `发现新版本 ${version}\n\n${notes}` : `发现新版本 ${version}`
+    try {
+      await ElMessageBox.confirm(message, '版本更新', {
+        type: 'info',
+        confirmButtonText: '打开下载',
+        cancelButtonText: '稍后提醒',
+        distinguishCancelAndClose: true,
+      })
+    } catch {
+      return
+    }
+
+    try {
+      await downloadDesktopUpdate(update)
+      ElMessage.success('已打开系统浏览器，请下载对应版本的安装包')
+    } catch (error) {
+      const detail = String(error?.message || error || '').trim()
+      ElMessage.error(detail || '版本更新失败，请稍后重试')
+    }
+  } catch (error) {
+    console.debug('desktop update check skipped', error)
+  }
+}
+
 onMounted(async () => {
   await router.isReady()
 
-  const currentPath = router.currentRoute.value.path
-  const publicPaths = AUTH_PUBLIC_PATHS
+  const embeddedDesktopRoute = isEmbeddedDesktopRoute(router.currentRoute.value)
   window.addEventListener('storage', handleAuthStorageChange)
   window.addEventListener('keydown', handleGlobalFeedbackShortcut)
 
-  try {
-    const { initialized, setup_required: setupRequired } = await api.get('/init/status')
-    const setupRequiredValue = setupRequired === true || initialized === false
-    if (currentPath === '/loading') {
-      return
-    }
-    if (setupRequiredValue && currentPath !== '/init') {
-      router.replace('/init')
-      return
-    }
-    if (!setupRequiredValue && currentPath === '/init') {
-      router.replace(getStoredToken() ? '/workbench' : '/login')
-      return
-    }
+  if (!embeddedDesktopRoute && router.currentRoute.value.path !== '/updates') {
+    void checkForDesktopUpdate()
+  }
 
-    const token = getStoredToken()
-    if (!token && !publicPaths.has(currentPath)) {
-      router.replace('/login')
-      return
-    }
-    if (token) {
-      try {
-        await syncCurrentUser()
-        if (!isExternalAuthSession()) {
-          startOnlineHeartbeat()
-          scheduleLocalBotListenerSync()
-        }
-      } catch {
-        clearAuthSession()
-        stopOnlineHeartbeat()
-        if (!publicPaths.has(currentPath)) {
-          router.replace('/login')
-        }
-        return
-      }
-    }
-  } catch {
-    stopOnlineHeartbeat()
-    if (!publicPaths.has(currentPath)) {
-      router.replace('/login')
-    }
+  if (getStoredToken() && !isExternalAuthSession()) {
+    scheduleLocalBotListenerSync()
   }
 })
 
@@ -293,20 +298,10 @@ watch(
       redirectToLoginIfNeeded()
       return
     }
-    if (isExternalAuthSession()) {
-      stopOnlineHeartbeat()
+    stopOnlineHeartbeat()
+    if (!isExternalAuthSession()) {
+      scheduleLocalBotListenerSync()
       return
-    }
-    startOnlineHeartbeat()
-    scheduleLocalBotListenerSync()
-  },
-)
-
-watch(
-  () => router.currentRoute.value.fullPath,
-  () => {
-    if (getStoredToken() && !isExternalAuthSession()) {
-      void sendOnlineHeartbeat()
     }
   },
 )

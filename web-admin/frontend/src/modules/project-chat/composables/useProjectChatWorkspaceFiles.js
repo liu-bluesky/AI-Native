@@ -2,7 +2,7 @@ import { computed, ref } from "vue";
 
 /**
  * 管理工作区文件树、文件内容、diff 预览和路径配置的状态。
- * API 调用已迁入 `services/projectChatWorkspaceApi.js`，本 composable 只持有状态。
+ * 工作区文件状态由桌面端本地桥接读写，本 composable 只持有面板状态。
  */
 export function useProjectChatWorkspaceFiles() {
   // --- 工作区文件树 ---

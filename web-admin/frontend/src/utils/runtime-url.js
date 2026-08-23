@@ -1,5 +1,3 @@
-import api from '@/utils/api.js'
-import { isExternalAuthSession } from '@/utils/auth-storage.js'
 import { buildServerUrl, resolveServerOrigin } from '@/utils/server-profile.js'
 
 function normalizePath(pathname) {
@@ -17,7 +15,6 @@ function currentOrigin() {
 }
 
 let configuredRuntimeOrigin = ''
-let configuredRuntimeOriginPromise = null
 
 export function setConfiguredRuntimeOrigin(origin) {
   configuredRuntimeOrigin = normalizeOrigin(origin)
@@ -25,20 +22,12 @@ export function setConfiguredRuntimeOrigin(origin) {
 }
 
 export async function fetchConfiguredRuntimeOrigin({ force = false } = {}) {
-  if (isExternalAuthSession()) return currentOrigin()
-  if (!force && configuredRuntimeOrigin) return configuredRuntimeOrigin
-  if (!force && configuredRuntimeOriginPromise) return configuredRuntimeOriginPromise
-  configuredRuntimeOriginPromise = (async () => {
-    try {
-      const data = await api.get('/projects/query-mcp/runtime')
-      return setConfiguredRuntimeOrigin(data?.runtime?.origin || '')
-    } catch {
-      return configuredRuntimeOrigin || currentOrigin()
-    } finally {
-      configuredRuntimeOriginPromise = null
-    }
-  })()
-  return configuredRuntimeOriginPromise
+  // Remote runtime discovery was part of the removed backend project flow.
+  // Keep this helper async for callers while resolving only from local state.
+  if (force || !configuredRuntimeOrigin) {
+    setConfiguredRuntimeOrigin(currentOrigin())
+  }
+  return configuredRuntimeOrigin || currentOrigin()
 }
 
 export function buildRuntimeUrl(pathname, originOverride = '') {

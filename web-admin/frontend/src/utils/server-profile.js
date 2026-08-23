@@ -72,6 +72,22 @@ export function buildApiBaseUrl(origin = resolveServerOrigin()) {
   return `${normalized}/api`;
 }
 
+export function buildNativeBackendApiBaseUrl(origin = resolveServerOrigin()) {
+  const normalized = normalizeServerOrigin(origin);
+  const current = browserOrigin();
+  const proxyTarget = String(import.meta.env?.VITE_API_PROXY_TARGET || "").trim();
+  if (
+    proxyTarget &&
+    /^https?:\/\//i.test(proxyTarget) &&
+    (!normalized || !current || normalized === current)
+  ) {
+    return `${proxyTarget.replace(/\/+$/, "")}/api`;
+  }
+  if (/^https?:\/\//i.test(normalized)) return `${normalized}/api`;
+  if (/^https?:\/\//i.test(current)) return `${current}/api`;
+  return "/api";
+}
+
 export function buildServerUrl(pathname = "", origin = resolveServerOrigin()) {
   const path = String(pathname || "").trim();
   const cleanPath = path.startsWith("/") ? path : `/${path}`;

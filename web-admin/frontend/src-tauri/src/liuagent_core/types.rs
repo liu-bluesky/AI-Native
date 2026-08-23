@@ -93,12 +93,18 @@ impl Default for LocalChatRequest {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalMediaToolConfig {
     pub name: String,
     pub provider_id: String,
     pub model_name: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub extra_headers: Value,
 }
 
 #[derive(Debug, Deserialize, Clone)]

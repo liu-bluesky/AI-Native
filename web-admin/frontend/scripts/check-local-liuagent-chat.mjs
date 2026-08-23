@@ -49,11 +49,6 @@ const style06 = readFileSync(
   resolve(rootDir, "src/modules/project-chat/styles/project-chat-style-06.css"),
   "utf8",
 );
-const llmProvidersRouter = readFileSync(
-  resolve(rootDir, "../api/routers/llm_providers.py"),
-  "utf8",
-);
-
 assert.match(
   tauriMain,
   /async fn liuagent_start_local_chat\(\s*app: tauri::AppHandle,\s*request: liuagent_core::LocalChatRequest,/,
@@ -368,7 +363,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /async function cancelActiveLocalLiuAgentRun\(\)[\s\S]*?if \(row\) \{[\s\S]*?ensureMessageAnswerId\(row\);/,
+  /async function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?if \(row\) \{[\s\S]*?ensureMessageAnswerId\(row\);/,
   "the immediate manual pause path must persist an answer ID",
 );
 
@@ -707,7 +702,7 @@ assert.match(
 assert.match(
   projectChat,
   /if \(workspacePath !== savedWorkspacePath\) \{[\s\S]*?saveProjectWorkspaceDirectory\(workspacePath,\s*\{[\s\S]*?silent: true,[\s\S]*?rethrow: true,/,
-  "Creating AIENTRY.md must persist a draft workspace path before using the backend workspace file API",
+  "Creating AIENTRY.md must persist a draft workspace path before using the native workspace file bridge",
 );
 
 assert.match(
@@ -724,7 +719,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /async function saveProjectWorkspaceDirectory[\s\S]*workspacePathDraft\.value = persisted;[\s\S]*connector_workspace_path: persisted,[\s\S]*workspace_path: persisted,/,
+  /async function saveProjectWorkspaceDirectory[\s\S]*?if \(isLocalProjectMode\(\)\) \{[\s\S]*?connector_workspace_path: workspacePath,[\s\S]*?updateLocalProjectRelations\(projectId,[\s\S]*?workspace_path: workspacePath,[\s\S]*?chat_settings: nextSettings,[\s\S]*?upsertLocalProject\([\s\S]*?workspace_path: workspacePath,[\s\S]*?workspacePathDraft\.value = workspacePath;/,
   "saving the project workspace must refresh local runner workspace state immediately",
 );
 
@@ -838,14 +833,14 @@ assert.match(
 
 assert.match(
   projectChat,
-  /\/llm\/providers\/\$\{encodeURIComponent\(normalizedProviderId\)\}\/desktop-runtime/,
-  "desktop model runtime config must be fetched from the backend as config data only",
+  /async function fetchLocalLiuAgentDesktopModelRuntime\(providerId\)[\s\S]*?readLocalEntities\("llm_providers"\)[\s\S]*?baseUrl/,
+  "desktop model runtime config must be read from the local provider catalog",
 );
 
-assert.match(
-  llmProvidersRouter,
-  /provider_type != "openai-compatible"/,
-  "desktop runtime config endpoint must only expose provider types implemented by the Tauri direct runtime",
+assert.doesNotMatch(
+  projectChat,
+  /\/llm\/providers\/\$\{encodeURIComponent\(normalizedProviderId\)\}\/desktop-runtime/,
+  "desktop local chat must not request the removed backend runtime config endpoint",
 );
 
 assert.doesNotMatch(
@@ -970,7 +965,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /function buildPersistedChatRuntimePayload\(\)[\s\S]*composer_plan: composerPlanState\.plan,[\s\S]*composer_plan_owner_id: composerPlanState\.ownerId/,
+  /function buildPersistedChatRuntimePayload\([^)]*\)[\s\S]*composer_plan: composerPlanState\.plan,[\s\S]*composer_plan_owner_id: composerPlanState\.ownerId/,
   "persisted chat runtime must include the active session composer plan",
 );
 
@@ -1180,7 +1175,7 @@ assert.match(
 
 assert.match(
   projectChat,
-  /const runtimePayload = await fetchPersistedChatRuntime\([\s\S]*?if \([\s\S]*?!isCurrentChatSession\(projectId, normalizedSessionId\)[\s\S]*?activeChatHistoryLoadingKey !== loadingKey[\s\S]*?return;/,
+  /const \[remoteHistoryResult, runtimePayload\] = await Promise\.all\([\s\S]*?fetchPersistedChatRuntime\(projectId, normalizedSessionId\)[\s\S]*?if \([\s\S]*?!isCurrentChatSession\(projectId, normalizedSessionId\)[\s\S]*?activeChatHistoryLoadingKey !== loadingKey[\s\S]*?return;/,
   "a stale conversation-history response must not overwrite the newly selected conversation",
 );
 

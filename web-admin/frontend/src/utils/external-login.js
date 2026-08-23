@@ -1,4 +1,6 @@
-const EXTERNAL_LOGIN_URL = 'https://d1api.ltllm.com/api/admin/login'
+import { EXTERNAL_LOGIN_ENDPOINT } from './backend-endpoints.js'
+
+const EXTERNAL_LOGIN_URL = EXTERNAL_LOGIN_ENDPOINT
 
 const PASSWORD_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqVNFLqJPwFF8Q5K/oQI/

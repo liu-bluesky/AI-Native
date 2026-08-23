@@ -10,10 +10,12 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use crate::liuagent_core::args::{number_arg, required_string_arg, string_arg};
+use crate::liuagent_core::normalize_local_backend_api_base_url;
 use crate::liuagent_core::types::ToolError;
 
 pub fn list_projects(arguments: &Value) -> Result<(Value, String), ToolError> {
-    let api_base_url = string_arg(arguments, "_backend_api_base_url", "");
+    let api_base_url =
+        normalize_local_backend_api_base_url(&string_arg(arguments, "_backend_api_base_url", ""));
     let backend_token = string_arg(arguments, "_backend_token", "");
     if api_base_url.is_empty() || backend_token.is_empty() {
         return Err(ToolError::new(
@@ -65,7 +67,8 @@ pub fn list_projects(arguments: &Value) -> Result<(Value, String), ToolError> {
 }
 
 pub fn get_project(arguments: &Value) -> Result<(Value, String), ToolError> {
-    let api_base_url = string_arg(arguments, "_backend_api_base_url", "");
+    let api_base_url =
+        normalize_local_backend_api_base_url(&string_arg(arguments, "_backend_api_base_url", ""));
     let backend_token = string_arg(arguments, "_backend_token", "");
     if api_base_url.is_empty() || backend_token.is_empty() {
         return Err(ToolError::new(
@@ -201,7 +204,8 @@ fn project_members_url(api_base_url: &str, project_id: &str) -> Result<Url, Tool
 }
 
 fn backend_url(api_base_url: &str, path: &str) -> Result<Url, ToolError> {
-    let base = Url::parse(api_base_url.trim()).map_err(|err| {
+    let normalized_api_base_url = normalize_local_backend_api_base_url(api_base_url);
+    let base = Url::parse(&normalized_api_base_url).map_err(|err| {
         ToolError::new(
             "tool.schema_invalid",
             format!("invalid api_base_url: {err}"),
@@ -249,6 +253,16 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn project_urls_migrate_legacy_local_frontend_port() {
+        assert_eq!(
+            backend_url("http://127.0.0.1:3000/api", "projects")
+                .unwrap()
+                .as_str(),
+            "http://127.0.0.1:8000/api/projects"
+        );
+    }
 
     #[test]
     fn get_project_includes_bound_agents_from_members_endpoint() {

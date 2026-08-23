@@ -13,33 +13,41 @@ export const MODEL_ROLE_CONFIGS = [
   {
     id: "image",
     label: "Images / 图片生成",
-    description: "由主模型通过 generate_image 工具调用。",
+    description:
+      "由主模型调用统一的图片工具协议；系统通过供应商适配器使用当前选择的图片模型，支持从零生成和现有图片编辑。",
     providerKey: "image_provider_id",
     modelKey: "image_model_name",
+    buildFeature: "image",
     modelTypes: ["image_generation"],
   },
   {
     id: "video",
     label: "Videos / 视频生成",
-    description: "由主模型通过 generate_video 工具调用。",
+    description:
+      "由主模型调用统一的视频工具协议；系统通过供应商适配器使用当前选择的视频模型，实际生成和编辑能力以供应商能力为准。",
     providerKey: "video_provider_id",
     modelKey: "video_model_name",
+    buildFeature: "video",
     modelTypes: ["video_generation"],
   },
   {
     id: "audio_generation",
     label: "Speech / 音频生成",
-    description: "由主模型通过 generate_audio 工具调用。",
+    description:
+      "由主模型调用统一的文本转语音工具协议；系统通过供应商适配器使用当前选择的语音模型。",
     providerKey: "audio_generation_provider_id",
     modelKey: "audio_generation_model_name",
+    buildFeature: "audioGeneration",
     modelTypes: ["audio_generation"],
   },
   {
     id: "audio_transcription",
     label: "Transcriptions / 音频转写",
-    description: "由主模型通过 transcribe_audio 工具调用。",
+    description:
+      "由主模型调用统一的音频转写工具协议；系统通过供应商适配器使用当前选择的转写模型。",
     providerKey: "audio_transcription_provider_id",
     modelKey: "audio_transcription_model_name",
+    buildFeature: "audioTranscription",
     modelTypes: ["audio_transcription"],
   },
 ];

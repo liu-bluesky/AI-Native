@@ -14,7 +14,7 @@
           :disabled="!audioProviderOptions.length"
           @click="openCreateDialog"
         >
-          创建自定义音色
+          登记项目音色
         </el-button>
       </div>
     </section>
@@ -71,8 +71,8 @@
               <dd>{{ item.preview_text || "未填写" }}</dd>
             </div>
             <div>
-              <dt>样本音频</dt>
-              <dd>{{ item.sample_audio?.original_filename || "未保存" }}</dd>
+              <dt>本地音频</dt>
+              <dd>{{ localAudioFileName(item) || "未保存" }}</dd>
             </div>
           </dl>
           <div
@@ -81,21 +81,18 @@
           >
             <div class="voice-card__preview-head">
               <div class="voice-card__preview-title">
-                {{ hasGeneratedPreview(item) ? "生成试听" : "试听区" }}
+                本地音频
               </div>
               <div class="voice-card__preview-text">
                 {{
-                  hasGeneratedPreview(item)
-                    ? "当前为最新试听音频"
-                    : item.sample_audio?.content_url
-                      ? "未生成试听时，可先听上传样本"
-                      : "点击试听后会在这里出现音频"
+                  resolveVoiceAudioUrl(item)
+                    ? "保留的本地音频文件"
+                    : "未保存可播放的本地音频"
                 }}
               </div>
             </div>
             <audio
               v-if="resolveVoiceAudioUrl(item)"
-              :ref="(el) => setPreviewAudioRef(item.id, el)"
               class="voice-card__audio"
               :src="resolveVoiceAudioUrl(item)"
               controls
@@ -107,14 +104,6 @@
           </div>
           <div class="voice-card__actions">
             <div class="voice-card__actions-main">
-              <el-button
-                size="small"
-                type="primary"
-                :loading="previewingId === String(item.id || '').trim()"
-                @click="previewVoice(item)"
-              >
-                {{ hasGeneratedPreview(item) ? "刷新试听" : "试听" }}
-              </el-button>
               <el-button
                 size="small"
                 plain
@@ -154,24 +143,14 @@
           <div class="voice-library-dialog__desc">
             {{
               dialogMode === "edit"
-                ? "更新名称、试听文案和备注，让项目里的配音资产更稳定。"
-                : "支持参考音频复刻，或登记供应商已有的音色 ID。"
+                ? "更新名称、供应商音色 ID、试听文案和备注。"
+                : "登记供应商已有的音色 ID，信息仅保存到当前桌面项目。"
             }}
           </div>
         </div>
       </template>
 
       <div class="voice-library-dialog__body">
-        <div class="voice-library-form-grid">
-          <label class="voice-library-field">
-            <span>创建方式</span>
-            <el-segmented
-              v-model="createMode"
-              :options="createModeOptions"
-              :disabled="dialogMode === 'edit'"
-            />
-          </label>
-        </div>
         <div class="voice-library-form-grid">
           <label class="voice-library-field">
             <span>模型源</span>
@@ -213,20 +192,11 @@
               placeholder="例如：女主旁白 · 冷静版"
             />
           </label>
-          <label v-if="createMode === 'manual'" class="voice-library-field">
+          <label class="voice-library-field">
             <span>音色 ID</span>
             <el-input
               v-model="form.voiceId"
               placeholder="填写供应商侧的 voice_id"
-            />
-          </label>
-          <label v-if="createMode === 'clone'" class="voice-library-field">
-            <span>样本转写</span>
-            <el-input
-              v-model="form.transcriptText"
-              type="textarea"
-              :rows="4"
-              placeholder="填写样本音频里的原文，复刻时会用来做对齐。"
             />
           </label>
           <label class="voice-library-field">
@@ -235,7 +205,7 @@
               v-model="form.previewText"
               type="textarea"
               :rows="3"
-              placeholder="用于生成试听。"
+              placeholder="用于标记该音色的推荐试听文案。"
             />
           </label>
           <label class="voice-library-field">
@@ -249,29 +219,6 @@
           </label>
         </div>
 
-        <section v-if="createMode === 'clone'" class="voice-library-upload">
-          <div>
-            <div class="voice-library__panel-title">参考音频</div>
-            <div class="voice-library__panel-desc">
-              建议上传 10 到 30 秒的清晰单人语音，噪声越少越稳。
-            </div>
-          </div>
-          <div class="voice-library-upload__actions">
-            <el-button :disabled="dialogMode === 'edit'" @click="openFilePicker">
-              选择音频
-            </el-button>
-            <span>{{
-              selectedFileName || (dialogMode === "edit" ? "当前保留原始样本" : "尚未选择文件")
-            }}</span>
-          </div>
-          <input
-            ref="fileInputRef"
-            class="voice-library__hidden-input"
-            type="file"
-            accept="audio/*"
-            @change="handleFileChange"
-          />
-        </section>
       </div>
 
       <template #footer>
@@ -279,10 +226,8 @@
           <div class="voice-library-dialog__hint">
             {{
               dialogMode === "edit"
-                ? "编辑不会重建音色本体，只会更新项目内的展示和试听信息。"
-                : createMode === "clone"
-                  ? "复刻完成后，会自动加入当前项目音色列表。"
-                  : "登记后会立即加入当前项目的音色列表。"
+                ? "修改仅写入当前桌面项目的音色元数据。"
+                : "登记后会立即加入当前项目的本地音色列表。"
             }}
           </div>
           <el-button @click="dialogVisible = false">取消</el-button>
@@ -296,13 +241,16 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 
-import api from "@/utils/api.js";
 import { normalizeProviderModelConfigs } from "@/utils/llm-models.js";
-import { resolveVoiceResourceUrl } from "@/utils/voice-resources.js";
+import { readLocalModelProviders } from "@/services/local-model-runtime.js";
+import {
+  getLocalProjectRelations,
+  updateLocalProjectRelations,
+} from "@/services/local-project-repository.js";
 import {
   getStoredProjectContextId,
   setStoredProjectContextId,
@@ -317,17 +265,9 @@ const dialogVisible = ref(false);
 const dialogMode = ref("create");
 const editingVoiceId = ref("");
 const submitting = ref(false);
-const loading = ref(false);
 const deletingId = ref("");
-const previewingId = ref("");
-const createMode = ref("clone");
-const fileInputRef = ref(null);
-const selectedFile = ref(null);
-const selectedFileName = ref("");
 const providers = ref([]);
 const voices = ref([]);
-const previewAudioMap = reactive({});
-const previewAudioRefs = new Map();
 
 watch(projectId, (value) => {
   const normalizedProjectId = String(value || "").trim();
@@ -340,15 +280,9 @@ const form = reactive({
   modelName: "",
   name: "",
   voiceId: "",
-  transcriptText: "",
-  previewText: "你好，这是一段用于校准音色的试听文本。",
+  previewText: "你好，这是一段用于标记音色的试听文本。",
   description: "",
 });
-
-const createModeOptions = [
-  { label: "参考音频复刻", value: "clone" },
-  { label: "手动登记音色ID", value: "manual" },
-];
 
 function normalizeAudioProviders(items) {
   return (Array.isArray(items) ? items : [])
@@ -362,26 +296,16 @@ function normalizeAudioProviders(items) {
           (model) => model.name && model.modelType === "audio_generation",
         );
       if (!audioModelConfigs.length) return null;
-      const cloneModelConfigs = audioModelConfigs.filter((model) =>
-        /clone/i.test(model.name),
-      );
-      const modelConfigs = cloneModelConfigs.length
-        ? cloneModelConfigs
-        : audioModelConfigs;
-      const models = modelConfigs.map((item) => item.name);
+      const models = audioModelConfigs.map((item) => item.name);
       const defaultModel =
-        modelConfigs.find(
+        audioModelConfigs.find(
           (model) => model.name === String(item?.default_model || "").trim(),
         )?.name ||
-        modelConfigs[0]?.name ||
+        audioModelConfigs[0]?.name ||
         "";
       return {
         id: String(item?.id || "").trim(),
         name: String(item?.name || item?.id || "未命名模型源").trim(),
-        cloneModels: cloneModelConfigs.map((entry) => entry.name),
-        speechModels: audioModelConfigs
-          .filter((entry) => !/clone/i.test(entry.name))
-          .map((entry) => entry.name),
         models,
         defaultModel,
       };
@@ -397,11 +321,7 @@ const audioModelOptions = computed(() => {
   const target = audioProviderOptions.value.find(
     (item) => item.id === String(form.providerId || "").trim(),
   );
-  if (!target) return [];
-  if (createMode.value === "clone") {
-    return target.cloneModels?.length ? target.cloneModels : [];
-  }
-  return target.speechModels?.length ? target.speechModels : target.models || [];
+  return target?.models || [];
 });
 
 function syncModelSelection() {
@@ -412,21 +332,9 @@ function syncModelSelection() {
   if (!provider) {
     form.providerId = "";
     form.modelName = "";
-    createMode.value = "clone";
     return;
   }
   form.providerId = provider.id;
-  if (dialogMode.value === "edit") {
-    form.modelName =
-      form.modelName || provider.defaultModel || provider.models[0] || "";
-    return;
-  }
-  if (createMode.value === "clone" && !(provider.cloneModels || []).length) {
-    createMode.value = "manual";
-  }
-  if (createMode.value === "manual" && !(provider.speechModels || []).length) {
-    createMode.value = "clone";
-  }
   const allowedModels = audioModelOptions.value;
   form.modelName = allowedModels.includes(form.modelName)
     ? form.modelName
@@ -443,95 +351,77 @@ function providerLabel(providerId) {
 
 function sourceTypeLabel(sourceType) {
   const normalized = String(sourceType || "").trim().toLowerCase();
-  if (normalized === "manual_binding") return "手动接入";
-  if (normalized === "custom_clone") return "参考音频复刻";
+  if (normalized === "manual_binding") return "本地登记";
+  if (normalized === "custom_clone") return "历史复刻记录";
   return "项目音色";
 }
 
 function statusLabel(status) {
-  const normalized = String(status || "")
-    .trim()
-    .toLowerCase();
-  if (normalized === "ready") return "可用";
-  if (normalized === "failed") return "失败";
-  return "处理中";
+  return String(status || "").trim().toLowerCase() === "failed"
+    ? "不可用"
+    : "可用";
 }
 
-function resolveUrl(url) {
-  return resolveVoiceResourceUrl(String(url || "").trim());
+function resolveLocalAudioUrl(value) {
+  const url = String(value || "").trim();
+  return /^(data:audio\/|blob:|file:\/\/)/i.test(url) ? url : "";
 }
 
 function resolveVoiceAudioUrl(item) {
-  const normalizedId = String(item?.id || "").trim();
-  return resolveUrl(
-    previewAudioMap[normalizedId]?.url ||
-      item?.preview_audio?.content_url ||
-      item?.sample_audio?.content_url,
-  );
+  return [
+    item?.local_audio?.content_url,
+    item?.preview_audio?.content_url,
+    item?.sample_audio?.content_url,
+    item?.local_audio_url,
+  ]
+    .map(resolveLocalAudioUrl)
+    .find(Boolean) || "";
 }
 
-function hasGeneratedPreview(item) {
-  const normalizedId = String(item?.id || "").trim();
-  return Boolean(
-    previewAudioMap[normalizedId]?.url ||
-      String(item?.preview_audio?.content_url || "").trim(),
-  );
+function localAudioFileName(item) {
+  const localAudio = item?.local_audio || {};
+  const previewAudio = item?.preview_audio || {};
+  const sampleAudio = item?.sample_audio || {};
+  return String(
+    localAudio.original_filename ||
+      previewAudio.original_filename ||
+      sampleAudio.original_filename ||
+      "",
+  ).trim();
 }
 
-function setPreviewAudioRef(id, element) {
-  const normalizedId = String(id || "").trim();
-  if (!normalizedId) return;
-  if (element) {
-    previewAudioRefs.set(normalizedId, element);
-    return;
-  }
-  previewAudioRefs.delete(normalizedId);
+function normalizeVoice(item) {
+  const id = String(item?.id || "").trim();
+  if (!id) return null;
+  return {
+    ...item,
+    id,
+    provider_id: String(item?.provider_id || "").trim(),
+    model_name: String(item?.model_name || "").trim(),
+    name: String(item?.name || id).trim() || id,
+    voice_id: String(item?.voice_id || "").trim(),
+    preview_text: String(item?.preview_text || "").trim(),
+    description: String(item?.description || "").trim(),
+    source_type: String(item?.source_type || "manual_binding").trim(),
+    status: String(item?.status || "ready").trim(),
+  };
 }
 
-function playPreviewAudio(id) {
-  const player = previewAudioRefs.get(String(id || "").trim());
-  if (!player?.play) return;
-  player.currentTime = 0;
-  const playback = player.play();
-  if (playback?.catch) {
-    playback.catch(() => {});
-  }
+function fetchProviders() {
+  providers.value = readLocalModelProviders();
+  syncModelSelection();
 }
 
-async function fetchProviders() {
-  const currentProjectId = projectId.value;
-  if (!currentProjectId) {
-    providers.value = [];
-    return;
-  }
-  try {
-    const data = await api.get(
-      `/projects/${currentProjectId}/studio/model-sources`,
-    );
-    providers.value = Array.isArray(data?.providers) ? data.providers : [];
-    syncModelSelection();
-  } catch (err) {
-    providers.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载音频模型源失败");
-  }
-}
-
-async function fetchVoices() {
-  const currentProjectId = projectId.value;
+function fetchVoices() {
+  const currentProjectId = String(projectId.value || "").trim();
   if (!currentProjectId) {
     voices.value = [];
     return;
   }
-  loading.value = true;
-  try {
-    const data = await api.get(`/projects/${currentProjectId}/studio/voices`);
-    voices.value = Array.isArray(data?.items) ? data.items : [];
-  } catch (err) {
-    voices.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载项目音色失败");
-  } finally {
-    loading.value = false;
-  }
+  const relations = getLocalProjectRelations(currentProjectId);
+  voices.value = (Array.isArray(relations.voices) ? relations.voices : [])
+    .map(normalizeVoice)
+    .filter(Boolean);
 }
 
 function resetForm() {
@@ -539,15 +429,9 @@ function resetForm() {
   editingVoiceId.value = "";
   form.name = "";
   form.voiceId = "";
-  form.transcriptText = "";
-  form.previewText = "你好，这是一段用于校准音色的试听文本。";
+  form.previewText = "你好，这是一段用于标记音色的试听文本。";
   form.description = "";
-  selectedFile.value = null;
-  selectedFileName.value = "";
   syncModelSelection();
-  if (fileInputRef.value) {
-    fileInputRef.value.value = "";
-  }
 }
 
 function openCreateDialog() {
@@ -559,36 +443,20 @@ function openEditDialog(item) {
   resetForm();
   dialogMode.value = "edit";
   editingVoiceId.value = String(item?.id || "").trim();
-  createMode.value =
-    String(item?.source_type || "").trim().toLowerCase() === "manual_binding"
-      ? "manual"
-      : "clone";
   form.providerId = String(item?.provider_id || "").trim();
   form.modelName = String(item?.model_name || "").trim();
   form.name = String(item?.name || "").trim();
   form.voiceId = String(item?.voice_id || "").trim();
-  form.transcriptText = String(item?.transcript_text || "").trim();
   form.previewText =
     String(item?.preview_text || "").trim() ||
-    "你好，这是一段用于校准音色的试听文本。";
+    "你好，这是一段用于标记音色的试听文本。";
   form.description = String(item?.description || "").trim();
-  selectedFileName.value = String(item?.sample_audio?.original_filename || "").trim();
   syncModelSelection();
   dialogVisible.value = true;
 }
 
-function openFilePicker() {
-  fileInputRef.value?.click?.();
-}
-
-function handleFileChange(event) {
-  const file = event?.target?.files?.[0];
-  selectedFile.value = file || null;
-  selectedFileName.value = file ? String(file.name || "").trim() : "";
-}
-
 async function submitForm() {
-  const currentProjectId = projectId.value;
+  const currentProjectId = String(projectId.value || "").trim();
   if (!currentProjectId) {
     ElMessage.warning("缺少项目 ID");
     return;
@@ -601,134 +469,64 @@ async function submitForm() {
     ElMessage.warning("请填写音色名称");
     return;
   }
-  const isEditing = dialogMode.value === "edit" && editingVoiceId.value;
-  if (createMode.value === "clone") {
-    if (!form.transcriptText.trim()) {
-      ElMessage.warning("请填写样本转写");
-      return;
-    }
-    if (!isEditing && !selectedFile.value) {
-      ElMessage.warning("请上传参考音频");
-      return;
-    }
-  } else if (!form.voiceId.trim()) {
-    ElMessage.warning("请填写音色 ID");
+  if (!form.voiceId.trim()) {
+    ElMessage.warning("请填写供应商音色 ID");
     return;
   }
+
+  const isEditing = dialogMode.value === "edit" && editingVoiceId.value;
   submitting.value = true;
   try {
-    if (dialogMode.value === "edit" && editingVoiceId.value) {
-      await api.patch(
-        `/projects/${currentProjectId}/studio/voices/${encodeURIComponent(editingVoiceId.value)}`,
-        {
-          name: form.name.trim(),
-          voice_id: createMode.value === "manual" ? form.voiceId.trim() : undefined,
-          transcript_text: createMode.value === "clone" ? form.transcriptText.trim() : undefined,
-          preview_text: form.previewText.trim(),
-          description: form.description.trim(),
-        },
-      );
-    } else {
-      const formData = new FormData();
-      formData.append("mode", createMode.value);
-      formData.append("provider_id", form.providerId);
-      formData.append("model_name", form.modelName);
-      formData.append("name", form.name.trim());
-      formData.append("voice_id", form.voiceId.trim());
-      formData.append("transcript_text", form.transcriptText.trim());
-      formData.append("preview_text", form.previewText.trim());
-      formData.append("description", form.description.trim());
-      if (createMode.value === "clone" && selectedFile.value) {
-        formData.append("sample_file", selectedFile.value);
-      }
-      await api.post(`/projects/${currentProjectId}/studio/voices`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-    }
+    const now = new Date().toISOString();
+    const relations = getLocalProjectRelations(currentProjectId);
+    const existingVoices = Array.isArray(relations.voices) ? relations.voices : [];
+    const existingVoice = existingVoices.find(
+      (item) => String(item?.id || "").trim() === editingVoiceId.value,
+    );
+    const voice = normalizeVoice({
+      ...existingVoice,
+      id:
+        editingVoiceId.value ||
+        `local-voice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      project_id: currentProjectId,
+      source_type: "manual_binding",
+      provider_id: form.providerId,
+      model_name: form.modelName,
+      name: form.name.trim(),
+      voice_id: form.voiceId.trim(),
+      preview_text: form.previewText.trim(),
+      description: form.description.trim(),
+      status: "ready",
+      created_at: existingVoice?.created_at || now,
+      updated_at: now,
+    });
+    const nextVoices = isEditing
+      ? existingVoices.map((item) =>
+          String(item?.id || "").trim() === voice.id ? voice : item,
+        )
+      : [...existingVoices, voice];
+    updateLocalProjectRelations(currentProjectId, { voices: nextVoices });
     dialogVisible.value = false;
-    await fetchVoices();
-    ElMessage.success(dialogMode.value === "edit" ? "项目音色已更新" : "项目音色已创建");
+    fetchVoices();
+    ElMessage.success(isEditing ? "项目音色已更新" : "项目音色已登记");
   } catch (err) {
     ElMessage.error(
       err?.detail ||
         err?.message ||
-        (dialogMode.value === "edit" ? "更新项目音色失败" : "创建项目音色失败"),
+        (isEditing ? "更新项目音色失败" : "登记项目音色失败"),
     );
   } finally {
     submitting.value = false;
   }
 }
 
-function resolvePreviewModelName(item) {
-  const provider = audioProviderOptions.value.find(
-    (option) => option.id === String(item?.provider_id || "").trim(),
-  );
-  return (
-    provider?.speechModels?.[0] ||
-    String(item?.model_name || "").trim() ||
-    ""
-  );
-}
-
-async function previewVoice(item) {
-  const currentProjectId = projectId.value;
-  const voiceRecordId = String(item?.id || "").trim();
-  if (!currentProjectId) {
-    ElMessage.warning("缺少项目 ID");
-    return;
-  }
-  if (hasGeneratedPreview(item)) {
-    await nextTick();
-    playPreviewAudio(voiceRecordId);
-    return;
-  }
-  const text =
-    String(item?.preview_text || "").trim() ||
-    `你好，我是${String(item?.name || "当前音色").trim()}。`;
-  const modelName = resolvePreviewModelName(item);
-  if (!String(item?.provider_id || "").trim() || !modelName || !String(item?.voice_id || "").trim()) {
-    ElMessage.warning("当前音色缺少试听所需配置");
-    return;
-  }
-  previewingId.value = voiceRecordId;
-  try {
-    const data = await api.post(`/projects/${currentProjectId}/studio/voiceovers/generate`, {
-      provider_id: String(item.provider_id || "").trim(),
-      model_name: modelName,
-      voice: String(item.voice_id || "").trim(),
-      text,
-      title: `${String(item.name || "音色").trim()} 试听`,
-      voice_record_id: voiceRecordId,
-      response_format: "wav",
-      speed: 1,
-    });
-    previewAudioMap[voiceRecordId] = {
-      url: String(data?.item?.content_url || "").trim(),
-      generatedAt: Date.now(),
-    };
-    const voiceIndex = voices.value.findIndex(
-      (entry) => String(entry?.id || "").trim() === voiceRecordId,
-    );
-    if (voiceIndex >= 0 && data?.voice_item && typeof data.voice_item === "object") {
-      voices.value.splice(voiceIndex, 1, data.voice_item);
-    }
-    await nextTick();
-    playPreviewAudio(voiceRecordId);
-    ElMessage.success("试听音频已生成");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "生成试听音频失败");
-  } finally {
-    previewingId.value = "";
-  }
-}
-
 async function removeVoice(item) {
-  const currentProjectId = projectId.value;
+  const currentProjectId = String(projectId.value || "").trim();
   const id = String(item?.id || "").trim();
   if (!currentProjectId || !id) return;
   try {
     await ElMessageBox.confirm(
-      `删除后音色「${item.name || "未命名音色"}」及其预览将无法恢复。`,
+      `确定删除项目音色「${item.name || "未命名音色"}」吗？这只会删除本地登记信息。`,
       "删除项目音色",
       { type: "warning" },
     );
@@ -737,24 +535,29 @@ async function removeVoice(item) {
   }
   deletingId.value = id;
   try {
-    const result = await api.delete(
-      `/projects/${currentProjectId}/studio/voices/${encodeURIComponent(id)}`,
-    );
-    delete previewAudioMap[id];
-    previewAudioRefs.delete(id);
-    await fetchVoices();
-    if (result?.provider_delete_error) {
-      ElMessage.warning(
-        `本地已删除，远端清理失败：${result.provider_delete_error}`,
-      );
-      return;
-    }
+    const relations = getLocalProjectRelations(currentProjectId);
+    updateLocalProjectRelations(currentProjectId, {
+      voices: (relations.voices || []).filter(
+        (entry) => String(entry?.id || "").trim() !== id,
+      ),
+    });
+    fetchVoices();
     ElMessage.success("项目音色已删除");
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "删除项目音色失败");
   } finally {
     deletingId.value = "";
   }
+}
+
+function handleLocalEntityUpdate(event) {
+  if (String(event?.detail?.entityName || "").trim() === "llm_providers") {
+    fetchProviders();
+  }
+}
+
+function handleLocalRelationsUpdate() {
+  fetchVoices();
 }
 
 watch(
@@ -764,18 +567,27 @@ watch(
   },
 );
 
-watch(createMode, () => {
-  syncModelSelection();
+watch(projectId, () => {
+  fetchProviders();
+  fetchVoices();
 });
 
-watch(projectId, async () => {
-  await fetchProviders();
-  await fetchVoices();
+onMounted(() => {
+  fetchProviders();
+  fetchVoices();
+  window.addEventListener("local-entities-updated", handleLocalEntityUpdate);
+  window.addEventListener(
+    "local-project-relations-updated",
+    handleLocalRelationsUpdate,
+  );
 });
 
-onMounted(async () => {
-  await fetchProviders();
-  await fetchVoices();
+onBeforeUnmount(() => {
+  window.removeEventListener("local-entities-updated", handleLocalEntityUpdate);
+  window.removeEventListener(
+    "local-project-relations-updated",
+    handleLocalRelationsUpdate,
+  );
 });
 </script>
 

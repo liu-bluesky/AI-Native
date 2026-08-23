@@ -25,7 +25,9 @@ pub use file_change_review::{
     FileChangeReviewItem,
 };
 pub use gateway::prepare_agent_invocation;
-pub use paths::{desktop_runtime_root, ensure_desktop_runtime_migrated};
+pub use paths::{
+    desktop_runtime_root, ensure_desktop_runtime_migrated, normalize_local_backend_api_base_url,
+};
 pub use runtime::classify_local_permission_reply;
 pub use runtime::{
     ack_local_runtime_outbox, cancel_local_runtime_job, cleanup_local_offline_cache,

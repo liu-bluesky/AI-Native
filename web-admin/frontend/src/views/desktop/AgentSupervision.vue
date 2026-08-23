@@ -284,9 +284,12 @@ import {
   searchAgentSupervisionAnswers,
 } from "@/modules/agent-supervision/services/agentSupervisionStorage.js";
 import { buildExecutionFlow } from "@/modules/agent-supervision/utils/executionFlowLayout.js";
-import { fetchProjectChatProviders } from "@/modules/project-chat/services/projectChatSettingsApi.js";
+import { readLocalModelProviders } from "@/services/local-model-runtime.js";
+import {
+  getLocalProjectRelations,
+  readLocalProjects,
+} from "@/services/local-project-repository.js";
 import { getStoredProjectContextId } from "@/utils/desktop-shell.js";
-import { fetchAllVisibleProjects } from "@/utils/projects.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -479,7 +482,7 @@ function normalizeProjectOption(item = {}) {
 async function loadProjectOptions() {
   projectsLoading.value = true;
   try {
-    projectOptions.value = (await fetchAllVisibleProjects())
+    projectOptions.value = readLocalProjects()
       .map(normalizeProjectOption)
       .filter(Boolean);
   } catch (error) {
@@ -495,14 +498,18 @@ async function loadProviderNames(nextProjectId) {
   providerNameById.value = new Map();
   if (!normalizedProjectId) return;
   try {
-    const data = await fetchProjectChatProviders(normalizedProjectId, {
-      includeRuntimeExternalTools: false,
-    });
+    const relations = getLocalProjectRelations(normalizedProjectId);
+    const projectProviders = Array.isArray(relations.providers)
+      ? relations.providers
+      : [];
+    const providers = projectProviders.length
+      ? projectProviders
+      : readLocalModelProviders();
     providerNameById.value = new Map(
-      (Array.isArray(data?.providers) ? data.providers : [])
+      providers
         .map((provider) => [
-          String(provider?.id || "").trim(),
-          String(provider?.name || "").trim(),
+          String(provider?.id || provider?.provider_id || "").trim(),
+          String(provider?.name || provider?.display_name || "").trim(),
         ])
         .filter(([providerId, providerName]) => providerId && providerName),
     );

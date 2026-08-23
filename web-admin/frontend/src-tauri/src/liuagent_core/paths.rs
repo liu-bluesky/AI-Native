@@ -1,6 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use url::Url;
 
 pub const DESKTOP_RUNTIME_DIR_NAME: &str = "desktop-agent-runtime";
 const LEGACY_RUNTIME_DIR_NAME: &str = "agent-runtime-v2";
@@ -19,6 +20,29 @@ pub fn desktop_runtime_root(base_root: &Path) -> PathBuf {
     base_root
         .join(".ai-employee")
         .join(DESKTOP_RUNTIME_DIR_NAME)
+}
+
+/// Normalize legacy local frontend proxy URLs before desktop tools call the API.
+///
+/// The Vite dev server listens on 3000, while the business API listens on 8000. A
+/// persisted desktop context must never use the frontend port for backend calls.
+pub fn normalize_local_backend_api_base_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let Ok(mut url) = Url::parse(trimmed) else {
+        return trimmed.trim_end_matches('/').to_string();
+    };
+    let is_local_host = matches!(
+        url.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1")
+    );
+    let path = url.path().trim_end_matches('/');
+    if is_local_host && url.port() == Some(3000) && (path == "/api" || path.starts_with("/api/")) {
+        let _ = url.set_port(Some(8000));
+    }
+    url.to_string().trim_end_matches('/').to_string()
 }
 
 pub fn ensure_desktop_runtime_migrated(base_root: &Path) -> io::Result<()> {
@@ -191,5 +215,25 @@ mod tests {
             "old-config"
         );
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn normalizes_legacy_local_backend_port_only() {
+        assert_eq!(
+            normalize_local_backend_api_base_url("http://127.0.0.1:3000/api"),
+            "http://127.0.0.1:8000/api"
+        );
+        assert_eq!(
+            normalize_local_backend_api_base_url("http://localhost:3000/api/"),
+            "http://localhost:8000/api"
+        );
+        assert_eq!(
+            normalize_local_backend_api_base_url("http://127.0.0.1:3001/api"),
+            "http://127.0.0.1:3001/api"
+        );
+        assert_eq!(
+            normalize_local_backend_api_base_url("https://example.test/api"),
+            "https://example.test/api"
+        );
     }
 }

@@ -2,10 +2,10 @@
   <div v-loading="loading" class="settings-page">
     <section class="settings-hero">
       <div class="settings-hero__copy">
-        <div class="settings-hero__eyebrow">Release Registry</div>
+        <div class="settings-hero__eyebrow">Changelog</div>
         <h1 class="settings-hero__title">更新日志</h1>
         <p class="settings-hero__summary">
-          独立维护官网更新日志条目。发布后会直接出现在 `/updates`。
+          维护网页端历史更新日志。该列表不会触发桌面客户端自动更新，桌面端更新由后台管理系统发布。
         </p>
         <div class="settings-hero__meta">
           <span>总条目 {{ entries.length }}</span>
@@ -143,8 +143,8 @@
             type="textarea"
             :rows="10"
             resize="vertical"
-            placeholder="- 新增更新日志独立菜单
-- 支持更新日志条目增删改查"
+            placeholder="- 修复已知问题
+- 优化使用体验"
           />
         </el-form-item>
       </el-form>

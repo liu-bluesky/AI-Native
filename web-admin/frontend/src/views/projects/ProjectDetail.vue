@@ -29,7 +29,7 @@
             </div>
             <div class="project-hero__actions-secondary">
               <el-button
-                v-if="canManageProject"
+                v-if="canManageProject && !isLocalProjectMode()"
                 :loading="experienceSummaryLoading"
                 plain
                 @click="openExperienceSummaryDialog"
@@ -154,7 +154,7 @@
                 <template #actions>
                   <div v-if="canManageProject" class="block-header__actions">
                     <el-button
-                      v-if="lastExperienceSummaryResult"
+                      v-if="!isLocalProjectMode() && lastExperienceSummaryResult"
                       size="small"
                       @click="showExperienceReviewDialog = true"
                       >查看最近评审</el-button
@@ -166,20 +166,21 @@
                       >编辑绑定</el-button
                     >
                     <el-button
-                      v-if="hasLegacyProjectExperienceRules"
+                      v-if="!isLocalProjectMode() && hasLegacyProjectExperienceRules"
                       size="small"
                       :loading="experienceRuleMigrating"
                       @click="handleMigrateExperienceRulesToDevelopment"
                       >迁移旧项目经验</el-button
                     >
                     <el-button
-                      v-if="boundExperienceRules.length > 1"
+                      v-if="!isLocalProjectMode() && boundExperienceRules.length > 1"
                       size="small"
                       :loading="experienceRuleConsolidating"
                       @click="handleConsolidateExperienceRules"
                       >汇总成一条</el-button
                     >
                     <el-button
+                      v-if="!isLocalProjectMode()"
                       type="primary"
                       size="small"
                       :loading="experienceSummaryLoading"
@@ -265,7 +266,7 @@
                       {{ rule.preview }}
                     </p>
                     <div
-                      v-if="canManageProject"
+                      v-if="canManageProject && !isLocalProjectMode()"
                       class="experience-rule-card__actions"
                     >
                       <el-button
@@ -317,12 +318,14 @@
                 <template #actions>
                   <div class="block-header__actions">
                     <el-button
+                      v-if="!isLocalProjectMode()"
                       size="small"
                       :loading="repositoryLoading"
                       @click="fetchCodeRepositories()"
                       >刷新</el-button
                     >
                     <el-button
+                      v-if="!isLocalProjectMode()"
                       size="small"
                       :disabled="!canInitializeRepository"
                       :loading="repositoryInitializing"
@@ -885,31 +888,6 @@
             </div>
           </el-tab-pane>
 
-          <el-tab-pane v-if="showProjectAddressFields" name="mcp">
-            <template #label>
-              <span class="project-detail-tab-label">
-                <span class="project-detail-tab-label__title">MCP 接入</span>
-                <span class="project-detail-tab-label__meta">SSE / HTTP</span>
-              </span>
-            </template>
-
-            <div class="project-detail-tab-pane">
-              <ProjectWorkspaceBlock eyebrow="MCP" title="项目 MCP 地址">
-                <el-descriptions
-                  :column="1"
-                  border
-                  class="project-descriptions"
-                >
-                  <el-descriptions-item label="SSE">
-                    <code>{{ projectMcpSseUrl }}</code>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="HTTP">
-                    <code>{{ projectMcpHttpUrl }}</code>
-                  </el-descriptions-item>
-                </el-descriptions>
-              </ProjectWorkspaceBlock>
-            </div>
-          </el-tab-pane>
         </el-tabs>
       </ProjectAppSection>
 
@@ -1027,6 +1005,8 @@
               collapse-tags
               collapse-tags-tooltip
               filterable
+              allow-create
+              default-first-option
               placeholder="请选择用户（可多选）"
               style="width: 100%"
             >
@@ -2207,7 +2187,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
@@ -2220,9 +2200,11 @@ import ProjectWorkspaceBlock from "@/components/project-workspace/ProjectWorkspa
 import ProjectWorkspaceToolbar from "@/components/project-workspace/ProjectWorkspaceToolbar.vue";
 import RequirementRecordCard from "@/components/project-workspace/RequirementRecordCard.vue";
 import WorkSessionDetailPanel from "@/components/WorkSessionDetailPanel.vue";
-import { fetchProjectChatProviders } from "@/modules/project-chat/services/projectChatSettingsApi.js";
+import {
+  readLocalTaskTreeSnapshots,
+  readLocalWorkSessionSnapshots,
+} from "@/modules/project-chat/services/projectChatStorage.js";
 import { normalizeTaskTreeHealth } from "@/modules/task-tree-feedback/taskTreeFeedback";
-import api from "@/utils/api.js";
 import { formatDateTime } from "@/utils/date.js";
 import {
   notifyDesktopRouteChange,
@@ -2234,12 +2216,7 @@ import {
   toWorkspaceRelativePath,
 } from "@/utils/workspace-picker.js";
 import { hasPermission } from "@/utils/permissions.js";
-import {
-  buildRuntimeUrl,
-  fetchConfiguredRuntimeOrigin,
-} from "@/utils/runtime-url.js";
 import { setStoredProjectContextId } from "@/utils/desktop-shell.js";
-import { normalizeProviderModelNames } from "@/utils/llm-models.js";
 import {
   getLocalProject,
   isLocalProjectMode,
@@ -2247,15 +2224,15 @@ import {
   updateLocalProjectRelations,
   readLocalEntities,
   writeLocalEntities,
+  upsertLocalProject,
 } from "@/services/local-project-repository.js";
+import { readLocalModelProviders } from "@/services/local-model-runtime.js";
 
 const route = useRoute();
 const router = useRouter();
 const projectId = computed(() => String(route.params.id || "").trim());
 const showProjectLocationFields = false;
-const showProjectAddressFields = false;
 const activeProjectTab = ref("overview");
-const runtimeOrigin = ref("");
 const projectTypeOptions = [
   {
     value: "image",
@@ -2518,13 +2495,12 @@ const canManageProject = computed(() => !!project.value?.can_manage);
 const ruleMap = computed(
   () => new Map((ruleOptions.value || []).map((item) => [item.id, item])),
 );
-const projectMcpSseUrl = computed(() => {
-  if (!project.value?.id) return "";
-  return buildRuntimeUrl(
-    `/mcp/projects/${project.value.id}/sse?key=YOUR_API_KEY`,
-    runtimeOrigin.value,
-  );
-});
+const experienceRuleMap = computed(
+  () =>
+    new Map(
+      (experienceRuleOptions.value || []).map((item) => [item.id, item]),
+    ),
+);
 
 function manageBlockedMessage() {
   const creator = String(project.value?.created_by || "").trim();
@@ -2532,17 +2508,6 @@ function manageBlockedMessage() {
     return `仅项目创建者可编辑，当前创建者为 ${creator}`;
   }
   return "仅项目创建者可编辑";
-}
-const projectMcpHttpUrl = computed(() => {
-  if (!project.value?.id) return "";
-  return buildRuntimeUrl(
-    `/mcp/projects/${project.value.id}/mcp?key=YOUR_API_KEY`,
-    runtimeOrigin.value,
-  );
-});
-
-async function fetchRuntimeOrigin() {
-  runtimeOrigin.value = await fetchConfiguredRuntimeOrigin();
 }
 
 const taskTreeStorageBackendLabel = computed(() => {
@@ -2701,6 +2666,7 @@ const isProjectDeployEnabled = computed(() => Boolean(project.value?.deploy_sett
 
 const canInitializeRepository = computed(
   () =>
+    !isLocalProjectMode() &&
     canManageProject.value &&
     Boolean(getDefaultRepositoryLocalPath()) &&
     !repositoryWorkspaceLoading.value &&
@@ -2709,11 +2675,7 @@ const canInitializeRepository = computed(
 );
 
 const availableProjectDetailTabs = computed(() => {
-  const tabs = ["overview", "repositories", "deploy", "access", "memory"];
-  if (showProjectAddressFields) {
-    tabs.push("mcp");
-  }
-  return tabs;
+  return ["overview", "repositories", "deploy", "access", "memory"];
 });
 
 const renderedManualHtml = computed(() => {
@@ -4201,15 +4163,20 @@ const boundExperienceRules = computed(() => {
     }));
   }
   return normalizeStringList(project.value?.experience_rule_ids || []).map(
-    (ruleId) => ({
-      id: ruleId,
-      title: `${ruleId} (历史配置)`,
-      displayTitle: `${ruleId} (历史配置)`,
-      domain: "项目经验",
-      preview: "",
-      experienceScope: "project",
-      systemSource: "project_experience",
-    }),
+    (ruleId) => {
+      const matched = experienceRuleMap.value.get(ruleId);
+      return (
+        matched || {
+          id: ruleId,
+          title: `${ruleId} (历史配置)`,
+          displayTitle: `${ruleId} (历史配置)`,
+          domain: "项目经验",
+          preview: "",
+          experienceScope: "project",
+          systemSource: "project_experience",
+        }
+      );
+    },
   );
 });
 
@@ -4446,82 +4413,19 @@ async function pollExperienceSummaryJob(
   targetProjectId = projectId.value,
   jobId = "",
 ) {
-  const effectiveProjectId = String(targetProjectId || "").trim();
-  const effectiveJobId = String(
-    jobId || experienceSummaryActiveJob.value?.id || "",
-  ).trim();
-  if (!effectiveProjectId || !effectiveJobId) {
-    stopExperienceSummaryPolling();
-    return;
-  }
-  try {
-    const data = await api.get(
-      `/projects/${effectiveProjectId}/experience-summary-jobs/${effectiveJobId}`,
-    );
-    if (effectiveProjectId !== projectId.value) return;
-    const job = normalizeExperienceSummaryJob(data?.job);
-    if (!job) {
-      stopExperienceSummaryPolling();
-      return;
-    }
-    if (isExperienceSummaryJobActive(job)) {
-      experienceSummaryActiveJob.value = job;
-      experienceSummaryLoading.value = true;
-      stopExperienceSummaryPolling();
-      experienceSummaryPollingTimer = window.setTimeout(() => {
-        void pollExperienceSummaryJob(effectiveProjectId, effectiveJobId);
-      }, 1500);
-      return;
-    }
-    await finalizeExperienceSummaryJob(job, {
-      refreshData: true,
-      showDialog: true,
-      notify: true,
-    });
-  } catch (err) {
-    if (effectiveProjectId !== projectId.value) return;
-    experienceSummaryLoading.value = false;
-    stopExperienceSummaryPolling();
-    ElMessage.error(err?.detail || err?.message || "获取总结任务进度失败");
-  }
+  void targetProjectId;
+  void jobId;
+  stopExperienceSummaryPolling();
+  experienceSummaryActiveJob.value = null;
+  experienceSummaryLoading.value = false;
 }
 
 async function restoreExperienceSummaryJob(targetProjectId = projectId.value) {
-  const effectiveProjectId = String(targetProjectId || "").trim();
-  if (!effectiveProjectId) return;
-  try {
-    const data = await api.get(
-      `/projects/${effectiveProjectId}/experience-summary-jobs`,
-      {
-        params: { limit: 10 },
-      },
-    );
-    if (effectiveProjectId !== projectId.value) return;
-    const currentJob = normalizeExperienceSummaryJob(data?.current_job);
-    const latestJob = normalizeExperienceSummaryJob(data?.latest_job);
-    if (currentJob && isExperienceSummaryJobActive(currentJob)) {
-      experienceSummaryActiveJob.value = currentJob;
-      experienceSummaryLoading.value = true;
-      lastExperienceSummaryResult.value = null;
-      stopExperienceSummaryPolling();
-      experienceSummaryPollingTimer = window.setTimeout(() => {
-        void pollExperienceSummaryJob(effectiveProjectId, currentJob.id);
-      }, 1200);
-      return;
-    }
-    stopExperienceSummaryPolling();
-    experienceSummaryActiveJob.value = null;
-    experienceSummaryLoading.value = false;
-    if (latestJob) {
-      lastExperienceSummaryResult.value = latestJob;
-    }
-  } catch (err) {
-    if (effectiveProjectId !== projectId.value) return;
-    experienceSummaryActiveJob.value = null;
-    experienceSummaryLoading.value = false;
-    stopExperienceSummaryPolling();
-    ElMessage.error(err?.detail || err?.message || "恢复总结任务状态失败");
-  }
+  void targetProjectId;
+  stopExperienceSummaryPolling();
+  experienceSummaryActiveJob.value = null;
+  experienceSummaryLoading.value = false;
+  lastExperienceSummaryResult.value = null;
 }
 
 function normalizeStringList(values) {
@@ -4624,42 +4528,40 @@ function resetUserForm() {
 }
 
 async function fetchEmployees() {
-  if (isLocalProjectMode()) {
-    const relations = getLocalProjectRelations(projectId.value);
-    employeeOptions.value = Array.isArray(relations.employee_options)
-      ? relations.employee_options
-      : [];
-    return;
-  }
-  try {
-    const data = await api.get("/employees");
-    employeeOptions.value = data.employees || [];
-  } catch {
-    employeeOptions.value = [];
-  }
+  const relations = getLocalProjectRelations(projectId.value);
+  const relationOptions = Array.isArray(relations.employee_options)
+    ? relations.employee_options
+    : [];
+  employeeOptions.value = relationOptions.length
+    ? relationOptions
+    : readLocalEntities("employees");
 }
 
 async function fetchRules() {
-  if (isLocalProjectMode()) {
-    const relations = getLocalProjectRelations(projectId.value);
-    ruleOptions.value = Array.isArray(relations.rule_options)
-      ? relations.rule_options
-      : [];
-    ensureUiRuleOptionCoverage();
-    return;
-  }
-  try {
-    const data = await api.get("/rules");
-    ruleOptions.value = (data.rules || []).map((rule) => ({
-      id: String(rule.id || "").trim(),
-      title: String(rule.title || rule.id || "").trim(),
-      domain: String(rule.domain || "").trim(),
-    }));
-  } catch {
-    ruleOptions.value = [];
-  } finally {
-    ensureUiRuleOptionCoverage();
-  }
+  const relations = getLocalProjectRelations(projectId.value);
+  const relationOptions = Array.isArray(relations.rule_options)
+    ? relations.rule_options
+    : [];
+  const rules = [...relationOptions, ...readLocalEntities("rules")];
+  ruleOptions.value = Array.from(
+    new Map(
+      rules
+        .map((rule) => {
+          const id = String(rule?.id || "").trim();
+          return [
+            id,
+            {
+              ...rule,
+              id,
+              title: String(rule?.title || id).trim(),
+              domain: String(rule?.domain || "").trim(),
+            },
+          ];
+        })
+        .filter(([id]) => id),
+    ).values(),
+  );
+  ensureUiRuleOptionCoverage();
 }
 
 async function fetchExperienceRuleOptions() {
@@ -4668,108 +4570,46 @@ async function fetchExperienceRuleOptions() {
     experienceRuleOptions.value = [];
     return;
   }
-  if (isLocalProjectMode()) {
-    const relations = getLocalProjectRelations(effectiveProjectId);
-    experienceRuleOptions.value = Array.isArray(relations.experience_rule_options)
-      ? relations.experience_rule_options
-          .map((item) => normalizeExperienceRuleOption(item))
-          .filter((item) => item.id)
-      : [];
-    ensureExperienceRuleOptionCoverage();
-    experienceRuleOptionsLoading.value = false;
-    return;
-  }
-  experienceRuleOptionsLoading.value = true;
-  try {
-    const data = await api.get(
-      `/projects/${effectiveProjectId}/experience-rules/options`,
-    );
-    experienceRuleOptions.value = (data.rules || [])
-      .map((item) => normalizeExperienceRuleOption(item))
-      .filter((item) => item.id);
-  } catch (err) {
-    experienceRuleOptions.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载经验规则候选失败");
-  } finally {
-    ensureExperienceRuleOptionCoverage();
-    experienceRuleOptionsLoading.value = false;
-  }
+  const relations = getLocalProjectRelations(effectiveProjectId);
+  const relationOptions = Array.isArray(relations.experience_rule_options)
+    ? relations.experience_rule_options
+    : [];
+  const rules = [...relationOptions, ...readLocalEntities("experience_rules")];
+  experienceRuleOptions.value = Array.from(
+    new Map(
+      rules
+        .map((item) => normalizeExperienceRuleOption(item))
+        .filter((item) => item.id)
+        .map((item) => [item.id, item]),
+    ).values(),
+  );
+  ensureExperienceRuleOptionCoverage();
+  experienceRuleOptionsLoading.value = false;
 }
 
 async function fetchProject(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
   if (!effectiveProjectId) return;
-  if (isLocalProjectMode()) {
-    const localProject = getLocalProject(effectiveProjectId);
-    if (!localProject) {
-      throw new Error("本地未找到该项目，请先在本地项目列表中创建或导入");
-    }
-    if (effectiveProjectId !== projectId.value) return;
-    const relations = getLocalProjectRelations(effectiveProjectId);
-    project.value = {
-      ...localProject,
-      type: normalizeProjectType(localProject.type),
-      ui_rule_ids: normalizeStringList(
-        relations.ui_rule_ids || localProject.ui_rule_ids || [],
-      ),
-      experience_rule_ids: normalizeStringList(
-        relations.experience_rule_ids || localProject.experience_rule_ids || [],
-      ),
-    };
-    syncProjectDesktopWindowTitle();
-    ensureUiRuleOptionCoverage();
-    ensureExperienceRuleOptionCoverage();
-    return;
+  const localProject = getLocalProject(effectiveProjectId);
+  if (!localProject) {
+    throw new Error("本地未找到该项目，请先在本地项目列表中创建或导入");
   }
-  const data = await api.get(`/projects/${effectiveProjectId}`);
   if (effectiveProjectId !== projectId.value) return;
+  const relations = getLocalProjectRelations(effectiveProjectId);
   project.value = {
-    ...(data.project || {}),
-    type: normalizeProjectType(data.project?.type),
-    ui_rule_ids: normalizeStringList(data.project?.ui_rule_ids || []),
+    ...localProject,
+    can_manage: localProject.can_manage !== false,
+    type: normalizeProjectType(localProject.type),
+    ui_rule_ids: normalizeStringList(
+      relations.ui_rule_ids || localProject.ui_rule_ids || [],
+    ),
     experience_rule_ids: normalizeStringList(
-      data.project?.experience_rule_ids || [],
+      relations.experience_rule_ids || localProject.experience_rule_ids || [],
     ),
   };
   syncProjectDesktopWindowTitle();
   ensureUiRuleOptionCoverage();
   ensureExperienceRuleOptionCoverage();
-}
-
-function normalizeRepositoryWorkspaceContext(data = {}) {
-  const chatSettings =
-    data?.chat_settings && typeof data.chat_settings === "object"
-      ? data.chat_settings
-      : {};
-  const externalAgent =
-    data?.external_agent && typeof data.external_agent === "object"
-      ? data.external_agent
-      : {};
-  const connectorWorkspace = String(
-    chatSettings.connector_workspace_path || "",
-  ).trim();
-  const effectiveWorkspace = String(data?.workspace_path || "").trim();
-  const externalAgentWorkspace = String(
-    externalAgent.workspace_path || "",
-  ).trim();
-  const projectWorkspace = String(data?.project_workspace_path || "").trim();
-  const path =
-    connectorWorkspace ||
-    effectiveWorkspace ||
-    externalAgentWorkspace ||
-    projectWorkspace;
-  return {
-    path,
-    source: connectorWorkspace
-      ? "connector_workspace_path"
-      : effectiveWorkspace
-        ? "effective_workspace_path"
-        : externalAgentWorkspace
-          ? "external_agent_workspace_path"
-          : projectWorkspace
-            ? "project_workspace_path"
-            : "",
-  };
 }
 
 async function fetchRepositoryWorkspaceContext(
@@ -4783,33 +4623,12 @@ async function fetchRepositoryWorkspaceContext(
     };
     return;
   }
-  if (isLocalProjectMode()) {
-    repositoryWorkspace.value = {
-      path: String(project.value?.workspace_path || "").trim(),
-      source: "local_project_workspace",
-    };
-    repositoryWorkspaceLoading.value = false;
-    return;
-  }
-  repositoryWorkspaceLoading.value = true;
-  try {
-    const data = await api.get(
-      `/projects/${encodeURIComponent(effectiveProjectId)}/chat/providers`,
-      { params: { include_runtime_external_tools: false } },
-    );
-    if (effectiveProjectId !== projectId.value) return;
-    repositoryWorkspace.value = normalizeRepositoryWorkspaceContext(data);
-  } catch {
-    if (effectiveProjectId !== projectId.value) return;
-    repositoryWorkspace.value = {
-      path: String(project.value?.workspace_path || "").trim(),
-      source: "project_workspace_path",
-    };
-  } finally {
-    if (effectiveProjectId === projectId.value) {
-      repositoryWorkspaceLoading.value = false;
-    }
-  }
+  if (effectiveProjectId !== projectId.value) return;
+  repositoryWorkspace.value = {
+    path: String(project.value?.workspace_path || "").trim(),
+    source: "local_project_workspace",
+  };
+  repositoryWorkspaceLoading.value = false;
 }
 
 function normalizeCodeRepository(item) {
@@ -4838,107 +4657,42 @@ async function fetchCodeRepositories(targetProjectId = projectId.value) {
     return;
   }
   repositoryLoading.value = true;
-  if (isLocalProjectMode()) {
-    const relations = getLocalProjectRelations(effectiveProjectId);
-    codeRepositories.value = Array.isArray(relations.code_repositories)
-      ? relations.code_repositories.map(normalizeCodeRepository).filter((item) => item.id)
-      : [];
-    repositoryLoading.value = false;
-    return;
-  }
-  try {
-    const data = await api.get(
-      `/projects/${effectiveProjectId}/code-repositories`,
-    );
-    if (effectiveProjectId !== projectId.value) return;
-    codeRepositories.value = (data.repositories || [])
-      .map((item) => normalizeCodeRepository(item))
-      .filter((item) => item.id);
-  } catch (err) {
-    codeRepositories.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载代码仓库失败");
-  } finally {
-    if (effectiveProjectId === projectId.value) {
-      repositoryLoading.value = false;
-    }
-  }
+  const relations = getLocalProjectRelations(effectiveProjectId);
+  codeRepositories.value = Array.isArray(relations.code_repositories)
+    ? relations.code_repositories
+        .map(normalizeCodeRepository)
+        .filter((item) => item.id)
+    : [];
+  repositoryLoading.value = false;
 }
 
 async function fetchExperienceProviders() {
-  const effectiveProjectId = String(projectId.value || "").trim();
-  if (!effectiveProjectId) {
-    experienceProviderOptions.value = [];
-    experienceSummaryProviderId.value = "";
-    experienceSummaryModelName.value = "";
-    return;
-  }
-  if (isLocalProjectMode()) {
-    experienceProviderOptions.value = [];
-    experienceSummaryProviderId.value = "";
-    experienceSummaryModelName.value = "";
-    experienceProvidersLoading.value = false;
-    return;
-  }
-  experienceProvidersLoading.value = true;
-  try {
-    const data = await fetchProjectChatProviders(effectiveProjectId, {
-      includeRuntimeExternalTools: false,
-    });
-    if (effectiveProjectId !== projectId.value) return;
-    const providers = Array.isArray(data?.providers) ? data.providers : [];
-    experienceProviderOptions.value = providers
-      .map((item) => {
-        const models = normalizeProviderModelNames(item);
-        return {
-          id: String(item.id || "").trim(),
-          name: String(item.name || item.id || "未命名模型源").trim(),
-          models,
-          default_model: String(item.default_model || models[0] || "").trim(),
-          is_default:
-            String(item.id || "").trim() ===
-              String(data?.default_provider_id || "").trim() ||
-            !!item.is_default,
-        };
-      })
-      .filter((item) => item.id && item.models.length);
-    const preferred =
-      experienceProviderOptions.value.find(
-        (item) => item.id === experienceSummaryProviderId.value,
-      ) ||
-      experienceProviderOptions.value.find(
-        (item) =>
-          item.id === String(data?.chat_settings?.provider_id || "").trim(),
-      ) ||
-      experienceProviderOptions.value.find((item) => item.is_default) ||
-      experienceProviderOptions.value[0] ||
-      null;
-    experienceSummaryProviderId.value = preferred?.id || "";
-    const availableModels = preferred?.models || [];
-    const preferredModel = String(
-      data?.chat_settings?.model_name || data?.default_model_name || "",
-    ).trim();
-    if (
-      !availableModels.includes(
-        String(experienceSummaryModelName.value || "").trim(),
-      )
-    ) {
-      experienceSummaryModelName.value =
-        (availableModels.includes(preferredModel) ? preferredModel : "") ||
-        preferred?.default_model ||
-        availableModels[0] ||
-        "";
-    }
-  } catch (err) {
-    if (effectiveProjectId !== projectId.value) return;
-    experienceProviderOptions.value = [];
-    experienceSummaryProviderId.value = "";
-    experienceSummaryModelName.value = "";
-    ElMessage.error(err?.detail || err?.message || "加载模型列表失败");
-  } finally {
-    if (effectiveProjectId === projectId.value) {
-      experienceProvidersLoading.value = false;
-    }
-  }
+  const providers = readLocalModelProviders()
+    .map((provider) => {
+      const models = (provider.model_configs || [])
+        .map((model) => String(model?.name || "").trim())
+        .filter(Boolean);
+      return {
+        id: provider.id,
+        name: provider.name,
+        models,
+        default_model: String(provider.default_model || models[0] || "").trim(),
+        is_default: Boolean(provider.is_default),
+      };
+    })
+    .filter((provider) => provider.id && provider.models.length);
+  experienceProviderOptions.value = providers;
+  const preferred =
+    providers.find((item) => item.id === experienceSummaryProviderId.value) ||
+    providers.find((item) => item.is_default) ||
+    providers[0] ||
+    null;
+  experienceSummaryProviderId.value = preferred?.id || "";
+  experienceSummaryModelName.value =
+    preferred?.models.includes(experienceSummaryModelName.value)
+      ? experienceSummaryModelName.value
+      : preferred?.default_model || preferred?.models[0] || "";
+  experienceProvidersLoading.value = false;
 }
 
 function normalizeProjectType(value) {
@@ -5044,145 +4798,26 @@ async function openMemoryDetail(row) {
   showMemoryDetailDialog.value = true;
   memoryDetailTaskTree.value = null;
   memoryDetailWorkEvents.value = [];
-  const explicitTaskSessionId = String(
-    selectedMemoryDetail.value?.task_tree_session_id || "",
-  ).trim();
-  const taskSessionId = String(
-    selectedMemoryDetail.value?.task_session_id || explicitTaskSessionId || "",
-  ).trim();
-  const chatSessionId = String(
-    selectedMemoryDetail.value?.chat_session_id || "",
-  ).trim();
-  const linkedWorkSessionId = String(
-    selectedMemoryDetail.value?.linked_work_session?.session_id || "",
-  ).trim();
-  const shouldPreferWorkSessionFallback =
-    !explicitTaskSessionId &&
-    linkedWorkSessionId &&
-    isCompletedLikeStatus(
-      selectedMemoryDetail.value?.linked_work_session?.latest_status,
-    ) &&
-    !selectedMemoryDetail.value?.has_task_tree;
-  if (shouldPreferWorkSessionFallback) {
-    await fetchMemoryDetailWorkEvents(null, { sessionId: linkedWorkSessionId });
-    return;
-  }
-  if (!taskSessionId && !chatSessionId) {
-    if (linkedWorkSessionId) {
-      await fetchMemoryDetailWorkEvents(null, {
-        sessionId: linkedWorkSessionId,
-      });
-    }
-    return;
-  }
-  memoryDetailTaskTreeLoading.value = true;
-  try {
-    const params = {};
-    if (taskSessionId) {
-      params.session_id = taskSessionId;
-    } else if (chatSessionId) {
-      params.chat_session_id = chatSessionId;
-    }
-    const data = await api.get(`/projects/${projectId.value}/chat/task-tree`, {
-      params,
-    });
-    memoryDetailTaskTree.value = normalizeTaskTreePayload(
-      resolveTaskTreeResponsePayload(data),
-    );
-    await fetchMemoryDetailWorkEvents(memoryDetailTaskTree.value);
-  } catch (err) {
-    memoryDetailTaskTree.value = null;
-    memoryDetailWorkEvents.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载关联任务树失败");
-  } finally {
-    memoryDetailTaskTreeLoading.value = false;
-  }
+  memoryDetailTaskTreeLoading.value = false;
+  memoryDetailWorkEventsLoading.value = false;
 }
 
 async function fetchMemoryDetailWorkEvents(taskTree, options = {}) {
-  const sessionId = String(options?.sessionId || "").trim();
-  const taskTreeSessionId = String(taskTree?.id || "").trim();
-  const taskTreeChatSessionId = String(
-    taskTree?.source_chat_session_id ||
-      taskTree?.chat_session_id ||
-      selectedMemoryDetail.value?.task_tree_chat_session_id ||
-      "",
-  ).trim();
-  if (!sessionId && !taskTreeSessionId && !taskTreeChatSessionId) {
-    memoryDetailWorkEvents.value = [];
-    return;
-  }
-  memoryDetailWorkEventsLoading.value = true;
-  try {
-    const params = { limit: 200 };
-    if (sessionId) {
-      params.session_id = sessionId;
-    }
-    if (taskTreeSessionId) {
-      params.task_tree_session_id = taskTreeSessionId;
-    }
-    if (taskTreeChatSessionId) {
-      params.task_tree_chat_session_id = taskTreeChatSessionId;
-    }
-    const data = await api.get(
-      `/projects/${projectId.value}/work-session-events`,
-      { params },
-    );
-    memoryDetailWorkEvents.value = Array.isArray(data?.items)
-      ? data.items.map((item) => normalizeProjectWorkEvent(item))
-      : [];
-  } catch (err) {
-    memoryDetailWorkEvents.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载关联工作轨迹失败");
-  } finally {
-    memoryDetailWorkEventsLoading.value = false;
-  }
+  void taskTree;
+  void options;
+  memoryDetailWorkEvents.value = [];
+  memoryDetailWorkEventsLoading.value = false;
 }
 
 async function openWorkSessionDetail(row) {
   const sessionId = String(row?.session_id || "").trim();
   if (!sessionId) return;
   showWorkSessionDetailDialog.value = true;
-  workSessionDetailLoading.value = true;
   selectedWorkSession.value = normalizeWorkSessionSummary(row);
-  selectedWorkSessionEvents.value = [];
-  try {
-    const data = await api.get(
-      `/projects/${projectId.value}/work-sessions/${encodeURIComponent(sessionId)}`,
-      {
-        params: {
-          employee_id: row?.employee_id || undefined,
-        },
-      },
-    );
-    selectedWorkSession.value = normalizeWorkSessionSummary(
-      data?.session || row,
-    );
-    selectedWorkSessionEvents.value = Array.isArray(data?.items)
-      ? data.items.map((item) => ({
-          ...item,
-          employee_name:
-            String(item?.employee_name || "").trim() ||
-            memberNameMap.value.get(String(item?.employee_id || "").trim()) ||
-            String(item?.employee_id || "").trim(),
-          verification: Array.isArray(item?.verification)
-            ? item.verification
-                .map((entry) => String(entry || "").trim())
-                .filter(Boolean)
-            : [],
-          facts: Array.isArray(item?.facts)
-            ? item.facts
-                .map((entry) => String(entry || "").trim())
-                .filter(Boolean)
-            : [],
-        }))
-      : [];
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "加载工作轨迹详情失败");
-    showWorkSessionDetailDialog.value = false;
-  } finally {
-    workSessionDetailLoading.value = false;
-  }
+  selectedWorkSessionEvents.value = Array.isArray(row?.events)
+    ? row.events
+    : [];
+  workSessionDetailLoading.value = false;
 }
 
 function buildSyntheticMemoryFromRound(round) {
@@ -5295,127 +4930,122 @@ function openMemoryLinkedWorkSession() {
 async function fetchProjectUsers(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
   if (!effectiveProjectId) return;
-  if (isLocalProjectMode()) {
-    const relations = getLocalProjectRelations(effectiveProjectId);
-    projectUsers.value = Array.isArray(relations.users) ? relations.users : [];
-    userOptions.value = Array.isArray(relations.user_options) ? relations.user_options : [];
-    canManageProjectUsers.value = true;
-    return;
-  }
-  const data = await api.get(`/projects/${effectiveProjectId}/users`);
-  if (effectiveProjectId !== projectId.value) return;
-  projectUsers.value = data.members || [];
-  userOptions.value = data.all_users || [];
-  canManageProjectUsers.value = !!data.can_manage;
+  const relations = getLocalProjectRelations(effectiveProjectId);
+  projectUsers.value = Array.isArray(relations.users) ? relations.users : [];
+  const relationOptions = Array.isArray(relations.user_options)
+    ? relations.user_options
+    : [];
+  userOptions.value = relationOptions.length
+    ? relationOptions
+    : readLocalEntities("users");
+  canManageProjectUsers.value = true;
 }
 
 async function fetchMembers(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
   if (!effectiveProjectId) return;
-  if (isLocalProjectMode()) {
-    const relations = getLocalProjectRelations(effectiveProjectId);
-    members.value = Array.isArray(relations.members) ? relations.members : [];
-    return;
-  }
-  const data = await api.get(`/projects/${effectiveProjectId}/members`);
-  if (effectiveProjectId !== projectId.value) return;
-  members.value = data.members || [];
+  const relations = getLocalProjectRelations(effectiveProjectId);
+  members.value = Array.isArray(relations.members) ? relations.members : [];
 }
 
 async function fetchProjectTaskSessions(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
-  if (!effectiveProjectId) return;
-  taskSessionsLoading.value = true;
-  try {
-    const data = await api.get(
-      `/projects/${effectiveProjectId}/chat/task-tree/sessions`,
-      {
-        params: { limit: PROJECT_TASK_SESSION_FETCH_LIMIT },
-      },
-    );
-    if (effectiveProjectId !== projectId.value) return;
-    projectTaskSessions.value = Array.isArray(data.items) ? data.items : [];
-    taskTreeStorageBackend.value = String(data.storage_backend || "").trim();
-    const validSessionIds = new Set(
-      (projectTaskSessions.value || [])
-        .map((item) => String(item?.id || "").trim())
-        .filter(Boolean),
-    );
-    projectTaskTreeDetails.value = Object.fromEntries(
-      Object.entries(projectTaskTreeDetails.value || {}).filter(([sessionId]) =>
-        validSessionIds.has(sessionId),
-      ),
-    );
-  } catch (err) {
-    if (effectiveProjectId !== projectId.value) return;
+  if (!effectiveProjectId) {
     projectTaskSessions.value = [];
     projectTaskTreeDetails.value = {};
-    taskTreeStorageBackend.value = "";
-    ElMessage.error(err?.detail || err?.message || "加载任务推进列表失败");
-  } finally {
-    if (effectiveProjectId === projectId.value) {
-      taskSessionsLoading.value = false;
+    return;
+  }
+  taskSessionsLoading.value = true;
+  try {
+    const sessionsById = new Map();
+    for (const snapshot of readLocalTaskTreeSnapshots(effectiveProjectId)) {
+      const taskTree = normalizeTaskTreePayload(snapshot);
+      if (!taskTree) continue;
+      const chatSessionId = String(
+        taskTree.chat_session_id || snapshot?.chat_session_id || "",
+      ).trim();
+      const sessionId = String(
+        taskTree.id || taskTree.task_tree_session_id || chatSessionId,
+      ).trim();
+      if (!sessionId) continue;
+      sessionsById.set(sessionId, {
+        ...taskTree,
+        id: sessionId,
+        project_id: effectiveProjectId,
+        chat_session_id: chatSessionId,
+      });
     }
+    const sessions = Array.from(sessionsById.values()).sort(
+      compareTaskSessionByCreatedAtDesc,
+    );
+    projectTaskSessions.value = sessions;
+    projectTaskTreeDetails.value = Object.fromEntries(
+      sessions.map((item) => [item.id, item]),
+    );
+    taskTreeStorageBackend.value = "local";
+  } finally {
+    taskSessionsLoading.value = false;
   }
-}
-
-function normalizeProjectIdTarget(targetProjectId = projectId.value) {
-  if (
-    typeof targetProjectId === "string" ||
-    typeof targetProjectId === "number"
-  ) {
-    return String(targetProjectId || "").trim();
-  }
-  return String(projectId.value || "").trim();
 }
 
 async function fetchRequirementRecords(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
   projectRequirementRecords.value =
-    isLocalProjectMode() && effectiveProjectId
+    effectiveProjectId
       ? readLocalEntities(`requirement_records_${effectiveProjectId}`)
       : [];
-  projectTaskSessions.value = [];
-  projectTaskTreeDetails.value = {};
-  taskTreeStorageBackend.value = "";
   requirementRecordsLoaded.value = true;
 }
 
 async function fetchProjectWorkSessions(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
-  if (!effectiveProjectId) return;
+  if (!effectiveProjectId) {
+    projectWorkSessions.value = [];
+    return;
+  }
   workSessionLoading.value = true;
   try {
-    const query = String(memoryFilters.value.query || "").trim();
-    const limitValue = Number(memoryFilters.value.limit || 20);
-    const safeLimit =
-      Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
-    const selectedEmployeeId = String(
-      memoryFilters.value.employeeId || "",
-    ).trim();
-    const params = { limit: safeLimit };
-    if (query) {
-      params.query = query;
-    }
-    if (selectedEmployeeId) {
-      params.employee_id = selectedEmployeeId;
-    }
-    const data = await api.get(
-      `/projects/${effectiveProjectId}/work-sessions`,
-      { params },
+    const taskTreesByChatSession = new Map(
+      readLocalTaskTreeSnapshots(effectiveProjectId)
+        .map((snapshot) => normalizeTaskTreePayload(snapshot))
+        .filter(Boolean)
+        .map((taskTree) => [String(taskTree.chat_session_id || "").trim(), taskTree])
+        .filter(([chatSessionId]) => chatSessionId),
     );
-    if (effectiveProjectId !== projectId.value) return;
-    projectWorkSessions.value = Array.isArray(data?.items)
-      ? data.items.map((item) => normalizeWorkSessionSummary(item))
-      : [];
-  } catch (err) {
-    if (effectiveProjectId !== projectId.value) return;
-    ElMessage.error(err?.detail || err?.message || "加载工作轨迹失败");
-    projectWorkSessions.value = [];
-  } finally {
-    if (effectiveProjectId === projectId.value) {
-      workSessionLoading.value = false;
+    const sessionsById = new Map();
+    for (const snapshot of readLocalWorkSessionSnapshots(effectiveProjectId)) {
+      const chatSessionId = String(
+        snapshot?.task_tree_chat_session_id || snapshot?.chat_session_id || "",
+      ).trim();
+      const taskTree = taskTreesByChatSession.get(chatSessionId);
+      const session = normalizeWorkSessionSummary({
+        ...snapshot,
+        project_id: effectiveProjectId,
+        project_name: String(
+          snapshot?.project_name || project.value?.name || "",
+        ).trim(),
+        task_tree_chat_session_id: chatSessionId,
+        task_tree_session_id: String(
+          snapshot?.task_tree_session_id || taskTree?.id || "",
+        ).trim(),
+        goal: String(
+          snapshot?.goal || taskTree?.root_goal || taskTree?.title || "",
+        ).trim(),
+        created_at: String(
+          snapshot?.created_at || taskTree?.created_at || "",
+        ).trim(),
+        updated_at: String(
+          snapshot?.updated_at || taskTree?.updated_at || "",
+        ).trim(),
+      });
+      if (!session?.session_id) continue;
+      sessionsById.set(session.session_id, session);
     }
+    projectWorkSessions.value = Array.from(sessionsById.values()).sort(
+      compareTaskSessionByCreatedAtDesc,
+    );
+  } finally {
+    workSessionLoading.value = false;
   }
 }
 
@@ -5482,6 +5112,11 @@ function normalizeMemory(memory, employeeId = "") {
 
 function normalizeWorkSessionSummary(session) {
   const currentEmployeeId = String(session?.employee_id || "").trim();
+  const rawEvents = Array.isArray(session?.events)
+    ? session.events
+    : Array.isArray(session?.runtime_events)
+      ? session.runtime_events
+      : [];
   return {
     session_id: String(session?.session_id || "").trim(),
     project_id: String(session?.project_id || "").trim(),
@@ -5539,6 +5174,17 @@ function normalizeWorkSessionSummary(session) {
           .map((item) => String(item || "").trim())
           .filter(Boolean)
       : [],
+    events: rawEvents
+      .map((item, index) =>
+        normalizeProjectWorkEvent({
+          ...item,
+          id: String(item?.id || item?.event_id || index).trim(),
+          session_id: String(
+            item?.session_id || session?.session_id || "",
+          ).trim(),
+        }),
+      )
+      .filter((item) => item.id),
     event_count: Number(session?.event_count || 0),
     updated_at: String(session?.updated_at || ""),
     created_at: String(session?.created_at || ""),
@@ -6122,42 +5768,10 @@ async function exportProjectMemories() {
 async function fetchProjectMemories(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
   if (!effectiveProjectId) return;
-  memoryLoading.value = true;
-  try {
-    const query = String(memoryFilters.value.query || "").trim();
-    const limitValue = Number(memoryFilters.value.limit || 20);
-    const safeLimit =
-      Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
-    const selectedEmployeeId = String(
-      memoryFilters.value.employeeId || "",
-    ).trim();
-    const params = { limit: safeLimit };
-    if (query) {
-      params.query = query;
-    }
-    if (selectedEmployeeId) {
-      params.employee_id = selectedEmployeeId;
-    }
-    const data = await api.get(`/projects/${effectiveProjectId}/memories`, {
-      params,
-    });
-    if (effectiveProjectId !== projectId.value) return;
-    projectMemories.value = Array.isArray(data?.items)
-      ? data.items.map((item) => normalizeMemory(item))
-      : [];
-    projectMemoryTotal.value = Number(data?.total || 0);
-    projectMemoryHasMore.value = Boolean(data?.has_more);
-  } catch (err) {
-    if (effectiveProjectId !== projectId.value) return;
-    ElMessage.error(err?.detail || err?.message || "加载项目记忆失败");
-    projectMemories.value = [];
-    projectMemoryTotal.value = 0;
-    projectMemoryHasMore.value = false;
-  } finally {
-    if (effectiveProjectId === projectId.value) {
-      memoryLoading.value = false;
-    }
-  }
+  projectMemories.value = [];
+  projectMemoryTotal.value = 0;
+  projectMemoryHasMore.value = false;
+  memoryLoading.value = false;
 }
 
 async function applyMemoryFilters() {
@@ -6170,7 +5784,6 @@ async function refreshRequirementRecords() {
 }
 
 async function deleteRequirementRecords(recordIds, successLabel = "需求记录") {
-  if (!isLocalProjectMode()) return null;
   const effectiveProjectId = String(projectId.value || "").trim();
   const ids = new Set(
     (Array.isArray(recordIds) ? recordIds : [])
@@ -6276,12 +5889,7 @@ async function ensureOverviewTabData(
     return tabDataPromises.overview;
   }
   tabDataPromises.overview = (async () => {
-    if (!isLocalProjectMode()) {
-      await fetchRules();
-    } else {
-      ruleOptions.value = [];
-      experienceRuleOptions.value = [];
-    }
+    await Promise.all([fetchRules(), fetchExperienceRuleOptions()]);
     setTabDataLoaded("overview", true);
   })().finally(() => {
     tabDataPromises.overview = null;
@@ -6301,14 +5909,6 @@ async function ensureAccessTabData(
     return tabDataPromises.access;
   }
   tabDataPromises.access = (async () => {
-    if (isLocalProjectMode()) {
-      projectUsers.value = [];
-      userOptions.value = [];
-      members.value = [];
-      employees.value = [];
-      setTabDataLoaded("access", true);
-      return;
-    }
     await Promise.all([
       fetchProjectUsers(targetProjectId),
       fetchMembers(targetProjectId),
@@ -6333,9 +5933,7 @@ async function ensureRepositoriesTabData(
     return tabDataPromises.repositories;
   }
   tabDataPromises.repositories = (async () => {
-    if (!isLocalProjectMode()) {
-      await fetchCodeRepositories(targetProjectId);
-    }
+    await fetchCodeRepositories(targetProjectId);
     setTabDataLoaded("repositories", true);
   })().finally(() => {
     tabDataPromises.repositories = null;
@@ -6355,16 +5953,12 @@ async function ensureMemoryTabData(
     return tabDataPromises.memory;
   }
   tabDataPromises.memory = (async () => {
-    if (isLocalProjectMode()) {
-      members.value = [];
-      projectRequirementRecords.value = [];
-      projectTaskSessions.value = [];
-      setTabDataLoaded("memory", true);
-      return;
-    }
     await Promise.all([
       fetchMembers(targetProjectId),
+      fetchProjectTaskSessions(targetProjectId),
       fetchRequirementRecords(targetProjectId),
+      fetchProjectMemories(targetProjectId),
+      fetchProjectWorkSessions(targetProjectId),
     ]);
     setTabDataLoaded("memory", true);
   })().finally(() => {
@@ -6407,15 +6001,8 @@ async function refresh(targetProjectId = projectId.value) {
   loading.value = true;
   try {
     await fetchProject(effectiveProjectId);
-    if (!isLocalProjectMode()) {
-      await fetchRepositoryWorkspaceContext(effectiveProjectId);
-      await restoreExperienceSummaryJob(effectiveProjectId);
-    } else {
-      repositoryWorkspace.value = {
-        path: String(project.value?.workspace_path || "").trim(),
-        source: "local_project",
-      };
-    }
+    await fetchRepositoryWorkspaceContext(effectiveProjectId);
+    await restoreExperienceSummaryJob(effectiveProjectId);
     await ensureProjectTabData(
       route.query.tab || activeProjectTab.value,
       effectiveProjectId,
@@ -6632,6 +6219,46 @@ function getExperienceReviewDisplayCard(card) {
   return null;
 }
 
+function saveLocalExperienceRule(ruleId, patch = {}) {
+  const normalizedRuleId = String(ruleId || "").trim();
+  if (!normalizedRuleId) return null;
+  const now = new Date().toISOString();
+  const existingRules = readLocalEntities("experience_rules");
+  const existingRule =
+    existingRules.find((item) => String(item?.id || "").trim() === normalizedRuleId) ||
+    {};
+  const nextRule = {
+    ...existingRule,
+    ...patch,
+    id: normalizedRuleId,
+    title: String(patch.title || existingRule.title || normalizedRuleId).trim(),
+    updated_at: now,
+  };
+  writeLocalEntities(
+    "experience_rules",
+    [
+      ...existingRules.filter(
+        (item) => String(item?.id || "").trim() !== normalizedRuleId,
+      ),
+      nextRule,
+    ],
+  );
+
+  const relations = getLocalProjectRelations(projectId.value);
+  const existingOptions = Array.isArray(relations.experience_rule_options)
+    ? relations.experience_rule_options
+    : [];
+  updateLocalProjectRelations(projectId.value, {
+    experience_rule_options: [
+      ...existingOptions.filter(
+        (item) => String(item?.id || "").trim() !== normalizedRuleId,
+      ),
+      nextRule,
+    ],
+  });
+  return nextRule;
+}
+
 async function openExperienceRuleEditDialog(rule) {
   if (!canManageProject.value) {
     ElMessage.warning(manageBlockedMessage());
@@ -6645,13 +6272,18 @@ async function openExperienceRuleEditDialog(rule) {
   experienceRuleEditingLoading.value = true;
   editingExperienceRuleId.value = ruleId;
   try {
-    const data = await api.get(`/rules/${ruleId}`);
-    const currentRule = data?.rule || {};
+    const currentRule =
+      readLocalEntities("experience_rules").find(
+        (item) => String(item?.id || "").trim() === ruleId,
+      ) ||
+      experienceRuleMap.value.get(ruleId) ||
+      rule ||
+      {};
     experienceRuleEditForm.value = {
       title: stripExperienceRuleTitlePrefix(
         currentRule.title || rule.title || "",
       ),
-      content: String(currentRule.content || "").trim(),
+      content: String(currentRule.content || currentRule.preview || "").trim(),
     };
     showExperienceRuleEditDialog.value = true;
   } catch (err) {
@@ -6680,10 +6312,12 @@ async function handleSaveExperienceRuleEdit() {
   }
   experienceRuleEditSaving.value = true;
   try {
-    await api.put(`/projects/${projectId.value}/experience-rules/${ruleId}`, {
+    saveLocalExperienceRule(ruleId, {
       title,
       content,
+      preview: content.slice(0, 240),
     });
+    await fetchExperienceRuleOptions();
     await fetchProject();
     ElMessage.success("经验规则已更新");
     editingExperienceRuleId.value = "";
@@ -6726,18 +6360,19 @@ async function handleDeleteExperienceRule(rule) {
   experienceRuleDeletingLoading.value = true;
   deletingExperienceRuleId.value = ruleId;
   try {
-    const data = await api.delete(
-      `/projects/${projectId.value}/experience-rules/${ruleId}`,
+    const relations = getLocalProjectRelations(projectId.value);
+    const nextRuleIds = normalizeStringList(
+      (relations.experience_rule_ids || project.value?.experience_rule_ids || [])
+        .filter((id) => String(id || "").trim() !== ruleId),
     );
-    await fetchProject();
-    const remainingCount = Number(data?.remaining_project_binding_count || 0);
-    if (remainingCount > 0) {
-      ElMessage.success(
-        `已移除当前项目引用，该经验仍被 ${remainingCount} 个其他项目使用`,
-      );
-    } else {
-      ElMessage.success("已从当前项目移除经验规则");
+    updateLocalProjectRelations(projectId.value, {
+      experience_rule_ids: nextRuleIds,
+    });
+    if (project.value) {
+      project.value.experience_rule_ids = nextRuleIds;
     }
+    await fetchProject();
+    ElMessage.success("已从当前项目移除经验规则");
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "移除经验规则失败");
   } finally {
@@ -6747,100 +6382,16 @@ async function handleDeleteExperienceRule(rule) {
 }
 
 async function handleMigrateExperienceRulesToDevelopment() {
-  if (!canManageProject.value) {
-    ElMessage.warning(manageBlockedMessage());
-    return;
-  }
-  if (!hasLegacyProjectExperienceRules.value) {
-    ElMessage.warning("当前没有需要迁移的旧项目经验规则");
-    return;
-  }
-  try {
-    await ElMessageBox.confirm(
-      "会把当前项目下旧的项目私有经验升级为开发经验，并按主题归并到开发经验库；项目仍会保留规则引用。是否继续？",
-      "迁移旧项目经验",
-      {
-        type: "warning",
-        confirmButtonText: "开始迁移",
-      },
-    );
-  } catch {
-    return;
-  }
-  experienceRuleMigrating.value = true;
-  try {
-    const data = await api.post(
-      `/projects/${projectId.value}/experience-rules/migrate-to-development`,
-    );
-    await fetchProject();
-    const createdCount = Array.isArray(data?.created_rule_ids)
-      ? data.created_rule_ids.length
-      : 0;
-    const updatedCount = Array.isArray(data?.updated_rule_ids)
-      ? data.updated_rule_ids.length
-      : 0;
-    const deletedCount = Array.isArray(data?.deleted_rule_ids)
-      ? data.deleted_rule_ids.length
-      : 0;
-    ElMessage.success(
-      `迁移完成：新增 ${createdCount} 条，归并更新 ${updatedCount} 条，清理 ${deletedCount} 条旧规则`,
-    );
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "迁移旧项目经验失败");
-  } finally {
-    experienceRuleMigrating.value = false;
-  }
+  ElMessage.info("本地经验迁移执行器尚未接入，已不再调用远端接口");
 }
 
 async function handleConsolidateExperienceRules() {
-  if (!canManageProject.value) {
-    ElMessage.warning(manageBlockedMessage());
-    return;
-  }
-  if (boundExperienceRules.value.length <= 1) {
-    ElMessage.warning("当前经验规则已经是单条，无需再汇总");
-    return;
-  }
-  await fetchExperienceProviders();
-  if (!experienceProviderOptions.value.length) {
-    ElMessage.warning("当前没有可用模型，无法汇总经验规则");
-    return;
-  }
-  showExperienceConsolidateDialog.value = true;
+  ElMessage.info("本地经验汇总执行器尚未接入，已不再调用远端接口");
 }
 
 async function handleConfirmConsolidateExperienceRules() {
-  experienceRuleConsolidating.value = true;
-  try {
-    const data = await api.post(
-      `/projects/${projectId.value}/experience-rules/consolidate`,
-      {
-        provider_id: String(experienceSummaryProviderId.value || "").trim(),
-        model_name: String(experienceSummaryModelName.value || "").trim(),
-      },
-    );
-    await fetchProject();
-    const deletedCount = Array.isArray(data?.deleted_rule_ids)
-      ? data.deleted_rule_ids.length
-      : 0;
-    const consolidatedCount = Array.isArray(data?.consolidated_rule_ids)
-      ? data.consolidated_rule_ids.length
-      : 0;
-    const remainingCount = Number(data?.remaining_rule_count || 0);
-    if (!consolidatedCount && !deletedCount) {
-      ElMessage.success(
-        `未发现可合并的重复主题，当前保留 ${remainingCount} 条经验规则`,
-      );
-      return;
-    }
-    ElMessage.success(
-      `已按主题汇总 ${consolidatedCount} 组经验规则，当前保留 ${remainingCount} 条，清理 ${deletedCount} 条重复规则`,
-    );
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "汇总经验规则失败");
-  } finally {
-    experienceRuleConsolidating.value = false;
-  }
+  showExperienceConsolidateDialog.value = false;
+  ElMessage.info("本地经验汇总执行器尚未接入，已不再调用远端接口");
 }
 
 function openEditDialog() {
@@ -6919,7 +6470,18 @@ async function saveEdit() {
   }
   saving.value = true;
   try {
-    await api.put(`/projects/${projectId.value}`, editForm.value);
+    const currentProject = getLocalProject(projectId.value);
+    if (!currentProject) {
+      throw new Error("本地项目不存在，无法更新");
+    }
+    upsertLocalProject({
+      ...currentProject,
+      ...editForm.value,
+      id: projectId.value,
+      name,
+      type: normalizeProjectType(editForm.value.type),
+      updated_at: new Date().toISOString(),
+    });
     ElMessage.success("项目已更新");
     showEditDialog.value = false;
     await fetchProject();
@@ -6960,36 +6522,7 @@ async function initializeRepositoryFromWorkspace() {
     ElMessage.warning(manageBlockedMessage());
     return;
   }
-  const localPath = getDefaultRepositoryLocalPath();
-  if (!localPath) {
-    ElMessage.warning("项目未配置本机工作区或项目工作区路径");
-    return;
-  }
-  repositoryInitializing.value = true;
-  try {
-    const data = await api.post(
-      `/projects/${projectId.value}/code-repositories/initialize`,
-      { local_path: localPath },
-    );
-    const createdCount = Number(data?.created_count || 0);
-    const skippedCount = Number(data?.skipped_count || 0);
-    await fetchCodeRepositories();
-    setTabDataLoaded("repositories", true);
-    if (createdCount > 0) {
-      const skippedText = skippedCount ? `，已存在 ${skippedCount} 个` : "";
-      ElMessage.success(`已自动保存 ${createdCount} 个代码仓库${skippedText}`);
-      return;
-    }
-    if (skippedCount > 0) {
-      ElMessage.info(`检测到 ${skippedCount} 个仓库地址已存在，无需重复保存`);
-      return;
-    }
-    ElMessage.warning("当前目录下未扫描到可保存的 Git 远程地址");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "初始化仓库失败");
-  } finally {
-    repositoryInitializing.value = false;
-  }
+  ElMessage.info("本机仓库自动扫描尚未接入，请手动添加仓库");
 }
 
 function openRepositoryDialog(repository = null) {
@@ -7046,38 +6579,21 @@ async function saveCodeRepository() {
   }
   repositorySaving.value = true;
   try {
-    if (isLocalProjectMode()) {
-      const relations = getLocalProjectRelations(projectId.value);
-      const repository = normalizeCodeRepository({
-        ...payload,
-        id: editingRepositoryId.value || `local-repository-${Date.now()}`,
-        project_id: projectId.value,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-      const repositories = Array.isArray(relations.code_repositories)
-        ? relations.code_repositories.filter((item) => item.id !== repository.id)
-        : [];
-      updateLocalProjectRelations(projectId.value, {
-        code_repositories: [...repositories, repository],
-      });
-      ElMessage.success(editingRepositoryId.value ? "代码仓库已更新" : "代码仓库已添加");
-      showRepositoryDialog.value = false;
-      resetRepositoryForm();
-      await fetchCodeRepositories();
-      setTabDataLoaded("repositories", true);
-      return;
-    }
-    if (editingRepositoryId.value) {
-      await api.put(
-        `/projects/${projectId.value}/code-repositories/${editingRepositoryId.value}`,
-        payload,
-      );
-      ElMessage.success("代码仓库已更新");
-    } else {
-      await api.post(`/projects/${projectId.value}/code-repositories`, payload);
-      ElMessage.success("代码仓库已添加");
-    }
+    const relations = getLocalProjectRelations(projectId.value);
+    const repository = normalizeCodeRepository({
+      ...payload,
+      id: editingRepositoryId.value || `local-repository-${Date.now()}`,
+      project_id: projectId.value,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    const repositories = Array.isArray(relations.code_repositories)
+      ? relations.code_repositories.filter((item) => item.id !== repository.id)
+      : [];
+    updateLocalProjectRelations(projectId.value, {
+      code_repositories: [...repositories, repository],
+    });
+    ElMessage.success(editingRepositoryId.value ? "代码仓库已更新" : "代码仓库已添加");
     showRepositoryDialog.value = false;
     resetRepositoryForm();
     await fetchCodeRepositories();
@@ -7110,21 +6626,12 @@ async function deleteCodeRepository(repository) {
   }
   repositorySaving.value = true;
   try {
-    if (isLocalProjectMode()) {
-      const relations = getLocalProjectRelations(projectId.value);
-      updateLocalProjectRelations(projectId.value, {
-        code_repositories: (relations.code_repositories || []).filter(
-          (item) => String(item?.id || "") !== repositoryId,
-        ),
-      });
-      ElMessage.success("代码仓库已删除");
-      await fetchCodeRepositories();
-      setTabDataLoaded("repositories", true);
-      return;
-    }
-    await api.delete(
-      `/projects/${projectId.value}/code-repositories/${repositoryId}`,
-    );
+    const relations = getLocalProjectRelations(projectId.value);
+    updateLocalProjectRelations(projectId.value, {
+      code_repositories: (relations.code_repositories || []).filter(
+        (item) => String(item?.id || "") !== repositoryId,
+      ),
+    });
     ElMessage.success("代码仓库已删除");
     await fetchCodeRepositories();
     setTabDataLoaded("repositories", true);
@@ -7154,21 +6661,12 @@ async function saveUiRuleBindings() {
   }
   uiRuleSaving.value = true;
   try {
-    if (isLocalProjectMode()) {
-      const ruleIds = normalizeStringList(uiRuleForm.value.rule_ids || []);
-      updateLocalProjectRelations(projectId.value, { ui_rule_ids: ruleIds });
-      if (project.value) {
-        project.value.ui_rule_ids = ruleIds;
-      }
-      ElMessage.success("UI 规则绑定已保存到本地");
-      showUiRuleDialog.value = false;
-      return;
+    const ruleIds = normalizeStringList(uiRuleForm.value.rule_ids || []);
+    updateLocalProjectRelations(projectId.value, { ui_rule_ids: ruleIds });
+    if (project.value) {
+      project.value.ui_rule_ids = ruleIds;
     }
-    await api.put(`/projects/${projectId.value}`, {
-      ui_rule_ids: normalizeStringList(uiRuleForm.value.rule_ids || []),
-    });
-    await fetchProject();
-    ElMessage.success("UI 规则绑定已更新");
+    ElMessage.success("UI 规则绑定已保存到本地");
     showUiRuleDialog.value = false;
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "保存 UI 规则绑定失败");
@@ -7185,25 +6683,14 @@ async function saveExperienceRuleBindings() {
   }
   experienceRuleBindingSaving.value = true;
   try {
-    if (isLocalProjectMode()) {
-      const ruleIds = normalizeStringList(
-        experienceRuleBindingForm.value.rule_ids || [],
-      );
-      updateLocalProjectRelations(projectId.value, { experience_rule_ids: ruleIds });
-      if (project.value) {
-        project.value.experience_rule_ids = ruleIds;
-      }
-      ElMessage.success("经验规则绑定已保存到本地");
-      showExperienceRuleBindingDialog.value = false;
-      return;
+    const ruleIds = normalizeStringList(
+      experienceRuleBindingForm.value.rule_ids || [],
+    );
+    updateLocalProjectRelations(projectId.value, { experience_rule_ids: ruleIds });
+    if (project.value) {
+      project.value.experience_rule_ids = ruleIds;
     }
-    await api.put(`/projects/${projectId.value}`, {
-      experience_rule_ids: normalizeStringList(
-        experienceRuleBindingForm.value.rule_ids || [],
-      ),
-    });
-    await fetchProject();
-    ElMessage.success("经验规则绑定已更新");
+    ElMessage.success("经验规则绑定已保存到本地");
     showExperienceRuleBindingDialog.value = false;
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "保存经验规则绑定失败");
@@ -7215,21 +6702,13 @@ async function saveExperienceRuleBindings() {
 async function showProjectManual() {
   manualLoading.value = true;
   try {
-    if (isLocalProjectMode()) {
-      generatedManual.value = String(
-        project.value?.manual_template ||
-          project.value?.description ||
-          `项目「${project.value?.name || projectId.value}」的本地使用手册暂未生成。`,
-      );
-      manualDialogTitle.value = `项目使用手册: ${project.value?.name || projectId.value}`;
-      showManualDialog.value = true;
-      return;
-    }
-    const data = await api.get(`/projects/${projectId.value}/manual-template`);
-    generatedManual.value = data.template || "";
+    generatedManual.value = String(
+      project.value?.manual_template ||
+        project.value?.description ||
+        `项目「${project.value?.name || projectId.value}」的本地使用手册暂未生成。`,
+    );
     manualDialogTitle.value = `项目使用手册: ${project.value?.name || projectId.value}`;
     showManualDialog.value = true;
-    ElMessage.success("项目使用手册加载成功");
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "加载项目使用手册失败");
   } finally {
@@ -7238,59 +6717,9 @@ async function showProjectManual() {
 }
 
 async function handleConfirmExperienceSummary() {
-  const targetRecordIds = getExperienceSummaryTargetRecordIds();
-  if (!targetRecordIds.length) {
-    ElMessage.warning(getExperienceSummaryUnavailableMessage());
-    return;
-  }
-  const manualReviewEnabled = Boolean(
-    experienceSummaryManualReviewEnabled.value,
-  );
-  const confirmText = manualReviewEnabled
-    ? `本次会总结 ${targetRecordIds.length} 条需求记录，先完成模型评审和经验入库，但会保留原始记录等待人工复核。是否继续？`
-    : `本次会总结 ${targetRecordIds.length} 条需求记录，生成可复用的开发经验规则。只有评审通过且覆盖完整时，才会清空这批记录。是否继续？`;
-  try {
-    await ElMessageBox.confirm(confirmText, "开启开发经验沉淀", {
-      type: "warning",
-      confirmButtonText: "开始总结",
-    });
-  } catch {
-    return;
-  }
-  experienceSummaryLoading.value = true;
-  try {
-    const data = await api.post(
-      `/projects/${projectId.value}/experience-summary-jobs`,
-      {
-        provider_id: String(experienceSummaryProviderId.value || "").trim(),
-        model_name: String(experienceSummaryModelName.value || "").trim(),
-        record_ids: targetRecordIds,
-        clear_requirement_records: !manualReviewEnabled,
-        experience_scope: "development",
-        review_mode: manualReviewEnabled ? "manual" : "auto",
-      },
-    );
-    const job = normalizeExperienceSummaryJob(data?.job);
-    if (!job?.id) {
-      throw new Error("总结任务创建成功，但未返回任务信息");
-    }
-    lastExperienceSummaryResult.value = null;
-    experienceSummaryActiveJob.value = job;
-    showExperienceSummaryDialog.value = false;
-    showExperienceReviewDialog.value = false;
-    stopExperienceSummaryPolling();
-    experienceSummaryPollingTimer = window.setTimeout(() => {
-      void pollExperienceSummaryJob(projectId.value, job.id);
-    }, 1200);
-    ElMessage.success(
-      "总结任务已创建，后台处理中；刷新页面后也可以继续查看进度",
-    );
-  } catch (err) {
-    experienceSummaryActiveJob.value = null;
-    experienceSummaryLoading.value = false;
-    stopExperienceSummaryPolling();
-    ElMessage.error(err?.detail || err?.message || "总结经验失败");
-  }
+  showExperienceSummaryDialog.value = false;
+  experienceSummaryLoading.value = false;
+  ElMessage.info("本地经验总结执行器尚未接入，已不再调用远端接口");
 }
 
 async function copyManual() {
@@ -7328,32 +6757,40 @@ async function addMember() {
   saving.value = true;
   try {
     const roleValue = String(addForm.value.role || "member").trim() || "member";
-    const results = await Promise.allSettled(
-      toAdd.map((employeeId) =>
-        api.post(`/projects/${projectId.value}/members`, {
-          employee_id: employeeId,
-          role: roleValue,
-          enabled: !!addForm.value.enabled,
-        }),
-      ),
+    const relations = getLocalProjectRelations(projectId.value);
+    const employeeById = new Map(
+      [...employeeOptions.value, ...readLocalEntities("employees")]
+        .map((item) => [String(item?.id || "").trim(), item])
+        .filter(([employeeId]) => employeeId),
     );
-    const successCount = results.filter(
-      (item) => item.status === "fulfilled",
-    ).length;
-    const failCount = results.length - successCount;
+    const now = new Date().toISOString();
+    const currentMembers = Array.isArray(relations.members)
+      ? relations.members
+      : [];
+    updateLocalProjectRelations(projectId.value, {
+      members: [
+        ...currentMembers,
+        ...toAdd.map((employeeId) => {
+          const employee = employeeById.get(employeeId);
+          return {
+            project_id: projectId.value,
+            employee_id: employeeId,
+            employee_name: String(
+              employee?.name || employee?.employee_name || employeeId,
+            ).trim(),
+            role: roleValue,
+            enabled: !!addForm.value.enabled,
+            employee_mcp_enabled: employee?.mcp_enabled !== false,
+            joined_at: now,
+          };
+        }),
+      ],
+    });
     await fetchMembers();
-    await fetchProjectMemories();
-    if (failCount === 0) {
-      const extra = skipped.length ? `，已忽略重复 ${skipped.length} 人` : "";
-      ElMessage.success(`成功添加 ${successCount} 人${extra}`);
-      showAddDialog.value = false;
-      return;
-    }
-    if (successCount > 0) {
-      ElMessage.warning(`成功添加 ${successCount} 人，失败 ${failCount} 人`);
-      return;
-    }
-    ElMessage.error("成员保存失败");
+    setTabDataLoaded("access", true);
+    const extra = skipped.length ? `，已忽略重复 ${skipped.length} 人` : "";
+    ElMessage.success(`成功添加 ${toAdd.length} 人${extra}`);
+    showAddDialog.value = false;
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "保存失败");
   } finally {
@@ -7388,31 +6825,60 @@ async function addProjectUsers() {
   try {
     const roleValue =
       String(userForm.value.role || "member").trim() || "member";
-    const results = await Promise.allSettled(
-      toAdd.map((username) =>
-        api.post(`/projects/${projectId.value}/users`, {
-          username,
-          role: roleValue,
-          enabled: !!userForm.value.enabled,
-        }),
-      ),
+    const relations = getLocalProjectRelations(projectId.value);
+    const knownUsers = new Map(
+      [...userOptions.value, ...readLocalEntities("users")]
+        .map((item) => {
+          const username = String(item?.username || item?.id || "").trim();
+          return [username, item];
+        })
+        .filter(([username]) => username),
     );
-    const successCount = results.filter(
-      (item) => item.status === "fulfilled",
-    ).length;
-    const failCount = results.length - successCount;
+    const now = new Date().toISOString();
+    const currentUsers = Array.isArray(relations.users) ? relations.users : [];
+    const currentOptions = Array.isArray(relations.user_options)
+      ? relations.user_options
+      : [];
+    const optionNames = new Set(
+      currentOptions
+        .map((item) => String(item?.username || item?.id || "").trim())
+        .filter(Boolean),
+    );
+    const nextOptions = [...currentOptions];
+    for (const username of toAdd) {
+      if (optionNames.has(username)) continue;
+      const user = knownUsers.get(username) || {};
+      nextOptions.push({
+        ...user,
+        id: String(user?.id || username).trim(),
+        username,
+        role_name: String(user?.role_name || user?.role || "local").trim(),
+        user_role: String(user?.user_role || "local").trim(),
+      });
+    }
+    updateLocalProjectRelations(projectId.value, {
+      users: [
+        ...currentUsers,
+        ...toAdd.map((username) => {
+          const user = knownUsers.get(username) || {};
+          return {
+            project_id: projectId.value,
+            username,
+            role: roleValue,
+            user_role: String(user?.user_role || "local").trim(),
+            enabled: !!userForm.value.enabled,
+            user_exists: true,
+            joined_at: now,
+          };
+        }),
+      ],
+      user_options: nextOptions,
+    });
     await fetchProjectUsers();
-    if (failCount === 0) {
-      const extra = skipped.length ? `，已忽略重复 ${skipped.length} 人` : "";
-      ElMessage.success(`成功添加 ${successCount} 人${extra}`);
-      showAddUserDialog.value = false;
-      return;
-    }
-    if (successCount > 0) {
-      ElMessage.warning(`成功添加 ${successCount} 人，失败 ${failCount} 人`);
-      return;
-    }
-    ElMessage.error("可见用户保存失败");
+    setTabDataLoaded("access", true);
+    const extra = skipped.length ? `，已忽略重复 ${skipped.length} 人` : "";
+    ElMessage.success(`成功添加 ${toAdd.length} 人${extra}`);
+    showAddUserDialog.value = false;
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "保存失败");
   } finally {
@@ -7425,16 +6891,26 @@ async function removeMember(row) {
     ElMessage.warning(manageBlockedMessage());
     return;
   }
-  await ElMessageBox.confirm(
-    `确定移除成员 ${row.employee_name || row.employee_id}？`,
-    "确认",
-    { type: "warning" },
-  );
   try {
-    await api.delete(`/projects/${projectId.value}/members/${row.employee_id}`);
+    await ElMessageBox.confirm(
+      `确定移除成员 ${row.employee_name || row.employee_id}？`,
+      "确认",
+      { type: "warning" },
+    );
+  } catch {
+    return;
+  }
+  try {
+    const employeeId = String(row?.employee_id || "").trim();
+    const relations = getLocalProjectRelations(projectId.value);
+    updateLocalProjectRelations(projectId.value, {
+      members: (relations.members || []).filter(
+        (item) => String(item?.employee_id || "").trim() !== employeeId,
+      ),
+    });
     ElMessage.success("成员已移除");
     await fetchMembers();
-    await fetchProjectMemories();
+    setTabDataLoaded("access", true);
   } catch {
     ElMessage.error("移除失败");
   }
@@ -7445,25 +6921,30 @@ async function removeProjectUser(row) {
     ElMessage.warning(manageBlockedMessage());
     return;
   }
-  await ElMessageBox.confirm(
-    `确定移除用户 ${row.username} 的项目访问权限？`,
-    "确认",
-    { type: "warning" },
-  );
   try {
-    await api.delete(
-      `/projects/${projectId.value}/users/${encodeURIComponent(row.username)}`,
+    await ElMessageBox.confirm(
+      `确定移除用户 ${row.username} 的项目访问权限？`,
+      "确认",
+      { type: "warning" },
     );
+  } catch {
+    return;
+  }
+  try {
+    const username = String(row?.username || "").trim();
+    const relations = getLocalProjectRelations(projectId.value);
+    updateLocalProjectRelations(projectId.value, {
+      users: (relations.users || []).filter(
+        (item) => String(item?.username || "").trim() !== username,
+      ),
+    });
     ElMessage.success("用户访问权限已移除");
     await fetchProjectUsers();
+    setTabDataLoaded("access", true);
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "移除失败");
   }
 }
-
-onMounted(async () => {
-  await fetchRuntimeOrigin();
-});
 
 onBeforeUnmount(() => {
   stopExperienceSummaryPolling();

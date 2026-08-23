@@ -177,9 +177,7 @@
           show-overflow-tooltip
         />
         <el-table-column label="API Key" min-width="130" show-overflow-tooltip>
-          <template #default="{ row }">{{
-            row.api_key_masked || "-"
-          }}</template>
+          <template #default="{ row }">{{ row.api_key || "-" }}</template>
         </el-table-column>
         <el-table-column label="启用" width="90" align="center">
           <template #default="{ row }">
@@ -353,8 +351,6 @@
         <el-form-item label="API Key">
           <el-input
             v-model="form.api_key"
-            type="password"
-            show-password
             :placeholder="apiKeyPlaceholder()"
           />
         </el-form-item>
@@ -512,15 +508,19 @@ import {
   watch,
 } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import api from "@/utils/api.js";
+import {
+  discoverNativeProviderModels,
+  hasNativeDesktopBridge,
+  testNativeProviderModel,
+} from "@/utils/native-desktop-bridge.js";
 import {
   readAllLocalProjectRelations,
   readLocalEntities,
   removeLocalEntity,
+  writeLocalEntities,
   upsertLocalEntity,
 } from "@/services/local-project-repository.js";
 import { formatDateTime, parseDateTime } from "@/utils/date.js";
-import { fetchDictionary } from "@/utils/dictionaries.js";
 import {
   canManageRecord,
   getOwnershipDeniedMessage,
@@ -585,6 +585,7 @@ const form = reactive({
 });
 const LOCAL_PROVIDER_ENTITY = "llm_providers";
 const LEGACY_PROVIDER_MODEL_SNAPSHOTS_KEY = "liuagent:cached-provider-models";
+const DELETED_PROVIDER_IDS_KEY = "llm_providers_deleted_ids";
 
 function createLocalProviderId() {
   const suffix =
@@ -651,12 +652,13 @@ function collectLegacyLocalProviders() {
 
 function migrateLegacyLocalProviders() {
   const existing = readLocalEntities(LOCAL_PROVIDER_ENTITY);
+  const deletedIds = readDeletedProviderIds();
   const existingIds = new Set(
     existing.map((item) => String(item?.id || "").trim()).filter(Boolean),
   );
   const now = new Date().toISOString();
   collectLegacyLocalProviders().forEach((provider) => {
-    if (existingIds.has(provider.id)) return;
+    if (existingIds.has(provider.id) || deletedIds.has(provider.id)) return;
     upsertLocalEntity(LOCAL_PROVIDER_ENTITY, {
       ...provider,
       created_at: String(provider.created_at || now),
@@ -664,6 +666,32 @@ function migrateLegacyLocalProviders() {
     });
     existingIds.add(provider.id);
   });
+}
+
+function readDeletedProviderIds() {
+  try {
+    const stored = JSON.parse(
+      window.localStorage?.getItem(DELETED_PROVIDER_IDS_KEY) || "[]",
+    );
+    return new Set(
+      Array.isArray(stored)
+        ? stored.map((item) => String(item || "").trim()).filter(Boolean)
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function rememberDeletedProviderId(providerId) {
+  const id = String(providerId || "").trim();
+  if (!id) return;
+  const deletedIds = readDeletedProviderIds();
+  deletedIds.add(id);
+  window.localStorage?.setItem(
+    DELETED_PROVIDER_IDS_KEY,
+    JSON.stringify([...deletedIds]),
+  );
 }
 
 const PROVIDER_INTERFACE_OPTIONS = [
@@ -969,7 +997,7 @@ function populateForm(row, { duplicate = false } = {}) {
     : String(row?.name || "");
   form.provider_type = String(row?.provider_type || "openai-compatible");
   form.base_url = String(row?.base_url || "");
-  form.api_key = "";
+  form.api_key = String(row?.api_key || "");
   const modelConfigs = normalizeProviderModelConfigs(
     row,
     modelTypeOptions.value,
@@ -1073,26 +1101,30 @@ function addModelConfig() {
 }
 
 function mergeDiscoveredModelNames(modelNames) {
-  const existingNames = new Set(
-    form.model_configs
-      .map((item) => String(item?.name || "").trim())
-      .filter(Boolean),
+  const latestNames = Array.from(
+    new Set(
+      (Array.isArray(modelNames) ? modelNames : [])
+        .map((item) =>
+          typeof item === "object"
+            ? item?.id || item?.name || item?.model
+            : item,
+        )
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    ),
   );
-  let added = 0;
-  modelNames.forEach((name) => {
-    const modelName = String(name || "").trim();
-    if (!modelName || existingNames.has(modelName)) return;
-    existingNames.add(modelName);
-    form.model_configs.push(createModelConfig(modelName));
-    added += 1;
-  });
-  if (added > 0) {
-    form.model_configs = form.model_configs.filter((item) =>
-      String(item?.name || "").trim(),
-    );
-  }
+  if (!latestNames.length) return 0;
+  const existingByName = new Map(
+    form.model_configs
+      .map((item) => [String(item?.name || "").trim(), item])
+      .filter(([name]) => name),
+  );
+  const previousNames = new Set(existingByName.keys());
+  form.model_configs = latestNames.map(
+    (name) => existingByName.get(name) || createModelConfig(name),
+  );
   syncDefaultModelSelection();
-  return added;
+  return latestNames.filter((name) => !previousNames.has(name)).length;
 }
 
 function removeModelConfig(index) {
@@ -1150,6 +1182,19 @@ function parseHeaders() {
   }
 }
 
+function formatProviderDiscoveryError(error) {
+  if (typeof error === "string") return error.trim() || "获取模型失败";
+  const directMessage = String(
+    error?.detail || error?.message || error?.error || "",
+  ).trim();
+  if (directMessage) return directMessage;
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized && serialized !== "{}") return serialized;
+  } catch {}
+  return "获取模型失败：桌面端没有返回可识别的错误信息";
+}
+
 async function discoverModels() {
   if (!form.base_url.trim()) {
     ElMessage.warning("请先填写 Base URL");
@@ -1166,26 +1211,41 @@ async function discoverModels() {
 
   discoveringModels.value = true;
   try {
-    const discoverEndpoint = editingId.value
-      ? `/llm/providers/${encodeURIComponent(editingId.value)}/discover-models`
-      : "/llm/providers/discover-models";
-    const data = await api.post(discoverEndpoint, {
-      provider_type: form.provider_type,
-      base_url: form.base_url.trim(),
-      api_key: form.api_key.trim(),
-      extra_headers: extraHeaders,
-    });
-    const models = Array.isArray(data?.models) ? data.models : [];
-    const added = mergeDiscoveredModelNames(models);
-    if (added > 0) {
-      ElMessage.success(`已获取 ${models.length} 个模型，新增 ${added} 个`);
-    } else if (models.length) {
-      ElMessage.info(`已获取 ${models.length} 个模型，当前列表已包含`);
-    } else {
-      ElMessage.warning("未获取到模型");
+    if (!hasNativeDesktopBridge()) {
+      throw new Error("当前环境不支持本地模型发现，请在桌面应用中操作");
     }
+    const data = await discoverNativeProviderModels({
+      providerType: form.provider_type,
+      baseUrl: form.base_url,
+      apiKey: form.api_key,
+      extraHeaders,
+    });
+    if (!data || typeof data !== "object") {
+      throw new Error(
+        "桌面端模型发现命令没有返回结果，请完全退出并重新启动桌面端后重试",
+      );
+    }
+    const models = Array.isArray(data?.models)
+      ? data.models
+      : Array.isArray(data?.data)
+        ? data.data
+        : [];
+    if (!models.length) {
+      throw new Error("供应商返回成功，但没有可用模型；请检查 API Key 和接口地址");
+    }
+    const added = mergeDiscoveredModelNames(models);
+    ElMessage.success(
+      `已获取 ${models.length} 个最新模型${added ? `，新增 ${added} 个` : "，已更新当前模型列表"}，请点击保存`,
+    );
   } catch (e) {
-    ElMessage.error(e.detail || e.message || "获取模型失败");
+    const message = formatProviderDiscoveryError(e);
+    console.error("discover provider models failed", e);
+    ElMessage({
+      type: "error",
+      message,
+      duration: 12000,
+      showClose: true,
+    });
   } finally {
     discoveringModels.value = false;
   }
@@ -1267,13 +1327,36 @@ async function submitForm() {
       (item) => String(item?.id || "").trim() === editingId.value,
     );
     const now = new Date().toISOString();
-    upsertLocalEntity(LOCAL_PROVIDER_ENTITY, {
+    const providerId = editingId.value || createLocalProviderId();
+    const nextProvider = {
       ...(existing || {}),
       ...payload,
-      id: editingId.value || createLocalProviderId(),
+      id: providerId,
       created_at: String(existing?.created_at || now),
       updated_at: now,
-    });
+    };
+    delete nextProvider.models;
+    delete nextProvider.api_key_masked;
+    const savedProviders = writeLocalEntities(
+      LOCAL_PROVIDER_ENTITY,
+      readLocalEntities(LOCAL_PROVIDER_ENTITY)
+        .filter((item) => String(item?.id || "").trim() !== providerId)
+        .concat(nextProvider),
+    );
+    const savedProvider = savedProviders.find(
+      (item) => String(item?.id || "").trim() === providerId,
+    );
+    const savedModelNames = normalizeProviderModelConfigs(
+      savedProvider,
+      modelTypeOptions.value,
+    ).map((item) => item.name);
+    const expectedModelNames = modelConfigs.map((item) => item.name);
+    if (
+      savedModelNames.length !== expectedModelNames.length ||
+      savedModelNames.some((name, index) => name !== expectedModelNames[index])
+    ) {
+      throw new Error("模型配置写入失败，请重试");
+    }
     ElMessage.success(
       editingId.value
         ? "本地供应商已更新"
@@ -1439,15 +1522,24 @@ function handleProviderAction(row, actionKey) {
 async function removeProvider(row) {
   const id = String(row.id || "");
   if (!id) return;
-  await ElMessageBox.confirm(`确定删除供应商 ${row.name || id}？`, "删除确认", {
-    type: "warning",
-  });
   try {
-    removeLocalEntity(LOCAL_PROVIDER_ENTITY, id);
+    await ElMessageBox.confirm(`确定删除供应商 ${row.name || id}？`, "删除确认", {
+      type: "warning",
+    });
+    const remainingProviders = removeLocalEntity(LOCAL_PROVIDER_ENTITY, id);
+    if (remainingProviders.some((item) => String(item?.id || "") === id)) {
+      throw new Error("供应商删除未完成，请刷新后重试");
+    }
+    delete connectionResultByProvider[id];
+    delete connectionResultsByProvider[id];
+    rememberDeletedProviderId(id);
     ElMessage.success("本地供应商已删除");
     await fetchProviders();
   } catch (e) {
-    ElMessage.error(e.detail || "删除失败");
+    if (e === "cancel" || e?.action === "cancel" || e?.action === "close") {
+      return;
+    }
+    ElMessage.error(e?.detail || e?.message || "删除失败");
   }
 }
 
@@ -1513,7 +1605,9 @@ function normalizeProviderModels(row) {
 }
 
 function getPrimaryTestModel(row) {
-  return normalizeProviderModels(row)[0] || "";
+  const models = normalizeProviderModels(row);
+  const defaultModel = String(row?.default_model || "").trim();
+  return models.includes(defaultModel) ? defaultModel : models[0] || "";
 }
 
 function getProviderTestActions(row) {
@@ -1627,28 +1721,45 @@ async function testConnection(row, modelName = "") {
   testingProviderId.value = providerId;
   testingModelName.value = normalizedModelName;
   try {
-    const response = await api.post(
-      `/llm/providers/${encodeURIComponent(providerId)}/test`,
-      {
-        model_name: normalizedModelName,
-      },
-    );
-    const result = response.result || {};
-    storeConnectionResult(providerId, result, normalizedModelName);
-    if (response.status === "ok" && result.reachable) {
+    if (!hasNativeDesktopBridge()) {
+      throw new Error("当前环境不支持本地供应商测试，请在桌面应用中操作");
+    }
+    const result = await testNativeProviderModel({
+      providerType: row?.provider_type,
+      baseUrl: row?.base_url,
+      apiKey: row?.api_key,
+      modelName: normalizedModelName || getPrimaryTestModel(row),
+      modelType: getProviderTestModelType(row, normalizedModelName),
+      extraHeaders: row?.extra_headers || {},
+    });
+    const normalizedResult = {
+      ...result,
+      model_type: result?.modelType || getProviderTestModelType(row, normalizedModelName),
+      request_urls: result?.requestUrl ? [result.requestUrl] : [],
+      message: result?.httpStatus
+        ? `${result.message || "模型接口连接测试失败"}（HTTP ${result.httpStatus}）`
+        : result?.message,
+      tested_at: new Date().toISOString(),
+    };
+    storeConnectionResult(providerId, normalizedResult, normalizedModelName);
+    if (normalizedResult.reachable) {
       ElMessage.success("模型真实能力测试成功，结果已展示");
     } else {
-      showConnectionTestFailure(result, result.message);
+      showConnectionTestFailure(normalizedResult, normalizedResult.message);
     }
   } catch (e) {
     const failedResult = {
       reachable: false,
       model_tested: normalizedModelName,
-      message: e.detail || "连接失败",
+      request_urls: e.requestUrl ? [e.requestUrl] : [],
+      message: e.detail || e.message || "连接失败",
       tested_at: new Date().toISOString(),
     };
     storeConnectionResult(providerId, failedResult, normalizedModelName);
-    showConnectionTestFailure(failedResult, e.detail || "模型接口连接测试失败");
+    showConnectionTestFailure(
+      failedResult,
+      e.detail || e.message || "模型接口连接测试失败",
+    );
   } finally {
     testingProviderId.value = "";
     testingModelName.value = "";
@@ -1914,6 +2025,13 @@ onBeforeUnmount(() => {
 
 .provider-interface-help__warning {
   color: #b45309;
+}
+
+.api-key-help {
+  margin-top: 4px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .model-config-header {

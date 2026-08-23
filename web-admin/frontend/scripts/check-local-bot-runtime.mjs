@@ -18,13 +18,16 @@ const botFeishu = read("src-tauri/src/bot/feishu.rs");
 const liuagentDefinitions = read("src-tauri/src/liuagent_core/definitions.rs");
 const liuagentRuntime = read("src-tauri/src/liuagent_core/runtime.rs");
 const liuagentMod = read("src-tauri/src/liuagent_core/mod.rs");
+const liuagentPaths = read("src-tauri/src/liuagent_core/paths.rs");
 const liuagentProjectTools = read("src-tauri/src/liuagent_core/tools/projects.rs");
 const botFeishuSdkWorker = read("src-tauri/bot_workers/feishu_sdk_listener.py");
+const botFeishuSdkRequirements = read("src-tauri/bot_workers/requirements.txt");
 const tauriConfig = read("src-tauri/tauri.conf.json");
 const bridge = read("src/utils/native-desktop-bridge.js");
 const projectChat = read("src/views/projects/ProjectChat.vue");
 const botConnectorPage = read("src/views/system/SystemBotConnectors.vue");
 const botConnectorModule = read("src/components/system/BotPlatformConnectorModule.vue");
+const localModelRuntime = read("src/services/local-model-runtime.js");
 const chatStorage = read("src/modules/project-chat/services/projectChatStorage.js");
 const shouldHandleEventMatch = botFeishu.match(
   /fn should_handle_event\([^)]*\) -> bool \{[\s\S]*?\n\}/,
@@ -36,9 +39,15 @@ assert.ok(
 const shouldHandleEventSource = shouldHandleEventMatch[0];
 
 assert.match(
+  liuagentPaths,
+  /pub const DESKTOP_RUNTIME_DIR_NAME: &str = "desktop-agent-runtime";[\s\S]*?pub fn desktop_runtime_root[\s\S]*?\.join\("\.ai-employee"\)[\s\S]*?\.join\(DESKTOP_RUNTIME_DIR_NAME\)/,
+  "desktop runtime root must be ~/.ai-employee/desktop-agent-runtime",
+);
+
+assert.match(
   tauriMain,
-  /\.join\("agent-runtime-v2"\)[\s\S]*?\.join\("bots"\)[\s\S]*?\.join\("connectors\.json"\)/,
-  "global bot connector config must live in ~/.ai-employee/agent-runtime-v2/bots/connectors.json",
+  /fn global_bot_connector_config_path\(\) -> Result<PathBuf, String> \{[\s\S]*?desktop_runtime_root\(&home\)[\s\S]*?\.join\("bots"\)[\s\S]*?\.join\("connectors\.json"\)/,
+  "global bot connector config must live under the desktop runtime bots directory",
 );
 
 assert.match(
@@ -49,13 +58,31 @@ assert.match(
 
 assert.match(
   appVue,
-  /\/llm\/providers\/\$\{encodeURIComponent\(normalizedProviderId\)\}\/desktop-runtime[\s\S]*syncLocalBotListeners[\s\S]*readGlobalBotConnectorConfigFile[\s\S]*startNativeFeishuLocalBotListener/s,
-  "desktop app shell must refresh local Feishu listeners with provider-derived model runtime without requiring ProjectChat to mount",
+  /buildLocalModelRuntime[\s\S]*syncLocalBotListeners[\s\S]*readGlobalBotConnectorConfigFile[\s\S]*startNativeFeishuLocalBotListener/s,
+  "desktop app shell must refresh local Feishu listeners from local model configuration without requiring ProjectChat to mount",
+);
+
+assert.match(
+  appVue,
+  /function buildConnectorModelRuntime[\s\S]*if \(providerId\) \{[\s\S]*return buildLocalModelRuntime\(providerId, modelName\)[\s\S]*const existing = normalizeLocalModelRuntime/s,
+  "desktop bot listener sync must rebuild runtime from the selected provider/model before falling back to any stored runtime snapshot",
+);
+
+assert.match(
+  appVue,
+  /local-bot-runtime-diagnostic/,
+  "desktop app shell must emit a local diagnostic when a bot has no usable model runtime",
+);
+
+assert.doesNotMatch(
+  appVue,
+  /\/llm\/providers\/\$\{encodeURIComponent\(normalizedProviderId\)\}\/desktop-runtime/,
+  "desktop bot listener sync must not call the backend desktop-runtime endpoint",
 );
 
 assert.match(
   chatStorage,
-  /export function globalBotConnectorConfigPathLabel\(\) \{[\s\S]*?~\/\.ai-employee\/agent-runtime-v2\/bots\/connectors\.json/,
+  /export function globalBotConnectorConfigPathLabel\(\) \{[\s\S]*?~\/\.ai-employee\/desktop-agent-runtime\/bots\/connectors\.json/,
   "frontend storage label must point to the local global bot connector config file",
 );
 
@@ -67,14 +94,50 @@ assert.match(
 
 assert.match(
   botConnectorPage,
-  /fetchDesktopModelRuntime[\s\S]*\/llm\/providers\/\$\{encodeURIComponent\(normalizedProviderId\)\}\/desktop-runtime[\s\S]*model_runtime/s,
-  "bot connector page must persist a desktop model runtime snapshot with the local connector config",
+  /writeGlobalBotConnectorConfigFile[\s\S]*model_runtime/s,
+  "bot connector page must derive an optional model runtime snapshot from local provider configuration",
+);
+
+assert.match(
+  botConnectorPage,
+  /buildLocalModelRuntime[\s\S]*normalizeLocalModelRuntime/s,
+  "bot connector page must derive an optional model runtime snapshot from local provider configuration",
+);
+
+assert.match(
+  botConnectorPage,
+  /catch \{[\s\S]*model_runtime: null/s,
+  "bot connector save must not preserve a stale model_runtime snapshot when provider/model runtime rebuilding fails",
+);
+
+assert.doesNotMatch(
+  botConnectorPage,
+  /\/llm\/providers\/\$\{encodeURIComponent\(normalizedProviderId\)\}\/desktop-runtime|import api from/,
+  "bot connector page save and scan flow must not call backend model runtime APIs",
 );
 
 assert.doesNotMatch(
   botConnectorPage,
   /\/api\/bot-connectors|api\.(?:get|post|patch|delete)\([^)]*bot-connectors/,
   "bot connector page must not use backend bot connector APIs as the config source",
+);
+
+assert.match(
+  botConnectorModule,
+  /readLocalModelProviders[\s\S]*fetchBotChatModelOptions[\s\S]*mergeBotChatProviders\(readLocalModelProviders\(\)\)/s,
+  "bot connector model selector must read local model providers",
+);
+
+assert.doesNotMatch(
+  botConnectorModule,
+  /api\.get\(["']\/llm\/providers|import api from/,
+  "bot connector module must not call the backend provider list API",
+);
+
+assert.match(
+  localModelRuntime,
+  /export function normalizeLocalModelRuntime[\s\S]*export function buildLocalModelRuntime/,
+  "local model runtime service must normalize persisted runtime snapshots",
 );
 
 assert.match(
@@ -91,8 +154,14 @@ assert.match(
 
 assert.match(
   botRuntime,
-  /system_prompt: None,[\s\S]*?system_prompt_parts,/,
-  "bot runtime must not set a built-in system_prompt",
+  /let mut system_prompt_parts = Vec::new\(\);[\s\S]*?system_prompt_parts,/,
+  "bot runtime must use explicit prompt parts",
+);
+
+assert.doesNotMatch(
+  botRuntime,
+  /(?:^|\n)\s*system_prompt:\s*(?:Some\(|None|")/m,
+  "bot runtime must not set a built-in system_prompt field",
 );
 
 assert.match(
@@ -138,6 +207,72 @@ assert.match(
 );
 
 assert.match(
+  tauriConfig,
+  /"bot_workers\/requirements\.txt"/,
+  "Tauri bundle resources must include the Feishu Python SDK requirements",
+);
+
+assert.match(
+  botFeishuSdkRequirements,
+  /^lark-oapi>=1\.4\.0,<2\s*$/m,
+  "Feishu Python SDK requirements must declare a compatible lark-oapi package",
+);
+
+assert.match(
+  botFeishuSdkWorker,
+  /def normalize_message_event/,
+  "Feishu Python SDK worker must normalize received message events",
+);
+
+assert.match(
+  botFeishuSdkWorker,
+  /"message_id", "messageId"/,
+  "Feishu Python SDK worker must normalize snake_case and camelCase message IDs",
+);
+
+assert.match(
+  botFeishuSdkWorker,
+  /"chat_id", "chatId"/,
+  "Feishu Python SDK worker must normalize snake_case and camelCase chat IDs",
+);
+
+assert.match(
+  botFeishuSdkWorker,
+  /"chat_type", "chatType"/,
+  "Feishu Python SDK worker must normalize snake_case and camelCase chat types",
+);
+
+assert.match(
+  botFeishuSdkWorker,
+  /"sender_id", "senderId"/,
+  "Feishu Python SDK worker must normalize snake_case and camelCase sender IDs",
+);
+
+assert.match(
+  botFeishuSdkWorker,
+  /def event_shape_diagnostic/,
+  "Feishu Python SDK worker must diagnose empty event shapes",
+);
+
+assert.match(
+  botFeishuSdkWorker,
+  /"root_keys"[\s\S]*"event_keys"[\s\S]*"message_keys"/s,
+  "Feishu event-shape diagnostics must identify only field names",
+);
+
+assert.match(
+  botFeishuSdkWorker,
+  /\[feishu-sdk\] event-shape \{diagnostic\}/,
+  "Feishu Python SDK worker must emit shape diagnostics for empty events",
+);
+
+assert.match(
+  botFeishuSdkWorker,
+  /"mentions": plain\([\s\S]*"mentions"[\s\S]*"message_mentions"/s,
+  "Feishu Python SDK worker must preserve message mentions for ignored-message diagnostics",
+);
+
+assert.match(
   botFeishu,
   /const FEISHU_SDK_WORKER_RELATIVE_PATH: &str = "bot_workers\/feishu_sdk_listener\.py";[\s\S]*?Command::new\(python\)[\s\S]*?\.arg\(worker_path\)[\s\S]*?AI_EMPLOYEE_FEISHU_APP_SECRET/,
   "Feishu listener must start the local Python SDK worker with connector credentials from local config",
@@ -163,7 +298,19 @@ assert.match(
 
 assert.match(
   botFeishu,
-  /agent-runtime-v2[\s\S]*bots[\s\S]*conversations[\s\S]*StoredBotConversation/s,
+  /struct StoredBotConversation/,
+  "Feishu bot must persist structured conversation history",
+);
+
+assert.match(
+  botFeishu,
+  /fn global_bot_runtime_dir\(\) -> Result<PathBuf, String> \{[\s\S]*?desktop_runtime_root\(&home\)\.join\("bots"\)/s,
+  "Feishu bot runtime files must use the desktop runtime bots directory",
+);
+
+assert.match(
+  botFeishu,
+  /fn global_bot_conversation_dir\(\) -> Result<PathBuf, String> \{[\s\S]*?global_bot_runtime_dir\(\)\?\.join\("conversations"\)/s,
   "Feishu bot conversation history must live in the local global bot runtime store",
 );
 
@@ -212,19 +359,19 @@ assert.match(
 assert.match(
   shouldHandleEventSource,
   /chat_type == "p2p"/,
-  "Feishu listener must only handle p2p/private messages",
+  "Feishu listener must always handle p2p/private messages",
 );
 
-assert.doesNotMatch(
+assert.match(
   shouldHandleEventSource,
-  /event_mentions_bot|event_text_matches_connector/,
-  "Feishu listener must not allow group messages through mentions or connector-name matching",
+  /event_mentions_bot[\s\S]*event_text_matches_connector/,
+  "Feishu listener must allow group messages when mentioned or name-matched",
 );
 
 assert.match(
   botFeishu,
-  /飞书消息未进入机器人：仅处理私聊；chatType=\{\} mentions=\{\} nameMatched=\{\}/,
-  "Feishu ignored group messages must log non-sensitive trigger diagnostics",
+  /飞书消息未命中机器人触发条件：chatType=\{\} mentions=\{\} nameMatched=\{\}/,
+  "Feishu ignored messages must log non-sensitive trigger diagnostics",
 );
 
 assert.match(
@@ -237,6 +384,12 @@ assert.match(
   botFeishu,
   /listener-contexts\.json[\s\S]*persist_listener_context[\s\S]*start_persisted_local_listeners/s,
   "Feishu listener context must be persisted locally so enabled bots can restart with the desktop app",
+);
+
+assert.match(
+  botFeishu,
+  /model_runtime: connector_model_runtime\(connector\)\.or\(context\.model_runtime\)/,
+  "Feishu persisted listener startup must prefer the latest connector model runtime over the previous listener context snapshot",
 );
 
 assert.match(
@@ -265,8 +418,14 @@ assert.doesNotMatch(
 
 assert.match(
   botFeishu,
-  /const DESKTOP_BOT_GLOBAL_PROJECT_ID: &str = "desktop-bot-global";[\s\S]*bot_chat_session_id[\s\S]*project_id: DESKTOP_BOT_GLOBAL_PROJECT_ID\.to_string\(\)/s,
-  "Feishu bot runtime must use a desktop-global virtual project and per-chat bot sessions instead of binding to ProjectChat project state",
+  /const DESKTOP_BOT_GLOBAL_PROJECT_ID: &str = "desktop-bot-global";/,
+  "Feishu bot runtime must define a desktop-global virtual project",
+);
+
+assert.match(
+  botFeishu,
+  /let chat_session_id = bot_chat_session_id[\s\S]*?unwrap_or\(DESKTOP_BOT_GLOBAL_PROJECT_ID\)[\s\S]*?project_id: bound_project_id\.clone\(\)/s,
+  "Feishu bot runtime must use per-chat sessions and fall back to the desktop-global virtual project",
 );
 
 assert.match(
@@ -331,7 +490,7 @@ assert.match(
 
 assert.match(
   botFeishuSdkWorker,
-  /"mentions": plain\(message\.get\("mentions"\) or event\.get\("mentions"\) or \[\]\)/,
+  /"mentions": plain\(\s*first_field\(\(message, event, raw\), "mentions", "message_mentions"\) or \[\]\s*\)/s,
   "Feishu Python SDK worker must preserve message mentions for ignored-message diagnostics",
 );
 
@@ -366,13 +525,13 @@ assert.match(
 );
 
 assert.match(
-  projectChat,
-  /startNativeFeishuLocalBotListener\(\{[\s\S]*modelRuntime[\s\S]*mcpConfig: globalMcpConfig\.value[\s\S]*backendContext/s,
-  "ProjectChat must pass model, global MCP, and backend context into the persistent Tauri Feishu listener",
+  appVue,
+  /startNativeFeishuLocalBotListener\(\{[\s\S]*modelRuntime[\s\S]*mcpConfig[\s\S]*permissionDecision: null/s,
+  "App shell must pass refreshed model runtime and global MCP config into the persistent Tauri Feishu listener",
 );
 
 assert.doesNotMatch(
-  projectChat,
+  `${appVue}\n${projectChat}`,
   /startNativeFeishuLocalBotListener\(\{[^}]*projectId|startNativeFeishuLocalBotListener\(\{[^}]*chatSessionId/s,
   "Feishu bot listener startup must not bind to the current project or current ProjectChat session",
 );

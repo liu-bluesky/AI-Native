@@ -342,7 +342,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "generate_image",
-            description: "使用已配置的图片模型从零创建新图片。只有用户要求生成、绘制不依赖现有图片的新图片时调用；只接受文字提示词。凡是基于现有图片生成或修改，都必须调用 edit_image，禁止改用 run_command、Python、Pillow 或 OpenCV。",
+            description: "调用统一的图片生成工具协议，由当前配置的供应商适配器连接图片模型，从零创建新图片。只有用户要求生成、绘制不依赖现有图片的新图片时调用；只接受文字提示词。凡是基于现有图片生成或修改，都必须调用 edit_image，禁止改用 run_command、Python、Pillow 或 OpenCV。供应商不支持该能力时必须如实返回失败，不得伪造结果或静默切换成本地脚本。",
             action: "media.image.generate",
             risk: "low",
             requires_approval: false,
@@ -357,7 +357,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "edit_image",
-            description: "使用已配置的图片模型编辑一张或多张现有图片。必须在 input_asset_ids 中明确选择附件上下文给出的图片资产 ID；只编辑被选择的图片。工具失败时直接返回失败，禁止改用 run_command、Python、Pillow 或 OpenCV 静默替代。",
+            description: "调用统一的图片编辑工具协议，由当前配置的供应商适配器连接图片模型，编辑一张或多张现有图片；该工具同时覆盖图改图和基于参考图生成。必须在 input_asset_ids 中明确选择附件上下文给出的图片资产 ID；只编辑被选择的图片。供应商不支持图片编辑时直接返回实际失败，禁止改用生成接口、run_command、Python、Pillow 或 OpenCV 静默替代。",
             action: "media.image.edit",
             risk: "low",
             requires_approval: false,
@@ -378,7 +378,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "generate_video",
-            description: "使用已配置的视频生成模型创建视频。只有用户明确要求生成视频或动画时调用；用户上传的图片会自动作为参考素材传给该工具。",
+            description: "调用统一的视频生成工具协议，由当前配置的供应商适配器连接视频模型创建视频。只有用户明确要求生成视频或动画时调用；用户上传的图片会自动作为参考素材传给该工具。视频编辑、重混或延长能力只有在对应工具和供应商适配器明确提供时才能调用，不得把视频编辑请求伪装成重新生成。",
             action: "media.video.generate",
             risk: "low",
             requires_approval: false,
@@ -393,7 +393,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "generate_audio",
-            description: "使用已配置的语音合成模型把文本生成音频。只有用户明确要求朗读、配音或文字转语音时调用。",
+            description: "调用统一的文本转语音工具协议，由当前配置的供应商适配器连接语音模型把文本生成音频。只有用户明确要求朗读、配音或文字转语音时调用；该工具不代表所有音乐、音效或通用音频生成能力。",
             action: "media.audio.generate",
             risk: "low",
             requires_approval: false,
@@ -411,7 +411,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "transcribe_audio",
-            description: "使用已配置的音频转写模型把本轮上传的音频转成文字。音频内容由运行时自动注入，不要要求用户提供文件路径或 Base64。",
+            description: "调用统一的音频转写工具协议，由当前配置的供应商适配器连接转写模型把本轮上传的音频转成文字。音频内容由运行时自动注入，不要要求用户提供文件路径或 Base64；语言、说话人识别和翻译等扩展能力以供应商支持情况为准。",
             action: "media.audio.transcribe",
             risk: "low",
             requires_approval: false,

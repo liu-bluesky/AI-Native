@@ -1,21 +1,13 @@
-import api from "@/utils/api.js";
+import { readLocalEntities } from "@/services/local-project-repository.js";
 
 export async function fetchEmployeeDraftCatalog() {
-  const [skillsRes, rulesRes] = await Promise.all([
-    api.get("/skills"),
-    api.get("/rules"),
-  ]);
   return {
-    skills: Array.isArray(skillsRes?.skills) ? skillsRes.skills : [],
-    rules: Array.isArray(rulesRes?.rules) ? rulesRes.rules : [],
+    skills: readLocalEntities("skills"),
+    rules: readLocalEntities("rules"),
   };
 }
 
-export function createEmployeeFromDraft(payload = {}) {
-  // 智能体草稿创建会触发技能/规则补齐，页面负责提交前的表单和匹配状态。
-  return api.post("/employees/create-from-draft", payload);
-}
-
 export function generateEmployeeDraft(payload = {}) {
-  return api.post("/employees/generate-draft", payload);
+  void payload;
+  throw new Error("本地模式未安装智能体草稿生成器，请在项目对话中使用本机 AI Runtime 生成草稿");
 }

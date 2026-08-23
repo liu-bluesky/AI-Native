@@ -19,14 +19,6 @@
           >
             新建项目
           </el-button>
-          <el-button
-            v-if="isLocalProjectMode()"
-            plain
-            :loading="restoringHistoricalProjects"
-            @click="restoreHistoricalProjects"
-          >
-            恢复历史项目
-          </el-button>
           <el-button plain @click="handleSearch">刷新列表</el-button>
         </div>
       </template>
@@ -372,7 +364,6 @@ import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ProjectAppHeader from "@/components/project-workspace/ProjectAppHeader.vue";
 import ProjectAppSection from "@/components/project-workspace/ProjectAppSection.vue";
-import api from "@/utils/api.js";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import { hasPermission } from "@/utils/permissions.js";
 import {
@@ -381,7 +372,6 @@ import {
   readLocalProjects,
   removeLocalProject,
   upsertLocalProject,
-  writeLocalProjects,
 } from "@/services/local-project-repository.js";
 import {
   pickWorkspaceDirectory as openWorkspaceDirectoryPicker,
@@ -390,12 +380,10 @@ import {
 } from "@/utils/workspace-picker.js";
 
 const PROJECT_CREATED_EVENT = "project-created";
-const LOCAL_PROJECTS_MIGRATION_KEY = "local_projects_migration_v1";
 const router = useRouter();
 const loading = ref(false);
 const creating = ref(false);
 const updating = ref(false);
-const restoringHistoricalProjects = ref(false);
 const projects = ref([]);
 const filters = ref({
   name: "",
@@ -527,86 +515,8 @@ function getOverflowProjectActions(project) {
   return getProjectActions(project).slice(3);
 }
 
-function buildProjectQueryParams() {
-  return {
-    page: currentPage.value,
-    page_size: pageSize.value,
-    name: String(filters.value.name || "").trim(),
-    created_by: String(filters.value.createdBy || "").trim(),
-  };
-}
-
 function createLocalProjectId() {
   return `local-project-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function normalizeProjectList(items) {
-  return (items || []).map((item) => ({
-    ...item,
-    type: normalizeProjectType(item.type),
-  }));
-}
-
-function mergeProjectsById(...projectLists) {
-  const byId = new Map();
-  projectLists.flat().forEach((project) => {
-    if (!project?.id) return;
-    byId.set(String(project.id), project);
-  });
-  return [...byId.values()];
-}
-
-async function restoreHistoricalProjects() {
-  if (!isLocalProjectMode() || restoringHistoricalProjects.value) return;
-
-  restoringHistoricalProjects.value = true;
-  try {
-    const pageSize = 100;
-    const restoredProjects = [];
-    let page = 1;
-    let total = null;
-
-    do {
-      const data = await api.get("/projects", {
-        params: { page, page_size: pageSize },
-      });
-      const pageProjects = normalizeProjectList(data?.projects || []);
-      restoredProjects.push(...pageProjects);
-      const reportedTotal = Number(data?.pagination?.total ?? data?.total);
-      total = Number.isFinite(reportedTotal) && reportedTotal >= 0
-        ? reportedTotal
-        : total;
-      if (!pageProjects.length || pageProjects.length < pageSize) break;
-      page += 1;
-    } while (total === null || restoredProjects.length < total);
-
-    if (!restoredProjects.length) {
-      ElMessage.info("没有可恢复的历史项目");
-      return;
-    }
-
-    const localProjects = readLocalProjects();
-    const mergedProjects = mergeProjectsById(restoredProjects, localProjects);
-    writeLocalProjects(mergedProjects);
-    currentPage.value = 1;
-    await fetchProjects();
-    ElMessage.success(`已恢复 ${restoredProjects.length} 个历史项目到本机`);
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "恢复历史项目失败");
-  } finally {
-    restoringHistoricalProjects.value = false;
-  }
-}
-
-async function ensureLocalProjectsImported() {
-  if (!isLocalProjectMode() || restoringHistoricalProjects.value) return false;
-  if (readLocalProjects().length) return false;
-  if (localStorage.getItem(LOCAL_PROJECTS_MIGRATION_KEY) === "completed") return false;
-
-  await restoreHistoricalProjects();
-  const imported = readLocalProjects().length > 0;
-  if (imported) localStorage.setItem(LOCAL_PROJECTS_MIGRATION_KEY, "completed");
-  return imported;
 }
 
 function handleSearch() {
@@ -785,9 +695,8 @@ async function updateProject() {
   }
   updating.value = true;
   try {
-    if (isLocalProjectMode()) {
-      const updatedProject = {
-        ...currentProject.value,
+    const updatedProject = {
+        ...currentProject,
         id: editForm.value.id,
         name: editForm.value.name,
         description: editForm.value.description,
@@ -797,24 +706,9 @@ async function updateProject() {
         ai_entry_file: editForm.value.ai_entry_file,
         mcp_enabled: !!editForm.value.mcp_enabled,
         feedback_upgrade_enabled: !!editForm.value.feedback_upgrade_enabled,
-      };
-      upsertLocalProject(updatedProject);
-      ElMessage.success("本地项目已更新");
-      showEditDialog.value = false;
-      await fetchProjects();
-      return;
-    }
-    await api.put(`/projects/${editForm.value.id}`, {
-      name: editForm.value.name,
-      description: editForm.value.description,
-      type: normalizeProjectType(editForm.value.type),
-      mcp_instruction: editForm.value.mcp_instruction,
-      workspace_path: editForm.value.workspace_path,
-      ai_entry_file: editForm.value.ai_entry_file,
-      mcp_enabled: editForm.value.mcp_enabled,
-      feedback_upgrade_enabled: editForm.value.feedback_upgrade_enabled,
-    });
-    ElMessage.success("项目已更新");
+    };
+    upsertLocalProject(updatedProject);
+    ElMessage.success("本地项目已更新");
     showEditDialog.value = false;
     await fetchProjects();
   } catch (err) {
@@ -827,49 +721,21 @@ async function updateProject() {
 async function fetchProjects(options = {}) {
   const allowPageAdjust = options.allowPageAdjust !== false;
   loading.value = true;
-  if (isLocalProjectMode()) {
-    if (!options.skipAutoImport && !readLocalProjects().length) {
-      await ensureLocalProjectsImported();
-    }
-    const cachedProjects = filterLocalProjects(readLocalProjects(), filters.value);
-    const start = (currentPage.value - 1) * pageSize.value;
-    projects.value = cachedProjects.slice(start, start + pageSize.value);
-    paginationTotal.value = cachedProjects.length;
-    loading.value = false;
+  const cachedProjects = filterLocalProjects(readLocalProjects(), filters.value);
+  const start = (currentPage.value - 1) * pageSize.value;
+  projects.value = cachedProjects.slice(start, start + pageSize.value);
+  paginationTotal.value = cachedProjects.length;
+  if (
+    allowPageAdjust &&
+    cachedProjects.length > 0 &&
+    !projects.value.length &&
+    currentPage.value > 1
+  ) {
+    currentPage.value = Math.max(1, Math.ceil(cachedProjects.length / pageSize.value));
+    await fetchProjects({ allowPageAdjust: false });
     return;
   }
-  const cachedProjects = filterLocalProjects(readLocalProjects(), filters.value);
-  try {
-    const data = await api.get("/projects", {
-      params: buildProjectQueryParams(),
-    });
-    const nextProjects = normalizeProjectList(data.projects || []);
-    const nextTotal = Math.max(
-      0,
-      Number(data?.pagination?.total ?? data?.total ?? nextProjects.length),
-    );
-    paginationTotal.value = nextTotal;
-    if (
-      allowPageAdjust &&
-      nextTotal > 0 &&
-      !nextProjects.length &&
-      currentPage.value > 1
-    ) {
-      currentPage.value = Math.max(1, Math.ceil(nextTotal / pageSize.value));
-      await fetchProjects({ allowPageAdjust: false });
-      return;
-    }
-    projects.value = nextProjects;
-    writeLocalProjects(mergeProjectsById(readLocalProjects(), nextProjects));
-  } catch {
-    if (!cachedProjects.length) {
-      projects.value = [];
-      paginationTotal.value = 0;
-      ElMessage.error("加载项目失败");
-    }
-  } finally {
-    loading.value = false;
-  }
+  loading.value = false;
 }
 
 async function createProject() {
@@ -880,8 +746,7 @@ async function createProject() {
   }
   creating.value = true;
   try {
-    if (isLocalProjectMode()) {
-      const localProject = {
+    const localProject = {
         id: createLocalProjectId(),
         name,
         description: createForm.value.description,
@@ -893,41 +758,10 @@ async function createProject() {
         feedback_upgrade_enabled: !!createForm.value.feedback_upgrade_enabled,
         created_by: "local",
         can_manage: true,
-      };
-      upsertLocalProject(localProject);
-      localStorage.setItem("project_id", localProject.id);
-      ElMessage.success("本地项目创建成功");
-      showCreateDialog.value = false;
-      currentPage.value = 1;
-      await fetchProjects();
-      return;
-    }
-    const data = await api.post("/projects", {
-      name,
-      description: createForm.value.description,
-      type: normalizeProjectType(createForm.value.type),
-      mcp_instruction: createForm.value.mcp_instruction,
-      workspace_path: createForm.value.workspace_path,
-      ai_entry_file: createForm.value.ai_entry_file,
-      mcp_enabled: !!createForm.value.mcp_enabled,
-      feedback_upgrade_enabled: !!createForm.value.feedback_upgrade_enabled,
-    });
-    const createdProjectId = String(data?.project?.id || "").trim();
-    if (data?.project) upsertLocalProject(data.project);
-    if (createdProjectId) {
-      localStorage.setItem("project_id", createdProjectId);
-      if (
-        typeof window !== "undefined" &&
-        typeof window.dispatchEvent === "function"
-      ) {
-        window.dispatchEvent(
-          new CustomEvent(PROJECT_CREATED_EVENT, {
-            detail: { projectId: createdProjectId },
-          }),
-        );
-      }
-    }
-    ElMessage.success("项目创建成功");
+    };
+    upsertLocalProject(localProject);
+    localStorage.setItem("project_id", localProject.id);
+    ElMessage.success("本地项目创建成功");
     showCreateDialog.value = false;
     currentPage.value = 1;
     await fetchProjects();
@@ -944,14 +778,8 @@ async function patchProjectFlags(row, payload, successMessage) {
     return;
   }
   try {
-    if (isLocalProjectMode()) {
-      upsertLocalProject({ ...row, ...payload });
-      ElMessage.success(successMessage);
-      await fetchProjects();
-      return;
-    }
-    await api.patch(`/projects/${row.id}`, payload);
     ElMessage.success(successMessage);
+    upsertLocalProject({ ...row, ...payload });
     await fetchProjects();
   } catch {
     ElMessage.error("更新失败");
@@ -967,15 +795,8 @@ async function removeProject(row) {
     type: "warning",
   });
   try {
-    if (isLocalProjectMode()) {
-      removeLocalProject(row.id);
-      ElMessage.success("已删除本地项目");
-      await fetchProjects();
-      return;
-    }
-    await api.delete(`/projects/${row.id}`);
     removeLocalProject(row.id);
-    ElMessage.success("已删除项目");
+    ElMessage.success("已删除本地项目");
     await fetchProjects();
   } catch {
     ElMessage.error("删除失败");

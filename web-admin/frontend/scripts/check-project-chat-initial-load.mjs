@@ -12,13 +12,13 @@ const source = readFileSync(projectChatPath, "utf8");
 
 assert.match(
   source,
-  /const runtimeExternalToolsRefreshingProjectIds = new Set\(\);/,
-  "runtime external tool refreshes must track in-flight projects",
+  /const runtimeExternalTools = ref\(\[\]\);/,
+  "project chat must keep runtime external tools in local reactive state",
 );
-assert.match(
+assert.doesNotMatch(
   source,
-  /if \(runtimeExternalToolsRefreshingProjectIds\.has\(normalizedProjectId\)\) return;/,
-  "same-project runtime external tool refreshes must be deduplicated",
+  /runtimeExternalToolsRefreshingProjectIds/,
+  "project chat must not retain the removed remote runtime tool refresh queue",
 );
 assert.match(
   source,

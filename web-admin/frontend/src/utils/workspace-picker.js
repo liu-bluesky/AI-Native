@@ -1,5 +1,4 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
-import api from '@/utils/api.js'
 import { pickNativeWorkspaceDirectory } from '@/utils/native-desktop-bridge.js'
 
 function normalizePathLike(value = '') {
@@ -41,22 +40,6 @@ export async function pickWorkspaceDirectory(currentPath = '', options = {}) {
     })
     if (nativePicked) return nativePicked
   } catch (err) {
-    ElMessage.warning(err?.message || '桌面端目录选择器不可用，改用服务端选择器')
-  }
-
-  try {
-    const data = await api.post('/projects/workspace-directory/pick', {
-      initial_path: initialPath,
-      title,
-    })
-    if (data?.cancelled) {
-      return null
-    }
-    const picked = String(data?.path || '').trim()
-    if (picked) {
-      return picked
-    }
-  } catch (err) {
     const fallbackMessage = manualFallback ? '系统目录选择器不可用，改为手动填写路径' : '系统目录选择器不可用'
     ElMessage.warning(err?.detail || err?.message || fallbackMessage)
   }
@@ -89,22 +72,6 @@ export async function pickWorkspaceFile(currentPath = '', options = {}) {
   const title = String(options?.title || '选择文件').trim() || '选择文件'
   const fallbackPlaceholder =
     String(options?.placeholder || '.ai/ENTRY.md').trim() || '.ai/ENTRY.md'
-
-  try {
-    const data = await api.post('/projects/workspace-file/pick', {
-      initial_path: initialPath,
-      title,
-    })
-    if (data?.cancelled) {
-      return null
-    }
-    const picked = String(data?.path || '').trim()
-    if (picked) {
-      return picked
-    }
-  } catch (err) {
-    ElMessage.warning(err?.detail || err?.message || '系统文件选择器不可用，改为手动填写路径')
-  }
 
   try {
     const { value } = await ElMessageBox.prompt(

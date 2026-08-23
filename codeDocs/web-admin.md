@@ -88,7 +88,6 @@ web-admin/api/
 | `personas.py` | 人设管理。 |
 | `evolution.py` | 进化报告、候选规则、反馈演进。 |
 | `sync.py` | 同步状态。 |
-| `usage.py` | API Key 与使用记录。 |
 | `feedback_upgrade.py` | 反馈驱动规则升级。 |
 | `users.py` | 用户。 |
 | `roles.py` | 角色。 |
@@ -241,7 +240,6 @@ web-admin/frontend/
 - 记忆与同步：`/memory/:id`、`/sync/:id`
 - 反馈与进化：`/feedback/:id`、`/feedback/:id/batch-analyze`、`/evolution/:id`、`/review/:id`
 - LLM：`/llm/providers`
-- 使用记录：`/usage/keys`
 
 ### 重要前端模块
 

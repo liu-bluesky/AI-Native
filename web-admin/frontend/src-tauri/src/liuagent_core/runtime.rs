@@ -28,7 +28,9 @@ use super::adapters::protocol::{
 };
 use super::audit::build_tool_audit_logs;
 use super::definitions::builtin_tool_definitions;
-use super::paths::{desktop_runtime_root, ensure_desktop_runtime_migrated};
+use super::paths::{
+    desktop_runtime_root, ensure_desktop_runtime_migrated, normalize_local_backend_api_base_url,
+};
 use super::permission::{
     cached_session_grant_comment, is_full_access_decision, permission_request_id,
 };
@@ -4942,8 +4944,8 @@ fn run_agent_loop_with(
                 let backend_api_base_url = request
                     .backend_context
                     .as_ref()
-                    .map(|context| context.api_base_url.as_str())
-                    .unwrap_or("");
+                    .map(|context| normalize_local_backend_api_base_url(&context.api_base_url))
+                    .unwrap_or_default();
                 match request
                     .selected_mcp_tools
                     .iter()
@@ -5690,7 +5692,7 @@ fn tool_arguments_with_backend_context(
             if let Some(context) = backend_context {
                 object.insert(
                     "_backend_api_base_url".to_string(),
-                    json!(context.api_base_url.trim()),
+                    json!(normalize_local_backend_api_base_url(&context.api_base_url)),
                 );
                 object.insert("_backend_token".to_string(), json!(context.token.trim()));
             }
@@ -5726,7 +5728,7 @@ fn tool_arguments_with_backend_context(
         object.insert("project_id".to_string(), json!(project_id.trim()));
         object.insert(
             "_backend_api_base_url".to_string(),
-            json!(context.api_base_url.trim()),
+            json!(normalize_local_backend_api_base_url(&context.api_base_url)),
         );
         object.insert("_backend_token".to_string(), json!(context.token.trim()));
         object.insert(
@@ -5736,6 +5738,12 @@ fn tool_arguments_with_backend_context(
         object.insert(
             "_media_model_name".to_string(),
             json!(config.model_name.trim()),
+        );
+        object.insert("_media_base_url".to_string(), json!(config.base_url.trim()));
+        object.insert("_media_api_key".to_string(), json!(config.api_key.trim()));
+        object.insert(
+            "_media_extra_headers".to_string(),
+            config.extra_headers.clone(),
         );
         if let Some(resolution) = selected_image_resolution {
             match resolution {
@@ -5809,7 +5817,7 @@ fn tool_arguments_with_backend_context(
     }
     object.insert(
         "_backend_api_base_url".to_string(),
-        json!(context.api_base_url.trim()),
+        json!(normalize_local_backend_api_base_url(&context.api_base_url)),
     );
     object.insert("_backend_token".to_string(), json!(context.token.trim()));
     arguments
@@ -8899,9 +8907,7 @@ fn parse_flow_routing_profile(result: &ModelStepResult, fallback: &TaskProfile) 
         "execute" => TaskIntent::Execute,
         _ => TaskIntent::Answer,
     };
-    let requires_confirmation = value["requires_confirmation"]
-        .as_bool()
-        .unwrap_or(false);
+    let requires_confirmation = value["requires_confirmation"].as_bool().unwrap_or(false);
     let intent = if requires_confirmation {
         TaskIntent::Answer
     } else {
@@ -8978,7 +8984,10 @@ fn parse_flow_routing_profile(result: &ModelStepResult, fallback: &TaskProfile) 
                     .collect()
             })
             .unwrap_or_default(),
-        complexity: value["complexity"].as_str().unwrap_or("unknown").to_string(),
+        complexity: value["complexity"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string(),
         risk: value["risk"]
             .as_str()
             .map(str::to_string)
@@ -9336,7 +9345,12 @@ fn request_targets_configured_media_tool(request: &ModelStepRequest) -> bool {
     if message.is_empty() {
         return false;
     }
-    let has_tool = |name: &str| request.media_tools.iter().any(|tool| tool.name.trim() == name);
+    let has_tool = |name: &str| {
+        request
+            .media_tools
+            .iter()
+            .any(|tool| tool.name.trim() == name)
+    };
     (has_tool("generate_image")
         && [
             "生成图片",
@@ -9350,7 +9364,9 @@ fn request_targets_configured_media_tool(request: &ModelStepRequest) -> bool {
         .iter()
         .any(|keyword| message.contains(keyword)))
         || (has_tool("edit_image")
-            && ["编辑图片", "修改图片", "修图", "edit image"].iter().any(|keyword| message.contains(keyword)))
+            && ["编辑图片", "修改图片", "修图", "edit image"]
+                .iter()
+                .any(|keyword| message.contains(keyword)))
 }
 
 fn hydrate_mcp_tool_snapshot(request: &mut ModelStepRequest) {
@@ -9682,7 +9698,7 @@ fn build_attachment_prompt_context(attachments: &[LocalChatAttachment]) -> Strin
         String::new()
     } else {
         format!(
-            "附件上下文：\n{}\n\n图片生成与编辑规则：从零生成图片使用 generate_image；修改现有图片必须使用 edit_image，并在 input_asset_ids 中填写上方明确列出的图片资产 ID。不得用 run_command、Python、Pillow 或 OpenCV 替代图片编辑工具。",
+            "附件上下文：\n{}\n\n媒体工具规则：媒体工具使用统一协议，并由当前供应商适配器连接具体模型；不同供应商的能力和参数可能不同，工具失败时必须如实返回。从零生成图片使用 generate_image；修改现有图片必须使用 edit_image，并在 input_asset_ids 中填写上方明确列出的图片资产 ID。不得用生成接口、run_command、Python、Pillow 或 OpenCV 替代图片编辑工具。",
             blocks.join("\n\n")
         )
     }
@@ -9952,8 +9968,7 @@ fn tool_disabled_reason(
     ) && !has_capability("file_write")
     {
         return Some(
-            "当前流程未授予 file_write 能力；只有模型路由到 execute 才能修改文件"
-                .to_string(),
+            "当前流程未授予 file_write 能力；只有模型路由到 execute 才能修改文件".to_string(),
         );
     }
     match tool_name.trim() {
@@ -11610,9 +11625,9 @@ mod tests {
                 system_prompt_parts: Vec::new(),
                 temperature: None,
                 model_runtime: None,
-            ai_entry_file: None,
-            agent_directory: None,
-            attachments: Vec::new(),
+                ai_entry_file: None,
+                agent_directory: None,
+                attachments: Vec::new(),
                 media_tools: Vec::new(),
                 mcp_config: json!({}),
                 backend_context: None,
@@ -13766,9 +13781,9 @@ mod tests {
                 system_prompt_parts: Vec::new(),
                 temperature: None,
                 model_runtime: None,
-            ai_entry_file: None,
-            agent_directory: None,
-            attachments: Vec::new(),
+                ai_entry_file: None,
+                agent_directory: None,
+                attachments: Vec::new(),
                 media_tools: Vec::new(),
                 backend_context: None,
                 mcp_config: json!({}),
@@ -15496,6 +15511,35 @@ mod tests {
     }
 
     #[test]
+    fn legacy_local_backend_context_is_normalized_before_execution() {
+        let tool = PlannedLocalTool {
+            tool_call_id: "call_legacy_backend".to_string(),
+            name: "list_projects".to_string(),
+            arguments: json!({}),
+            summary: "list projects".to_string(),
+        };
+        let backend_context = LocalBackendContext {
+            api_base_url: "http://127.0.0.1:3000/api".to_string(),
+            token: "secret-token".to_string(),
+        };
+
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            "desktop-bot-global",
+            Some(&backend_context),
+            &json!({}),
+            &[],
+            &[],
+            tool.arguments.clone(),
+        );
+
+        assert_eq!(
+            execution_args["_backend_api_base_url"],
+            "http://127.0.0.1:8000/api"
+        );
+    }
+
+    #[test]
     fn deploy_options_backend_context_is_injected_only_for_execution() {
         let tool = PlannedLocalTool {
             tool_call_id: "call_deploy_options".to_string(),
@@ -15604,11 +15648,13 @@ mod tests {
                 name: "generate_image".to_string(),
                 provider_id: "provider-image".to_string(),
                 model_name: "image-model".to_string(),
+                ..Default::default()
             },
             LocalMediaToolConfig {
                 name: "edit_image".to_string(),
                 provider_id: "provider-image".to_string(),
                 model_name: "image-model".to_string(),
+                ..Default::default()
             },
         ];
         request.attachments = vec![LocalChatAttachment {
@@ -15662,6 +15708,7 @@ mod tests {
             name: "generate_image".to_string(),
             provider_id: "provider-image".to_string(),
             model_name: "image-model".to_string(),
+            ..Default::default()
         }];
         request.attachments = vec![
             LocalChatAttachment {
@@ -15722,6 +15769,7 @@ mod tests {
             name: "edit_image".to_string(),
             provider_id: "provider-image".to_string(),
             model_name: "image-model".to_string(),
+            ..Default::default()
         }];
         request.attachments = vec![LocalChatAttachment {
             attachment_id: Some("context-image".to_string()),
@@ -15769,6 +15817,7 @@ mod tests {
             name: "edit_image".to_string(),
             provider_id: "provider-image".to_string(),
             model_name: "image-model".to_string(),
+            ..Default::default()
         }];
 
         let definitions = tool_definitions_for_request(&request);
@@ -15787,6 +15836,7 @@ mod tests {
             name: "edit_image".to_string(),
             provider_id: "provider-image".to_string(),
             model_name: "image-model".to_string(),
+            ..Default::default()
         }];
         request.attachments = vec![LocalChatAttachment {
             attachment_id: Some("document-asset".to_string()),
@@ -15893,7 +15943,9 @@ mod tests {
 
         let model_request = build_model_request(&request, "查询项目成员");
 
-        assert!(model_request.mcp_config["mcpServers"].get("runtime").is_none());
+        assert!(model_request.mcp_config["mcpServers"]
+            .get("runtime")
+            .is_none());
         assert_eq!(
             model_request.mcp_config["mcpServers"]["local-mcp"]["url"],
             "http://127.0.0.1:9000/mcp"
@@ -15916,6 +15968,7 @@ mod tests {
             name: "generate_image".to_string(),
             provider_id: "image-provider".to_string(),
             model_name: "image-model".to_string(),
+            ..Default::default()
         }];
 
         hydrate_mcp_tool_snapshot(&mut request);
@@ -15923,7 +15976,6 @@ mod tests {
         assert!(request.selected_mcp_tools.is_empty());
         assert!(request.mcp_discovery_error.is_empty());
     }
-
 
     #[test]
     fn tool_observation_compacts_large_read_file_content_for_model() {
@@ -17042,6 +17094,7 @@ mod tests {
             name: "generate_image".to_string(),
             provider_id: "image-provider".to_string(),
             model_name: "image-model".to_string(),
+            ..Default::default()
         }];
         let model_request = build_model_request_with_history_and_task_profile(
             &request_with_tool,

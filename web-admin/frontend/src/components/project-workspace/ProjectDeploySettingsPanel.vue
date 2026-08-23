@@ -214,7 +214,9 @@
                       :loading="notifyOptionsLoading"
                       filterable
                       clearable
-                      placeholder="选择已识别群"
+                      allow-create
+                      default-first-option
+                      placeholder="输入或选择已识别群 ID"
                       @change="syncNotifyTargetChatName(target)"
                     >
                       <el-option
@@ -226,14 +228,9 @@
                     </el-select>
                   </el-form-item>
                 </div>
-                <div v-if="target.platform === 'feishu'" class="deploy-settings-panel__notify-resolver">
-                  <el-input v-model="target.chat_name" placeholder="输入飞书群名称，可直接解析" />
-                  <el-button
-                    :loading="resolvingNotifyTarget === target"
-                    :disabled="!target.connector_id || !String(target.chat_name || '').trim()"
-                    @click="resolveNotifyChat(target)"
-                  >解析群</el-button>
-                </div>
+                <el-form-item label="通知群名称（可选）">
+                  <el-input v-model="target.chat_name" placeholder="用于展示和部署通知内容" />
+                </el-form-item>
                 <div class="deploy-settings-panel__grid two-columns">
                   <el-form-item label="提醒方式">
                     <el-select v-model="target.mention.mode">
@@ -247,18 +244,11 @@
                       v-model="target.mention.users"
                       multiple
                       filterable
+                      allow-create
+                      default-first-option
                       clearable
-                      :loading="mentionOptionsLoadingKey === notifyTargetKey(target)"
-                      placeholder="选择需要提醒的人"
-                      @visible-change="(visible) => visible && fetchMentionOptions(target)"
-                    >
-                      <el-option
-                        v-for="member in mentionOptionsFor(target)"
-                        :key="member.open_id"
-                        :label="member.name || member.open_id"
-                        :value="member.open_id"
-                      />
-                    </el-select>
+                      placeholder="输入需要提醒的成员 open_id"
+                    />
                   </el-form-item>
                 </div>
                 <div class="deploy-settings-panel__notify-actions">
@@ -347,10 +337,15 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import ProjectWorkspaceBlock from "@/components/project-workspace/ProjectWorkspaceBlock.vue";
-import api from "@/utils/api.js";
+import { readGlobalBotConnectorConfigFile } from "@/modules/project-chat/services/projectChatStorage.js";
+import {
+  getLocalProject,
+  readLocalEntities,
+  upsertLocalProject,
+} from "@/services/local-project-repository.js";
 
 const props = defineProps({
   projectId: { type: String, required: true },
@@ -367,9 +362,6 @@ const ftpCredentials = ref([]);
 const notifyOptionsLoading = ref(false);
 const notifyConnectors = ref([]);
 const notifyChats = ref([]);
-const resolvingNotifyTarget = ref(null);
-const mentionOptionsLoadingKey = ref("");
-const mentionOptions = ref({});
 const validation = ref(null);
 const form = ref(createDefaultSettings());
 const activeProfileId = ref("prod");
@@ -682,11 +674,14 @@ function syncActiveComponentId(nextId) {
 async function fetchFtpCredentials() {
   ftpLoading.value = true;
   try {
-    const data = await api.get("/ftp-credentials");
-    ftpCredentials.value = Array.isArray(data?.items) ? data.items : [];
-  } catch (error) {
-    ftpCredentials.value = [];
-    ElMessage.error(error?.detail || error?.message || "加载 FTP 连接失败");
+    ftpCredentials.value = readLocalEntities("ftp_credentials").map((item) => ({
+      ...item,
+      id: String(item?.id || "").trim(),
+      name: String(item?.name || item?.id || "").trim(),
+      host: String(item?.host || "").trim(),
+      username: String(item?.username || "").trim(),
+      enabled: item?.enabled !== false,
+    })).filter((item) => item.id);
   } finally {
     ftpLoading.value = false;
   }
@@ -700,6 +695,10 @@ function normalizeNotifyConnector(item) {
     name: String(source.name || source.id || "").trim(),
     agent_name: String(source.agent_name || "").trim(),
     reply_identity: String(source.reply_identity || "bot").trim(),
+    enabled: source.enabled !== false,
+    scanned_chats: Array.isArray(source.scanned_chats)
+      ? source.scanned_chats.map(normalizeNotifyChat).filter((chat) => chat.chat_id)
+      : [],
   };
 }
 
@@ -723,14 +722,6 @@ function notifyChatsFor(target) {
   return notifyChats.value
     .filter((item) => item.platform === target.platform && item.connector_id === target.connector_id)
     .map((item) => ({ ...item, label: [item.chat_name, item.chat_id].filter(Boolean).join(" · ") }));
-}
-
-function notifyTargetKey(target) {
-  return [target.platform, target.connector_id, target.chat_id].join(":");
-}
-
-function mentionOptionsFor(target) {
-  return mentionOptions.value[notifyTargetKey(target)] || [];
 }
 
 function addNotifyTarget() {
@@ -764,71 +755,108 @@ function syncNotifyTargetChatName(target) {
 async function fetchNotifyOptions() {
   notifyOptionsLoading.value = true;
   try {
-    const data = await api.get(`/projects/${props.projectId}/deploy-notify-options`);
-    notifyConnectors.value = Array.isArray(data?.connectors) ? data.connectors.map(normalizeNotifyConnector).filter((item) => item.id) : [];
-    notifyChats.value = Array.isArray(data?.chats) ? data.chats.map(normalizeNotifyChat).filter((item) => item.chat_id) : [];
+    const data = await readGlobalBotConnectorConfigFile();
+    const connectors = Array.isArray(data?.config?.connectors)
+      ? data.config.connectors
+          .map(normalizeNotifyConnector)
+          .filter((item) => item.id && item.platform && item.enabled)
+      : [];
+    notifyConnectors.value = connectors;
+    notifyChats.value = connectors.flatMap((connector) =>
+      (connector.scanned_chats || []).map((chat) => ({
+        ...chat,
+        platform: connector.platform,
+        connector_id: connector.id,
+      })),
+    );
   } catch (error) {
     notifyConnectors.value = [];
     notifyChats.value = [];
-    ElMessage.error(error?.detail || error?.message || "加载部署通知配置失败");
+    ElMessage.warning(error?.detail || error?.message || "读取本机部署通知配置失败");
   } finally {
     notifyOptionsLoading.value = false;
-  }
-}
-
-async function resolveNotifyChat(target) {
-  resolvingNotifyTarget.value = target;
-  try {
-    const data = await api.post(`/projects/${props.projectId}/deploy-notify-chat/resolve`, {
-      platform: target.platform,
-      connector_id: target.connector_id,
-      chat_name: String(target.chat_name || "").trim(),
-      identity: target.resolve_identity || "bot",
-    });
-    const chat = normalizeNotifyChat(data?.chat);
-    const index = notifyChats.value.findIndex((item) => item.platform === chat.platform && item.connector_id === chat.connector_id && item.chat_id === chat.chat_id);
-    if (index >= 0) notifyChats.value[index] = chat;
-    else notifyChats.value.push(chat);
-    target.chat_id = chat.chat_id;
-    target.chat_name = chat.chat_name;
-    ElMessage.success("通知群已解析");
-  } catch (error) {
-    ElMessage.error(error?.detail || error?.message || "解析通知群失败");
-  } finally {
-    resolvingNotifyTarget.value = null;
-  }
-}
-
-async function fetchMentionOptions(target) {
-  const key = notifyTargetKey(target);
-  if (!target.connector_id || !target.chat_id || mentionOptions.value[key]) return;
-  mentionOptionsLoadingKey.value = key;
-  try {
-    const data = await api.get(`/projects/${props.projectId}/deploy-notify-mention-options`, {
-      params: { platform: target.platform, connector_id: target.connector_id, chat_id: target.chat_id },
-    });
-    mentionOptions.value = { ...mentionOptions.value, [key]: Array.isArray(data?.members) ? data.members : [] };
-  } catch (error) {
-    ElMessage.error(error?.detail || error?.message || "加载提醒成员失败");
-  } finally {
-    mentionOptionsLoadingKey.value = "";
   }
 }
 
 async function validateSettings({ notify = true } = {}) {
   validating.value = true;
   try {
-    const data = await api.post(`/projects/${props.projectId}/deploy-settings/validate`, {
-      deploy_settings: normalizeSettings(form.value),
-    });
-    validation.value = { valid: Boolean(data?.valid), issues: Array.isArray(data?.issues) ? data.issues : [] };
+    const settings = normalizeSettings(form.value);
+    const issues = [];
+    const profileIds = new Set();
+    const ftpCredentialMap = new Map(
+      ftpCredentials.value.map((item) => [String(item.id || "").trim(), item]),
+    );
+    const connectorMap = new Map(
+      notifyConnectors.value.map((item) => [String(item.id || "").trim(), item]),
+    );
+    if (settings.enabled && !settings.profiles.length) {
+      issues.push({ path: "profiles", message: "启用部署时至少需要一个环境档位" });
+    }
+    for (const [profileIndex, profile] of settings.profiles.entries()) {
+      const profilePath = `profiles.${profileIndex}`;
+      if (!profile.id) {
+        issues.push({ path: `${profilePath}.id`, message: "环境 ID 不能为空" });
+      } else if (profileIds.has(profile.id)) {
+        issues.push({ path: `${profilePath}.id`, message: `环境 ID 重复：${profile.id}` });
+      } else {
+        profileIds.add(profile.id);
+      }
+      const componentIds = new Set();
+      for (const [componentIndex, component] of (profile.components || []).entries()) {
+        const componentPath = `${profilePath}.components.${componentIndex}`;
+        if (!component.id) {
+          issues.push({ path: `${componentPath}.id`, message: "部署单元 ID 不能为空" });
+        } else if (componentIds.has(component.id)) {
+          issues.push({ path: `${componentPath}.id`, message: `部署单元 ID 重复：${component.id}` });
+        } else {
+          componentIds.add(component.id);
+        }
+        if (settings.enabled && component.enabled !== false) {
+          const enabledTargets = (component.targets || []).filter((target) => target?.enabled !== false);
+          if (!enabledTargets.length) {
+            issues.push({ path: `${componentPath}.targets`, message: `部署单元「${component.name || component.id}」至少需要一个启用的服务器目标` });
+          }
+          enabledTargets.forEach((target, targetIndex) => {
+            const targetPath = `${componentPath}.targets.${targetIndex}`;
+            const credentialId = String(target?.ftp_credential_id || "").trim();
+            const credential = ftpCredentialMap.get(credentialId);
+            if (!credentialId) {
+              issues.push({ path: `${targetPath}.ftp_credential_id`, message: `服务器「${target?.name || target?.id || targetIndex + 1}」未选择 FTP 连接` });
+            } else if (!credential) {
+              issues.push({ path: `${targetPath}.ftp_credential_id`, message: `服务器引用的 FTP 连接不存在：${credentialId}` });
+            } else if (credential.enabled === false) {
+              issues.push({ path: `${targetPath}.ftp_credential_id`, message: `服务器引用的 FTP 连接已停用：${credential.name || credentialId}` });
+            }
+            if (!String(target?.remote_path || "").trim()) {
+              issues.push({ path: `${targetPath}.remote_path`, message: `服务器「${target?.name || target?.id || targetIndex + 1}」缺少远端目录` });
+            }
+          });
+        }
+        if (component.notify?.enabled) {
+          (component.notify.targets || []).forEach((target, targetIndex) => {
+            const targetPath = `${componentPath}.notify.targets.${targetIndex}`;
+            const connectorId = String(target?.connector_id || "").trim();
+            if (!connectorId) {
+              issues.push({ path: `${targetPath}.connector_id`, message: "部署通知未选择机器人" });
+            } else if (!connectorMap.has(connectorId)) {
+              issues.push({ path: `${targetPath}.connector_id`, message: `部署通知机器人不可用：${connectorId}` });
+            }
+            if (!String(target?.chat_id || "").trim()) {
+              issues.push({ path: `${targetPath}.chat_id`, message: "部署通知缺少群 ID" });
+            }
+          });
+        }
+      }
+    }
+    if (settings.enabled && !profileIds.has(settings.default_profile)) {
+      issues.push({ path: "default_profile", message: "默认环境必须指向已有环境档位" });
+    }
+    validation.value = { valid: issues.length === 0, issues };
     if (notify) ElMessage[validation.value.valid ? "success" : "warning"](
       validation.value.valid ? "部署配置校验通过" : firstValidationMessage.value,
     );
     return validation.value.valid;
-  } catch (error) {
-    ElMessage.error(error?.detail || error?.message || "校验部署配置失败");
-    return false;
   } finally {
     validating.value = false;
   }
@@ -845,7 +873,15 @@ async function saveSettings() {
   }
   saving.value = true;
   try {
-    await api.put(`/projects/${props.projectId}`, { deploy_settings: normalizeSettings(form.value) });
+    const project = getLocalProject(props.projectId);
+    if (!project) {
+      throw new Error("本地项目不存在，无法保存部署配置");
+    }
+    upsertLocalProject({
+      ...project,
+      deploy_settings: normalizeSettings(form.value),
+      updated_at: new Date().toISOString(),
+    });
     ElMessage.success("部署配置已保存");
     emit("project-updated");
   } catch (error) {
@@ -856,7 +892,23 @@ async function saveSettings() {
 }
 
 watch(() => props.project?.deploy_settings, (settings) => syncFromProject(settings || {}), { immediate: true });
-onMounted(() => Promise.all([fetchFtpCredentials(), fetchNotifyOptions()]));
+
+function handleLocalEntityUpdate(event) {
+  if (String(event?.detail?.entityName || "").trim() === "ftp_credentials") {
+    void fetchFtpCredentials();
+  }
+}
+
+onMounted(() => {
+  void Promise.all([fetchFtpCredentials(), fetchNotifyOptions()]);
+  window.addEventListener("local-entities-updated", handleLocalEntityUpdate);
+  window.addEventListener("local-bot-connectors-config-updated", fetchNotifyOptions);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("local-entities-updated", handleLocalEntityUpdate);
+  window.removeEventListener("local-bot-connectors-config-updated", fetchNotifyOptions);
+});
 </script>
 
 <style scoped>

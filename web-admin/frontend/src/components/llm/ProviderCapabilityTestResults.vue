@@ -40,6 +40,7 @@
             :src="artifact.preview_url || artifact.content_url"
             :preview-src-list="[artifact.content_url || artifact.preview_url]"
             fit="contain"
+            :z-index="4000"
             class="capability-result-card__image"
             :alt="artifact.title || `${result.model_tested} 测试图片`"
           />
@@ -156,15 +157,20 @@ function normalizeArtifacts(result) {
 
 .capability-result-card__artifacts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 320px));
+  grid-template-columns: repeat(auto-fill, 120px);
   gap: 12px;
 }
 
-.capability-result-card__image,
+.capability-result-card__image {
+  width: 120px;
+  height: 88px;
+  border-radius: 8px;
+  background: var(--el-fill-color-light);
+  cursor: zoom-in;
+}
+
 .capability-result-card__video {
   width: 100%;
-  min-height: 180px;
-  max-height: 320px;
   border-radius: 8px;
   background: var(--el-fill-color-light);
 }

@@ -432,8 +432,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
-import api from '@/utils/api.js'
 import { authStateVersion, hasStoredToken } from '@/utils/auth-storage.js'
+import { readLocalSystemConfig } from '@/services/local-system-config.js'
 
 const router = useRouter()
 let sectionObserver
@@ -485,7 +485,7 @@ const activeContactActionText = computed(() => {
 const navItems = [
   { id: 'principles', label: '能力' },
   { id: 'market', label: '市场' },
-  { id: 'updates', label: '更新日志', path: '/updates' },
+  { id: 'updates', label: '版本更新', path: '/updates' },
   { id: 'workflow', label: '流程' },
 ]
 
@@ -792,12 +792,10 @@ function handleEscapeKey(event) {
 }
 
 async function fetchPublicContactChannels() {
-  try {
-    const data = await api.get('/system-config/public-contact-channels')
-    publicContactChannels.value = normalizePublicContactChannels(data?.items)
-  } catch {
-    publicContactChannels.value = []
-  }
+  const config = readLocalSystemConfig()
+  publicContactChannels.value = normalizePublicContactChannels(
+    config.public_contact_channels,
+  )
 }
 
 async function copyContactChannel(channel) {

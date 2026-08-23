@@ -37,6 +37,11 @@ const TAURI_COMMAND_NAMES = {
   runRunnerCommand: "run_runner_command",
   recordRunnerPermissionDecision: "record_runner_permission_decision",
   listRunnerPermissionDecisions: "list_runner_permission_decisions",
+  checkDesktopUpdate: "check_desktop_update",
+  getDesktopVersion: "get_desktop_version",
+  installDesktopUpdate: "install_desktop_update",
+  discoverProviderModels: "discover_provider_models",
+  testProviderModel: "test_provider_model",
   liuagentBuiltinToolDefinitions: "liuagent_builtin_tool_definitions",
   liuagentExecuteTool: "liuagent_execute_tool",
   liuagentUploadProviderFile: "liuagent_upload_provider_file",
@@ -62,6 +67,8 @@ const TAURI_COMMAND_NAMES = {
   liuagentLoadOfflineCache: "liuagent_load_offline_cache",
   liuagentCleanupOfflineCache: "liuagent_cleanup_offline_cache",
   projectChatListSessions: "project_chat_list_sessions",
+  projectChatListAllSessions: "project_chat_list_all_sessions",
+  projectChatUpsertSession: "project_chat_upsert_session",
   projectChatReplaceSessions: "project_chat_replace_sessions",
   projectChatReadRuntime: "project_chat_read_runtime",
   projectChatWriteRuntime: "project_chat_write_runtime",
@@ -190,6 +197,27 @@ export async function listNativeProjectChatSessions(projectId, username) {
     username: String(username || "").trim(),
   });
   return Array.isArray(result) ? result : [];
+}
+
+export async function listAllNativeProjectChatSessions(username) {
+  requireNativeProjectChatStore();
+  const result = await invokeNativeDesktopBridge("projectChatListAllSessions", {
+    username: String(username || "").trim(),
+  });
+  return Array.isArray(result) ? result : [];
+}
+
+export async function upsertNativeProjectChatSession(
+  projectId,
+  username,
+  session,
+) {
+  requireNativeProjectChatStore();
+  return invokeNativeDesktopBridge("projectChatUpsertSession", {
+    projectId: String(projectId || "").trim(),
+    username: String(username || "").trim(),
+    session: session && typeof session === "object" ? session : {},
+  });
 }
 
 export async function replaceNativeProjectChatSessions(
@@ -362,6 +390,133 @@ export async function getNativeRuntimeInfo() {
       result.defaultWorkspacePath || result.default_workspace_path || "",
     ).trim(),
   };
+}
+
+export async function getNativeDesktopVersion() {
+  const result = await invokeNativeDesktopBridge("getDesktopVersion");
+  const version = typeof result === "string" ? result : result?.version;
+  return String(version || "").trim() || null;
+}
+
+export async function checkNativeDesktopUpdate(endpoint) {
+  const normalizedEndpoint = String(endpoint || "").trim();
+  if (!normalizedEndpoint) return null;
+  const result = await invokeNativeDesktopBridge("checkDesktopUpdate", {
+    endpoint: normalizedEndpoint,
+  });
+  if (!result || typeof result !== "object") return null;
+  return {
+    version: String(result.version || "").trim(),
+    currentVersion: String(result.currentVersion || result.current_version || "").trim(),
+    notes: String(result.notes || ""),
+    pubDate: String(result.pubDate || result.pub_date || "").trim(),
+  };
+}
+
+export async function installNativeDesktopUpdate(endpoint) {
+  const normalizedEndpoint = String(endpoint || "").trim();
+  if (!normalizedEndpoint) throw new Error("版本更新地址未配置");
+  const result = await invokeNativeDesktopBridge("installDesktopUpdate", {
+    endpoint: normalizedEndpoint,
+  });
+  if (result === null || result === undefined) {
+    throw new Error("桌面端版本更新命令不可用，请完全退出并重新启动桌面端");
+  }
+  return result;
+}
+
+export async function subscribeNativeDesktopUpdateProgress(handler) {
+  if (typeof handler !== "function" || !hasNativeDesktopBridge()) return () => {};
+  const handleEvent = (event) => {
+    const payload = event?.payload && typeof event.payload === "object" ? event.payload : event;
+    handler({
+      downloaded: Number(payload?.downloaded || 0),
+      contentLength: Number(payload?.contentLength || payload?.content_length || 0) || null,
+      finished: Boolean(payload?.finished),
+    });
+  };
+  const unlisteners = [];
+  try {
+    unlisteners.push(await listenTauriEvent("desktop-update-progress", handleEvent));
+  } catch (_error) {
+    // iframe/legacy bridge fallback below
+  }
+  if (!unlisteners.length) {
+    const fallbackListen = resolveTauriEventListen();
+    if (fallbackListen) {
+      try {
+        unlisteners.push(await fallbackListen("desktop-update-progress", handleEvent));
+      } catch (_error) {
+        // ignore unavailable event bridge
+      }
+    }
+  }
+  if (!unlisteners.length) return () => {};
+  return () => {
+    for (const unlisten of unlisteners) {
+      try {
+        unlisten?.();
+      } catch (_error) {
+        // ignore cleanup errors
+      }
+    }
+  };
+}
+
+export async function discoverNativeProviderModels(options = {}) {
+  let result;
+  try {
+    result = await invokeNativeDesktopBridge("discoverProviderModels", {
+      request: {
+        providerType: String(
+          options?.providerType || options?.provider_type || "openai-compatible",
+        ).trim(),
+        baseUrl: String(options?.baseUrl || options?.base_url || "").trim(),
+        apiKey: String(options?.apiKey || options?.api_key || "").trim(),
+        extraHeaders:
+          options?.extraHeaders && typeof options.extraHeaders === "object"
+            ? options.extraHeaders
+            : options?.extra_headers && typeof options.extra_headers === "object"
+              ? options.extra_headers
+              : {},
+      },
+    });
+  } catch (error) {
+    const detail =
+      typeof error === "string"
+        ? error.trim()
+        : String(error?.detail || error?.message || error?.error || "").trim();
+    throw new Error(detail || "桌面端模型发现命令执行失败");
+  }
+  if (!result || typeof result !== "object") {
+    throw new Error(
+      "桌面端模型发现命令不可用，请完全退出并重新启动桌面端",
+    );
+  }
+  const normalizeModelItem = (item) =>
+    typeof item === "object"
+      ? String(item?.id || item?.name || item?.model || "").trim()
+      : String(item || "").trim();
+  return {
+    models: Array.isArray(result?.models)
+      ? result.models.map(normalizeModelItem).filter(Boolean)
+      : Array.isArray(result?.data)
+        ? result.data.map(normalizeModelItem).filter(Boolean)
+        : [],
+  };
+}
+
+export async function testNativeProviderModel(options = {}) {
+  return invokeNativeDesktopBridge("testProviderModel", {
+    request: {
+      providerType: String(options?.providerType || options?.provider_type || "openai-compatible").trim(),
+      baseUrl: String(options?.baseUrl || options?.base_url || "").trim(),
+      apiKey: String(options?.apiKey || options?.api_key || "").trim(),
+      modelName: String(options?.modelName || options?.model_name || "").trim(),
+      modelType: String(options?.modelType || options?.model_type || "text_generation").trim(),
+      extraHeaders: options?.extraHeaders && typeof options.extraHeaders === "object" ? options.extraHeaders : {},
+    },
+  });
 }
 
 function normalizeConfigFileContent(value) {

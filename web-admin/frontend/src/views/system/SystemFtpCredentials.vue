@@ -120,7 +120,7 @@
         />
       </el-form>
       <template #footer>
-        <el-button :loading="testing" :disabled="saving" @click="testCredential">测试连接</el-button>
+        <el-button :loading="testing" :disabled="saving" @click="testCredential">检查本地配置</el-button>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="saveCredential">保存</el-button>
       </template>
@@ -129,9 +129,13 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
-import api from "@/utils/api.js";
+import {
+  readLocalEntities,
+  removeLocalEntity,
+  upsertLocalEntity,
+} from "@/services/local-project-repository.js";
 
 const loading = ref(false);
 const saving = ref(false);
@@ -154,14 +158,40 @@ function createDraft(item = null) {
   };
 }
 
+function normalizeCredential(item = {}) {
+  const password = String(item?.password || "");
+  return {
+    ...item,
+    id: String(item?.id || "").trim(),
+    name: String(item?.name || item?.id || "").trim(),
+    host: String(item?.host || "").trim(),
+    username: String(item?.username || "").trim(),
+    enabled: item?.enabled !== false,
+    can_manage: item?.can_manage !== false,
+    has_password: Boolean(password) || Boolean(item?.has_password),
+  };
+}
+
+function findEditingCredential() {
+  const id = String(editingId.value || "").trim();
+  return id ? credentials.value.find((item) => item.id === id) || null : null;
+}
+
+function createCredentialId() {
+  const namePart = String(draft.value.name || "ftp")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "ftp";
+  return `local-ftp-${namePart}-${Date.now().toString(36)}`;
+}
+
 async function fetchCredentials() {
   loading.value = true;
   try {
-    const data = await api.get("/ftp-credentials");
-    credentials.value = Array.isArray(data?.items) ? data.items : [];
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "加载 FTP 连接失败");
-    credentials.value = [];
+    credentials.value = readLocalEntities("ftp_credentials")
+      .map((item) => normalizeCredential(item))
+      .filter((item) => item.id);
   } finally {
     loading.value = false;
   }
@@ -232,51 +262,54 @@ function buildCredentialPayload({ requireName = false, requirePassword = false }
 }
 
 async function testCredential() {
-  const payload = buildCredentialPayload({
-    requireName: false,
-    requirePassword: !editingId.value,
-  });
+  const payload = buildCredentialPayload({ requireName: false });
   if (!payload) return;
-  if (editingId.value) {
-    payload.credential_id = editingId.value;
+  const existing = findEditingCredential();
+  const password = String(payload.password || existing?.password || "").trim();
+  if (!password) {
+    ElMessage.warning("请填写 FTP 登录密码");
+    return;
   }
   testing.value = true;
   testResult.value = { ok: false, message: "" };
   try {
-    const data = await api.post("/ftp-credentials/test", payload);
-    const message = data?.message || (data?.ok ? "FTP 连接成功" : "FTP 连接测试失败");
-    testResult.value = { ok: Boolean(data?.ok), message };
-    ElMessage[data?.ok ? "success" : "warning"](message);
-  } catch (err) {
-    const message = err?.detail || err?.message || "FTP 连接测试失败";
-    testResult.value = { ok: false, message };
-    ElMessage.error(message);
+    const message = "本地配置完整，未执行 FTP 网络连接测试";
+    testResult.value = { ok: true, message };
+    ElMessage.success(message);
   } finally {
     testing.value = false;
   }
 }
 
 async function saveCredential() {
-  const payload = buildCredentialPayload({
-    requireName: true,
-    requirePassword: !editingId.value,
-  });
+  const payload = buildCredentialPayload({ requireName: true });
   if (!payload) return;
   saving.value = true;
   try {
-    if (editingId.value && !String(payload.password || "").trim()) {
-      delete payload.password;
+    const existing = findEditingCredential();
+    const password = String(payload.password || existing?.password || "").trim();
+    if (!password) {
+      ElMessage.warning("请填写 FTP 登录密码");
+      return;
     }
-    if (editingId.value) {
-      await api.put(`/ftp-credentials/${encodeURIComponent(editingId.value)}`, payload);
-    } else {
-      await api.post("/ftp-credentials", payload);
-    }
+    const now = new Date().toISOString();
+    upsertLocalEntity(
+      "ftp_credentials",
+      normalizeCredential({
+        ...existing,
+        ...payload,
+        id: editingId.value || createCredentialId(),
+        password,
+        has_password: true,
+        can_manage: true,
+        created_at: existing?.created_at || now,
+        updated_at: now,
+        created_by: existing?.created_by || "local",
+      }),
+    );
     await fetchCredentials();
     dialogVisible.value = false;
     ElMessage.success("FTP 连接已保存");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "保存 FTP 连接失败");
   } finally {
     saving.value = false;
   }
@@ -285,17 +318,24 @@ async function saveCredential() {
 async function deleteCredential(item) {
   const id = String(item?.id || "").trim();
   if (!id) return;
-  try {
-    await api.delete(`/ftp-credentials/${encodeURIComponent(id)}`);
-    credentials.value = credentials.value.filter((entry) => entry.id !== id);
-    ElMessage.success("FTP 连接已删除");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "删除 FTP 连接失败");
+  removeLocalEntity("ftp_credentials", id);
+  credentials.value = credentials.value.filter((entry) => entry.id !== id);
+  ElMessage.success("FTP 连接已删除");
+}
+
+function handleLocalEntityUpdate(event) {
+  if (String(event?.detail?.entityName || "").trim() === "ftp_credentials") {
+    void fetchCredentials();
   }
 }
 
 onMounted(() => {
   void fetchCredentials();
+  window.addEventListener("local-entities-updated", handleLocalEntityUpdate);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("local-entities-updated", handleLocalEntityUpdate);
 });
 </script>
 

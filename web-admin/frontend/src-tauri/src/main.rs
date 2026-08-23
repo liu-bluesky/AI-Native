@@ -1,6 +1,7 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
 #[cfg(target_os = "linux")]
@@ -8,10 +9,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
+use tauri_plugin_updater::UpdaterExt;
+use url::Url;
 
 mod bot;
 mod liuagent_core;
@@ -217,6 +223,527 @@ struct RunnerPermissionDecisionRecord {
     source: String,
     risk_level: String,
     created_at_epoch_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderModelDiscoveryRequest {
+    provider_type: Option<String>,
+    base_url: String,
+    api_key: String,
+    extra_headers: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderModelDiscoveryResult {
+    models: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderModelTestRequest {
+    provider_type: String,
+    base_url: String,
+    api_key: String,
+    model_name: String,
+    model_type: Option<String>,
+    extra_headers: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderModelTestResult {
+    reachable: bool,
+    model_tested: String,
+    request_url: String,
+    http_status: Option<u16>,
+    model_type: String,
+    artifacts: Vec<Value>,
+    message: String,
+}
+
+const DESKTOP_UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQxMUQ3NjhBMEYzMjI3RTIKUldUaUp6SVBpbllkUVNNdzVwVmFuZ1dmV2xFdzc1amtiWE9LTEFOeUI4aVBDalBUZ1Y2b1VnSEYK";
+const DESKTOP_UPDATE_PROGRESS_EVENT: &str = "desktop-update-progress";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopUpdateMetadata {
+    version: String,
+    current_version: String,
+    notes: String,
+    pub_date: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopUpdateProgress {
+    downloaded: u64,
+    content_length: Option<u64>,
+    finished: bool,
+}
+
+fn desktop_update_endpoint(value: &str) -> Result<Url, String> {
+    let endpoint = value.trim();
+    if endpoint.is_empty() {
+        return Err("版本更新地址未配置".to_string());
+    }
+    let separator = if endpoint.contains('?') {
+        if endpoint.ends_with('?') || endpoint.ends_with('&') {
+            ""
+        } else {
+            "&"
+        }
+    } else {
+        "?"
+    };
+    let endpoint = format!(
+        "{endpoint}{separator}target={{{{target}}}}&arch={{{{arch}}}}&bundle_type={{{{bundle_type}}}}"
+    );
+    let parsed = Url::parse(&endpoint).map_err(|error| format!("版本更新地址无效：{error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.username() != ""
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("版本更新地址必须是 HTTP 或 HTTPS 地址，且不能包含账号密码和片段".to_string());
+    }
+    Ok(parsed)
+}
+
+fn desktop_update_metadata(update: &tauri_plugin_updater::Update) -> DesktopUpdateMetadata {
+    DesktopUpdateMetadata {
+        version: update.version.clone(),
+        current_version: update.current_version.clone(),
+        notes: update.body.clone().unwrap_or_default(),
+        pub_date: update.date.as_ref().map(ToString::to_string),
+    }
+}
+
+#[tauri::command]
+fn get_desktop_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+async fn check_desktop_update(
+    app: tauri::AppHandle,
+    endpoint: String,
+) -> Result<Option<DesktopUpdateMetadata>, String> {
+    let endpoint = desktop_update_endpoint(&endpoint)?;
+    let update = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| format!("构建版本更新请求失败：{error}"))?
+        .build()
+        .map_err(|error| format!("初始化版本更新失败：{error}"))?
+        .check()
+        .await
+        .map_err(|error| format!("检查版本更新失败：{error}"))?;
+    Ok(update.as_ref().map(desktop_update_metadata))
+}
+
+#[tauri::command]
+async fn install_desktop_update(app: tauri::AppHandle, endpoint: String) -> Result<(), String> {
+    let endpoint = desktop_update_endpoint(&endpoint)?;
+    let update = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| format!("构建版本更新请求失败：{error}"))?
+        .build()
+        .map_err(|error| format!("初始化版本更新失败：{error}"))?
+        .check()
+        .await
+        .map_err(|error| format!("确认版本更新失败：{error}"))?
+        .ok_or_else(|| "版本更新已不存在或当前版本已经是最新版本".to_string())?;
+
+    let progress_app = app.clone();
+    let downloaded = Arc::new(AtomicU64::new(0));
+    let progress_downloaded = Arc::clone(&downloaded);
+    let finished_downloaded = Arc::clone(&downloaded);
+    update
+        .download_and_install(
+            |chunk_length, content_length| {
+                let downloaded = progress_downloaded
+                    .fetch_add(chunk_length as u64, Ordering::Relaxed)
+                    .saturating_add(chunk_length as u64);
+                let _ = progress_app.emit(
+                    DESKTOP_UPDATE_PROGRESS_EVENT,
+                    DesktopUpdateProgress {
+                        downloaded,
+                        content_length,
+                        finished: false,
+                    },
+                );
+            },
+            || {
+                let _ = progress_app.emit(
+                    DESKTOP_UPDATE_PROGRESS_EVENT,
+                    DesktopUpdateProgress {
+                        downloaded: finished_downloaded.load(Ordering::Relaxed),
+                        content_length: None,
+                        finished: true,
+                    },
+                );
+            },
+        )
+        .await
+        .map_err(|error| format!("下载或安装版本更新失败：{error}"))?;
+
+    app.request_restart();
+    Ok(())
+}
+
+#[tauri::command]
+async fn discover_provider_models(
+    request: ProviderModelDiscoveryRequest,
+) -> Result<ProviderModelDiscoveryResult, String> {
+    tauri::async_runtime::spawn_blocking(move || discover_provider_models_with_http(request))
+        .await
+        .map_err(|error| format!("模型发现任务执行失败：{error}"))?
+}
+
+fn discover_provider_models_with_http(
+    request: ProviderModelDiscoveryRequest,
+) -> Result<ProviderModelDiscoveryResult, String> {
+    let base_url = request.base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return Err("请填写 Base URL".to_string());
+    }
+    let provider_type = request
+        .provider_type
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    // 模型列表端点候选：不同供应商的 /models 可能位于根路径或 /v1 前缀下。
+    // 按顺序尝试，遇到 4xx 时回退到下一个候选，直到成功或全部失败。
+    let mut candidates: Vec<String> = vec![format!("{base_url}/models")];
+    if provider_type != "custom" {
+        candidates.push(format!("{base_url}/v1/models"));
+    }
+    candidates.sort();
+    candidates.dedup();
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("创建模型发现客户端失败：{error}"))?;
+
+    let extra_headers = request.extra_headers.unwrap_or_default();
+    let mut last_error: Option<String> = None;
+
+    for models_url in candidates {
+        let parsed_url =
+            reqwest::Url::parse(&models_url).map_err(|error| format!("Base URL 无效：{error}"))?;
+        if !matches!(parsed_url.scheme(), "http" | "https") {
+            return Err("Base URL 只支持 http 或 https".to_string());
+        }
+
+        let mut http_request = client.get(parsed_url);
+        if !request.api_key.trim().is_empty() {
+            http_request = http_request.bearer_auth(request.api_key.trim());
+        }
+        for (name, value) in &extra_headers {
+            let header_name = reqwest::header::HeaderName::from_bytes(name.trim().as_bytes())
+                .map_err(|_| format!("额外请求头名称无效：{}", name.trim()))?;
+            let header_value = reqwest::header::HeaderValue::from_str(value.trim())
+                .map_err(|_| format!("额外请求头值无效：{}", name.trim()))?;
+            http_request = http_request.header(header_name, header_value);
+        }
+
+        let response = match http_request.send() {
+            Ok(response) => response,
+            Err(error) => {
+                last_error = Some(format!("请求供应商模型列表失败（{models_url}）：{error}"));
+                continue;
+            }
+        };
+        let status = response.status();
+        let body = match response.text() {
+            Ok(body) => body,
+            Err(error) => {
+                last_error = Some(format!(
+                    "读取供应商模型列表响应失败（{models_url}）：{error}"
+                ));
+                continue;
+            }
+        };
+        if !status.is_success() {
+            let detail = body.chars().take(500).collect::<String>();
+            last_error = Some(format!(
+                "供应商模型列表请求失败（{models_url}，HTTP {status}）：{detail}"
+            ));
+            // 仅对客户端/资源错误（4xx）回退到下一个端点候选；
+            // 5xx 或鉴权失败通常不会因换路径而好转，直接停止。
+            if !status.is_client_error() {
+                break;
+            }
+            continue;
+        }
+
+        let payload: Value = match serde_json::from_str(&body) {
+            Ok(payload) => payload,
+            Err(error) => {
+                last_error = Some(format!("供应商模型列表响应不是有效 JSON：{error}"));
+                continue;
+            }
+        };
+        let items = payload
+            .get("data")
+            .or_else(|| payload.get("models"))
+            .and_then(Value::as_array);
+        let Some(items) = items else {
+            last_error = Some("供应商模型列表响应缺少 data 或 models 数组".to_string());
+            continue;
+        };
+        let models = items
+            .iter()
+            .filter_map(|item| match item {
+                Value::String(value) => Some(value.trim().to_string()),
+                Value::Object(_) => item
+                    .get("id")
+                    .or_else(|| item.get("name"))
+                    .or_else(|| item.get("model"))
+                    .and_then(Value::as_str)
+                    .map(|value| value.trim().to_string()),
+                _ => None,
+            })
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        return Ok(ProviderModelDiscoveryResult { models });
+    }
+
+    Err(last_error.unwrap_or_else(|| "供应商模型列表请求失败".to_string()))
+}
+
+#[tauri::command]
+async fn test_provider_model(
+    request: ProviderModelTestRequest,
+) -> Result<ProviderModelTestResult, String> {
+    tauri::async_runtime::spawn_blocking(move || test_provider_model_with_http(request))
+        .await
+        .map_err(|error| format!("模型测试任务执行失败：{error}"))?
+}
+
+fn test_provider_model_with_http(
+    request: ProviderModelTestRequest,
+) -> Result<ProviderModelTestResult, String> {
+    let base_url = request.base_url.trim().trim_end_matches('/');
+    let model_name = request.model_name.trim();
+    if base_url.is_empty() || model_name.is_empty() {
+        return Err("测试模型需要 Base URL 和模型名称".to_string());
+    }
+    let model_type = request
+        .model_type
+        .as_deref()
+        .unwrap_or("text_generation")
+        .trim()
+        .to_ascii_lowercase();
+    let is_responses = request
+        .provider_type
+        .trim()
+        .eq_ignore_ascii_case("responses");
+    let is_image_generation = model_type == "image_generation";
+    let path = if is_image_generation {
+        "/images/generations"
+    } else if is_responses {
+        "/responses"
+    } else {
+        "/chat/completions"
+    };
+    let request_url = format!("{base_url}{path}");
+    let parsed_url =
+        reqwest::Url::parse(&request_url).map_err(|error| format!("模型测试地址无效：{error}"))?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|error| format!("创建模型测试客户端失败：{error}"))?;
+    let body = if is_image_generation {
+        json!({
+            "model": model_name,
+            "prompt": "请生成一张简单的测试图片",
+            "size": "1024x1024",
+            "n": 1,
+        })
+    } else if is_responses {
+        json!({
+            "model": model_name,
+            "input": "请只回复：连接测试成功",
+            "max_output_tokens": 32,
+        })
+    } else {
+        json!({
+            "model": model_name,
+            "messages": [{"role": "user", "content": "请只回复：连接测试成功"}],
+            "max_tokens": 32,
+            "temperature": 0,
+        })
+    };
+    let mut http_request = client.post(parsed_url).json(&body);
+    if !request.api_key.trim().is_empty() {
+        http_request = http_request.bearer_auth(request.api_key.trim());
+    }
+    for (name, value) in request.extra_headers.unwrap_or_default() {
+        let header_name = reqwest::header::HeaderName::from_bytes(name.trim().as_bytes())
+            .map_err(|_| format!("额外请求头名称无效：{}", name.trim()))?;
+        let header_value = reqwest::header::HeaderValue::from_str(value.trim())
+            .map_err(|_| format!("额外请求头值无效：{}", name.trim()))?;
+        http_request = http_request.header(header_name, header_value);
+    }
+    let response = match http_request.send() {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(ProviderModelTestResult {
+                reachable: false,
+                model_tested: model_name.to_string(),
+                request_url,
+                http_status: None,
+                model_type: model_type.clone(),
+                artifacts: Vec::new(),
+                message: format!("请求模型测试接口失败：{error}"),
+            });
+        }
+    };
+    let status = response.status();
+    let response_body = response.text().map_err(|error| {
+        format!("读取模型测试响应失败（请求地址：{request_url}，HTTP {status}）：{error}")
+    })?;
+    if !status.is_success() {
+        let detail = response_body.chars().take(500).collect::<String>();
+        return Ok(ProviderModelTestResult {
+            reachable: false,
+            model_tested: model_name.to_string(),
+            request_url,
+            http_status: Some(status.as_u16()),
+            model_type: model_type.clone(),
+            artifacts: Vec::new(),
+            message: format!("模型测试失败（HTTP {status}）：{detail}"),
+        });
+    }
+    let payload: Value = serde_json::from_str(&response_body).map_err(|error| {
+        format!("模型测试响应不是有效 JSON（请求地址：{request_url}，HTTP {status}）：{error}")
+    })?;
+    let has_output = if is_image_generation {
+        payload
+            .get("data")
+            .and_then(Value::as_array)
+            .map(|items| !items.is_empty())
+            .unwrap_or(false)
+            || payload
+                .get("images")
+                .and_then(Value::as_array)
+                .map(|items| !items.is_empty())
+                .unwrap_or(false)
+            || payload
+                .get("candidates")
+                .and_then(Value::as_array)
+                .map(|items| !items.is_empty())
+                .unwrap_or(false)
+    } else if is_responses {
+        payload
+            .get("output")
+            .and_then(Value::as_array)
+            .map(|items| !items.is_empty())
+            .unwrap_or(false)
+            || payload
+                .get("output_text")
+                .and_then(Value::as_str)
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(false)
+    } else {
+        payload
+            .get("choices")
+            .and_then(Value::as_array)
+            .map(|items| !items.is_empty())
+            .unwrap_or(false)
+    };
+    if !has_output {
+        return Err("模型测试请求成功，但响应中没有可用输出".to_string());
+    }
+    let artifacts = if is_image_generation {
+        extract_image_test_artifacts(&payload)
+    } else {
+        Vec::new()
+    };
+    Ok(ProviderModelTestResult {
+        reachable: true,
+        model_tested: model_name.to_string(),
+        request_url,
+        http_status: Some(status.as_u16()),
+        model_type,
+        artifacts,
+        message: "模型真实调用成功".to_string(),
+    })
+}
+
+fn extract_image_test_artifacts(payload: &Value) -> Vec<Value> {
+    let mut artifacts = Vec::new();
+    if let Some(items) = payload.get("data").and_then(Value::as_array) {
+        for item in items {
+            if let Some(url) = item
+                .get("url")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+            {
+                artifacts.push(json!({
+                    "asset_type": "image",
+                    "content_url": url,
+                    "preview_url": url,
+                    "title": "图片模型测试结果",
+                }));
+            } else if let Some(encoded) = item
+                .get("b64_json")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+            {
+                artifacts.push(json!({
+                    "asset_type": "image",
+                    "content_url": format!("data:image/png;base64,{encoded}"),
+                    "preview_url": format!("data:image/png;base64,{encoded}"),
+                    "title": "图片模型测试结果",
+                }));
+            }
+        }
+    }
+    if let Some(candidates) = payload.get("candidates").and_then(Value::as_array) {
+        for candidate in candidates {
+            let parts = candidate
+                .get("content")
+                .and_then(|content| content.get("parts"))
+                .and_then(Value::as_array);
+            if let Some(parts) = parts {
+                for part in parts {
+                    let inline_data = part.get("inlineData").or_else(|| part.get("inline_data"));
+                    let Some(inline_data) = inline_data else {
+                        continue;
+                    };
+                    let Some(encoded) = inline_data
+                        .get("data")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                    else {
+                        continue;
+                    };
+                    let mime_type = inline_data
+                        .get("mimeType")
+                        .or_else(|| inline_data.get("mime_type"))
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("image/png");
+                    artifacts.push(json!({
+                        "asset_type": "image",
+                        "content_url": format!("data:{mime_type};base64,{encoded}"),
+                        "preview_url": format!("data:{mime_type};base64,{encoded}"),
+                        "title": "图片模型测试结果",
+                    }));
+                }
+            }
+        }
+    }
+    artifacts
 }
 
 #[tauri::command]
@@ -2164,7 +2691,15 @@ fn write_runner_permission_decisions(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_updater::Builder::new()
+                .pubkey(DESKTOP_UPDATE_PUBLIC_KEY)
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
+            get_desktop_version,
+            check_desktop_update,
+            install_desktop_update,
             pick_workspace_directory,
             detect_executors,
             get_runtime_info,
@@ -2192,6 +2727,8 @@ fn main() {
             run_runner_command,
             record_runner_permission_decision,
             list_runner_permission_decisions,
+            discover_provider_models,
+            test_provider_model,
             liuagent_builtin_tool_definitions,
             liuagent_execute_tool,
             liuagent_upload_provider_file,
@@ -2217,6 +2754,8 @@ fn main() {
             liuagent_load_offline_cache,
             liuagent_cleanup_offline_cache,
             project_chat_store::project_chat_list_sessions,
+            project_chat_store::project_chat_list_all_sessions,
+            project_chat_store::project_chat_upsert_session,
             project_chat_store::project_chat_replace_sessions,
             project_chat_store::project_chat_read_runtime,
             project_chat_store::project_chat_write_runtime,
@@ -2256,6 +2795,21 @@ mod tests {
             sanitize_clipboard_file_name("../不安全/文件?.png"),
             "_不安全_文件_.png"
         );
+    }
+
+    #[test]
+    fn desktop_update_endpoint_accepts_http_and_https() {
+        let http =
+            desktop_update_endpoint("http://127.0.0.1:8000/api/desktop-updates/latest").unwrap();
+        assert_eq!(http.scheme(), "http");
+        assert!(http.as_str().contains("target={{target}}"));
+
+        let https =
+            desktop_update_endpoint("https://updates.example.com/api/desktop-updates/latest")
+                .unwrap();
+        assert_eq!(https.scheme(), "https");
+
+        assert!(desktop_update_endpoint("ftp://updates.example.com/latest").is_err());
     }
 
     #[test]

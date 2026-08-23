@@ -1,10 +1,11 @@
 use base64::{engine::general_purpose, Engine as _};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -347,6 +348,37 @@ fn resolve_bot_workspace_path(raw: &str) -> String {
     trimmed.to_string()
 }
 
+fn normalize_backend_api_base_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let Ok(mut url) = Url::parse(trimmed) else {
+        return trimmed.trim_end_matches('/').to_string();
+    };
+    let is_local_host = matches!(
+        url.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1")
+    );
+    let is_api_path = {
+        let path = url.path().trim_end_matches('/');
+        path == "/api" || path.starts_with("/api/")
+    };
+    if is_local_host && url.port() == Some(3000) && is_api_path {
+        let _ = url.set_port(Some(8000));
+    }
+    url.to_string().trim_end_matches('/').to_string()
+}
+
+fn normalize_backend_context(
+    backend_context: Option<LocalBackendContext>,
+) -> Option<LocalBackendContext> {
+    backend_context.map(|mut context| {
+        context.api_base_url = normalize_backend_api_base_url(&context.api_base_url);
+        context
+    })
+}
+
 fn load_local_bot_connectors() -> Result<Vec<Value>, String> {
     let path = global_bot_connector_config_path()?;
     let content =
@@ -388,7 +420,14 @@ fn load_stored_listener_contexts() -> Vec<StoredFeishuListenerContext> {
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|item| serde_json::from_value::<StoredFeishuListenerContext>(item).ok())
+        .filter_map(|item| {
+            serde_json::from_value::<StoredFeishuListenerContext>(item)
+                .ok()
+                .map(|mut context| {
+                    context.backend_context = normalize_backend_context(context.backend_context);
+                    context
+                })
+        })
         .collect()
 }
 
@@ -396,6 +435,8 @@ fn persist_listener_context(context: StoredFeishuListenerContext) {
     if context.connector_id.trim().is_empty() || context.workspace_path.trim().is_empty() {
         return;
     }
+    let mut context = context;
+    context.backend_context = normalize_backend_context(context.backend_context);
     let Ok(path) = global_bot_listener_context_path() else {
         return;
     };
@@ -527,9 +568,32 @@ fn event_text_matches_connector(connector: &BotConnectorConfig, event: &Value) -
         .any(|value| content.contains(&value))
 }
 
-fn should_handle_event(_connector: &BotConnectorConfig, event: &Value) -> bool {
+fn event_mentions_bot(event: &Value) -> bool {
+    ["mentions", "message_mentions"]
+        .iter()
+        .filter_map(|key| event.get(*key).and_then(Value::as_array))
+        .flatten()
+        .any(|mention| {
+            let mention_type = value_string(
+                mention,
+                &[
+                    "mentioned_type",
+                    "mentionedType",
+                    "mention_type",
+                    "mentionType",
+                    "type",
+                ],
+            )
+            .to_ascii_lowercase();
+            mention_type.contains("bot") || mention_type.contains("app")
+        })
+}
+
+fn should_handle_event(connector: &BotConnectorConfig, event: &Value) -> bool {
     let chat_type = value_string(event, &["chat_type", "chatType"]).to_ascii_lowercase();
     chat_type == "p2p"
+        || event_mentions_bot(event)
+        || event_text_matches_connector(connector, event)
 }
 
 fn resolve_feishu_sdk_worker_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -586,26 +650,57 @@ fn resolve_feishu_sdk_worker_path_for_command() -> Result<PathBuf, String> {
 
 fn resolve_feishu_sdk_python() -> Result<PathBuf, String> {
     if let Some(path) = env::var_os(FEISHU_PYTHON_ENV).map(PathBuf::from) {
-        if path.is_file() {
+        if path.is_file() && python_supports_feishu_sdk(&path) {
             return Ok(path);
         }
         return Err(format!(
-            "{} 指向的 Python 不存在：{}",
+            "{} 指向的 Python 不存在或未安装 lark-oapi：{}",
             FEISHU_PYTHON_ENV,
             path.to_string_lossy()
         ));
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let worker_dir = manifest_dir.join("bot_workers");
     #[cfg(target_os = "windows")]
     let api_venv_python = manifest_dir.join("..\\..\\api\\.venv\\Scripts\\python.exe");
     #[cfg(not(target_os = "windows"))]
     let api_venv_python = manifest_dir.join("../../api/.venv/bin/python");
-    if api_venv_python.is_file() {
-        return Ok(api_venv_python);
+    #[cfg(target_os = "windows")]
+    let worker_venv_python = worker_dir.join(".venv\\Scripts\\python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let worker_venv_python = worker_dir.join(".venv/bin/python");
+
+    for candidate in [worker_venv_python, api_venv_python] {
+        if candidate.is_file() && python_supports_feishu_sdk(&candidate) {
+            return Ok(candidate);
+        }
     }
 
-    Ok(PathBuf::from("python3"))
+    for candidate in [PathBuf::from("python3"), PathBuf::from("python")] {
+        if python_supports_feishu_sdk(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    Err(format!(
+        "未找到已安装 lark-oapi 的 Python。请使用 {} 创建 .venv 并安装依赖，或设置 {} 指向已安装该依赖的 Python。",
+        worker_dir.join("requirements.txt").to_string_lossy(),
+        FEISHU_PYTHON_ENV
+    ))
+}
+
+fn python_supports_feishu_sdk(python: &Path) -> bool {
+    Command::new(python)
+        .args([
+            "-c",
+            "import lark_oapi\nfrom lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody, PatchMessageRequest, PatchMessageRequestBody, ReplyMessageRequest, ReplyMessageRequestBody, P2ImMessageReceiveV1\nfrom lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse\nfrom lark_oapi.ws import Client",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 pub fn start_local_listener(
@@ -635,6 +730,7 @@ pub fn start_local_listener(
     if app_id.is_empty() || app_secret.is_empty() {
         return Err("飞书机器人缺少 App ID 或 App Secret".to_string());
     }
+    let backend_context = normalize_backend_context(request.backend_context.clone());
     let runtime_context = FeishuBotRuntimeContext {
         connector: connector_config_from_value(&connector, request.owner_username.as_str()),
         workspace_path: resolve_bot_workspace_path(&request.workspace_path),
@@ -643,7 +739,7 @@ pub fn start_local_listener(
             .clone()
             .or_else(|| connector_model_runtime(&connector)),
         mcp_config: request.mcp_config.clone(),
-        backend_context: request.backend_context.clone(),
+        backend_context,
         permission_decision: request.permission_decision.clone(),
     };
     let worker_path = resolve_feishu_sdk_worker_path(&app)?;
@@ -793,11 +889,9 @@ pub fn start_persisted_local_listeners(app: AppHandle) {
                 connector_id: connector_id.clone(),
                 workspace_path: context.workspace_path,
                 owner_username: context.owner_username,
-                model_runtime: context
-                    .model_runtime
-                    .or_else(|| connector_model_runtime(connector)),
+                model_runtime: connector_model_runtime(connector).or(context.model_runtime),
                 mcp_config: load_global_mcp_config(),
-                backend_context: context.backend_context,
+                backend_context: normalize_backend_context(context.backend_context),
                 permission_decision: None,
             };
             if let Err(error) = start_local_listener(app.clone(), request) {
@@ -1303,7 +1397,7 @@ fn handle_local_feishu_event_inner(
             status,
             "ignored",
             format!(
-                "飞书消息未进入机器人：仅处理私聊；chatType={} mentions={} nameMatched={}",
+                "飞书消息未命中机器人触发条件：chatType={} mentions={} nameMatched={}",
                 if chat_type.is_empty() {
                     "unknown"
                 } else {
@@ -3087,9 +3181,10 @@ mod tests {
         bot_project_binding_from_runtime_event, bot_reply_content, card_action_value,
         connector_model_runtime, epoch_millis, extract_chat_items, extract_next_page_token,
         feishu_bot_approval_card, is_feishu_card_action_event, is_runtime_approval_required_event,
-        project_ids_from_text, runtime_permission_decision_parts, safe_resource_filename,
-        should_handle_event, text_permission_decision, trim_bot_conversation_history,
-        validate_card_action_matches_pending, StoredBotPendingApproval,
+        normalize_backend_api_base_url, project_ids_from_text, runtime_permission_decision_parts,
+        safe_resource_filename, should_handle_event, text_permission_decision,
+        trim_bot_conversation_history, validate_card_action_matches_pending,
+        StoredBotPendingApproval,
     };
     use crate::bot::types::BotConnectorConfig;
     use crate::liuagent_core::{LocalChatMessage, LocalChatResult, ToolError};
@@ -3154,6 +3249,30 @@ mod tests {
     }
 
     #[test]
+    fn legacy_vite_backend_url_is_migrated_to_api_port() {
+        assert_eq!(
+            normalize_backend_api_base_url("http://127.0.0.1:3000/api"),
+            "http://127.0.0.1:8000/api"
+        );
+        assert_eq!(
+            normalize_backend_api_base_url("http://localhost:3000/api/"),
+            "http://localhost:8000/api"
+        );
+    }
+
+    #[test]
+    fn non_legacy_backend_url_is_preserved() {
+        assert_eq!(
+            normalize_backend_api_base_url("https://example.test/api"),
+            "https://example.test/api"
+        );
+        assert_eq!(
+            normalize_backend_api_base_url("http://127.0.0.1:3001/api"),
+            "http://127.0.0.1:3001/api"
+        );
+    }
+
+    #[test]
     fn p2p_messages_are_handled() {
         assert!(should_handle_event(
             &test_connector(),
@@ -3165,16 +3284,34 @@ mod tests {
     }
 
     #[test]
-    fn group_messages_are_ignored_even_when_mentioned_or_name_matched() {
+    fn group_messages_are_handled_when_mentioned_or_name_matched() {
+        assert!(should_handle_event(
+            &test_connector(),
+            &json!({
+                "chat_type": "group",
+                "content": "@_user_1 帮我处理",
+                "mentions": [{
+                    "mentioned_type": "bot",
+                    "name": "测试机器人"
+                }]
+            }),
+        ));
+        assert!(should_handle_event(
+            &test_connector(),
+            &json!({
+                "chat_type": "group",
+                "content": "测试机器人，帮我处理"
+            }),
+        ));
+    }
+
+    #[test]
+    fn group_messages_without_bot_trigger_are_ignored() {
         assert!(!should_handle_event(
             &test_connector(),
             &json!({
                 "chat_type": "group",
-                "content": "@测试机器人 帮我处理",
-                "mentions": [{
-                    "type": "bot",
-                    "mention_name": "测试机器人"
-                }]
+                "content": "请帮我处理"
             }),
         ));
     }

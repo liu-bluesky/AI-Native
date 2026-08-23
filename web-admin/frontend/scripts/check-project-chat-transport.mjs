@@ -22,32 +22,20 @@ const projectChatSource = readFileSync(projectChatPath, "utf8");
 
 assert.match(
   transportSource,
-  /const connections = new Map\(\);/,
-  "project chat transport must retain websocket connections by project",
+  /本地项目聊天不使用远程实时接口/,
+  "project chat transport must explicitly reject the removed remote websocket path",
 );
 
 assert.match(
   transportSource,
-  /function getWsClient\(projectId = wsProjectId\.value\)[\s\S]*?connections\.get\(normalizedProjectId\)/,
-  "callers must route replies to the websocket that owns the request project",
-);
-
-assert.match(
-  transportSource,
-  /if \(entry\?\.client\?\.isOpen\?\.\(\)\) \{[\s\S]*?return entry\.client;/,
-  "returning to a project must reuse its live websocket",
+  /wsStatusText = computed\(\(\) => "本地 Runtime"\)/,
+  "project chat transport must report the local runtime as its transport",
 );
 
 assert.doesNotMatch(
-  transportSource,
-  /wsProjectId\.value !== normalizedProjectId\)[\s\S]{0,160}disconnectWs\("switch project"\)/,
-  "opening a project websocket must not close another project's background connection",
-);
-
-assert.match(
-  transportSource,
-  /onMessage: \(eventData\) => onMessage\?\.\(eventData, normalizedProjectId\)/,
-  "background websocket events must carry their owning project id",
+  `${transportSource}\n${projectChatSource}`,
+  /new WebSocket|buildWsBaseUrl/,
+  "local project chat must not construct a remote websocket",
 );
 
 assert.match(
@@ -64,19 +52,7 @@ const projectWatcher =
 assert.match(
   projectWatcher,
   /selectWsProject\(projectId\);/,
-  "project switching must only select the foreground websocket state",
-);
-
-assert.doesNotMatch(
-  projectWatcher,
-  /rejectPendingRequests\(|disconnectWs\(/,
-  "project switching must not cancel background requests or disconnect their websocket",
-);
-
-assert.match(
-  projectChatSource,
-  /onUnexpectedClose: \(reason, projectId\) => \{\s*rejectPendingRequests\(reason, \{ projectId \}\);/,
-  "a broken project connection must reject only requests owned by that project",
+  "project switching must keep the local transport project context in sync",
 );
 
 globalThis.window = { setTimeout, clearTimeout };

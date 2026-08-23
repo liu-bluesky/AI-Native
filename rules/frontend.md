@@ -7,8 +7,8 @@
 - Vue 3.5+ Composition API（`<script setup>` 语法）
 - Element Plus 2.9+（中文 locale：zh-CN）
 - vue-router 4.5+（hash 模式）
-- axios 1.7+（封装于 `utils/api.js`）
-- Vite 构建，开发端口 3000，`/api` 与 `/mcp` 代理到 `vite.config.js` 解析出的 API 地址
+- Tauri 2 桌面桥接（需要本机能力时通过 `utils/native-desktop-bridge.js`）
+- Vite 构建，开发端口由项目脚本控制
 
 ## 组件结构
 
@@ -45,7 +45,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { User, Plus, SetUp } from '@element-plus/icons-vue'
 
 // 3. 本地模块（使用 @ 别名，指向 src/）
-import api from '@/utils/api.js'
+import { hasNativeDesktopBridge } from '@/utils/native-desktop-bridge.js'
 ```
 
 ### 响应式数据模式
@@ -66,18 +66,20 @@ const form = reactive({
 const employeeId = computed(() => route.params.id)
 ```
 
-## API 调用模式
+## 本地能力调用模式
 
-统一使用 `utils/api.js` 封装的 axios 实例：
+本机文件、运行时和桌面能力必须通过桥接封装或领域 Service 调用：
 
 ```js
-async function fetchList() {
+async function loadLocalRuntime() {
   loading.value = true
   try {
-    const { employees: list } = await api.get('/employees')
-    employees.value = list
-  } catch {
-    ElMessage.error('加载失败')
+    if (!hasNativeDesktopBridge()) {
+      throw new Error('当前环境不支持桌面端能力')
+    }
+    // 调用所属领域的 bridge/service 封装
+  } catch (error) {
+    ElMessage.error(error?.message || '加载失败')
   } finally {
     loading.value = false
   }
@@ -85,8 +87,7 @@ async function fetchList() {
 ```
 
 关键约束：
-- 响应已自动解包为 `res.data`，直接解构业务字段
-- 401 自动跳转登录页，无需手动处理
+- 组件不直接调用 Tauri `invoke`，必须通过 `utils/native-desktop-bridge.js` 或领域 Service
 - 错误提示用 `ElMessage.error()`
 - 加载状态用 `loading` ref + `v-loading` 指令
 
@@ -202,7 +203,7 @@ function severityColor(sev) {
 
 - 组件内状态：`ref` / `reactive`
 - 跨页面状态：`localStorage`（token、username、role、permissions）
-- 服务端状态：每次进入页面 `onMounted` 重新拉取
+- 本地持久化状态：每次进入页面按项目与会话恢复，并处理缓存失效
 
 ## 样式规范
 
@@ -226,4 +227,4 @@ function severityColor(sev) {
 - 禁止全局状态管理库（当前规模不需要）
 - 禁止直接操作 DOM（用 ref + template ref 代替）
 - 禁止在 template 中写复杂逻辑（提取为 computed 或函数）
-- 禁止裸 axios 调用（必须通过 `utils/api.js`）
+- 禁止在组件中直接调用 Tauri `invoke` 或读写本地文件

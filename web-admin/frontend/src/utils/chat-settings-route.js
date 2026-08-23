@@ -17,11 +17,8 @@ const SETTINGS_PANEL_TARGETS = [
   { panel: "projects", prefixes: ["/projects"] },
   { panel: "agent-templates", prefixes: ["/agent-templates"] },
   { panel: "employees", prefixes: ["/employees", "/agent-feedback", "/memory"] },
-  { panel: "skills", prefixes: ["/skills", "/skill-resources"] },
+  { panel: "skills", prefixes: ["/skills"] },
   { panel: "rules", prefixes: ["/rules"] },
-  { panel: "users", prefixes: ["/users"] },
-  { panel: "roles", prefixes: ["/roles"] },
-  { panel: "api-keys", prefixes: ["/usage/keys"] },
 ]
 
 function normalizePath(path) {

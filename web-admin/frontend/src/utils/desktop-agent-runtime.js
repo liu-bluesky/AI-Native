@@ -1,24 +1,12 @@
-import api from "@/utils/api.js";
-import { getStoredToken } from "@/utils/auth-storage.js";
 import {
   getNativeRuntimeInfo,
   hasNativeDesktopBridge,
   startNativeLiuAgentLocalChat,
 } from "@/utils/native-desktop-bridge.js";
-import { buildApiBaseUrl, resolveServerOrigin } from "@/utils/server-profile.js";
+import { buildLocalModelRuntime } from "@/services/local-model-runtime.js";
 
 function desktopAgentRequestId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-}
-
-function desktopBackendApiBaseUrl() {
-  const baseUrl = String(buildApiBaseUrl() || "").trim();
-  if (/^https?:\/\//i.test(baseUrl)) return baseUrl;
-  const origin = String(resolveServerOrigin() || "").trim();
-  if (/^https?:\/\//i.test(origin)) {
-    return `${origin.replace(/\/+$/, "")}/${baseUrl.replace(/^\/+/, "")}`;
-  }
-  return baseUrl;
 }
 
 export async function resolveDesktopAgentWorkspacePath(workspacePath = "") {
@@ -43,29 +31,9 @@ export async function resolveDesktopAgentModelRuntime({
   if (!normalizedProviderId) {
     throw new Error("请先选择桌面智能体使用的模型供应商");
   }
-  const data = await api.get(
-    `/llm/providers/${encodeURIComponent(normalizedProviderId)}/desktop-runtime`,
-  );
-  const runtime = data?.runtime && typeof data.runtime === "object" ? data.runtime : {};
-  const baseUrl = String(runtime.base_url || runtime.baseUrl || "").trim();
-  const apiKey = String(runtime.api_key || runtime.apiKey || "").trim();
-  const resolvedModelName = String(
-    modelName ||
-      runtime.model_name ||
-      runtime.modelName ||
-      runtime.default_model ||
-      runtime.defaultModel ||
-      "",
-  ).trim();
-  if (!baseUrl || !apiKey || !resolvedModelName) {
-    throw new Error("当前模型供应商缺少桌面端 Base URL、API Key 或模型名");
-  }
+  const runtime = buildLocalModelRuntime(normalizedProviderId, modelName);
   return {
-    mode: "direct-openai-compatible",
-    providerId: normalizedProviderId,
-    modelName: resolvedModelName,
-    baseUrl,
-    apiKey,
+    ...runtime,
     temperature: Number(temperature),
   };
 }
@@ -111,10 +79,6 @@ export async function runDesktopAgentTextTask({
       : [],
     temperature: modelRuntime.temperature,
     modelRuntime,
-    backendContext: {
-      apiBaseUrl: desktopBackendApiBaseUrl(),
-      token: getStoredToken(),
-    },
   });
   if (!result?.ok) {
     throw new Error(

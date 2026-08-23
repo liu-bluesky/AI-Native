@@ -16,6 +16,7 @@ const requiredFiles = [
   "src-tauri/src/bot/feishu.rs",
   "src-tauri/bot_workers/feishu_sdk_listener.py",
   "src/utils/native-desktop-bridge.js",
+  "src/utils/desktop-updater.js",
   "src/utils/workspace-picker.js",
 ];
 
@@ -62,6 +63,11 @@ await assertIncludes("src-tauri/src/main.rs", [
   "liuagent_prepare_agent_invocation",
   "record_runner_permission_decision",
   "list_runner_permission_decisions",
+  "get_desktop_version",
+  "check_desktop_update",
+  "install_desktop_update",
+  "desktop-update-progress",
+  "tauri_plugin_updater::Builder",
   "is_allowed_runner_command",
   "tauri::generate_handler!",
 ]);
@@ -70,6 +76,8 @@ await assertIncludes("src-tauri/tauri.conf.json", [
   '"devUrl": "http://127.0.0.1:3000"',
   '"resources"',
   '"bot_workers/feishu_sdk_listener.py"',
+  '"pubkey"',
+  '"dangerousInsecureTransportProtocol": true',
 ]);
 await assertIncludes("src/utils/native-desktop-bridge.js", [
   '@tauri-apps/api/core',
@@ -133,9 +141,20 @@ await assertIncludes("src/utils/native-desktop-bridge.js", [
   "removedNativeExternalAgentError",
   "recordNativeRunnerPermissionDecision",
   "listNativeRunnerPermissionDecisions",
+  "getDesktopVersion",
   "listNativeWorkspaceFileChanges",
   "acceptNativeWorkspaceFileChange",
   "revertNativeWorkspaceFileChange",
+  "checkDesktopUpdate",
+  "installDesktopUpdate",
+  "desktop-update-progress",
+]);
+await assertIncludes("src/utils/desktop-updater.js", [
+  "VITE_DESKTOP_UPDATE_ENDPOINT",
+  "/desktop-updates/latest",
+  "getNativeRuntimeInfo",
+  "resolveDesktopDistribution",
+  "downloadDesktopUpdate",
 ]);
 await assertIncludes("src/views/projects/ProjectChat.vue", [
   "startNativeLiuAgentLocalChat",
@@ -163,7 +182,7 @@ await assertIncludes("src/modules/project-chat/components/file-changes/FileChang
   "文件变更审查",
   "确认保存",
   "放弃修改",
-  "撤回已保存",
+  "撤回保存",
 ]);
 await assertIncludes("src-tauri/Cargo.toml", [
   'name = "ai-employee-factory-desktop"',

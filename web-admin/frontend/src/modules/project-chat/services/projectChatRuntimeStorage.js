@@ -1,35 +1,25 @@
 import {
-  deleteNativeProjectChatSession,
   readNativeProjectChatRuntime,
   writeNativeProjectChatRuntime,
 } from "@/utils/native-desktop-bridge.js";
-import { resolveCurrentUsername } from "@/modules/project-chat/services/projectChatStorage.js";
-
-const runtimeWriteQueues = new Map();
-
-function runtimeStorageQueueKey(projectId, chatSessionId) {
-  return `${String(projectId || "").trim()}::${String(chatSessionId || "").trim()}`;
-}
-
-function enqueueRuntimeStorageOperation(projectId, chatSessionId, operation) {
-  const key = runtimeStorageQueueKey(projectId, chatSessionId);
-  const previous = runtimeWriteQueues.get(key) || Promise.resolve();
-  const next = previous.catch(() => undefined).then(operation);
-  runtimeWriteQueues.set(key, next);
-  return next.finally(() => {
-    if (runtimeWriteQueues.get(key) === next) {
-      runtimeWriteQueues.delete(key);
-    }
-  });
-}
+import {
+  deleteLocalChatSession,
+  enqueueChatSessionStorageOperation,
+  isChatSessionDeleted,
+  resolveCurrentUsername,
+} from "@/modules/project-chat/services/projectChatStorage.js";
 
 export async function readPersistedChatRuntime(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId || !normalizedChatSessionId) return null;
-  await (runtimeWriteQueues.get(
-    runtimeStorageQueueKey(normalizedProjectId, normalizedChatSessionId),
-  ) || Promise.resolve());
+  await enqueueChatSessionStorageOperation(
+    normalizedProjectId,
+    async () => undefined,
+  );
+  if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
+    return null;
+  }
   return readNativeProjectChatRuntime(
     normalizedProjectId,
     normalizedChatSessionId,
@@ -49,16 +39,22 @@ export async function writePersistedChatRuntime(
     await clearPersistedChatRuntime(normalizedProjectId, normalizedChatSessionId);
     return true;
   }
-  return enqueueRuntimeStorageOperation(
+  if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
+    return false;
+  }
+  return enqueueChatSessionStorageOperation(
     normalizedProjectId,
-    normalizedChatSessionId,
-    () =>
-      writeNativeProjectChatRuntime(
+    async () => {
+      if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
+        return false;
+      }
+      return writeNativeProjectChatRuntime(
         normalizedProjectId,
         normalizedChatSessionId,
         resolveCurrentUsername(),
         payload,
-      ),
+      );
+    },
   );
 }
 
@@ -66,14 +62,8 @@ export async function clearPersistedChatRuntime(projectId, chatSessionId = "") {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId || !normalizedChatSessionId) return false;
-  return enqueueRuntimeStorageOperation(
+  return deleteLocalChatSession(
     normalizedProjectId,
     normalizedChatSessionId,
-    () =>
-      deleteNativeProjectChatSession(
-        normalizedProjectId,
-        normalizedChatSessionId,
-        resolveCurrentUsername(),
-      ),
   );
 }

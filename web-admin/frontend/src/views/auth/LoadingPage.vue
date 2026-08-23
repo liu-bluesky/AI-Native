@@ -30,24 +30,17 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import api from '@/utils/api.js'
-import { getStoredToken, isExternalAuthSession } from '@/utils/auth-storage.js'
+import { getStoredToken } from '@/utils/auth-storage.js'
 
 const OFFLINE_DESKTOP_STARTUP_STORAGE_KEY = 'desktop_offline_startup'
-const DESKTOP_OFFLINE_MODE_STORAGE_KEY = 'desktop_offline_mode'
 
 const router = useRouter()
 const statusText = ref('正在确认是否需要初始化')
 const errorText = ref('')
 
-function resolveSetupRequired(payload = {}) {
-  return payload.setup_required === true || payload.initialized === false
-}
-
 function markOfflineDesktopStartup() {
   try {
     window.sessionStorage?.setItem(OFFLINE_DESKTOP_STARTUP_STORAGE_KEY, '1')
-    window.sessionStorage?.setItem(DESKTOP_OFFLINE_MODE_STORAGE_KEY, '1')
   } catch {
     // Ignore storage failures; the router can still try the normal workbench route.
   }
@@ -55,26 +48,9 @@ function markOfflineDesktopStartup() {
 
 async function checkStatus() {
   errorText.value = ''
-  if (isExternalAuthSession()) {
-    statusText.value = '正在打开本地工作台'
-    await router.replace('/workbench')
-    return
-  }
-  statusText.value = '正在确认是否需要初始化'
-  try {
-    const status = await api.get('/init/status')
-    if (resolveSetupRequired(status)) {
-      statusText.value = '正在打开初始化页面'
-      await router.replace('/init')
-      return
-    }
-    statusText.value = '正在打开登录入口'
-    await router.replace(getStoredToken() ? '/workbench' : '/login')
-  } catch {
-    markOfflineDesktopStartup()
-    statusText.value = '后端不可用，正在打开桌面工作台'
-    await router.replace('/workbench')
-  }
+  markOfflineDesktopStartup()
+  statusText.value = '正在打开本地工作台'
+  await router.replace(getStoredToken() ? '/workbench' : '/login')
 }
 
 onMounted(() => {

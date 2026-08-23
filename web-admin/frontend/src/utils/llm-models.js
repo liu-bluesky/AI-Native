@@ -144,7 +144,7 @@ export const FALLBACK_MODEL_TYPE_OPTIONS = [
   {
     id: 'image_generation',
     label: 'Images / 图片生成',
-    description: '适合根据提示词或参考图生成图片；常见别名：image、images。',
+    description: '适合根据提示词生成图片或编辑现有图片；由统一媒体协议和供应商适配器连接具体模型。常见别名：image、images。',
     chat_parameter_mode: 'image',
     project_chat_allowed_file_types: [],
     attachment_mode: 'unsupported',
@@ -154,7 +154,7 @@ export const FALLBACK_MODEL_TYPE_OPTIONS = [
   {
     id: 'video_generation',
     label: 'Videos / 视频生成',
-    description: '适合生成短视频或动画片段；常见别名：video、videos。',
+    description: '适合生成短视频或动画片段；由统一媒体协议和供应商适配器连接具体模型，编辑能力取决于供应商。常见别名：video、videos。',
     chat_parameter_mode: 'video',
     project_chat_allowed_file_types: [],
     attachment_mode: 'unsupported',
@@ -164,7 +164,7 @@ export const FALLBACK_MODEL_TYPE_OPTIONS = [
   {
     id: 'audio_generation',
     label: 'Speech / 音频生成',
-    description: '适合语音、配音或音频内容生成；常见别名：speech、tts。',
+    description: '主要表示文本转语音、朗读和配音；由统一媒体协议和供应商适配器连接具体模型。常见别名：speech、tts。',
     chat_parameter_mode: 'audio_generation',
     project_chat_allowed_file_types: [],
     attachment_mode: 'unsupported',
@@ -174,7 +174,7 @@ export const FALLBACK_MODEL_TYPE_OPTIONS = [
   {
     id: 'audio_transcription',
     label: 'Transcriptions / 音频转写',
-    description: '适合语音识别、语音转文本与实时转写场景；常见别名：transcription、speech_to_text、asr。',
+    description: '适合语音识别和语音转文本；由统一媒体协议和供应商适配器连接具体模型，语言、说话人识别等能力取决于供应商。常见别名：transcription、speech_to_text、asr。',
     chat_parameter_mode: 'audio_transcription',
     project_chat_allowed_file_types: ['audio/*'],
     attachment_mode: 'inline_audio',

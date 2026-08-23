@@ -153,8 +153,8 @@ for (const dependency of [
 }
 assert.match(
   pageSource,
-  /fetchAllVisibleProjects/,
-  "supervision project selector must use the same project source as project chat",
+  /readLocalProjects\(\)/,
+  "supervision project selector must use the local project source",
 );
 assert.match(
   pageSource,
@@ -213,7 +213,8 @@ const chatSessionListSource = jsonStoreSource.match(
 )?.[0] || "";
 assert.ok(chatSessionListSource, "JSON store must define project chat session listing");
 assert.ok(
-  chatSessionListSource.includes("merge_session_with_runtime"),
+  jsonStoreSource.includes("fn list_canonical_sessions(") &&
+    jsonStoreSource.includes("merge_session_with_runtime(&chat_session_id"),
   "chat session listing must derive metadata from the same runtime JSON",
 );
 assert.doesNotMatch(
@@ -253,8 +254,8 @@ assert.match(
 );
 assert.match(
   pageSource,
-  /fetchProjectChatProviders[\s\S]*provider\?\.id[\s\S]*provider\?\.name/,
-  "supervision must use the same provider source as project chat for historical name recovery",
+  /readLocalModelProviders[\s\S]*provider\?\.id[\s\S]*provider\?\.(?:name|display_name)/,
+  "supervision must use the local provider source for historical name recovery",
 );
 assert.match(
   projectChatSource,

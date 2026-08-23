@@ -485,11 +485,11 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
-import api from "@/utils/api.js";
 import {
   FALLBACK_MODEL_TYPE_OPTIONS,
   normalizeProviderModelConfigs as normalizeLlmProviderModelConfigs,
 } from "@/utils/llm-models.js";
+import { readLocalModelProviders } from "@/services/local-model-runtime.js";
 import {
   hasNativeDesktopBridge,
   scanNativeFeishuBotChats,
@@ -1164,12 +1164,7 @@ async function fetchBotChatModelOptions(options = {}) {
   const currentModelName = String(draft.value.model_name || "").trim();
   loadingBotChatModelOptions.value = true;
   try {
-    const llmProviderData = await api.get("/llm/providers", {
-      params: { enabled_only: true },
-    });
-    botChatProviderOptions.value = mergeBotChatProviders([
-      ...(Array.isArray(llmProviderData?.providers) ? llmProviderData.providers : []),
-    ]);
+    botChatProviderOptions.value = mergeBotChatProviders(readLocalModelProviders());
     if (preserveSelection && currentProviderId) {
       const provider = botChatProviderOptions.value.find((item) => item.id === currentProviderId);
       if (!provider) {

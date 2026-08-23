@@ -11,45 +11,8 @@
       <div class="login-panel__header">
         <div class="login-panel__eyebrow">账号登录</div>
         <div class="login-panel__title">欢迎回来</div>
-        <div class="login-panel__text">先确认服务端，再输入账号和密码进入桌面工作区。</div>
+        <div class="login-panel__text">输入账号和密码进入桌面工作区。</div>
       </div>
-
-      <section class="server-connect">
-        <div class="server-connect__head">
-          <div>
-            <div class="server-connect__label">服务端地址</div>
-            <div class="server-connect__value">{{ activeServerLabel }}</div>
-          </div>
-          <el-tag size="small" :type="serverStatusType" effect="plain">
-            {{ serverStatusLabel }}
-          </el-tag>
-        </div>
-        <el-input
-          v-model="serverOriginDraft"
-          placeholder="https://ai.example.com"
-          autocomplete="url"
-          @keyup.enter="applyServerOrigin"
-        />
-        <div v-if="serverProfiles.length" class="server-connect__profiles">
-          <button
-            v-for="item in serverProfiles"
-            :key="item.origin"
-            type="button"
-            class="server-connect__profile"
-            @click="selectServerProfile(item)"
-          >
-            {{ item.name }}
-          </button>
-        </div>
-        <div class="server-connect__footer">
-          <span class="server-connect__message" :class="{ 'is-error': serverStatus === 'error' }">
-            {{ serverStatusMessage }}
-          </span>
-          <el-button text :loading="serverChecking" @click="applyServerOrigin">
-            测试连接
-          </el-button>
-        </div>
-      </section>
 
       <el-form
         ref="formRef"
@@ -86,8 +49,7 @@
         <el-form-item class="login-form__submit">
           <el-button
             type="primary"
-            :loading="loading || serverChecking"
-            :disabled="serverStatus !== 'ready'"
+            :loading="loading"
             class="login-submit"
             @click="handleLogin"
           >
@@ -107,20 +69,13 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { gsap } from "gsap";
 import AuthDesktopShell from "@/components/auth/AuthDesktopShell.vue";
 import { loginWithPassword, resolveSafeRedirectPath } from "@/utils/auth.js";
 import { getRememberedLoginInfo, persistRememberedLoginInfo } from "@/utils/auth-storage.js";
-import api from "@/utils/api.js";
-import {
-  getServerProfiles,
-  resolveServerOrigin,
-  setActiveServerOrigin,
-  validateServerOrigin,
-} from "@/utils/server-profile.js";
 import { openNativeExternalUrl } from "@/utils/native-desktop-bridge.js";
 
 const EXTERNAL_REGISTRATION_URL = "https://token.ltllm.com/login";
@@ -130,11 +85,6 @@ const router = useRouter();
 const formRef = ref(null);
 const motionRoot = ref(null);
 const loading = ref(false);
-const serverChecking = ref(false);
-const serverStatus = ref("idle");
-const serverStatusMessage = ref("请先确认当前要连接的服务端。");
-const serverOriginDraft = ref(resolveServerOrigin());
-const serverProfiles = ref(getServerProfiles());
 
 const dockPreview = ["AI", "PR", "MT", "MK", "SE"];
 const loginFeatures = [
@@ -159,26 +109,11 @@ const rules = {
 };
 let motionMedia = null;
 
-const activeServerLabel = computed(() => resolveServerOrigin() || "当前网页服务");
-const serverStatusType = computed(() => {
-  if (serverStatus.value === "ready") return "success";
-  if (serverStatus.value === "error") return "danger";
-  if (serverStatus.value === "setup") return "warning";
-  return "info";
-});
-const serverStatusLabel = computed(() => {
-  if (serverStatus.value === "ready") return "可连接";
-  if (serverStatus.value === "setup") return "待初始化";
-  if (serverStatus.value === "error") return "不可用";
-  return "未确认";
-});
-
 onMounted(() => {
   const remembered = getRememberedLoginInfo();
   form.username = remembered.username;
   form.password = remembered.enabled ? remembered.password : "";
   form.rememberPassword = remembered.enabled;
-  void checkServerStatus({ silent: true });
   void nextTick(playLoginMotion);
 });
 
@@ -186,17 +121,9 @@ onBeforeUnmount(() => {
   motionMedia?.revert();
 });
 
-watch(
-  () => loading.value || serverChecking.value,
-  (busy) => {
-    animateSubmitState(busy);
-  },
-);
-
-function selectServerProfile(item) {
-  serverOriginDraft.value = item.origin;
-  void applyServerOrigin();
-}
+watch(loading, (busy) => {
+  animateSubmitState(busy);
+});
 
 async function openRegistration() {
   try {
@@ -207,59 +134,8 @@ async function openRegistration() {
   window.open(EXTERNAL_REGISTRATION_URL, "_blank", "noopener,noreferrer");
 }
 
-async function checkServerStatus({ silent = false } = {}) {
-  serverStatus.value = "ready";
-  serverStatusMessage.value = "使用统一账号服务登录。";
-  return true;
-  /* c8 ignore start */
-  serverChecking.value = true;
-  if (!silent) {
-    serverStatus.value = "checking";
-    serverStatusMessage.value = "正在检查服务端状态。";
-  }
-  try {
-    const status = await api.get("/init/status");
-    if (status?.setup_required === true || status?.initialized === false) {
-      serverStatus.value = "setup";
-      serverStatusMessage.value = "服务端尚未初始化，请先创建超级管理员。";
-      await router.replace("/init");
-      return false;
-    }
-    serverStatus.value = "ready";
-    serverStatusMessage.value = "服务端连接正常。";
-    return true;
-  } catch (err) {
-    serverStatus.value = "error";
-    serverStatusMessage.value = err?.detail || err?.message || "服务端不可连接";
-    return false;
-  } finally {
-    serverChecking.value = false;
-  }
-  /* c8 ignore stop */
-}
-
-async function applyServerOrigin() {
-  const validation = validateServerOrigin(serverOriginDraft.value);
-  if (!validation.ok) {
-    serverStatus.value = "error";
-    serverStatusMessage.value = validation.message;
-    return;
-  }
-  setActiveServerOrigin(validation.origin, {
-    name: validation.origin,
-    saveProfile: true,
-  });
-  serverOriginDraft.value = validation.origin;
-  serverProfiles.value = getServerProfiles();
-  return checkServerStatus();
-}
-
 async function handleLogin() {
   animateSubmitPress();
-  if (serverStatus.value !== "ready") {
-    await applyServerOrigin();
-    if (serverStatus.value !== "ready") return;
-  }
   await formRef.value.validate();
   loading.value = true;
   try {
@@ -439,81 +315,6 @@ function prefersReducedMotion() {
 .login-form :deep(.el-form-item__label) {
   color: #334155;
   font-weight: 600;
-}
-
-.server-connect {
-  margin-bottom: 18px;
-  padding: 14px;
-  border: 1px solid rgba(203, 213, 225, 0.8);
-  border-radius: 16px;
-  background: rgba(248, 250, 252, 0.82);
-}
-
-.server-connect__head,
-.server-connect__footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.server-connect__head {
-  margin-bottom: 10px;
-}
-
-.server-connect__label {
-  color: #334155;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.server-connect__value {
-  margin-top: 3px;
-  max-width: 280px;
-  overflow: hidden;
-  color: #64748b;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.server-connect__profiles {
-  display: flex;
-  gap: 6px;
-  margin-top: 10px;
-  overflow-x: auto;
-}
-
-.server-connect__profile {
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid rgba(203, 213, 225, 0.88);
-  border-radius: 999px;
-  background: #fff;
-  color: #475569;
-  cursor: pointer;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.server-connect__profile:hover {
-  border-color: rgba(15, 23, 42, 0.18);
-  color: #111827;
-}
-
-.server-connect__footer {
-  margin-top: 10px;
-}
-
-.server-connect__message {
-  min-width: 0;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.server-connect__message.is-error {
-  color: #b91c1c;
 }
 
 .login-form__submit {
