@@ -1,4 +1,4 @@
-//! Structured media-model tools executed through the authenticated backend.
+//! Structured media-model tools. Images use direct provider APIs; other media uses the backend.
 
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};

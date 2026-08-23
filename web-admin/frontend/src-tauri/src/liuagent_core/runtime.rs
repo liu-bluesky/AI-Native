@@ -4384,6 +4384,8 @@ impl AgentLoopResult {
             | "runtime_interrupted"
             | "repeated_failure"
             | "verification_failed"
+            | "required_tool_unavailable"
+            | "required_tool_not_called"
             | "tool_no_signal" => return false,
             _ => {}
         }
@@ -4397,6 +4399,8 @@ impl AgentLoopResult {
             "runtime_interrupted" => "runtime.interrupted".to_string(),
             "repeated_failure" => "agent_loop.repeated_failure".to_string(),
             "verification_failed" => "agent_loop.verification_failed".to_string(),
+            "required_tool_unavailable" => "agent_loop.required_tool_unavailable".to_string(),
+            "required_tool_not_called" => "agent_loop.required_tool_not_called".to_string(),
             "tool_no_signal" => "agent_loop.no_signal".to_string(),
             _ => String::new(),
         }
@@ -4413,6 +4417,12 @@ impl AgentLoopResult {
             }
             "verification_failed" => {
                 "agent loop could not verify the user goal after failed attempts".to_string()
+            }
+            "required_tool_unavailable" => {
+                "required media tool was not available in the model request".to_string()
+            }
+            "required_tool_not_called" => {
+                "model did not call the required media tool after retry".to_string()
             }
             "tool_no_signal" => {
                 "tool stopped without completion evidence; task state is no_signal".to_string()
@@ -4433,6 +4443,12 @@ impl AgentLoopResult {
                     "Agent Loop 验收没有通过：存在未解决的失败方案，不能把当前需求判定为完成。"
                         .to_string()
                 }
+            }
+            "required_tool_unavailable" => {
+                "任务需要媒体工具，但本轮请求未提供对应工具，已阻止虚假完成。".to_string()
+            }
+            "required_tool_not_called" => {
+                "模型未调用任务所需的媒体工具，已阻止虚假完成。".to_string()
             }
             _ => String::new(),
         }
@@ -4809,6 +4825,32 @@ fn run_agent_loop_with(
                             continue 'agent_loop;
                         }
                     }
+                }
+            }
+            if let Some(required_tool_name) = required_media_tool_name(&request) {
+                let successful_required_tool = tool_results
+                    .iter()
+                    .any(|result| result.ok && result.name.trim() == required_tool_name);
+                if !successful_required_tool {
+                    let required_tool_available = tool_definitions_for_request(&request)
+                        .iter()
+                        .any(|definition| definition.name == required_tool_name);
+                    if !required_tool_available {
+                        stopped_reason = "required_tool_unavailable".to_string();
+                        break;
+                    }
+                    if verification_reprompts < DEFAULT_MAX_VERIFICATION_REPROMPTS {
+                        verification_reprompts += 1;
+                        messages.push(RuntimeModelMessage::simple(
+                            "user",
+                            format!(
+                                "当前目标必须通过 {required_tool_name} 的真实成功结果完成。你尚未调用该工具，不能仅用文字声明已完成。请立即调用工具；若无法调用，请明确说明阻塞原因。"
+                            ),
+                        ));
+                        continue;
+                    }
+                    stopped_reason = "required_tool_not_called".to_string();
+                    break;
                 }
             }
             let active_workspace_for_verification = active_workspace_root.borrow().clone();
@@ -5719,9 +5761,6 @@ fn tool_arguments_with_backend_context(
         tool_name,
         "generate_image" | "edit_image" | "generate_video" | "generate_audio" | "transcribe_audio"
     ) {
-        let Some(context) = backend_context else {
-            return arguments;
-        };
         let Some(config) = media_tools
             .iter()
             .find(|item| item.name.trim() == tool_name)
@@ -5741,14 +5780,6 @@ fn tool_arguments_with_backend_context(
         let Some(object) = arguments.as_object_mut() else {
             return arguments;
         };
-        if !is_tauri_bot_local_chat_config(mcp_config) {
-            object.insert("project_id".to_string(), json!(project_id.trim()));
-        }
-        object.insert(
-            "_backend_api_base_url".to_string(),
-            json!(normalize_local_backend_api_base_url(&context.api_base_url)),
-        );
-        object.insert("_backend_token".to_string(), json!(context.token.trim()));
         object.insert(
             "_media_provider_id".to_string(),
             json!(config.provider_id.trim()),
@@ -5763,6 +5794,19 @@ fn tool_arguments_with_backend_context(
             "_media_extra_headers".to_string(),
             config.extra_headers.clone(),
         );
+        if !matches!(tool_name, "generate_image" | "edit_image") {
+            let Some(context) = backend_context else {
+                return arguments;
+            };
+            if !is_tauri_bot_local_chat_config(mcp_config) {
+                object.insert("project_id".to_string(), json!(project_id.trim()));
+            }
+            object.insert(
+                "_backend_api_base_url".to_string(),
+                json!(normalize_local_backend_api_base_url(&context.api_base_url)),
+            );
+            object.insert("_backend_token".to_string(), json!(context.token.trim()));
+        }
         if let Some(resolution) = selected_image_resolution {
             match resolution {
                 Ok(reference_images) => {
@@ -6391,6 +6435,18 @@ fn build_agent_loop_verification(
                 .filter(|gate| !gate.passed)
                 .map(|gate| gate.evidence.clone())
                 .unwrap_or_else(|| unresolved_failure_evidence(attempts)),
+        },
+        "required_tool_unavailable" => AgentLoopVerification {
+            status: "failed".to_string(),
+            summary:
+                "任务需要媒体生成工具，但本轮请求未提供对应工具；不能把模型文字声明判定为完成。"
+                    .to_string(),
+            evidence: vec!["required_media_tool_unavailable".to_string()],
+        },
+        "required_tool_not_called" => AgentLoopVerification {
+            status: "failed".to_string(),
+            summary: "任务需要媒体生成工具，但模型在重试后仍未调用；不能判定为完成。".to_string(),
+            evidence: vec!["required_media_tool_not_called".to_string()],
         },
         "repeated_failure" => AgentLoopVerification {
             status: "paused".to_string(),
@@ -8877,6 +8933,25 @@ fn task_profile_required_capabilities(intent: &TaskIntent, domains: &[String]) -
     capabilities
 }
 
+fn normalize_task_domain(domain: &str) -> String {
+    let normalized = domain.trim().to_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "media"
+            | "image"
+            | "image_generation"
+            | "image generation"
+            | "图像生成"
+            | "图片生成"
+            | "媒体"
+            | "媒体生成"
+    ) {
+        "media".to_string()
+    } else {
+        normalized
+    }
+}
+
 fn build_task_profile(user_message: &str) -> TaskProfile {
     let _ = user_message;
     TaskProfile {
@@ -8945,9 +9020,8 @@ fn parse_flow_routing_profile(result: &ModelStepResult, fallback: &TaskProfile) 
             items
                 .iter()
                 .filter_map(Value::as_str)
-                .map(str::trim)
+                .map(normalize_task_domain)
                 .filter(|item| !item.is_empty())
-                .map(str::to_string)
                 .take(8)
                 .collect::<Vec<_>>()
         })
@@ -9393,6 +9467,49 @@ fn request_targets_configured_media_tool(request: &ModelStepRequest) -> bool {
             && ["编辑图片", "修改图片", "修图", "edit image"]
                 .iter()
                 .any(|keyword| message.contains(keyword)))
+}
+
+fn required_media_tool_name(request: &ModelStepRequest) -> Option<&'static str> {
+    if !request
+        .task_profile
+        .required_capabilities
+        .iter()
+        .any(|capability| capability == "media_tool")
+    {
+        return None;
+    }
+    let text = format!(
+        "{} {} {}",
+        request.user_message,
+        request.task_profile.goal,
+        request.task_profile.targets.join(" ")
+    )
+    .to_lowercase();
+    if ["转写", "转录", "字幕", "transcribe", "transcription"]
+        .iter()
+        .any(|keyword| text.contains(keyword))
+    {
+        return Some("transcribe_audio");
+    }
+    if ["视频", "video", "动画", "短片"]
+        .iter()
+        .any(|keyword| text.contains(keyword))
+    {
+        return Some("generate_video");
+    }
+    if ["音频", "语音", "配音", "audio", "speech"]
+        .iter()
+        .any(|keyword| text.contains(keyword))
+    {
+        return Some("generate_audio");
+    }
+    if ["编辑图片", "修改图片", "修改这张", "修图", "edit image"]
+        .iter()
+        .any(|keyword| text.contains(keyword))
+    {
+        return Some("edit_image");
+    }
+    Some("generate_image")
 }
 
 fn hydrate_mcp_tool_snapshot(request: &mut ModelStepRequest) {
@@ -10080,6 +10197,28 @@ fn tool_disabled_reason(
         }
         "generate_image" | "edit_image" | "generate_video" | "generate_audio"
         | "transcribe_audio" => {
+            let config = request
+                .media_tools
+                .iter()
+                .find(|item| item.name.trim() == tool_name);
+            let configured = config.is_some_and(|item| {
+                !item.provider_id.trim().is_empty() && !item.model_name.trim().is_empty()
+            });
+            if !configured {
+                return Some(format!(
+                    "{tool_name} is disabled because no auxiliary model is configured"
+                ));
+            }
+            if matches!(tool_name, "generate_image" | "edit_image") {
+                let direct_configured = config.is_some_and(|item| {
+                    !item.base_url.trim().is_empty() && !item.api_key.trim().is_empty()
+                });
+                if !direct_configured {
+                    return Some(format!(
+                        "{tool_name} is disabled because direct image baseUrl/apiKey is missing"
+                    ));
+                }
+            }
             let has_backend_context = request
                 .backend_context
                 .as_ref()
@@ -10087,21 +10226,11 @@ fn tool_disabled_reason(
                     !context.api_base_url.trim().is_empty() && !context.token.trim().is_empty()
                 })
                 .unwrap_or(false);
-            if !has_backend_context {
+            if !matches!(tool_name, "generate_image" | "edit_image") && !has_backend_context {
                 return Some(
                     "Media tools are disabled because no backend login context is available"
                         .to_string(),
                 );
-            }
-            let configured = request.media_tools.iter().any(|item| {
-                item.name.trim() == tool_name
-                    && !item.provider_id.trim().is_empty()
-                    && !item.model_name.trim().is_empty()
-            });
-            if !configured {
-                return Some(format!(
-                    "{tool_name} is disabled because no auxiliary model is configured"
-                ));
             }
             if tool_name == "edit_image" {
                 let has_image = request.attachments.iter().any(|attachment| {
@@ -15886,21 +16015,22 @@ mod tests {
     #[test]
     fn configured_image_tools_are_exposed_without_implicit_generate_references() {
         let mut request = test_model_request("请参考上传图片生成一张海报");
-        request.backend_context = Some(LocalBackendContext {
-            api_base_url: "http://127.0.0.1:8000/api".to_string(),
-            token: "login-token".to_string(),
-        });
+        request.backend_context = None;
         request.media_tools = vec![
             LocalMediaToolConfig {
                 name: "generate_image".to_string(),
                 provider_id: "provider-image".to_string(),
                 model_name: "image-model".to_string(),
+                base_url: "https://images.example.com/v1".to_string(),
+                api_key: "image-key".to_string(),
                 ..Default::default()
             },
             LocalMediaToolConfig {
                 name: "edit_image".to_string(),
                 provider_id: "provider-image".to_string(),
                 model_name: "image-model".to_string(),
+                base_url: "https://images.example.com/v1".to_string(),
+                api_key: "image-key".to_string(),
                 ..Default::default()
             },
         ];
@@ -15940,6 +16070,12 @@ mod tests {
         );
         assert_eq!(execution_args["_media_provider_id"], "provider-image");
         assert_eq!(execution_args["_media_model_name"], "image-model");
+        assert_eq!(
+            execution_args["_media_base_url"],
+            "https://images.example.com/v1"
+        );
+        assert_eq!(execution_args["_media_api_key"], "image-key");
+        assert!(execution_args.get("_backend_token").is_none());
         assert!(execution_args.get("_reference_images").is_none());
         assert!(tool.arguments.get("_backend_token").is_none());
     }
@@ -17249,6 +17385,81 @@ mod tests {
         assert!(routed
             .required_capabilities
             .contains(&"file_write".to_string()));
+    }
+
+    #[test]
+    fn model_routing_normalizes_chinese_image_domain_to_media() {
+        let profile = build_task_profile("生成一个女孩");
+        let result = test_model_result(
+            r#"{"intent":"execute","goal":"生成一张女孩的图片","domains":["图像生成"],"targets":["女孩图片"],"clarity_score":3,"ambiguities":[],"complexity":"simple","risk":"model_declared_write"}"#,
+            Vec::new(),
+        );
+
+        let routed = parse_flow_routing_profile(&result, &profile);
+
+        assert_eq!(routed.domains, vec!["media".to_string()]);
+        assert!(routed
+            .required_capabilities
+            .contains(&"media_tool".to_string()));
+        assert!(routed.required_context.contains(&"media_rules".to_string()));
+    }
+
+    #[test]
+    fn media_task_without_configured_tool_cannot_finish_from_text_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_media_tool_unavailable_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let mut request = test_model_request("生成一个女孩");
+        request.workspace_path = dir.to_string_lossy().to_string();
+        request.task_profile.intent = TaskIntent::Execute;
+        request.task_profile.domains = vec!["media".to_string()];
+        request.task_profile.goal = "生成一张女孩的图片".to_string();
+        request.task_profile.targets = vec!["女孩图片".to_string()];
+        request.task_profile.required_capabilities = task_profile_required_capabilities(
+            &request.task_profile.intent,
+            &request.task_profile.domains,
+        );
+        let prompt_stack = prompt_stack_from_model_request(&request);
+        let model_runner =
+            |_request: &ModelStepRequest| test_model_result("已生成女孩图片。", Vec::new());
+        let tool_runner =
+            |_request: ToolExecutionRequest| panic!("unavailable media tool must not execute");
+
+        let result = run_agent_loop_with(
+            "chat-media-unavailable",
+            "runtime-media-unavailable",
+            &request,
+            &prompt_stack,
+            &dir,
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert_eq!(result.stopped_reason, "required_tool_unavailable");
+        assert_eq!(result.verification.status, "failed");
+        assert!(!result.ok());
+        assert_eq!(result.error_code(), "agent_loop.required_tool_unavailable");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn required_media_tool_distinguishes_edit_and_transcription_tasks() {
+        let mut edit_request = test_model_request("修改这张图片的背景");
+        edit_request.task_profile.required_capabilities = vec!["media_tool".to_string()];
+        edit_request.task_profile.goal = "编辑图片背景".to_string();
+        assert_eq!(required_media_tool_name(&edit_request), Some("edit_image"));
+
+        let mut transcription_request = test_model_request("转写这段音频");
+        transcription_request.task_profile.required_capabilities = vec!["media_tool".to_string()];
+        transcription_request.task_profile.goal = "生成音频转写文本".to_string();
+        assert_eq!(
+            required_media_tool_name(&transcription_request),
+            Some("transcribe_audio")
+        );
     }
 
     #[test]

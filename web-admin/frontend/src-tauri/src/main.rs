@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Read;
-#[cfg(target_os = "linux")]
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -2817,14 +2815,55 @@ fn desktop_file_drag_drop_payload(event: &tauri::DragDropEvent) -> Option<Value>
     }
 }
 
+fn desktop_file_drag_drop_log_path() -> PathBuf {
+    std::env::temp_dir().join("ai-employee-desktop-file-drag-drop.log")
+}
+
+fn log_desktop_file_drag_drop(payload: &Value) {
+    let line = format!(
+        "{} {}\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+        payload
+    );
+    eprintln!("[desktop-file-drag-drop] {}", payload);
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(desktop_file_drag_drop_log_path())
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 fn emit_desktop_file_drag_drop<R: tauri::Runtime, E: tauri::Emitter<R>>(
     emitter: &E,
     payload: &Value,
 ) {
-    #[cfg(debug_assertions)]
-    eprintln!("[desktop-file-drag-drop] {}", payload);
+    log_desktop_file_drag_drop(payload);
     if let Err(error) = emitter.emit("desktop-file-drag-drop", payload) {
         eprintln!("[desktop-file-drag-drop] event emit failed: {error}");
+    }
+}
+
+fn dispatch_desktop_file_drag_drop_dom<R: tauri::Runtime>(
+    webviews: impl IntoIterator<Item = tauri::Webview<R>>,
+    payload: &Value,
+) {
+    let script = format!(
+        r#"(function(){{
+  try {{
+    var payload = {payload};
+    window.__AI_EMPLOYEE_NATIVE_DRAG__ = payload;
+    window.dispatchEvent(new CustomEvent("ai-employee-native-file-drag-drop", {{ detail: payload }}));
+  }} catch (error) {{
+    console.warn("[desktop-file-drag-drop] DOM dispatch failed", error);
+  }}
+}})();"#
+    );
+    for webview in webviews {
+        if let Err(error) = webview.eval(&script) {
+            eprintln!("[desktop-file-drag-drop] eval failed: {error}");
+        }
     }
 }
 
@@ -2841,7 +2880,8 @@ fn main() {
             };
             if let Some(payload) = desktop_file_drag_drop_payload(drag_event) {
                 emit_desktop_file_drag_drop(window, &payload);
-                emit_desktop_file_drag_drop(&window.app_handle(), &payload);
+                emit_desktop_file_drag_drop(window.app_handle(), &payload);
+                dispatch_desktop_file_drag_drop_dom(window.webviews(), &payload);
             }
         })
         .on_webview_event(|webview, event| {
@@ -2850,7 +2890,8 @@ fn main() {
             };
             if let Some(payload) = desktop_file_drag_drop_payload(drag_event) {
                 emit_desktop_file_drag_drop(webview, &payload);
-                emit_desktop_file_drag_drop(&webview.app_handle(), &payload);
+                emit_desktop_file_drag_drop(webview.app_handle(), &payload);
+                dispatch_desktop_file_drag_drop_dom(std::iter::once(webview.clone()), &payload);
             }
         })
         .invoke_handler(tauri::generate_handler![

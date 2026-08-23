@@ -1479,7 +1479,9 @@ async function subscribeNativeDragDropSource(label, subscribe) {
   }
 }
 
-const NATIVE_DRAG_LEAVE_GRACE_MS = 180;
+const NATIVE_DRAG_LEAVE_GRACE_MS = 600;
+export const NATIVE_FILE_DRAG_DROP_DOM_EVENT =
+  "ai-employee-native-file-drag-drop";
 
 export async function subscribeNativeDesktopDragDrop(handler) {
   if (typeof handler !== "function") {
@@ -1507,7 +1509,7 @@ export async function subscribeNativeDesktopDragDrop(handler) {
       if (type !== "leave") {
         const signature = [
           type,
-          paths.join(" "),
+          paths.join("\0"),
           Math.round(Number(position.x || 0)),
           Math.round(Number(position.y || 0)),
         ].join(":");
@@ -1541,26 +1543,62 @@ export async function subscribeNativeDesktopDragDrop(handler) {
     if (typeof unlisten === "function") unlisteners.push(unlisten);
   };
 
+  if (typeof window !== "undefined") {
+    const onNativeDomDragDrop = (event) => {
+      forwardPayload(event?.detail);
+    };
+    window.addEventListener(
+      NATIVE_FILE_DRAG_DROP_DOM_EVENT,
+      onNativeDomDragDrop,
+    );
+    document.addEventListener(
+      NATIVE_FILE_DRAG_DROP_DOM_EVENT,
+      onNativeDomDragDrop,
+    );
+    addUnlistener(() => {
+      window.removeEventListener(
+        NATIVE_FILE_DRAG_DROP_DOM_EVENT,
+        onNativeDomDragDrop,
+      );
+      document.removeEventListener(
+        NATIVE_FILE_DRAG_DROP_DOM_EVENT,
+        onNativeDomDragDrop,
+      );
+    });
+  }
+
   addUnlistener(
     await subscribeNativeDragDropSource(
       "WebviewWindow.onDragDropEvent",
       async () =>
         getCurrentWebviewWindow().onDragDropEvent((event) => {
-          forwardPayload(event?.payload);
+          try {
+            forwardPayload(event?.payload);
+          } catch (error) {
+            console.warn("处理 WebviewWindow.onDragDropEvent 失败", error);
+          }
         }),
     ),
   );
   addUnlistener(
     await subscribeNativeDragDropSource("Webview.onDragDropEvent", async () =>
       getCurrentWebview().onDragDropEvent((event) => {
-        forwardPayload(event?.payload);
+        try {
+          forwardPayload(event?.payload);
+        } catch (error) {
+          console.warn("处理 Webview.onDragDropEvent 失败", error);
+        }
       }),
     ),
   );
   addUnlistener(
     await subscribeNativeDragDropSource("Window.onDragDropEvent", async () =>
       getCurrentWindow().onDragDropEvent((event) => {
-        forwardPayload(event?.payload);
+        try {
+          forwardPayload(event?.payload);
+        } catch (error) {
+          console.warn("处理 Window.onDragDropEvent 失败", error);
+        }
       }),
     ),
   );

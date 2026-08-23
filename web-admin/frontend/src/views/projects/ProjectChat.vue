@@ -2985,6 +2985,7 @@ import {
   clearAuthSession,
   getStoredAuthProfile,
   getStoredToken,
+  isExternalAuthSession,
 } from "@/utils/auth-storage.js";
 import { fetchDictionary } from "@/utils/dictionaries.js";
 import {
@@ -3003,7 +3004,10 @@ import {
   ArrowUp,
 } from "@element-plus/icons-vue";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
-import { resolveServerOrigin } from "@/utils/server-profile.js";
+import {
+  buildNativeBackendApiBaseUrl,
+  resolveServerOrigin,
+} from "@/utils/server-profile.js";
 import { formatRelativeDateTime } from "@/utils/date.js";
 import {
   DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME,
@@ -27067,6 +27071,9 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
     : [];
   let remainingTextBudget = Math.max(0, Number(docMaxCharsTotal.value || 0));
   const modelMode = currentModelAttachmentMode.value;
+  const mediaImageToolConfigured = localLiuAgentMediaTools.value.some((tool) =>
+    ["generate_image", "edit_image"].includes(String(tool?.name || "").trim()),
+  );
   const attachments = [];
   for (const [index, item] of normalizedItems.entries()) {
     const rawFile = item?.raw || item;
@@ -27104,7 +27111,10 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
       continue;
     }
     try {
-      if ((isImage && routingMode === "inline_image") || isAudio) {
+      if (
+        (isImage && (routingMode === "inline_image" || mediaImageToolConfigured)) ||
+        isAudio
+      ) {
         base.dataUrl = await readFileAsDataUrl(rawFile);
         base.extractionStatus = base.dataUrl
           ? isAudio
@@ -31628,6 +31638,13 @@ async function sendLocalLiuAgentChatRequest({
     providerId,
     modelName,
   );
+  const backendToken = isExternalAuthSession() ? "" : getStoredToken();
+  const backendContext = backendToken
+    ? {
+        apiBaseUrl: buildNativeBackendApiBaseUrl(),
+        token: backendToken,
+      }
+    : null;
   await saveLocalLiuAgentRuntimeConfigOfflineCache({
     workspacePath,
     providerId,
@@ -31652,6 +31669,7 @@ async function sendLocalLiuAgentChatRequest({
     mcpConfig: effectiveMcpConfig.value,
     attachments,
     mediaTools,
+    backendContext,
     permissionDecision: localLiuAgentFullAccessEnabled(workspacePath)
       ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
       : null,

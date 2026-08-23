@@ -51,6 +51,9 @@ assert.equal(projectChatSource.includes("resolveRequestModelTarget"), false);
 assert.equal(projectChatSource.includes("isProviderCapabilityRequest"), false);
 assert.equal(projectChatSource.includes("providerCapabilityMode"), false);
 assert.ok(projectChatSource.includes("mediaTools: localLiuAgentMediaTools.value"));
+assert.ok(projectChatSource.includes("backendContext,"));
+assert.ok(projectChatSource.includes("buildNativeBackendApiBaseUrl()"));
+assert.ok(projectChatSource.includes("mediaImageToolConfigured"));
 assert.ok(projectChatSource.includes("applyLocalLiuAgentMediaToolResults"));
 assert.ok(projectChatSource.includes('["image", "edit_image"]'));
 assert.match(
