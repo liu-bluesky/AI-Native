@@ -4850,14 +4850,22 @@ fn run_agent_loop_with(
                     }
                 }
             }
-            if let Some(required_tool_name) = required_media_tool_name(&request) {
-                let successful_required_tool = tool_results
-                    .iter()
-                    .any(|result| result.ok && result.name.trim() == required_tool_name);
+            let required_tool_names = required_media_tool_candidates(&request);
+            if !required_tool_names.is_empty() {
+                let successful_required_tool = tool_results.iter().any(|result| {
+                    result.ok
+                        && required_tool_names
+                            .iter()
+                            .any(|name| result.name.trim() == *name)
+                });
                 if !successful_required_tool {
-                    let required_tool_available = tool_definitions_for_request(&request)
+                    let available_tool_names = tool_definitions_for_request(&request)
                         .iter()
-                        .any(|definition| definition.name == required_tool_name);
+                        .map(|definition| definition.name)
+                        .collect::<HashSet<_>>();
+                    let required_tool_available = required_tool_names
+                        .iter()
+                        .any(|name| available_tool_names.contains(name));
                     if !required_tool_available {
                         stopped_reason = "required_tool_unavailable".to_string();
                         break;
@@ -4866,9 +4874,7 @@ fn run_agent_loop_with(
                         verification_reprompts += 1;
                         messages.push(RuntimeModelMessage::simple(
                             "user",
-                            format!(
-                                "当前目标必须通过 {required_tool_name} 的真实成功结果完成。你尚未调用该工具，不能仅用文字声明已完成。请立即调用工具；若无法调用，请明确说明阻塞原因。"
-                            ),
+                            required_media_tool_retry_message(&required_tool_names),
                         ));
                         continue;
                     }
@@ -9600,30 +9606,67 @@ fn required_media_tool_name(request: &ModelStepRequest) -> Option<&'static str> 
     {
         return Some("generate_audio");
     }
-    if ["编辑图片", "修改图片", "修改这张", "修图", "edit image"]
-        .iter()
-        .any(|keyword| text.contains(keyword))
-        || (request
-            .attachments
-            .iter()
-            .any(|attachment| attachment_is_image(attachment))
-            && [
-                "这张",
-                "该图",
-                "原图",
-                "参考图",
-                "以这",
-                "产品照片",
-                "保留产品",
-                "reference image",
-                "this image",
-            ]
-            .iter()
-            .any(|keyword| text.contains(keyword)))
+    if [
+        "编辑图片",
+        "修改图片",
+        "修改这张",
+        "修图",
+        "变清晰",
+        "清晰一点",
+        "提高清晰度",
+        "增强清晰度",
+        "增强画质",
+        "提升画质",
+        "高清一点",
+        "变高清",
+        "去模糊",
+        "太模糊",
+        "照片修复",
+        "修复照片",
+        "edit image",
+        "enhance image",
+        "upscale image",
+        "sharpen image",
+        "deblur image",
+    ]
+    .iter()
+    .any(|keyword| text.contains(keyword))
     {
         return Some("edit_image");
     }
     Some("generate_image")
+}
+
+fn required_media_tool_candidates(request: &ModelStepRequest) -> Vec<&'static str> {
+    let Some(primary) = required_media_tool_name(request) else {
+        return Vec::new();
+    };
+    if matches!(primary, "generate_image" | "edit_image")
+        && request
+            .attachments
+            .iter()
+            .any(|attachment| attachment_is_image(attachment))
+    {
+        let secondary = if primary == "edit_image" {
+            "generate_image"
+        } else {
+            "edit_image"
+        };
+        return vec![primary, secondary];
+    }
+    vec![primary]
+}
+
+fn required_media_tool_retry_message(required_tool_names: &[&str]) -> String {
+    if required_tool_names.contains(&"generate_image")
+        && required_tool_names.contains(&"edit_image")
+    {
+        return "当前目标必须通过真实图片工具结果完成。请根据需求选择正确工具：从文字从零生成图片调用 generate_image；只有需要修改、增强或基于现有图片生成时才调用 edit_image。不能仅用文字声明已完成；若无法调用，请明确说明阻塞原因。".to_string();
+    }
+    let required_tool_name = required_tool_names.first().copied().unwrap_or("media_tool");
+    format!(
+        "当前目标必须通过 {required_tool_name} 的真实成功结果完成。你尚未调用该工具，不能仅用文字声明已完成。请立即调用工具；若无法调用，请明确说明阻塞原因。"
+    )
 }
 
 fn hydrate_mcp_tool_snapshot(request: &mut ModelStepRequest) {
@@ -17609,6 +17652,14 @@ mod tests {
         edit_request.task_profile.goal = "编辑图片背景".to_string();
         assert_eq!(required_media_tool_name(&edit_request), Some("edit_image"));
 
+        let mut enhancement_request =
+            test_model_request("可以帮我把图片照片变得清晰一点吗？现在太模糊了");
+        enhancement_request.task_profile.required_capabilities = vec!["media_tool".to_string()];
+        assert_eq!(
+            required_media_tool_name(&enhancement_request),
+            Some("edit_image")
+        );
+
         let mut poster_request =
             test_model_request("以这张凳子产品照片为唯一依据，制作竖版 4:5 母婴电商宣传海报");
         poster_request.task_profile.required_capabilities = vec!["media_tool".to_string()];
@@ -17627,8 +17678,38 @@ mod tests {
             error: None,
         }];
         assert_eq!(
-            required_media_tool_name(&poster_request),
-            Some("edit_image")
+            required_media_tool_candidates(&poster_request),
+            vec!["generate_image", "edit_image"]
+        );
+
+        poster_request.user_message = "帮我做一个更适合投放的版本".to_string();
+        poster_request.task_profile.goal = "制作电商宣传素材".to_string();
+        poster_request.task_profile.targets = Vec::new();
+        poster_request.media_tools = vec![LocalMediaToolConfig {
+            name: "edit_image".to_string(),
+            provider_id: "image-provider".to_string(),
+            model_name: "image-model".to_string(),
+            base_url: "https://images.example.test/v1".to_string(),
+            api_key: "image-key".to_string(),
+            ..Default::default()
+        }];
+        assert_eq!(
+            required_media_tool_candidates(&poster_request),
+            vec!["generate_image", "edit_image"],
+            "图片附件只能提供图生图能力，不能强制把需求判成 edit_image"
+        );
+        assert!(!request_targets_configured_media_tool(&poster_request));
+
+        let mut text_to_image_request = test_model_request("生成一张儿童房里的凳子宣传图");
+        text_to_image_request.task_profile.required_capabilities = vec!["media_tool".to_string()];
+        text_to_image_request.attachments = poster_request.attachments.clone();
+        assert_eq!(
+            required_media_tool_name(&text_to_image_request),
+            Some("generate_image")
+        );
+        assert_eq!(
+            required_media_tool_candidates(&text_to_image_request),
+            vec!["generate_image", "edit_image"]
         );
 
         let mut transcription_request = test_model_request("转写这段音频");
@@ -17638,6 +17719,94 @@ mod tests {
             required_media_tool_name(&transcription_request),
             Some("transcribe_audio")
         );
+    }
+
+    #[test]
+    fn successful_image_enhancement_is_not_failed_after_final_text_response() {
+        let mut request = test_model_request("可以帮我把图片照片变得清晰一点吗？现在太模糊了");
+        request.task_profile.intent = TaskIntent::Execute;
+        request.task_profile.domains = vec!["media".to_string()];
+        request.task_profile.required_capabilities = vec!["media_tool".to_string()];
+        request.media_tools = vec![LocalMediaToolConfig {
+            name: "edit_image".to_string(),
+            provider_id: "image-provider".to_string(),
+            model_name: "image-model".to_string(),
+            base_url: "https://images.example.test/v1".to_string(),
+            api_key: "image-key".to_string(),
+            ..Default::default()
+        }];
+        request.attachments = vec![LocalChatAttachment {
+            attachment_id: Some("blurry-photo".to_string()),
+            name: "blurry.jpg".to_string(),
+            mime_type: Some("image/jpeg".to_string()),
+            size: None,
+            kind: Some("image".to_string()),
+            routing_mode: Some("inline_image".to_string()),
+            extraction_status: Some("image_data_url".to_string()),
+            data_url: Some("data:image/jpeg;base64,AAAA".to_string()),
+            extracted_text: None,
+            provider_file_id: None,
+            error: None,
+        }];
+        let prompt_stack = prompt_stack_from_model_request(&request);
+        let model_call_count = Cell::new(0usize);
+        let model_runner = |_request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_enhance_image".to_string(),
+                        name: "edit_image".to_string(),
+                        arguments: json!({
+                            "prompt": "提升清晰度并去除模糊",
+                            "input_asset_ids": ["blurry-photo"]
+                        }),
+                        summary: "增强照片清晰度".to_string(),
+                    }],
+                );
+            }
+            test_model_result("照片已经增强清晰度。", Vec::new())
+        };
+        let tool_runner = |tool_request: ToolExecutionRequest| {
+            assert_eq!(tool_request.name, "edit_image");
+            super::super::types::ToolExecutionResult::ok(
+                tool_request.tool_call_id.unwrap_or_default(),
+                tool_request.name,
+                json!({
+                    "artifacts": [{
+                        "asset_type": "image",
+                        "content_url": "https://example.test/enhanced.jpg"
+                    }]
+                }),
+                "图片增强完成".to_string(),
+            )
+        };
+
+        let result = run_agent_loop_with(
+            "chat-image-enhancement",
+            "runtime-image-enhancement",
+            &request,
+            &prompt_stack,
+            &PathBuf::from("."),
+            None,
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert_eq!(model_call_count.get(), 2);
+        assert_eq!(result.tool_results.len(), 1);
+        assert!(
+            result.tool_results[0].ok,
+            "unexpected enhancement loop tool failure: {:?}",
+            result.tool_results[0]
+        );
+        assert_eq!(result.tool_results[0].name, "edit_image");
+        assert_eq!(result.stopped_reason, "no_tool_calls");
+        assert!(result.ok());
+        assert_eq!(result.verification.status, "passed");
     }
 
     #[test]
