@@ -3321,6 +3321,15 @@ const LOCAL_RUNTIME_TASK_QUERY_KEY = "local_runtime_task";
 const LOCAL_RUNTIME_TASK_ACTION_QUERY_KEY = "local_runtime_task_action";
 const LOCAL_AI_TASK_ID_QUERY_KEY = "local_ai_task_id";
 const DEFAULT_AI_ENTRY_FILE = "AIENTRY.md";
+const DEFAULT_AI_ENTRY_CONTENT = `# AIENTRY.md
+
+## 桌面本地智能体工作流
+
+- 先确认当前项目、工作区和用户目标，再开始执行。
+- 涉及文件修改或命令执行时，先说明计划、影响范围和验证方式。
+- 优先使用当前项目工作区中的真实文件和配置，避免跨项目读取或写入。
+- 完成后汇报实际修改、验证结果和仍需用户确认的事项。
+`;
 
 const route = useRoute();
 const router = useRouter();
@@ -31365,7 +31374,7 @@ async function fetchDefaultAiEntryFileContent(projectId) {
   return String(
     readLocalSystemConfig().desktop_agent_global_prompt ||
       desktopAgentGlobalPrompt.value ||
-      "",
+      DEFAULT_AI_ENTRY_CONTENT,
   ).trim();
 }
 
@@ -31405,7 +31414,11 @@ async function createDefaultAiEntryFile() {
       return;
     } catch (err) {
       const message = String(err?.message || err?.detail || "");
-      if (!/not found|no such file|不存在/i.test(message)) {
+      if (
+        !/not found|no such file|os error 2|系统找不到指定的文件|找不到指定的文件|不存在/i.test(
+          message,
+        )
+      ) {
         throw err;
       }
     }

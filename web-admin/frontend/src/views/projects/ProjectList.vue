@@ -144,6 +144,15 @@ import {
 import { pickWorkspaceDirectory } from "@/utils/workspace-picker.js";
 
 const DEFAULT_AI_ENTRY_FILE = "AIENTRY.md";
+const DEFAULT_AI_ENTRY_CONTENT = `# AIENTRY.md
+
+## 桌面本地智能体工作流
+
+- 先确认当前项目、工作区和用户目标，再开始执行。
+- 涉及文件修改或命令执行时，先说明计划、影响范围和验证方式。
+- 优先使用当前项目工作区中的真实文件和配置，避免跨项目读取或写入。
+- 完成后汇报实际修改、验证结果和仍需用户确认的事项。
+`;
 
 const router = useRouter();
 const loading = ref(false);
@@ -175,7 +184,7 @@ function workspaceName(workspace) {
 }
 
 function isWorkspaceFileMissing(error) {
-  return /not found|no such file|不存在/i.test(
+  return /not found|no such file|os error 2|系统找不到指定的文件|找不到指定的文件|不存在/i.test(
     String(error?.message || error?.detail || error || ""),
   );
 }
@@ -205,7 +214,8 @@ async function initializeProjectAiEntryFile(project) {
       workspacePath,
       path: DEFAULT_AI_ENTRY_FILE,
       content: String(
-        readLocalSystemConfig().desktop_agent_global_prompt || "",
+        readLocalSystemConfig().desktop_agent_global_prompt ||
+          DEFAULT_AI_ENTRY_CONTENT,
       ).trim(),
     });
   }
@@ -239,7 +249,7 @@ async function selectWorkspace() {
     if (!workspace?.id) {
       throw new Error("无法保存文件夹工作区");
     }
-    if (!existingWorkspace) {
+    if (!String(workspace?.ai_entry_file || "").trim()) {
       await initializeProjectAiEntryFile(workspace);
     }
     await openWorkspaceSettings(workspace);

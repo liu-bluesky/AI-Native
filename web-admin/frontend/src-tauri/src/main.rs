@@ -1425,10 +1425,18 @@ fn write_workspace_file(
     }
     let temporary = target.with_extension(format!("{}.ai-employee-tmp", std::process::id()));
     fs::write(&temporary, content.as_bytes()).map_err(|err| format!("无法写入临时文件：{err}"))?;
-    fs::rename(&temporary, &target).map_err(|err| {
-        let _ = fs::remove_file(&temporary);
-        format!("无法替换目标文件：{err}")
-    })?;
+    if let Err(rename_error) = fs::rename(&temporary, &target) {
+        if cfg!(windows) && target.exists() {
+            fs::remove_file(&target).map_err(|err| format!("无法替换已有文件：{err}"))?;
+            fs::rename(&temporary, &target).map_err(|err| {
+                let _ = fs::remove_file(&temporary);
+                format!("无法替换目标文件：{err}")
+            })?;
+        } else {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("无法替换目标文件：{rename_error}"));
+        }
+    }
     let metadata = target
         .metadata()
         .map_err(|err| format!("无法读取保存结果：{err}"))?;
@@ -3141,6 +3149,36 @@ mod tests {
         liuagent_core::revert_change(&root, "sample.txt", &saved.content_hash).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "before\n");
         assert!(liuagent_core::list_changes(&root).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_write_creates_new_file_and_tracks_baseline() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-employee-new-file-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let saved = write_workspace_file(
+            root.to_string_lossy().to_string(),
+            "AIENTRY.md".to_string(),
+            "# AIENTRY.md\n".to_string(),
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(saved.path, "AIENTRY.md");
+        assert_eq!(
+            fs::read_to_string(root.join("AIENTRY.md")).unwrap(),
+            "# AIENTRY.md\n"
+        );
+        let changes = liuagent_core::list_changes(&root).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].change_type, "added");
         fs::remove_dir_all(root).unwrap();
     }
 }
