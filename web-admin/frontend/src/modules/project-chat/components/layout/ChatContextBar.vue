@@ -213,7 +213,7 @@ defineExpose({
   color: #0f172a !important;
 }
 
-@media (max-width: 1120px) {
+@media (max-width: 900px) {
   .chat-context-bar__surface {
     flex-direction: column;
     align-items: flex-start;

@@ -25,7 +25,13 @@
     @update-desktop-item-layout="persistDesktopItemLayout"
   >
     <template #window="{ window }">
-      <div class="layout-window-frame" :class="{ 'is-workbench': window.appId === 'workbench' }">
+      <div
+        class="layout-window-frame"
+        :class="{
+          'is-workbench': window.appId === 'workbench',
+          'is-chat': window.appId === 'chat',
+        }"
+      >
         <DesktopWindowHost
           :key="`${window.id}:${window.instanceKey || 0}`"
           :window-id="window.id"
@@ -1189,14 +1195,19 @@ watch(
 .layout-window-frame {
   min-height: 100%;
   height: 100%;
-  border-radius: 22px;
+  border-radius: 0;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.72);
+  background: transparent;
 }
 
 .layout-window-frame :deep(.desktop-window-host) {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+.layout-window-frame.is-chat :deep(.chat-main),
+.layout-window-frame.is-chat :deep(.chat-shell) {
+  padding: 0;
 }
 </style>

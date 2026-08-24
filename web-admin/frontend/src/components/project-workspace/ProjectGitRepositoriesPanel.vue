@@ -20,6 +20,7 @@
     />
 
     <el-table
+      v-if="repositoryLoading || codeRepositories.length"
       v-loading="repositoryLoading"
       :data="codeRepositories"
       stripe
@@ -87,7 +88,8 @@
     </el-table>
 
     <el-empty
-      v-if="!repositoryLoading && !codeRepositories.length"
+      v-else
+      class="git-panel__empty"
       description="当前项目还没有维护代码仓库"
       :image-size="60"
     />
@@ -416,6 +418,10 @@ onBeforeUnmount(() => {
 .git-panel__table {
   margin-top: 8px;
   width: 100%;
+}
+
+.git-panel__empty {
+  padding: 28px 0 12px;
 }
 
 .git-panel__repo-main {

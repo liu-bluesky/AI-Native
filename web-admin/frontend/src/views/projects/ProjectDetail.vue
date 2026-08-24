@@ -18,77 +18,84 @@
       </div>
     </header>
 
-    <section v-if="hasProject" class="folder-settings-page__content" aria-labelledby="folder-settings-title">
-      <div class="folder-settings-form">
-        <div class="folder-settings-form__heading">
-          <h2 id="folder-settings-title">文件夹设置</h2>
-        </div>
-
-        <el-form label-position="top" @submit.prevent="saveProject">
-          <el-form-item label="项目名称">
-            <el-input
-              v-model="form.name"
-              maxlength="80"
-              show-word-limit
-              autocomplete="off"
-              placeholder="输入显示名称"
-              @keyup.enter="saveProject"
-            />
-          </el-form-item>
-
-          <el-form-item label="文件夹">
-            <div class="folder-settings-path">
-              <el-input
-                v-model="form.workspacePath"
-                autocomplete="off"
-                placeholder="选择本机文件夹"
-              >
-                <template #prefix>
-                  <el-icon><FolderOpened /></el-icon>
-                </template>
-              </el-input>
-              <el-button
-                :loading="pickingWorkspace"
-                :disabled="saving"
-                @click="selectWorkspaceDirectory"
-              >
-                选择文件夹
-              </el-button>
+    <section v-if="hasProject" class="folder-settings-page__content">
+      <el-tabs v-model="activeTab" class="folder-settings-tabs">
+        <el-tab-pane label="基本信息" name="general">
+          <div class="folder-settings-panel">
+            <div class="folder-settings-form__heading">
+              <h2 id="folder-settings-title">文件夹设置</h2>
+              <p>管理项目名称和本机工作区路径。</p>
             </div>
-          </el-form-item>
 
-          <div class="folder-settings-form__actions">
-            <el-button
-              type="primary"
-              :loading="saving"
-              :disabled="pickingWorkspace"
-              @click="saveProject"
-            >
-              <el-icon><Check /></el-icon>
-              <span>保存</span>
-            </el-button>
+            <el-form class="folder-settings-form" label-position="top" @submit.prevent="saveProject">
+              <el-form-item label="项目名称">
+                <el-input
+                  v-model="form.name"
+                  maxlength="80"
+                  show-word-limit
+                  autocomplete="off"
+                  placeholder="输入显示名称"
+                  @keyup.enter="saveProject"
+                />
+              </el-form-item>
+
+              <el-form-item label="文件夹">
+                <div class="folder-settings-path">
+                  <el-input
+                    v-model="form.workspacePath"
+                    autocomplete="off"
+                    placeholder="选择本机文件夹"
+                  >
+                    <template #prefix>
+                      <el-icon><FolderOpened /></el-icon>
+                    </template>
+                  </el-input>
+                  <el-button
+                    :loading="pickingWorkspace"
+                    :disabled="saving"
+                    @click="selectWorkspaceDirectory"
+                  >
+                    选择文件夹
+                  </el-button>
+                </div>
+              </el-form-item>
+
+              <div class="folder-settings-form__actions">
+                <el-button
+                  type="primary"
+                  :loading="saving"
+                  :disabled="pickingWorkspace"
+                  @click="saveProject"
+                >
+                  <el-icon><Check /></el-icon>
+                  <span>保存</span>
+                </el-button>
+              </div>
+            </el-form>
           </div>
-        </el-form>
-      </div>
+        </el-tab-pane>
 
-      <div class="folder-settings-module">
-        <ProjectGitRepositoriesPanel
-          :project-id="projectId"
-          :project="project"
-          :can-manage-project="canManageProject"
-          :manage-blocked-message="manageBlockedMessage"
-        />
-      </div>
+        <el-tab-pane label="Git 仓库" name="repositories">
+          <ProjectGitRepositoriesPanel
+            :project-id="projectId"
+            :project="project"
+            :can-manage-project="canManageProject"
+            :manage-blocked-message="manageBlockedMessage"
+          />
+        </el-tab-pane>
 
-      <div class="folder-settings-module">
-        <ProjectDeploySettingsPanel
-          :project-id="projectId"
-          :project="project"
-          :can-manage-project="canManageProject"
-          :manage-blocked-message="manageBlockedMessage"
-          @project-updated="handleProjectUpdated"
-        />
-      </div>
+        <el-tab-pane label="部署设置" name="deployment">
+          <div class="folder-settings-panel">
+            <ProjectDeploySettingsPanel
+              :project-id="projectId"
+              :project="project"
+              :can-manage-project="canManageProject"
+              :manage-blocked-message="manageBlockedMessage"
+              @project-updated="handleProjectUpdated"
+            />
+          </div>
+        </el-tab-pane>
+      </el-tabs>
     </section>
 
     <section v-else-if="!loading" class="folder-settings-page__empty">
@@ -124,6 +131,7 @@ const projectId = computed(() => String(route.params.id || "").trim());
 const loading = ref(false);
 const saving = ref(false);
 const pickingWorkspace = ref(false);
+const activeTab = ref("general");
 const project = ref(null);
 const form = reactive({
   name: "",
@@ -285,10 +293,17 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .folder-settings-page {
-  width: min(100%, 1120px);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
   margin: 0 auto;
-  padding: 24px 20px 40px;
+  padding: 24px max(20px, calc((100% - 1120px) / 2 + 20px)) 40px;
   color: #1f2937;
+  background: var(
+    --page-bg,
+    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%)
+  );
 }
 
  .folder-settings-page__header {
@@ -349,32 +364,58 @@ onBeforeUnmount(() => {
 }
 
  .folder-settings-page__content {
-  padding-top: 28px;
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
+  padding-top: 20px;
 }
 
- .folder-settings-form {
+.folder-settings-tabs :deep(.el-tabs__header) {
+  margin: 0 0 20px;
+}
+
+.folder-settings-tabs :deep(.el-tabs__nav-wrap::after) {
+  background-color: #dfe5ec;
+}
+
+.folder-settings-tabs :deep(.el-tabs__item) {
+  height: 42px;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.folder-settings-tabs :deep(.el-tabs__item.is-active) {
+  color: #1d4ed8;
+}
+
+.folder-settings-panel {
+  min-height: 360px;
+  padding: 24px;
+  border: 1px solid #dfe5ec;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
+}
+
+.folder-settings-form {
   max-width: 680px;
-}
-
-.folder-settings-module {
-  padding-top: 24px;
-  border-top: 1px solid #dfe5ec;
 }
 
  .folder-settings-form__heading {
   margin-bottom: 20px;
 }
 
- .folder-settings-form__heading h2 {
+.folder-settings-form__heading h2 {
   margin: 0;
   color: #334155;
   font-size: 18px;
   font-weight: 600;
   letter-spacing: 0;
   line-height: 1.35;
+}
+
+.folder-settings-form__heading p {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
  .folder-settings-path :deep(.el-input) {
@@ -411,6 +452,11 @@ onBeforeUnmount(() => {
 
   .folder-settings-page__header-actions > .el-button {
     flex: 1 1 auto;
+  }
+
+  .folder-settings-panel {
+    min-height: 0;
+    padding: 18px;
   }
 
   .folder-settings-path {

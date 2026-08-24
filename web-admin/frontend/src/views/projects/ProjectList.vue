@@ -127,13 +127,23 @@ import {
 } from "@element-plus/icons-vue";
 import {
   getWorkspaceFolderName,
+  getLocalWorkspaceProjectByPath,
   isProjectNamePlaceholder,
   openLocalWorkspaceProject,
   readLocalWorkspaceProjects,
   renameLocalWorkspaceProject,
   removeLocalWorkspaceProject,
+  upsertLocalProject,
 } from "@/services/local-project-repository.js";
+import { readLocalSystemConfig } from "@/services/local-system-config.js";
+import {
+  hasNativeDesktopBridge,
+  readNativeWorkspaceFile,
+  writeNativeWorkspaceFile,
+} from "@/utils/native-desktop-bridge.js";
 import { pickWorkspaceDirectory } from "@/utils/workspace-picker.js";
+
+const DEFAULT_AI_ENTRY_FILE = "AIENTRY.md";
 
 const router = useRouter();
 const loading = ref(false);
@@ -164,6 +174,49 @@ function workspaceName(workspace) {
   return getWorkspaceFolderName(workspace?.workspace_path) || "未命名文件夹";
 }
 
+function isWorkspaceFileMissing(error) {
+  return /not found|no such file|不存在/i.test(
+    String(error?.message || error?.detail || error || ""),
+  );
+}
+
+async function initializeProjectAiEntryFile(project) {
+  const projectId = String(project?.id || "").trim();
+  const workspacePath = String(project?.workspace_path || "").trim();
+  if (
+    !projectId ||
+    !workspacePath ||
+    String(project?.ai_entry_file || "").trim() ||
+    !hasNativeDesktopBridge()
+  ) {
+    return;
+  }
+
+  try {
+    await readNativeWorkspaceFile({
+      workspacePath,
+      path: DEFAULT_AI_ENTRY_FILE,
+    });
+  } catch (error) {
+    if (!isWorkspaceFileMissing(error)) {
+      throw error;
+    }
+    await writeNativeWorkspaceFile({
+      workspacePath,
+      path: DEFAULT_AI_ENTRY_FILE,
+      content: String(
+        readLocalSystemConfig().desktop_agent_global_prompt || "",
+      ).trim(),
+    });
+  }
+
+  upsertLocalProject({
+    ...project,
+    id: projectId,
+    ai_entry_file: DEFAULT_AI_ENTRY_FILE,
+  });
+}
+
 async function fetchWorkspaces() {
   loading.value = true;
   try {
@@ -181,9 +234,13 @@ async function selectWorkspace() {
       title: "打开文件夹",
     });
     if (!workspacePath) return;
+    const existingWorkspace = getLocalWorkspaceProjectByPath(workspacePath);
     const workspace = openLocalWorkspaceProject(workspacePath);
     if (!workspace?.id) {
       throw new Error("无法保存文件夹工作区");
+    }
+    if (!existingWorkspace) {
+      await initializeProjectAiEntryFile(workspace);
     }
     await openWorkspaceSettings(workspace);
   } catch (error) {
@@ -345,10 +402,16 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .workspace-list-page {
-  width: min(100%, 1080px);
+  width: 100%;
+  min-height: 100dvh;
+  box-sizing: border-box;
   margin: 0 auto;
-  padding: 24px 20px 40px;
+  padding: 24px max(20px, calc((100% - 1080px) / 2 + 20px)) 40px;
   color: #1f2937;
+  background: var(
+    --page-bg,
+    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%)
+  );
 }
 
  .workspace-list-page__header {

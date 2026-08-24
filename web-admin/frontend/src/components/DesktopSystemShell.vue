@@ -155,9 +155,6 @@
                 <div class="desktop-system__window-title">
                   {{ window.title }}
                 </div>
-                <div class="desktop-system__window-subtitle">
-                  {{ window.eyebrow }}
-                </div>
               </div>
               <div class="desktop-system__window-actions">
                 <button
@@ -174,10 +171,7 @@
               </div>
             </div>
 
-            <div
-              v-if="window.id === activeWindowId && !window.minimized"
-              class="desktop-system__window-body"
-            >
+            <div class="desktop-system__window-body">
               <div class="desktop-system__window-frame">
                 <slot name="window" :window="window" />
               </div>
@@ -1790,13 +1784,11 @@ onBeforeUnmount(() => {
   height: var(--desktop-window-height, 720px);
   min-width: 720px;
   min-height: 480px;
-  border-radius: 30px;
-  border: 1px solid rgba(255, 255, 255, 0.9);
-  background: rgba(255, 255, 255, 0.76);
-  box-shadow:
-    0 24px 64px rgba(15, 23, 42, 0.12),
-    0 4px 14px rgba(15, 23, 42, 0.04);
-  backdrop-filter: blur(20px);
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1887,9 +1879,7 @@ onBeforeUnmount(() => {
 }
 
 .desktop-system__window.is-active {
-  box-shadow:
-    0 30px 84px rgba(15, 23, 42, 0.16),
-    0 8px 24px rgba(15, 23, 42, 0.08);
+  box-shadow: none;
 }
 
 .desktop-system__window.is-minimized {
@@ -1939,11 +1929,14 @@ onBeforeUnmount(() => {
 
 .desktop-system__window-bar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 12px;
-  padding: 14px 18px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+  min-height: 52px;
+  padding: 10px 18px;
+  box-sizing: border-box;
+  border-bottom: 1px solid #d9dee7;
+  background: #f8fafc;
   cursor: grab;
   user-select: none;
 }
@@ -1957,6 +1950,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  justify-self: start;
 }
 
 .desktop-system__traffic {
@@ -1983,6 +1977,7 @@ onBeforeUnmount(() => {
 .desktop-system__window-title-group {
   min-width: 0;
   pointer-events: none;
+  text-align: center;
 }
 
 .desktop-system__window-title {
@@ -1994,18 +1989,11 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
-.desktop-system__window-subtitle {
-  margin-top: 3px;
-  font-size: 11px;
-  color: #64748b;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
 .desktop-system__window-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  justify-self: end;
   gap: 10px;
 }
 
@@ -2059,7 +2047,8 @@ onBeforeUnmount(() => {
 
 .desktop-system__window-frame {
   min-height: 0;
-  padding: 0 14px 14px;
+  padding: 0;
+  background: var(--page-surface-solid, #ffffff);
   backface-visibility: hidden;
 }
 
@@ -2414,10 +2403,11 @@ onBeforeUnmount(() => {
 
   .desktop-system__window {
     min-width: 0;
-    width: calc(100% - 16px) !important;
-    height: calc(100% - 16px) !important;
-    top: 8px !important;
-    left: 8px !important;
+    width: 100% !important;
+    height: 100% !important;
+    top: 0 !important;
+    left: 0 !important;
+    border-radius: 0;
     transform: none !important;
   }
 }
