@@ -31404,7 +31404,7 @@ async function createDefaultAiEntryFile() {
       ElMessage.success(`${DEFAULT_AI_ENTRY_FILE} 已存在，已设为 AI 入口文件`);
       return;
     } catch (err) {
-      const message = String(err?.message || err?.detail || "");
+      const message = String(err?.detail || err?.message || err || "");
       if (
         !/not found|no such file|os error 2|系统找不到指定的文件|找不到指定的文件|不存在/i.test(
           message,
@@ -31424,7 +31424,9 @@ async function createDefaultAiEntryFile() {
     aiEntryFileDraft.value = savedPath;
     ElMessage.success(`${savedPath} 已创建`);
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "创建 AIENTRY.md 失败");
+    ElMessage.error(
+      String(err?.detail || err?.message || err || "创建 AIENTRY.md 失败").trim(),
+    );
   } finally {
     aiEntryFileCreating.value = false;
   }
