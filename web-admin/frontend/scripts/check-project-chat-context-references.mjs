@@ -4,9 +4,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  buildImplicitRecentImageReferences,
   buildContextReferenceAttachments,
   buildContextReferencesPrompt,
   mergeContextReferences,
+  requestsImplicitRecentImageReference,
 } from "../src/modules/project-chat/mappers/contextReferenceMappers.js";
 
 const references = mergeContextReferences(
@@ -93,6 +95,35 @@ assert.equal(attachments[2].dataUrl, "data:audio/wav;base64,AAAA");
 assert.equal(attachments[3].kind, "file");
 assert.equal(attachments[3].extractedText, "历史附件摘要");
 
+assert.equal(requestsImplicitRecentImageReference("这个照片保存本地"), true);
+assert.equal(requestsImplicitRecentImageReference("把上一张保存到 images"), true);
+assert.equal(requestsImplicitRecentImageReference("把上面的内容记录一下"), false);
+
+const implicitReferences = buildImplicitRecentImageReferences(
+  [
+    {
+      id: "assistant-old",
+      role: "assistant",
+      images: ["https://example.test/old.png"],
+    },
+    {
+      id: "assistant-latest",
+      role: "assistant",
+      images: [
+        "https://example.test/latest-1.png",
+        "https://example.test/latest-2.png",
+      ],
+    },
+  ],
+  "这个照片保存本地",
+);
+assert.equal(implicitReferences.length, 1);
+assert.equal(implicitReferences[0].messageId, "assistant-latest");
+assert.equal(implicitReferences[0].url, "https://example.test/latest-2.png");
+assert.equal(implicitReferences[0].label, "最近一张图片");
+assert.equal(implicitReferences[0].implicit, true);
+assert.equal(implicitReferences[0].visibility, "model_context");
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectChatSource = readFileSync(
   resolve(scriptDir, "../src/views/projects/ProjectChat.vue"),
@@ -137,8 +168,20 @@ assert.doesNotMatch(
   /<small>\{\{ messageContextMenu\.label \}\}<\/small>/,
 );
 assert.match(projectChatSource, /buildContextReferenceAttachments\(activeContextRefs\)/);
-assert.match(projectChatSource, /contextRefs:\s*activeContextRefs/);
-assert.match(projectChatSource, /context_references:\s*activeContextRefs/);
+assert.match(projectChatSource, /buildImplicitRecentImageReferences\(messages\.value, text\)/);
+assert.match(projectChatSource, /images:\s*extractImages\(item\)/);
+assert.match(projectChatSource, /videos:\s*extractVideos\(item\)/);
+assert.match(projectChatSource, /audios:\s*extractAudios\(item\)/);
+assert.match(
+  projectChatSource,
+  /visibleContextRefs = activeContextRefs\.filter\([\s\S]*?contextRefs:\s*visibleContextRefs/,
+  "implicit historical image references must stay out of the visible user message",
+);
+assert.match(
+  projectChatSource,
+  /context_references:\s*activeContextRefs/,
+  "implicit historical image references must remain available to the model",
+);
 assert.match(projectChatSource, /source: "desktop_local_agent\.media_tool_orchestration"/);
 assert.match(
   projectChatSource,
@@ -157,8 +200,11 @@ assert.match(nativeBridgeSource, /copyResourceFileToClipboard/);
 assert.match(nativeBridgeSource, /copy_resource_file_to_clipboard/);
 assert.match(nativeBridgeSource, /saveResourceFile/);
 assert.match(nativeBridgeSource, /save_resource_file/);
+assert.match(nativeBridgeSource, /persistProjectChatAsset/);
+assert.match(nativeBridgeSource, /persist_project_chat_asset/);
 assert.match(tauriMainSource, /fn copy_resource_file_to_clipboard/);
 assert.match(tauriMainSource, /fn save_resource_file/);
+assert.match(tauriMainSource, /fn persist_project_chat_asset/);
 assert.match(tauriMainSource, /copy_local_file_to_system_clipboard/);
 
 console.log("project chat context reference checks passed");

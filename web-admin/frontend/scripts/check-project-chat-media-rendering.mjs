@@ -88,7 +88,7 @@ const messageCssSource = readFileSync(
 
 assert.match(
   projectChatSource,
-  /formatContent\([\s\S]*?images: extractImages\(row\),[\s\S]*?videos: extractVideos\(row\),[\s\S]*?audios: extractAudios\(row\),/,
+  /formatContent\([\s\S]*?images: mergeImageUrls\([\s\S]*?extractImages\(row\)[\s\S]*?videos: mergeVideoUrls\([\s\S]*?extractVideos\(row\)[\s\S]*?audios: mergeAudioUrls\([\s\S]*?extractAudios\(row\)/,
   "assistant message rendering must suppress media already shown by the structured media area",
 );
 assert.match(
@@ -106,6 +106,23 @@ assert.match(
   /normalizePersistedMessageMediaUrls[\s\S]*?startsWith\("blob:"\)/,
   "expired blob URLs must not be restored from persisted chat messages",
 );
+assert.match(
+  projectChatSource,
+  /persistNativeProjectChatAsset[\s\S]*?persistLocalLiuAgentMediaUrls/,
+  "AI media results must be copied into the native persistent asset store",
+);
+assert.match(
+  projectChatSource,
+  /mediaAssets:\s*normalizePersistedMediaAssets/,
+  "persistent asset metadata must be included in runtime message snapshots",
+);
+const persistentMediaMaterializerSource = projectChatSource.slice(
+  projectChatSource.indexOf("async function materializePersistentMediaUrl("),
+  projectChatSource.indexOf("async function materializePersistentContextReferences("),
+);
+assert.match(persistentMediaMaterializerSource, /isNativeAsset/);
+assert.match(persistentMediaMaterializerSource, /options\.kind === "image"/);
+assert.match(persistentMediaMaterializerSource, /readBlobAsDataUrl/);
 assert.match(
   projectChatSource,
   /mergeImageUrls,[\s\S]*?mergeMediaUrls,[\s\S]*?mergeVideoUrls/,

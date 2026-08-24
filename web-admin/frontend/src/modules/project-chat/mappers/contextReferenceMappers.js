@@ -1,3 +1,5 @@
+import { extractImages } from "./mediaMappers.js";
+
 const CONTEXT_REFERENCE_TYPES = new Set([
   "image",
   "video",
@@ -6,6 +8,9 @@ const CONTEXT_REFERENCE_TYPES = new Set([
   "text",
   "message",
 ]);
+
+const IMPLICIT_RECENT_IMAGE_REFERENCE_PATTERN =
+  /(?:这个|那个|这张|那张|该|上述|上面(?:的)?|前面(?:的)?|刚才(?:的)?|刚刚(?:的)?|刚生成(?:的)?)(?:照片|图片|图像|图)|(?:上一张|最近(?:的)?(?:一张)?)(?:照片|图片|图像|图)?/;
 
 function compactText(value, maxLength = 4000) {
   const text = String(value || "").trim();
@@ -56,6 +61,8 @@ export function normalizeContextReference(input = {}, index = 0) {
     label,
     content,
     mimeType: String(input?.mimeType || input?.mime_type || "").trim(),
+    implicit: input?.implicit === true,
+    visibility: String(input?.visibility || "").trim() || "user_visible",
     source: "conversation_history",
     usage: type === "image" ? "reference_image" : "context",
   };
@@ -86,6 +93,35 @@ export function mergeContextReferences(current = [], additions = []) {
     result.push(item);
   }
   return result;
+}
+
+export function requestsImplicitRecentImageReference(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return IMPLICIT_RECENT_IMAGE_REFERENCE_PATTERN.test(text);
+}
+
+export function buildImplicitRecentImageReferences(messages = [], userText = "") {
+  if (!requestsImplicitRecentImageReference(userText)) return [];
+  const rows = Array.isArray(messages) ? messages : [];
+  for (let messageIndex = rows.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = rows[messageIndex];
+    const imageUrls = extractImages(message);
+    if (!imageUrls.length) continue;
+    const imageIndex = imageUrls.length - 1;
+    return [
+      normalizeContextReference({
+        type: "image",
+        messageId: String(message?.id || "").trim(),
+        url: imageUrls[imageIndex],
+        label: "最近一张图片",
+        mimeType: "image/*",
+        implicit: true,
+        visibility: "model_context",
+      }),
+    ].filter(Boolean);
+  }
+  return [];
 }
 
 export function buildContextReferencesPrompt(references = []) {

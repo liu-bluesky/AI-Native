@@ -1,6 +1,11 @@
 #[cfg(windows)]
 fn build_attributes() -> tauri_build::Attributes {
-    let windows_attributes = tauri_build::WindowsAttributes::new().app_manifest(
+    let execution_level = if std::env::var("PROFILE").as_deref() == Ok("release") {
+        "requireAdministrator"
+    } else {
+        "asInvoker"
+    };
+    let manifest = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <dependency>
@@ -18,12 +23,13 @@ fn build_attributes() -> tauri_build::Attributes {
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <requestedExecutionLevel level="{execution_level}" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>
-</assembly>"#,
+</assembly>"#
     );
+    let windows_attributes = tauri_build::WindowsAttributes::new().app_manifest(manifest);
     tauri_build::Attributes::new().windows_attributes(windows_attributes)
 }
 

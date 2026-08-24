@@ -3,6 +3,7 @@
 //! 本地工具只能访问用户选择的 workspace。模型可以传入 workspace 内绝对路径，
 //! 但 `../` 或外部绝对路径仍会被拒绝。
 
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use super::types::ToolError;
@@ -15,7 +16,16 @@ pub fn resolve_workspace_root(workspace_path: &str) -> Result<PathBuf, ToolError
             "workspace_path is required",
         ));
     }
-    let root = PathBuf::from(raw).canonicalize().map_err(|err| {
+    let raw_root = PathBuf::from(raw);
+    if !raw_root.exists() {
+        fs::create_dir_all(&raw_root).map_err(|err| {
+            ToolError::new(
+                "workspace.not_accessible",
+                format!("workspace could not be created: {err}"),
+            )
+        })?;
+    }
+    let root = raw_root.canonicalize().map_err(|err| {
         ToolError::new(
             "workspace.not_accessible",
             format!("workspace is not accessible: {err}"),

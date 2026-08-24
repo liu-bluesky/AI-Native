@@ -3,6 +3,7 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
@@ -46,6 +47,21 @@ struct SavedResourceFileResult {
     cancelled: bool,
     path: String,
     name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedProjectChatAssetResult {
+    asset_id: String,
+    kind: String,
+    mime_type: String,
+    bytes: u64,
+    name: String,
+    local_path: String,
+    source_url: String,
+    source_tool: String,
+    message_id: String,
+    created_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -812,10 +828,19 @@ async fn liuagent_start_local_chat(
     request: liuagent_core::LocalChatRequest,
 ) -> liuagent_core::LocalChatResult {
     let chat_session_id = request.chat_session_id.trim().to_string();
+    if !liuagent_core::try_begin_local_chat_run(&chat_session_id) {
+        return liuagent_core::LocalChatResult::failed(
+            chat_session_id,
+            liuagent_core::ToolError::new(
+                "runtime.already_running",
+                "该聊天会话仍有本地 Runtime 在运行或正在停止，请等待其完成后再继续。",
+            ),
+        );
+    }
     liuagent_core::prepare_local_chat_run(&chat_session_id);
     let live_events = Arc::new(Mutex::new(Vec::new()));
     let live_events_for_worker = Arc::clone(&live_events);
-    match tauri::async_runtime::spawn_blocking(move || {
+    let result = match tauri::async_runtime::spawn_blocking(move || {
         liuagent_core::start_local_chat_with_event_sink(request, |event| {
             if let Ok(mut events) = live_events_for_worker.lock() {
                 events.push(event.clone());
@@ -849,13 +874,15 @@ async fn liuagent_start_local_chat(
             result
         }
         Err(error) => liuagent_core::LocalChatResult::failed(
-            chat_session_id,
+            chat_session_id.clone(),
             liuagent_core::ToolError::new(
                 "runtime.join_failed",
                 format!("local chat worker failed: {error}"),
             ),
         ),
-    }
+    };
+    liuagent_core::finish_local_chat_run(&chat_session_id);
+    result
 }
 
 #[tauri::command]
@@ -1733,6 +1760,145 @@ fn save_resource_file(
 }
 
 #[tauri::command]
+fn persist_project_chat_asset(
+    app: tauri::AppHandle,
+    username: String,
+    project_id: String,
+    chat_session_id: String,
+    message_id: String,
+    url: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    asset_type: Option<String>,
+    authorization_token: Option<String>,
+    source_tool: Option<String>,
+) -> Result<PersistedProjectChatAssetResult, String> {
+    let username = require_project_chat_asset_component(&username, "用户名")?;
+    let project_id = require_project_chat_asset_component(&project_id, "项目 ID")?;
+    let chat_session_id = require_project_chat_asset_component(&chat_session_id, "会话 ID")?;
+    let message_id = require_project_chat_asset_component(&message_id, "消息 ID")?;
+    let source_url = url.trim();
+    if source_url.is_empty() {
+        return Err("缺少要持久化的资源地址".to_string());
+    }
+    let requested_mime_type = mime_type.unwrap_or_default();
+    let (bytes, downloaded_mime_type) = load_clipboard_resource(
+        source_url,
+        authorization_token.as_deref().unwrap_or(""),
+        &requested_mime_type,
+    )?;
+    if bytes.is_empty() {
+        return Err("资源内容为空".to_string());
+    }
+    if bytes.len() > 100 * 1024 * 1024 {
+        return Err("持久化资源不能超过 100MB".to_string());
+    }
+    let resolved_mime_type = if !downloaded_mime_type.trim().is_empty() {
+        downloaded_mime_type.trim().to_string()
+    } else {
+        requested_mime_type.trim().to_string()
+    };
+    let resolved_name = resolve_clipboard_file_name(
+        file_name.as_deref().unwrap_or(""),
+        source_url,
+        &resolved_mime_type,
+    );
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let digest = format!("{:x}", hasher.finalize());
+    let extension = Path::new(&resolved_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .or_else(|| clipboard_extension_for_mime_type(&resolved_mime_type).map(str::to_string));
+    let stored_name = extension
+        .as_deref()
+        .map(|value| format!("{digest}.{value}"))
+        .unwrap_or_else(|| digest.clone());
+    let app_data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    let asset_directory = app_data_dir
+        .join("project-chat-data")
+        .join(project_chat_asset_path_component(&username))
+        .join(project_chat_asset_path_component(&project_id))
+        .join("assets")
+        .join(project_chat_asset_path_component(&chat_session_id))
+        .join(project_chat_asset_path_component(&message_id));
+    fs::create_dir_all(&asset_directory).map_err(|err| format!("创建会话资产目录失败：{err}"))?;
+    let local_path = asset_directory.join(&stored_name);
+    if !local_path.exists() {
+        let temporary_path = asset_directory.join(format!(
+            ".{stored_name}.{}.{}.tmp",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::write(&temporary_path, &bytes).map_err(|err| format!("写入会话资产失败：{err}"))?;
+        if let Err(error) = fs::rename(&temporary_path, &local_path) {
+            if local_path.exists() {
+                let _ = fs::remove_file(&temporary_path);
+            } else {
+                return Err(format!("保存会话资产失败：{error}"));
+            }
+        }
+    }
+    let kind =
+        normalize_project_chat_asset_kind(asset_type.as_deref().unwrap_or(""), &resolved_mime_type);
+    let result = PersistedProjectChatAssetResult {
+        asset_id: format!("sha256:{digest}"),
+        kind,
+        mime_type: resolved_mime_type,
+        bytes: bytes.len() as u64,
+        name: resolved_name,
+        local_path: local_path.to_string_lossy().to_string(),
+        source_url: source_url.to_string(),
+        source_tool: source_tool.unwrap_or_default().trim().to_string(),
+        message_id,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let metadata_path = asset_directory.join(format!("{digest}.json"));
+    let metadata = serde_json::to_vec_pretty(&result)
+        .map_err(|err| format!("序列化会话资产元数据失败：{err}"))?;
+    fs::write(metadata_path, metadata).map_err(|err| format!("保存会话资产元数据失败：{err}"))?;
+    Ok(result)
+}
+
+fn require_project_chat_asset_component(value: &str, label: &str) -> Result<String, String> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return Err(format!("缺少{label}"));
+    }
+    Ok(normalized.to_string())
+}
+
+fn project_chat_asset_path_component(value: &str) -> String {
+    value
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn normalize_project_chat_asset_kind(requested: &str, mime_type: &str) -> String {
+    let requested = requested.trim().to_lowercase();
+    if matches!(requested.as_str(), "image" | "video" | "audio" | "file") {
+        return requested;
+    }
+    let mime_type = mime_type.trim().to_lowercase();
+    if mime_type.starts_with("image/") {
+        "image".to_string()
+    } else if mime_type.starts_with("video/") {
+        "video".to_string()
+    } else if mime_type.starts_with("audio/") {
+        "audio".to_string()
+    } else {
+        "file".to_string()
+    }
+}
+
+#[tauri::command]
 fn read_local_file(path: String) -> Result<LocalFileReadResult, String> {
     let target = PathBuf::from(path.trim());
     if target.as_os_str().is_empty() {
@@ -2411,7 +2577,11 @@ fn resolve_workspace_root(workspace_path: &str) -> Result<PathBuf, String> {
     if raw.is_empty() {
         return Err("缺少工作区路径".to_string());
     }
-    let root = PathBuf::from(raw)
+    let raw_root = PathBuf::from(raw);
+    if !raw_root.exists() {
+        fs::create_dir_all(&raw_root).map_err(|err| format!("工作区无法创建：{err}"))?;
+    }
+    let root = raw_root
         .canonicalize()
         .map_err(|err| format!("工作区不可访问：{err}"))?;
     if !root.is_dir() {
@@ -2452,19 +2622,63 @@ fn resolve_workspace_write_target(root: &Path, raw_path: String) -> Result<PathB
     } else {
         root.join(path)
     };
-    let parent = candidate
-        .parent()
-        .ok_or_else(|| "缺少父目录".to_string())?
-        .canonicalize()
-        .map_err(|err| format!("父目录不可访问：{err}"))?;
-    if !parent.starts_with(root) {
+    let candidate = normalize_path_lexically(&candidate);
+    if !candidate.starts_with(root) {
         return Err("路径必须位于项目工作区内".to_string());
     }
-    Ok(parent.join(
+    let parent = candidate.parent().ok_or_else(|| "缺少父目录".to_string())?;
+    let mut existing_ancestor = parent;
+    let mut missing_segments = Vec::new();
+    while !existing_ancestor.exists() {
+        let segment = existing_ancestor
+            .file_name()
+            .ok_or_else(|| "父目录不可访问".to_string())?;
+        missing_segments.push(segment.to_os_string());
+        existing_ancestor = existing_ancestor
+            .parent()
+            .ok_or_else(|| "父目录不可访问".to_string())?;
+    }
+    let canonical_ancestor = existing_ancestor
+        .canonicalize()
+        .map_err(|err| format!("父目录不可访问：{err}"))?;
+    if !canonical_ancestor.starts_with(root) {
+        return Err("路径必须位于项目工作区内".to_string());
+    }
+    let mut resolved_parent = canonical_ancestor;
+    for segment in missing_segments.iter().rev() {
+        resolved_parent.push(segment);
+    }
+    let target = resolved_parent.join(
         candidate
             .file_name()
             .ok_or_else(|| "缺少文件名".to_string())?,
-    ))
+    );
+    if target.symlink_metadata().is_ok() {
+        let canonical_target = target
+            .canonicalize()
+            .map_err(|err| format!("目标路径不可访问：{err}"))?;
+        if !canonical_target.starts_with(root) {
+            return Err("路径必须位于项目工作区内".to_string());
+        }
+        return Ok(canonical_target);
+    }
+    Ok(target)
+}
+
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::Normal(segment) => normalized.push(segment),
+        }
+    }
+    normalized
 }
 
 fn global_mcp_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -2997,6 +3211,7 @@ fn main() {
             open_external_url,
             copy_resource_file_to_clipboard,
             save_resource_file,
+            persist_project_chat_asset,
             read_local_file,
             open_desktop_devtools,
             classify_runner_command,
@@ -3095,6 +3310,11 @@ mod tests {
             sanitize_clipboard_file_name("../不安全/文件?.png"),
             "_不安全_文件_.png"
         );
+        assert_eq!(
+            project_chat_asset_path_component("用户-1"),
+            "e794a8e688b72d31"
+        );
+        assert_eq!(normalize_project_chat_asset_kind("", "video/mp4"), "video");
     }
 
     #[test]
@@ -3179,6 +3399,36 @@ mod tests {
         let changes = liuagent_core::list_changes(&root).unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].change_type, "added");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_write_creates_empty_file_in_missing_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-employee-empty-entry-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!root.exists());
+
+        let saved = write_workspace_file(
+            root.to_string_lossy().to_string(),
+            "rules\\AIENTRY.md".to_string(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+
+        assert_eq!(saved.path, "rules/AIENTRY.md");
+        assert_eq!(saved.size, 0);
+        assert!(root.join("rules\\AIENTRY.md").is_file());
+        assert_eq!(
+            fs::read(root.join("rules\\AIENTRY.md")).unwrap(),
+            Vec::<u8>::new()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

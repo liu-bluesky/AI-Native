@@ -1399,6 +1399,7 @@ import {
   writeGlobalMcpConfigFile,
 } from "@/modules/project-chat/services/projectChatStorage.js";
 import { GLOBAL_ASSISTANT_BUILD_FEATURES } from "@/config/buildFeatures.js";
+import { DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT } from "@/config/desktopAgentPrompts.js";
 const DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT =
   "你好，我是系统状态助手。我会默认保持实时通话，随时帮你观察当前页面、系统状态和功能是否可用。";
 const DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT = `你是系统状态助手。
@@ -1416,34 +1417,6 @@ const DEFAULT_BOT_PLATFORM_CONNECTORS = [];
 const DEFAULT_PUBLIC_CONTACT_CHANNELS = [];
 const DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT =
   "基于智能体职责、目标、技能建议和 prompts.chat MCP 相关能力，为智能体自动补全 1 到 3 条可直接落地的执行规则。优先生成问题排查、输出规范、风险控制、技术选型相关规则；规则内容必须具体、可执行、可绑定。";
-const DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT = `桌面本地智能体工作流：计划先行 · 选项驱动
-
-当收到用户需求时，默认按以下流程处理：
-
-步骤 1：快速扫描与计划输出
-- 基于已知信息，总结问题的核心。
-- 列出 2～3 条可行的解决路径；每条路径说明适用条件、优点和缺点。
-- 标注为了进一步细化还需要的关键信息，最多 2 项。
-- 输出标题必须是“初步解决路径清单”，用清晰分点呈现。
-
-步骤 2：等待用户选择与补充
-- 用户会从清单中选择一条路径，并回答必要信息。
-- 如果用户未明确选择，主动询问“你更倾向于哪个方向？”
-- 在用户明确选择前，不要调用会修改文件、执行命令、发起网络写入或改变 MCP 状态的工具。
-
-步骤 3：针对性追问
-- 只问与用户所选路径直接相关的必要信息，最多 3 个问题。
-- 如果信息已经足够，直接进入交付，不重复追问。
-
-步骤 4：交付完整方案
-- 基于用户选择和补充信息，给出具体代码、配置或操作步骤。
-- 附带必要解释和注意事项。
-
-附加原则：
-- 不替用户做选择；只把选项清楚摆出来。
-- 保持精简，避免冗长理论。
-- 如果方案无效，允许用户回到步骤 1 重新选择其他路径。
-- 如果用户已经明确指定路径并要求执行，可直接从步骤 3 或步骤 4 继续。`;
 const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MCP。
 
 详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：

@@ -174,7 +174,7 @@ export function inferArtifactAssetType(item) {
   const explicit = String(item?.asset_type || item?.assetType || "")
     .trim()
     .toLowerCase();
-  if (["image", "video", "audio"].includes(explicit)) return explicit;
+  if (["image", "video", "audio", "file"].includes(explicit)) return explicit;
   const mimeType = String(
     item?.mime_type || item?.mimeType || item?.content_type || "",
   )
@@ -182,6 +182,7 @@ export function inferArtifactAssetType(item) {
     .toLowerCase();
   if (mimeType.startsWith("video/")) return "video";
   if (mimeType.startsWith("audio/")) return "audio";
+  if (mimeType && !mimeType.startsWith("image/")) return "file";
   const contentUrl = String(
     item?.content_url ||
       item?.contentUrl ||
@@ -234,6 +235,23 @@ export function collectArtifactVideoUrls(payload) {
             item?.videoUrl,
             item?.url,
           ]
+        : [],
+    ),
+  );
+}
+
+export function collectArtifactFileUrls(payload) {
+  const directFiles = Array.isArray(payload?.files) ? payload.files : [];
+  const artifacts = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
+  return mergeMediaUrls(
+    directFiles.map((item) =>
+      typeof item === "string"
+        ? item
+        : item?.content_url || item?.contentUrl || item?.url,
+    ),
+    artifacts.flatMap((item) =>
+      inferArtifactAssetType(item) === "file"
+        ? [item?.content_url, item?.contentUrl, item?.url]
         : [],
     ),
   );

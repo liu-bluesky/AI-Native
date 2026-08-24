@@ -340,6 +340,11 @@ export function mapHistoryMessage(item) {
   const images = Array.isArray(item?.images) ? item.images : [];
   const videos = Array.isArray(item?.videos) ? item.videos : [];
   const audios = Array.isArray(item?.audios) ? item.audios : [];
+  const mediaAssets = Array.isArray(item?.mediaAssets || item?.media_assets)
+    ? (item.mediaAssets || item.media_assets).filter(
+        (asset) => asset && typeof asset === "object",
+      )
+    : [];
   const rawSourceContext =
     item?.source_context && typeof item.source_context === "object"
       ? item.source_context
@@ -388,6 +393,7 @@ export function mapHistoryMessage(item) {
     images,
     videos,
     audios,
+    mediaAssets,
     attachments,
     source_context: sourceContext,
     hasAiRequestContext,

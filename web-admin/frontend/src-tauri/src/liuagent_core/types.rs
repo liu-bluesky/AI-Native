@@ -213,8 +213,16 @@ pub struct OfflineCacheCleanupRequest {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalChatMessage {
+    #[serde(default, alias = "message_id")]
+    pub message_id: Option<String>,
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub images: Vec<String>,
+    #[serde(default)]
+    pub videos: Vec<String>,
+    #[serde(default)]
+    pub audios: Vec<String>,
     #[serde(default, alias = "reasoning_content")]
     pub reasoning_content: Option<String>,
     #[serde(default, alias = "source_kind")]

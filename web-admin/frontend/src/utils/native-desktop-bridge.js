@@ -1,4 +1,5 @@
 import {
+  convertFileSrc,
   invoke as invokeTauriCommand,
   isTauri as isTauriRuntime,
 } from "@tauri-apps/api/core";
@@ -43,6 +44,7 @@ const TAURI_COMMAND_NAMES = {
   openExternalUrl: "open_external_url",
   copyResourceFileToClipboard: "copy_resource_file_to_clipboard",
   saveResourceFile: "save_resource_file",
+  persistProjectChatAsset: "persist_project_chat_asset",
   classifyRunnerCommand: "classify_runner_command",
   runRunnerCommand: "run_runner_command",
   recordRunnerPermissionDecision: "record_runner_permission_decision",
@@ -667,6 +669,35 @@ export async function saveNativeResourceFile(options = {}) {
     mimeType: String(options?.mimeType || "").trim(),
     authorizationToken: String(options?.authorizationToken || "").trim(),
   });
+}
+
+export async function persistNativeProjectChatAsset(options = {}) {
+  const url = String(options?.url || "").trim();
+  const username = String(options?.username || "").trim();
+  const projectId = String(options?.projectId || "").trim();
+  const chatSessionId = String(options?.chatSessionId || "").trim();
+  const messageId = String(options?.messageId || "").trim();
+  if (!url || !username || !projectId || !chatSessionId || !messageId) {
+    throw new Error("持久化会话资产缺少必要参数");
+  }
+  const result = await invokeNativeDesktopBridge("persistProjectChatAsset", {
+    username,
+    projectId,
+    chatSessionId,
+    messageId,
+    url,
+    fileName: String(options?.fileName || "").trim(),
+    mimeType: String(options?.mimeType || "").trim(),
+    assetType: String(options?.assetType || "").trim(),
+    authorizationToken: String(options?.authorizationToken || "").trim(),
+    sourceTool: String(options?.sourceTool || "").trim(),
+  });
+  const localPath = String(result?.localPath || "").trim();
+  return {
+    ...(result && typeof result === "object" ? result : {}),
+    localPath,
+    displayUrl: localPath ? convertFileSrc(localPath) : url,
+  };
 }
 
 export async function listNativeLiuAgentBuiltinTools() {

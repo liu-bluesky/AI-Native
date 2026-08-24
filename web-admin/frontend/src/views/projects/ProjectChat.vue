@@ -3010,6 +3010,7 @@ import {
   writeModelRoleTarget,
 } from "@/modules/project-chat/services/modelRouting.js";
 import { isMediaBuildFeatureEnabled } from "@/config/buildFeatures.js";
+import { DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT } from "@/config/desktopAgentPrompts.js";
 import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
@@ -3061,6 +3062,7 @@ import {
   writeNativeExternalAgentSessionInput,
   executeNativeLiuAgentTool,
   openNativeExternalUrl,
+  persistNativeProjectChatAsset,
   saveNativeResourceFile,
   nativeDragDropCssPoints,
   subscribeNativeDesktopDragDrop,
@@ -3136,6 +3138,7 @@ import {
   clipText,
   collectArtifactImageUrls,
   collectArtifactAudioUrls,
+  collectArtifactFileUrls,
   collectArtifactVideoUrls,
   extractAttachments,
   extractAudios,
@@ -3152,6 +3155,7 @@ import {
   stripStructuredMediaDuplicatesFromMarkdown,
 } from "@/modules/project-chat/mappers/mediaMappers.js";
 import {
+  buildImplicitRecentImageReferences,
   buildContextReferenceAttachments,
   buildContextReferencesPrompt,
   contextReferenceTypeLabel,
@@ -7679,7 +7683,11 @@ function externalAgentHistoryRows(limit = 6) {
     }))
     .filter(
       (item) =>
-        (item.role === "user" || item.role === "assistant") && item.content,
+        (item.role === "user" || item.role === "assistant") &&
+        (item.content ||
+          item.images.length ||
+          item.videos.length ||
+          item.audios.length),
     )
     .slice(-safeLimit);
 }
@@ -9687,7 +9695,7 @@ function pauseOpenMessageOperations(row) {
     const phase = normalizeOperationPhase(
       operation?.phase || operation?.status,
     );
-    if (!["running", "pending"].includes(phase)) return operation;
+    if (!["running", "pending", "waiting_user"].includes(phase)) return operation;
     changed = true;
     return {
       ...operation,
@@ -9699,6 +9707,40 @@ function pauseOpenMessageOperations(row) {
           ? operation.meta
           : {}),
         paused: true,
+      },
+    };
+  });
+  return changed;
+}
+
+function settlePausedLocalLiuAgentOperations(row) {
+  if (!row || !Array.isArray(row.operations)) return false;
+  let changed = false;
+  row.operations = row.operations.map((operation) => {
+    const meta =
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
+    const isLocalRuntimeOperation =
+      coerceBooleanSetting(meta.local_liuagent_operation, false) ||
+      coerceBooleanSetting(meta.local_liuagent_permission, false) ||
+      meta.source === "tauri_liuagent_local_chat";
+    if (!isLocalRuntimeOperation || !coerceBooleanSetting(meta.paused, false)) {
+      return operation;
+    }
+    changed = true;
+    return {
+      ...operation,
+      summary: "已转入恢复执行",
+      detail: "旧的暂停状态已关闭，恢复任务将根据 checkpoint 重新核对进度。",
+      phase: "completed",
+      actionType: "none",
+      updatedAt: nowText(),
+      meta: {
+        ...meta,
+        paused: false,
+        pausing: false,
+        superseded: true,
       },
     };
   });
@@ -13871,6 +13913,9 @@ function normalizeRuntimeMessageSnapshot(row) {
     images: normalizePersistedMessageMediaUrls(row.images),
     videos: normalizePersistedMessageMediaUrls(row.videos),
     audios: normalizePersistedMessageMediaUrls(row.audios),
+    mediaAssets: normalizePersistedMediaAssets(
+      row.mediaAssets || row.media_assets,
+    ),
     attachments: Array.isArray(row.attachments) ? row.attachments.slice() : [],
     time: String(row.time || ""),
     displayMode: String(row.displayMode || ""),
@@ -17266,13 +17311,31 @@ function shouldShowInlineThinkingState(row, idx) {
 }
 
 function messageBodyHtml(row, idx) {
+  const persistedAssets = normalizePersistedMediaAssets(
+    row?.mediaAssets || row?.media_assets,
+  );
   const content = formatContent(
     row?.content,
     row?.role === "assistant"
       ? {
-          images: extractImages(row),
-          videos: extractVideos(row),
-          audios: extractAudios(row),
+          images: mergeImageUrls(
+            extractImages(row),
+            persistedAssets
+              .filter((asset) => asset.kind === "image")
+              .map((asset) => asset.sourceUrl),
+          ),
+          videos: mergeVideoUrls(
+            extractVideos(row),
+            persistedAssets
+              .filter((asset) => asset.kind === "video")
+              .map((asset) => asset.sourceUrl),
+          ),
+          audios: mergeAudioUrls(
+            extractAudios(row),
+            persistedAssets
+              .filter((asset) => asset.kind === "audio")
+              .map((asset) => asset.sourceUrl),
+          ),
         }
       : {},
   );
@@ -19315,7 +19378,149 @@ function localLiuAgentPermissionRequestFromChatResult(result = {}) {
   return null;
 }
 
-function applyLocalLiuAgentMediaToolResults(row, result = {}) {
+const localLiuAgentAssetPersistencePromises = new Map();
+
+function localLiuAgentAssetMimeType(kind) {
+  return {
+    image: "image/*",
+    video: "video/*",
+    audio: "audio/*",
+    file: "application/octet-stream",
+  }[kind] || "application/octet-stream";
+}
+
+function localLiuAgentAssetFileName(sourceUrl) {
+  try {
+    const pathName = new URL(String(sourceUrl || "").trim(), window.location.href)
+      .pathname;
+    const name = decodeURIComponent(pathName.split("/").filter(Boolean).pop() || "");
+    return name.includes(".") ? name : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function persistLocalLiuAgentMediaUrls(row, media = {}, options = {}) {
+  const normalizedMedia = {
+    images: mergeImageUrls(media.images),
+    videos: mergeVideoUrls(media.videos),
+    audios: mergeAudioUrls(media.audios),
+    files: mergeMediaUrls(media.files),
+  };
+  const projectId = String(
+    options.projectId || selectedProjectId.value || "",
+  ).trim();
+  const chatSessionId = String(
+    options.chatSessionId || currentChatSessionId.value || "",
+  ).trim();
+  const messageId = String(row?.id || "").trim();
+  if (
+    !hasNativeDesktopBridge() ||
+    !projectId ||
+    !chatSessionId ||
+    !messageId
+  ) {
+    return normalizedMedia;
+  }
+  const existingAssets = normalizePersistedMediaAssets(
+    row?.mediaAssets || row?.media_assets,
+  );
+  const persistedAssets = [];
+  const persistKindUrls = async (kind, urls) => {
+    const results = [];
+    for (const sourceUrl of urls) {
+      const existing = existingAssets.find(
+        (asset) =>
+          asset.sourceUrl === sourceUrl ||
+          asset.displayUrl === sourceUrl ||
+          asset.localPath === sourceUrl,
+      );
+      if (existing) {
+        persistedAssets.push(existing);
+        results.push(existing.displayUrl || existing.localPath || sourceUrl);
+        continue;
+      }
+      if (/^(?:asset:|https?:\/\/asset\.localhost)/i.test(sourceUrl)) {
+        results.push(sourceUrl);
+        continue;
+      }
+      const persistenceKey = [
+        projectId,
+        chatSessionId,
+        messageId,
+        kind,
+        sourceUrl,
+      ].join("|");
+      let persistencePromise = localLiuAgentAssetPersistencePromises.get(
+        persistenceKey,
+      );
+      if (!persistencePromise) {
+        persistencePromise = persistNativeProjectChatAsset({
+          username: currentUsername.value,
+          projectId,
+          chatSessionId,
+          messageId,
+          url: sourceUrl,
+          fileName: localLiuAgentAssetFileName(sourceUrl),
+          mimeType: localLiuAgentAssetMimeType(kind),
+          assetType: kind,
+          authorizationToken: contextReferenceAuthorizationToken({
+            url: sourceUrl,
+          }),
+          sourceTool: String(options.sourceTool || "").trim(),
+        }).finally(() => {
+          localLiuAgentAssetPersistencePromises.delete(persistenceKey);
+        });
+        localLiuAgentAssetPersistencePromises.set(
+          persistenceKey,
+          persistencePromise,
+        );
+      }
+      try {
+        const persisted = await persistencePromise;
+        const normalized = normalizePersistedMediaAssets([persisted])[0];
+        if (normalized) persistedAssets.push(normalized);
+        results.push(
+          String(persisted?.displayUrl || persisted?.localPath || sourceUrl),
+        );
+      } catch (error) {
+        console.warn("persist local liuAgent asset failed", {
+          sourceUrl,
+          kind,
+          error,
+        });
+        results.push(sourceUrl);
+      }
+    }
+    return results;
+  };
+  const [images, videos, audios, files] = await Promise.all([
+    persistKindUrls("image", normalizedMedia.images),
+    persistKindUrls("video", normalizedMedia.videos),
+    persistKindUrls("audio", normalizedMedia.audios),
+    persistKindUrls("file", normalizedMedia.files),
+  ]);
+  row.mediaAssets = normalizePersistedMediaAssets([
+    ...existingAssets,
+    ...persistedAssets,
+  ]);
+  return { images, videos, audios, files };
+}
+
+function localLiuAgentToolResultAssetUrl(item) {
+  if (typeof item === "string") return item.trim();
+  if (!item || typeof item !== "object") return "";
+  return String(
+    item.content_url ||
+      item.contentUrl ||
+      item.preview_url ||
+      item.previewUrl ||
+      item.url ||
+      "",
+  ).trim();
+}
+
+async function applyLocalLiuAgentMediaToolResults(row, result = {}) {
   const toolResults = Array.isArray(result?.toolResults)
     ? result.toolResults
     : Array.isArray(result?.tool_results)
@@ -19328,7 +19533,7 @@ function applyLocalLiuAgentMediaToolResults(row, result = {}) {
     "generate_audio",
     "transcribe_audio",
   ]);
-  const collected = { images: [], videos: [], audios: [] };
+  const collected = { images: [], videos: [], audios: [], files: [] };
   for (const toolResult of toolResults) {
     if (!mediaToolNames.has(String(toolResult?.name || "").trim())) continue;
     const content =
@@ -19338,16 +19543,19 @@ function applyLocalLiuAgentMediaToolResults(row, result = {}) {
     for (const key of Object.keys(collected)) {
       const values = Array.isArray(content?.[key]) ? content[key] : [];
       collected[key].push(
-        ...values.map((item) => String(item || "").trim()).filter(Boolean),
+        ...values.map(localLiuAgentToolResultAssetUrl).filter(Boolean),
       );
     }
   }
-  for (const key of Object.keys(collected)) {
-    if (!collected[key].length) continue;
+  const persisted = await persistLocalLiuAgentMediaUrls(row, collected, {
+    sourceTool: "media_tool_result",
+  });
+  for (const key of ["images", "videos", "audios"]) {
+    if (!persisted[key].length) continue;
     row[key] = [
       ...new Set([
         ...(Array.isArray(row?.[key]) ? row[key] : []),
-        ...collected[key],
+        ...persisted[key],
       ]),
     ];
   }
@@ -22134,10 +22342,62 @@ function scheduleLocalLiuAgentAutomaticResume({
 function localLiuAgentResumeStateSnapshot(result = {}) {
   const state =
     result?.state && typeof result.state === "object" ? result.state : {};
+  const modelRuntime =
+    state?.model_runtime && typeof state.model_runtime === "object"
+      ? state.model_runtime
+      : state?.modelRuntime && typeof state.modelRuntime === "object"
+        ? state.modelRuntime
+        : {};
+  const agentLoop =
+    modelRuntime?.agent_loop && typeof modelRuntime.agent_loop === "object"
+      ? modelRuntime.agent_loop
+      : modelRuntime?.agentLoop && typeof modelRuntime.agentLoop === "object"
+        ? modelRuntime.agentLoop
+        : {};
+  const plannedTools = Array.isArray(agentLoop?.planned_tools)
+    ? agentLoop.planned_tools
+    : Array.isArray(agentLoop?.plannedTools)
+      ? agentLoop.plannedTools
+      : [];
+  const toolResults = Array.isArray(state?.tool_results)
+    ? state.tool_results
+    : Array.isArray(state?.toolResults)
+      ? state.toolResults
+      : [];
+  const toolResultByCallId = new Map(
+    toolResults.map((result) => [String(result?.tool_call_id || result?.toolCallId || ""), result]),
+  );
+  const executionProgress = plannedTools.map((tool) => {
+    const toolCallId = String(tool?.tool_call_id || tool?.toolCallId || "");
+    const result = toolResultByCallId.get(toolCallId);
+    return {
+      tool_call_id: toolCallId,
+      tool_name: String(tool?.name || tool?.tool_name || ""),
+      status: result ? (coerceBooleanSetting(result?.ok, false) ? "succeeded" : "failed") : "not_executed",
+      summary: String(result?.summary || tool?.summary || "").trim(),
+      error_code: String(result?.error_code || result?.errorCode || "").trim(),
+    };
+  });
   const snapshot = {
     run_state: state?.run_state || {},
     current_state: state?.current_state || {},
-    tool_results: Array.isArray(state?.tool_results) ? state.tool_results : [],
+    current_state_delta: state?.current_state_delta || state?.currentStateDelta || {},
+    scheduler_state: state?.scheduler_state || state?.schedulerState || {},
+    model_runtime: {
+      stopped_reason: agentLoop?.stopped_reason || agentLoop?.stoppedReason || "",
+      awaiting_permission: coerceBooleanSetting(
+        agentLoop?.awaiting_permission ?? agentLoop?.awaitingPermission,
+        false,
+      ),
+      planned_tools: plannedTools,
+      model_steps: Array.isArray(agentLoop?.model_steps)
+        ? agentLoop.model_steps
+        : Array.isArray(agentLoop?.modelSteps)
+          ? agentLoop.modelSteps
+          : [],
+    },
+    tool_results: toolResults,
+    execution_progress: executionProgress,
     operations: Array.isArray(state?.operations) ? state.operations : [],
     background_jobs: Array.isArray(state?.background_jobs)
       ? state.background_jobs
@@ -22244,6 +22504,32 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
   const recoverySnapshot = recovery?.ok
     ? localLiuAgentResumeStateSnapshot(recovery)
     : "未读取到本地 checkpoint；请根据对话历史继续，并先核对已有结果。";
+  const recoveredRunStatus = String(
+    recovery?.state?.run_state?.status ||
+      recovery?.state?.runState?.status ||
+      "",
+  ).trim();
+  if (
+    recovery?.ok &&
+    recoveredRunStatus &&
+    !["paused", "interrupted", "failed"].includes(recoveredRunStatus)
+  ) {
+    upsertMessageOperation(row, {
+      ...currentOperation,
+      summary: "当前任务仍未进入可恢复状态",
+      detail: `checkpoint 当前状态为 ${recoveredRunStatus}，请等待运行结束后再继续。`,
+      phase: "blocked",
+      actionType: "none",
+      meta: {
+        ...meta,
+        local_liuagent_resuming: "false",
+        local_liuagent_recoverable: "true",
+      },
+    });
+    ElMessage.warning("当前任务仍在运行或等待授权，请先等待当前状态结束");
+    return;
+  }
+  settlePausedLocalLiuAgentOperations(row);
   const recoveredResumeContext =
     recovery?.state?.resume_context &&
     typeof recovery.state.resume_context === "object"
@@ -27192,17 +27478,24 @@ function readBlobAsDataUrl(blob) {
   });
 }
 
-async function materializePersistentMediaUrl(url) {
+async function materializePersistentMediaUrl(url, options = {}) {
   const normalizedUrl = String(url || "").trim();
-  if (!normalizedUrl || !normalizedUrl.startsWith("blob:")) {
+  const isTemporaryBlob = normalizedUrl.startsWith("blob:");
+  const isNativeAsset = /^(?:asset:|https?:\/\/asset\.localhost)/i.test(
+    normalizedUrl,
+  );
+  if (
+    !normalizedUrl ||
+    (!isTemporaryBlob && !(isNativeAsset && options.kind === "image"))
+  ) {
     return normalizedUrl;
   }
   const response = await fetch(normalizedUrl);
   if (!response.ok) {
-    throw new Error(`临时图片读取失败（HTTP ${response.status}）`);
+    throw new Error(`本地媒体读取失败（HTTP ${response.status}）`);
   }
   const dataUrl = await readBlobAsDataUrl(await response.blob());
-  if (!dataUrl) throw new Error("临时图片转换失败");
+  if (!dataUrl) throw new Error("本地媒体转换失败");
   return dataUrl;
 }
 
@@ -27217,7 +27510,9 @@ async function materializePersistentContextReferences(references = []) {
       }
       return {
         ...reference,
-        url: await materializePersistentMediaUrl(reference.url),
+        url: await materializePersistentMediaUrl(reference.url, {
+          kind: reference.type,
+        }),
       };
     }),
   );
@@ -27500,8 +27795,12 @@ function toHistoryRows(sourceMessages, limit = 20) {
       const sourceKind = localLiuAgentHistorySourceKind(item);
       const diagnostic = shouldMarkLocalLiuAgentHistoryDiagnostic(item);
       return {
+        messageId: String(item.id || "").trim(),
         role,
         content,
+        images: extractImages(item),
+        videos: extractVideos(item),
+        audios: extractAudios(item),
         reasoningContent: String(
           item.reasoningContent || item.reasoning_content || "",
         ).trim(),
@@ -30615,18 +30914,19 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
     return;
   }
   if (eventType === "artifact") {
-    row.images = mergeImageUrls(
-      extractImages(row),
-      collectArtifactImageUrls(eventData),
+    const persistedMedia = await persistLocalLiuAgentMediaUrls(
+      row,
+      {
+        images: collectArtifactImageUrls(eventData),
+        videos: collectArtifactVideoUrls(eventData),
+        audios: collectArtifactAudioUrls(eventData),
+        files: collectArtifactFileUrls(eventData),
+      },
+      { sourceTool: String(eventData?.tool_name || "artifact").trim() },
     );
-    row.videos = mergeVideoUrls(
-      extractVideos(row),
-      collectArtifactVideoUrls(eventData),
-    );
-    row.audios = mergeAudioUrls(
-      extractAudios(row),
-      collectArtifactAudioUrls(eventData),
-    );
+    row.images = mergeImageUrls(extractImages(row), persistedMedia.images);
+    row.videos = mergeVideoUrls(extractVideos(row), persistedMedia.videos);
+    row.audios = mergeAudioUrls(extractAudios(row), persistedMedia.audios);
     scrollToBottom();
     return;
   }
@@ -30891,18 +31191,19 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
           text: doneLogSummary,
         });
       }
-      row.images = mergeImageUrls(
-        extractImages(row),
-        collectArtifactImageUrls(eventData),
+      const persistedMedia = await persistLocalLiuAgentMediaUrls(
+        row,
+        {
+          images: collectArtifactImageUrls(eventData),
+          videos: collectArtifactVideoUrls(eventData),
+          audios: collectArtifactAudioUrls(eventData),
+          files: collectArtifactFileUrls(eventData),
+        },
+        { sourceTool: String(eventData?.tool_name || "done").trim() },
       );
-      row.videos = mergeVideoUrls(
-        extractVideos(row),
-        collectArtifactVideoUrls(eventData),
-      );
-      row.audios = mergeAudioUrls(
-        extractAudios(row),
-        collectArtifactAudioUrls(eventData),
-      );
+      row.images = mergeImageUrls(extractImages(row), persistedMedia.images);
+      row.videos = mergeVideoUrls(extractVideos(row), persistedMedia.videos);
+      row.audios = mergeAudioUrls(extractAudios(row), persistedMedia.audios);
       const currentContent = String(row.content || "").trim();
       if (!currentContent) {
         row.content = doneContent || guardSummary;
@@ -31362,11 +31663,42 @@ async function saveProjectAiEntryFile(aiEntryFileOverride = null) {
 async function fetchDefaultAiEntryFileContent(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return "";
-  return String(
-    readLocalSystemConfig().desktop_agent_global_prompt ||
-      desktopAgentGlobalPrompt.value ||
-      "",
-  ).trim();
+  return (
+    String(
+      readLocalSystemConfig().desktop_agent_global_prompt ||
+        desktopAgentGlobalPrompt.value ||
+        "",
+    ).trim() || DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT
+  );
+}
+
+function normalizePersistedMediaAssets(values) {
+  const result = [];
+  const seen = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    if (!value || typeof value !== "object") continue;
+    const assetId = String(value.assetId || value.asset_id || "").trim();
+    const localPath = String(value.localPath || value.local_path || "").trim();
+    const displayUrl = String(value.displayUrl || value.display_url || "").trim();
+    if (!assetId && !localPath && !displayUrl) continue;
+    const key = assetId || localPath || displayUrl;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      assetId,
+      kind: String(value.kind || "file").trim() || "file",
+      mimeType: String(value.mimeType || value.mime_type || "").trim(),
+      bytes: Number(value.bytes || 0) || 0,
+      name: String(value.name || "").trim(),
+      localPath,
+      displayUrl,
+      sourceUrl: String(value.sourceUrl || value.source_url || "").trim(),
+      sourceTool: String(value.sourceTool || value.source_tool || "").trim(),
+      messageId: String(value.messageId || value.message_id || "").trim(),
+      createdAt: String(value.createdAt || value.created_at || "").trim(),
+    });
+  }
+  return result;
 }
 
 async function createDefaultAiEntryFile() {
@@ -31396,13 +31728,15 @@ async function createDefaultAiEntryFile() {
       throw new Error("创建 AIENTRY.md 仅支持桌面客户端");
     }
     try {
-      await readNativeWorkspaceFile({
+      const existingFile = await readNativeWorkspaceFile({
         workspacePath,
         path: DEFAULT_AI_ENTRY_FILE,
       });
-      await saveProjectAiEntryFile(DEFAULT_AI_ENTRY_FILE);
-      ElMessage.success(`${DEFAULT_AI_ENTRY_FILE} 已存在，已设为 AI 入口文件`);
-      return;
+      if (Number(existingFile?.size || 0) > 0) {
+        await saveProjectAiEntryFile(DEFAULT_AI_ENTRY_FILE);
+        ElMessage.success(`${DEFAULT_AI_ENTRY_FILE} 已存在，已设为 AI 入口文件`);
+        return;
+      }
     } catch (err) {
       const message = String(err?.detail || err?.message || err || "");
       if (
@@ -32274,7 +32608,7 @@ async function sendLocalLiuAgentChatRequest({
         result?.summary ||
         "",
     ).trim();
-    applyLocalLiuAgentMediaToolResults(assistantMessage, result);
+    await applyLocalLiuAgentMediaToolResults(assistantMessage, result);
   }
   if (!assistantMessage.content && ok) {
     assistantMessage.content = "本地智能体未返回最终回答，请检查本轮执行过程。";
@@ -32633,26 +32967,20 @@ async function cancelActiveLocalLiuAgentRun(options = {}) {
       });
   if (!paused) return false;
   run.cancelled = true;
-  deleteLocalLiuAgentActiveRun(chatSessionId);
+  run.pauseRequested = true;
   const row = localLiuAgentActiveRunRow(run);
-  const message = LOCAL_LIUAGENT_PAUSE_SUMMARY;
   if (row) {
     ensureMessageAnswerId(row);
     row.displayMode = "";
     row.time = nowText();
-    applyLocalLiuAgentRuntimeTiming(row, {
-      startedAt: run.startedAt,
-      endedAt: Date.now(),
-    });
-    pauseOpenMessageOperations(row);
     upsertMessageOperation(row, {
       operationId: `local-agent:${row.id}`,
       kind: "request",
       title: "桌面本地 Agent Runtime",
-      summary: "任务已暂停，可以继续执行",
+      summary: "正在停止当前操作",
       detail:
-        "已停止新的模型请求和工具调度；当前工作节点由桌面 Runtime 直接写入 checkpoint。",
-      phase: "blocked",
+        "正在等待当前模型或工具调用返回；旧 Runtime 完全退出后才可继续执行。",
+      phase: "running",
       actionType: "none",
       meta: {
         local_liuagent_operation: "true",
@@ -32664,68 +32992,30 @@ async function cancelActiveLocalLiuAgentRun(options = {}) {
         user_message_id: String(run.userMessageId || "").trim(),
         root_goal: String(run.rootGoal || "").trim(),
         cwd: String(run.workspacePath || "").trim(),
-        paused: true,
-        checkpoint_ready: true,
+        paused: false,
+        pausing: true,
+        checkpoint_ready: false,
         recoverable: true,
         recovery_reason: "manual_pause",
       },
     });
     appendMessageProcessLog(row, {
       level: "warning",
-      text: message,
+      text: "正在停止本地 Runtime；停止完成后才能继续执行",
       autoExpand: true,
     });
     row.processExpanded = true;
-    await persistLocalLiuAgentAssistantState({
-      projectId: run.projectId || selectedProjectId.value,
-      chatSessionId,
-      assistantMessage: row,
-      fallbackContent: message,
-      preserveVisibleContent: true,
-      workspacePath: String(run.workspacePath || "").trim(),
-      sourceContext: {
-        chat_mode: "system",
-        surface: chatSurface.value,
-        runtime: "tauri",
-        workspace_path: String(run.workspacePath || "").trim(),
-        paused: true,
-        checkpoint_ready: true,
-        recoverable: true,
-        ...localLiuAgentRuntimeTimingSourceContext(row),
-      },
-    });
-    void upsertProjectChatRequirementRecord({
-      chatSessionId,
-      status: "paused",
-      rootGoal:
-        String(run.rootGoal || "").trim() ||
-        String(row.content || "").trim() ||
-        message,
-      messageId: String(run.userMessageId || "").trim(),
-      assistantMessageId: row.id,
-      resultSummary: row.content,
-      verificationResult: message,
-      source: "desktop_local_agent",
-      sourceContext: {
-        runtime: "tauri",
-        workspace_path: String(run.workspacePath || "").trim(),
-        paused: true,
-        checkpoint_ready: true,
-        recoverable: true,
-        ...localLiuAgentRuntimeTimingSourceContext(row),
-      },
-    });
   }
   queuedFollowupMessages.value = [];
   activeFollowupAssistantMessageId = "";
   if (run.localTaskId) {
     updateLocalAiTask(run.localTaskId, {
-      status: "cancelled",
-      currentStep: "任务已取消",
-      recoverable: false,
+      status: "pausing",
+      currentStep: "正在停止当前操作",
+      lastOutput: "等待旧 Runtime 完全退出后保存 checkpoint。",
+      recoverable: true,
     });
   }
-  clearWorkingStatusStartForChatSession(chatSessionId);
   syncChatLoadingWithCurrentSession();
   chatLoading.value = isChatSessionBusy();
   scrollToBottom();
@@ -32745,7 +33035,7 @@ function closeIdleChatWsAfterFastCancel() {
 
 async function stopGeneration() {
   if (await cancelActiveLocalLiuAgentRun()) {
-    ElMessage.info("本地智能体已暂停，当前工作节点已保存");
+    ElMessage.info("正在停止本地智能体，完成后才可继续");
     return;
   }
   if (await pauseLocalLiuAgentPendingPermissionsForChatSession()) {
@@ -33000,9 +33290,23 @@ async function doSend(options = {}) {
 
   const text = String(draftText.value || "").trim();
   let activeContextRefs = [];
+  let visibleContextRefs = [];
   try {
+    const explicitContextRefs = mergeContextReferences(
+      [],
+      composerContextRefs.value,
+    );
+    const hasExplicitImageReference = explicitContextRefs.some(
+      (item) => item.type === "image" && String(item.url || "").trim(),
+    );
+    const implicitContextRefs = hasExplicitImageReference
+      ? []
+      : buildImplicitRecentImageReferences(messages.value, text);
     activeContextRefs = await materializePersistentContextReferences(
-      mergeContextReferences([], composerContextRefs.value),
+      mergeContextReferences(explicitContextRefs, implicitContextRefs),
+    );
+    visibleContextRefs = activeContextRefs.filter(
+      (item) => item?.implicit !== true && item?.visibility !== "model_context",
     );
   } catch (error) {
     ElMessage.error(error?.message || "引用图片读取失败，请重新添加");
@@ -33058,7 +33362,7 @@ async function doSend(options = {}) {
   }
   const imageUrls = mergeImageUrls(
     persistentUploadImageUrls,
-    activeContextRefs
+    visibleContextRefs
       .filter((item) => item.type === "image")
       .map((item) => item.url)
       .filter(Boolean),
@@ -33268,19 +33572,19 @@ async function doSend(options = {}) {
     role: "user",
     content: displayUserMessageContent,
     images: imageUrls,
-    videos: activeContextRefs
+    videos: visibleContextRefs
       .filter((item) => item.type === "video")
       .map((item) => item.url)
       .filter(Boolean),
     audios: mergeAudioUrls(
       persistentUploadAudioUrls,
-      activeContextRefs
+      visibleContextRefs
         .filter((item) => item.type === "audio")
         .map((item) => item.url)
         .filter(Boolean),
     ),
     attachments: attachmentNames,
-    contextRefs: activeContextRefs,
+    contextRefs: visibleContextRefs,
     time: nowText(),
   };
   const assistantMessage = {

@@ -86,9 +86,31 @@ const TOOL_OBSERVATION_MAX_DEPTH: usize = 6;
 const DESKTOP_BOT_GLOBAL_PROJECT_ID: &str = "desktop-bot-global";
 
 static LOCAL_CHAT_PAUSE_REQUESTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static LOCAL_CHAT_ACTIVE_RUNS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 fn local_chat_pause_requests() -> &'static Mutex<HashSet<String>> {
     LOCAL_CHAT_PAUSE_REQUESTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn local_chat_active_runs() -> &'static Mutex<HashSet<String>> {
+    LOCAL_CHAT_ACTIVE_RUNS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub fn try_begin_local_chat_run(chat_session_id: &str) -> bool {
+    let normalized = chat_session_id.trim();
+    if normalized.is_empty() {
+        return false;
+    }
+    local_chat_active_runs()
+        .lock()
+        .map(|mut runs| runs.insert(normalized.to_string()))
+        .unwrap_or(false)
+}
+
+pub fn finish_local_chat_run(chat_session_id: &str) {
+    if let Ok(mut runs) = local_chat_active_runs().lock() {
+        runs.remove(chat_session_id.trim());
+    }
 }
 
 pub fn request_local_chat_pause(request: LocalChatPauseRequest) -> bool {
@@ -763,7 +785,7 @@ fn start_local_chat_inner(
         |request: &ModelStepRequest| run_model_step_interruptible(&chat_session_id, request);
     let has_context_history = request.history.iter().any(|message| {
         !should_exclude_history_message_from_model_context(message)
-            && !message.content.trim().is_empty()
+            && history_message_has_model_context(message)
     });
     let relevant_context = if request.resume_from_checkpoint {
         collecting_event_sink(progress_update_event(
@@ -9327,12 +9349,7 @@ fn should_include_system_prompt_part(
 ) -> Result<bool, ToolError> {
     match source.trim() {
         "desktop_local_agent.entry_policy" => {
-            Ok(task_profile_requests_context(profile, "entry_policy")
-                && request
-                    .ai_entry_file
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|value| !value.is_empty()))
+            Ok(task_profile_requests_context(profile, "entry_policy"))
         }
         "desktop_local_agent.media_tool_orchestration" => {
             Ok(task_profile_requests_context(profile, "media_rules")
@@ -9469,30 +9486,7 @@ fn build_model_request_with_history_and_task_profile(
                 RuntimeModelMessage::system(source, priority, content)
             }),
     );
-    messages.extend(history.iter().filter_map(|message| {
-        if should_exclude_history_message_from_model_context(message) {
-            return None;
-        }
-        if ["user", "assistant", "system"].contains(&message.role.trim())
-            && !message.content.trim().is_empty()
-        {
-            let mut runtime_message = RuntimeModelMessage::simple(
-                message.role.trim().to_string(),
-                message.content.clone(),
-            );
-            if message.role.trim() == "assistant" {
-                runtime_message.reasoning_content = message
-                    .reasoning_content
-                    .as_deref()
-                    .map(str::trim)
-                    .unwrap_or("")
-                    .to_string();
-            }
-            Some(runtime_message)
-        } else {
-            None
-        }
-    }));
+    messages.extend(history.iter().filter_map(build_history_model_message));
     messages.push(build_user_message_with_attachments(
         user_message,
         &request.attachments,
@@ -9793,6 +9787,124 @@ fn should_exclude_history_message_from_model_context(message: &LocalChatMessage)
     visibility != "model_context"
 }
 
+fn history_message_has_model_context(message: &LocalChatMessage) -> bool {
+    !message.content.trim().is_empty()
+        || message
+            .images
+            .iter()
+            .any(|value| is_supported_image_reference(value))
+        || message.videos.iter().any(|value| !value.trim().is_empty())
+        || message.audios.iter().any(|value| !value.trim().is_empty())
+}
+
+fn build_history_media_context(message: &LocalChatMessage) -> String {
+    let mut lines = Vec::new();
+    let message_id = message
+        .message_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    for (index, url) in message
+        .images
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| is_supported_image_reference(value))
+        .enumerate()
+    {
+        lines.push(format!(
+            "- 历史图片 {}{}：{}",
+            index + 1,
+            message_id
+                .map(|value| format!("（消息 {value}）"))
+                .unwrap_or_default(),
+            url
+        ));
+    }
+    for (label, values) in [("视频", &message.videos), ("音频", &message.audios)] {
+        for (index, url) in values
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .enumerate()
+        {
+            lines.push(format!("- 历史{label} {}：{}", index + 1, url));
+        }
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("会话媒体引用：\n{}", lines.join("\n"))
+    }
+}
+
+fn build_history_model_message(message: &LocalChatMessage) -> Option<RuntimeModelMessage> {
+    if should_exclude_history_message_from_model_context(message) {
+        return None;
+    }
+    let role = message.role.trim();
+    if !["user", "assistant", "system"].contains(&role) {
+        return None;
+    }
+    let media_context = build_history_media_context(message);
+    let content = [message.content.trim(), media_context.trim()]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if content.is_empty() {
+        return None;
+    }
+    let mut runtime_message = if role == "user" {
+        let image_parts = message
+            .images
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| is_supported_image_reference(value))
+            .map(|url| RuntimeModelContentPart::ImageUrl {
+                image_url: RuntimeModelImageUrl {
+                    url: url.to_string(),
+                },
+            })
+            .collect::<Vec<_>>();
+        if image_parts.is_empty() {
+            RuntimeModelMessage::simple(role, content)
+        } else {
+            let mut content_parts = Vec::with_capacity(1 + image_parts.len());
+            content_parts.push(RuntimeModelContentPart::Text {
+                text: content.clone(),
+            });
+            content_parts.extend(image_parts);
+            RuntimeModelMessage::with_content_parts(role, content, content_parts)
+        }
+    } else {
+        RuntimeModelMessage::simple(role, content)
+    };
+    if role == "assistant" {
+        runtime_message.reasoning_content = message
+            .reasoning_content
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+    }
+    Some(runtime_message)
+}
+
+fn format_history_message_for_context(index: usize, message: &LocalChatMessage) -> String {
+    let media_context = build_history_media_context(message);
+    let content = [message.content.trim(), media_context.trim()]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!(
+        "[{}] {}\n{}",
+        index,
+        normalize_model_message_role(&message.role),
+        truncate_inline(&content, 1200)
+    )
+}
+
 fn extract_relevant_conversation_context(
     base_request: &ModelStepRequest,
     history: &[LocalChatMessage],
@@ -9806,15 +9918,8 @@ fn extract_relevant_conversation_context(
         .iter()
         .enumerate()
         .filter(|(_, message)| !should_exclude_history_message_from_model_context(message))
-        .filter(|(_, message)| !message.content.trim().is_empty())
-        .map(|(index, message)| {
-            format!(
-                "[{}] {}\n{}",
-                index,
-                normalize_model_message_role(&message.role),
-                truncate_inline(&message.content, 600)
-            )
-        })
+        .filter(|(_, message)| history_message_has_model_context(message))
+        .map(|(index, message)| format_history_message_for_context(index, message))
         .collect::<Vec<_>>();
     if conversation_history.is_empty() {
         return String::new();
@@ -9851,16 +9956,11 @@ fn extract_relevant_conversation_context(
         .filter_map(|index| {
             let message = history.get(index)?;
             if should_exclude_history_message_from_model_context(message)
-                || message.content.trim().is_empty()
+                || !history_message_has_model_context(message)
             {
                 return None;
             }
-            Some(format!(
-                "[{}] {}\n{}",
-                index,
-                normalize_model_message_role(&message.role),
-                truncate_inline(&message.content, 600)
-            ))
+            Some(format_history_message_for_context(index, message))
         })
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -12156,8 +12256,12 @@ mod tests {
                 message: "继续执行未完成任务".to_string(),
                 workspace_path: dir.to_string_lossy().to_string(),
                 history: vec![LocalChatMessage {
+                    message_id: None,
                     role: "user".to_string(),
                     content: "中断前的历史任务".to_string(),
+                    images: Vec::new(),
+                    videos: Vec::new(),
+                    audios: Vec::new(),
                     reasoning_content: None,
                     source_kind: None,
                     diagnostic: None,
@@ -15754,6 +15858,61 @@ mod tests {
     }
 
     #[test]
+    fn local_chat_history_deserializes_structured_media_fields() {
+        let message: LocalChatMessage = serde_json::from_value(json!({
+            "messageId": "assistant-image-message",
+            "role": "assistant",
+            "content": "图片已生成",
+            "images": ["https://example.test/generated.png"],
+            "videos": ["https://example.test/generated.mp4"],
+            "audios": ["https://example.test/generated.mp3"]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            message.message_id.as_deref(),
+            Some("assistant-image-message")
+        );
+        assert_eq!(message.images, ["https://example.test/generated.png"]);
+        assert_eq!(message.videos, ["https://example.test/generated.mp4"]);
+        assert_eq!(message.audios, ["https://example.test/generated.mp3"]);
+    }
+
+    #[test]
+    fn local_chat_user_history_image_rebuilds_multimodal_message() {
+        let request = LocalChatRequest::default();
+        let history = vec![LocalChatMessage {
+            message_id: Some("user-image-message".to_string()),
+            role: "user".to_string(),
+            content: "这是参考图片".to_string(),
+            images: vec!["https://example.test/reference.png".to_string()],
+            videos: Vec::new(),
+            audios: Vec::new(),
+            reasoning_content: None,
+            source_kind: None,
+            diagnostic: None,
+            visibility: None,
+        }];
+
+        let model_request =
+            build_model_request_with_history(&request, "继续处理", &history).unwrap();
+        let history_message = model_request
+            .messages
+            .iter()
+            .find(|message| message.role == "user" && message.content.contains("这是参考图片"))
+            .unwrap();
+        let payload = openai_compatible_message_payload(history_message);
+        let content = payload["content"].as_array().unwrap();
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(
+            content[1]["image_url"]["url"],
+            "https://example.test/reference.png"
+        );
+        assert!(history_message.content.contains("会话媒体引用"));
+        assert!(history_message.content.contains("user-image-message"));
+    }
+
+    #[test]
     fn local_chat_local_extract_mode_skips_image_url_parts() {
         let request = LocalChatRequest {
             project_id: "proj-test".to_string(),
@@ -17875,6 +18034,29 @@ mod tests {
     }
 
     #[test]
+    fn execute_task_keeps_builtin_entry_policy_without_project_entry_file() {
+        let message = "按照设计方案开发实现登录模块，修改 src/login.rs";
+        let mut request = test_dynamic_prompt_request(message);
+        request.ai_entry_file = None;
+        let mut routed_profile = build_task_profile(message);
+        routed_profile.intent = TaskIntent::Execute;
+        routed_profile.domains = vec!["code".to_string()];
+        routed_profile.required_capabilities =
+            task_profile_required_capabilities(&routed_profile.intent, &routed_profile.domains);
+        push_unique(&mut routed_profile.required_context, "entry_policy");
+
+        let model_request = build_model_request_with_history_and_task_profile(
+            &request,
+            message,
+            &request.history,
+            Some(routed_profile),
+        )
+        .unwrap();
+
+        assert!(system_prompt_sources(&model_request).contains(&"desktop_local_agent.entry_policy"));
+    }
+
+    #[test]
     fn dynamic_task_brief_does_not_force_output_sections() {
         let message = "设计登录需求和验收标准";
         let request = test_dynamic_prompt_request(message);
@@ -18226,16 +18408,24 @@ mod tests {
     fn relevant_context_extractor_receives_complete_history_as_separate_data() {
         let history = vec![
             LocalChatMessage {
+                message_id: None,
                 role: "user".to_string(),
                 content: "改造登录和注册页面".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
                 visibility: None,
             },
             LocalChatMessage {
+                message_id: None,
                 role: "assistant".to_string(),
                 content: "我会读取页面源码并开始改造".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
@@ -18275,32 +18465,48 @@ mod tests {
     fn relevant_context_extractor_can_recover_early_conversation_content() {
         let history = vec![
             LocalChatMessage {
+                message_id: None,
                 role: "user".to_string(),
                 content: "改造登录页面".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
                 visibility: None,
             },
             LocalChatMessage {
+                message_id: None,
                 role: "assistant".to_string(),
                 content: "登录页改造进行中".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
                 visibility: None,
             },
             LocalChatMessage {
+                message_id: None,
                 role: "user".to_string(),
                 content: "查询一级目录".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
                 visibility: None,
             },
             LocalChatMessage {
+                message_id: None,
                 role: "assistant".to_string(),
                 content: "一级目录已展示".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
@@ -18325,8 +18531,12 @@ mod tests {
     #[test]
     fn relevant_context_extractor_failure_returns_no_history() {
         let history = vec![LocalChatMessage {
+            message_id: None,
             role: "user".to_string(),
             content: "旧任务".to_string(),
+            images: Vec::new(),
+            videos: Vec::new(),
+            audios: Vec::new(),
             reasoning_content: None,
             source_kind: None,
             diagnostic: None,
@@ -18346,8 +18556,12 @@ mod tests {
     #[test]
     fn relevant_context_extractor_rejects_generated_text() {
         let history = vec![LocalChatMessage {
+            message_id: None,
             role: "assistant".to_string(),
             content: "我是 Claude，由 Anthropic 开发。".to_string(),
+            images: Vec::new(),
+            videos: Vec::new(),
+            audios: Vec::new(),
             reasoning_content: None,
             source_kind: None,
             diagnostic: None,
@@ -19193,6 +19407,16 @@ mod tests {
             "model_call_started"
         );
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn local_chat_run_guard_blocks_resume_while_previous_run_is_active() {
+        let chat_session_id = "chat-active-run-guard-test";
+        assert!(try_begin_local_chat_run(chat_session_id));
+        assert!(!try_begin_local_chat_run(chat_session_id));
+        finish_local_chat_run(chat_session_id);
+        assert!(try_begin_local_chat_run(chat_session_id));
+        finish_local_chat_run(chat_session_id);
     }
 
     #[test]

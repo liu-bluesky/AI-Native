@@ -1506,8 +1506,12 @@ fn trim_bot_conversation_history(
 
 fn bot_history_message(role: &str, content: &str) -> LocalChatMessage {
     LocalChatMessage {
+        message_id: None,
         role: role.to_string(),
         content: content.trim().to_string(),
+        images: Vec::new(),
+        videos: Vec::new(),
+        audios: Vec::new(),
         reasoning_content: None,
         source_kind: Some("feishu_bot_conversation".to_string()),
         diagnostic: Some(false),
@@ -2899,8 +2903,12 @@ mod tests {
     #[test]
     fn bot_conversation_history_keeps_only_final_user_assistant_turns() {
         let mut messages = vec![LocalChatMessage {
+            message_id: None,
             role: "assistant".to_string(),
             content: "正在调用模型处理。".to_string(),
+            images: Vec::new(),
+            videos: Vec::new(),
+            audios: Vec::new(),
             reasoning_content: None,
             source_kind: Some("progress".to_string()),
             diagnostic: Some(true),
@@ -2928,8 +2936,12 @@ mod tests {
     fn bot_conversation_history_is_trimmed_to_recent_messages() {
         let messages = (0..8)
             .map(|index| LocalChatMessage {
+                message_id: None,
                 role: if index % 2 == 0 { "user" } else { "assistant" }.to_string(),
                 content: format!("m{index}"),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,

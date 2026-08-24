@@ -136,6 +136,7 @@ import {
   upsertLocalProject,
 } from "@/services/local-project-repository.js";
 import { readLocalSystemConfig } from "@/services/local-system-config.js";
+import { DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT } from "@/config/desktopAgentPrompts.js";
 import {
   hasNativeDesktopBridge,
   readNativeWorkspaceFile,
@@ -189,10 +190,18 @@ async function initializeProjectAiEntryFile(project) {
   if (!hasNativeDesktopBridge()) return;
 
   try {
-    await readNativeWorkspaceFile({
+    const existingFile = await readNativeWorkspaceFile({
       workspacePath,
       path: DEFAULT_AI_ENTRY_FILE,
     });
+    if (Number(existingFile?.size || 0) > 0) {
+      upsertLocalProject({
+        ...project,
+        id: projectId,
+        ai_entry_file: DEFAULT_AI_ENTRY_FILE,
+      });
+      return;
+    }
   } catch (error) {
     if (!isWorkspaceFileMissing(error)) {
       throw error;
@@ -200,7 +209,9 @@ async function initializeProjectAiEntryFile(project) {
     await writeNativeWorkspaceFile({
       workspacePath,
       path: DEFAULT_AI_ENTRY_FILE,
-      content: String(readLocalSystemConfig().desktop_agent_global_prompt || "").trim(),
+      content:
+        String(readLocalSystemConfig().desktop_agent_global_prompt || "").trim() ||
+        DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT,
     });
   }
 

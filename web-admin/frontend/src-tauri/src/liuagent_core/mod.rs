@@ -49,8 +49,8 @@ pub use runtime::{
     recover_local_runtime_state, refresh_local_runtime_job, save_local_offline_cache,
 };
 pub use runtime::{
-    prepare_local_chat_run, request_local_chat_pause, start_local_chat_with_event_sink,
-    upload_provider_file,
+    finish_local_chat_run, prepare_local_chat_run, request_local_chat_pause,
+    start_local_chat_with_event_sink, try_begin_local_chat_run, upload_provider_file,
 };
 pub use tools::network::{
     global_web_tool_config_path, project_web_tool_config_path, WEB_TOOL_CONFIG_TEMPLATE,
@@ -331,6 +331,40 @@ mod tests {
             result.content["stdout"].as_str().unwrap().trim(),
             dir.canonicalize().unwrap().to_string_lossy()
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn run_command_creates_missing_workspace_and_uses_host_shell() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent-run-missing-workspace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!dir.exists());
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_run_missing_workspace".to_string()),
+            name: "run_command".to_string(),
+            arguments: json!({"cmd": "echo local-agent", "timeout_ms": 5000}),
+            workspace_path: dir.to_string_lossy().to_string(),
+            permission_decision: Some(types::PermissionDecisionInput {
+                request_id: Some("perm_call_run_missing_workspace_command_run".to_string()),
+                decision: "approve_once".to_string(),
+                grant_scope: Some("once".to_string()),
+                comment: None,
+            }),
+        });
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.content["exit_code"], 0);
+        assert!(result.content["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("local-agent"));
+        assert!(dir.is_dir());
         let _ = std::fs::remove_dir_all(dir);
     }
 

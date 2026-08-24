@@ -290,11 +290,22 @@ fn run_shell_command(
     output_sink: Option<&dyn Fn(&str, &str)>,
     cancel_check: Option<&dyn Fn() -> bool>,
 ) -> Result<(Value, String), ToolError> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
     let started = Instant::now();
-    let mut command = Command::new(shell);
+    #[cfg(windows)]
+    let mut command = {
+        let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+        let mut command = Command::new(shell);
+        command.args(["/d", "/s", "/c"]);
+        command
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let mut command = Command::new(shell);
+        command.arg("-lc");
+        command
+    };
     command
-        .arg("-lc")
         .arg(cmd)
         .current_dir(cwd)
         .stdin(Stdio::null())
