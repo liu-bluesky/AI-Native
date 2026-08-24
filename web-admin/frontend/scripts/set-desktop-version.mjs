@@ -47,7 +47,7 @@ async function updateCargoLockVersion(version) {
   const lockPath = path.join(projectDirectory, 'src-tauri', 'Cargo.lock');
   const lockContents = await readFile(lockPath, 'utf8');
   const updatedContents = lockContents.replace(
-    /(name = "ai-employee-factory-desktop"\nversion = )"[^"]+"/,
+    /(name = "ai-employee-factory-desktop"\r?\nversion = )"[^"]+"/,
     `$1"${version}"`,
   );
 

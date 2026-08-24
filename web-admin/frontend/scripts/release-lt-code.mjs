@@ -3,7 +3,6 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { setDesktopVersion } from './set-desktop-version.mjs';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(scriptDirectory, '..');
@@ -25,13 +24,15 @@ function output(command, argumentsList, options = {}) {
   return execFileSync(command, argumentsList, { encoding: 'utf8', ...options }).trim();
 }
 
-function nextPatchVersion(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
-  if (!match) {
-    throw new Error(`package.json 的版本号不是 x.y.z 格式：${version}`);
+function releasePlatform() {
+  const platformIndex = process.argv.indexOf('--platform');
+  const platform = platformIndex === -1 ? 'all' : String(process.argv[platformIndex + 1] || '').trim();
+
+  if (!['all', 'mac', 'windows'].includes(platform)) {
+    throw new Error('--platform 仅支持 all、mac 或 windows。');
   }
 
-  return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+  return platform;
 }
 
 function findGitHubRepository() {
@@ -138,38 +139,17 @@ async function writeChecksums(releaseDirectory) {
   await writeFile(path.join(releaseDirectory, 'SHA256SUMS.txt'), `${checksums.sort().join('\n')}\n`);
 }
 
-async function main() {
-  if (process.platform !== 'darwin') {
-    throw new Error('该总控脚本需在 macOS 上执行，以同时构建三个 macOS 安装包。');
-  }
-
-  const packagePath = path.join(projectDirectory, 'package.json');
-  const currentVersion = JSON.parse(await readFile(packagePath, 'utf8')).version;
-  const version = nextPatchVersion(currentVersion);
-  const branch = output('git', ['branch', '--show-current'], { cwd: repositoryDirectory });
-
-  if (!branch) {
-    throw new Error('当前仓库处于 detached HEAD，无法触发 Windows 构建。请切换到分支后再执行。');
-  }
-
-  const repository = findGitHubRepository();
-  ensureGitHubAuthentication();
-  ensureWindowsWorkflowExists(repository);
-  const releaseDirectory = path.join(projectDirectory, '发布包', `LT code v${version}`);
-  const windowsDirectory = path.join(releaseDirectory, 'Windows · 64 位');
-
-  await setDesktopVersion(version);
-  await rm(releaseDirectory, { recursive: true, force: true });
-  await mkdir(releaseDirectory, { recursive: true });
-
-  startWindowsBuild(repository, branch, version);
-
+async function buildMacInstallers(releaseDirectory) {
   run('rustup', ['target', 'add', 'aarch64-apple-darwin', 'x86_64-apple-darwin']);
   for (const macBuild of macBuilds) {
     run('npm', ['run', 'tauri:build', '--', '--target', macBuild.target, '--bundles', 'dmg'], { cwd: projectDirectory });
     const bundleDirectory = path.join(projectDirectory, 'src-tauri', 'target', macBuild.target, 'release', 'bundle', 'dmg');
     await copyBundles(bundleDirectory, '.dmg', path.join(releaseDirectory, macBuild.directory));
   }
+}
+
+async function buildWindowsInstaller(repository, branch, version, windowsDirectory) {
+  startWindowsBuild(repository, branch, version);
 
   const windowsRunId = await waitForWindowsRun(repository, version);
   run('gh', ['run', 'watch', String(windowsRunId), '--repo', repository, '--exit-status'], { cwd: repositoryDirectory });
@@ -185,9 +165,44 @@ async function main() {
   if (windowsInstallers.length === 0) {
     throw new Error('Windows 工作流已完成，但下载结果中没有 .exe 安装包。');
   }
+}
 
+async function main() {
+  const platform = releasePlatform();
+  const includesMac = platform === 'all' || platform === 'mac';
+  const includesWindows = platform === 'all' || platform === 'windows';
+
+  if (includesMac && process.platform !== 'darwin') {
+    throw new Error('macOS 安装包只能在 macOS 上构建。');
+  }
+
+  const packagePath = path.join(projectDirectory, 'package.json');
+  const currentVersion = JSON.parse(await readFile(packagePath, 'utf8')).version;
+  const version = currentVersion;
+  const releaseDirectory = path.join(projectDirectory, '发布包', `LT code v${version}`);
+  const windowsDirectory = path.join(releaseDirectory, 'Windows · 64 位');
+
+  if (includesMac) {
+    await rm(releaseDirectory, { recursive: true, force: true });
+    await mkdir(releaseDirectory, { recursive: true });
+    await buildMacInstallers(releaseDirectory);
+  }
+
+  if (includesWindows) {
+    const branch = output('git', ['branch', '--show-current'], { cwd: repositoryDirectory });
+    if (!branch) {
+      throw new Error('当前仓库处于 detached HEAD，无法触发 Windows 构建。请切换到分支后再执行。');
+    }
+
+    const repository = findGitHubRepository();
+    ensureGitHubAuthentication();
+    ensureWindowsWorkflowExists(repository);
+    await buildWindowsInstaller(repository, branch, version, windowsDirectory);
+  }
+
+  await mkdir(releaseDirectory, { recursive: true });
   await writeChecksums(releaseDirectory);
-  console.log(`\nLT code v${version} 已完成打包：${releaseDirectory}`);
+  console.log(`\nLT code v${version} ${platform} 安装包已完成：${releaseDirectory}`);
 }
 
 main().catch((error) => {

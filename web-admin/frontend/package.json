@@ -1,7 +1,7 @@
 {
   "name": "ai-employee-factory",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -26,7 +26,9 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:check": "node ./src-tauri/check-tauri-shell.mjs",
-    "release:lt-code": "node ./scripts/release-lt-code.mjs"
+    "release:lt-code": "node ./scripts/release-lt-code.mjs",
+    "release:lt-code:mac": "node ./scripts/release-lt-code.mjs --platform mac",
+    "release:lt-code:windows": "node ./scripts/release-lt-code.mjs --platform windows"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

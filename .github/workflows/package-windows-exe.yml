@@ -17,6 +17,8 @@ jobs:
   package:
     name: Windows x64 EXE
     runs-on: windows-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     defaults:
       run:
         working-directory: web-admin/frontend
@@ -39,8 +41,13 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Apply requested release version
-        run: node scripts/set-desktop-version.mjs --version "${{ inputs.version }}"
+      - name: Verify requested release version
+        shell: pwsh
+        run: |
+          $packageVersion = node -p "require('./package.json').version"
+          if ($packageVersion -ne "${{ inputs.version }}") {
+            throw "请求版本 ${{ inputs.version }} 与仓库当前版本 $packageVersion 不一致。请先更新版本并推送后重试。"
+          }
 
       - name: Build NSIS installer
         run: npm run tauri:build -- --target x86_64-pc-windows-msvc --bundles nsis
