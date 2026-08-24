@@ -29,13 +29,11 @@ const createDesktopAppRoutes = () => [
         children: [
           { path: '', redirect: '/ai/chat/settings/chat' },
           { path: 'chat', component: { render: () => null } },
-          { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
           { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
           { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
           { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
           { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
           { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
-          { path: 'mcp-monitor', component: () => import('../views/system/McpMonitorManager.vue'), meta: { superAdminOnly: true } },
           { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
           { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
           { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
@@ -49,7 +47,6 @@ const createDesktopAppRoutes = () => [
       },
       { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
       { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
-      { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
       { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
       { path: 'employees/create', component: () => import('../views/employees/EmployeeCreate.vue') },
       { path: 'employees/:id/edit', component: () => import('../views/employees/EmployeeEdit.vue') },
@@ -60,7 +57,6 @@ const createDesktopAppRoutes = () => [
       { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
       { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
       { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
-      { path: 'mcp-monitor', component: () => import('../views/system/McpMonitorManager.vue'), meta: { superAdminOnly: true } },
   { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
 ]
 

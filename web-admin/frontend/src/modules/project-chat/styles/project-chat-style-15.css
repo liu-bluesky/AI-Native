@@ -1,8 +1,8 @@
-@media (max-width: 1120px) {
+@media (max-width: 900px) {
   .chat-layout {
-    min-height: 100%;
-    height: auto;
-    overflow: visible;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
   }
 
   .settings-center-page {
@@ -13,10 +13,12 @@
   .chat-shell {
     width: 100%;
     grid-template-columns: 1fr;
-    min-height: auto;
-    height: auto;
+    grid-template-rows: minmax(132px, 24%) minmax(0, 1fr);
+    min-height: 0;
+    height: 100%;
     gap: 20px;
     padding: 14px 0 0;
+    overflow: hidden;
   }
 
   .chat-shell--local-runner {
@@ -30,7 +32,7 @@
 
   .chat-stage {
     order: 1;
-    min-height: auto;
+    min-height: 0;
     padding: 0;
   }
 
@@ -45,10 +47,10 @@
   }
 
   .chat-main {
-    height: auto;
+    height: 100%;
     min-height: 0;
     padding: 0 14px 18px;
-    overflow: visible;
+    overflow: hidden;
   }
 
   .chat-messages {
@@ -83,7 +85,7 @@
   }
 
   .settings-center-stage {
-    height: auto;
+    height: 100%;
     min-height: 0;
     padding-top: 4px;
     border-radius: 28px;
@@ -263,7 +265,7 @@
 
 @media (max-width: 760px) {
   .chat-layout {
-    height: 100dvh;
+    height: 100%;
     min-height: 0;
     overflow: hidden;
   }
@@ -277,6 +279,7 @@
   .chat-layout .chat-shell,
   .chat-layout .chat-shell.chat-shell--local-runner {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(112px, 20%);
     height: 100%;
     min-height: 0;
     overflow: hidden;
@@ -286,6 +289,12 @@
   .chat-layout .chat-messages-shell {
     height: 100%;
     min-height: 0;
+    overflow: hidden;
+  }
+
+  .chat-layout .chat-conversation-sidebar {
+    height: 100%;
+    max-height: 100%;
     overflow: hidden;
   }
 }

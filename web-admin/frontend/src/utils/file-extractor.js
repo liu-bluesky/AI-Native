@@ -1,8 +1,30 @@
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
-import mammoth from 'mammoth'
-import * as XLSX from 'xlsx'
+let pdfjsPromise
+let mammothPromise
+let xlsxPromise
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.mjs`
+function loadPdfjs() {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then((pdfjsLib) => {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.mjs`
+      return pdfjsLib
+    })
+  }
+  return pdfjsPromise
+}
+
+function loadMammoth() {
+  if (!mammothPromise) {
+    mammothPromise = import('mammoth').then((module) => module.default)
+  }
+  return mammothPromise
+}
+
+function loadXlsx() {
+  if (!xlsxPromise) {
+    xlsxPromise = import('xlsx')
+  }
+  return xlsxPromise
+}
 
 export async function extractTextFromFile(file) {
   if (!file) return ''
@@ -14,6 +36,7 @@ export async function extractTextFromFile(file) {
     }
 
     if (name.endsWith('.pdf')) {
+      const pdfjsLib = await loadPdfjs()
       const arrayBuffer = await file.arrayBuffer()
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
       let fullText = ''
@@ -27,12 +50,14 @@ export async function extractTextFromFile(file) {
     }
 
     if (name.endsWith('.docx') || name.endsWith('.wps')) {
+      const mammoth = await loadMammoth()
       const arrayBuffer = await file.arrayBuffer()
       const result = await mammoth.extractRawText({ arrayBuffer })
       return result.value.trim()
     }
 
     if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+      const XLSX = await loadXlsx()
       const arrayBuffer = await file.arrayBuffer()
       const workbook = XLSX.read(arrayBuffer, { type: 'buffer' })
       let fullText = ''

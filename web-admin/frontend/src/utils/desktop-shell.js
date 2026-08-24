@@ -6,6 +6,7 @@ export const DESKTOP_WALLPAPER_STORAGE_KEY = "desktop_wallpaper_config";
 export const DESKTOP_WINDOW_SESSION_STORAGE_KEY = "desktop_window_session";
 const DESKTOP_DOCK_APP_IDS_STORAGE_KEY = "desktop_dock_app_ids";
 const DESKTOP_DOCK_ORDER_STORAGE_KEY = "desktop_dock_order";
+const DESKTOP_SHORTCUT_LAYOUT_STORAGE_KEY = "desktop_shortcut_layout";
 const DESKTOP_REQUIRED_DOCK_APP_IDS = ["chat", "tasks", "workbench", "settings-providers"];
 const REMOVED_DESKTOP_APP_IDS = new Set([
   "market",
@@ -19,6 +20,8 @@ const REMOVED_DESKTOP_APP_IDS = new Set([
   "settings-work-sessions",
   "settings-dictionaries",
   "settings-online-users",
+  "settings-user",
+  "settings-mcp-monitor",
 ]);
 
 export const DESKTOP_WALLPAPER_PRESETS = [
@@ -87,7 +90,6 @@ const DESKTOP_APP_ICON_THEMES = {
   "project-detail": ["#60a5fa", "#4f46e5"],
   market: ["#fb7185", "#f97316"],
   "settings-home": ["#94a3b8", "#475569"],
-  "settings-user": ["#818cf8", "#4f46e5"],
   "settings-agent-templates": ["#c084fc", "#7c3aed"],
   "settings-skills": ["#22c55e", "#15803d"],
   "settings-rules": ["#facc15", "#ca8a04"],
@@ -100,7 +102,6 @@ const DESKTOP_APP_ICON_THEMES = {
   "settings-providers": ["#06b6d4", "#0891b2"],
   "settings-wallpaper": ["#67e8f9", "#0ea5e9"],
   "settings-online-users": ["#4ade80", "#16a34a"],
-  "settings-mcp-monitor": ["#f472b6", "#be185d"],
 };
 
 function resolveDesktopAppIcon(config = {}) {
@@ -359,20 +360,6 @@ const DESKTOP_APP_ITEMS = [
     },
   }),
   createApp({
-    id: "settings-user",
-    label: "用户设置",
-    shortLabel: "US",
-    path: "/user/settings",
-    summary: "管理当前账号的个人偏好和默认行为。",
-    eyebrow: "User Settings",
-    width: 980,
-    height: 720,
-    launcher: false,
-    category: "settings",
-    categoryLabel: "设置应用",
-    match: (path) => String(path || "").startsWith("/user/settings"),
-  }),
-  createApp({
     id: "settings-agent-templates",
     label: "模板库",
     shortLabel: "AT",
@@ -540,20 +527,6 @@ const DESKTOP_APP_ITEMS = [
     categoryLabel: "设置应用",
     match: (path) => String(path || "").startsWith("/online-users"),
   }),
-  createApp({
-    id: "settings-mcp-monitor",
-    label: "MCP 监控",
-    shortLabel: "MP",
-    path: "/mcp-monitor",
-    summary: "查看 MCP 入口接入和使用情况。",
-    eyebrow: "MCP Monitor",
-    width: 1180,
-    height: 780,
-    launcher: false,
-    category: "settings",
-    categoryLabel: "设置应用",
-    match: (path) => String(path || "").startsWith("/mcp-monitor"),
-  }),
 ];
 
 export const DESKTOP_DOCK_ITEMS = DESKTOP_REQUIRED_DOCK_APP_IDS
@@ -669,6 +642,50 @@ export function setStoredDesktopDockOrder(appIds = []) {
   return normalized;
 }
 
+function normalizeDesktopShortcutLayout(layout = {}) {
+  if (!layout || typeof layout !== "object" || Array.isArray(layout)) return {};
+  const normalized = {};
+  for (const [appId, position] of Object.entries(layout)) {
+    const normalizedId = String(appId || "").trim();
+    const column = Math.floor(Number(position?.column));
+    const row = Math.floor(Number(position?.row));
+    if (
+      !normalizedId
+      || !Number.isFinite(column)
+      || !Number.isFinite(row)
+      || column < 0
+      || row < 0
+    ) {
+      continue;
+    }
+    normalized[normalizedId] = {
+      column: Math.min(column, 32),
+      row: Math.min(row, 32),
+    };
+  }
+  return normalized;
+}
+
+export function getStoredDesktopShortcutLayout() {
+  if (!canUseWindow()) return {};
+  try {
+    const raw = window.localStorage.getItem(DESKTOP_SHORTCUT_LAYOUT_STORAGE_KEY);
+    return normalizeDesktopShortcutLayout(JSON.parse(String(raw || "{}")));
+  } catch {
+    return {};
+  }
+}
+
+export function setStoredDesktopShortcutLayout(layout = {}) {
+  const normalized = normalizeDesktopShortcutLayout(layout);
+  if (!canUseWindow()) return normalized;
+  window.localStorage.setItem(
+    DESKTOP_SHORTCUT_LAYOUT_STORAGE_KEY,
+    JSON.stringify(normalized),
+  );
+  return normalized;
+}
+
 export function getStoredDesktopWindowSession() {
   if (!canUseWindow()) return null;
   const raw = window.localStorage.getItem(DESKTOP_WINDOW_SESSION_STORAGE_KEY);
@@ -718,6 +735,7 @@ export function clearDesktopRuntimeStorage(options = {}) {
   if (!canUseWindow()) return;
   const preserveWallpaper = options?.preserveWallpaper !== false;
   const preserveDock = options?.preserveDock === true;
+  const preserveDesktopShortcuts = options?.preserveDesktopShortcuts !== false;
   window.localStorage.removeItem(PROJECT_CONTEXT_STORAGE_KEY);
   clearStoredDesktopWindowSession();
   if (!preserveWallpaper) {
@@ -726,6 +744,9 @@ export function clearDesktopRuntimeStorage(options = {}) {
   if (!preserveDock) {
     window.localStorage.removeItem(DESKTOP_DOCK_APP_IDS_STORAGE_KEY);
     window.localStorage.removeItem(DESKTOP_DOCK_ORDER_STORAGE_KEY);
+  }
+  if (!preserveDesktopShortcuts) {
+    window.localStorage.removeItem(DESKTOP_SHORTCUT_LAYOUT_STORAGE_KEY);
   }
 }
 

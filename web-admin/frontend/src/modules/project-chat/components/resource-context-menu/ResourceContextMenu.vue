@@ -12,7 +12,7 @@
       </button>
       <div v-if="canAppend && hasResourceActions" class="resource-context-menu__divider" />
       <button v-if="canOpen" type="button" role="menuitem" @click="$emit('open')">
-        <span>在新窗口打开</span>
+        <span>{{ openLabel }}</span>
       </button>
       <button v-if="canDownload" type="button" role="menuitem" @click="$emit('download')">
         <span>下载 / 另存为</span>
@@ -39,6 +39,7 @@ const props = defineProps({
   y: { type: Number, default: 0 },
   canAppend: { type: Boolean, default: false },
   canOpen: { type: Boolean, default: false },
+  openLabel: { type: String, default: "在新窗口打开" },
   canDownload: { type: Boolean, default: false },
   canCopyAddress: { type: Boolean, default: false },
   canCopyFile: { type: Boolean, default: false },

@@ -84,12 +84,31 @@
           </section>
         </aside>
 
-        <section class="desktop-system__desktop">
+        <section ref="desktopRef" class="desktop-system__desktop">
           <div
             class="desktop-system__mesh"
             :style="meshStyle"
             aria-hidden="true"
           />
+          <div class="desktop-system__shortcuts" aria-label="桌面快捷方式">
+            <button
+              v-for="(item, index) in desktopItems"
+              :key="item.id"
+              type="button"
+              class="desktop-system__shortcut"
+              :class="{ 'is-dragging': draggingDesktopShortcutId === item.id }"
+              :style="desktopShortcutStyle(item, index)"
+              :aria-label="`打开${item.label}`"
+              @pointerdown="startDesktopShortcutDrag($event, item, index)"
+              @contextmenu.prevent.stop="openDesktopShortcutContextMenu($event, item)"
+              @click="handleDesktopShortcutClick(item)"
+            >
+              <span class="desktop-system__shortcut-icon" :style="desktopIconStyle(item)">
+                {{ item.icon?.label || item.shortLabel }}
+              </span>
+              <span class="desktop-system__shortcut-label">{{ item.label }}</span>
+            </button>
+          </div>
           <article
             v-for="window in visibleWindows"
             :key="window.id"
@@ -155,10 +174,10 @@
               </div>
             </div>
 
-            <div v-show="!window.minimized" class="desktop-system__window-body">
-              <div class="desktop-system__window-summary">
-                <p>{{ window.summary }}</p>
-              </div>
+            <div
+              v-if="window.id === activeWindowId && !window.minimized"
+              class="desktop-system__window-body"
+            >
               <div class="desktop-system__window-frame">
                 <slot name="window" :window="window" />
               </div>
@@ -284,6 +303,14 @@
       </nav>
 
       <GlobalAiAssistant />
+      <ResourceContextMenu
+        :visible="desktopShortcutContextMenu.visible"
+        :x="desktopShortcutContextMenu.x"
+        :y="desktopShortcutContextMenu.y"
+        :can-open="Boolean(desktopShortcutContextMenu.item)"
+        open-label="打开"
+        @open="openDesktopShortcutFromContextMenu"
+      />
     </div>
   </div>
 </template>
@@ -299,6 +326,7 @@ import {
 } from "vue";
 
 import GlobalAiAssistant from "@/components/GlobalAiAssistant.vue";
+import ResourceContextMenu from "@/modules/project-chat/components/resource-context-menu/ResourceContextMenu.vue";
 
 const props = defineProps({
   dockItems: {
@@ -308,6 +336,14 @@ const props = defineProps({
   launcherItems: {
     type: Array,
     default: () => [],
+  },
+  desktopItems: {
+    type: Array,
+    default: () => [],
+  },
+  desktopItemLayout: {
+    type: Object,
+    default: () => ({}),
   },
   windows: {
     type: Array,
@@ -361,11 +397,17 @@ const emit = defineEmits([
   "clear-cache",
   "unpin-dock-app",
   "reorder-dock-apps",
+  "update-desktop-item-layout",
 ]);
 
 const RESIZE_HANDLES = ["n", "e", "s", "w", "ne", "nw", "se", "sw"];
 const DESKTOP_WINDOW_MIN_WIDTH = 720;
 const DESKTOP_WINDOW_MIN_HEIGHT = 480;
+const DESKTOP_SHORTCUT_COLUMN_WIDTH = 104;
+const DESKTOP_SHORTCUT_ROW_HEIGHT = 94;
+const DESKTOP_SHORTCUT_PADDING_X = 20;
+const DESKTOP_SHORTCUT_PADDING_Y = 24;
+const DESKTOP_SHORTCUT_BOTTOM_CLEARANCE = 112;
 
 const activeWindow = computed(
   () => props.windows.find((item) => item.id === props.activeWindowId) || null,
@@ -408,6 +450,17 @@ const dockDragAnchorY = ref(0);
 const dockTooltipLabel = ref("");
 const dockTooltipLeft = ref(0);
 const dockTooltipVisible = ref(false);
+const desktopRef = ref(null);
+const draggingDesktopShortcutId = ref("");
+const desktopShortcutDragOffsetX = ref(0);
+const desktopShortcutDragOffsetY = ref(0);
+const suppressDesktopShortcutClickId = ref("");
+const desktopShortcutContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  item: null,
+});
 const wallpaperStyle = computed(() => ({
   background:
     String(props.wallpaperAppearance?.background || "").trim() || undefined,
@@ -424,6 +477,19 @@ const meshStyle = computed(() => ({
   opacity: `${Number(props.wallpaperAppearance?.meshOpacity ?? 1)}`,
 }));
 const dockTone = computed(() => props.wallpaperAppearance?.dockTone || {});
+const desktopShortcutTone = computed(() => {
+  const luminance = Number(dockTone.value?.luminance ?? 0.8);
+  if (Number.isFinite(luminance) && luminance <= 0.64) {
+    return {
+      "--desktop-shortcut-label-color": "#f8fafc",
+      "--desktop-shortcut-label-shadow": "0 1px 3px rgba(2, 6, 23, 0.86)",
+    };
+  }
+  return {
+    "--desktop-shortcut-label-color": "#1e293b",
+    "--desktop-shortcut-label-shadow": "0 1px 0 rgba(255, 255, 255, 0.72)",
+  };
+});
 const dockStyleVars = computed(() => ({
   "--dock-surface-border": "rgba(148, 163, 184, 0.42)",
   "--dock-surface-top": "rgba(255, 255, 255, 0.92)",
@@ -493,6 +559,15 @@ const dockDragState = {
   startY: 0,
   shellElement: null,
   active: false,
+  moved: false,
+};
+const desktopShortcutDragState = {
+  pointerId: null,
+  appId: "",
+  index: 0,
+  startX: 0,
+  startY: 0,
+  target: null,
   moved: false,
 };
 const DOCK_DRAG_THRESHOLD = 6;
@@ -712,6 +787,166 @@ function desktopIconStyle(item) {
     "--desktop-app-icon-text": text,
     "--desktop-app-icon-glow": glow,
   };
+}
+
+function getDesktopShortcutPosition(item, index) {
+  const saved = props.desktopItemLayout?.[item.id];
+  const column = Number(saved?.column);
+  const row = Number(saved?.row);
+  if (Number.isFinite(column) && Number.isFinite(row) && column >= 0 && row >= 0) {
+    return { column, row };
+  }
+  return {
+    column: Math.floor(index / 6),
+    row: index % 6,
+  };
+}
+
+function desktopShortcutStyle(item, index) {
+  const position = getDesktopShortcutPosition(item, index);
+  const style = {
+    ...desktopShortcutTone.value,
+    left: `${DESKTOP_SHORTCUT_PADDING_X + position.column * DESKTOP_SHORTCUT_COLUMN_WIDTH}px`,
+    top: `${DESKTOP_SHORTCUT_PADDING_Y + position.row * DESKTOP_SHORTCUT_ROW_HEIGHT}px`,
+  };
+  if (draggingDesktopShortcutId.value === item.id) {
+    style.transform = `translate(${desktopShortcutDragOffsetX.value}px, ${desktopShortcutDragOffsetY.value}px)`;
+    style.zIndex = 3;
+    style.transition = "none";
+  }
+  return style;
+}
+
+function handleDesktopShortcutClick(item) {
+  const appId = String(item?.id || "").trim();
+  if (!appId || suppressDesktopShortcutClickId.value === appId) return;
+  emit("launch-app", item);
+}
+
+function closeDesktopShortcutContextMenu() {
+  desktopShortcutContextMenu.value = {
+    visible: false,
+    x: 0,
+    y: 0,
+    item: null,
+  };
+}
+
+function openDesktopShortcutContextMenu(event, item) {
+  const menuWidth = 220;
+  const menuHeight = 62;
+  desktopShortcutContextMenu.value = {
+    visible: true,
+    x: Math.max(8, Math.min(Number(event?.clientX || 0), Number(window.innerWidth || 0) - menuWidth - 8)),
+    y: Math.max(8, Math.min(Number(event?.clientY || 0), Number(window.innerHeight || 0) - menuHeight - 8)),
+    item,
+  };
+}
+
+function openDesktopShortcutFromContextMenu() {
+  const item = desktopShortcutContextMenu.value.item;
+  closeDesktopShortcutContextMenu();
+  if (item) emit("launch-app", item);
+}
+
+function handleDesktopShortcutContextMenuPointerDown(event) {
+  if (!desktopShortcutContextMenu.value.visible) return;
+  if (event?.target?.closest?.(".resource-context-menu")) return;
+  closeDesktopShortcutContextMenu();
+}
+
+function handleDesktopShortcutContextMenuKeydown(event) {
+  if (event?.key === "Escape") closeDesktopShortcutContextMenu();
+}
+
+function startDesktopShortcutDrag(event, item, index) {
+  if (event.button !== 0) return;
+  const appId = String(item?.id || "").trim();
+  const pointerId = Number(event.pointerId);
+  if (!appId || !Number.isFinite(pointerId)) return;
+  desktopShortcutDragState.pointerId = pointerId;
+  desktopShortcutDragState.appId = appId;
+  desktopShortcutDragState.index = index;
+  desktopShortcutDragState.startX = Number(event.clientX || 0);
+  desktopShortcutDragState.startY = Number(event.clientY || 0);
+  desktopShortcutDragState.target = event.currentTarget;
+  desktopShortcutDragState.moved = false;
+  event.currentTarget?.setPointerCapture?.(pointerId);
+  globalThis.window?.addEventListener("pointermove", handleDesktopShortcutDragMove);
+  globalThis.window?.addEventListener("pointerup", stopDesktopShortcutDrag);
+  globalThis.window?.addEventListener("pointercancel", stopDesktopShortcutDrag);
+}
+
+function handleDesktopShortcutDragMove(event) {
+  if (Number(event.pointerId) !== desktopShortcutDragState.pointerId) return;
+  const offsetX = Number(event.clientX || 0) - desktopShortcutDragState.startX;
+  const offsetY = Number(event.clientY || 0) - desktopShortcutDragState.startY;
+  if (!desktopShortcutDragState.moved && Math.hypot(offsetX, offsetY) < 6) return;
+  desktopShortcutDragState.moved = true;
+  draggingDesktopShortcutId.value = desktopShortcutDragState.appId;
+  desktopShortcutDragOffsetX.value = offsetX;
+  desktopShortcutDragOffsetY.value = offsetY;
+}
+
+function stopDesktopShortcutDrag(event) {
+  if (
+    desktopShortcutDragState.pointerId == null
+    || (event && Number(event.pointerId) !== desktopShortcutDragState.pointerId)
+  ) {
+    return;
+  }
+  if (desktopShortcutDragState.moved) {
+    const desktopBounds = desktopRef.value?.getBoundingClientRect?.();
+    if (desktopBounds) {
+      const maxColumn = Math.max(
+        0,
+        Math.floor((desktopBounds.width - DESKTOP_SHORTCUT_PADDING_X * 2 - 72) / DESKTOP_SHORTCUT_COLUMN_WIDTH),
+      );
+      const maxRow = Math.max(
+        0,
+        Math.floor((desktopBounds.height - DESKTOP_SHORTCUT_PADDING_Y - DESKTOP_SHORTCUT_BOTTOM_CLEARANCE) / DESKTOP_SHORTCUT_ROW_HEIGHT),
+      );
+      const nextPosition = {
+        column: Math.min(maxColumn, Math.max(0, Math.round((Number(event?.clientX || 0) - desktopBounds.left - DESKTOP_SHORTCUT_PADDING_X - 36) / DESKTOP_SHORTCUT_COLUMN_WIDTH))),
+        row: Math.min(maxRow, Math.max(0, Math.round((Number(event?.clientY || 0) - desktopBounds.top - DESKTOP_SHORTCUT_PADDING_Y - 32) / DESKTOP_SHORTCUT_ROW_HEIGHT))),
+      };
+      const sourceItem = props.desktopItems.find((item) => item.id === desktopShortcutDragState.appId);
+      const sourcePosition = sourceItem
+        ? getDesktopShortcutPosition(sourceItem, desktopShortcutDragState.index)
+        : null;
+      const occupiedItem = props.desktopItems.find((item, index) => {
+        if (item.id === desktopShortcutDragState.appId) return false;
+        const position = getDesktopShortcutPosition(item, index);
+        return position.column === nextPosition.column && position.row === nextPosition.row;
+      });
+      const nextLayout = {
+        ...props.desktopItemLayout,
+        [desktopShortcutDragState.appId]: nextPosition,
+      };
+      if (occupiedItem && sourcePosition) {
+        nextLayout[occupiedItem.id] = sourcePosition;
+      }
+      emit("update-desktop-item-layout", nextLayout);
+    }
+    const draggedAppId = desktopShortcutDragState.appId;
+    suppressDesktopShortcutClickId.value = draggedAppId;
+    globalThis.window?.setTimeout(() => {
+      if (suppressDesktopShortcutClickId.value === draggedAppId) {
+        suppressDesktopShortcutClickId.value = "";
+      }
+    }, 0);
+  }
+  desktopShortcutDragState.target?.releasePointerCapture?.(desktopShortcutDragState.pointerId);
+  globalThis.window?.removeEventListener("pointermove", handleDesktopShortcutDragMove);
+  globalThis.window?.removeEventListener("pointerup", stopDesktopShortcutDrag);
+  globalThis.window?.removeEventListener("pointercancel", stopDesktopShortcutDrag);
+  desktopShortcutDragState.pointerId = null;
+  desktopShortcutDragState.appId = "";
+  desktopShortcutDragState.target = null;
+  desktopShortcutDragState.moved = false;
+  draggingDesktopShortcutId.value = "";
+  desktopShortcutDragOffsetX.value = 0;
+  desktopShortcutDragOffsetY.value = 0;
 }
 
 function dockItemStyle(item) {
@@ -1191,6 +1426,8 @@ watch(
 );
 
 onMounted(() => {
+  globalThis.window?.addEventListener("pointerdown", handleDesktopShortcutContextMenuPointerDown);
+  globalThis.window?.addEventListener("keydown", handleDesktopShortcutContextMenuKeydown);
   void nextTick(() => {
     dockLayoutSnapshot = measureDockLayout();
   });
@@ -1202,6 +1439,9 @@ onBeforeUnmount(() => {
   stopWindowDrag();
   stopWindowResize();
   stopDockDrag();
+  stopDesktopShortcutDrag();
+  globalThis.window?.removeEventListener("pointerdown", handleDesktopShortcutContextMenuPointerDown);
+  globalThis.window?.removeEventListener("keydown", handleDesktopShortcutContextMenuKeydown);
   clearDockAutoHideTimer();
   cancelDockFlipAnimations();
 });
@@ -1269,6 +1509,80 @@ onBeforeUnmount(() => {
   background-size: 56px 56px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.72), transparent 84%);
   pointer-events: none;
+}
+
+.desktop-system__shortcuts {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.desktop-system__shortcut {
+  width: 84px;
+  min-height: 78px;
+  position: absolute;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 7px;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--desktop-shortcut-label-color);
+  cursor: pointer;
+  font: inherit;
+  pointer-events: auto;
+  transition:
+    background-color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.desktop-system__shortcut:hover,
+.desktop-system__shortcut:focus-visible {
+  background: rgba(255, 255, 255, 0.42);
+  outline: none;
+}
+
+.desktop-system__shortcut.is-dragging {
+  cursor: grabbing;
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+}
+
+.desktop-system__shortcut-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--desktop-app-icon-top) 38%, white);
+  border-radius: 14px;
+  background: linear-gradient(
+    160deg,
+    var(--desktop-app-icon-top),
+    var(--desktop-app-icon-bottom)
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 8px 18px var(--desktop-app-icon-glow);
+  color: var(--desktop-app-icon-text);
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}
+
+.desktop-system__shortcut-label {
+  width: 100%;
+  overflow: hidden;
+  color: var(--desktop-shortcut-label-color);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-align: center;
+  text-overflow: ellipsis;
+  text-shadow: var(--desktop-shortcut-label-shadow);
+  white-space: nowrap;
 }
 
 .desktop-system__surface {
@@ -1740,18 +2054,7 @@ onBeforeUnmount(() => {
 .desktop-system__window-body {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.desktop-system__window-summary {
-  padding: 14px 18px 10px;
-  color: #526071;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.desktop-system__window-summary p {
-  margin: 0;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .desktop-system__window-frame {

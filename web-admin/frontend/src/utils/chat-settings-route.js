@@ -2,7 +2,6 @@ const CHAT_SETTINGS_ROUTE_PREFIX = "/ai/chat/settings";
 
 const SETTINGS_PANEL_TARGETS = [
   { panel: "chat", prefixes: ["/chat"] },
-  { panel: "user-settings", prefixes: ["/user/settings"] },
   { panel: "bot-connectors", prefixes: ["/system/bot-connectors"] },
   { panel: "ftp-credentials", prefixes: ["/system/ftp-credentials"] },
   { panel: "system-config", prefixes: ["/system/config"] },
@@ -10,7 +9,6 @@ const SETTINGS_PANEL_TARGETS = [
   { panel: "changelog-entries", prefixes: ["/changelog-entries"] },
   { panel: "work-sessions", prefixes: ["/work-sessions"] },
   { panel: "online-users", prefixes: ["/online-users"] },
-  { panel: "mcp-monitor", prefixes: ["/mcp-monitor"] },
   { panel: "dictionaries", prefixes: ["/dictionaries"] },
   { panel: "providers", prefixes: ["/llm/providers"] },
   { panel: "projects", prefixes: ["/projects"] },

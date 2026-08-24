@@ -2911,6 +2911,7 @@
 // ============================================================
 import {
   computed,
+  defineAsyncComponent,
   h,
   onMounted,
   onUnmounted,
@@ -2921,8 +2922,6 @@ import {
 } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ElementEasyForm } from "element-easy-form";
-import "element-easy-form/dist/style.css";
 import ProjectEmployeeDraftCreateDialog from "@/components/ProjectEmployeeDraftCreateDialog.vue";
 import ChatComposer from "@/modules/project-chat/components/composer/ChatComposer.vue";
 import ChatMediaParameterPopover from "@/modules/project-chat/components/composer/ChatMediaParameterPopover.vue";
@@ -3291,7 +3290,7 @@ import {
   isLocalProjectMode,
   isProjectNamePlaceholder,
   readLocalEntities,
-  readLocalProjects,
+  readLocalWorkspaceProjects,
   updateLocalProjectRelations,
   upsertLocalEntity,
   upsertLocalProject,
@@ -3308,6 +3307,14 @@ import {
   SETTINGS_CENTER_PANEL_META,
   SETTINGS_GUIDE_REASON_MAP,
 } from "@/modules/project-chat/constants/settingsCenterConfig.js";
+
+const ElementEasyForm = defineAsyncComponent(async () => {
+  const [module] = await Promise.all([
+    import("element-easy-form"),
+    import("element-easy-form/dist/style.css"),
+  ]);
+  return module.ElementEasyForm;
+});
 
 const CREATE_CHAT_SESSION_QUERY_KEY = "create_chat_session";
 const LOCAL_RUNTIME_TASK_QUERY_KEY = "local_runtime_task";
@@ -24473,6 +24480,9 @@ function scrollToBottom(options = {}) {
 
 function handleMessagesScroll() {
   updateMessagesBottomStickiness();
+  const container = messagesContainer.value;
+  if (!container || Number(container.scrollTop || 0) > 120) return;
+  void loadOlderMessages();
 }
 
 function disconnectMessageListResizeObserver() {
@@ -27890,10 +27900,9 @@ async function fetchChatParameterOptions() {
 }
 
 async function fetchProjects() {
-  const fallbackProjects = await resolveProjectListOfflineFallback(
-    readLocalProjects(),
-  );
-  projects.value = fallbackProjects;
+  projects.value = readLocalWorkspaceProjects()
+    .map(normalizeOfflineProjectListItem)
+    .filter(Boolean);
   projectListOffline.value = true;
   if (!projects.value.length) {
     clearSelectedProjectId();
@@ -27912,26 +27921,17 @@ async function fetchSelectedProject(projectId = "") {
     clearSelectedProjectId();
     return;
   }
-  const localProjects = readLocalProjects()
+  const localProjects = readLocalWorkspaceProjects()
     .map(normalizeOfflineProjectListItem)
     .filter(Boolean);
-  const fallbackProjects = await resolveProjectListOfflineFallback(
-    localProjects,
-  );
   const project =
     localProjects.find((item) => item.id === normalizedProjectId) ||
-    normalizeOfflineProjectListItem(getLocalProject(normalizedProjectId)) ||
-    fallbackProjects.find((item) => item.id === normalizedProjectId) ||
     currentProjects.find((item) => item.id === normalizedProjectId) ||
     null;
   if (!project) {
-    throw new Error("本地项目不存在或尚未完成导入");
+    throw new Error("项目不存在或已从项目列表移除");
   }
-  projects.value = mergeOfflineProjectLists(
-    localProjects,
-    fallbackProjects,
-    [project],
-  );
+  projects.value = localProjects;
   projectListOffline.value = true;
 }
 
@@ -27987,6 +27987,26 @@ async function fetchGlobalProviders() {
     projectChatSettings.value,
     String(selectedProjectId.value || "").trim(),
   );
+}
+
+function scheduleBackgroundChatConfigurationLoad() {
+  const loadConfiguration = () => {
+    void Promise.all([
+      fetchSystemConfig(),
+      fetchModelTypeOptions(),
+      fetchChatParameterOptions(),
+      fetchGlobalProviders(),
+    ]).catch((err) => {
+      console.warn("后台加载聊天配置失败", err);
+    });
+  };
+
+  if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+    window.requestIdleCallback(loadConfiguration, { timeout: 1200 });
+    return;
+  }
+
+  window.setTimeout(loadConfiguration, 250);
 }
 
 async function refreshModelProviders() {
@@ -33981,14 +34001,7 @@ onMounted(async () => {
       await fetchSelectedProject(selectedProjectId.value);
     }
     loading.value = false;
-    void Promise.all([
-      fetchSystemConfig(),
-      fetchModelTypeOptions(),
-      fetchChatParameterOptions(),
-      fetchGlobalProviders(),
-    ]).catch((err) => {
-      console.warn("后台加载聊天配置失败", err);
-    });
+    scheduleBackgroundChatConfigurationLoad();
     void applyPluginInstallDraftFromRoute();
     void applyProjectDeployDraftFromRoute();
     if (!String(selectedProjectId.value || "").trim()) {

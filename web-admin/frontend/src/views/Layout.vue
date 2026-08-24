@@ -2,6 +2,8 @@
   <DesktopSystemShell
     :dock-items="dockItems"
     :launcher-items="launcherItems"
+    :desktop-items="launcherItems"
+    :desktop-item-layout="desktopItemLayout"
     :windows="desktopWindows"
     :active-window-id="activeWindowId"
     :status-text="statusText"
@@ -20,6 +22,7 @@
     @clear-cache="clearDesktopCache"
     @unpin-dock-app="unpinDockApp"
     @reorder-dock-apps="reorderDockApps"
+    @update-desktop-item-layout="persistDesktopItemLayout"
   >
     <template #window="{ window }">
       <div class="layout-window-frame" :class="{ 'is-workbench': window.appId === 'workbench' }">
@@ -51,6 +54,7 @@ import {
   getDesktopAppById,
   getStoredDesktopDockAppIds,
   getStoredDesktopDockOrder,
+  getStoredDesktopShortcutLayout,
   getStoredDesktopWindowSession,
   resolveDesktopWallpaperAppearance,
   resolveDesktopAppMeta,
@@ -58,6 +62,7 @@ import {
   setStoredDesktopWindowSession,
   setStoredDesktopDockAppIds,
   setStoredDesktopDockOrder,
+  setStoredDesktopShortcutLayout,
 } from "@/utils/desktop-shell.js";
 import {
   DESKTOP_BRIDGE_EVENT_NAME,
@@ -85,6 +90,7 @@ const launcherOpen = ref(false);
 const wallpaperConfig = ref(getDesktopWallpaperConfig());
 const dockAppIds = ref(getStoredDesktopDockAppIds());
 const dockOrder = ref(getStoredDesktopDockOrder());
+const desktopItemLayout = ref(getStoredDesktopShortcutLayout());
 const nextWindowOrder = ref(1);
 const currentDesktopPath = ref(DESKTOP_HOME_PATH);
 const suppressNextRouteWindowSync = ref(false);
@@ -826,6 +832,10 @@ function persistDockOrder(nextOrder) {
   dockOrder.value = setStoredDesktopDockOrder(nextOrder);
 }
 
+function persistDesktopItemLayout(nextLayout) {
+  desktopItemLayout.value = setStoredDesktopShortcutLayout(nextLayout);
+}
+
 function syncDockOrderWithState(nextPinnedIds = dockAppIds.value) {
   const requiredIds = DESKTOP_DOCK_ITEMS.map((item) => item.id);
   const nextOrder = [];
@@ -1158,6 +1168,10 @@ function handleStorageChange(event) {
   }
   if (key === "desktop_dock_order") {
     dockOrder.value = getStoredDesktopDockOrder();
+    return;
+  }
+  if (key === "desktop_shortcut_layout") {
+    desktopItemLayout.value = getStoredDesktopShortcutLayout();
   }
 }
 

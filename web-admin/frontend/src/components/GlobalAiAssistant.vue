@@ -702,7 +702,9 @@ const speechAudioBlobCache = new Map();
 const speechAudioPendingRequests = new Map();
 const speechStreamingProgress = new Map();
 const suppressedAutoPlayMessageIds = new Set();
-const globalAssistantEnabled = ref(true);
+const globalAssistantEnabled = ref(false);
+const assistantInitialized = ref(false);
+let assistantInitializationPromise = null;
 const globalAssistantChatProviderId = ref("");
 const globalAssistantChatModelName = ref("");
 const globalAssistantSystemPrompt = ref("");
@@ -1748,6 +1750,7 @@ function openAssistantPanel() {
     return;
   }
   panelOpen.value = true;
+  void initializeAssistant();
 }
 
 function toggleAssistantPanel() {
@@ -3116,47 +3119,67 @@ function scrollToBottom() {
   });
 }
 
-async function initializeAssistant() {
+function initializeAssistant() {
   if (!shouldRender.value) {
     teardownAssistant();
-    return;
+    return Promise.resolve();
   }
-  bootstrapping.value = true;
-  errorText.value = "";
-  try {
-    selectedVoiceInputDeviceId.value = normalizeVoiceInputSelectionValue(
-      loadStoredVoiceInputDeviceId(),
-    );
-    selectedSpeechVoiceUri.value = loadStoredSpeechVoiceUri();
-    autoPlayAssistantSpeech.value = loadStoredAutoPlayAssistantSpeech();
-    removeAssistantStorageValue(ASSISTANT_CHAT_CACHE_STORAGE_SUFFIX);
-    messages.value = [];
-    typedDraftText.value = "";
-    currentChatSessionId.value = "";
-    await fetchAssistantConfig();
-    if (!globalAssistantEnabled.value) {
-      teardownAssistant();
-      return;
-    }
-    await Promise.all([
-      fetchVoiceRuntime(),
-      fetchSpeechRuntime(),
-      refreshVoiceInputDevices(),
-    ]);
-    if (!String(currentChatSessionId.value || "").trim()) {
-      currentChatSessionId.value = createEphemeralSessionId();
-    }
-    maybeRunInitialGreetingOnVisit();
-  } catch (err) {
-    errorText.value = err?.detail || err?.message || "初始化失败";
-  } finally {
-    bootstrapping.value = false;
+  if (assistantInitialized.value) {
+    return Promise.resolve();
   }
+  if (assistantInitializationPromise) return assistantInitializationPromise;
+
+  const initialization = (async () => {
+    bootstrapping.value = true;
+    errorText.value = "";
+    try {
+      selectedVoiceInputDeviceId.value = normalizeVoiceInputSelectionValue(
+        loadStoredVoiceInputDeviceId(),
+      );
+      selectedSpeechVoiceUri.value = loadStoredSpeechVoiceUri();
+      autoPlayAssistantSpeech.value = loadStoredAutoPlayAssistantSpeech();
+      removeAssistantStorageValue(ASSISTANT_CHAT_CACHE_STORAGE_SUFFIX);
+      messages.value = [];
+      typedDraftText.value = "";
+      currentChatSessionId.value = "";
+      await fetchAssistantConfig();
+      if (!globalAssistantEnabled.value || !shouldRender.value) {
+        teardownAssistant();
+        return;
+      }
+      ensureAssistantBrowserBridgeInstalled();
+      const [tools] = await Promise.all([
+        listNativeLiuAgentBuiltinTools(),
+        startNativeGlobalAssistantRuntimeSubscription(),
+        fetchVoiceRuntime(),
+        fetchSpeechRuntime(),
+        refreshVoiceInputDevices(),
+      ]);
+      assistantToolDefinitions.value = Array.isArray(tools) ? tools : [];
+      if (!String(currentChatSessionId.value || "").trim()) {
+        currentChatSessionId.value = createEphemeralSessionId();
+      }
+      assistantInitialized.value = true;
+      maybeRunInitialGreetingOnVisit();
+    } catch (err) {
+      assistantToolDefinitions.value = [];
+      errorText.value = err?.detail || err?.message || "初始化失败";
+    } finally {
+      bootstrapping.value = false;
+    }
+  })();
+
+  assistantInitializationPromise = initialization;
+  return initialization.finally(() => {
+    if (assistantInitializationPromise === initialization) {
+      assistantInitializationPromise = null;
+    }
+  });
 }
 
 async function fetchAssistantConfig() {
   const config = readLocalSystemConfig();
-  globalAssistantEnabled.value = config.global_assistant_enabled !== false;
+  globalAssistantEnabled.value = config.global_assistant_enabled === true;
   globalAssistantChatProviderId.value = String(
     config.global_assistant_chat_provider_id || "",
   ).trim();
@@ -5110,6 +5133,7 @@ function toggleVoiceInput() {
 }
 
 function teardownAssistant() {
+  assistantInitialized.value = false;
   stopAssistantFabDrag();
   stopAssistantPanelResize();
   if (typeof window !== "undefined" && assistantFabResizeRafId) {
@@ -5211,11 +5235,7 @@ watch(
       return;
     }
     if (!shouldRender.value) return;
-    void fetchSpeechRuntime();
-    if (!backendSpeechPlaybackEnabled.value) {
-      refreshSpeechVoiceOptions({ forceRetry: true });
-    }
-    void refreshVoiceInputDevices();
+    void initializeAssistant();
   },
 );
 
@@ -5237,11 +5257,7 @@ watch(
     nextTick(() => {
       syncAssistantFabPosition({ preferStored: true });
     });
-    if (!shouldRender.value) {
-      teardownAssistant();
-      return;
-    }
-    void initializeAssistant();
+    teardownAssistant();
   },
 );
 
@@ -5255,7 +5271,6 @@ watch(
     nextTick(() => {
       syncAssistantFabPosition({ preferStored: true });
     });
-    void initializeAssistant();
   },
 );
 
@@ -5264,13 +5279,10 @@ function handleSystemConfigUpdated(event) {
     event?.detail?.config && typeof event.detail.config === "object"
       ? event.detail.config
       : {};
-  globalAssistantEnabled.value = config.global_assistant_enabled !== false;
+  globalAssistantEnabled.value = config.global_assistant_enabled === true;
   if (!globalAssistantEnabled.value) {
     teardownAssistant();
     return;
-  }
-  if (getStoredToken()) {
-    void initializeAssistant();
   }
 }
 
@@ -5287,9 +5299,6 @@ function handleSystemConfigStorageUpdated(event) {
         teardownAssistant();
         return;
       }
-      if (getStoredToken()) {
-        void initializeAssistant();
-      }
     });
   }
 }
@@ -5301,22 +5310,7 @@ onMounted(() => {
     handleSystemConfigUpdated,
   );
   window.addEventListener("storage", handleSystemConfigStorageUpdated);
-  if (!shouldRender.value) return;
-  ensureAssistantBrowserBridgeInstalled();
-  void listNativeLiuAgentBuiltinTools()
-    .then((tools) => {
-      assistantToolDefinitions.value = Array.isArray(tools) ? tools : [];
-    })
-    .catch((error) => {
-      assistantToolDefinitions.value = [];
-      console.warn("加载本地 AI 工具定义失败", error);
-    });
-  void startNativeGlobalAssistantRuntimeSubscription();
-  selectedVoiceInputDeviceId.value = normalizeVoiceInputSelectionValue(
-    loadStoredVoiceInputDeviceId(),
-  );
-  selectedSpeechVoiceUri.value = loadStoredSpeechVoiceUri();
-  autoPlayAssistantSpeech.value = loadStoredAutoPlayAssistantSpeech();
+  void fetchAssistantConfig();
   if (window.navigator?.mediaDevices?.addEventListener) {
     window.navigator.mediaDevices.addEventListener(
       "devicechange",
@@ -5329,11 +5323,9 @@ onMounted(() => {
       refreshSpeechVoiceOptions,
     );
   }
-  refreshSpeechVoiceOptions({ forceRetry: true });
   nextTick(() => {
     syncAssistantFabPosition({ preferStored: true });
   });
-  void initializeAssistant();
 });
 
 onBeforeUnmount(() => {

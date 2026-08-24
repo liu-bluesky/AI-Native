@@ -146,9 +146,8 @@
 
 .chat-layout {
   position: relative;
-  min-height: 100vh;
-  height: 100vh;
-  height: 100dvh;
+  min-height: 0;
+  height: 100%;
   overflow: hidden;
   color: var(--page-text, #0f172a);
   background: var(

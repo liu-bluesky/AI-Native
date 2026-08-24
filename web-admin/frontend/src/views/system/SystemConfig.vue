@@ -1605,7 +1605,7 @@ const form = ref({
   voice_output_model_name: "",
   voice_output_voice: "",
   voice_output_reminder_volume: 40,
-  global_assistant_enabled: true,
+  global_assistant_enabled: false,
   global_assistant_greeting_enabled: GLOBAL_ASSISTANT_BUILD_FEATURES.greeting,
   global_assistant_greeting_text: DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
   global_assistant_chat_provider_id: "",
@@ -2225,7 +2225,7 @@ function applyConfigToForm(config, options = {}) {
       0,
       Math.min(100, Number(payload.voice_output_reminder_volume ?? 40) || 40),
     ),
-    global_assistant_enabled: payload.global_assistant_enabled !== false,
+    global_assistant_enabled: payload.global_assistant_enabled === true,
     global_assistant_greeting_enabled:
       GLOBAL_ASSISTANT_BUILD_FEATURES.greeting,
     global_assistant_greeting_text: String(

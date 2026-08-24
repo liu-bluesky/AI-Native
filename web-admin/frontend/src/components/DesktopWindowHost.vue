@@ -1,12 +1,24 @@
 <template>
   <div class="desktop-window-host">
-    <div ref="mountPoint" class="desktop-window-host__mount" />
+    <div
+      ref="mountPoint"
+      class="desktop-window-host__mount"
+      :class="{ 'desktop-window-host__mount--chat': isChatRoute }"
+    />
     <div v-if="error" class="desktop-window-host__error">{{ error }}</div>
   </div>
 </template>
 
 <script setup>
-import { createApp, h, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  createApp,
+  h,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 import ElementPlus from "element-plus";
 import zhCn from "element-plus/dist/locale/zh-cn.mjs";
 import { RouterView } from "vue-router";
@@ -28,6 +40,12 @@ const emit = defineEmits(["route-change"]);
 
 const mountPoint = ref(null);
 const error = ref("");
+const activeRoutePath = ref("");
+const isChatRoute = computed(() =>
+  String(activeRoutePath.value || props.sourcePath || "").startsWith(
+    "/ai/chat",
+  ),
+);
 let childApp = null;
 let childRouter = null;
 let removeAfterEach = null;
@@ -47,12 +65,14 @@ async function navigate(path) {
   const targetPath = resolvePath(path);
   if (childRouter.currentRoute.value.fullPath === targetPath) return;
   await childRouter.replace(targetPath);
+  activeRoutePath.value = String(childRouter.currentRoute.value.path || "");
 }
 
 async function mountDesktopWindow() {
   try {
     childRouter = createDesktopWindowRouter(props.windowId);
     removeAfterEach = childRouter.afterEach((to) => {
+      activeRoutePath.value = String(to.path || "");
       emit("route-change", {
         path: to.fullPath,
       });
@@ -111,14 +131,28 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.desktop-window-host__mount--chat {
+  display: flex;
   overflow: hidden;
 }
 
-/* Keep each child application's root constrained to its desktop window. */
+.desktop-window-host__mount--chat :deep(> .chat-layout),
+.desktop-window-host__mount--chat :deep(> .settings-center-page) {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  max-height: 100%;
+  height: auto !important;
+}
+
+/* Allow desktop application content to extend and scroll inside its window. */
 .desktop-window-host__mount :deep(> *) {
   width: 100%;
-  height: 100% !important;
-  min-height: 0 !important;
+  min-height: 100%;
 }
 
 .desktop-window-host__error {

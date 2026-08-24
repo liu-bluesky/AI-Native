@@ -59,7 +59,7 @@ function ensureGitHubAuthentication() {
 
 function ensureWindowsWorkflowExists(repository) {
   try {
-    output('gh', ['workflow', 'view', windowsWorkflow, '--repo', repository, '--json', 'id'], { cwd: repositoryDirectory });
+    output('gh', ['workflow', 'view', windowsWorkflow, '--repo', repository], { cwd: repositoryDirectory });
   } catch {
     throw new Error(`GitHub 中未找到 ${windowsWorkflow}。请先提交并推送 .github/workflows/package-windows-exe.yml。`);
   }
