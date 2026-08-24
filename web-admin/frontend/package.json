@@ -25,7 +25,8 @@
     "test:agent-supervision": "node ./scripts/check-agent-supervision.mjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:check": "node ./src-tauri/check-tauri-shell.mjs"
+    "tauri:check": "node ./src-tauri/check-tauri-shell.mjs",
+    "release:lt-code": "node ./scripts/release-lt-code.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

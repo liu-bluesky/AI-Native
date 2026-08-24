@@ -1,0 +1,24 @@
+# LT code 桌面端打包
+
+在 macOS 上执行以下命令，会自动将补丁版本递增一位，构建三个 macOS `.dmg` 安装包，并等待 GitHub Actions 构建 Windows 64 位 `.exe` 安装包：
+
+```bash
+npm run release:lt-code
+```
+
+安装包输出到 `发布包/LT code v<版本>/`，包含以下目录：
+
+- `macOS · 通用`
+- `macOS · Apple 芯片`
+- `macOS · Intel`
+- `Windows · 64 位`
+
+根目录的 `SHA256SUMS.txt` 包含全部安装包的 SHA-256 校验值。
+
+## 首次使用
+
+1. 将 `.github/workflows/package-windows-exe.yml` 提交并推送到 GitHub 的当前分支。
+2. 在 macOS 上执行 `gh auth login`，让本机可触发和下载 GitHub Actions 构建产物。
+3. 确保本机已经安装 Node.js、npm、Rust 和 Xcode Command Line Tools。
+
+Windows 包使用 NSIS 生成 `.exe`，当前流程未包含 macOS 或 Windows 代码签名。

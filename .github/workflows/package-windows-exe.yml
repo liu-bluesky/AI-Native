@@ -1,0 +1,60 @@
+name: Package LT code Windows EXE
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version in x.y.z format
+        required: true
+        type: string
+
+run-name: LT code Windows x64 v${{ inputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Windows x64 EXE
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: web-admin/frontend
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web-admin/frontend/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Apply requested release version
+        run: node scripts/set-desktop-version.mjs --version "${{ inputs.version }}"
+
+      - name: Build NSIS installer
+        run: npm run tauri:build -- --target x86_64-pc-windows-msvc --bundles nsis
+
+      - name: Stage EXE installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-artifact | Out-Null
+          Get-ChildItem -Path src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter *.exe -Recurse |
+            Copy-Item -Destination release-artifact
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: lt-code-windows-x64-v${{ inputs.version }}
+          path: web-admin/frontend/release-artifact/*.exe
+          if-no-files-found: error
