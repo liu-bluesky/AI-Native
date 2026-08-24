@@ -2491,9 +2491,8 @@ fn global_bot_connector_config_path() -> Result<PathBuf, String> {
 }
 
 fn ensure_global_desktop_runtime_migrated() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| "缺少 HOME，无法定位全局桌面 Runtime".to_string())?;
+    let home = liuagent_core::global_user_home_dir()
+        .ok_or_else(|| "缺少用户目录，无法定位全局桌面 Runtime".to_string())?;
     liuagent_core::ensure_desktop_runtime_migrated(&home)
         .map_err(|err| format!("迁移旧全局桌面 Runtime 数据失败：{err}"))?;
     Ok(home)

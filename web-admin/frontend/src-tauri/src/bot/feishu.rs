@@ -14,8 +14,8 @@ use crate::bot::types::{
     BotChatRequest, BotConnectorConfig, BotSourceContext, BotWorkspaceSelection,
 };
 use crate::liuagent_core::{
-    find_global_project_catalog_entry, LocalChatMessage, LocalChatResult, LocalModelRuntimeConfig,
-    PermissionDecisionInput,
+    configure_process_group, find_global_project_catalog_entry, LocalChatMessage, LocalChatResult,
+    LocalModelRuntimeConfig, PermissionDecisionInput,
 };
 
 const FEISHU_SDK_WORKER_RELATIVE_PATH: &str = "bot_workers/feishu_sdk_listener.py";
@@ -560,13 +560,16 @@ fn resolve_feishu_sdk_python() -> Result<PathBuf, String> {
 }
 
 fn python_supports_feishu_sdk(python: &Path) -> bool {
-    Command::new(python)
+    let mut command = Command::new(python);
+    command
         .args([
             "-c",
             "import lark_oapi\nfrom lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody, PatchMessageRequest, PatchMessageRequestBody, ReplyMessageRequest, ReplyMessageRequestBody, P2ImMessageReceiveV1\nfrom lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse\nfrom lark_oapi.ws import Client",
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    configure_process_group(&mut command);
+    command
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
@@ -608,7 +611,8 @@ pub fn start_local_listener(
     };
     let worker_path = resolve_feishu_sdk_worker_path(&app)?;
     let python = resolve_feishu_sdk_python()?;
-    let mut child = Command::new(python)
+    let mut command = Command::new(python);
+    command
         .arg(worker_path)
         .env("AI_EMPLOYEE_FEISHU_CONNECTOR_ID", connector_id.as_str())
         .env("AI_EMPLOYEE_FEISHU_APP_ID", app_id.as_str())
@@ -623,7 +627,9 @@ pub fn start_local_listener(
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_process_group(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|err| format!("无法启动飞书 Python SDK 本地监听：{err}"))?;
 
@@ -835,6 +841,7 @@ fn reply_message_with_connector(
                 "false"
             },
         );
+    configure_process_group(&mut command);
     let output = command
         .output()
         .map_err(|err| format!("无法执行飞书 Python SDK 回复：{err}"))?;
@@ -914,6 +921,7 @@ fn run_feishu_card_worker_command(
         .env("AI_EMPLOYEE_FEISHU_CHAT_ID", chat_id.trim())
         .env("AI_EMPLOYEE_FEISHU_CARD_CONTENT", content)
         .env("AI_EMPLOYEE_FEISHU_IDEMPOTENCY_KEY", idempotency_key.trim());
+    configure_process_group(&mut command);
     let output = command
         .output()
         .map_err(|err| format!("无法执行飞书 Python SDK 卡片命令：{err}"))?;
@@ -957,6 +965,7 @@ pub fn scan_chats(request: FeishuChatScanRequest) -> Result<FeishuChatScanResult
         if !page_token.is_empty() {
             command.args(["--page-token", page_token.as_str()]);
         }
+        configure_process_group(&mut command);
         let output = command
             .output()
             .map_err(|err| format!("无法执行 lark-cli 群扫描：{err}"))?;

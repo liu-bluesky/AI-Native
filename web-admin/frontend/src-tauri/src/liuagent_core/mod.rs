@@ -34,7 +34,8 @@ pub use ftp_credentials::{
 };
 pub use gateway::prepare_agent_invocation;
 pub use paths::{
-    desktop_runtime_root, ensure_desktop_runtime_migrated, normalize_local_backend_api_base_url,
+    desktop_runtime_root, ensure_desktop_runtime_migrated, global_user_home_dir,
+    normalize_local_backend_api_base_url,
 };
 pub use project_catalog::{
     find_global_project_catalog_entry, global_project_catalog_path, parse_project_catalog_content,
@@ -54,6 +55,7 @@ pub use runtime::{
 pub use tools::network::{
     global_web_tool_config_path, project_web_tool_config_path, WEB_TOOL_CONFIG_TEMPLATE,
 };
+pub(crate) use tools::process::configure_process_group;
 pub use types::{
     AgentInvocationRequest, AgentInvocationResult, LocalBackendContext, LocalChatAttachment,
     LocalChatMessage, LocalChatPauseRequest, LocalChatRequest, LocalChatResult,

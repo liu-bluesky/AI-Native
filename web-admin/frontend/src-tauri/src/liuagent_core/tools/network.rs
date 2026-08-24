@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::liuagent_core::args::{bool_arg, number_arg, required_string_arg};
-use crate::liuagent_core::paths::{desktop_runtime_root, ensure_desktop_runtime_migrated};
+use crate::liuagent_core::paths::{
+    desktop_runtime_root, ensure_desktop_runtime_migrated, global_user_home_dir,
+};
 use crate::liuagent_core::permission::require_approval;
 use crate::liuagent_core::types::{PermissionDecisionInput, ToolError};
 use crate::liuagent_core::workspace::{
@@ -817,8 +819,8 @@ fn load_web_tool_config(workspace_path: &str) -> Result<WebToolConfig, ToolError
             format!("migrate project desktop runtime config failed: {err}"),
         )
     })?;
-    if let Some(home) = env::var_os("HOME") {
-        ensure_desktop_runtime_migrated(Path::new(&home)).map_err(|err| {
+    if let Some(home) = global_user_home_dir() {
+        ensure_desktop_runtime_migrated(&home).map_err(|err| {
             ToolError::new(
                 "desktop_runtime.migration_failed",
                 format!("migrate global desktop runtime config failed: {err}"),
@@ -882,8 +884,8 @@ fn read_optional_web_tool_config(scope: &str, path: &Path) -> Result<Option<Valu
 }
 
 pub fn global_web_tool_config_path() -> Option<PathBuf> {
-    env::var_os("HOME").map(|home| {
-        desktop_runtime_root(Path::new(&home))
+    global_user_home_dir().map(|home| {
+        desktop_runtime_root(&home)
             .join("web-tools")
             .join("config.json")
     })

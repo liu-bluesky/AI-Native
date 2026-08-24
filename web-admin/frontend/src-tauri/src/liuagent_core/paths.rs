@@ -1,3 +1,5 @@
+use std::env;
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -20,6 +22,29 @@ pub fn desktop_runtime_root(base_root: &Path) -> PathBuf {
     base_root
         .join(".ai-employee")
         .join(DESKTOP_RUNTIME_DIR_NAME)
+}
+
+pub fn global_user_home_dir() -> Option<PathBuf> {
+    global_user_home_dir_from(
+        env::var_os("HOME"),
+        env::var_os("USERPROFILE"),
+        env::var_os("HOMEDRIVE"),
+        env::var_os("HOMEPATH"),
+    )
+}
+
+fn global_user_home_dir_from(
+    home: Option<OsString>,
+    user_profile: Option<OsString>,
+    home_drive: Option<OsString>,
+    home_path: Option<OsString>,
+) -> Option<PathBuf> {
+    home.or(user_profile)
+        .map(PathBuf::from)
+        .or_else(|| match (home_drive, home_path) {
+            (Some(drive), Some(path)) => Some(PathBuf::from(drive).join(path)),
+            _ => None,
+        })
 }
 
 /// Normalize legacy local frontend proxy URLs before desktop tools call the API.
@@ -236,4 +261,16 @@ mod tests {
             "https://example.test/api"
         );
     }
+}
+#[test]
+fn global_user_home_dir_uses_windows_userprofile_when_home_is_missing() {
+    assert_eq!(
+        global_user_home_dir_from(
+            None,
+            Some(OsString::from("C:/Users/desktop-user")),
+            None,
+            None,
+        ),
+        Some(PathBuf::from("C:/Users/desktop-user")),
+    );
 }
