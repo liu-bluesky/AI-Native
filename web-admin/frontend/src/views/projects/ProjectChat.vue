@@ -5245,7 +5245,7 @@ const hasSelectedProject = computed(() =>
 const chatSurface = computed(() => {
   return "local-runner";
 });
-const chatSurfaceMark = computed(() => "LR");
+const chatSurfaceMark = computed(() => "LT");
 const chatSurfaceName = computed(() => "本地运行");
 const chatSurfaceMeta = computed(() => "系统模型 · 本机执行");
 const canUseExternalAgent = computed(
