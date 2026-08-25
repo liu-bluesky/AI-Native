@@ -10,7 +10,8 @@ const layout = read("src/views/Layout.vue");
 const desktopShell = read("src/components/DesktopSystemShell.vue");
 const desktopWindowHost = read("src/components/DesktopWindowHost.vue");
 const projectChat = read("src/views/projects/ProjectChat.vue");
-const nativeDesktopBridge = read("src/utils/native-desktop-bridge.js");
+const chatComposer = read("src/modules/project-chat/components/composer/ChatComposer.vue");
+const tauriConfig = read("src-tauri/tauri.conf.json");
 
 assert.match(
   desktopShell,
@@ -82,135 +83,30 @@ assert.match(
   /childApp\.unmount\(\)/,
   "closing a desktop window must unmount its child application",
 );
-assert.match(
-  layout,
-  /subscribeNativeDesktopDragDrop\(handleNativeDesktopDragDrop\)/,
-  "the desktop shell must own the native file drop subscription",
-);
-assert.match(
-  layout,
-  /new CustomEvent\(DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME/,
-  "the desktop shell must forward native drops to the target window",
-);
-assert.match(
-  projectChat,
-  /DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME/,
-  "project chat must receive directed desktop drop events",
-);
-assert.match(
-  projectChat,
-  /targetWindowId !== desktopWindowId/,
-  "project chat must ignore drops that belong to another desktop window",
-);
-assert.match(
-  projectChat,
-  /readNativeLocalFile\(normalizedPath\)/,
-  "project chat must convert native file paths into browser File data",
-);
-assert.match(
-  nativeDesktopBridge,
-  /getCurrentWebviewWindow\(\)\.onDragDropEvent/,
-  "the native bridge must subscribe to Tauri WebviewWindow drag-drop events",
-);
-assert.match(
-  nativeDesktopBridge,
-  /getCurrentWebview\(\)\.onDragDropEvent/,
-  "the native bridge must subscribe to Tauri Webview drag-drop events",
-);
-assert.match(
-  nativeDesktopBridge,
-  /getCurrentWindow\(\)\.onDragDropEvent/,
-  "the native bridge must still subscribe through Tauri's window drag-drop API",
-);
-assert.match(
-  nativeDesktopBridge,
-  /export function nativeDragDropCssPoints/,
-  "the native bridge must convert physical drag coordinates into CSS pixels",
-);
-assert.match(
-  layout,
-  /nativeDragDropCssPoints\(payload\?\.position\)/,
-  "the desktop shell must hit-test native drops with CSS pixels",
-);
-assert.match(
-  layout,
-  /fileDropWindowId/,
-  "the desktop shell must expose the current file-drop target window",
-);
-assert.match(
-  desktopShell,
-  /is-file-drop-target/,
-  "the desktop window chrome must highlight the file-drop target",
-);
-assert.match(
-  desktopShell,
-  /desktop-system__window-drop-overlay/,
-  "the desktop window chrome must show a window-level drop overlay",
-);
 assert.doesNotMatch(
   projectChat,
-  /positionMatchesInput/,
-  "project chat must accept native file drops anywhere in the window",
+  /chat-window-drop-overlay|is-file-dragover/,
+  "project chat must not show a window-level file-drop overlay",
+);
+assert.match(
+  chatComposer,
+  /class="chat-input-wrapper"[\s\S]*?@dragenter\.prevent\.stop[\s\S]*?@drop\.prevent\.stop/,
+  "only the chat input wrapper must accept file drops",
 );
 assert.match(
   projectChat,
-  /chat-window-drop-overlay/,
-  "project chat must show a window-level drop overlay",
+  /function isBrowserFileDragEvent\(event\)/,
+  "project chat must verify that browser drag events carry files",
 );
 assert.match(
   projectChat,
-  /subscribeNativeDesktopDragDrop/,
-  "project chat must subscribe to native drag-drop events even inside a desktop window",
+  /event\.dataTransfer\.dropEffect = "copy"/,
+  "the accepted input drop zone must advertise the copy operation",
 );
 assert.match(
-  projectChat,
-  /nativeDragHitsThisChat/,
-  "project chat must hit-test native drops against its own window",
-);
-assert.match(
-  layout,
-  /lastNativeDragDropWindowId \|\|\s*activeWindowId\.value/,
-  "desktop shell must keep the last hovered window when drop coordinates miss",
-);
-assert.match(
-  layout,
-  /desktopWindows\.value\.find\(\(item\) => !item\.minimized\)\?\.id/,
-  "desktop shell must fall back to the first visible window when no drag target is known",
-);
-assert.match(
-  nativeDesktopBridge,
-  /tauri:\/\/drag-enter/,
-  "the native bridge must subscribe to raw Tauri drag-enter events",
-);
-assert.match(
-  nativeDesktopBridge,
-  /kind:\s*"AnyLabel"/,
-  "the native bridge must listen with AnyLabel so WebviewWindow drag events match",
-);
-assert.match(
-  nativeDesktopBridge,
-  /Math\.abs\(point\.x\) < 0\.5 && Math\.abs\(point\.y\) < 0\.5/,
-  "the native bridge must treat origin coordinates as an unknown drag position",
-);
-assert.match(
-  nativeDesktopBridge,
-  /const NATIVE_DRAG_LEAVE_GRACE_MS = 180/,
-  "the native bridge must delay native leave so window/webview leave cannot clear the overlay in the same frame",
-);
-assert.match(
-  projectChat,
-  /if \(!points\.length\) return true;/,
-  "project chat must treat unknown native drag coordinates as a hit",
-);
-assert.match(
-  projectChat,
-  /if \(!hits\) \{\s*return;/,
-  "project chat must not clear the drop overlay when another window owns the drag",
-);
-assert.match(
-  desktopShell,
-  /grid-area:\s*1 \/ 1 \/ -1 \/ -1/,
-  "the desktop window drop overlay must cover the full window grid",
+  tauriConfig,
+  /"dragDropEnabled"\s*:\s*false/,
+  "Tauri must leave file drag/drop to the HTML5 input drop zone",
 );
 
 console.log("desktop window layout contract check passed");

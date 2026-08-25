@@ -116,6 +116,7 @@ import { computed, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import {
+  DEFAULT_DESKTOP_WALLPAPER_PRESET_ID,
   DESKTOP_WALLPAPER_PRESETS,
   getDesktopWallpaperConfig,
   resolveDesktopWallpaperAppearance,
@@ -200,7 +201,8 @@ function resolveImageLuminance(dataUrl) {
 
 function selectPreset(presetId) {
   draftConfig.mode = "preset";
-  draftConfig.presetId = String(presetId || "").trim() || presets[0]?.id || "";
+  draftConfig.presetId =
+    String(presetId || "").trim() || DEFAULT_DESKTOP_WALLPAPER_PRESET_ID;
   draftConfig.customImage = "";
   draftConfig.customLuminance = 0.82;
 }
@@ -208,7 +210,7 @@ function selectPreset(presetId) {
 function triggerPresetMode() {
   selectedFileName.value = "";
   if (!draftConfig.presetId) {
-    draftConfig.presetId = presets[0]?.id || "";
+    draftConfig.presetId = DEFAULT_DESKTOP_WALLPAPER_PRESET_ID;
   }
   draftConfig.mode = "preset";
   draftConfig.customImage = "";
@@ -269,7 +271,7 @@ function applyConfig() {
 
 function resetToPreset() {
   selectedFileName.value = "";
-  const nextPresetId = presets[0]?.id || "";
+  const nextPresetId = DEFAULT_DESKTOP_WALLPAPER_PRESET_ID;
   try {
     const nextConfig = setDesktopWallpaperConfig({
       mode: "preset",

@@ -1,18 +1,9 @@
 <template>
   <div
     v-if="!isSettingsCenterRoute"
-    ref="chatLayoutRef"
     class="chat-layout"
-    :class="{ 'is-file-dragover': isDragging }"
     v-loading="loading"
-    @dragenter.prevent="handleDragOver"
-    @dragover.prevent="handleDragOver"
-    @dragleave="handleDragLeave"
-    @drop.prevent="handleDrop"
   >
-    <div v-if="isDragging" class="chat-window-drop-overlay" aria-hidden="true">
-      <span>释放到此窗口即可添加附件</span>
-    </div>
     <div
       class="chat-layout__ambient chat-layout__ambient--left"
       aria-hidden="true"
@@ -31,6 +22,7 @@
           :surface-name="chatSurfaceName"
           :surface-meta="chatSurfaceMeta"
           :creating-session="creatingChatSession"
+          :project-creating="projectCreationInProgress"
           :chat-loading="chatLoading"
           :has-selected-project="hasSelectedProject"
           :current-session-id="currentChatSessionId"
@@ -41,6 +33,7 @@
           :username="currentUsername"
           @open-settings="openSettingsCenter"
           @create-conversation="handleCreateNewConversation"
+          @create-project="handleCreateProject"
           @clear-current="clearMessages"
           @select-session="selectChatSession"
           @delete-session="deleteChatSession"
@@ -2978,10 +2971,7 @@ import {
   resolveServerOrigin,
 } from "@/utils/server-profile.js";
 import { formatRelativeDateTime } from "@/utils/date.js";
-import {
-  DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME,
-  openRouteInDesktop,
-} from "@/utils/desktop-app-bridge.js";
+import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   ATTACHMENT_MODE_LABELS,
@@ -3011,6 +3001,7 @@ import {
 } from "@/modules/project-chat/services/modelRouting.js";
 import { isMediaBuildFeatureEnabled } from "@/config/buildFeatures.js";
 import { DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT } from "@/config/desktopAgentPrompts.js";
+import { openLocalWorkspaceProjectFromPicker } from "@/services/local-workspace-project-service.js";
 import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
@@ -3040,7 +3031,6 @@ import {
   prepareNativeWorkspaceFileWrite,
   openNativeDesktopDevtools,
   previewNativeWorkspaceDiff,
-  readNativeLocalFile,
   readNativeWorkspaceFile,
   revertNativeWorkspaceFileChange,
   writeNativeWorkspaceFile,
@@ -3064,8 +3054,6 @@ import {
   openNativeExternalUrl,
   persistNativeProjectChatAsset,
   saveNativeResourceFile,
-  nativeDragDropCssPoints,
-  subscribeNativeDesktopDragDrop,
 } from "@/utils/native-desktop-bridge.js";
 import {
   buildChatSettingsRoute,
@@ -3376,6 +3364,7 @@ function applyLocalConnectorRuntimeSettings(baseSettings) {
 const loading = ref(false);
 const chatLoading = ref(false);
 const workspaceTrustSaving = ref(false);
+const projectCreationInProgress = ref(false);
 const projectListOffline = ref(false);
 const modelProviderOffline = ref(false);
 const modelProviderSyncing = ref(false);
@@ -5247,7 +5236,7 @@ const chatSurface = computed(() => {
 });
 const chatSurfaceMark = computed(() => "LT");
 const chatSurfaceName = computed(() => "本地运行");
-const chatSurfaceMeta = computed(() => "系统模型 · 本机执行");
+const chatSurfaceMeta = computed(() => "新建项目");
 const canUseExternalAgent = computed(
   () =>
     hasSelectedProject.value &&
@@ -13351,17 +13340,6 @@ const messageContextMenu = reactive({
 });
 const inputFocused = ref(false);
 const isDragging = ref(false);
-const chatLayoutRef = ref(null);
-let nativeDesktopDragDropUnlisten = null;
-const desktopWindowId = String(
-  router?.__aiEmployeeDesktopWindow?.windowId || "",
-).trim();
-
-function reportNativeDesktopDragDropDiagnostic(message, type = "info") {
-  if (!import.meta.env.DEV) return;
-  const notify = ElMessage[type] || ElMessage.info;
-  notify(message);
-}
 const {
   rememberChatSessionComposerState,
   rememberCurrentChatSessionComposerState,
@@ -26621,13 +26599,29 @@ async function uploadFileToProviderWithNativeRuntime(
   return result;
 }
 
-function handleDragOver() {
+function isBrowserFileDragEvent(event) {
+  const dataTransfer = event?.dataTransfer;
+  if (!dataTransfer) return false;
+  if (Array.from(dataTransfer.files || []).length > 0) return true;
+  if (
+    Array.from(dataTransfer.items || []).some((item) => item?.kind === "file")
+  ) {
+    return true;
+  }
+  return Array.from(dataTransfer.types || []).includes("Files");
+}
+
+function handleDragOver(event) {
+  if (!isBrowserFileDragEvent(event)) return;
+  if (event?.dataTransfer) {
+    event.dataTransfer.dropEffect = "copy";
+  }
   isDragging.value = true;
 }
 
 function handleDragLeave(event) {
   const current = event?.currentTarget;
-  if (!current?.classList?.contains("chat-layout")) return;
+  if (!current) return;
   const related = event?.relatedTarget;
   if (related && current.contains?.(related)) return;
   isDragging.value = false;
@@ -26657,6 +26651,10 @@ function ingestDroppedBrowserFile(file) {
 }
 
 function handleDrop(e) {
+  if (!isBrowserFileDragEvent(e)) {
+    isDragging.value = false;
+    return;
+  }
   isDragging.value = false;
   const dataTransfer = e?.dataTransfer;
   const files = Array.from(dataTransfer?.files || []);
@@ -26670,93 +26668,6 @@ function handleDrop(e) {
     if (item.kind !== "file") continue;
     ingestDroppedBrowserFile(item.getAsFile());
   }
-}
-
-function nativeDragHitsThisChat(payload = {}) {
-  if (!desktopWindowId) return true;
-  const points = nativeDragDropCssPoints(payload?.position);
-  if (!points.length) return true;
-  const root = chatLayoutRef.value;
-  const rect = root?.getBoundingClientRect?.();
-  if (!rect) return true;
-  return points.some(
-    (point) =>
-      point.x >= rect.left &&
-      point.x <= rect.right &&
-      point.y >= rect.top &&
-      point.y <= rect.bottom,
-  );
-}
-
-async function handleNativeDragDropEvent(payload = {}, options = {}) {
-  const type = String(payload?.type || "").trim();
-  const paths = Array.isArray(payload.paths) ? payload.paths : [];
-  const fromShell = Boolean(options.fromShell);
-  const hits = fromShell || nativeDragHitsThisChat(payload);
-  if (type === "enter" || type === "drop") {
-    console.debug("[ProjectChat] Tauri drag/drop", {
-      type,
-      pathCount: paths.length,
-      position: payload.position || null,
-      windowLevel: true,
-      fromShell,
-      hits,
-    });
-  }
-  if (type === "leave") {
-    isDragging.value = false;
-    return;
-  }
-  if (!hits) {
-    return;
-  }
-  if (type === "enter" || type === "over") {
-    if (type === "enter") {
-      reportNativeDesktopDragDropDiagnostic("已收到 Tauri 原生拖入事件");
-    }
-    isDragging.value = true;
-    return;
-  }
-  if (type !== "drop") return;
-  isDragging.value = false;
-  if (!paths.length) {
-    reportNativeDesktopDragDropDiagnostic(
-      "已收到 Tauri 释放事件，但没有文件路径",
-      "warning",
-    );
-    return;
-  }
-  reportNativeDesktopDragDropDiagnostic(
-    `已收到 Tauri 释放事件，正在读取 ${paths.length} 个文件`,
-    "success",
-  );
-  for (const path of paths) {
-    const normalizedPath = String(path || "").trim();
-    if (!normalizedPath) continue;
-    try {
-      const fileData = await readNativeLocalFile(normalizedPath);
-      const name =
-        fileData.name ||
-        normalizedPath.split("/").pop() ||
-        normalizedPath.split("\\").pop() ||
-        "dropped-file";
-      const rawFile = new File([new Uint8Array(fileData.bytes)], name, {
-        type: fileData.mimeType || "application/octet-stream",
-      });
-      ingestDroppedBrowserFile(rawFile);
-    } catch (err) {
-      ElMessage.error(String(err?.message || err || "文件拖放失败").trim());
-    }
-  }
-}
-
-function handleDesktopWindowFileDragDrop(event) {
-  const detail = event?.detail || {};
-  const targetWindowId = String(detail?.windowId || "").trim();
-  if (desktopWindowId && targetWindowId && targetWindowId !== desktopWindowId) {
-    return;
-  }
-  void handleNativeDragDropEvent(detail?.payload || {}, { fromShell: true });
 }
 
 async function handleDesktopDevtoolsShortcut(event) {
@@ -28100,6 +28011,26 @@ function handleProjectCommand(projectId, options = {}) {
   }
   void router.replace({ query: nextQuery }).catch(() => {});
   selectedProjectId.value = normalizedProjectId;
+}
+
+async function handleCreateProject() {
+  if (projectCreationInProgress.value) return;
+
+  projectCreationInProgress.value = true;
+  try {
+    const selection = await openLocalWorkspaceProjectFromPicker();
+    if (!selection) return;
+    const { project, workspacePath } = selection;
+    await fetchProjects();
+    handleProjectCommand(project.id);
+    ElMessage.success(
+      `已打开项目「${getWorkspaceFolderName(workspacePath) || project.name || project.id}」`,
+    );
+  } catch (error) {
+    ElMessage.error(String(error?.message || error || "创建项目失败").trim());
+  } finally {
+    projectCreationInProgress.value = false;
+  }
 }
 
 function moduleTypeLabel(moduleType) {
@@ -34270,23 +34201,6 @@ onMounted(async () => {
   loading.value = true;
   reloadLocalMcpConfig(selectedProjectId.value);
   reloadLocalWebToolsConfig(selectedProjectId.value);
-  window.addEventListener(
-    DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME,
-    handleDesktopWindowFileDragDrop,
-  );
-  nativeDesktopDragDropUnlisten = await subscribeNativeDesktopDragDrop(
-    (payload) => {
-      void handleNativeDragDropEvent(payload);
-    },
-  );
-  if (nativeDesktopDragDropUnlisten) {
-    reportNativeDesktopDragDropDiagnostic("桌面文件拖放监听已启用");
-  } else if (!desktopWindowId) {
-    reportNativeDesktopDragDropDiagnostic(
-      "桌面文件拖放监听未启用：当前页面未连接到 Tauri",
-      "warning",
-    );
-  }
   handleLocalMcpConfigUpdated = () => {
     reloadLocalMcpConfig(selectedProjectId.value);
   };
@@ -34384,18 +34298,6 @@ onUnmounted(() => {
   window.removeEventListener("keydown", handleContextMenuGlobalKeydown);
   window.removeEventListener("contextmenu", handleTeleportedResourceContextMenu, true);
   window.removeEventListener("scroll", closeMessageContextMenu, true);
-  window.removeEventListener(
-    DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME,
-    handleDesktopWindowFileDragDrop,
-  );
-  if (nativeDesktopDragDropUnlisten) {
-    try {
-      nativeDesktopDragDropUnlisten();
-    } catch (error) {
-      console.warn("解除桌面拖放事件订阅失败", error);
-    }
-    nativeDesktopDragDropUnlisten = null;
-  }
   clearExternalAgentStatusRefreshTimer();
   stopExternalAgentBridgeTaskPolling();
   stopNativeExternalAgentSessionPolling();
@@ -34494,25 +34396,6 @@ onUnmounted(() => {
 ></style>
 
 <style scoped>
-.chat-layout.is-file-dragover {
-  box-shadow: inset 0 0 0 3px rgba(37, 99, 235, 0.38);
-}
-
-.chat-window-drop-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 80;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  border: 2px dashed rgba(37, 99, 235, 0.45);
-  border-radius: 20px;
-  background: rgba(239, 246, 255, 0.72);
-  color: #1d4ed8;
-  font-size: 16px;
-  font-weight: 700;
-}
 .message-audios {
   display: grid;
   gap: 8px;

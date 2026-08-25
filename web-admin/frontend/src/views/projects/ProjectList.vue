@@ -127,24 +127,16 @@ import {
 } from "@element-plus/icons-vue";
 import {
   getWorkspaceFolderName,
-  getLocalWorkspaceProjectByPath,
   isProjectNamePlaceholder,
   openLocalWorkspaceProject,
   readLocalWorkspaceProjects,
   renameLocalWorkspaceProject,
   removeLocalWorkspaceProject,
-  upsertLocalProject,
 } from "@/services/local-project-repository.js";
-import { readLocalSystemConfig } from "@/services/local-system-config.js";
-import { DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT } from "@/config/desktopAgentPrompts.js";
 import {
-  hasNativeDesktopBridge,
-  readNativeWorkspaceFile,
-  writeNativeWorkspaceFile,
-} from "@/utils/native-desktop-bridge.js";
-import { pickWorkspaceDirectory } from "@/utils/workspace-picker.js";
-
-const DEFAULT_AI_ENTRY_FILE = "AIENTRY.md";
+  initializeLocalWorkspaceProjectAiEntryFile,
+  openLocalWorkspaceProjectFromPicker,
+} from "@/services/local-workspace-project-service.js";
 
 const router = useRouter();
 const loading = ref(false);
@@ -175,53 +167,6 @@ function workspaceName(workspace) {
   return getWorkspaceFolderName(workspace?.workspace_path) || "未命名文件夹";
 }
 
-function isWorkspaceFileMissing(error) {
-  return /not found|no such file|os error 2|系统找不到指定的文件|找不到指定的文件|不存在/i.test(
-    String(error?.message || error?.detail || error || ""),
-  );
-}
-
-async function initializeProjectAiEntryFile(project) {
-  const projectId = String(project?.id || "").trim();
-  const workspacePath = String(project?.workspace_path || "").trim();
-  if (!projectId || !workspacePath) {
-    return;
-  }
-  if (!hasNativeDesktopBridge()) return;
-
-  try {
-    const existingFile = await readNativeWorkspaceFile({
-      workspacePath,
-      path: DEFAULT_AI_ENTRY_FILE,
-    });
-    if (Number(existingFile?.size || 0) > 0) {
-      upsertLocalProject({
-        ...project,
-        id: projectId,
-        ai_entry_file: DEFAULT_AI_ENTRY_FILE,
-      });
-      return;
-    }
-  } catch (error) {
-    if (!isWorkspaceFileMissing(error)) {
-      throw error;
-    }
-    await writeNativeWorkspaceFile({
-      workspacePath,
-      path: DEFAULT_AI_ENTRY_FILE,
-      content:
-        String(readLocalSystemConfig().desktop_agent_global_prompt || "").trim() ||
-        DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT,
-    });
-  }
-
-  upsertLocalProject({
-    ...project,
-    id: projectId,
-    ai_entry_file: DEFAULT_AI_ENTRY_FILE,
-  });
-}
-
 async function fetchWorkspaces() {
   loading.value = true;
   try {
@@ -235,16 +180,9 @@ async function selectWorkspace() {
   if (openingWorkspace.value) return;
   openingWorkspace.value = true;
   try {
-    const workspacePath = await pickWorkspaceDirectory("", {
-      title: "打开文件夹",
-    });
-    if (!workspacePath) return;
-    const existingWorkspace = getLocalWorkspaceProjectByPath(workspacePath);
-    const workspace = openLocalWorkspaceProject(workspacePath);
-    if (!workspace?.id) {
-      throw new Error("无法保存文件夹工作区");
-    }
-    await initializeProjectAiEntryFile(workspace);
+    const selection = await openLocalWorkspaceProjectFromPicker();
+    if (!selection) return;
+    const { project: workspace } = selection;
     await openWorkspaceSettings(workspace);
   } catch (error) {
     ElMessage.error(String(error?.message || error || "打开文件夹失败").trim());
@@ -264,7 +202,7 @@ async function openWorkspace(workspace) {
     if (!currentWorkspace?.id) {
       throw new Error("无法打开文件夹工作区");
     }
-    await initializeProjectAiEntryFile(currentWorkspace);
+    await initializeLocalWorkspaceProjectAiEntryFile(currentWorkspace);
     await openProjectChat(currentWorkspace);
   } catch (error) {
     ElMessage.error(String(error?.message || error || "打开文件夹失败").trim());

@@ -17,73 +17,6 @@
     />
     <div class="desktop-system__surface">
       <main class="desktop-system__workspace">
-        <div
-          v-if="showLauncher"
-          class="desktop-system__launcher-backdrop"
-          @click="$emit('toggle-launcher')"
-        />
-        <aside v-if="showLauncher" class="desktop-system__launcher" @click.stop>
-          <div class="desktop-system__launcher-head">
-            <div>
-              <div class="desktop-system__launcher-eyebrow">All Apps</div>
-              <h3>启动台</h3>
-            </div>
-            <button
-              type="button"
-              class="desktop-system__launcher-close"
-              @click="$emit('toggle-launcher')"
-            >
-              收起
-            </button>
-          </div>
-
-          <div class="desktop-system__launcher-actions">
-            <button
-              type="button"
-              class="desktop-system__launcher-action desktop-system__launcher-action--danger"
-              @click="$emit('clear-cache')"
-            >
-              清理当前缓存
-            </button>
-            <span
-              >关闭窗口、清理桌面运行缓存，保留登录态、当前壁纸和已添加的 Dock
-              应用。</span
-            >
-          </div>
-
-          <p class="desktop-system__launcher-note">
-            底部 dock
-            是常驻主应用。启动台是完整应用库，工作台和其他小应用都从这里打开。
-          </p>
-
-          <section
-            v-for="section in launcherSections"
-            :key="section.id"
-            class="desktop-system__launcher-section"
-          >
-            <div class="desktop-system__launcher-section-head">
-              <span>{{ section.label }}</span>
-            </div>
-            <div class="desktop-system__launcher-grid">
-              <button
-                v-for="item in section.items"
-                :key="item.id"
-                type="button"
-                class="desktop-system__launcher-item"
-                @click="$emit('launch-app', item)"
-              >
-                <span
-                  class="desktop-system__launcher-icon"
-                  :style="desktopIconStyle(item)"
-                  >{{ item.icon?.label || item.shortLabel }}</span
-                >
-                <strong>{{ item.label }}</strong>
-                <small>{{ item.summary }}</small>
-              </button>
-            </div>
-          </section>
-        </aside>
-
         <section ref="desktopRef" class="desktop-system__desktop">
           <div
             class="desktop-system__mesh"
@@ -200,102 +133,6 @@
         </section>
       </main>
 
-      <div
-        v-if="shouldAutoHideDock"
-        class="desktop-system__dock-trigger"
-        aria-hidden="true"
-        @pointerenter="revealDock"
-      >
-        <span class="desktop-system__dock-trigger-line" />
-      </div>
-
-      <nav
-        ref="dockRef"
-        class="desktop-system__dock"
-        :class="{
-          'is-auto-hidden': shouldAutoHideDock,
-          'is-revealed': !shouldAutoHideDock,
-          'is-dock-sorting': isDockSorting,
-        }"
-        :style="dockStyleVars"
-        aria-label="桌面应用"
-        @pointerenter="revealDock"
-        @pointerleave="hideDock"
-      >
-        <span
-          v-if="dockTooltipVisible"
-          class="desktop-system__dock-tooltip"
-          :style="dockTooltipStyle"
-          role="tooltip"
-        >
-          {{ dockTooltipLabel }}
-        </span>
-
-        <div class="desktop-system__dock-scroll">
-          <button
-            type="button"
-            class="desktop-system__dock-item desktop-system__dock-item--launcher"
-            :class="{ 'is-active': showLauncher }"
-            :style="dockLauncherStyle"
-            aria-label="启动台"
-            @pointerenter="showDockTooltip('启动台', $event)"
-            @pointerleave="clearDockTooltip"
-            @focus="showDockTooltip('启动台', $event)"
-            @blur="clearDockTooltip"
-            @click="$emit('toggle-launcher')"
-          >
-            <span class="desktop-system__dock-icon">+</span>
-            <span class="desktop-system__dock-label">启动台</span>
-          </button>
-
-          <span
-            v-for="item in dockItems"
-            :key="item.id"
-            class="desktop-system__dock-item-shell"
-            :style="dockItemShellStyle(item)"
-            :data-dock-app-id="item.id"
-            :class="{
-              'is-dock-dragging': draggingDockAppId === item.id,
-              'is-dock-drop-target':
-                dockDropTargetId === item.id && draggingDockAppId !== item.id,
-            }"
-            @pointerenter="showDockTooltip(item.label, $event)"
-            @pointerleave="clearDockTooltip"
-            @pointerdown="startDockDrag($event, item)"
-          >
-            <button
-              type="button"
-              class="desktop-system__dock-item"
-              :class="{
-                'is-active': activeWindow?.appId === item.id,
-                'is-open': openAppIds.includes(item.id),
-              }"
-              :style="dockItemStyle(item)"
-              :aria-label="item.label"
-              @focus="showDockTooltip(item.label, $event)"
-              @blur="clearDockTooltip"
-              @click="handleDockItemClick(item)"
-            >
-              <span
-                class="desktop-system__dock-icon"
-                :style="desktopIconStyle(item)"
-                >{{ item.icon?.label || item.shortLabel }}</span
-              >
-              <span class="desktop-system__dock-label">{{ item.label }}</span>
-            </button>
-            <button
-              v-if="item.dockRemovable === true"
-              type="button"
-              class="desktop-system__dock-remove"
-              aria-label="从 Dock 移除"
-              @click.stop="$emit('unpin-dock-app', item)"
-            >
-              ×
-            </button>
-          </span>
-        </div>
-      </nav>
-
       <GlobalAiAssistant />
       <ResourceContextMenu
         :visible="desktopShortcutContextMenu.visible"
@@ -410,6 +247,20 @@ const activeWindow = computed(
 const visibleWindows = computed(() => props.windows);
 
 const openAppIds = computed(() => props.windows.map((item) => item.appId));
+const runningWindows = computed(() =>
+  props.windows.map((window) => {
+    const app =
+      props.launcherItems.find((item) => item.id === window.appId)
+      || props.desktopItems.find((item) => item.id === window.appId)
+      || {
+        id: window.appId,
+        label: window.title,
+        shortLabel: String(window.title || "应用").slice(0, 2),
+        icon: {},
+      };
+    return { window, app };
+  }),
+);
 const launcherSections = computed(() => {
   const sections = [];
   const sectionMap = new Map();
@@ -1443,11 +1294,20 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .desktop-system {
+  --desktop-canvas: #e8f0f5;
+  --desktop-window-surface: #f7fafc;
+  --desktop-window-content: #ffffff;
+  --desktop-window-border: #cbd8e3;
+  --desktop-window-border-active: #93b6cf;
+  --desktop-window-shadow: 0 20px 48px rgba(15, 23, 42, 0.14);
+  --desktop-window-shadow-active:
+    0 28px 64px rgba(15, 23, 42, 0.18),
+    0 8px 20px rgba(15, 23, 42, 0.1);
   position: relative;
   min-height: 100vh;
   height: 100vh;
   overflow: hidden;
-  background: #f8fafc;
+  background: var(--desktop-canvas);
 }
 
 .desktop-system__wallpaper {
@@ -1464,7 +1324,7 @@ onBeforeUnmount(() => {
       rgba(103, 232, 249, 0.14),
       transparent 22%
     ),
-    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 40%, #edf2f7 100%);
+    linear-gradient(180deg, #eaf3f7 0%, #e8f0f5 44%, #dfe9f0 100%);
   background-size: cover;
   background-position: center;
 }
@@ -1498,8 +1358,8 @@ onBeforeUnmount(() => {
   inset: 0;
   z-index: 0;
   background:
-    linear-gradient(rgba(15, 23, 42, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(15, 23, 42, 0.02) 1px, transparent 1px);
+    linear-gradient(rgba(51, 65, 85, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(51, 65, 85, 0.035) 1px, transparent 1px);
   background-size: 56px 56px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.72), transparent 84%);
   pointer-events: none;
@@ -1601,6 +1461,37 @@ onBeforeUnmount(() => {
   padding-bottom: 4px;
 }
 
+.desktop-system__menu-bar {
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  z-index: 18;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(15, 23, 42, 0.74);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.desktop-system__menu-button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.1);
+  color: #0f172a;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+  backdrop-filter: blur(14px);
+}
+
+.desktop-system__menu-button:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
 .desktop-system__launcher-backdrop {
   position: absolute;
   inset: 0;
@@ -1612,11 +1503,11 @@ onBeforeUnmount(() => {
 
 .desktop-system__launcher {
   position: absolute;
-  top: 0;
-  left: 50%;
+  top: 58px;
+  left: 18px;
   z-index: 20;
   width: min(380px, calc(100% - 32px));
-  max-height: calc(100vh - 132px);
+  max-height: calc(100vh - 76px);
   box-sizing: border-box;
   overflow: auto;
   display: flex;
@@ -1628,7 +1519,6 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.74);
   box-shadow: 0 22px 58px rgba(15, 23, 42, 0.08);
   backdrop-filter: blur(20px);
-  transform: translateX(-50%);
 }
 
 .desktop-system__launcher-head {
@@ -1706,21 +1596,105 @@ onBeforeUnmount(() => {
 
 .desktop-system__launcher-grid {
   display: grid;
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.desktop-system__launcher-note {
+.desktop-system__launcher-empty {
   margin: 0;
   color: #526071;
   font-size: 13px;
   line-height: 1.6;
 }
 
+.desktop-system__running-list {
+  display: grid;
+  gap: 8px;
+}
+
+.desktop-system__running-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(226, 232, 240, 0.86);
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.desktop-system__running-item.is-active {
+  border-color: rgba(56, 189, 248, 0.34);
+  background: rgba(240, 249, 255, 0.9);
+}
+
+.desktop-system__running-focus {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.desktop-system__running-focus .desktop-system__launcher-icon {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  font-size: 10px;
+}
+
+.desktop-system__running-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.desktop-system__running-copy strong,
+.desktop-system__running-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-system__running-copy strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.desktop-system__running-copy small {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.desktop-system__running-close {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(226, 232, 240, 0.7);
+  color: #475569;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.desktop-system__running-close:hover {
+  background: rgba(254, 226, 226, 0.92);
+  color: #dc2626;
+}
+
 .desktop-system__launcher-item {
   display: grid;
   gap: 8px;
   justify-items: start;
-  padding: 14px;
+  padding: 12px;
   border: 1px solid rgba(226, 232, 240, 0.86);
   border-radius: 22px;
   background: rgba(248, 250, 252, 0.86);
@@ -1749,11 +1723,12 @@ onBeforeUnmount(() => {
 
 .desktop-system__launcher-item strong {
   color: #0f172a;
-  font-size: 16px;
+  font-size: 14px;
 }
 
 .desktop-system__launcher-item small {
   color: #526071;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -1784,11 +1759,11 @@ onBeforeUnmount(() => {
   height: var(--desktop-window-height, 720px);
   min-width: 720px;
   min-height: 480px;
-  border: 0;
+  border: 1px solid var(--desktop-window-border);
   border-radius: 14px;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
+  background: var(--desktop-window-surface);
+  box-shadow: var(--desktop-window-shadow);
+  backdrop-filter: blur(12px);
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1879,7 +1854,8 @@ onBeforeUnmount(() => {
 }
 
 .desktop-system__window.is-active {
-  box-shadow: none;
+  border-color: var(--desktop-window-border-active);
+  box-shadow: var(--desktop-window-shadow-active);
 }
 
 .desktop-system__window.is-minimized {
@@ -1931,12 +1907,12 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  min-height: 52px;
-  padding: 10px 18px;
+  gap: 8px;
+  min-height: 42px;
+  padding: 6px 12px;
   box-sizing: border-box;
-  border-bottom: 1px solid #d9dee7;
-  background: #f8fafc;
+  border-bottom: 1px solid #d4e0e9;
+  background: #f3f7fa;
   cursor: grab;
   user-select: none;
 }
@@ -1949,13 +1925,13 @@ onBeforeUnmount(() => {
 .desktop-system__traffic-group {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   justify-self: start;
 }
 
 .desktop-system__traffic {
-  width: 15px;
-  height: 15px;
+  width: 12px;
+  height: 12px;
   padding: 0;
   border: 0;
   border-radius: 999px;
@@ -1981,8 +1957,8 @@ onBeforeUnmount(() => {
 }
 
 .desktop-system__window-title {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 650;
   color: #0f172a;
   white-space: nowrap;
   overflow: hidden;
@@ -1994,17 +1970,17 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: flex-end;
   justify-self: end;
-  gap: 10px;
+  gap: 6px;
 }
 
 .desktop-system__window-action {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border: 1px solid rgba(226, 232, 240, 0.88);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.82);
   color: #475569;
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1;
   cursor: pointer;
   transition:
@@ -2024,13 +2000,13 @@ onBeforeUnmount(() => {
 }
 
 .desktop-system__window-handle {
-  height: 30px;
-  padding: 0 10px;
+  height: 26px;
+  padding: 0 8px;
   border: 1px solid rgba(226, 232, 240, 0.88);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.82);
   color: #475569;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   cursor: grab;
 }
@@ -2048,7 +2024,7 @@ onBeforeUnmount(() => {
 .desktop-system__window-frame {
   min-height: 0;
   padding: 0;
-  background: var(--page-surface-solid, #ffffff);
+  background: var(--desktop-window-content);
   backface-visibility: hidden;
 }
 

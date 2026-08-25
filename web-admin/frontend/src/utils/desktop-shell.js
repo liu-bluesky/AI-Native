@@ -75,6 +75,8 @@ export const DESKTOP_WALLPAPER_PRESETS = [
   },
 ];
 
+export const DEFAULT_DESKTOP_WALLPAPER_PRESET_ID = "midnight-aurora";
+
 function clampNumber(value, min, max) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return min;
@@ -84,6 +86,7 @@ function clampNumber(value, min, max) {
 const DESKTOP_APP_ICON_THEMES = {
   chat: ["#22d3ee", "#2563eb"],
   workbench: ["#f59e0b", "#ef4444"],
+  "desktop-task-manager": ["#818cf8", "#4f46e5"],
   tasks: ["#6366f1", "#2563eb"],
   "work-logs": ["#14b8a6", "#0f766e"],
   projects: ["#38bdf8", "#0f766e"],
@@ -274,6 +277,20 @@ const DESKTOP_APP_ITEMS = [
     match: (path) =>
       String(path || "") === "/desktop" ||
       String(path || "").startsWith("/workbench"),
+  }),
+  createApp({
+    id: "desktop-task-manager",
+    label: "任务管理器",
+    shortLabel: "TM",
+    path: "/desktop/task-manager",
+    summary: "查看当前真实打开的桌面窗口，并逐个切换或关闭。",
+    eyebrow: "Desktop System",
+    width: 940,
+    height: 660,
+    dock: false,
+    category: "workspace",
+    categoryLabel: "工作应用",
+    match: (path) => String(path || "").startsWith("/desktop/task-manager"),
   }),
   createApp({
     id: "tasks",
@@ -717,6 +734,9 @@ function getWallpaperPresetById(presetId) {
   const normalizedPresetId = String(presetId || "").trim();
   return (
     DESKTOP_WALLPAPER_PRESETS.find((item) => item.id === normalizedPresetId)
+    || DESKTOP_WALLPAPER_PRESETS.find(
+      (item) => item.id === DEFAULT_DESKTOP_WALLPAPER_PRESET_ID,
+    )
     || DESKTOP_WALLPAPER_PRESETS[0]
   );
 }
@@ -751,7 +771,9 @@ export function clearDesktopRuntimeStorage(options = {}) {
 }
 
 export function getDesktopWallpaperConfig() {
-  const fallbackPreset = getWallpaperPresetById("");
+  const fallbackPreset = getWallpaperPresetById(
+    DEFAULT_DESKTOP_WALLPAPER_PRESET_ID,
+  );
   if (!canUseWindow()) {
     return {
       mode: "preset",

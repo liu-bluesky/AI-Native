@@ -22,15 +22,25 @@
     </div>
 
     <div class="chat-conversation-sidebar__actions">
-      <el-button
-        class="chat-new-conversation-button"
-        :loading="creatingSession"
-        :disabled="!hasSelectedProject"
-        :icon="DocumentCopy"
-        @click="emit('create-conversation')"
-      >
-        新对话
-      </el-button>
+      <div class="chat-conversation-sidebar__primary-actions">
+        <el-button
+          class="chat-new-conversation-button"
+          :loading="creatingSession"
+          :disabled="!hasSelectedProject"
+          :icon="DocumentCopy"
+          @click="emit('create-conversation')"
+        >
+          新对话
+        </el-button>
+        <el-button
+          class="chat-new-project-button"
+          :loading="projectCreating"
+          :icon="FolderAdd"
+          @click="emit('create-project')"
+        >
+          新建项目
+        </el-button>
+      </div>
       <el-button
         text
         class="chat-clear-current-button"
@@ -93,7 +103,7 @@
 
 <script setup>
 import { ref } from "vue";
-import { DocumentCopy, Setting } from "@element-plus/icons-vue";
+import { DocumentCopy, FolderAdd, Setting } from "@element-plus/icons-vue";
 import ChatSessionList from "@/modules/project-chat/components/sessions/ChatSessionList.vue";
 
 const props = defineProps({
@@ -101,6 +111,7 @@ const props = defineProps({
   surfaceName: { type: String, default: "" },
   surfaceMeta: { type: String, default: "" },
   creatingSession: { type: Boolean, default: false },
+  projectCreating: { type: Boolean, default: false },
   chatLoading: { type: Boolean, default: false },
   hasSelectedProject: { type: Boolean, default: false },
   currentSessionId: { type: String, default: "" },
@@ -114,6 +125,7 @@ const props = defineProps({
 const emit = defineEmits([
   "open-settings",
   "create-conversation",
+  "create-project",
   "clear-current",
   "select-session",
   "delete-session",
@@ -223,8 +235,14 @@ defineExpose({
   padding: 0;
 }
 
+.chat-conversation-sidebar__primary-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .chat-new-conversation-button {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 42px !important;
   border: 1px solid rgba(17, 24, 39, 0.06) !important;
   border-radius: 18px !important;
@@ -232,6 +250,24 @@ defineExpose({
   color: #f8fafc !important;
   font-weight: 600;
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16) !important;
+}
+
+.chat-new-project-button {
+  flex: 1;
+  min-width: 0;
+  height: 42px !important;
+  border: 1px solid rgba(15, 23, 42, 0.08) !important;
+  border-radius: 18px !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  color: #334155 !important;
+  font-weight: 600;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.07) !important;
+}
+
+.chat-new-project-button:hover {
+  border-color: rgba(56, 189, 248, 0.28) !important;
+  background: #ffffff !important;
+  color: #0f172a !important;
 }
 
 .chat-clear-current-button {

@@ -8,7 +8,6 @@
     :active-window-id="activeWindowId"
     :status-text="statusText"
     :show-launcher="launcherOpen"
-    :file-drop-window-id="fileDropWindowId"
     :wallpaper-appearance="wallpaperAppearance"
     @launch-app="handleLaunchApp"
     @focus-window="focusWindow"
@@ -72,14 +71,13 @@ import {
 } from "@/utils/desktop-shell.js";
 import {
   DESKTOP_BRIDGE_EVENT_NAME,
-  DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME,
   isDesktopBridgeMessage,
   normalizeDesktopBridgePath,
 } from "@/utils/desktop-app-bridge.js";
 import {
-  nativeDragDropCssPoints,
-  subscribeNativeDesktopDragDrop,
-} from "@/utils/native-desktop-bridge.js";
+  DESKTOP_WINDOW_MANAGER_ACTION_EVENT,
+  publishDesktopWindowManagerState,
+} from "@/utils/desktop-window-manager.js";
 
 const DESKTOP_HOME_PATH = "/workbench";
 const DESKTOP_SHELL_PATHS = new Set([DESKTOP_HOME_PATH, "/desktop"]);
@@ -102,9 +100,6 @@ const currentDesktopPath = ref(DESKTOP_HOME_PATH);
 const suppressNextRouteWindowSync = ref(false);
 const desktopSessionHydrated = ref(false);
 const DESKTOP_WINDOW_SESSION_VERSION = 1;
-let nativeDesktopDragDropUnlisten = null;
-let lastNativeDragDropWindowId = "";
-const fileDropWindowId = ref("");
 
 const dockItems = computed(() => {
   const itemsById = new Map();
@@ -654,6 +649,26 @@ function closeWindow(windowId) {
   activeWindowId.value = nextActive.id;
 }
 
+function publishDesktopTaskManagerState() {
+  publishDesktopWindowManagerState({
+    windows: desktopWindows.value,
+    activeWindowId: activeWindowId.value,
+  });
+}
+
+function handleDesktopTaskManagerAction(event) {
+  const action = String(event?.detail?.action || "").trim();
+  const windowId = String(event?.detail?.windowId || "").trim();
+  if (!windowId) return;
+  if (action === "focus") {
+    focusWindow(windowId);
+    return;
+  }
+  if (action === "close") {
+    closeWindow(windowId);
+  }
+}
+
 function minimizeWindow(windowId) {
   const targetId = String(windowId || "").trim();
   const targetWindow = desktopWindows.value.find((item) => item.id === targetId);
@@ -1058,89 +1073,19 @@ function handleDesktopBridgeEvent(event) {
   }
 }
 
-function fallbackNativeDragDropWindowId() {
-  return (
-    lastNativeDragDropWindowId ||
-    activeWindowId.value ||
-    desktopWindows.value.find((item) => !item.minimized)?.id ||
-    ""
-  );
-}
-
-function resolveNativeDragDropWindowId(payload = {}) {
-  const type = String(payload?.type || "").trim();
-  if (type === "leave") {
-    return fallbackNativeDragDropWindowId();
-  }
-  if (typeof document === "undefined") return fallbackNativeDragDropWindowId();
-  const points = nativeDragDropCssPoints(payload?.position).filter(
-    (point) => Number.isFinite(point.x) && Number.isFinite(point.y),
-  );
-  if (!points.length) return fallbackNativeDragDropWindowId();
-  const availableWindowIds = new Set(
-    desktopWindows.value
-      .filter((item) => !item.minimized)
-      .map((item) => item.id),
-  );
-  for (const { x: pointX, y: pointY } of points) {
-    const hit = document.elementsFromPoint?.(pointX, pointY) || [];
-    for (const element of hit) {
-      const host = element?.closest?.(".desktop-system__window[data-window-id]");
-      const windowId = String(host?.dataset?.windowId || "").trim();
-      if (windowId && availableWindowIds.has(windowId)) return windowId;
-    }
-    for (const item of desktopWindows.value) {
-      if (item.minimized) continue;
-      const host = document.querySelector(`.desktop-system__window[data-window-id="${item.id}"]`);
-      const rect = host?.getBoundingClientRect?.();
-      if (
-        rect
-        && pointX >= rect.left
-        && pointX <= rect.right
-        && pointY >= rect.top
-        && pointY <= rect.bottom
-      ) {
-        return item.id;
-      }
-    }
-  }
-  return fallbackNativeDragDropWindowId();
-}
-
-function handleNativeDesktopDragDrop(payload = {}) {
-  const paths = Array.isArray(payload?.paths)
-    ? payload.paths.map((item) => String(item || "").trim()).filter(Boolean)
-    : [];
-  let type = String(payload?.type || "").trim();
-  if (!type) type = paths.length ? "drop" : "over";
-  const nextPayload = { ...payload, type, paths };
-  const windowId = resolveNativeDragDropWindowId(nextPayload);
-  if (!windowId) return;
-  if (type === "leave" || type === "drop") {
-    lastNativeDragDropWindowId = type === "drop" ? windowId : "";
-    fileDropWindowId.value = "";
-  } else {
-    lastNativeDragDropWindowId = windowId;
-    fileDropWindowId.value = windowId;
-  }
-  window.dispatchEvent(
-    new CustomEvent(DESKTOP_WINDOW_FILE_DRAG_DROP_EVENT_NAME, {
-      detail: { windowId, payload: nextPayload },
-    }),
-  );
-}
-
 onMounted(() => {
   if (typeof window === "undefined") return;
   restoreDesktopSession();
   desktopSessionHydrated.value = true;
   syncRouteAsWindow(route.fullPath);
+  publishDesktopTaskManagerState();
   window.addEventListener("message", handleDesktopBridgeMessage);
   window.addEventListener(DESKTOP_BRIDGE_EVENT_NAME, handleDesktopBridgeEvent);
+  window.addEventListener(
+    DESKTOP_WINDOW_MANAGER_ACTION_EVENT,
+    handleDesktopTaskManagerAction,
+  );
   window.addEventListener("storage", handleStorageChange);
-  void subscribeNativeDesktopDragDrop(handleNativeDesktopDragDrop).then((unlisten) => {
-    nativeDesktopDragDropUnlisten = unlisten;
-  });
 });
 
 onBeforeUnmount(() => {
@@ -1150,11 +1095,11 @@ onBeforeUnmount(() => {
   }
   window.removeEventListener("message", handleDesktopBridgeMessage);
   window.removeEventListener(DESKTOP_BRIDGE_EVENT_NAME, handleDesktopBridgeEvent);
+  window.removeEventListener(
+    DESKTOP_WINDOW_MANAGER_ACTION_EVENT,
+    handleDesktopTaskManagerAction,
+  );
   window.removeEventListener("storage", handleStorageChange);
-  if (nativeDesktopDragDropUnlisten) {
-    nativeDesktopDragDropUnlisten();
-    nativeDesktopDragDropUnlisten = null;
-  }
 });
 
 function handleStorageChange(event) {
@@ -1185,6 +1130,7 @@ watch(
   [desktopWindows, activeWindowId, currentDesktopPath, nextWindowOrder],
   () => {
     persistDesktopSession();
+    publishDesktopTaskManagerState();
   },
   { deep: true },
 );

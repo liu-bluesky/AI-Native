@@ -16,6 +16,7 @@ const createPublicRoutes = () => [
 
 const createDesktopAppRoutes = () => [
       { path: 'workbench', component: () => import('../views/desktop/DesktopWorkbench.vue') },
+      { path: 'desktop/task-manager', component: () => import('../views/desktop/DesktopTaskManager.vue') },
       { path: 'work-logs', component: () => import('../views/desktop/ProjectWorkLog.vue') },
       { path: 'tasks', component: () => import('../views/tasks/TaskManager.vue') },
       { path: 'settings-center', component: () => import('../views/desktop/SettingsLauncher.vue') },
