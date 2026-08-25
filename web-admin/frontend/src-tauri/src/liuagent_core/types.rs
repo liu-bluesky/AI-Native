@@ -66,6 +66,20 @@ pub struct LocalChatRequest {
     pub resume_from_checkpoint: bool,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAgentScope {
+    pub agent_id: String,
+    #[serde(default)]
+    pub parent_agent_id: Option<String>,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub tool_allowlist: Vec<String>,
+    #[serde(default)]
+    pub delegation_context: Option<String>,
+}
+
 impl Default for LocalChatRequest {
     fn default() -> Self {
         Self {
@@ -127,8 +141,16 @@ pub struct LocalBackendContext {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalChatPromptPart {
+    #[serde(default)]
+    pub id: Option<String>,
     pub source: String,
     pub priority: Option<i64>,
+    #[serde(default)]
+    pub order: Option<i32>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub complete: bool,
     pub content: String,
 }
 
@@ -434,7 +456,9 @@ pub struct PromptStack {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptStackItem {
+    pub id: String,
     pub source: String,
+    pub scope: String,
     pub priority: i64,
     pub content_chars: usize,
     pub estimated_tokens: usize,

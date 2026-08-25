@@ -4854,12 +4854,16 @@ function buildDesktopLocalAgentEntryPolicyPrompt() {
 function buildLocalLiuAgentSystemPromptParts() {
   return [
     {
+      id: "desktop_local_agent:entry_policy",
       source: "desktop_local_agent.entry_policy",
+      scope: "global",
       priority: 120,
       content: buildDesktopLocalAgentEntryPolicyPrompt(),
     },
     {
+      id: "desktop_local_agent:media_tool_orchestration",
       source: "desktop_local_agent.media_tool_orchestration",
+      scope: "global",
       priority: 110,
       content: [
         "主模型与媒体工具职责：",
@@ -4874,7 +4878,9 @@ function buildLocalLiuAgentSystemPromptParts() {
       ].join("\n"),
     },
     {
+      id: "deployment:persona",
       source: "project_chat_settings.system_prompt",
+      scope: "project",
       priority: 100,
       content: String(systemPrompt.value || "").trim(),
     },
@@ -22509,10 +22515,29 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
       recovery?.state?.runState?.status ||
       "",
   ).trim();
+  const recoveredRunState =
+    recovery?.state?.run_state && typeof recovery.state.run_state === "object"
+      ? recovery.state.run_state
+      : recovery?.state?.runState && typeof recovery.state.runState === "object"
+        ? recovery.state.runState
+        : {};
+  const recoveredResumeDecision = String(
+    recovery?.state?.resume_judgement?.decision ||
+      recovery?.state?.resumeJudgement?.decision ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
+  const recoveryAllowsResume =
+    ["paused", "interrupted", "failed"].includes(recoveredRunStatus) ||
+    recoveredResumeDecision === "resume_from_checkpoint" ||
+    (recoveredRunStatus === "running" &&
+      coerceBooleanSetting(recoveredRunState?.checkpoint_ready, false) &&
+      coerceBooleanSetting(recoveredRunState?.recoverable, false));
   if (
     recovery?.ok &&
     recoveredRunStatus &&
-    !["paused", "interrupted", "failed"].includes(recoveredRunStatus)
+    !recoveryAllowsResume
   ) {
     upsertMessageOperation(row, {
       ...currentOperation,
