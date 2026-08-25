@@ -3252,6 +3252,12 @@ fn main() {
             project_chat_store::agent_supervision_find_answer
         ])
         .setup(|app| {
+            if let (Some(window), Some(icon)) = (
+                app.get_webview_window("main"),
+                app.default_window_icon().cloned(),
+            ) {
+                window.set_icon(icon)?;
+            }
             #[cfg(debug_assertions)]
             {
                 let app_handle = app.handle().clone();
