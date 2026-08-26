@@ -526,7 +526,12 @@ import {
   getOwnershipDeniedMessage,
 } from "@/utils/ownership.js";
 import ProviderCapabilityTestResults from "@/components/llm/ProviderCapabilityTestResults.vue";
-import { fetchBuiltinModelProviders } from "@/services/builtin-model-providers.js";
+import {
+  fetchBuiltinModelProviders,
+  isServerBuiltinModelProvider,
+  mergeBuiltinModelProviders,
+  testBuiltinModelProvider,
+} from "@/services/builtin-model-providers.js";
 import {
   buildModelTypeMetaMap,
   FALLBACK_MODEL_TYPE_OPTIONS,
@@ -1256,14 +1261,25 @@ async function fetchProviders() {
   loading.value = true;
   try {
     migrateLegacyLocalProviders();
-    const [localProviders, builtinProviders] = await Promise.all([
-      Promise.resolve(readLocalProviders()),
+    const localProviders = readLocalProviders();
+    localProviders
+      .filter((provider) => isServerBuiltinModelProvider(provider))
+      .forEach((provider) => {
+        const providerId = String(provider?.id || "").trim();
+        if (!providerId) return;
+        removeLocalEntity(LOCAL_PROVIDER_ENTITY, providerId);
+        rememberDeletedProviderId(providerId);
+      });
+    const nonBuiltinLocalProviders = localProviders.filter(
+      (provider) => !isServerBuiltinModelProvider(provider),
+    );
+    const [builtinProviders] = await Promise.all([
       fetchBuiltinModelProviders().catch((error) => {
         console.warn("load server builtin model providers failed", error);
         return [];
       }),
     ]);
-    providers.value = [...builtinProviders, ...localProviders];
+    providers.value = mergeBuiltinModelProviders(nonBuiltinLocalProviders, builtinProviders);
   } catch (error) {
     console.error("load local model providers failed", error);
     providers.value = [];
@@ -1474,7 +1490,9 @@ function canManageProvider(row) {
 }
 
 function getProviderActions(row) {
-  if (row?.is_builtin_provider) return [];
+  if (row?.is_builtin_provider) {
+    return [{ key: "test", label: "测试连接", type: "success" }];
+  }
   return [
     { key: "test", label: "测试连接", type: "success" },
     { key: "duplicate", label: "复制", type: "warning" },
@@ -1504,6 +1522,10 @@ function getOverflowProviderActions(row) {
 function handleProviderAction(row, actionKey) {
   switch (actionKey) {
     case "test":
+      if (row?.is_builtin_provider) {
+        void testBuiltinConnection(row);
+        break;
+      }
       void testConnection(row, getPrimaryTestModel(row));
       break;
     case "duplicate":
@@ -1525,6 +1547,31 @@ function handleProviderAction(row, actionKey) {
       break;
     default:
       break;
+  }
+}
+
+async function testBuiltinConnection(row) {
+  const providerId = String(row?.source_provider_id || "").trim();
+  if (!providerId) return;
+  testingProviderId.value = String(row?.id || providerId);
+  try {
+    const result = await testBuiltinModelProvider(providerId);
+    const normalizedResult = {
+      reachable: result?.reachable === true,
+      model_tested: result?.model_tested || row?.default_model || "",
+      latency_ms: result?.latency_ms || "",
+      message: result?.message || "连接测试完成",
+      tested_at: new Date().toISOString(),
+    };
+    storeConnectionResult(String(row?.id || providerId), normalizedResult);
+    if (normalizedResult.reachable) ElMessage.success("内置供应商连接测试成功");
+    else showConnectionTestFailure(normalizedResult, normalizedResult.message);
+  } catch (error) {
+    const failedResult = { reachable: false, message: error?.message || "内置供应商连接测试失败", tested_at: new Date().toISOString() };
+    storeConnectionResult(String(row?.id || providerId), failedResult);
+    showConnectionTestFailure(failedResult, failedResult.message);
+  } finally {
+    testingProviderId.value = "";
   }
 }
 

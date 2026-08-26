@@ -3287,7 +3287,11 @@ import {
   upsertLocalEntity,
   upsertLocalProject,
 } from "@/services/local-project-repository.js";
-import { fetchBuiltinModelProviders } from "@/services/builtin-model-providers.js";
+import {
+  fetchBuiltinModelProviders,
+  isServerBuiltinModelProvider,
+  mergeBuiltinModelProviders,
+} from "@/services/builtin-model-providers.js";
 import {
   readLocalSystemConfig,
   writeLocalSystemConfig,
@@ -18389,6 +18393,7 @@ function saveProviderModelOfflineSnapshot(projectId = "") {
   const normalizedProviders = (
     Array.isArray(providers.value) ? providers.value : []
   )
+    .filter((provider) => !isServerBuiltinModelProvider(provider))
     .map(normalizeProviderModelSnapshotItem)
     .filter(Boolean);
   if (!normalizedProviders.length) return;
@@ -18421,6 +18426,7 @@ function applyProviderModelOfflineSnapshot(projectId = "") {
   const snapshotProviders = (
     Array.isArray(scoped?.providers) ? scoped.providers : []
   )
+    .filter((provider) => !isServerBuiltinModelProvider(provider))
     .map(normalizeProviderModelSnapshotItem)
     .filter(Boolean);
   if (!snapshotProviders.length) return false;
@@ -28203,7 +28209,7 @@ async function fetchGlobalProviders() {
   } catch (error) {
     console.warn("load server builtin model providers for chat failed", error);
   }
-  const availableProviders = [...builtinProviders, ...localProviders];
+  const availableProviders = mergeBuiltinModelProviders(localProviders, builtinProviders);
   if (availableProviders.length) {
     providers.value = availableProviders;
     const preferredProviderId = String(
@@ -28436,7 +28442,7 @@ async function fetchProvidersByProject(projectId) {
         const providerId = String(provider?.id || provider?.provider_id || "").trim();
         if (providerId) upsertLocalEntity("llm_providers", { ...provider, id: providerId });
       });
-      const availableProviders = [...builtinProviders, ...localProviders];
+      const availableProviders = mergeBuiltinModelProviders(localProviders, builtinProviders);
       if (availableProviders.length) {
         providers.value = availableProviders;
       } else {

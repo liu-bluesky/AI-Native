@@ -1,7 +1,25 @@
 import { DEFAULT_BACKEND_API_ORIGIN } from "@/utils/backend-endpoints.js";
+import { getStoredToken, isExternalAuthSession } from "@/utils/auth-storage.js";
 
 function normalizeText(value) {
   return String(value || "").trim();
+}
+
+export function isServerBuiltinModelProvider(provider = {}) {
+  const id = normalizeText(provider?.id);
+  return (
+    provider?.is_builtin_provider === true ||
+    provider?.source === "server-builtin" ||
+    id.startsWith("server-builtin-") ||
+    id.startsWith("builtin-")
+  );
+}
+
+export function mergeBuiltinModelProviders(localProviders = [], builtinProviders = []) {
+  const localOnly = (Array.isArray(localProviders) ? localProviders : []).filter(
+    (provider) => !isServerBuiltinModelProvider(provider),
+  );
+  return [...builtinProviders, ...localOnly];
 }
 
 function normalizeProvider(provider = {}) {
@@ -35,17 +53,34 @@ function normalizeProvider(provider = {}) {
 }
 
 export async function fetchBuiltinModelProviders() {
-  const response = await fetch(
-    `${DEFAULT_BACKEND_API_ORIGIN}/api/llm/builtin-providers`,
-  );
+  const response = await requestBuiltinProviderApi("/api/llm/builtin-providers");
+  const source = Array.isArray(response?.providers)
+    ? response.providers
+    : response?.provider
+      ? [{ ...response.provider, models: response.models || [] }]
+      : [];
+  return source.map(normalizeProvider).filter(Boolean);
+}
+
+async function requestBuiltinProviderApi(pathname, init = {}) {
+  const token = getStoredToken();
+  const headers = {};
+  if (token && !isExternalAuthSession()) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`${DEFAULT_BACKEND_API_ORIGIN}${pathname}`, {
+    ...init,
+    headers: { ...headers, ...(init.headers || {}) },
+  });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(payload?.error || "获取内置模型供应商失败");
   }
-  const source = Array.isArray(payload?.providers)
-    ? payload.providers
-    : payload?.provider
-      ? [{ ...payload.provider, models: payload.models || [] }]
-      : [];
-  return source.map(normalizeProvider).filter(Boolean);
+  return payload;
+}
+
+export async function testBuiltinModelProvider(providerId) {
+  const id = encodeURIComponent(normalizeText(providerId));
+  if (!id) throw new Error("缺少内置供应商 ID");
+  return requestBuiltinProviderApi(`/api/llm/builtin-providers/${id}/test`, {
+    method: "POST",
+  });
 }
