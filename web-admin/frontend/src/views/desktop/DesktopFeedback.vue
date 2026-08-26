@@ -3,13 +3,14 @@
     <div class="desktop-feedback__ambient" aria-hidden="true" />
 
     <header class="desktop-feedback__hero">
-      <div>
-        <div class="desktop-feedback__eyebrow">Product Feedback</div>
-        <h1>告诉我们，怎样做得更好。</h1>
-        <p>你的反馈会直接提交给产品团队。反馈类型默认是“产品建议”，处理进度会同步显示在这里。</p>
-      </div>
-      <button type="button" class="desktop-feedback__refresh" :disabled="loading" @click="loadFeedback">
-        {{ loading ? "正在刷新..." : "刷新记录" }}
+      <h1>提交反馈</h1>
+      <button
+        type="button"
+        class="desktop-feedback__refresh"
+        :disabled="loading"
+        @click="openHistory"
+      >
+        {{ loading ? "正在读取..." : "查看记录" }}
       </button>
     </header>
 
@@ -17,13 +18,21 @@
       <section class="desktop-feedback__card desktop-feedback__form-card">
         <div class="desktop-feedback__section-head">
           <div>
-            <span>NEW FEEDBACK</span>
-            <h2>提交反馈</h2>
+            <span>PRODUCT FEEDBACK</span>
+            <h2>告诉我们，怎样做得更好。</h2>
           </div>
           <span class="desktop-feedback__category">产品建议</span>
         </div>
 
-        <el-form :model="form" label-position="top" @submit.prevent="submitFeedback">
+        <p class="desktop-feedback__intro">
+          你的反馈会直接提交给产品团队，处理进度可以通过“刷新记录”查看。
+        </p>
+
+        <el-form
+          :model="form"
+          label-position="top"
+          @submit.prevent="submitFeedback"
+        >
           <el-form-item label="反馈主题" required>
             <el-input
               v-model.trim="form.title"
@@ -54,55 +63,72 @@
           </el-button>
         </el-form>
       </section>
-
-      <section class="desktop-feedback__card desktop-feedback__history-card">
-        <div class="desktop-feedback__section-head">
-          <div>
-            <span>MY HISTORY</span>
-            <h2>我的反馈记录</h2>
-          </div>
-          <strong>{{ feedbackItems.length }}</strong>
-        </div>
-
-        <div v-if="loading" class="desktop-feedback__status">正在读取反馈记录...</div>
-        <el-empty
-          v-else-if="!feedbackItems.length"
-          description="还没有提交过反馈"
-          :image-size="76"
-        />
-        <div v-else class="desktop-feedback__list">
-          <article v-for="item in feedbackItems" :key="item.id" class="desktop-feedback__item">
-            <div class="desktop-feedback__item-head">
-              <div>
-                <h3>{{ item.title }}</h3>
-                <span>{{ item.category || "产品建议" }} · {{ formatDate(item.created_at) }}</span>
-              </div>
-              <el-tag :type="statusType(item.status)">{{ statusLabel(item.status) }}</el-tag>
-            </div>
-            <p>{{ item.content }}</p>
-            <div v-if="item.reply" class="desktop-feedback__reply">
-              <b>平台回复</b>
-              <span>{{ item.reply }}</span>
-              <small v-if="item.reviewed_at">{{ formatDate(item.reviewed_at) }}</small>
-            </div>
-          </article>
-        </div>
-      </section>
     </div>
+
+    <el-dialog
+      v-model="historyVisible"
+      title="我的反馈记录"
+      width="min(680px, calc(100vw - 32px))"
+    >
+      <div v-if="loading" class="desktop-feedback__status">
+        正在读取反馈记录...
+      </div>
+      <el-empty
+        v-else-if="!feedbackItems.length"
+        description="还没有提交过反馈"
+        :image-size="76"
+      />
+      <div v-else class="desktop-feedback__list">
+        <article
+          v-for="item in feedbackItems"
+          :key="item.id"
+          class="desktop-feedback__item"
+        >
+          <div class="desktop-feedback__item-head">
+            <div>
+              <h3>{{ item.title }}</h3>
+              <span
+                >{{ item.category || "产品建议" }} ·
+                {{ formatDate(item.created_at) }}</span
+              >
+            </div>
+            <el-tag :type="statusType(item.status)">{{
+              statusLabel(item.status)
+            }}</el-tag>
+          </div>
+          <p>{{ item.content }}</p>
+          <div v-if="item.reply" class="desktop-feedback__reply">
+            <b>平台回复</b>
+            <span>{{ item.reply }}</span>
+            <small v-if="item.reviewed_at">{{
+              formatDate(item.reviewed_at)
+            }}</small>
+          </div>
+        </article>
+      </div>
+    </el-dialog>
   </section>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from "vue";
+import { reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { useRouter } from "vue-router";
 import api from "@/utils/api.js";
+import {
+  getStoredAuthProfile,
+  isExternalAuthSession,
+} from "@/utils/auth-storage.js";
+import { DEFAULT_BACKEND_API_ORIGIN } from "@/utils/backend-endpoints.js";
 import { isEmbeddedDesktopApp } from "@/utils/desktop-app-bridge.js";
 
 const router = useRouter();
-const embeddedMode = isEmbeddedDesktopApp() || Boolean(router?.__aiEmployeeDesktopWindow?.windowId);
+const embeddedMode =
+  isEmbeddedDesktopApp() ||
+  Boolean(router?.__aiEmployeeDesktopWindow?.windowId);
 const loading = ref(false);
 const submitting = ref(false);
+const historyVisible = ref(false);
 const feedbackItems = ref([]);
 const form = reactive({
   title: "",
@@ -131,16 +157,47 @@ function formatDate(value) {
   }).format(date);
 }
 
+async function requestFeedback(method, payload) {
+  if (!isExternalAuthSession()) {
+    return method === "GET"
+      ? api.get("/user/feedback")
+      : api.post("/user/feedback", payload);
+  }
+
+  const username = String(getStoredAuthProfile()?.username || "").trim();
+  if (!username) throw new Error("登录信息缺失，请重新登录");
+
+  const response = await fetch(
+    `${DEFAULT_BACKEND_API_ORIGIN}/api/user/feedback`,
+    {
+      method,
+      headers: {
+        Authorization: `Bearer ${encodeURIComponent(username)}`,
+        ...(payload ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(payload ? { body: JSON.stringify(payload) } : {}),
+    },
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "用户反馈请求失败");
+  return data;
+}
+
 async function loadFeedback() {
   loading.value = true;
   try {
-    const data = await api.get("/user/feedback");
+    const data = await requestFeedback("GET");
     feedbackItems.value = Array.isArray(data?.list) ? data.list : [];
   } catch (error) {
     ElMessage.error(error?.detail || error?.message || "读取反馈记录失败");
   } finally {
     loading.value = false;
   }
+}
+
+async function openHistory() {
+  historyVisible.value = true;
+  await loadFeedback();
 }
 
 async function submitFeedback() {
@@ -154,7 +211,7 @@ async function submitFeedback() {
   }
   submitting.value = true;
   try {
-    await api.post("/user/feedback", {
+    await requestFeedback("POST", {
       title: form.title,
       category: "产品建议",
       content: form.content,
@@ -171,10 +228,6 @@ async function submitFeedback() {
     submitting.value = false;
   }
 }
-
-onMounted(() => {
-  void loadFeedback();
-});
 </script>
 
 <style scoped>
@@ -187,7 +240,11 @@ onMounted(() => {
   box-sizing: border-box;
   background:
     radial-gradient(circle at 8% 0%, rgba(56, 189, 248, 0.2), transparent 24%),
-    radial-gradient(circle at 92% 16%, rgba(168, 85, 247, 0.13), transparent 25%),
+    radial-gradient(
+      circle at 92% 16%,
+      rgba(168, 85, 247, 0.13),
+      transparent 25%
+    ),
     linear-gradient(180deg, #f5f4ef 0%, #f8fafc 42%, #edf2f7 100%);
 }
 
@@ -237,17 +294,15 @@ onMounted(() => {
 }
 
 .desktop-feedback h1 {
-  max-width: 12ch;
-  margin-top: 10px;
+  margin: 0;
   color: #0f172a;
-  font-size: clamp(40px, 6.5vw, 72px);
-  line-height: 0.98;
+  font-size: clamp(28px, 4vw, 44px);
+  line-height: 1.15;
   letter-spacing: -0.06em;
 }
 
-.desktop-feedback__hero p {
-  max-width: 60ch;
-  margin-top: 16px;
+.desktop-feedback__intro {
+  margin: -4px 0 22px;
   color: #475569;
   line-height: 1.75;
 }
@@ -273,9 +328,9 @@ onMounted(() => {
 
 .desktop-feedback__content {
   display: grid;
-  grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr);
-  gap: 16px;
+  grid-template-columns: minmax(300px, 680px);
   align-items: start;
+  justify-content: center;
 }
 
 .desktop-feedback__card {

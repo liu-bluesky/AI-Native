@@ -1,5 +1,10 @@
+import {
+  getStoredAuthProfile,
+  getStoredToken,
+  isExternalAuthSession,
+} from "@/utils/auth-storage.js";
 import { DEFAULT_BACKEND_API_ORIGIN } from "@/utils/backend-endpoints.js";
-import { getStoredToken, isExternalAuthSession } from "@/utils/auth-storage.js";
+import { buildNativeBackendApiBaseUrl } from "@/utils/server-profile.js";
 
 function normalizeText(value) {
   return String(value || "").trim();
@@ -64,9 +69,19 @@ export async function fetchBuiltinModelProviders() {
 
 async function requestBuiltinProviderApi(pathname, init = {}) {
   const token = getStoredToken();
+  const profile = getStoredAuthProfile();
   const headers = {};
-  if (token && !isExternalAuthSession()) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(`${DEFAULT_BACKEND_API_ORIGIN}${pathname}`, {
+  const externalSession = isExternalAuthSession();
+  const username = String(profile?.username || "").trim();
+  if (externalSession && username) {
+    headers.Authorization = `Bearer ${encodeURIComponent(username)}`;
+  } else if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const apiBaseUrl = externalSession
+    ? `${DEFAULT_BACKEND_API_ORIGIN}/api`
+    : buildNativeBackendApiBaseUrl().replace(/\/+$/, "");
+  const response = await fetch(`${apiBaseUrl}${pathname.replace(/^\/api/, "")}`, {
     ...init,
     headers: { ...headers, ...(init.headers || {}) },
   });
