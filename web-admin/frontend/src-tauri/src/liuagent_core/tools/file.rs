@@ -99,6 +99,91 @@ pub fn read_file(workspace_path: &str, arguments: &Value) -> Result<(Value, Stri
     ))
 }
 
+fn configured_resource_directory(arguments: &Value, kind: &str) -> Result<std::path::PathBuf, ToolError> {
+    let directory = arguments
+        .get("_local_resource_directories")
+        .and_then(Value::as_object)
+        .and_then(|items| items.get(kind))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ToolError::new("resource.not_configured", format!("未配置{kind}目录")))?;
+    let path = std::path::PathBuf::from(directory);
+    if !path.exists() {
+        return Ok(path);
+    }
+    if !path.is_dir() {
+        return Err(ToolError::new("resource.not_directory", "资源目录路径不是目录"));
+    }
+    path.canonicalize().map_err(|err| {
+        ToolError::new("resource.not_accessible", format!("资源目录不可访问：{err}"))
+    })
+}
+
+pub fn list_local_resources(arguments: &Value) -> Result<(Value, String), ToolError> {
+    let kind = required_string_arg(arguments, "kind")?;
+    if !matches!(kind.as_str(), "agent" | "skill" | "rule") {
+        return Err(ToolError::new("tool.schema_invalid", "kind must be agent, skill or rule"));
+    }
+    let root = configured_resource_directory(arguments, &kind)?;
+    let mut entries = Vec::new();
+    if root.is_dir() {
+        collect_resource_entries(&root, &root, &mut entries, 0)?;
+    }
+    Ok((json!({ "kind": kind, "directory": root.to_string_lossy(), "entries": entries }),
+        format!("列出 {} 个{kind}资源", entries.len())))
+}
+
+pub fn read_local_resource(arguments: &Value) -> Result<(Value, String), ToolError> {
+    let kind = required_string_arg(arguments, "kind")?;
+    if !matches!(kind.as_str(), "agent" | "skill" | "rule") {
+        return Err(ToolError::new("tool.schema_invalid", "kind must be agent, skill or rule"));
+    }
+    let relative = required_string_arg(arguments, "path")?;
+    let root = configured_resource_directory(arguments, &kind)?;
+    let target = root.join(&relative);
+    let resolved = target.canonicalize().map_err(|err| {
+        ToolError::new("resource.not_accessible", format!("资源文件不可访问：{err}"))
+    })?;
+    if !resolved.starts_with(&root) || !resolved.is_file() {
+        return Err(ToolError::new("resource.out_of_scope", "资源文件必须位于对应配置目录内"));
+    }
+    let content = fs::read_to_string(&resolved).map_err(|err| {
+        ToolError::new("resource.read_failed", format!("读取资源文件失败：{err}"))
+    })?;
+    Ok((json!({ "kind": kind, "path": relative, "content": content }),
+        format!("读取{kind}资源：{relative}")))
+}
+
+fn collect_resource_entries(
+    root: &Path,
+    directory: &Path,
+    entries: &mut Vec<Value>,
+    depth: usize,
+) -> Result<(), ToolError> {
+    if depth > 3 || entries.len() >= 200 { return Ok(()); }
+    let read_dir = fs::read_dir(directory).map_err(|err| {
+        ToolError::new("resource.list_failed", format!("列出资源目录失败：{err}"))
+    })?;
+    for item in read_dir {
+        let item = item.map_err(|err| ToolError::new("resource.list_failed", err.to_string()))?;
+        let path = item.path();
+        let name = item.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') { continue; }
+        if path.is_dir() {
+            collect_resource_entries(root, &path, entries, depth + 1)?;
+        } else if path.is_file() {
+            entries.push(json!({
+                "path": path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/"),
+                "name": name,
+                "size": item.metadata().map(|metadata| metadata.len()).unwrap_or(0)
+            }));
+        }
+        if entries.len() >= 200 { break; }
+    }
+    Ok(())
+}
+
 pub fn search_text(workspace_path: &str, arguments: &Value) -> Result<(Value, String), ToolError> {
     let root = resolve_workspace_root(workspace_path)?;
     let query = required_string_arg(arguments, "query")?;

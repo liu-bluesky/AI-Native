@@ -5775,13 +5775,23 @@ fn tool_arguments_with_file_access_policy(
     tool: &PlannedLocalTool,
     request: &ModelStepRequest,
 ) -> Value {
-    if !matches!(tool.name.trim(), "read_file" | "search_text") {
-        return tool.arguments.clone();
-    }
     let mut arguments = tool.arguments.clone();
     let Some(object) = arguments.as_object_mut() else {
         return arguments;
     };
+    if matches!(tool.name.trim(), "list_local_resources" | "read_local_resource") {
+        if let Some(directories) = request
+            .mcp_config
+            .get("localResourceDirectories")
+            .or_else(|| request.mcp_config.get("local_resource_directories"))
+        {
+            object.insert("_local_resource_directories".to_string(), directories.clone());
+        }
+        return arguments;
+    }
+    if !matches!(tool.name.trim(), "read_file" | "search_text") {
+        return arguments;
+    }
     object.insert(
         "file_access_policy".to_string(),
         build_file_access_policy_for_request(request),
@@ -6045,6 +6055,31 @@ fn build_file_access_policy_for_request(request: &ModelStepRequest) -> Value {
         "cli_entry_files": CLI_ENTRY_FILES.map(normalize_policy_path),
         "explicit_cli_entry_files": [],
     })
+}
+
+fn build_project_entry_message(request: &LocalChatRequest) -> Option<RuntimeModelMessage> {
+    let configured = request.ai_entry_file.as_deref().unwrap_or("").trim();
+    let path = if configured.is_empty() { "AIENTRY.md" } else { configured };
+    let root = resolve_workspace_root(&request.workspace_path).ok()?;
+    let target = resolve_workspace_child(&root, path, true).ok()?;
+    if !target.is_file() {
+        return None;
+    }
+    let content = fs::read_to_string(&target).ok()?;
+    if content.trim().is_empty() {
+        return None;
+    }
+    Some(RuntimeModelMessage::system_section(
+        "project:ai_entry_file",
+        "project.ai_entry_file",
+        "project",
+        -240,
+        format!(
+            "项目 AI 入口文件（永久生效，优先级高于普通任务提示）：\n路径：{}\n\n{}",
+            workspace_relative_path(&root, &target),
+            content.chars().take(200_000).collect::<String>()
+        ),
+    ))
 }
 
 fn normalize_policy_path(value: &str) -> String {
@@ -9239,6 +9274,15 @@ fn selected_context_sources_for_task(request: &LocalChatRequest) -> Result<Vec<S
     {
         sources.push("desktop_runtime.execution_plan_rules".to_string());
     }
+    if request
+        .ai_entry_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        sources.push("project.ai_entry_file".to_string());
+    }
     sources.extend(
         resolve_task_system_prompt_parts(request)?
             .into_iter()
@@ -9291,6 +9335,9 @@ fn build_model_request_with_history_and_task_profile(
     let task_profile = task_profile_override.unwrap_or_else(|| build_task_profile(user_message));
     let selected_context_sources = selected_context_sources_for_task(request)?;
     let mut messages = Vec::new();
+    if let Some(entry_message) = build_project_entry_message(request) {
+        messages.push(entry_message);
+    }
     if let Some(context_message) = build_desktop_local_context_message(request) {
         messages.push(context_message);
     }
@@ -10119,6 +10166,21 @@ fn tool_disabled_reason(
             "MCP host management tools are internal and are not exposed to the ordinary model"
                 .to_string(),
         ),
+        "list_local_resources" | "read_local_resource" => {
+            let configured = request
+                .mcp_config
+                .get("localResourceDirectories")
+                .or_else(|| request.mcp_config.get("local_resource_directories"))
+                .and_then(Value::as_object)
+                .is_some_and(|directories| {
+                    directories.values().any(|value| {
+                        value.as_str().is_some_and(|path| !path.trim().is_empty())
+                    })
+                });
+            (!configured).then(|| {
+                "本地智能体、技能、规则目录均未配置".to_string()
+            })
+        }
         "list_projects" | "get_project" => {
             if is_tauri_bot_local_chat_request(request) {
                 return Some(

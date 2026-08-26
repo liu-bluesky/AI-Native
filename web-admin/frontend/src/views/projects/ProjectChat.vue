@@ -4862,6 +4862,14 @@ function buildDesktopLocalAgentEntryPolicyPrompt() {
   ].join("\n");
 }
 
+function buildLocalResourceDirectoriesPayload() {
+  return {
+    agent: String(projectChatSettings.value.agent_directory || "").trim(),
+    skill: String(projectChatSettings.value.skill_directory || "").trim(),
+    rule: String(projectChatSettings.value.rule_directory || "").trim(),
+  };
+}
+
 function buildLocalLiuAgentSystemPromptParts() {
   return [
     {
@@ -11895,7 +11903,10 @@ async function restoreLocalLiuAgentRuntimeState(
       ),
       modelRuntime,
       aiEntryFile: String(projectAiEntryFile.value || "").trim(),
-      mcpConfig: effectiveMcpConfig.value,
+      mcpConfig: {
+        ...effectiveMcpConfig.value,
+        localResourceDirectories: buildLocalResourceDirectoriesPayload(),
+      },
     };
     const normalizedPermissionRequest = {
       ...permissionRequest,
@@ -22162,7 +22173,10 @@ async function submitCurrentLocalLiuAgentPermissionReplyIfNeeded(text = "") {
         temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
       ),
       modelRuntime: await buildLocalLiuAgentModelRuntime(),
-      mcpConfig: effectiveMcpConfig.value,
+      mcpConfig: {
+        ...effectiveMcpConfig.value,
+        localResourceDirectories: buildLocalResourceDirectoriesPayload(),
+      },
     };
     classification = await classifyNativeLiuAgentPermissionReply({
       ...fallbackPayload,
@@ -32457,7 +32471,14 @@ async function sendLocalLiuAgentChatRequest({
     ),
     modelRuntime,
     aiEntryFile: String(projectAiEntryFile.value || "").trim(),
-    mcpConfig: effectiveMcpConfig.value,
+    mcpConfig: {
+      ...effectiveMcpConfig.value,
+      localResourceDirectories: {
+        agent: String(projectChatSettings.value.agent_directory || "").trim(),
+        skill: String(projectChatSettings.value.skill_directory || "").trim(),
+        rule: String(projectChatSettings.value.rule_directory || "").trim(),
+      },
+    },
     attachments,
     mediaTools,
     backendContext,

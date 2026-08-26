@@ -72,7 +72,7 @@ pub use types::{
 
 use tools::command::{check_command_risk, run_command, run_command_with_output_sink_and_cancel};
 use tools::deploy::{deploy_workspace_files_to_target, get_project_deploy_options};
-use tools::file::{apply_patch, delete_file, list_files, read_file, search_text, write_file};
+use tools::file::{apply_patch, delete_file, list_files, list_local_resources, read_file, read_local_resource, search_text, write_file};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
 use tools::media::execute_media_tool;
 use tools::network::{download_file, http_get, http_post, web_extract, web_search};
@@ -106,6 +106,8 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
     let result = match name.as_str() {
         "list_files" => list_files(&request.workspace_path, &request.arguments),
         "read_file" => read_file(&request.workspace_path, &request.arguments),
+        "list_local_resources" => list_local_resources(&request.arguments),
+        "read_local_resource" => read_local_resource(&request.arguments),
         "search_text" => search_text(&request.workspace_path, &request.arguments),
         "write_file" => write_file(
             &tool_call_id,

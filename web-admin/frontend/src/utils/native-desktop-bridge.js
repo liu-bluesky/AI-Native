@@ -807,6 +807,12 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
             ? request.model_runtime
             : null,
       aiEntryFile: String(request?.aiEntryFile || request?.ai_entry_file || "").trim(),
+      localResourceDirectories:
+        request?.localResourceDirectories && typeof request.localResourceDirectories === "object"
+          ? request.localResourceDirectories
+          : request?.local_resource_directories && typeof request.local_resource_directories === "object"
+            ? request.local_resource_directories
+            : null,
       mcpConfig:
         request?.mcpConfig && typeof request.mcpConfig === "object"
           ? request.mcpConfig
