@@ -3492,6 +3492,7 @@ let handleLocalMcpConfigUpdated = null;
 let handleLocalWebToolsConfigUpdated = null;
 let handleLocalProjectsUpdated = null;
 let handleLocalProjectsStorage = null;
+let handleLocalProvidersStorage = null;
 
 const selectedProjectId = ref("");
 let selectedProjectConversationLoadingKey = "";
@@ -34236,6 +34237,11 @@ onMounted(async () => {
       handleLocalProjectsUpdated?.();
     }
   };
+  handleLocalProvidersStorage = (event) => {
+    if (event?.key === "local_entities_llm_providers") {
+      void refreshModelProviders();
+    }
+  };
   window.addEventListener(
     "local-mcp-config-updated",
     handleLocalMcpConfigUpdated,
@@ -34249,6 +34255,7 @@ onMounted(async () => {
     handleLocalProjectsUpdated,
   );
   window.addEventListener("storage", handleLocalProjectsStorage);
+  window.addEventListener("storage", handleLocalProvidersStorage);
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.addEventListener("keydown", handleWorkingStatusKeydown);
   window.addEventListener("keydown", handleDesktopDevtoolsShortcut);
@@ -34311,6 +34318,10 @@ onUnmounted(() => {
   if (handleLocalProjectsStorage) {
     window.removeEventListener("storage", handleLocalProjectsStorage);
     handleLocalProjectsStorage = null;
+  }
+  if (handleLocalProvidersStorage) {
+    window.removeEventListener("storage", handleLocalProvidersStorage);
+    handleLocalProvidersStorage = null;
   }
   window.removeEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.removeEventListener("keydown", handleWorkingStatusKeydown);

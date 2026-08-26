@@ -36,7 +36,8 @@ const createDesktopAppRoutes = () => [
           { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
           { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
           { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
-          { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
+      { path: 'account', component: () => import('../views/account/AccountCenter.vue') },
+      { path: 'account/settings', component: () => import('../views/users/UserSettings.vue') },
           { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
           { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
           { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
@@ -59,7 +60,9 @@ const createDesktopAppRoutes = () => [
       { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
       { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
       { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
-  { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
+      { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
+      { path: 'account', component: () => import('../views/account/AccountCenter.vue') },
+      { path: 'account/settings', component: () => import('../views/users/UserSettings.vue') },
 ]
 
 function createDesktopWindowRoutes() {

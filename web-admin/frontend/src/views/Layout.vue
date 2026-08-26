@@ -48,6 +48,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router";
 import DesktopSystemShell from "@/components/DesktopSystemShell.vue";
 import DesktopWindowHost from "@/components/DesktopWindowHost.vue";
+import { authStateVersion, getStoredAuthProfile } from "@/utils/auth-storage.js";
 import { canAccessPath } from "@/utils/permissions.js";
 import {
   canAccessDesktopApp,
@@ -87,6 +88,10 @@ const DESKTOP_SHELL_PATHS = new Set([DESKTOP_HOME_PATH, "/desktop"]);
 
 const route = useRoute();
 const router = useRouter();
+const authProfile = computed(() => {
+  void authStateVersion.value;
+  return getStoredAuthProfile();
+});
 
 const launcherItems = computed(() =>
   DESKTOP_LAUNCHER_ITEMS.filter((item) => canAccessDesktopApp(item)),
@@ -615,6 +620,7 @@ function handleLaunchApp(item) {
     eyebrow: app.eyebrow,
   });
 }
+
 
 function focusWindow(windowId, options = {}) {
   const targetId = String(windowId || "").trim();

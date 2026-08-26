@@ -108,6 +108,7 @@ const DESKTOP_APP_ICON_THEMES = {
   "settings-work-sessions": ["#38bdf8", "#2563eb"],
   "settings-dictionaries": ["#a78bfa", "#6d28d9"],
   "settings-providers": ["#06b6d4", "#0891b2"],
+  account: ["#a78bfa", "#6d28d9"],
   "settings-wallpaper": ["#67e8f9", "#0ea5e9"],
   "settings-online-users": ["#4ade80", "#16a34a"],
 };
@@ -534,6 +535,20 @@ const DESKTOP_APP_ITEMS = [
     category: "settings",
     categoryLabel: "设置应用",
     match: (path) => String(path || "").startsWith("/llm/providers"),
+  }),
+  createApp({
+    id: "account",
+    label: "个人中心",
+    shortLabel: "ME",
+    path: "/account",
+    summary: "查看账户概览、安全设置和模型使用入口。",
+    eyebrow: "Account Center",
+    width: 1080,
+    height: 760,
+    dock: true,
+    category: "account",
+    categoryLabel: "账户应用",
+    match: (path) => String(path || "").startsWith("/account"),
   }),
   createApp({
     id: "settings-wallpaper",

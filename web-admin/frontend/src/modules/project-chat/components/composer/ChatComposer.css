@@ -690,10 +690,23 @@
 }
 
 .chat-model-routing-dialog__intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 16px;
   color: #64748b;
   font-size: 13px;
   line-height: 1.6;
+}
+
+.chat-model-routing-dialog__add-provider {
+  flex: 0 0 auto;
+}
+
+.chat-provider-create-form :deep(.el-radio-group) {
+  display: flex;
+  flex-wrap: wrap;
 }
 
 .chat-model-routing-mode {

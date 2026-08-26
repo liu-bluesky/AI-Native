@@ -342,6 +342,16 @@
     >
       <div class="chat-model-routing-dialog__intro">
         主模型是唯一对话入口，负责理解意图并通过结构化工具调用图片、视频和音频模型。
+        <el-button
+          class="chat-model-routing-dialog__add-provider"
+          type="primary"
+          plain
+          size="small"
+          @click="openProviderCreateDialog"
+        >
+          <el-icon><Plus /></el-icon>
+          添加模型供应商
+        </el-button>
       </div>
       <div class="chat-model-routing-roles">
         <section
@@ -395,6 +405,11 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <ModelProviderCreateDialog
+      v-model="providerCreateDialogVisible"
+      @saved="$emit('refresh-model-providers')"
+    />
   </div>
 </template>
 
@@ -409,6 +424,7 @@ import {
   Setting,
   VideoPause,
 } from "@element-plus/icons-vue";
+import ModelProviderCreateDialog from "@/components/llm/ModelProviderCreateDialog.vue";
 
 const props = defineProps([
   "agentWorkflowMetaItems",
@@ -480,6 +496,11 @@ const emit = defineEmits([
 
 const inputWrapperRef = ref(null);
 const modelRoutingDialogVisible = ref(false);
+const providerCreateDialogVisible = ref(false);
+
+function openProviderCreateDialog() {
+  providerCreateDialogVisible.value = true;
+}
 const safeToolCommandItems = computed(() =>
   Array.isArray(props.toolCommandItems) ? props.toolCommandItems : [],
 );

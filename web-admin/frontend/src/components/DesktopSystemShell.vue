@@ -190,14 +190,6 @@ const props = defineProps({
     type: String,
     default: "System Ready",
   },
-  brandName: {
-    type: String,
-    default: "AI 智能体工厂",
-  },
-  brandMeta: {
-    type: String,
-    default: "Desktop Workspace",
-  },
   showLauncher: {
     type: Boolean,
     default: false,
@@ -1318,6 +1310,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   background: var(--desktop-canvas);
 }
+
 
 .desktop-system__wallpaper {
   position: absolute;

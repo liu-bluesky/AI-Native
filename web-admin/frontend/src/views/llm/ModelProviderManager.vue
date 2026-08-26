@@ -160,11 +160,7 @@
           min-width="200"
           show-overflow-tooltip
         />
-        <el-table-column label="共享用户" min-width="160" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ formatSharedUsers(row.shared_usernames) }}
-          </template>
-        </el-table-column>
+
         <el-table-column label="模型列表" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">{{
             formatProviderModels(row)
@@ -177,7 +173,9 @@
           show-overflow-tooltip
         />
         <el-table-column label="API Key" min-width="130" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.api_key || "-" }}</template>
+          <template #default="{ row }">{{
+            row.api_key_masked || maskApiKey(row.api_key) || "-"
+          }}</template>
         </el-table-column>
         <el-table-column label="启用" width="90" align="center">
           <template #default="{ row }">
@@ -253,7 +251,13 @@
       />
     </section>
 
+    <ModelProviderCreateDialog
+      v-model="createDialogVisible"
+      @saved="fetchProviders"
+    />
+
     <el-dialog
+      v-if="dialogMode !== 'create'"
       v-model="showDialog"
       :title="dialogTitle()"
       width="min(860px, calc(100vw - 24px))"
@@ -349,10 +353,7 @@
           />
         </el-form-item>
         <el-form-item label="API Key">
-          <el-input
-            v-model="form.api_key"
-            :placeholder="apiKeyPlaceholder()"
-          />
+          <el-input v-model="form.api_key" :placeholder="apiKeyPlaceholder()" />
         </el-form-item>
         <el-form-item label="模型配置">
           <div class="model-config-editor">
@@ -463,7 +464,7 @@
             placeholder='例如：{"X-Provider":"demo"}'
           />
         </el-form-item>
-        <el-form-item label="共享给用户">
+        <!-- <el-form-item label="共享给用户">
           <el-select
             v-model="form.shared_usernames"
             multiple
@@ -481,7 +482,7 @@
               :value="item.username"
             />
           </el-select>
-        </el-form-item>
+        </el-form-item> -->
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" />
         </el-form-item>
@@ -521,11 +522,8 @@ import {
   upsertLocalEntity,
 } from "@/services/local-project-repository.js";
 import { formatDateTime, parseDateTime } from "@/utils/date.js";
-import {
-  canManageRecord,
-  getOwnershipDeniedMessage,
-} from "@/utils/ownership.js";
 import ProviderCapabilityTestResults from "@/components/llm/ProviderCapabilityTestResults.vue";
+import ModelProviderCreateDialog from "@/components/llm/ModelProviderCreateDialog.vue";
 import {
   fetchBuiltinModelProviders,
   isServerBuiltinModelProvider,
@@ -547,6 +545,7 @@ const providers = ref([]);
 const shareUserOptions = ref([]);
 const modelTypeOptions = ref(FALLBACK_MODEL_TYPE_OPTIONS);
 const showDialog = ref(false);
+const createDialogVisible = ref(false);
 const editingId = ref("");
 const dialogMode = ref("create");
 const testingProviderId = ref("");
@@ -618,7 +617,9 @@ function normalizeLegacyProvider(provider = {}) {
   const modelConfigs = Array.isArray(provider?.model_configs)
     ? provider.model_configs
         .map((item) => ({
-          name: String(item?.name || item?.model_name || item?.model || "").trim(),
+          name: String(
+            item?.name || item?.model_name || item?.model || "",
+          ).trim(),
           model_type: String(item?.model_type || "text_generation").trim(),
         }))
         .filter((item) => item.name)
@@ -627,7 +628,9 @@ function normalizeLegacyProvider(provider = {}) {
     ...provider,
     id,
     name: String(provider?.name || provider?.label || id).trim(),
-    provider_type: String(provider?.provider_type || "openai-compatible").trim(),
+    provider_type: String(
+      provider?.provider_type || "openai-compatible",
+    ).trim(),
     base_url: String(provider?.base_url || provider?.baseUrl || "").trim(),
     model_configs: modelConfigs,
     default_model: String(
@@ -641,7 +644,8 @@ function collectLegacyLocalProviders() {
   const candidates = [];
   const relations = readAllLocalProjectRelations();
   Object.values(relations || {}).forEach((relation) => {
-    if (Array.isArray(relation?.providers)) candidates.push(...relation.providers);
+    if (Array.isArray(relation?.providers))
+      candidates.push(...relation.providers);
   });
   try {
     const snapshots = JSON.parse(
@@ -1069,10 +1073,7 @@ function applyProviderPreset(preset) {
 }
 
 function openCreate() {
-  dialogMode.value = "create";
-  editingId.value = "";
-  resetForm();
-  showDialog.value = true;
+  createDialogVisible.value = true;
 }
 
 function openEdit(row) {
@@ -1237,7 +1238,9 @@ async function discoverModels() {
         ? data.data
         : [];
     if (!models.length) {
-      throw new Error("供应商返回成功，但没有可用模型；请检查 API Key 和接口地址");
+      throw new Error(
+        "供应商返回成功，但没有可用模型；请检查 API Key 和接口地址",
+      );
     }
     const added = mergeDiscoveredModelNames(models);
     ElMessage.success(
@@ -1279,7 +1282,10 @@ async function fetchProviders() {
         return [];
       }),
     ]);
-    providers.value = mergeBuiltinModelProviders(nonBuiltinLocalProviders, builtinProviders);
+    providers.value = mergeBuiltinModelProviders(
+      nonBuiltinLocalProviders,
+      builtinProviders,
+    );
   } catch (error) {
     console.error("load local model providers failed", error);
     providers.value = [];
@@ -1485,8 +1491,11 @@ function formatSharedUsers(usernames) {
   return values.join(", ") || "-";
 }
 
-function canManageProvider(row) {
-  return canManageRecord(row);
+function maskApiKey(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  if (normalized.length <= 8) return "••••••••";
+  return `${normalized.slice(0, 4)}••••${normalized.slice(-4)}`;
 }
 
 function getProviderActions(row) {
@@ -1496,27 +1505,17 @@ function getProviderActions(row) {
   return [
     { key: "test", label: "测试连接", type: "success" },
     { key: "duplicate", label: "复制", type: "warning" },
-    { key: "edit", label: "编辑", type: "primary", requiresManage: true },
-    { key: "delete", label: "删除", type: "danger", requiresManage: true },
+    { key: "edit", label: "编辑", type: "primary" },
+    { key: "delete", label: "删除", type: "danger" },
   ];
 }
 
 function getPrimaryProviderActions(row) {
-  return getProviderActions(row)
-    .map((item) => ({
-      ...item,
-      disabled: item.requiresManage ? !canManageProvider(row) : false,
-    }))
-    .slice(0, 3);
+  return getProviderActions(row).slice(0, 3);
 }
 
 function getOverflowProviderActions(row) {
-  return getProviderActions(row)
-    .map((item) => ({
-      ...item,
-      disabled: item.requiresManage ? !canManageProvider(row) : false,
-    }))
-    .slice(3);
+  return getProviderActions(row).slice(3);
 }
 
 function handleProviderAction(row, actionKey) {
@@ -1532,17 +1531,9 @@ function handleProviderAction(row, actionKey) {
       openDuplicate(row);
       break;
     case "edit":
-      if (!canManageProvider(row)) {
-        ElMessage.warning(getOwnershipDeniedMessage(row, "编辑"));
-        return;
-      }
       openEdit(row);
       break;
     case "delete":
-      if (!canManageProvider(row)) {
-        ElMessage.warning(getOwnershipDeniedMessage(row, "删除"));
-        return;
-      }
       void removeProvider(row);
       break;
     default:
@@ -1567,7 +1558,11 @@ async function testBuiltinConnection(row) {
     if (normalizedResult.reachable) ElMessage.success("内置供应商连接测试成功");
     else showConnectionTestFailure(normalizedResult, normalizedResult.message);
   } catch (error) {
-    const failedResult = { reachable: false, message: error?.message || "内置供应商连接测试失败", tested_at: new Date().toISOString() };
+    const failedResult = {
+      reachable: false,
+      message: error?.message || "内置供应商连接测试失败",
+      tested_at: new Date().toISOString(),
+    };
     storeConnectionResult(String(row?.id || providerId), failedResult);
     showConnectionTestFailure(failedResult, failedResult.message);
   } finally {
@@ -1579,9 +1574,13 @@ async function removeProvider(row) {
   const id = String(row.id || "");
   if (!id) return;
   try {
-    await ElMessageBox.confirm(`确定删除供应商 ${row.name || id}？`, "删除确认", {
-      type: "warning",
-    });
+    await ElMessageBox.confirm(
+      `确定删除供应商 ${row.name || id}？`,
+      "删除确认",
+      {
+        type: "warning",
+      },
+    );
     const remainingProviders = removeLocalEntity(LOCAL_PROVIDER_ENTITY, id);
     if (remainingProviders.some((item) => String(item?.id || "") === id)) {
       throw new Error("供应商删除未完成，请刷新后重试");
@@ -1790,7 +1789,8 @@ async function testConnection(row, modelName = "") {
     });
     const normalizedResult = {
       ...result,
-      model_type: result?.modelType || getProviderTestModelType(row, normalizedModelName),
+      model_type:
+        result?.modelType || getProviderTestModelType(row, normalizedModelName),
       request_urls: result?.requestUrl ? [result.requestUrl] : [],
       message: result?.httpStatus
         ? `${result.message || "模型接口连接测试失败"}（HTTP ${result.httpStatus}）`
@@ -1951,14 +1951,8 @@ onBeforeUnmount(() => {
   position: sticky;
   left: 50px;
   box-sizing: border-box;
-  width: max(
-    0px,
-    calc(var(--provider-table-visible-width, 100vw) - 100px)
-  );
-  max-width: max(
-    0px,
-    calc(var(--provider-table-visible-width, 100vw) - 100px)
-  );
+  width: max(0px, calc(var(--provider-table-visible-width, 100vw) - 100px));
+  max-width: max(0px, calc(var(--provider-table-visible-width, 100vw) - 100px));
 }
 
 .expand-actions__hint {
@@ -2197,10 +2191,7 @@ onBeforeUnmount(() => {
 
   .provider-expanded-content {
     left: 16px;
-    width: max(
-      0px,
-      calc(var(--provider-table-visible-width, 100vw) - 32px)
-    );
+    width: max(0px, calc(var(--provider-table-visible-width, 100vw) - 32px));
     max-width: max(
       0px,
       calc(var(--provider-table-visible-width, 100vw) - 32px)

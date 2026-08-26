@@ -39,6 +39,18 @@
       </aside>
     </header>
 
+    <div class="workbench-app__status-grid">
+      <button type="button" class="workbench-app__status-card" @click="openApp('account')">
+        <span>当前账户</span><strong>{{ profile.displayName || profile.username || "当前用户" }}</strong><small>{{ roleLabel }}</small>
+      </button>
+      <button type="button" class="workbench-app__status-card" :class="`is-${modelStatus.kind}`" @click="openApp('settings-providers')">
+        <span>模型配置</span><strong>{{ modelStatus.label }}</strong><small>{{ modelStatus.detail }}</small>
+      </button>
+      <button type="button" class="workbench-app__status-card" @click="openApp('settings-providers')">
+        <span>待处理事项</span><strong>{{ modelStatus.kind === "ready" ? "暂无" : "配置模型" }}</strong><small>{{ modelStatus.kind === "ready" ? "当前没有需要处理的配置问题" : "模型配置完成后才能开始 AI 对话" }}</small>
+      </button>
+    </div>
+
     <div class="workbench-app__grid">
       <article v-for="app in apps" :key="app.id" class="workbench-app__card">
         <button
@@ -70,6 +82,9 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
+import { getStoredAuthProfile } from "@/utils/auth-storage.js";
+import { readLocalMainModelSelection } from "@/services/local-main-model-runtime.js";
+import { readLocalModelProviders } from "@/services/local-model-runtime.js";
 import {
   canAccessDesktopApp,
   DESKTOP_LAUNCHER_ITEMS,
@@ -87,6 +102,15 @@ import {
 const router = useRouter();
 const embeddedMode = isEmbeddedDesktopApp() || Boolean(router?.__aiEmployeeDesktopWindow?.windowId);
 const desktopShortcutAppIds = ref(getStoredDesktopShortcutAppIds());
+const profile = getStoredAuthProfile();
+const roleLabel = profile.role === "admin" ? "管理员" : "普通用户";
+const modelStatus = computed(() => {
+  const providers = readLocalModelProviders().filter((item) => item.enabled !== false);
+  const selection = readLocalMainModelSelection();
+  const selected = providers.find((item) => item.id === selection.providerId) || providers[0];
+  if (!selected || !selected.base_url || !(selection.modelName || selected.default_model)) return { kind: "unconfigured", label: "未配置", detail: "点击立即配置模型" };
+  return { kind: "ready", label: "已配置", detail: `${selected.name} · ${selection.modelName || selected.default_model}` };
+});
 
 function desktopIconStyle(app) {
   return {
@@ -333,6 +357,13 @@ const apps = computed(() =>
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
 }
+
+.workbench-app__status-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+.workbench-app__status-card { min-width: 0; padding: 16px; border: 1px solid rgba(255,255,255,.82); border-radius: 18px; background: rgba(255,255,255,.58); color: #0f172a; text-align: left; cursor: pointer; box-shadow: 0 12px 28px rgba(15,23,42,.06); }
+.workbench-app__status-card:hover { transform: translateY(-2px); background: rgba(255,255,255,.82); }
+.workbench-app__status-card span { color: #64748b; font-size: 11px; }.workbench-app__status-card strong { display:block; margin:8px 0 4px; font-size:16px; }.workbench-app__status-card small { display:block; overflow:hidden; color:#64748b; text-overflow:ellipsis; white-space:nowrap; }.workbench-app__status-card.is-ready { border-color: rgba(16,185,129,.32); }
+@media (max-width: 960px) { .workbench-app__status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .workbench-app__status-grid { grid-template-columns: 1fr; } }
 
 .workbench-app__card {
   position: relative;
