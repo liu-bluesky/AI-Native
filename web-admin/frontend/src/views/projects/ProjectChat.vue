@@ -2500,6 +2500,44 @@
                         </article>
                         <article class="settings-module-row">
                           <div class="settings-module-row__icon">
+                            <el-icon><Cpu /></el-icon>
+                          </div>
+                          <div class="settings-module-row__main">
+                            <strong>思考模式</strong>
+                            <span>兼容模型会返回独立的思考过程；关闭时不发送思考参数。</span>
+                          </div>
+                          <div class="settings-module-row__control">
+                            <el-switch
+                              v-model="projectChatSettings.thinking_mode"
+                              active-value="enabled"
+                              inactive-value="disabled"
+                            />
+                          </div>
+                        </article>
+                        <article
+                          v-if="projectChatSettings.thinking_mode === 'enabled'"
+                          class="settings-module-row"
+                        >
+                          <div class="settings-module-row__icon">
+                            <el-icon><Operation /></el-icon>
+                          </div>
+                          <div class="settings-module-row__main">
+                            <strong>思考强度</strong>
+                            <span>通过 reasoning_effort 传给 DeepSeek 等兼容模型。</span>
+                          </div>
+                          <div class="settings-module-row__control">
+                            <el-select
+                              v-model="projectChatSettings.reasoning_effort"
+                              class="settings-module-row__select"
+                            >
+                              <el-option label="低" value="low" />
+                              <el-option label="中" value="medium" />
+                              <el-option label="高" value="high" />
+                            </el-select>
+                          </div>
+                        </article>
+                        <article class="settings-module-row">
+                          <div class="settings-module-row__icon">
                             <el-icon><CircleCheck /></el-icon>
                           </div>
                           <div class="settings-module-row__main">
@@ -2973,6 +3011,8 @@ import {
   FolderOpened,
   Document,
   RefreshRight,
+  Cpu,
+  Operation,
   InfoFilled,
   View,
   CircleCheck,
@@ -3564,7 +3604,7 @@ const settingsModuleNavItems = [
     desc: "风格、温度、模型参数",
     meta: "通用",
     scope: "all",
-    keywords: "生成 回答 模型 温度 风格 图片 视频 参数 结论",
+    keywords: "生成 回答 模型 温度 风格 思考 推理 reasoning DeepSeek 图片 视频 参数 结论",
   },
   {
     id: "tools",
@@ -33070,18 +33110,16 @@ async function buildLocalLiuAgentModelRuntime(
   providerIdOverride = "",
   modelNameOverride = "",
 ) {
-  void providerIdOverride;
-  void modelNameOverride;
   const providerId = String(
-    selectedProviderId.value || defaultProviderId.value || "",
+    providerIdOverride || selectedProviderId.value || defaultProviderId.value || "",
   ).trim();
   const modelName = String(
-    selectedModelName.value || defaultModelName.value || "",
+    modelNameOverride || selectedModelName.value || defaultModelName.value || "",
   ).trim();
   if (!providerId || !modelName) {
     throw new Error("请先在主对话模型中选择可用的模型供应商和模型");
   }
-  return {
+  const runtime = {
     mode: "direct-openai-compatible",
     providerId,
     modelName,
@@ -33115,6 +33153,13 @@ async function buildLocalLiuAgentModelRuntime(
       temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
     ),
   };
+  if (projectChatSettings.value.thinking_mode === "enabled") {
+    runtime.thinking = "enabled";
+    runtime.reasoningEffort = String(
+      projectChatSettings.value.reasoning_effort || "high",
+    ).trim().toLowerCase();
+  }
+  return runtime;
 }
 
 function resolvePendingRequestFast(requestId, pending, content = "") {

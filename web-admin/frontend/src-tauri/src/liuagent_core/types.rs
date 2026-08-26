@@ -668,6 +668,8 @@ pub struct LocalModelRuntimeConfig {
     pub api_key_env: Option<String>,
     pub gateway_url: Option<String>,
     pub temperature: Option<f64>,
+    pub thinking: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub timeout_ms: Option<u64>,
 }
 

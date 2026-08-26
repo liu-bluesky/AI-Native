@@ -8472,6 +8472,8 @@ struct ModelStepRequest {
     api_key: String,
     gateway_url: String,
     temperature: f64,
+    thinking: Option<String>,
+    reasoning_effort: Option<String>,
     timeout_ms: u64,
     user_message: String,
     ai_entry_file: String,
@@ -8503,6 +8505,8 @@ impl ModelStepRequest {
             api_key: self.api_key.clone(),
             gateway_url: self.gateway_url.clone(),
             temperature: self.temperature,
+            thinking: self.thinking.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
             timeout_ms: self.timeout_ms,
             user_message: self.user_message.clone(),
             ai_entry_file: self.ai_entry_file.clone(),
@@ -9318,6 +9322,8 @@ fn build_model_request_with_history_and_task_profile(
             api_key_env: None,
             gateway_url: None,
             temperature: None,
+            thinking: None,
+            reasoning_effort: None,
             timeout_ms: None,
         });
     let mode = normalize_model_mode(runtime.mode.as_deref());
@@ -9382,6 +9388,8 @@ fn build_model_request_with_history_and_task_profile(
             .or(request.temperature)
             .unwrap_or(0.2)
             .clamp(0.0, 2.0),
+        thinking: normalize_thinking_mode(runtime.thinking.as_deref()),
+        reasoning_effort: normalize_reasoning_effort(runtime.reasoning_effort.as_deref()),
         timeout_ms: runtime
             .timeout_ms
             .unwrap_or(DEFAULT_MODEL_TIMEOUT_MS)
@@ -10408,6 +10416,12 @@ fn build_openai_compatible_request_body(
         request_body["tools"] = json!(openai_compatible_tool_schemas(request)?);
         request_body["tool_choice"] = json!("auto");
     }
+    if request.thinking.as_deref() == Some("enabled") {
+        request_body["thinking"] = json!({"type": "enabled"});
+        if let Some(reasoning_effort) = request.reasoning_effort.as_deref() {
+            request_body["reasoning_effort"] = json!(reasoning_effort);
+        }
+    }
     Ok(request_body)
 }
 
@@ -11069,6 +11083,21 @@ fn normalize_model_mode(value: Option<&str>) -> String {
         }
         "backend-gateway" | "gateway" => "backend-gateway".to_string(),
         _ => "mock".to_string(),
+    }
+}
+
+fn normalize_thinking_mode(value: Option<&str>) -> Option<String> {
+    match value.unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+        "enabled" | "enable" | "on" | "true" => Some("enabled".to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_reasoning_effort(value: Option<&str>) -> Option<String> {
+    let normalized = value.unwrap_or_default().trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "low" | "medium" | "high" => Some(normalized),
+        _ => None,
     }
 }
 
@@ -15105,6 +15134,8 @@ mod tests {
                 api_key_env: None,
                 gateway_url: None,
                 temperature: None,
+                thinking: None,
+                reasoning_effort: None,
                 timeout_ms: None,
             }),
             ai_entry_file: None,
@@ -17192,6 +17223,8 @@ mod tests {
                 api_key_env: None,
                 gateway_url: None,
                 temperature: Some(0.1),
+                thinking: None,
+                reasoning_effort: None,
                 timeout_ms: Some(5_000),
             }),
             ai_entry_file: None,
@@ -17314,6 +17347,8 @@ mod tests {
                 api_key_env: None,
                 gateway_url: None,
                 temperature: Some(0.1),
+                thinking: None,
+                reasoning_effort: None,
                 timeout_ms: Some(5_000),
             }),
             ai_entry_file: None,
@@ -17382,6 +17417,8 @@ mod tests {
             api_key: "test-key".to_string(),
             gateway_url: String::new(),
             temperature: 0.2,
+            thinking: None,
+            reasoning_effort: None,
             timeout_ms: 1_000,
             user_message: user_message.to_string(),
             ai_entry_file: String::new(),
@@ -17402,6 +17439,29 @@ mod tests {
             task_goal: None,
             task_tree: None,
         }
+    }
+
+    #[test]
+    fn openai_compatible_request_body_includes_thinking_configuration_when_enabled() {
+        let mut request = test_model_request("请分析这个问题");
+        request.thinking = Some("enabled".to_string());
+        request.reasoning_effort = Some("high".to_string());
+
+        let body = build_openai_compatible_request_body(&request, "deepseek-reasoner", false)
+            .expect("request body should serialize");
+
+        assert_eq!(body["thinking"]["type"], json!("enabled"));
+        assert_eq!(body["reasoning_effort"], json!("high"));
+    }
+
+    #[test]
+    fn openai_compatible_request_body_omits_thinking_configuration_when_disabled() {
+        let request = test_model_request("请直接回答");
+        let body = build_openai_compatible_request_body(&request, "gpt-test", false)
+            .expect("request body should serialize");
+
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     fn test_model_result(content: &str, tool_calls: Vec<PlannedLocalTool>) -> ModelStepResult {

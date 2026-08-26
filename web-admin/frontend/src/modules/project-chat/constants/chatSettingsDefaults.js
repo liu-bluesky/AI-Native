@@ -35,6 +35,8 @@ export const CHAT_SETTINGS_DEFAULTS = {
   audio_transcription_provider_id: "",
   audio_transcription_model_name: "",
   temperature: 0.1,
+  thinking_mode: "disabled",
+  reasoning_effort: "high",
   system_prompt: "",
   auto_use_tools: false,
   auto_use_tools_explicit: false,

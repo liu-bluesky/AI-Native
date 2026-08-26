@@ -50,6 +50,14 @@ export function normalizeLocalModelRuntime(
 
   const temperature = normalizeFiniteNumber(source.temperature);
   if (temperature !== null) normalized.temperature = temperature;
+  const thinking = normalizeText(source.thinking || source.thinking_mode).toLowerCase();
+  if (thinking === "enabled") normalized.thinking = "enabled";
+  const reasoningEffort = normalizeText(
+    source.reasoningEffort || source.reasoning_effort,
+  ).toLowerCase();
+  if (["low", "medium", "high"].includes(reasoningEffort)) {
+    normalized.reasoningEffort = reasoningEffort;
+  }
   const timeoutMs = normalizeFiniteNumber(source.timeoutMs || source.timeout_ms);
   if (timeoutMs !== null) normalized.timeoutMs = timeoutMs;
   return normalized;
