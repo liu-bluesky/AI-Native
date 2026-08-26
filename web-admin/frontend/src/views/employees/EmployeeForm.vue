@@ -40,7 +40,6 @@
             定义该智能体判断任务和输出结果时最优先追求的目标。
           </div>
         </el-form-item>
-        <ResourceShareSettings :form="form" />
       </template>
 
       <template v-else-if="currentStep === 1">
@@ -466,10 +465,12 @@
 import { ref, reactive, onMounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import api from "@/utils/api.js";
-import ResourceShareSettings from "@/components/ResourceShareSettings.vue";
-import { getOwnershipDeniedMessage } from "@/utils/ownership.js";
-import { canCreateEmployee, canUpdateEmployee } from "@/utils/employee-permissions.js";
+import {
+  readLocalEntities,
+  upsertLocalEntity,
+} from "@/services/local-project-repository.js";
+import { readSelectedProjectId } from "@/modules/project-chat/services/projectChatStorage.js";
+import { saveLocalAgentDirectoryResources } from "@/services/local-agent-directory-service.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -478,8 +479,8 @@ const isEdit = computed(() => Boolean(route.params.id));
 const pageTitle = computed(() => (isEdit.value ? "编辑 AI 智能体" : "创建 AI 智能体"));
 const pageHint = computed(() =>
   isEdit.value
-    ? "按 3 步完成修改：基础信息、能力绑定、人设与进化。"
-    : "按 3 步完成配置：基础信息、能力绑定、人设与进化。"
+    ? "按 3 步修改本地智能体；保存后会同步更新本地目录定义。"
+    : "按 3 步创建本地智能体；保存后会写入智能体、技能和规则目录。"
 );
 const previewTitle = computed(() => (isEdit.value ? "修改预览" : "创建预览"));
 const submitLabel = computed(() => (isEdit.value ? "保存修改" : "创建 AI 智能体"));
@@ -499,8 +500,6 @@ const form = reactive({
   name: "",
   description: "",
   goal: "",
-  share_scope: "private",
-  shared_with_usernames: [],
   skills: [],
   memory_scope: "project",
   memory_retention_days: 90,
@@ -750,20 +749,18 @@ function addWorkflowPreset(preset) {
 async function fetchDetail() {
   const employeeId = String(route.params.id || "");
   if (!employeeId) return true;
-  const { employee } = await api.get(`/employees/${employeeId}`);
-  if (!canUpdateEmployee(employee)) {
-    ElMessage.warning(getOwnershipDeniedMessage(employee, "编辑"));
-    await router.replace(`/employees/${employeeId}`);
+  const employee = readLocalEntities("employees").find(
+    (item) => String(item?.id || "").trim() === employeeId,
+  );
+  if (!employee) {
+    ElMessage.warning("未找到本地智能体");
+    await router.replace("/employees");
     return false;
   }
   Object.assign(form, {
     name: employee.name || "",
     description: employee.description || "",
     goal: employee.goal || "",
-    share_scope: employee.share_scope || "private",
-    shared_with_usernames: Array.isArray(employee.shared_with_usernames)
-      ? employee.shared_with_usernames
-      : [],
     skills: employee.skills || [],
     memory_scope: employee.memory_scope || "project",
     memory_retention_days: employee.memory_retention_days ?? 90,
@@ -784,18 +781,18 @@ async function fetchDetail() {
 async function fetchSelectionOptions() {
   optionsLoading.value = true;
   try {
-    const [skillsRes, rulesRes] = await Promise.all([
-      api.get("/skills"),
-      api.get("/rules"),
-    ]);
-    availableSkills.value = (skillsRes.skills || []).map((s) => ({
+    availableSkills.value = readLocalEntities("skills").map((s) => ({
       id: s.id,
       name: s.name || s.id,
+      description: s.description || s.content || "",
+      content: s.content || "",
     }));
-    availableRules.value = (rulesRes.rules || []).map((rule) => ({
+    availableRules.value = readLocalEntities("rules").map((rule) => ({
       id: rule.id,
       title: String(rule.title || rule.id || "").trim(),
       domain: String(rule.domain || "").trim(),
+      content: rule.content || rule.body || rule.description || "",
+      description: rule.description || "",
     }));
     ensureOptionCoverage();
     if (initialRuleIds.value.length) {
@@ -824,6 +821,15 @@ async function fetchSelectionOptions() {
   }
 }
 
+function createLocalEmployeeId() {
+  const namePart = String(form.name || "agent")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "agent";
+  return `local-agent-${namePart}-${Date.now().toString(36)}`;
+}
+
 async function handleSubmit() {
   await formRef.value.validate();
   submitting.value = true;
@@ -840,17 +846,27 @@ async function handleSubmit() {
       }),
       style_hints: normalizeStyleHints(form.style_hints),
       default_workflow: normalizeWorkflow(form.default_workflow),
+      id: isEdit.value
+        ? String(route.params.id || "").trim()
+        : createLocalEmployeeId(),
+      project_id: String(readSelectedProjectId() || "").trim(),
     };
-    if (isEdit.value) {
-      const employeeId = String(route.params.id || "");
-      await api.put(`/employees/${employeeId}`, payload);
-      ElMessage.success("智能体已保存");
-      router.push(`/employees/${employeeId}`);
-    } else {
-      const { employee } = await api.post("/employees", payload);
-      ElMessage.success(`智能体「${employee.name}」创建成功`);
-      router.push("/employees");
-    }
+    const selectedSkillsForSave = payload.skills.map(
+      (id) => availableSkills.value.find((item) => item.id === id) || { id, name: id },
+    );
+    const selectedRulesForSave = selectedRuleIds.value.map(
+      (id) => ruleMap.value.get(id) || { id, title: id },
+    );
+    const { employee } = await saveLocalAgentDirectoryResources({
+      employee: payload,
+      skills: selectedSkillsForSave,
+      rules: selectedRulesForSave,
+    });
+    upsertLocalEntity("employees", employee);
+    ElMessage.success(
+      isEdit.value ? "本地智能体已保存并同步目录" : `智能体「${employee.name}」已创建并写入本地目录`,
+    );
+    router.push("/employees");
   } catch (e) {
     ElMessage.error(e.detail || (isEdit.value ? "保存失败" : "创建失败"));
   } finally {
@@ -861,11 +877,6 @@ async function handleSubmit() {
 onMounted(async () => {
   pageLoading.value = true;
   try {
-    if (!isEdit.value && !canCreateEmployee()) {
-      ElMessage.warning("当前角色没有创建智能体权限");
-      await router.replace("/employees");
-      return;
-    }
     if (isEdit.value) {
       const ok = await fetchDetail();
       if (!ok) return;

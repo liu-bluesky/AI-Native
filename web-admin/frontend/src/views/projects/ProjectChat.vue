@@ -1,9 +1,5 @@
 <template>
-  <div
-    v-if="!isSettingsCenterRoute"
-    class="chat-layout"
-    v-loading="loading"
-  >
+  <div v-if="!isSettingsCenterRoute" class="chat-layout" v-loading="loading">
     <div
       class="chat-layout__ambient chat-layout__ambient--left"
       aria-hidden="true"
@@ -135,7 +131,9 @@
                     :data-message-id="
                       String(item?.id || '').trim() || undefined
                     "
-                    @contextmenu.prevent="openMessageContextMenu($event, item, idx)"
+                    @contextmenu.prevent="
+                      openMessageContextMenu($event, item, idx)
+                    "
                   >
                     <div class="message-avatar">
                       <el-avatar
@@ -996,7 +994,13 @@
                             :initial-index="imageIndex"
                             preview-teleported
                             @contextmenu.stop.prevent="
-                              openMediaContextMenu($event, item, 'image', img, imageIndex)
+                              openMediaContextMenu(
+                                $event,
+                                item,
+                                'image',
+                                img,
+                                imageIndex,
+                              )
                             "
                           />
                         </div>
@@ -1013,7 +1017,13 @@
                             preload="metadata"
                             playsinline
                             @contextmenu.stop.prevent="
-                              openMediaContextMenu($event, item, 'video', video, videoIndex)
+                              openMediaContextMenu(
+                                $event,
+                                item,
+                                'video',
+                                video,
+                                videoIndex,
+                              )
                             "
                           />
                         </div>
@@ -1029,7 +1039,13 @@
                             controls
                             preload="metadata"
                             @contextmenu.stop.prevent="
-                              openMediaContextMenu($event, item, 'audio', audio, audioIndex)
+                              openMediaContextMenu(
+                                $event,
+                                item,
+                                'audio',
+                                audio,
+                                audioIndex,
+                              )
                             "
                           />
                         </div>
@@ -1044,7 +1060,12 @@
                             :key="`att-${idx}-${attachmentIndex}`"
                             class="attachment-item"
                             @contextmenu.stop.prevent="
-                              openAttachmentContextMenu($event, item, attachment, attachmentIndex)
+                              openAttachmentContextMenu(
+                                $event,
+                                item,
+                                attachment,
+                                attachmentIndex,
+                              )
                             "
                           >
                             <el-tag
@@ -1345,7 +1366,7 @@
                             "
                             class="message-employee-draft__workflow"
                           >
-                            <div class="meta-label">默认工作流</div>
+                            <div class="meta-label">默认执行步骤</div>
                             <ol class="employee-draft-workflow-list">
                               <li
                                 v-for="step in getEmployeeDraftCard(item)
@@ -1356,23 +1377,12 @@
                               </li>
                             </ol>
                           </div>
-                          <div class="message-employee-draft__actions">
-                            <el-button
-                              type="primary"
-                              :loading="
-                                employeeDraftCreatingKey ===
-                                getEmployeeDraftKey(item)
-                              "
-                              :disabled="Boolean(item.employeeDraftCreatedName)"
-                              @click="createEmployeeFromDraft(item)"
-                            >
-                              手动创建智能体
-                            </el-button>
-                            <span
-                              v-if="item.employeeDraftCreatedName"
-                              class="message-employee-draft__success"
-                            >
-                              已创建：{{ item.employeeDraftCreatedName }}
+                          <div
+                            v-if="item.employeeDraftCreatedName"
+                            class="message-employee-draft__actions"
+                          >
+                            <span class="message-employee-draft__success">
+                              已同步至本地目录：{{ item.employeeDraftCreatedName }}
                             </span>
                           </div>
                         </div>
@@ -2086,7 +2096,9 @@
                     <strong class="settings-chat-quick-overview__value">{{
                       selectedEmployeeSummary
                     }}</strong>
-                    <span class="settings-chat-quick-overview__meta">当前项目工具默认自动使用。</span>
+                    <span class="settings-chat-quick-overview__meta"
+                      >当前项目工具默认自动使用。</span
+                    >
                   </article>
                   <article class="settings-chat-quick-overview__card">
                     <span class="settings-chat-quick-overview__label">
@@ -2308,7 +2320,9 @@
                         </div>
                         <div class="settings-module-row__main">
                           <strong>智能体目录</strong>
-                          <span>桌面运行会从该目录读取项目智能体定义、提示词和脚本。</span>
+                          <span
+                            >桌面运行会从该目录读取项目智能体定义、提示词和脚本。</span
+                          >
                         </div>
                         <div class="settings-module-row__control">
                           <el-input
@@ -3002,6 +3016,7 @@ import {
 import { isMediaBuildFeatureEnabled } from "@/config/buildFeatures.js";
 import { DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT } from "@/config/desktopAgentPrompts.js";
 import { openLocalWorkspaceProjectFromPicker } from "@/services/local-workspace-project-service.js";
+import { saveLocalAgentDirectoryResources } from "@/services/local-agent-directory-service.js";
 import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
@@ -3462,7 +3477,6 @@ const employeeDraftCatalog = ref({
   rules: [],
   loaded_at: 0,
 });
-const employeeDraftCreatingKey = ref("");
 const employeeDraftDialogVisible = ref(false);
 const employeeDraftDialogLoading = ref(false);
 const employeeDraftDialogPayload = ref(null);
@@ -3493,6 +3507,8 @@ let handleLocalWebToolsConfigUpdated = null;
 let handleLocalProjectsUpdated = null;
 let handleLocalProjectsStorage = null;
 let handleLocalProvidersStorage = null;
+let handleLocalProjectRelationsUpdated = null;
+const localAgentDirectorySyncingIds = new Set();
 
 const selectedProjectId = ref("");
 let selectedProjectConversationLoadingKey = "";
@@ -9696,7 +9712,8 @@ function pauseOpenMessageOperations(row) {
     const phase = normalizeOperationPhase(
       operation?.phase || operation?.status,
     );
-    if (!["running", "pending", "waiting_user"].includes(phase)) return operation;
+    if (!["running", "pending", "waiting_user"].includes(phase))
+      return operation;
     changed = true;
     return {
       ...operation,
@@ -11376,9 +11393,7 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
     ["write_file", "apply_patch", "delete_file"].includes(toolName) &&
     isCurrentChatSession(run.projectId, chatSessionId)
   ) {
-    void revealWorkspaceFileChangesAfterMutation(
-      run.workspacePath,
-    );
+    void revealWorkspaceFileChangesAfterMutation(run.workspacePath);
   }
   if (
     eventType === "tool_result" &&
@@ -11533,7 +11548,6 @@ function stopNativeLiuAgentRuntimeEventSubscription() {
     }
   }
 }
-
 
 function localLiuAgentUserMessageFromRuntimeEvents(events = []) {
   const event = (Array.isArray(events) ? events : []).find((item) => {
@@ -12974,7 +12988,9 @@ const localLiuAgentMediaTools = computed(() =>
   ]
     .filter(([roleId]) => {
       const role = MODEL_ROLE_CONFIGS.find((item) => item.id === roleId);
-      return !role?.buildFeature || isMediaBuildFeatureEnabled(role.buildFeature);
+      return (
+        !role?.buildFeature || isMediaBuildFeatureEnabled(role.buildFeature)
+      );
     })
     .map(([roleId, name]) => ({
       name,
@@ -12982,7 +12998,9 @@ const localLiuAgentMediaTools = computed(() =>
     }))
     .map((item) => {
       const provider = (providers.value || []).find(
-        (candidate) => String(candidate?.id || "").trim() === String(item.providerId || "").trim(),
+        (candidate) =>
+          String(candidate?.id || "").trim() ===
+          String(item.providerId || "").trim(),
       );
       return {
         ...item,
@@ -13179,7 +13197,8 @@ const activeComposerAssistMeta = computed(
 const activeComposerToolCommand = computed(
   () =>
     composerSlashCommands.value.find(
-      (item) => item.id === String(activeComposerToolCommandId.value || "").trim(),
+      (item) =>
+        item.id === String(activeComposerToolCommandId.value || "").trim(),
     ) || null,
 );
 function buildAssistSlashCommand(actionId) {
@@ -13242,8 +13261,7 @@ const composerSlashCommands = computed(() => {
       command: HOST_RUN_COMMAND,
       aliases: HOST_RUN_COMMAND_ALIASES,
       label: "本机命令",
-      description:
-        "让 AI 直接在当前电脑执行命令并返回实际结果。",
+      description: "让 AI 直接在当前电脑执行命令并返回实际结果。",
       assistActionId: "",
     },
     {
@@ -13252,20 +13270,19 @@ const composerSlashCommands = computed(() => {
       command: LARK_CLI_COMMAND,
       aliases: LARK_CLI_COMMAND_ALIASES,
       label: "飞书 CLI",
-      description:
-        "优先使用 lark-cli 执行飞书相关操作并返回真实结果。",
+      description: "优先使用 lark-cli 执行飞书相关操作并返回真实结果。",
       assistActionId: "",
     },
-    {
-      id: "form_json",
-      kind: "form_json",
-      command: "/form-json",
-      aliases: ["/form", "/表单", "/表单数据"],
-      label: "表单数据",
-      description:
-        "让大模型根据字段描述生成 ElementEasyForm formJson，并在消息里长期保留预览和复制入口。",
-      assistActionId: "",
-    },
+    // {
+    //   id: "form_json",
+    //   kind: "form_json",
+    //   command: "/form-json",
+    //   aliases: ["/form", "/表单", "/表单数据"],
+    //   label: "表单数据",
+    //   description:
+    //     "让大模型根据字段描述生成 ElementEasyForm formJson，并在消息里长期保留预览和复制入口。",
+    //   assistActionId: "",
+    // },
   ];
   commands.push({
     id: "package_deploy",
@@ -13964,7 +13981,10 @@ function normalizeRuntimeMessageSnapshot(row) {
 
 function normalizePersistedMessageMediaUrls(values) {
   return mergeMediaUrls(values).filter(
-    (url) => !String(url || "").trim().startsWith("blob:"),
+    (url) =>
+      !String(url || "")
+        .trim()
+        .startsWith("blob:"),
   );
 }
 
@@ -14060,9 +14080,7 @@ function buildPersistedChatRuntimePayload(options = {}) {
     ...(deletedMessageIds.length
       ? { deleted_message_ids: deletedMessageIds }
       : {}),
-    messages: runtimeRows
-      .map(normalizeRuntimeMessageSnapshot)
-      .filter(Boolean),
+    messages: runtimeRows.map(normalizeRuntimeMessageSnapshot).filter(Boolean),
     composer_plan: composerPlanState.plan,
     composer_plan_owner_id: composerPlanState.ownerId,
     terminal: {
@@ -14139,9 +14157,7 @@ function persistedRuntimeDeletedMessageIds(runtimePayload) {
       : []),
   ];
   return new Set(
-    values
-      .map((value) => String(value || "").trim())
-      .filter(Boolean),
+    values.map((value) => String(value || "").trim()).filter(Boolean),
   );
 }
 
@@ -14455,9 +14471,7 @@ function persistCurrentChatRuntimeNow(
   if (!normalizedProjectId || !normalizedChatSessionId) {
     return Promise.resolve(false);
   }
-  if (
-    isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)
-  ) {
+  if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
     return Promise.resolve(false);
   }
   if (!isCurrentChatSession(normalizedProjectId, normalizedChatSessionId)) {
@@ -14478,9 +14492,7 @@ function persistCurrentChatRuntimeNow(
     rows: options.rows,
     deletedMessageIds: options.deletedMessageIds,
   });
-  const persistedRows = Array.isArray(payload.messages)
-    ? payload.messages
-    : [];
+  const persistedRows = Array.isArray(payload.messages) ? payload.messages : [];
   const runtimeKey = chatSessionMessageCacheKey(
     normalizedProjectId,
     normalizedChatSessionId,
@@ -14490,63 +14502,68 @@ function persistCurrentChatRuntimeNow(
     normalizedProjectId,
     normalizedChatSessionId,
     payload,
-  ).then((saved) => {
-    if (saved !== true) {
-      dirtyChatRuntimeSessionKeys.add(runtimeKey);
-      return false;
-    }
-    let metadataRows = persistedRows;
-    const deletedMessageIds = Array.isArray(options.deletedMessageIds)
-      ? options.deletedMessageIds
-      : [];
-    if (options.replaceMessages === true || deletedMessageIds.length > 0) {
-      return readPersistedChatRuntime(
-        normalizedProjectId,
-        normalizedChatSessionId,
-      )
-        .then((persistedPayload) => {
-          if (persistedPayload && typeof persistedPayload === "object") {
-            rememberCachedChatRuntime(
+  )
+    .then((saved) => {
+      if (saved !== true) {
+        dirtyChatRuntimeSessionKeys.add(runtimeKey);
+        return false;
+      }
+      let metadataRows = persistedRows;
+      const deletedMessageIds = Array.isArray(options.deletedMessageIds)
+        ? options.deletedMessageIds
+        : [];
+      if (options.replaceMessages === true || deletedMessageIds.length > 0) {
+        return readPersistedChatRuntime(
+          normalizedProjectId,
+          normalizedChatSessionId,
+        )
+          .then((persistedPayload) => {
+            if (persistedPayload && typeof persistedPayload === "object") {
+              rememberCachedChatRuntime(
+                normalizedProjectId,
+                normalizedChatSessionId,
+                persistedPayload,
+              );
+              const fullRows = Array.isArray(persistedPayload.messages)
+                ? persistedPayload.messages
+                    .map(normalizeRuntimeMessageSnapshot)
+                    .filter(Boolean)
+                : [];
+              if (
+                fullRows.length > 0 ||
+                persistedPayload.messages_authoritative === true
+              ) {
+                metadataRows = fullRows;
+              }
+            }
+          })
+          .catch((error) => {
+            console.warn(
+              "read persisted chat runtime after mutation failed",
+              error,
+            );
+          })
+          .then(() => {
+            syncLocalChatSessionMetadata(
               normalizedProjectId,
               normalizedChatSessionId,
-              persistedPayload,
+              metadataRows,
             );
-            const fullRows = Array.isArray(persistedPayload.messages)
-              ? persistedPayload.messages
-                  .map(normalizeRuntimeMessageSnapshot)
-                  .filter(Boolean)
-              : [];
-            if (
-              fullRows.length > 0 ||
-              persistedPayload.messages_authoritative === true
-            ) {
-              metadataRows = fullRows;
-            }
-          }
-        })
-        .catch((error) => {
-          console.warn("read persisted chat runtime after mutation failed", error);
-        })
-        .then(() => {
-          syncLocalChatSessionMetadata(
-            normalizedProjectId,
-            normalizedChatSessionId,
-            metadataRows,
-          );
-          return true;
-        });
-    }
-    syncLocalChatSessionMetadata(
-      normalizedProjectId,
-      normalizedChatSessionId,
-      metadataRows,
-    );
-    return true;
-  }).catch((error) => {
-    dirtyChatRuntimeSessionKeys.add(runtimeKey);
-    console.error("persist current chat runtime failed", error);
-    return false;
-  });
+            return true;
+          });
+      }
+      syncLocalChatSessionMetadata(
+        normalizedProjectId,
+        normalizedChatSessionId,
+        metadataRows,
+      );
+      return true;
+    })
+    .catch((error) => {
+      dirtyChatRuntimeSessionKeys.add(runtimeKey);
+      console.error("persist current chat runtime failed", error);
+      return false;
+    });
 }
 
 const chatHistoryHasMore = computed(() => {
@@ -14618,11 +14635,32 @@ function normalizeEmployeeDraftPayload(raw) {
       }))
       .filter((draft) => draft.title || draft.domain || draft.content),
     style_hints: normalizeStringList(item.style_hints || [], 12),
-    default_workflow: normalizeStringList(item.default_workflow || [], 12),
+    default_workflow: normalizeEmployeeDraftWorkflow(
+      item.default_workflow || [],
+    ),
     tool_usage_policy: String(item.tool_usage_policy || "").trim(),
     memory_scope: String(item.memory_scope || "project").trim() || "project",
     memory_retention_days: Number(item.memory_retention_days || 90),
   };
+}
+
+function normalizeEmployeeDraftWorkflow(value) {
+  const steps = Array.isArray(value) ? value : [];
+  return normalizeStringList(
+    steps.map((step) => {
+      if (!step || typeof step !== "object") return step;
+      return (
+        step.title ||
+        step.name ||
+        step.step ||
+        step.label ||
+        step.description ||
+        step.content ||
+        ""
+      );
+    }),
+    12,
+  );
 }
 
 function detectHighRiskSignals(text) {
@@ -15716,13 +15754,17 @@ async function acceptReviewedWorkspaceFile() {
 }
 
 async function acceptReviewedWorkspaceFiles(paths = []) {
-  const normalizedPaths = [...new Set(
-    (Array.isArray(paths) ? paths : [])
-      .map((path) => String(path || "").trim())
-      .filter(Boolean),
-  )];
+  const normalizedPaths = [
+    ...new Set(
+      (Array.isArray(paths) ? paths : [])
+        .map((path) => String(path || "").trim())
+        .filter(Boolean),
+    ),
+  ];
   const items = normalizedPaths
-    .map((path) => workspaceReviewItems.value.find((item) => item.path === path))
+    .map((path) =>
+      workspaceReviewItems.value.find((item) => item.path === path),
+    )
     .filter((item) => item && item.reviewStatus !== "accepted");
   if (!items.length) return;
   await ElMessageBox.confirm(
@@ -16670,7 +16712,10 @@ function setMessageFileChangesScope(item = {}) {
 }
 
 async function showMessageFileChangesOnly() {
-  if (!activeFileChangesMessageId.value || !activeFileChangesPaths.value.length) {
+  if (
+    !activeFileChangesMessageId.value ||
+    !activeFileChangesPaths.value.length
+  ) {
     return;
   }
   fileChangesScopeMode.value = "message";
@@ -16709,12 +16754,9 @@ watch(fileChangesDialogVisible, (visible) => {
   }
 });
 
-watch(
-  [selectedProjectId, currentChatSessionId],
-  () => {
-    resetFileChangesScope();
-  },
-);
+watch([selectedProjectId, currentChatSessionId], () => {
+  resetFileChangesScope();
+});
 
 function inferMessageProcessEntryKind(entry = {}) {
   const explicit = normalizeMessageProcessEntryKind(entry?.kind || "");
@@ -18570,7 +18612,10 @@ async function loadLocalProjectChatStoreProjects() {
         (Array.isArray(sessions) ? sessions : [])
           .map((session) => {
             const projectId = String(session?.project_id || "").trim();
-            if (!projectId || projectId === GLOBAL_PROJECT_CHAT_LOCAL_PROJECT_ID) {
+            if (
+              !projectId ||
+              projectId === GLOBAL_PROJECT_CHAT_LOCAL_PROJECT_ID
+            ) {
               return null;
             }
             return [
@@ -19373,19 +19418,25 @@ function localLiuAgentPermissionRequestFromChatResult(result = {}) {
 const localLiuAgentAssetPersistencePromises = new Map();
 
 function localLiuAgentAssetMimeType(kind) {
-  return {
-    image: "image/*",
-    video: "video/*",
-    audio: "audio/*",
-    file: "application/octet-stream",
-  }[kind] || "application/octet-stream";
+  return (
+    {
+      image: "image/*",
+      video: "video/*",
+      audio: "audio/*",
+      file: "application/octet-stream",
+    }[kind] || "application/octet-stream"
+  );
 }
 
 function localLiuAgentAssetFileName(sourceUrl) {
   try {
-    const pathName = new URL(String(sourceUrl || "").trim(), window.location.href)
-      .pathname;
-    const name = decodeURIComponent(pathName.split("/").filter(Boolean).pop() || "");
+    const pathName = new URL(
+      String(sourceUrl || "").trim(),
+      window.location.href,
+    ).pathname;
+    const name = decodeURIComponent(
+      pathName.split("/").filter(Boolean).pop() || "",
+    );
     return name.includes(".") ? name : "";
   } catch (_error) {
     return "";
@@ -19406,12 +19457,7 @@ async function persistLocalLiuAgentMediaUrls(row, media = {}, options = {}) {
     options.chatSessionId || currentChatSessionId.value || "",
   ).trim();
   const messageId = String(row?.id || "").trim();
-  if (
-    !hasNativeDesktopBridge() ||
-    !projectId ||
-    !chatSessionId ||
-    !messageId
-  ) {
+  if (!hasNativeDesktopBridge() || !projectId || !chatSessionId || !messageId) {
     return normalizedMedia;
   }
   const existingAssets = normalizePersistedMediaAssets(
@@ -19443,9 +19489,8 @@ async function persistLocalLiuAgentMediaUrls(row, media = {}, options = {}) {
         kind,
         sourceUrl,
       ].join("|");
-      let persistencePromise = localLiuAgentAssetPersistencePromises.get(
-        persistenceKey,
-      );
+      let persistencePromise =
+        localLiuAgentAssetPersistencePromises.get(persistenceKey);
       if (!persistencePromise) {
         persistencePromise = persistNativeProjectChatAsset({
           username: currentUsername.value,
@@ -22357,7 +22402,10 @@ function localLiuAgentResumeStateSnapshot(result = {}) {
       ? state.toolResults
       : [];
   const toolResultByCallId = new Map(
-    toolResults.map((result) => [String(result?.tool_call_id || result?.toolCallId || ""), result]),
+    toolResults.map((result) => [
+      String(result?.tool_call_id || result?.toolCallId || ""),
+      result,
+    ]),
   );
   const executionProgress = plannedTools.map((tool) => {
     const toolCallId = String(tool?.tool_call_id || tool?.toolCallId || "");
@@ -22365,7 +22413,11 @@ function localLiuAgentResumeStateSnapshot(result = {}) {
     return {
       tool_call_id: toolCallId,
       tool_name: String(tool?.name || tool?.tool_name || ""),
-      status: result ? (coerceBooleanSetting(result?.ok, false) ? "succeeded" : "failed") : "not_executed",
+      status: result
+        ? coerceBooleanSetting(result?.ok, false)
+          ? "succeeded"
+          : "failed"
+        : "not_executed",
       summary: String(result?.summary || tool?.summary || "").trim(),
       error_code: String(result?.error_code || result?.errorCode || "").trim(),
     };
@@ -22373,10 +22425,12 @@ function localLiuAgentResumeStateSnapshot(result = {}) {
   const snapshot = {
     run_state: state?.run_state || {},
     current_state: state?.current_state || {},
-    current_state_delta: state?.current_state_delta || state?.currentStateDelta || {},
+    current_state_delta:
+      state?.current_state_delta || state?.currentStateDelta || {},
     scheduler_state: state?.scheduler_state || state?.schedulerState || {},
     model_runtime: {
-      stopped_reason: agentLoop?.stopped_reason || agentLoop?.stoppedReason || "",
+      stopped_reason:
+        agentLoop?.stopped_reason || agentLoop?.stoppedReason || "",
       awaiting_permission: coerceBooleanSetting(
         agentLoop?.awaiting_permission ?? agentLoop?.awaitingPermission,
         false,
@@ -22414,7 +22468,8 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
     operationMatch?.row ||
     (operation?.rowId
       ? messages.value.find(
-          (item) => String(item?.id || "").trim() === String(operation.rowId).trim(),
+          (item) =>
+            String(item?.id || "").trim() === String(operation.rowId).trim(),
         )
       : null) ||
     null;
@@ -22520,11 +22575,7 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
     (recoveredRunStatus === "running" &&
       coerceBooleanSetting(recoveredRunState?.checkpoint_ready, false) &&
       coerceBooleanSetting(recoveredRunState?.recoverable, false));
-  if (
-    recovery?.ok &&
-    recoveredRunStatus &&
-    !recoveryAllowsResume
-  ) {
+  if (recovery?.ok && recoveredRunStatus && !recoveryAllowsResume) {
     upsertMessageOperation(row, {
       ...currentOperation,
       summary: "当前任务仍未进入可恢复状态",
@@ -23060,9 +23111,9 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
   const action = agentRuntimePermissionActionValue(actionKey);
   const currentOperation = latestAgentRuntimePermissionOperation(operation);
   const meta =
-  currentOperation?.meta && typeof currentOperation.meta === "object"
-    ? currentOperation.meta
-    : {};
+    currentOperation?.meta && typeof currentOperation.meta === "object"
+      ? currentOperation.meta
+      : {};
   if (!action) {
     ElMessage.warning("缺少权限上下文，无法继续");
     return;
@@ -23074,9 +23125,7 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
       meta.command_signature,
     ) || findMessageRowByOperationId(currentOperation.id);
   const summary =
-    action === "deny"
-      ? "已拒绝旧服务端工具调用"
-      : "旧服务端运行时授权已移除";
+    action === "deny" ? "已拒绝旧服务端工具调用" : "旧服务端运行时授权已移除";
   const detail =
     "该授权来自已移除的服务端 Agent Runtime，无法继续执行。请使用桌面本地 Agent 的授权卡片重新发起任务。";
   if (row) {
@@ -24280,10 +24329,7 @@ function applyDeleteTargetLocally(target) {
     endIndex = findConversationRoundEnd(startIndex, rows);
   }
   if (endIndex <= startIndex) return;
-  messages.value = [
-    ...rows.slice(0, startIndex),
-    ...rows.slice(endIndex),
-  ];
+  messages.value = [...rows.slice(0, startIndex), ...rows.slice(endIndex)];
   chatHistoryLoadedCount.value = messages.value.length;
 }
 
@@ -24374,17 +24420,18 @@ async function truncateConversationFromSource(source) {
   applyReplaySourceTruncateLocally(source);
   if (projectId && chatSessionId) {
     const remainingMessageIds = new Set(
-      messages.value.map((item) => String(item?.id || "").trim()).filter(Boolean),
+      messages.value
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean),
     );
     const deletedMessageIds = previousMessages
       .map((item) => String(item?.id || "").trim())
       .filter((id) => id && !remainingMessageIds.has(id));
     rememberCurrentChatSessionMessages();
-    const saved = await persistCurrentChatRuntimeNow(
-      projectId,
-      chatSessionId,
-      { replaceMessages: true, deletedMessageIds },
-    );
+    const saved = await persistCurrentChatRuntimeNow(projectId, chatSessionId, {
+      replaceMessages: true,
+      deletedMessageIds,
+    });
     if (saved !== true) {
       messages.value = previousMessages;
       chatHistoryLoadedCount.value = previousLoadedCount;
@@ -24427,23 +24474,21 @@ async function deleteMessageAt(messageIndex) {
   try {
     applyDeleteTargetLocally(target);
     const remainingMessageIds = new Set(
-      messages.value.map((item) => String(item?.id || "").trim()).filter(Boolean),
+      messages.value
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean),
     );
     const deletedMessageIds = previousMessages
       .map((item) => String(item?.id || "").trim())
       .filter((id) => id && !remainingMessageIds.has(id));
     rememberCurrentChatSessionMessages();
-    const saved = await persistCurrentChatRuntimeNow(
-      projectId,
-      chatSessionId,
-      {
-        // 普通删除只记录被删消息的 ID，不能把当前分页结果当成全量快照，
-        // 否则未加载的历史消息也会被 native merge 当成“已删除”。
-        replaceMessages: false,
-        deletedMessageIds,
-        rows: messages.value,
-      },
-    );
+    const saved = await persistCurrentChatRuntimeNow(projectId, chatSessionId, {
+      // 普通删除只记录被删消息的 ID，不能把当前分页结果当成全量快照，
+      // 否则未加载的历史消息也会被 native merge 当成“已删除”。
+      replaceMessages: false,
+      deletedMessageIds,
+      rows: messages.value,
+    });
     if (saved !== true) {
       messages.value = previousMessages;
       chatHistoryLoadedCount.value = previousLoadedCount;
@@ -24866,13 +24911,18 @@ function clearRouteCreateChatSessionFlag() {
 }
 
 function clearLocalRuntimeTaskRouteAction() {
-  if (!String(route.query[LOCAL_RUNTIME_TASK_ACTION_QUERY_KEY] || "").trim()) return;
+  if (!String(route.query[LOCAL_RUNTIME_TASK_ACTION_QUERY_KEY] || "").trim())
+    return;
   const nextQuery = { ...route.query };
   delete nextQuery[LOCAL_RUNTIME_TASK_ACTION_QUERY_KEY];
   void router.replace({ query: nextQuery }).catch(() => {});
 }
 
-function findLocalRuntimeResumeOperation(projectId, chatSessionId, localTaskId = "") {
+function findLocalRuntimeResumeOperation(
+  projectId,
+  chatSessionId,
+  localTaskId = "",
+) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedSessionId = String(chatSessionId || "").trim();
   for (let index = messages.value.length - 1; index >= 0; index -= 1) {
@@ -24883,7 +24933,8 @@ function findLocalRuntimeResumeOperation(projectId, chatSessionId, localTaskId =
       return (
         String(meta.local_liuagent_operation || "").trim() === "true" &&
         String(meta.local_liuagent_recoverable || "").trim() === "true" &&
-        String(meta.project_id || normalizedProjectId).trim() === normalizedProjectId &&
+        String(meta.project_id || normalizedProjectId).trim() ===
+          normalizedProjectId &&
         String(meta.chat_session_id || "").trim() === normalizedSessionId
       );
     });
@@ -25121,7 +25172,10 @@ async function upsertProjectChatRequirementRecord({
     payload.projectId || selectedProjectId.value || "",
   ).trim();
   const normalizedChatSessionId = String(
-    chatSessionId || payload.chat_session_id || currentChatSessionId.value || "",
+    chatSessionId ||
+      payload.chat_session_id ||
+      currentChatSessionId.value ||
+      "",
   ).trim();
   const rootGoal = String(
     payload.rootGoal || payload.root_goal || payload.title || "",
@@ -25864,10 +25918,7 @@ async function handleDirectProjectBindingSlashCommand(
 ) {
   const kind = String(slashCommand?.entry?.kind || "").trim();
   if (!["skill", "agent", "rule"].includes(kind)) return false;
-  if (
-    !projectToolModules.value.length &&
-    !runtimeExternalTools.value.length
-  ) {
+  if (!projectToolModules.value.length && !runtimeExternalTools.value.length) {
     await fetchProvidersByProject(selectedProjectId.value);
   }
   const userMessage = {
@@ -26380,28 +26431,6 @@ async function openEmployeeDraftCreateDialog(item, payload) {
   employeeDraftDialogVisible.value = true;
 }
 
-async function createEmployeeFromDraft(item) {
-  const rawDraft = extractEmployeeDraftPayload(item?.content || "");
-  if (!rawDraft) {
-    ElMessage.warning("当前消息里没有可创建的智能体草稿");
-    return;
-  }
-  try {
-    const draft = normalizeEmployeeDraftPayload(rawDraft);
-    const payload = {
-      ...draft,
-      add_to_current_project: Boolean(
-        String(selectedProjectId.value || "").trim(),
-      ),
-      memory_retention_days: Math.min(
-        365,
-        Math.max(7, Number(draft.memory_retention_days || 90)),
-      ),
-    };
-    await openEmployeeDraftCreateDialog(item, payload);
-  } catch {}
-}
-
 async function confirmEmployeeDraftCreation(options = {}) {
   const payload = employeeDraftDialogPayload.value;
   const item = employeeDraftDialogItem.value;
@@ -26409,30 +26438,25 @@ async function confirmEmployeeDraftCreation(options = {}) {
     employeeDraftDialogVisible.value = false;
     return;
   }
-  employeeDraftCreatingKey.value = getEmployeeDraftKey(item);
-  try {
-    const employee = await handleQuickCreateEmployee({
-      ...payload,
-      skills: Array.isArray(payload.skills) ? payload.skills : [],
-      rule_drafts: Array.isArray(payload.rule_drafts)
-        ? payload.rule_drafts
-        : [],
-      add_to_current_project:
-        options?.add_to_current_project ?? employeeDraftAddToProject.value,
-      auto_create_missing_skills:
-        options?.auto_create_missing_skills ??
-        employeeDraftAutoCreateSkills.value,
-      auto_create_missing_rules:
-        options?.auto_create_missing_rules ??
-        employeeDraftAutoCreateRules.value,
-    });
-    item.employeeDraftCreatedName = String(
-      employee?.name || payload.name || "",
-    ).trim();
-    employeeDraftDialogVisible.value = false;
-  } finally {
-    employeeDraftCreatingKey.value = "";
-  }
+  const employee = await handleQuickCreateEmployee({
+    ...payload,
+    skills: Array.isArray(payload.skills) ? payload.skills : [],
+    rule_drafts: Array.isArray(payload.rule_drafts)
+      ? payload.rule_drafts
+      : [],
+    add_to_current_project:
+      options?.add_to_current_project ?? employeeDraftAddToProject.value,
+    auto_create_missing_skills:
+      options?.auto_create_missing_skills ??
+      employeeDraftAutoCreateSkills.value,
+    auto_create_missing_rules:
+      options?.auto_create_missing_rules ??
+      employeeDraftAutoCreateRules.value,
+  });
+  item.employeeDraftCreatedName = String(
+    employee?.name || payload.name || "",
+  ).trim();
+  employeeDraftDialogVisible.value = false;
 }
 
 function applyStarterPrompt(prompt) {
@@ -26689,7 +26713,9 @@ async function handleDesktopDevtoolsShortcut(event) {
   try {
     await openNativeDesktopDevtools();
   } catch (err) {
-    const message = String(err?.message || err || "打开桌面开发者工具失败").trim();
+    const message = String(
+      err?.message || err || "打开桌面开发者工具失败",
+    ).trim();
     console.warn("打开桌面开发者工具失败", err);
     ElMessage.error(message);
   }
@@ -26775,11 +26801,11 @@ function showMessageContextMenu(event, references = []) {
     Boolean(singleReference?.url),
     Boolean(
       singleReference?.url &&
-        ["image", "video", "audio", "file"].includes(singleReference?.type),
+      ["image", "video", "audio", "file"].includes(singleReference?.type),
     ),
     Boolean(
       singleReference?.url &&
-        ["image", "video", "audio", "file"].includes(singleReference?.type),
+      ["image", "video", "audio", "file"].includes(singleReference?.type),
     ),
     normalized.some((item) => String(item?.content || "").trim()),
   ].filter(Boolean).length;
@@ -26818,9 +26844,14 @@ function buildAttachmentContextReference(message, attachment = {}, index = 0) {
     ).trim(),
     label: name || messageContextRefLabel("file", index),
     content: String(
-      attachment?.content || attachment?.extracted_text || attachment?.summary || "",
+      attachment?.content ||
+        attachment?.extracted_text ||
+        attachment?.summary ||
+        "",
     ).trim(),
-    mimeType: String(attachment?.mime_type || attachment?.mimeType || "").trim(),
+    mimeType: String(
+      attachment?.mime_type || attachment?.mimeType || "",
+    ).trim(),
   });
 }
 
@@ -26864,7 +26895,9 @@ function buildMessageContextReferences(message = {}) {
     });
   }
   for (const [index, attachment] of extractAttachments(message).entries()) {
-    references.push(buildAttachmentContextReference(message, attachment, index));
+    references.push(
+      buildAttachmentContextReference(message, attachment, index),
+    );
   }
   return references.filter(Boolean);
 }
@@ -26873,7 +26906,12 @@ function selectedMessageText(event) {
   const selection = window.getSelection?.();
   const text = String(selection?.toString?.() || "").trim();
   const row = event?.currentTarget;
-  if (!text || !row || !selection?.anchorNode || !row.contains(selection.anchorNode)) {
+  if (
+    !text ||
+    !row ||
+    !selection?.anchorNode ||
+    !row.contains(selection.anchorNode)
+  ) {
     return "";
   }
   return text;
@@ -26883,7 +26921,9 @@ function openMessageContextMenu(event, message) {
   const mediaElement = event?.target?.closest?.("img, video, audio");
   if (mediaElement) {
     const type = String(mediaElement.tagName || "").toLowerCase();
-    const url = String(mediaElement.currentSrc || mediaElement.src || "").trim();
+    const url = String(
+      mediaElement.currentSrc || mediaElement.src || "",
+    ).trim();
     if (["img", "video", "audio"].includes(type) && url) {
       openMediaContextMenu(
         event,
@@ -26962,15 +27002,16 @@ function contextMenuCanCopyFile() {
   const reference = contextMenuSingleReference();
   return Boolean(
     reference &&
-      ["image", "video", "audio", "file"].includes(reference.type) &&
-      String(reference.url || "").trim(),
+    ["image", "video", "audio", "file"].includes(reference.type) &&
+    String(reference.url || "").trim(),
   );
 }
 
 function contextMenuCopyableContent() {
-  return (Array.isArray(messageContextMenu.references)
-    ? messageContextMenu.references
-    : []
+  return (
+    Array.isArray(messageContextMenu.references)
+      ? messageContextMenu.references
+      : []
   )
     .map((item) => String(item?.content || "").trim())
     .filter(Boolean)
@@ -27026,7 +27067,9 @@ function contextReferenceFileName(reference = {}) {
   if (url && !url.startsWith("data:")) {
     try {
       const pathname = new URL(url, window.location.href).pathname;
-      const name = decodeURIComponent(pathname.split("/").filter(Boolean).pop() || "");
+      const name = decodeURIComponent(
+        pathname.split("/").filter(Boolean).pop() || "",
+      );
       if (name && name.includes(".")) return name;
     } catch (_error) {}
   }
@@ -27034,19 +27077,20 @@ function contextReferenceFileName(reference = {}) {
   const dataMimeType = url.startsWith("data:")
     ? url.slice(5, url.indexOf(";") > 5 ? url.indexOf(";") : url.indexOf(","))
     : "";
-  const extension = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-    "image/gif": "gif",
-    "image/webp": "webp",
-    "video/webm": "webm",
-    "audio/mpeg": "mp3",
-    "application/pdf": "pdf",
-    image: "png",
-    video: "mp4",
-    audio: "wav",
-    file: "bin",
-  }[dataMimeType || mimeType] ||
+  const extension =
+    {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/gif": "gif",
+      "image/webp": "webp",
+      "video/webm": "webm",
+      "audio/mpeg": "mp3",
+      "application/pdf": "pdf",
+      image: "png",
+      video: "mp4",
+      audio: "wav",
+      file: "bin",
+    }[dataMimeType || mimeType] ||
     {
       image: "png",
       video: "mp4",
@@ -27069,7 +27113,10 @@ function contextReferenceAuthorizationToken(reference = {}) {
 }
 
 async function copyResourceBlobInBrowser(reference = {}) {
-  if (!navigator?.clipboard?.write || typeof window.ClipboardItem !== "function") {
+  if (
+    !navigator?.clipboard?.write ||
+    typeof window.ClipboardItem !== "function"
+  ) {
     throw new Error("当前浏览器不支持复制文件本身，请使用桌面端");
   }
   const response = await fetch(String(reference?.url || "").trim());
@@ -27116,7 +27163,10 @@ async function downloadContextMenuResource() {
   closeMessageContextMenu();
   if (!reference) return;
   try {
-    if (hasNativeDesktopBridge() && !String(reference.url).startsWith("blob:")) {
+    if (
+      hasNativeDesktopBridge() &&
+      !String(reference.url).startsWith("blob:")
+    ) {
       try {
         const result = await saveNativeResourceFile({
           url: reference.url,
@@ -27145,7 +27195,10 @@ async function copyContextMenuFile() {
   closeMessageContextMenu();
   if (!reference) return;
   try {
-    if (hasNativeDesktopBridge() && !String(reference.url).startsWith("blob:")) {
+    if (
+      hasNativeDesktopBridge() &&
+      !String(reference.url).startsWith("blob:")
+    ) {
       try {
         const result = await copyNativeResourceFileToClipboard({
           url: reference.url,
@@ -27468,10 +27521,12 @@ async function buildPersistentUploadMediaUrls(
   kind = "image",
 ) {
   const attachmentById = new Map(
-    (Array.isArray(localAttachments) ? localAttachments : []).map((attachment) => [
-      String(attachment?.attachmentId || "").trim(),
-      attachment,
-    ]),
+    (Array.isArray(localAttachments) ? localAttachments : []).map(
+      (attachment) => [
+        String(attachment?.attachmentId || "").trim(),
+        attachment,
+      ],
+    ),
   );
   const mediaItems = (Array.isArray(uploadItems) ? uploadItems : []).filter(
     (item) => String(item?.kind || "").trim() === kind,
@@ -27554,7 +27609,8 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
     }
     try {
       if (
-        (isImage && (routingMode === "inline_image" || mediaImageToolConfigured)) ||
+        (isImage &&
+          (routingMode === "inline_image" || mediaImageToolConfigured)) ||
         isAudio
       ) {
         base.dataUrl = await readFileAsDataUrl(rawFile);
@@ -27732,7 +27788,9 @@ function toHistoryRows(sourceMessages, limit = 20) {
         .toLowerCase();
       const content = [
         String(item.content || "").trim(),
-        buildContextReferencesPrompt(item.contextRefs || item.context_refs || []),
+        buildContextReferencesPrompt(
+          item.contextRefs || item.context_refs || [],
+        ),
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -28116,10 +28174,7 @@ async function fetchSystemConfig() {
   );
   employeeDraftAutoRuleGenerationMaxCount.value = Math.min(
     6,
-    Math.max(
-      1,
-      Number(config?.employee_auto_rule_generation_max_count || 3),
-    ),
+    Math.max(1, Number(config?.employee_auto_rule_generation_max_count || 3)),
   );
 }
 
@@ -28210,7 +28265,10 @@ async function fetchGlobalProviders() {
   } catch (error) {
     console.warn("load server builtin model providers for chat failed", error);
   }
-  const availableProviders = mergeBuiltinModelProviders(localProviders, builtinProviders);
+  const availableProviders = mergeBuiltinModelProviders(
+    localProviders,
+    builtinProviders,
+  );
   if (availableProviders.length) {
     providers.value = availableProviders;
     const preferredProviderId = String(
@@ -28220,8 +28278,9 @@ async function fetchGlobalProviders() {
         "",
     ).trim();
     const selectedProvider =
-      availableProviders.find((item) => String(item?.id || "").trim() === preferredProviderId) ||
-      availableProviders[0];
+      availableProviders.find(
+        (item) => String(item?.id || "").trim() === preferredProviderId,
+      ) || availableProviders[0];
     selectedProviderId.value = String(selectedProvider?.id || "").trim();
     const modelNames = normalizeProviderModelNames(
       selectedProvider,
@@ -28285,7 +28344,43 @@ async function refreshModelProviders() {
   modelProviderSyncing.value = true;
   try {
     if (projectId) {
-      await fetchProvidersByProject(projectId);
+      const relations = getLocalProjectRelations(projectId);
+      const projectProviders = Array.isArray(relations.providers)
+        ? relations.providers
+        : [];
+      const localProviders = projectProviders.length
+        ? projectProviders
+        : readLocalEntities("llm_providers").filter(
+            (item) => item?.enabled !== false,
+          );
+      let builtinProviders = [];
+      try {
+        builtinProviders = await fetchBuiltinModelProviders();
+      } catch (error) {
+        console.warn(
+          "load server builtin model providers for project chat refresh failed",
+          error,
+        );
+      }
+      projectProviders.forEach((provider) => {
+        const providerId = String(
+          provider?.id || provider?.provider_id || "",
+        ).trim();
+        if (providerId) {
+          upsertLocalEntity("llm_providers", { ...provider, id: providerId });
+        }
+      });
+      const availableProviders = mergeBuiltinModelProviders(
+        localProviders,
+        builtinProviders,
+      );
+      if (availableProviders.length) {
+        providers.value = availableProviders;
+        saveProviderModelOfflineSnapshot(projectId);
+      } else {
+        applyProviderModelOfflineSnapshot(projectId);
+      }
+      modelProviderOffline.value = false;
     } else {
       await fetchGlobalProviders();
     }
@@ -28404,26 +28499,43 @@ async function fetchProvidersByProject(projectId) {
       const localEmployees = Array.isArray(relations.employees)
         ? relations.employees
         : [];
-      const localSkills = Array.isArray(relations.skills) ? relations.skills : [];
+      const localSkills = Array.isArray(relations.skills)
+        ? relations.skills
+        : [];
       const localRules = Array.isArray(relations.rules) ? relations.rules : [];
       const localTools = Array.isArray(relations.project_tools)
         ? relations.project_tools
         : [];
+      void syncPendingLocalAgentDirectories(
+        normalizedProjectId,
+        localEmployees,
+        localSkills,
+        localRules,
+      );
       const settings = applyLocalConnectorRuntimeSettings({
         ...CHAT_SETTINGS_DEFAULTS,
         ...localSettings,
-        selected_employee_ids: Array.isArray(localSettings.selected_employee_ids)
+        selected_employee_ids: Array.isArray(
+          localSettings.selected_employee_ids,
+        )
           ? localSettings.selected_employee_ids
-          : localEmployees.map((item) => String(item?.id || "").trim()).filter(Boolean),
-        agent_directory: localSettings.agent_directory || localProject.agent_directory || "",
-        skill_directory: localSettings.skill_directory || localProject.skill_directory || "",
-        rule_directory: localSettings.rule_directory || localProject.rule_directory || "",
+          : localEmployees
+              .map((item) => String(item?.id || "").trim())
+              .filter(Boolean),
+        agent_directory:
+          localSettings.agent_directory || localProject.agent_directory || "",
+        skill_directory:
+          localSettings.skill_directory || localProject.skill_directory || "",
+        rule_directory:
+          localSettings.rule_directory || localProject.rule_directory || "",
       });
       projectChatSettings.value = settings;
       projectEmployees.value = localEmployees;
       selectedEmployeeIds.value = normalizeChatSelectedEmployeeIds(
         settings.selected_employee_ids || [],
-        localEmployees.map((item) => String(item?.id || "").trim()).filter(Boolean),
+        localEmployees
+          .map((item) => String(item?.id || "").trim())
+          .filter(Boolean),
       );
       const projectProviders = Array.isArray(relations.providers)
         ? relations.providers
@@ -28437,13 +28549,22 @@ async function fetchProvidersByProject(projectId) {
       try {
         builtinProviders = await fetchBuiltinModelProviders();
       } catch (error) {
-        console.warn("load server builtin model providers for project chat failed", error);
+        console.warn(
+          "load server builtin model providers for project chat failed",
+          error,
+        );
       }
       projectProviders.forEach((provider) => {
-        const providerId = String(provider?.id || provider?.provider_id || "").trim();
-        if (providerId) upsertLocalEntity("llm_providers", { ...provider, id: providerId });
+        const providerId = String(
+          provider?.id || provider?.provider_id || "",
+        ).trim();
+        if (providerId)
+          upsertLocalEntity("llm_providers", { ...provider, id: providerId });
       });
-      const availableProviders = mergeBuiltinModelProviders(localProviders, builtinProviders);
+      const availableProviders = mergeBuiltinModelProviders(
+        localProviders,
+        builtinProviders,
+      );
       if (availableProviders.length) {
         providers.value = availableProviders;
       } else {
@@ -28460,14 +28581,18 @@ async function fetchProvidersByProject(projectId) {
       if (!projectWorkspaceDraft.value && workspacePathDraft.value) {
         projectWorkspaceDraft.value = workspacePathDraft.value;
       }
-      projectAiEntryFile.value = String(localProject.ai_entry_file || "").trim();
-      aiEntryFileDraft.value = projectAiEntryFile.value || DEFAULT_AI_ENTRY_FILE;
+      projectAiEntryFile.value = String(
+        localProject.ai_entry_file || "",
+      ).trim();
+      aiEntryFileDraft.value =
+        projectAiEntryFile.value || DEFAULT_AI_ENTRY_FILE;
       mcpModules.value = normalizeMcpModules({
         system: { project_related: localTools },
         local: { skills: localSkills, rules: localRules },
       });
       selectedProjectToolNames.value = normalizeStringList(
-        settings.enabled_project_tool_names || localTools.map((item) => item.tool_name),
+        settings.enabled_project_tool_names ||
+          localTools.map((item) => item.tool_name),
       );
       const systemConfig = readLocalSystemConfig();
       const preferredProviderId = String(
@@ -28598,10 +28723,18 @@ async function handleQuickCreateEmployee(payload) {
       language: String(payload.language || "zh-CN").trim(),
       skills: Array.isArray(payload.skills) ? payload.skills : [],
       rule_ids: Array.isArray(payload.rule_ids) ? payload.rule_ids : [],
-      rule_titles: Array.isArray(payload.rule_titles) ? payload.rule_titles : [],
-      rule_domains: Array.isArray(payload.rule_domains) ? payload.rule_domains : [],
-      rule_drafts: Array.isArray(payload.rule_drafts) ? payload.rule_drafts : [],
-      style_hints: Array.isArray(payload.style_hints) ? payload.style_hints : [],
+      rule_titles: Array.isArray(payload.rule_titles)
+        ? payload.rule_titles
+        : [],
+      rule_domains: Array.isArray(payload.rule_domains)
+        ? payload.rule_domains
+        : [],
+      rule_drafts: Array.isArray(payload.rule_drafts)
+        ? payload.rule_drafts
+        : [],
+      style_hints: Array.isArray(payload.style_hints)
+        ? payload.style_hints
+        : [],
       default_workflow: Array.isArray(payload.default_workflow)
         ? payload.default_workflow
         : [],
@@ -28616,14 +28749,23 @@ async function handleQuickCreateEmployee(payload) {
     };
 
     const employees = Array.isArray(relations.employees)
-      ? relations.employees.filter((item) => String(item?.id || "") !== employeeId)
+      ? relations.employees.filter(
+          (item) => String(item?.id || "") !== employeeId,
+        )
       : [];
     employees.push(employee);
 
     const skills = Array.isArray(relations.skills) ? [...relations.skills] : [];
-    for (const rawSkill of Array.isArray(payload.skills) ? payload.skills : []) {
+    for (const rawSkill of Array.isArray(payload.skills)
+      ? payload.skills
+      : []) {
       const skillId = String(rawSkill?.id || rawSkill || "").trim();
-      if (!skillId || skills.some((item) => String(item?.id || item?.name || "").trim() === skillId)) {
+      if (
+        !skillId ||
+        skills.some(
+          (item) => String(item?.id || item?.name || "").trim() === skillId,
+        )
+      ) {
         continue;
       }
       skills.push({
@@ -28639,10 +28781,15 @@ async function handleQuickCreateEmployee(payload) {
     }
 
     const rules = Array.isArray(relations.rules) ? [...relations.rules] : [];
-    for (const rawRule of Array.isArray(payload.rule_drafts) ? payload.rule_drafts : []) {
+    for (const rawRule of Array.isArray(payload.rule_drafts)
+      ? payload.rule_drafts
+      : []) {
       const title = String(rawRule?.title || "").trim();
       if (!title) continue;
-      const ruleId = String(rawRule?.id || `local-rule-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`).trim();
+      const ruleId = String(
+        rawRule?.id ||
+          `local-rule-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      ).trim();
       const rule = {
         id: ruleId,
         title,
@@ -28654,23 +28801,64 @@ async function handleQuickCreateEmployee(payload) {
       upsertLocalEntity("rules", rule);
     }
 
-    upsertLocalEntity("employees", employee);
+    const selectedSkills = employee.skills.map((skillId) => {
+      const id = String(skillId?.id || skillId || "").trim();
+      return (
+        skills.find(
+          (item) => String(item?.id || item?.name || "").trim() === id,
+        ) || { id, name: id }
+      );
+    }).filter((item) => String(item?.id || "").trim());
+    const selectedRules = rules.filter((rule) => {
+      const ruleId = String(rule?.id || "").trim();
+      return (
+        employee.rule_ids.includes(ruleId) ||
+        employee.rule_drafts.some(
+          (draft) => String(draft?.title || "").trim() === String(rule?.title || "").trim(),
+        )
+      );
+    });
+    employee.rule_ids = [...new Set(selectedRules.map((rule) => String(rule.id || "").trim()).filter(Boolean))];
+    employee.rule_bindings = selectedRules.map((rule) => ({
+      id: String(rule.id || "").trim(),
+      title: String(rule.title || rule.id || "").trim(),
+      domain: String(rule.domain || "").trim(),
+    }));
+
+    const { employee: directoryEmployee, directories } = await saveLocalAgentDirectoryResources({
+      employee,
+      skills: selectedSkills,
+      rules: selectedRules,
+    });
+    Object.assign(projectChatSettings.value, {
+      agent_directory: directories.agent,
+      skill_directory: directories.skill,
+      rule_directory: directories.rule,
+    });
+    upsertLocalEntity("employees", directoryEmployee);
+    const directoryRelations = getLocalProjectRelations(projectId);
+    const directoryEmployees = Array.isArray(directoryRelations.employees)
+      ? directoryRelations.employees.filter(
+          (item) => String(item?.id || "").trim() !== employeeId,
+        )
+      : [];
+    directoryEmployees.push(directoryEmployee);
     updateLocalProjectRelations(projectId, {
-      employees,
+      employees: directoryEmployees,
       skills,
       rules,
       chat_settings: {
-        ...(relations.chat_settings || {}),
+        ...(directoryRelations.chat_settings || {}),
         selected_employee_ids: [
           ...new Set([
-            ...(relations.chat_settings?.selected_employee_ids || []),
+            ...(directoryRelations.chat_settings?.selected_employee_ids || []),
             employeeId,
           ]),
         ],
       },
     });
-    projectEmployees.value = employees;
-    selectedEmployeeIds.value = employees.map((item) => String(item.id));
+    projectEmployees.value = directoryEmployees;
+    selectedEmployeeIds.value = directoryEmployees.map((item) => String(item.id));
     employeeDraftCatalog.value = {
       ...employeeDraftCatalog.value,
       skills: skills.map((skill) => ({
@@ -28686,13 +28874,71 @@ async function handleQuickCreateEmployee(payload) {
       })),
       loaded_at: Date.now(),
     };
-    ElMessage.success(`智能体「${employee.name}」已加入当前项目`);
-    return employee;
+    ElMessage.success(`智能体「${directoryEmployee.name}」已加入当前项目并同步本地目录`);
+    return directoryEmployee;
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "创建智能体失败");
     throw err;
   } finally {
     employeeCreateSubmitting.value = false;
+  }
+}
+
+async function syncPendingLocalAgentDirectories(
+  projectId,
+  employees = [],
+  skills = [],
+  rules = [],
+) {
+  if (!hasNativeDesktopBridge()) return;
+  for (const employee of Array.isArray(employees) ? employees : []) {
+    const employeeId = String(employee?.id || "").trim();
+    if (!employeeId || String(employee?.file_path || "").trim()) continue;
+    if (localAgentDirectorySyncingIds.has(employeeId)) continue;
+    localAgentDirectorySyncingIds.add(employeeId);
+    try {
+      const skillIds = Array.isArray(employee?.skills) ? employee.skills : [];
+      const selectedSkills = skillIds
+        .map((rawSkill) => {
+          const skillId = String(rawSkill?.id || rawSkill || "").trim();
+          return (
+            skills.find(
+              (item) => String(item?.id || item?.name || "").trim() === skillId,
+            ) || { id: skillId, name: skillId }
+          );
+        })
+        .filter((item) => String(item?.id || "").trim());
+      const boundRuleIds = new Set(
+        [
+          ...(Array.isArray(employee?.rule_ids) ? employee.rule_ids : []),
+          ...(Array.isArray(employee?.rule_bindings)
+            ? employee.rule_bindings.map((item) => item?.id || item)
+            : []),
+        ]
+          .map((item) => String(item || "").trim())
+          .filter(Boolean),
+      );
+      const draftRuleTitles = new Set(
+        (Array.isArray(employee?.rule_drafts) ? employee.rule_drafts : [])
+          .map((item) => String(item?.title || "").trim())
+          .filter(Boolean),
+      );
+      const selectedRules = rules.filter(
+        (rule) =>
+          boundRuleIds.has(String(rule?.id || "").trim()) ||
+          draftRuleTitles.has(String(rule?.title || "").trim()),
+      );
+      const { employee: savedEmployee } = await saveLocalAgentDirectoryResources({
+        employee: { ...employee, project_id: projectId },
+        skills: selectedSkills,
+        rules: selectedRules,
+      });
+      upsertLocalEntity("employees", savedEmployee);
+    } catch (error) {
+      console.warn("同步本地智能体目录失败", error);
+    } finally {
+      localAgentDirectorySyncingIds.delete(employeeId);
+    }
   }
 }
 
@@ -28999,13 +29245,12 @@ function syncLocalChatSessionMetadata(projectId, chatSessionId, rows) {
     .slice(0, 120);
   const nextLastMessageId = String(lastMessage?.id || "").trim();
   const currentLastMessageId = String(current?.last_message_id || "").trim();
-  const currentPreview = String(
-    current?.preview || current?.last_message || "",
-  )
+  const currentPreview = String(current?.preview || current?.last_message || "")
     .trim()
     .slice(0, 120);
   const messageActivityChanged = currentLastMessageId
-    ? currentLastMessageId !== nextLastMessageId || currentPreview !== nextPreview
+    ? currentLastMessageId !== nextLastMessageId ||
+      currentPreview !== nextPreview
     : currentPreview !== nextPreview ||
       Number(current?.message_count || 0) < messageRows.length;
   const now = messageActivityChanged ? new Date().toISOString() : "";
@@ -29041,10 +29286,7 @@ function removeChatSessionFromVisibleState(projectId, chatSessionId) {
     String(item?.id || "").trim() !== normalizedSessionId;
   if (normalizedProjectId === String(selectedProjectId.value || "").trim()) {
     chatSessions.value = (chatSessions.value || []).filter(removeSession);
-    setProjectChatSessionsMemoryCache(
-      normalizedProjectId,
-      chatSessions.value,
-    );
+    setProjectChatSessionsMemoryCache(normalizedProjectId, chatSessions.value);
     return;
   }
 
@@ -29119,7 +29361,9 @@ async function fetchChatSessions(
       routeChatTarget().localRuntimeTask &&
       preferred &&
       !isChatSessionDeleted(projectId, preferred) &&
-      !storedSessions.some((session) => String(session?.id || "").trim() === preferred)
+      !storedSessions.some(
+        (session) => String(session?.id || "").trim() === preferred,
+      )
     ) {
       storedSessions = [
         {
@@ -29137,7 +29381,10 @@ async function fetchChatSessions(
     }
     const remoteSessions = [];
     const mergedSessions = new Map(
-      storedSessions.map((session) => [String(session.id || "").trim(), session]),
+      storedSessions.map((session) => [
+        String(session.id || "").trim(),
+        session,
+      ]),
     );
     remoteSessions.forEach((session) => {
       const sessionId = String(session.id || "").trim();
@@ -29544,7 +29791,9 @@ async function createChatSession(options = {}) {
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const chatSessionId = `chat-session-${String(randomId).replace(/[^A-Za-z0-9-]/g, "").slice(0, 48)}`;
+    const chatSessionId = `chat-session-${String(randomId)
+      .replace(/[^A-Za-z0-9-]/g, "")
+      .slice(0, 48)}`;
     const data = null;
     const session = normalizeChatSession({
       ...(data?.session || {}),
@@ -31326,7 +31575,7 @@ function rejectPendingRequests(reason, options = {}) {
   const message = String(reason || "连接已断开").trim();
   const hasScope = Boolean(
     String(options?.projectId || "").trim() ||
-      String(options?.chatSessionId || "").trim(),
+    String(options?.chatSessionId || "").trim(),
   );
   const items = hasScope
     ? rejectAndCleanupRequests(reason, options)
@@ -31428,8 +31677,12 @@ async function pickChatRuntimeDirectory(kind) {
     },
   }[kind];
   if (!directoryConfig) return;
-  const { pickingState, settingKey, label: directoryLabel, placeholder } =
-    directoryConfig;
+  const {
+    pickingState,
+    settingKey,
+    label: directoryLabel,
+    placeholder,
+  } = directoryConfig;
   const initialPath = String(
     projectChatSettings.value[settingKey] ||
       resolveNativeRuntimeWorkspacePath() ||
@@ -31627,7 +31880,9 @@ async function saveProjectAiEntryFile(aiEntryFileOverride = null) {
           ? { ...item, ai_entry_file: aiEntryFile }
           : item,
       );
-      ElMessage.success(aiEntryFile ? "AI 入口文件已保存" : "已清空 AI 入口文件");
+      ElMessage.success(
+        aiEntryFile ? "AI 入口文件已保存" : "已清空 AI 入口文件",
+      );
       return;
     }
     throw new Error("项目 AI 入口文件仅支持本地项目");
@@ -31657,7 +31912,9 @@ function normalizePersistedMediaAssets(values) {
     if (!value || typeof value !== "object") continue;
     const assetId = String(value.assetId || value.asset_id || "").trim();
     const localPath = String(value.localPath || value.local_path || "").trim();
-    const displayUrl = String(value.displayUrl || value.display_url || "").trim();
+    const displayUrl = String(
+      value.displayUrl || value.display_url || "",
+    ).trim();
     if (!assetId && !localPath && !displayUrl) continue;
     const key = assetId || localPath || displayUrl;
     if (seen.has(key)) continue;
@@ -31712,7 +31969,9 @@ async function createDefaultAiEntryFile() {
       });
       if (Number(existingFile?.size || 0) > 0) {
         await saveProjectAiEntryFile(DEFAULT_AI_ENTRY_FILE);
-        ElMessage.success(`${DEFAULT_AI_ENTRY_FILE} 已存在，已设为 AI 入口文件`);
+        ElMessage.success(
+          `${DEFAULT_AI_ENTRY_FILE} 已存在，已设为 AI 入口文件`,
+        );
         return;
       }
     } catch (err) {
@@ -31737,7 +31996,9 @@ async function createDefaultAiEntryFile() {
     ElMessage.success(`${savedPath} 已创建`);
   } catch (err) {
     ElMessage.error(
-      String(err?.detail || err?.message || err || "创建 AIENTRY.md 失败").trim(),
+      String(
+        err?.detail || err?.message || err || "创建 AIENTRY.md 失败",
+      ).trim(),
     );
   } finally {
     aiEntryFileCreating.value = false;
@@ -31903,7 +32164,9 @@ async function sendProjectChatRequest({
       modelName,
     });
     return {
-      requestId: String(localResult?.sessionId || localResult?.session_id || "").trim(),
+      requestId: String(
+        localResult?.sessionId || localResult?.session_id || "",
+      ).trim(),
       cancelled: Boolean(localResult?.cancelled),
       localResult,
     };
@@ -32233,9 +32496,13 @@ async function sendLocalLiuAgentChatRequest({
     userMessageId: userMessage.id,
     title: displayUserMessageContent || finalUserPrompt,
     status: "running",
-    currentStep: resumeFromCheckpoint ? "从 checkpoint 继续执行" : "正在调用本地 AI Runtime",
+    currentStep: resumeFromCheckpoint
+      ? "从 checkpoint 继续执行"
+      : "正在调用本地 AI Runtime",
     workspacePath,
-    originWindowId: new URLSearchParams(window.location.search).get("desktop_window_id") || "",
+    originWindowId:
+      new URLSearchParams(window.location.search).get("desktop_window_id") ||
+      "",
     recoverable: true,
   });
   activeRun.localTaskId = localTask.id;
@@ -32389,7 +32656,9 @@ async function sendLocalLiuAgentChatRequest({
     updateLocalAiTask(activeRun.localTaskId, {
       status: "interrupted",
       currentStep: "已暂停，等待继续执行",
-      lastOutput: String(assistantMessage.content || LOCAL_LIUAGENT_PAUSE_SUMMARY).trim(),
+      lastOutput: String(
+        assistantMessage.content || LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      ).trim(),
       recoverable: true,
     });
     const recoveryReason = "manual_pause";
@@ -32935,14 +33204,15 @@ async function cancelActiveLocalLiuAgentRun(options = {}) {
   const chatSessionId = String(currentChatSessionId.value || "").trim();
   const run = localLiuAgentActiveRunForChatSession(chatSessionId);
   if (!run || run.cancelled) return false;
-  const paused = options.runtimeAlreadyPaused === true
-    ? true
-    : await pauseNativeLiuAgentLocalChat({
-        projectId: run.projectId || selectedProjectId.value,
-        chatSessionId,
-        workspacePath: String(run.workspacePath || "").trim(),
-        reason: "manual_pause",
-      });
+  const paused =
+    options.runtimeAlreadyPaused === true
+      ? true
+      : await pauseNativeLiuAgentLocalChat({
+          projectId: run.projectId || selectedProjectId.value,
+          chatSessionId,
+          workspacePath: String(run.workspacePath || "").trim(),
+          reason: "manual_pause",
+        });
   if (!paused) return false;
   run.cancelled = true;
   run.pauseRequested = true;
@@ -33290,7 +33560,8 @@ async function doSend(options = {}) {
     ElMessage.error(error?.message || "引用图片读取失败，请重新添加");
     return;
   }
-  const contextReferencesPrompt = buildContextReferencesPrompt(activeContextRefs);
+  const contextReferencesPrompt =
+    buildContextReferencesPrompt(activeContextRefs);
   let activeChatSessionId = String(currentChatSessionId.value || "").trim();
   const slashCommand = activeComposerToolCommand.value
     ? {
@@ -33434,7 +33705,9 @@ async function doSend(options = {}) {
     }
   }
   if (contextReferencesPrompt) {
-    userPrompt = [userPrompt, contextReferencesPrompt].filter(Boolean).join("\n\n");
+    userPrompt = [userPrompt, contextReferencesPrompt]
+      .filter(Boolean)
+      .join("\n\n");
   }
   const assistAction = effectiveAssistAction;
   const assistToolNames = normalizeStringList(
@@ -33512,16 +33785,17 @@ async function doSend(options = {}) {
         ? false
         : projectChatToolsExplicitlyEnabled();
   const effectiveSelectedProjectToolNames = effectiveAutoUseTools
-      ? normalizeStringList([
+    ? normalizeStringList([
         ...selectedProjectToolNames.value,
         ...activeCommandToolNames,
         ...operationToolNames,
       ])
     : [];
-  const displayUserMessageContent = text ||
-      (activeContextRefs.length
-        ? `（引用了 ${activeContextRefs.length} 项历史内容）`
-        : "（发送了附件）");
+  const displayUserMessageContent =
+    text ||
+    (activeContextRefs.length
+      ? `（引用了 ${activeContextRefs.length} 项历史内容）`
+      : "（发送了附件）");
   if (!String(displayUserMessageContent || "").trim()) {
     ElMessage.warning("请输入内容或添加附件");
     return;
@@ -33898,7 +34172,10 @@ async function resolveAvailableProjectId(preferredId = "") {
   const preferredProject = normalizedPreferred
     ? candidates.find((item) => item.id === normalizedPreferred) || null
     : null;
-  if (preferredProject && (await isProjectWorkspaceAvailable(preferredProject))) {
+  if (
+    preferredProject &&
+    (await isProjectWorkspaceAvailable(preferredProject))
+  ) {
     return normalizedPreferred;
   }
   for (const project of candidates) {
@@ -33907,7 +34184,9 @@ async function resolveAvailableProjectId(preferredId = "") {
       return project.id;
     }
   }
-  return preferredProject ? normalizedPreferred : String(candidates[0]?.id || "").trim();
+  return preferredProject
+    ? normalizedPreferred
+    : String(candidates[0]?.id || "").trim();
 }
 
 async function loadSelectedProjectConversation(projectId) {
@@ -34242,6 +34521,10 @@ onMounted(async () => {
       void refreshModelProviders();
     }
   };
+  handleLocalProjectRelationsUpdated = () => {
+    const projectId = String(selectedProjectId.value || "").trim();
+    if (projectId) void refreshModelProviders();
+  };
   window.addEventListener(
     "local-mcp-config-updated",
     handleLocalMcpConfigUpdated,
@@ -34250,9 +34533,10 @@ onMounted(async () => {
     "local-web-tools-config-updated",
     handleLocalWebToolsConfigUpdated,
   );
+  window.addEventListener("local-projects-updated", handleLocalProjectsUpdated);
   window.addEventListener(
-    "local-projects-updated",
-    handleLocalProjectsUpdated,
+    "local-project-relations-updated",
+    handleLocalProjectRelationsUpdated,
   );
   window.addEventListener("storage", handleLocalProjectsStorage);
   window.addEventListener("storage", handleLocalProvidersStorage);
@@ -34261,7 +34545,11 @@ onMounted(async () => {
   window.addEventListener("keydown", handleDesktopDevtoolsShortcut);
   window.addEventListener("pointerdown", handleContextMenuGlobalPointerDown);
   window.addEventListener("keydown", handleContextMenuGlobalKeydown);
-  window.addEventListener("contextmenu", handleTeleportedResourceContextMenu, true);
+  window.addEventListener(
+    "contextmenu",
+    handleTeleportedResourceContextMenu,
+    true,
+  );
   window.addEventListener("scroll", closeMessageContextMenu, true);
   void hydrateNativeDesktopRuntimeInfo();
   void startNativeLiuAgentRuntimeEventSubscription();
@@ -34323,12 +34611,23 @@ onUnmounted(() => {
     window.removeEventListener("storage", handleLocalProvidersStorage);
     handleLocalProvidersStorage = null;
   }
+  if (handleLocalProjectRelationsUpdated) {
+    window.removeEventListener(
+      "local-project-relations-updated",
+      handleLocalProjectRelationsUpdated,
+    );
+    handleLocalProjectRelationsUpdated = null;
+  }
   window.removeEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.removeEventListener("keydown", handleWorkingStatusKeydown);
   window.removeEventListener("keydown", handleDesktopDevtoolsShortcut);
   window.removeEventListener("pointerdown", handleContextMenuGlobalPointerDown);
   window.removeEventListener("keydown", handleContextMenuGlobalKeydown);
-  window.removeEventListener("contextmenu", handleTeleportedResourceContextMenu, true);
+  window.removeEventListener(
+    "contextmenu",
+    handleTeleportedResourceContextMenu,
+    true,
+  );
   window.removeEventListener("scroll", closeMessageContextMenu, true);
   clearExternalAgentStatusRefreshTimer();
   stopExternalAgentBridgeTaskPolling();
