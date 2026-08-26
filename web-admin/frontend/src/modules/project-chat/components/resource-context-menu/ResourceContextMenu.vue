@@ -14,6 +14,15 @@
       <button v-if="canOpen" type="button" role="menuitem" @click="$emit('open')">
         <span>{{ openLabel }}</span>
       </button>
+      <button
+        v-if="canRemove"
+        type="button"
+        role="menuitem"
+        class="resource-context-menu__danger"
+        @click="$emit('remove')"
+      >
+        <span>{{ removeLabel }}</span>
+      </button>
       <button v-if="canDownload" type="button" role="menuitem" @click="$emit('download')">
         <span>下载 / 另存为</span>
       </button>
@@ -40,6 +49,8 @@ const props = defineProps({
   canAppend: { type: Boolean, default: false },
   canOpen: { type: Boolean, default: false },
   openLabel: { type: String, default: "在新窗口打开" },
+  canRemove: { type: Boolean, default: false },
+  removeLabel: { type: String, default: "移除" },
   canDownload: { type: Boolean, default: false },
   canCopyAddress: { type: Boolean, default: false },
   canCopyFile: { type: Boolean, default: false },
@@ -49,6 +60,7 @@ const props = defineProps({
 defineEmits([
   "append",
   "open",
+  "remove",
   "download",
   "copy-address",
   "copy-file",
@@ -94,6 +106,14 @@ const hasResourceActions = computed(
 
 .resource-context-menu button:hover {
   background: #eef4ff;
+}
+
+.resource-context-menu button.resource-context-menu__danger {
+  color: #dc2626;
+}
+
+.resource-context-menu button.resource-context-menu__danger:hover {
+  background: #fef2f2;
 }
 
 .resource-context-menu button span {

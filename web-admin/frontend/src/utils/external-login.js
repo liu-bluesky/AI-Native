@@ -45,7 +45,12 @@ export async function loginWithExternalAccount({ account, password }) {
   const response = await fetch(EXTERNAL_LOGIN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ account, password: await encryptPassword(password) }),
+    body: JSON.stringify({
+      account,
+      password: await encryptPassword(password),
+      client_platform: 'desktop_agent',
+      client_domain: typeof window !== 'undefined' ? window.location.host : '',
+    }),
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || '账号或密码错误')

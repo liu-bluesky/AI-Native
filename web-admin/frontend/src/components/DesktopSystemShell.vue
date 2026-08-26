@@ -139,8 +139,10 @@
         :x="desktopShortcutContextMenu.x"
         :y="desktopShortcutContextMenu.y"
         :can-open="Boolean(desktopShortcutContextMenu.item)"
+        :can-remove="Boolean(desktopShortcutContextMenu.item)"
         open-label="打开"
         @open="openDesktopShortcutFromContextMenu"
+        @remove="removeDesktopShortcutFromContextMenu"
       />
     </div>
   </div>
@@ -229,6 +231,7 @@ const emit = defineEmits([
   "unpin-dock-app",
   "reorder-dock-apps",
   "update-desktop-item-layout",
+  "remove-desktop-shortcut",
 ]);
 
 const RESIZE_HANDLES = ["n", "e", "s", "w", "ne", "nw", "se", "sw"];
@@ -679,7 +682,7 @@ function closeDesktopShortcutContextMenu() {
 
 function openDesktopShortcutContextMenu(event, item) {
   const menuWidth = 220;
-  const menuHeight = 62;
+  const menuHeight = 100;
   desktopShortcutContextMenu.value = {
     visible: true,
     x: Math.max(8, Math.min(Number(event?.clientX || 0), Number(window.innerWidth || 0) - menuWidth - 8)),
@@ -692,6 +695,12 @@ function openDesktopShortcutFromContextMenu() {
   const item = desktopShortcutContextMenu.value.item;
   closeDesktopShortcutContextMenu();
   if (item) emit("launch-app", item);
+}
+
+function removeDesktopShortcutFromContextMenu() {
+  const item = desktopShortcutContextMenu.value.item;
+  closeDesktopShortcutContextMenu();
+  if (item) emit("remove-desktop-shortcut", item);
 }
 
 function handleDesktopShortcutContextMenuPointerDown(event) {

@@ -52,8 +52,14 @@
           <strong>{{ app.label }}</strong>
           <small>{{ app.summary }}</small>
         </button>
-        <button type="button" class="workbench-app__pin" @click="pinApp(app)">
-          加入 Dock
+        <button
+          type="button"
+          class="workbench-app__pin"
+          :class="{ 'is-added': isDesktopShortcutAdded(app.id) }"
+          :disabled="isDesktopShortcutAdded(app.id)"
+          @click="pinApp(app)"
+        >
+          {{ isDesktopShortcutAdded(app.id) ? "已加入桌面" : "加入桌面" }}
         </button>
       </article>
     </div>
@@ -61,22 +67,26 @@
 </template>
 
 <script setup>
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import { ElMessage } from "element-plus";
 import {
   canAccessDesktopApp,
   DESKTOP_LAUNCHER_ITEMS,
   getDesktopAppById,
+  getStoredDesktopShortcutAppIds,
   resolveDesktopLaunchPath,
+  setStoredDesktopShortcutAppIds,
 } from "@/utils/desktop-shell.js";
 import {
   isEmbeddedDesktopApp,
   openRouteInDesktop,
-  requestDesktopPinApp,
+  requestDesktopShortcutApp,
 } from "@/utils/desktop-app-bridge.js";
 
 const router = useRouter();
 const embeddedMode = isEmbeddedDesktopApp() || Boolean(router?.__aiEmployeeDesktopWindow?.windowId);
+const desktopShortcutAppIds = ref(getStoredDesktopShortcutAppIds());
 
 function desktopIconStyle(app) {
   return {
@@ -102,11 +112,36 @@ function openApp(appId) {
   });
 }
 
-function pinApp(app) {
-  requestDesktopPinApp(app.id, {
-    title: app.label,
-  }, router);
+function isDesktopShortcutAdded(appId) {
+  return desktopShortcutAppIds.value.includes(String(appId || "").trim());
 }
+
+function pinApp(app) {
+  const appId = String(app?.id || "").trim();
+  if (!appId || isDesktopShortcutAdded(appId)) return;
+  if (requestDesktopShortcutApp(appId, { title: app.label }, router)) {
+    desktopShortcutAppIds.value = setStoredDesktopShortcutAppIds([
+      ...desktopShortcutAppIds.value,
+      appId,
+    ]);
+    ElMessage.success(`已加入应用桌面：${app.label}`);
+    return;
+  }
+  ElMessage.warning("请从 AI 员工工厂桌面内打开工作台后再加入桌面");
+}
+
+function syncDesktopShortcutState(event) {
+  if (event?.key !== "desktop_shortcut_app_ids") return;
+  desktopShortcutAppIds.value = getStoredDesktopShortcutAppIds();
+}
+
+onMounted(() => {
+  window.addEventListener("storage", syncDesktopShortcutState);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("storage", syncDesktopShortcutState);
+});
 
 const apps = computed(() =>
   DESKTOP_LAUNCHER_ITEMS.filter(
@@ -362,6 +397,11 @@ const apps = computed(() =>
 .workbench-app__pin:focus-visible {
   opacity: 1;
   transform: translateY(0);
+}
+
+.workbench-app__pin.is-added {
+  background: rgba(22, 163, 74, 0.9);
+  cursor: default;
 }
 
 .workbench-app__icon {

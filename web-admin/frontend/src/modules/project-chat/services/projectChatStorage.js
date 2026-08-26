@@ -318,14 +318,14 @@ export function readLocalWorkSessionSnapshots(projectId) {
 
 export function resolveCurrentUsername() {
   const profile = getStoredAuthProfile();
-  return String(profile.username || "anonymous").trim() || "anonymous";
+  return String(profile.username || "").trim();
 }
 
 export function guideTourStorageKey(surface, username, roleId) {
   return [
     GUIDE_TOUR_STORAGE_PREFIX,
     String(surface || "").trim() || "chat",
-    String(username || "").trim() || "anonymous",
+    String(username || "").trim() || "unauthenticated",
     String(roleId || "").trim() || "user",
   ].join(".");
 }

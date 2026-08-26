@@ -19,6 +19,7 @@ const createDesktopAppRoutes = () => [
       { path: 'desktop/task-manager', component: () => import('../views/desktop/DesktopTaskManager.vue') },
       { path: 'work-logs', component: () => import('../views/desktop/ProjectWorkLog.vue') },
       { path: 'tasks', component: () => import('../views/tasks/TaskManager.vue') },
+      { path: 'feedback', component: () => import('../views/desktop/DesktopFeedback.vue') },
       { path: 'settings-center', component: () => import('../views/desktop/SettingsLauncher.vue') },
       { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
       { path: 'desktop', redirect: '/workbench' },

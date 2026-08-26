@@ -526,6 +526,7 @@ import {
   getOwnershipDeniedMessage,
 } from "@/utils/ownership.js";
 import ProviderCapabilityTestResults from "@/components/llm/ProviderCapabilityTestResults.vue";
+import { fetchBuiltinModelProviders } from "@/services/builtin-model-providers.js";
 import {
   buildModelTypeMetaMap,
   FALLBACK_MODEL_TYPE_OPTIONS,
@@ -1255,7 +1256,14 @@ async function fetchProviders() {
   loading.value = true;
   try {
     migrateLegacyLocalProviders();
-    providers.value = readLocalProviders();
+    const [localProviders, builtinProviders] = await Promise.all([
+      Promise.resolve(readLocalProviders()),
+      fetchBuiltinModelProviders().catch((error) => {
+        console.warn("load server builtin model providers failed", error);
+        return [];
+      }),
+    ]);
+    providers.value = [...builtinProviders, ...localProviders];
   } catch (error) {
     console.error("load local model providers failed", error);
     providers.value = [];
@@ -1465,7 +1473,8 @@ function canManageProvider(row) {
   return canManageRecord(row);
 }
 
-function getProviderActions() {
+function getProviderActions(row) {
+  if (row?.is_builtin_provider) return [];
   return [
     { key: "test", label: "测试连接", type: "success" },
     { key: "duplicate", label: "复制", type: "warning" },

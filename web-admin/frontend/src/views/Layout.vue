@@ -2,7 +2,7 @@
   <DesktopSystemShell
     :dock-items="dockItems"
     :launcher-items="launcherItems"
-    :desktop-items="launcherItems"
+    :desktop-items="desktopItems"
     :desktop-item-layout="desktopItemLayout"
     :windows="desktopWindows"
     :active-window-id="activeWindowId"
@@ -22,6 +22,7 @@
     @unpin-dock-app="unpinDockApp"
     @reorder-dock-apps="reorderDockApps"
     @update-desktop-item-layout="persistDesktopItemLayout"
+    @remove-desktop-shortcut="removeDesktopShortcutApp"
   >
     <template #window="{ window }">
       <div
@@ -59,6 +60,7 @@ import {
   getDesktopAppById,
   getStoredDesktopDockAppIds,
   getStoredDesktopDockOrder,
+  getStoredDesktopShortcutAppIds,
   getStoredDesktopShortcutLayout,
   getStoredDesktopWindowSession,
   resolveDesktopWallpaperAppearance,
@@ -67,6 +69,7 @@ import {
   setStoredDesktopWindowSession,
   setStoredDesktopDockAppIds,
   setStoredDesktopDockOrder,
+  setStoredDesktopShortcutAppIds,
   setStoredDesktopShortcutLayout,
 } from "@/utils/desktop-shell.js";
 import {
@@ -87,6 +90,12 @@ const router = useRouter();
 
 const launcherItems = computed(() =>
   DESKTOP_LAUNCHER_ITEMS.filter((item) => canAccessDesktopApp(item)),
+);
+const desktopShortcutAppIds = ref(getStoredDesktopShortcutAppIds());
+const desktopItems = computed(() =>
+  desktopShortcutAppIds.value
+    .map((appId) => getDesktopAppById(appId))
+    .filter((item) => canAccessDesktopApp(item)),
 );
 const desktopWindows = ref([]);
 const activeWindowId = ref("");
@@ -857,6 +866,27 @@ function persistDesktopItemLayout(nextLayout) {
   desktopItemLayout.value = setStoredDesktopShortcutLayout(nextLayout);
 }
 
+function addDesktopShortcutApp(appId) {
+  const app = getDesktopAppById(appId);
+  if (!app?.id || !canAccessDesktopApp(app)) return false;
+  if (desktopShortcutAppIds.value.includes(app.id)) return true;
+  desktopShortcutAppIds.value = setStoredDesktopShortcutAppIds([
+    ...desktopShortcutAppIds.value,
+    app.id,
+  ]);
+  return true;
+}
+
+function removeDesktopShortcutApp(item) {
+  const appId = String(item?.id || item?.appId || "").trim();
+  if (!appId || !desktopShortcutAppIds.value.includes(appId)) return;
+  desktopShortcutAppIds.value = setStoredDesktopShortcutAppIds(
+    desktopShortcutAppIds.value.filter((id) => id !== appId),
+  );
+  const { [appId]: _removedPosition, ...remainingLayout } = desktopItemLayout.value;
+  persistDesktopItemLayout(remainingLayout);
+}
+
 function syncDockOrderWithState(nextPinnedIds = dockAppIds.value) {
   const requiredIds = DESKTOP_DOCK_ITEMS.map((item) => item.id);
   const nextOrder = [];
@@ -915,6 +945,7 @@ async function clearDesktopCache() {
   clearDesktopRuntimeStorage({ preserveWallpaper: true, preserveDock: true });
   dockAppIds.value = getStoredDesktopDockAppIds();
   dockOrder.value = getStoredDesktopDockOrder();
+  desktopShortcutAppIds.value = getStoredDesktopShortcutAppIds();
   wallpaperConfig.value = getDesktopWallpaperConfig();
   if (typeof window !== "undefined" && "caches" in window) {
     const keys = await window.caches.keys();
@@ -1044,6 +1075,10 @@ function handleDesktopBridgeMessage(event) {
     pinDockApp(payload?.appId);
     return;
   }
+  if (type === "add-desktop-shortcut") {
+    addDesktopShortcutApp(payload?.appId);
+    return;
+  }
   if (type === "wallpaper-change") {
     wallpaperConfig.value = getDesktopWallpaperConfig();
   }
@@ -1065,6 +1100,10 @@ function handleDesktopBridgeEvent(event) {
   if (type === "pin-app") {
     pinDockApp(payload?.appId);
     event.preventDefault();
+    return;
+  }
+  if (type === "add-desktop-shortcut") {
+    if (addDesktopShortcutApp(payload?.appId)) event.preventDefault();
     return;
   }
   if (type === "wallpaper-change") {

@@ -9,6 +9,7 @@ import {
 
 export const authStateVersion = ref(0)
 const REMEMBER_LOGIN_INFO_STORAGE_KEY = 'remember_login_info'
+const ANONYMOUS_LOGIN_USERNAMES = new Set(['anonymous', 'guest'])
 
 function bumpAuthState() {
   authStateVersion.value += 1
@@ -97,10 +98,15 @@ function getStoredRoleIds() {
 }
 
 function normalizeRememberLoginInfo(payload = {}) {
+  const username = String(payload.username || '').trim()
+  const enabled =
+    payload.enabled === true &&
+    Boolean(username) &&
+    !ANONYMOUS_LOGIN_USERNAMES.has(username.toLowerCase())
   return {
-    enabled: payload.enabled === true,
-    username: String(payload.username || '').trim(),
-    password: String(payload.password || ''),
+    enabled,
+    username: enabled ? username : '',
+    password: enabled ? String(payload.password || '') : '',
   }
 }
 
@@ -117,9 +123,15 @@ export function hasStoredToken() {
 }
 
 export function getRememberedLoginInfo() {
-  return normalizeRememberLoginInfo(
-    getJsonStorageValue(REMEMBER_LOGIN_INFO_STORAGE_KEY, normalizeRememberLoginInfo()),
+  const stored = getJsonStorageValue(
+    REMEMBER_LOGIN_INFO_STORAGE_KEY,
+    normalizeRememberLoginInfo(),
   )
+  const normalized = normalizeRememberLoginInfo(stored)
+  if (stored?.enabled === true && !normalized.enabled) {
+    removeJsonStorageValue(REMEMBER_LOGIN_INFO_STORAGE_KEY)
+  }
+  return normalized
 }
 
 export function persistRememberedLoginInfo(payload = {}) {

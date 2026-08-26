@@ -144,6 +144,20 @@ export function requestDesktopPinApp(appId, options = {}, router = null) {
   return postDesktopBridgeMessage("pin-app", payload);
 }
 
+export function requestDesktopShortcutApp(appId, options = {}, router = null) {
+  const normalizedAppId = String(appId || "").trim();
+  if (!normalizedAppId) return false;
+  const payload = {
+    appId: normalizedAppId,
+    title: String(options.title || "").trim(),
+    windowId: desktopWindowIdFromRouter(router),
+  };
+  if (desktopWindowIdFromRouter(router)) {
+    return dispatchDesktopBridgeEvent("add-desktop-shortcut", payload);
+  }
+  return postDesktopBridgeMessage("add-desktop-shortcut", payload);
+}
+
 export function notifyDesktopWallpaperChange(router = null) {
   const payload = { windowId: desktopWindowIdFromRouter(router) };
   if (desktopWindowIdFromRouter(router)) {

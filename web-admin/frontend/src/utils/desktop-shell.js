@@ -6,9 +6,13 @@ export const DESKTOP_WALLPAPER_STORAGE_KEY = "desktop_wallpaper_config";
 export const DESKTOP_WINDOW_SESSION_STORAGE_KEY = "desktop_window_session";
 const DESKTOP_DOCK_APP_IDS_STORAGE_KEY = "desktop_dock_app_ids";
 const DESKTOP_DOCK_ORDER_STORAGE_KEY = "desktop_dock_order";
+const DESKTOP_SHORTCUT_APP_IDS_STORAGE_KEY = "desktop_shortcut_app_ids";
+const DESKTOP_SHORTCUT_DEFAULTS_VERSION_STORAGE_KEY = "desktop_shortcut_defaults_version";
 const DESKTOP_SHORTCUT_LAYOUT_STORAGE_KEY = "desktop_shortcut_layout";
+const DESKTOP_SHORTCUT_DEFAULTS_VERSION = 2;
 const DESKTOP_REQUIRED_DOCK_APP_IDS = ["chat", "tasks", "workbench", "settings-providers"];
 const REMOVED_DESKTOP_APP_IDS = new Set([
+  "work-logs",
   "market",
   "settings-users",
   "settings-departments",
@@ -88,6 +92,7 @@ const DESKTOP_APP_ICON_THEMES = {
   workbench: ["#f59e0b", "#ef4444"],
   "desktop-task-manager": ["#818cf8", "#4f46e5"],
   tasks: ["#6366f1", "#2563eb"],
+  feedback: ["#0ea5e9", "#0284c7"],
   "work-logs": ["#14b8a6", "#0f766e"],
   projects: ["#38bdf8", "#0f766e"],
   "project-detail": ["#60a5fa", "#4f46e5"],
@@ -305,6 +310,20 @@ const DESKTOP_APP_ITEMS = [
     match: (path) => String(path || "").startsWith("/tasks"),
   }),
   createApp({
+    id: "feedback",
+    label: "反馈",
+    shortLabel: "FB",
+    path: "/feedback",
+    summary: "提交产品建议，并查看自己的反馈处理进度与平台回复。",
+    eyebrow: "Product Feedback",
+    width: 1120,
+    height: 780,
+    launcher: true,
+    category: "workspace",
+    categoryLabel: "工作应用",
+    match: (path) => String(path || "").startsWith("/feedback"),
+  }),
+  createApp({
     id: "work-logs",
     label: "工作日志",
     shortLabel: "WL",
@@ -314,7 +333,7 @@ const DESKTOP_APP_ITEMS = [
     width: 1180,
     height: 780,
     dock: false,
-    launcher: true,
+    launcher: false,
     category: "workspace",
     categoryLabel: "工作应用",
     match: (path) => String(path || "").startsWith("/work-logs"),
@@ -558,6 +577,7 @@ export const DESKTOP_SETTINGS_ITEMS = DESKTOP_APP_ITEMS.filter(
     item.id !== "settings-home" &&
     !REMOVED_DESKTOP_APP_IDS.has(item.id),
 );
+const DESKTOP_DEFAULT_SHORTCUT_APP_IDS = DESKTOP_LAUNCHER_ITEMS.map((item) => item.id);
 const DESKTOP_OPTIONAL_DOCK_APP_IDS = DESKTOP_APP_ITEMS
   .filter((item) => !REMOVED_DESKTOP_APP_IDS.has(item.id))
   .map((item) => item.id)
@@ -598,6 +618,24 @@ function normalizeStoredDockOrder(appIds = []) {
     seen.add(appId);
   }
   return normalized;
+}
+
+function normalizeStoredDesktopShortcutAppIds(appIds = []) {
+  const seen = new Set();
+  return (Array.isArray(appIds) ? appIds : [])
+    .map((item) => String(item || "").trim())
+    .filter((appId) => {
+      if (
+        !appId
+        || seen.has(appId)
+        || REMOVED_DESKTOP_APP_IDS.has(appId)
+        || !DESKTOP_APP_ITEMS.some((app) => app.id === appId)
+      ) {
+        return false;
+      }
+      seen.add(appId);
+      return true;
+    });
 }
 
 export function getStoredProjectContextId() {
@@ -655,6 +693,50 @@ export function setStoredDesktopDockOrder(appIds = []) {
   window.localStorage.setItem(
     DESKTOP_DOCK_ORDER_STORAGE_KEY,
     JSON.stringify(normalized),
+  );
+  return normalized;
+}
+
+export function getStoredDesktopShortcutAppIds() {
+  if (!canUseWindow()) return [...DESKTOP_DEFAULT_SHORTCUT_APP_IDS];
+  const raw = window.localStorage.getItem(DESKTOP_SHORTCUT_APP_IDS_STORAGE_KEY);
+  if (raw === null) return [...DESKTOP_DEFAULT_SHORTCUT_APP_IDS];
+  try {
+    const parsed = JSON.parse(String(raw || "[]"));
+    if (!Array.isArray(parsed)) return [...DESKTOP_DEFAULT_SHORTCUT_APP_IDS];
+    const normalized = normalizeStoredDesktopShortcutAppIds(parsed);
+    const storedVersion = Number(
+      window.localStorage.getItem(DESKTOP_SHORTCUT_DEFAULTS_VERSION_STORAGE_KEY) || 0,
+    );
+    if (storedVersion >= DESKTOP_SHORTCUT_DEFAULTS_VERSION) return normalized;
+    const migrated = normalizeStoredDesktopShortcutAppIds([
+      ...normalized,
+      "feedback",
+    ]);
+    window.localStorage.setItem(
+      DESKTOP_SHORTCUT_APP_IDS_STORAGE_KEY,
+      JSON.stringify(migrated),
+    );
+    window.localStorage.setItem(
+      DESKTOP_SHORTCUT_DEFAULTS_VERSION_STORAGE_KEY,
+      String(DESKTOP_SHORTCUT_DEFAULTS_VERSION),
+    );
+    return migrated;
+  } catch {
+    return [...DESKTOP_DEFAULT_SHORTCUT_APP_IDS];
+  }
+}
+
+export function setStoredDesktopShortcutAppIds(appIds = []) {
+  const normalized = normalizeStoredDesktopShortcutAppIds(appIds);
+  if (!canUseWindow()) return normalized;
+  window.localStorage.setItem(
+    DESKTOP_SHORTCUT_APP_IDS_STORAGE_KEY,
+    JSON.stringify(normalized),
+  );
+  window.localStorage.setItem(
+    DESKTOP_SHORTCUT_DEFAULTS_VERSION_STORAGE_KEY,
+    String(DESKTOP_SHORTCUT_DEFAULTS_VERSION),
   );
   return normalized;
 }
@@ -766,6 +848,8 @@ export function clearDesktopRuntimeStorage(options = {}) {
     window.localStorage.removeItem(DESKTOP_DOCK_ORDER_STORAGE_KEY);
   }
   if (!preserveDesktopShortcuts) {
+    window.localStorage.removeItem(DESKTOP_SHORTCUT_APP_IDS_STORAGE_KEY);
+    window.localStorage.removeItem(DESKTOP_SHORTCUT_DEFAULTS_VERSION_STORAGE_KEY);
     window.localStorage.removeItem(DESKTOP_SHORTCUT_LAYOUT_STORAGE_KEY);
   }
 }

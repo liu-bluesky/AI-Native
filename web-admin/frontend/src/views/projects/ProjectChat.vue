@@ -3287,6 +3287,7 @@ import {
   upsertLocalEntity,
   upsertLocalProject,
 } from "@/services/local-project-repository.js";
+import { fetchBuiltinModelProviders } from "@/services/builtin-model-providers.js";
 import {
   readLocalSystemConfig,
   writeLocalSystemConfig,
@@ -28196,8 +28197,15 @@ async function fetchGlobalProviders() {
   const localProviders = readLocalEntities("llm_providers").filter(
     (item) => item?.enabled !== false,
   );
-  if (localProviders.length) {
-    providers.value = localProviders;
+  let builtinProviders = [];
+  try {
+    builtinProviders = await fetchBuiltinModelProviders();
+  } catch (error) {
+    console.warn("load server builtin model providers for chat failed", error);
+  }
+  const availableProviders = [...builtinProviders, ...localProviders];
+  if (availableProviders.length) {
+    providers.value = availableProviders;
     const preferredProviderId = String(
       systemConfig.default_ai_provider_id ||
         systemConfig.main_chat_provider_id ||
@@ -28205,8 +28213,8 @@ async function fetchGlobalProviders() {
         "",
     ).trim();
     const selectedProvider =
-      localProviders.find((item) => String(item?.id || "").trim() === preferredProviderId) ||
-      localProviders[0];
+      availableProviders.find((item) => String(item?.id || "").trim() === preferredProviderId) ||
+      availableProviders[0];
     selectedProviderId.value = String(selectedProvider?.id || "").trim();
     const modelNames = normalizeProviderModelNames(
       selectedProvider,
@@ -28418,12 +28426,19 @@ async function fetchProvidersByProject(projectId) {
         : readLocalEntities("llm_providers").filter(
             (item) => item?.enabled !== false,
           );
+      let builtinProviders = [];
+      try {
+        builtinProviders = await fetchBuiltinModelProviders();
+      } catch (error) {
+        console.warn("load server builtin model providers for project chat failed", error);
+      }
       projectProviders.forEach((provider) => {
         const providerId = String(provider?.id || provider?.provider_id || "").trim();
         if (providerId) upsertLocalEntity("llm_providers", { ...provider, id: providerId });
       });
-      if (localProviders.length) {
-        providers.value = localProviders;
+      const availableProviders = [...builtinProviders, ...localProviders];
+      if (availableProviders.length) {
+        providers.value = availableProviders;
       } else {
         applyProviderModelOfflineSnapshot(normalizedProjectId);
       }
