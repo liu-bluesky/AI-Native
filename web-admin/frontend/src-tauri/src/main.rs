@@ -1161,7 +1161,7 @@ fn read_workspace_file(
     path: String,
 ) -> Result<WorkspaceFileReadResult, String> {
     let root = resolve_workspace_root(&workspace_path)?;
-    let target = resolve_workspace_child(&root, path)?;
+    let target = resolve_workspace_write_target(&root, path)?;
     if !target.exists() {
         return Err("文件不存在".to_string());
     }
@@ -3405,6 +3405,40 @@ mod tests {
         let changes = liuagent_core::list_changes(&root).unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].change_type, "added");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_read_reports_missing_nested_file_consistently() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-employee-missing-read-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+
+        let result = read_workspace_file(
+            root.to_string_lossy().to_string(),
+            "agents/local-agent-test/AGENT.md".to_string(),
+        );
+
+        assert!(matches!(result, Err(ref error) if error == "文件不存在"));
+        let saved = write_workspace_file(
+            root.to_string_lossy().to_string(),
+            "agents/local-agent-test/AGENT.md".to_string(),
+            "# Test Agent\n".to_string(),
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(saved.path, "agents/local-agent-test/AGENT.md");
+        assert_eq!(
+            fs::read_to_string(root.join("agents/local-agent-test/AGENT.md")).unwrap(),
+            "# Test Agent\n"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

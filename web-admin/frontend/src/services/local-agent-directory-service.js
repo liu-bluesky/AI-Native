@@ -10,6 +10,7 @@ import {
   readNativeWorkspaceFile,
   writeNativeWorkspaceFile,
 } from "@/utils/native-desktop-bridge.js";
+import { isWorkspaceFileMissing } from "@/utils/workspace-file-errors.js";
 
 const MANAGED_BLOCK_PREFIX = "<!-- ai-employee:";
 
@@ -60,8 +61,7 @@ async function readDirectoryFile(directory, path) {
     const result = await readNativeWorkspaceFile({ workspacePath: directory, path });
     return String(result?.content || "");
   } catch (error) {
-    const message = cleanText(error?.detail || error?.message || error);
-    if (/不存在|not found|no such file/i.test(message)) return "";
+    if (isWorkspaceFileMissing(error)) return "";
     throw error;
   }
 }

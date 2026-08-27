@@ -25,6 +25,7 @@ use super::adapters::protocol::{
     approval_required_event, command_finished_event, command_output_chunk_event,
     command_started_event, model_call_started_event, model_step_event, plan_event,
     progress_update_event, tool_call_started_event, tool_result_event,
+    user_question_required_event,
 };
 use super::audit::build_tool_audit_logs;
 use super::definitions::builtin_tool_definitions;
@@ -759,7 +760,10 @@ fn start_local_chat_inner(
         }
     };
     let runtime_event_sink: Option<&dyn Fn(Value)> = Some(&collecting_event_sink);
-    if request.permission_decision.is_none() && !local_chat_pause_requested(&chat_session_id) {
+    if request.permission_decision.is_none()
+        && request.user_question_answer.is_none()
+        && !local_chat_pause_requested(&chat_session_id)
+    {
         let runtime_started_event = json!({
             "event_id": format!("evt_{session_id}_runtime_started"),
             "runtime_session_id": session_id.as_str(),
@@ -889,18 +893,29 @@ fn start_local_chat_inner(
         &model_request,
         &prompt_stack,
     );
-    let replayed_permission_tool = if local_chat_pause_requested(&chat_session_id) {
+    let replayed_user_question_tool = if local_chat_pause_requested(&chat_session_id) {
         None
     } else {
-        replay_pending_permission_tool_if_available(
+        replay_pending_user_question_if_available(
             &workspace_root,
             &project_id,
             &chat_session_id,
-            &session_id,
             &request,
-            runtime_event_sink,
         )
     };
+    let replayed_permission_tool =
+        if local_chat_pause_requested(&chat_session_id) || replayed_user_question_tool.is_some() {
+            None
+        } else {
+            replay_pending_permission_tool_if_available(
+                &workspace_root,
+                &project_id,
+                &chat_session_id,
+                &session_id,
+                &request,
+                runtime_event_sink,
+            )
+        };
     if let Some(replayed) = replayed_permission_tool.as_ref() {
         let mut messages = model_request.messages.clone();
         messages.push(RuntimeModelMessage::assistant_tool_call(
@@ -915,6 +930,19 @@ fn start_local_chat_inner(
         ));
         model_request = model_request.with_messages(messages);
     }
+    if let Some(replayed) = replayed_user_question_tool.as_ref() {
+        let mut messages = model_request.messages.clone();
+        messages.push(RuntimeModelMessage::assistant_tool_call(
+            "用户已回答问题，继续当前任务。",
+            replayed.reasoning_content.clone(),
+            vec![replayed.tool.clone()],
+        ));
+        messages.push(RuntimeModelMessage::tool_observation(
+            replayed.result.tool_call_id.clone(),
+            tool_observation_content(&replayed.result, false, None, None),
+        ));
+        model_request = model_request.with_messages(messages);
+    }
     let mut agent_loop = run_agent_loop(
         &chat_session_id,
         &session_id,
@@ -922,9 +950,16 @@ fn start_local_chat_inner(
         &prompt_stack,
         &workspace_root,
         request.permission_decision.clone(),
+        replayed_user_question_tool
+            .as_ref()
+            .map(|replayed| &replayed.result.content),
         runtime_event_sink,
     );
     if let Some(replayed) = replayed_permission_tool {
+        agent_loop.planned_tools.insert(0, replayed.tool);
+        agent_loop.tool_results.insert(0, replayed.result);
+    }
+    if let Some(replayed) = replayed_user_question_tool {
         agent_loop.planned_tools.insert(0, replayed.tool);
         agent_loop.tool_results.insert(0, replayed.result);
     }
@@ -940,6 +975,7 @@ fn start_local_chat_inner(
     let planned_tools = agent_loop.planned_tools.clone();
     let tool_results = agent_loop.tool_results.clone();
     let awaiting_permission = agent_loop.awaiting_permission;
+    let awaiting_user_question = agent_loop.stopped_reason == "waiting_user";
     let run_ok = agent_loop.ok();
     let response_format = format_local_chat_response(
         &project_id,
@@ -961,6 +997,8 @@ fn start_local_chat_inner(
         "paused"
     } else if awaiting_permission {
         "waiting_approval"
+    } else if awaiting_user_question {
+        "waiting_user"
     } else if run_ok {
         "completed"
     } else {
@@ -968,6 +1006,8 @@ fn start_local_chat_inner(
     };
     let waiting_for = if awaiting_permission {
         Some("approval")
+    } else if awaiting_user_question {
+        Some("user_question")
     } else {
         None
     };
@@ -1166,6 +1206,8 @@ fn start_local_chat_inner(
         "runtime.interrupted".to_string()
     } else if awaiting_permission {
         "permission.required".to_string()
+    } else if awaiting_user_question {
+        "interaction.user_input_required".to_string()
     } else if run_ok {
         String::new()
     } else if !agent_loop.error_code().is_empty() {
@@ -1181,6 +1223,8 @@ fn start_local_chat_inner(
         "桌面智能体已暂停，当前节点已写入本地 checkpoint".to_string()
     } else if agent_loop.stopped_reason == "runtime_interrupted" {
         "桌面智能体因网络或模型连接中断，当前节点已写入本地 checkpoint".to_string()
+    } else if awaiting_user_question {
+        "桌面智能体正在等待用户补充信息".to_string()
     } else if run_ok {
         String::new()
     } else if !agent_loop.error().is_empty() {
@@ -1198,6 +1242,8 @@ fn start_local_chat_inner(
         "桌面端本地对话已因连接中断暂停，可从 checkpoint 继续".to_string()
     } else if awaiting_permission {
         "桌面端本地对话等待用户授权".to_string()
+    } else if awaiting_user_question {
+        "桌面端本地对话等待用户回答问题".to_string()
     } else if run_ok {
         if tool_results.is_empty() {
             "桌面端本地对话已完成".to_string()
@@ -2393,6 +2439,8 @@ fn build_runtime_scheduler_state(
         .collect::<Vec<_>>();
     let next_action = if waiting_for == Some("approval") {
         "wait_for_approval"
+    } else if waiting_for == Some("user_question") {
+        "wait_for_user_answer"
     } else if run_status == "completed" {
         "finish"
     } else if failed_tool_count > 0 {
@@ -2404,8 +2452,15 @@ fn build_runtime_scheduler_state(
     };
     let pending_request_id = tool_results
         .iter()
-        .find(|result| result.error_code == "permission.required")
-        .and_then(|result| result.content.get("permissionRequest"))
+        .find_map(|result| {
+            if result.error_code == "permission.required" {
+                result.content.get("permissionRequest")
+            } else if result.error_code == "interaction.user_input_required" {
+                result.content.get("userQuestionRequest")
+            } else {
+                None
+            }
+        })
         .and_then(|request| request.get("requestId"))
         .and_then(Value::as_str)
         .unwrap_or("")
@@ -2682,6 +2737,7 @@ fn prompt_stack_from_model_request(model_request: &ModelStepRequest) -> PromptSt
         mcp_config: json!({}),
         backend_context: None,
         permission_decision: None,
+        user_question_answer: None,
         resume_from_checkpoint: false,
     };
     resolve_prompt_stack(&request, model_request)
@@ -3597,10 +3653,12 @@ fn format_local_chat_response(
         })
         .count();
     let model_step_failed = !model_result.ok && model_result.status == "failed";
-    let loop_failed = !agent_loop_ok && !awaiting_permission;
+    let loop_failed = !agent_loop_ok && !awaiting_permission && stopped_reason != "waiting_user";
     let successful_tool_count = tool_results.iter().filter(|item| item.ok).count();
     let mut lines = if awaiting_permission {
         vec!["本地智能体等待授权，任务尚未完成。".to_string()]
+    } else if stopped_reason == "waiting_user" {
+        vec!["本地智能体正在等待你补充必要信息，回答后会继续当前任务。".to_string()]
     } else if model_step_failed && model_result.error_code == "model.connection_timeout" {
         if tool_results.is_empty() {
             vec![
@@ -3700,6 +3758,11 @@ fn format_local_chat_response(
             lines.push(
                 "请在当前回答气泡中选择允许或拒绝；允许后会用同一个工具调用继续执行。".to_string(),
             );
+        } else if tool_results
+            .iter()
+            .any(|result| result.error_code == "interaction.user_input_required")
+        {
+            lines.push("请回答当前界面中的问题；提交后会从同一个工具调用继续执行。".to_string());
         } else {
             let success_count = tool_results.iter().filter(|item| item.ok).count();
             let failure_count = tool_results.len().saturating_sub(success_count);
@@ -4063,10 +4126,22 @@ struct ReplayedPermissionTool {
     reasoning_content: String,
 }
 
+struct ReplayedUserQuestionTool {
+    tool: PlannedLocalTool,
+    result: super::types::ToolExecutionResult,
+    reasoning_content: String,
+}
+
 struct PendingPermissionContext {
     request_id: String,
     tool: PlannedLocalTool,
     permission_request: Value,
+}
+
+struct PendingUserQuestionContext {
+    request_id: String,
+    tool: PlannedLocalTool,
+    user_question_request: Value,
 }
 
 pub fn classify_local_permission_reply(
@@ -4477,6 +4552,292 @@ fn recover_pending_permission_context(
     })
 }
 
+fn replay_pending_user_question_if_available(
+    workspace_root: &PathBuf,
+    project_id: &str,
+    chat_session_id: &str,
+    request: &LocalChatRequest,
+) -> Option<ReplayedUserQuestionTool> {
+    let answer = request.user_question_answer.as_ref()?;
+    let pending =
+        recover_pending_user_question_context(workspace_root, project_id, chat_session_id)?;
+    let request_id = answer.request_id.as_deref().map(str::trim).unwrap_or("");
+    let tool_call_id = answer.tool_call_id.as_deref().map(str::trim).unwrap_or("");
+    if request_id != pending.request_id
+        || (!tool_call_id.is_empty() && tool_call_id != pending.tool.tool_call_id)
+    {
+        return None;
+    }
+    let question_ids = pending
+        .user_question_request
+        .get("questions")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|question| question.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if question_ids.iter().any(|question_id| {
+        !answer.answers.iter().any(|item| {
+            item.id.trim() == *question_id
+                && (!item.selected.is_empty()
+                    || item
+                        .custom
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty()))
+        })
+    }) {
+        return None;
+    }
+    let state = recover_runtime_state(workspace_root, project_id, chat_session_id).ok()?;
+    let reasoning_content = reasoning_content_for_pending_tool(&state, &pending.tool.tool_call_id);
+    let answered_questions = pending
+        .user_question_request
+        .get("questions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|question| {
+            let id = question.get("id").and_then(Value::as_str)?.trim();
+            let item = answer.answers.iter().find(|item| item.id.trim() == id)?;
+            Some(json!({
+                "id": id,
+                "header": question.get("header").and_then(Value::as_str).unwrap_or("").trim(),
+                "question": question.get("question").and_then(Value::as_str).unwrap_or("").trim(),
+                "selected": item.selected,
+                "custom": item.custom,
+            }))
+        })
+        .collect::<Vec<_>>();
+    let result = super::types::ToolExecutionResult::ok(
+        pending.tool.tool_call_id.clone(),
+        pending.tool.name.clone(),
+        json!({
+            "requestId": pending.request_id,
+            "answers": answer.answers,
+            "answeredQuestions": answered_questions,
+            "final": true,
+            "instruction": "这些是用户已经提交的最终选择。必须直接继续当前任务，不得再次询问相同方向、名称、受众或其他已回答内容；非关键缺省项采用合理默认值。",
+        }),
+        "用户已回答问题".to_string(),
+    );
+    Some(ReplayedUserQuestionTool {
+        tool: pending.tool,
+        result,
+        reasoning_content,
+    })
+}
+
+fn normalize_user_question_match_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn matching_answered_user_question<'a>(
+    question: &Value,
+    answered_questions: &'a [Value],
+) -> Option<&'a Value> {
+    let question_id = question
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let normalized_question = normalize_user_question_match_text(
+        question
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
+    answered_questions.iter().find(|answered| {
+        let answered_id = answered
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let stable_id_match = !question_id.is_empty()
+            && !question_id.starts_with("question-")
+            && question_id == answered_id;
+        let answered_text = answered
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        stable_id_match
+            || (!normalized_question.is_empty()
+                && normalize_user_question_match_text(answered_text) == normalized_question)
+    })
+}
+
+fn filter_answered_user_questions_from_tool(
+    mut tool: PlannedLocalTool,
+    answered_context: Option<&Value>,
+) -> PlannedLocalTool {
+    if tool.name.trim() != "ask_user_question" {
+        return tool;
+    }
+    let Some(answered_questions) = answered_context
+        .and_then(|context| context.get("answeredQuestions"))
+        .and_then(Value::as_array)
+    else {
+        return tool;
+    };
+    let Some(questions) = tool.arguments.get("questions").and_then(Value::as_array) else {
+        return tool;
+    };
+    let unanswered_questions = questions
+        .iter()
+        .filter(|question| matching_answered_user_question(question, answered_questions).is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    if unanswered_questions.is_empty() || unanswered_questions.len() == questions.len() {
+        return tool;
+    }
+    tool.arguments["questions"] = Value::Array(unanswered_questions);
+    tool
+}
+
+fn replay_answered_user_question_if_match(
+    tool: &PlannedLocalTool,
+    answered_context: Option<&Value>,
+) -> Option<super::types::ToolExecutionResult> {
+    if tool.name.trim() != "ask_user_question" {
+        return None;
+    }
+    let answered_questions = answered_context?.get("answeredQuestions")?.as_array()?;
+    let questions = tool.arguments.get("questions")?.as_array()?;
+    if questions.is_empty() {
+        return None;
+    }
+    let mut reused_answers = Vec::with_capacity(questions.len());
+    let mut reused_questions = Vec::with_capacity(questions.len());
+    for (index, question) in questions.iter().enumerate() {
+        let question_text = question
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let answered = matching_answered_user_question(question, answered_questions)?;
+        let id = question
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("question-{}", index + 1));
+        let selected = answered
+            .get("selected")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let custom = answered.get("custom").cloned().unwrap_or(Value::Null);
+        reused_answers.push(json!({
+            "id": id,
+            "selected": selected.clone(),
+            "custom": custom.clone(),
+        }));
+        reused_questions.push(json!({
+            "id": id,
+            "header": question.get("header").and_then(Value::as_str).unwrap_or("").trim(),
+            "question": question_text,
+            "selected": selected,
+            "custom": custom,
+        }));
+    }
+    Some(super::types::ToolExecutionResult::ok(
+        tool.tool_call_id.clone(),
+        tool.name.clone(),
+        json!({
+            "requestId": format!("question_{}", tool.tool_call_id),
+            "answers": reused_answers,
+            "answeredQuestions": reused_questions,
+            "final": true,
+            "reused": true,
+            "instruction": "相同问题已由用户回答，必须继续任务，不得再次请求用户补充这些内容。",
+        }),
+        "已复用用户对相同问题的最终回答".to_string(),
+    ))
+}
+
+fn block_followup_user_question_after_final_answer(
+    tool: &PlannedLocalTool,
+    answered_context: Option<&Value>,
+) -> Option<super::types::ToolExecutionResult> {
+    if tool.name.trim() != "ask_user_question" {
+        return None;
+    }
+    let answered_questions = answered_context?.get("answeredQuestions")?.clone();
+    Some(super::types::ToolExecutionResult::ok(
+        tool.tool_call_id.clone(),
+        tool.name.clone(),
+        json!({
+            "answers": [],
+            "answeredQuestions": answered_questions,
+            "final": true,
+            "followupQuestionBlocked": true,
+            "instruction": "用户已完成本次必要信息补充。不得再次暂停或提出第二轮补充问题；必须使用已有最终回答和合理默认值继续完成当前任务。",
+        }),
+        "用户已完成补充，继续当前任务".to_string(),
+    ))
+}
+
+fn recover_pending_user_question_context(
+    workspace_root: &PathBuf,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Option<PendingUserQuestionContext> {
+    let state = recover_runtime_state(workspace_root, project_id, chat_session_id).ok()?;
+    if state["run_state"]["status"].as_str().unwrap_or_default() != "waiting_user" {
+        return None;
+    }
+    let (request_id, tool_call_id, user_question_request) = state["tool_results"]
+        .as_array()?
+        .iter()
+        .find_map(|result| {
+            if value_str_any(result, &["errorCode", "error_code"])
+                != "interaction.user_input_required"
+            {
+                return None;
+            }
+            let request = &result["content"]["userQuestionRequest"];
+            let request_id = value_str_any(request, &["requestId", "request_id"]);
+            let tool_call_id = value_str_any(result, &["toolCallId", "tool_call_id"]);
+            if request_id.is_empty() || tool_call_id.is_empty() {
+                None
+            } else {
+                Some((request_id, tool_call_id, request.clone()))
+            }
+        })?;
+    let tool = state["model_runtime"]["agent_loop"]["planned_tools"]
+        .as_array()?
+        .iter()
+        .find(|tool| value_str_any(tool, &["tool_call_id", "toolCallId"]) == tool_call_id)
+        .and_then(|tool| serde_json::from_value::<PlannedLocalTool>(tool.clone()).ok())?;
+    Some(PendingUserQuestionContext {
+        request_id,
+        tool,
+        user_question_request,
+    })
+}
+
+fn reasoning_content_for_pending_tool(state: &Value, tool_call_id: &str) -> String {
+    state["model_runtime"]["agent_loop"]["model_steps"]
+        .as_array()
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                let has_tool_call = step["tool_calls"].as_array().is_some_and(|tools| {
+                    tools.iter().any(|tool| {
+                        value_str_any(tool, &["tool_call_id", "toolCallId"]) == tool_call_id
+                    })
+                });
+                has_tool_call
+                    .then(|| value_str_any(step, &["reasoning_content", "reasoningContent"]))
+            })
+        })
+        .unwrap_or_default()
+}
+
 fn value_str_any(value: &Value, keys: &[&str]) -> String {
     keys.iter()
         .find_map(|key| value.get(*key).and_then(Value::as_str))
@@ -4538,6 +4899,7 @@ impl AgentLoopResult {
         match self.stopped_reason.as_str() {
             "manual_pause"
             | "runtime_interrupted"
+            | "waiting_user"
             | "repeated_failure"
             | "verification_failed"
             | "tool_no_signal" => return false,
@@ -4682,6 +5044,7 @@ fn run_agent_loop(
     prompt_stack: &PromptStack,
     workspace_root: &PathBuf,
     permission_decision: Option<super::types::PermissionDecisionInput>,
+    answered_user_question: Option<&Value>,
     event_sink: Option<&dyn Fn(Value)>,
 ) -> AgentLoopResult {
     let next_stream_block_index = Cell::new(0usize);
@@ -4716,19 +5079,16 @@ fn run_agent_loop(
                 }));
             }
         };
-        run_model_step_interruptible_with_stream_deltas(
-            run_key,
-            request,
-            Some(&emit_stream_delta),
-        )
+        run_model_step_interruptible_with_stream_deltas(run_key, request, Some(&emit_stream_delta))
     };
-    run_agent_loop_with(
+    run_agent_loop_with_answered_user_question(
         run_key,
         runtime_session_id,
         base_request,
         prompt_stack,
         workspace_root,
         permission_decision,
+        answered_user_question,
         event_sink,
         &interruptible_model_runner,
         &execute_tool,
@@ -4805,6 +5165,32 @@ fn run_agent_loop_with(
     prompt_stack: &PromptStack,
     workspace_root: &PathBuf,
     permission_decision: Option<super::types::PermissionDecisionInput>,
+    event_sink: Option<&dyn Fn(Value)>,
+    model_runner: &dyn Fn(&ModelStepRequest) -> ModelStepResult,
+    tool_runner: &dyn Fn(ToolExecutionRequest) -> super::types::ToolExecutionResult,
+) -> AgentLoopResult {
+    run_agent_loop_with_answered_user_question(
+        run_key,
+        runtime_session_id,
+        base_request,
+        prompt_stack,
+        workspace_root,
+        permission_decision,
+        None,
+        event_sink,
+        model_runner,
+        tool_runner,
+    )
+}
+
+fn run_agent_loop_with_answered_user_question(
+    run_key: &str,
+    runtime_session_id: &str,
+    base_request: &ModelStepRequest,
+    prompt_stack: &PromptStack,
+    workspace_root: &PathBuf,
+    permission_decision: Option<super::types::PermissionDecisionInput>,
+    answered_user_question: Option<&Value>,
     event_sink: Option<&dyn Fn(Value)>,
     model_runner: &dyn Fn(&ModelStepRequest) -> ModelStepResult,
     tool_runner: &dyn Fn(ToolExecutionRequest) -> super::types::ToolExecutionResult,
@@ -5095,6 +5481,7 @@ fn run_agent_loop_with(
                 stopped_reason = "manual_pause".to_string();
                 break 'agent_loop;
             }
+            let tool = filter_answered_user_questions_from_tool(tool, answered_user_question);
             let mut candidate =
                 build_agent_loop_candidate(&tool, candidate_solutions.len() + 1, &attempts);
             candidate.status = "selected".to_string();
@@ -5157,6 +5544,14 @@ fn run_agent_loop_with(
                 agent_tool_allowlist_denied_result(&tool)
             } else if let Some(disabled_result) = disabled_tool_result(&tool, &request) {
                 disabled_result
+            } else if let Some(reused_answer) =
+                replay_answered_user_question_if_match(&tool, answered_user_question)
+            {
+                reused_answer
+            } else if let Some(blocked_followup) =
+                block_followup_user_question_after_final_answer(&tool, answered_user_question)
+            {
+                blocked_followup
             } else if block_mutating_batch && is_side_effect_tool(&tool.name) {
                 batch_schema_failures
                     .iter()
@@ -5264,6 +5659,25 @@ fn run_agent_loop_with(
                 candidate_solutions.push(candidate);
                 tool_results.push(result);
                 stopped_reason = "waiting_approval".to_string();
+                return finalize_agent_loop_result(
+                    model_steps,
+                    model_input_snapshots,
+                    planned_tools,
+                    tool_results,
+                    candidate_solutions,
+                    attempts,
+                    last_acceptance_gate,
+                    model_plan_tree,
+                    stopped_reason,
+                    awaiting_permission,
+                );
+            }
+            if result.error_code == "interaction.user_input_required" {
+                emit_user_question_required_event(event_sink, runtime_session_id, run_key, &result);
+                candidate.status = "waiting_user".to_string();
+                candidate_solutions.push(candidate);
+                tool_results.push(result);
+                stopped_reason = "waiting_user".to_string();
                 return finalize_agent_loop_result(
                     model_steps,
                     model_input_snapshots,
@@ -5848,13 +6262,19 @@ fn tool_arguments_with_file_access_policy(
     let Some(object) = arguments.as_object_mut() else {
         return arguments;
     };
-    if matches!(tool.name.trim(), "list_local_resources" | "read_local_resource") {
+    if matches!(
+        tool.name.trim(),
+        "list_local_resources" | "read_local_resource"
+    ) {
         if let Some(directories) = request
             .mcp_config
             .get("localResourceDirectories")
             .or_else(|| request.mcp_config.get("local_resource_directories"))
         {
-            object.insert("_local_resource_directories".to_string(), directories.clone());
+            object.insert(
+                "_local_resource_directories".to_string(),
+                directories.clone(),
+            );
         }
         return arguments;
     }
@@ -6128,7 +6548,11 @@ fn build_file_access_policy_for_request(request: &ModelStepRequest) -> Value {
 
 fn build_project_entry_message(request: &LocalChatRequest) -> Option<RuntimeModelMessage> {
     let configured = request.ai_entry_file.as_deref().unwrap_or("").trim();
-    let path = if configured.is_empty() { "AIENTRY.md" } else { configured };
+    let path = if configured.is_empty() {
+        "AIENTRY.md"
+    } else {
+        configured
+    };
     let root = resolve_workspace_root(&request.workspace_path).ok()?;
     let target = resolve_workspace_child(&root, path, true).ok()?;
     if !target.is_file() {
@@ -6587,6 +7011,34 @@ fn emit_approval_required_event(
     }
 }
 
+fn emit_user_question_required_event(
+    event_sink: Option<&dyn Fn(Value)>,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    result: &super::types::ToolExecutionResult,
+) {
+    if let Some(user_question_request) = result.content.get("userQuestionRequest") {
+        if let Some(sink) = event_sink {
+            let mut payload = user_question_request.clone();
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("tool_call_id".to_string(), json!(result.tool_call_id));
+                object.insert("tool_name".to_string(), json!(result.name));
+            }
+            sink(user_question_required_event(
+                format!(
+                    "evt_{}_user_question_{}",
+                    runtime_session_id,
+                    sanitize_path_segment(&result.tool_call_id)
+                ),
+                runtime_session_id,
+                chat_session_id,
+                payload,
+                epoch_millis(),
+            ));
+        }
+    }
+}
+
 fn finalize_agent_loop_result(
     model_steps: Vec<ModelStepResult>,
     model_input_snapshots: Vec<Value>,
@@ -6633,6 +7085,13 @@ fn build_agent_loop_verification(
             status: "waiting_approval".to_string(),
             summary: "等待用户授权后继续同一个 Agent Loop。".to_string(),
             evidence: vec!["permission.required".to_string()],
+        };
+    }
+    if stopped_reason == "waiting_user" {
+        return AgentLoopVerification {
+            status: "waiting_user".to_string(),
+            summary: "等待用户回答必要问题后继续同一个 Agent Loop。".to_string(),
+            evidence: vec!["interaction.user_input_required".to_string()],
         };
     }
     let final_step = model_steps.last();
@@ -10270,13 +10729,11 @@ fn tool_disabled_reason(
                 .or_else(|| request.mcp_config.get("local_resource_directories"))
                 .and_then(Value::as_object)
                 .is_some_and(|directories| {
-                    directories.values().any(|value| {
-                        value.as_str().is_some_and(|path| !path.trim().is_empty())
-                    })
+                    directories
+                        .values()
+                        .any(|value| value.as_str().is_some_and(|path| !path.trim().is_empty()))
                 });
-            (!configured).then(|| {
-                "本地智能体、技能、规则目录均未配置".to_string()
-            })
+            (!configured).then(|| "本地智能体、技能、规则目录均未配置".to_string())
         }
         "list_projects" | "get_project" => {
             if is_tauri_bot_local_chat_request(request) {
@@ -11198,7 +11655,12 @@ fn normalize_model_mode(value: Option<&str>) -> String {
 }
 
 fn normalize_thinking_mode(value: Option<&str>) -> Option<String> {
-    match value.unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+    match value
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "enabled" | "enable" | "on" | "true" => Some("enabled".to_string()),
         _ => None,
     }
@@ -12111,6 +12573,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            user_question_answer: None,
             resume_from_checkpoint: false,
         });
 
@@ -12163,6 +12626,7 @@ mod tests {
                 mcp_config: json!({}),
                 backend_context: None,
                 permission_decision: None,
+                user_question_answer: None,
                 resume_from_checkpoint: true,
             },
             |event| events.borrow_mut().push(event),
@@ -14324,6 +14788,7 @@ mod tests {
                     grant_scope: Some("once".to_string()),
                     comment: None,
                 }),
+                user_question_answer: None,
                 resume_from_checkpoint: false,
             },
             Some(&sink),
@@ -14342,6 +14807,363 @@ mod tests {
             .map(|event| event["type"].as_str().unwrap_or("").to_string())
             .collect::<Vec<_>>();
         assert_eq!(event_types, vec!["tool_call_started", "tool_result"]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn user_question_answer_replays_pending_tool_from_runtime_state() {
+        let dir =
+            std::env::temp_dir().join(format!("liuagent_user_question_replay_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let workspace_root = dir.canonicalize().unwrap();
+        let planned_tool = PlannedLocalTool {
+            tool_call_id: "call_agent_name".to_string(),
+            name: "ask_user_question".to_string(),
+            arguments: json!({
+                "questions": [{
+                    "id": "agent-name",
+                    "header": "名称",
+                    "question": "智能体名称是什么？",
+                    "options": [],
+                    "multi_select": false
+                }]
+            }),
+            summary: "询问智能体名称".to_string(),
+        };
+        let pending_result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some(planned_tool.tool_call_id.clone()),
+            name: planned_tool.name.clone(),
+            arguments: planned_tool.arguments.clone(),
+            workspace_path: workspace_root.to_string_lossy().to_string(),
+            permission_decision: None,
+        });
+        assert_eq!(pending_result.error_code, "interaction.user_input_required");
+        write_runtime_artifacts(RuntimePersistenceInput {
+            workspace_root: &workspace_root,
+            project_id: "proj-question-replay",
+            chat_session_id: "chat-question-replay",
+            session_id: "local-question-old",
+            user_message_id: "msg-user",
+            assistant_message_id: "msg-assistant",
+            user_message: "创建智能体",
+            assistant_content: "等待用户回答",
+            run_status: "waiting_user",
+            waiting_for: Some("user_question"),
+            model_runtime: json!({
+                "agent_loop": {
+                    "model_steps": [{
+                        "reasoning_content": "需要用户提供名称",
+                        "tool_calls": [planned_tool.clone()]
+                    }],
+                    "planned_tools": [planned_tool.clone()]
+                }
+            }),
+            agent_run_context: json!({"version": "agent-run-context/test"}),
+            observations: json!([]),
+            scheduler_state: json!({"version": "runtime-scheduler-state/test"}),
+            verification_report: json!({"overall_status": "waiting_user"}),
+            task_goal: json!({"version": "task-goal/test", "goalId": "goal-question"}),
+            clarity_assessment: json!({"version": "clarity-assessment/test"}),
+            plan_state: json!({"version": "plan-state/test"}),
+            retry_decision: json!({"version": "retry-decision/test"}),
+            memory_write_plan: json!({"version": "memory-write-plan/test"}),
+            tool_results: &[pending_result],
+            operations: json!([]),
+            audit_logs: &[],
+        })
+        .unwrap();
+        let request = LocalChatRequest {
+            project_id: "proj-question-replay".to_string(),
+            chat_session_id: "chat-question-replay".to_string(),
+            message: "创建智能体".to_string(),
+            workspace_path: workspace_root.to_string_lossy().to_string(),
+            user_question_answer: Some(crate::liuagent_core::types::UserQuestionAnswerInput {
+                request_id: Some("question_call_agent_name".to_string()),
+                tool_call_id: Some("call_agent_name".to_string()),
+                answers: vec![crate::liuagent_core::types::UserQuestionAnswerItem {
+                    id: "agent-name".to_string(),
+                    selected: Vec::new(),
+                    custom: Some("前端创作助手".to_string()),
+                }],
+            }),
+            resume_from_checkpoint: true,
+            ..LocalChatRequest::default()
+        };
+
+        let replayed = replay_pending_user_question_if_available(
+            &workspace_root,
+            "proj-question-replay",
+            "chat-question-replay",
+            &request,
+        )
+        .expect("pending user question should replay");
+
+        assert!(replayed.result.ok);
+        assert_eq!(replayed.reasoning_content, "需要用户提供名称");
+        assert_eq!(
+            replayed.result.content["answers"][0]["custom"],
+            "前端创作助手"
+        );
+        assert_eq!(
+            replayed.result.content["answeredQuestions"][0]["question"],
+            "智能体名称是什么？"
+        );
+        assert_eq!(replayed.result.content["final"], true);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repeated_user_question_reuses_final_answer_without_waiting_again() {
+        let answered_context = json!({
+            "answeredQuestions": [{
+                "id": "agent-name",
+                "header": "Name",
+                "question": "What should the agent name be?",
+                "selected": [],
+                "custom": "Frontend Creator"
+            }]
+        });
+        let repeated_tool = PlannedLocalTool {
+            tool_call_id: "call_agent_name_again".to_string(),
+            name: "ask_user_question".to_string(),
+            arguments: json!({
+                "questions": [{
+                    "id": "agent-name-repeated",
+                    "header": "Name",
+                    "question": "What should the agent name be?",
+                    "options": [],
+                    "multi_select": false
+                }]
+            }),
+            summary: "Ask for the agent name again".to_string(),
+        };
+
+        let replayed =
+            replay_answered_user_question_if_match(&repeated_tool, Some(&answered_context))
+                .expect("the same answered question should be reused");
+
+        assert!(replayed.ok);
+        assert_eq!(replayed.content["reused"], true);
+        assert_eq!(replayed.content["answers"][0]["id"], "agent-name-repeated");
+        assert_eq!(replayed.content["answers"][0]["custom"], "Frontend Creator");
+
+        let rephrased_tool = PlannedLocalTool {
+            tool_call_id: "call_agent_name_rephrased".to_string(),
+            name: "ask_user_question".to_string(),
+            arguments: json!({
+                "questions": [{
+                    "id": "agent-name",
+                    "header": "Name",
+                    "question": "Please confirm the final name for this agent.",
+                    "options": [],
+                    "multi_select": false
+                }]
+            }),
+            summary: "Rephrase the same agent name question".to_string(),
+        };
+        assert!(
+            replay_answered_user_question_if_match(&rephrased_tool, Some(&answered_context))
+                .is_some(),
+            "a stable question id must prevent rephrased duplicate prompts"
+        );
+
+        let new_question_tool = PlannedLocalTool {
+            tool_call_id: "call_agent_audience".to_string(),
+            name: "ask_user_question".to_string(),
+            arguments: json!({
+                "questions": [{
+                    "id": "agent-audience",
+                    "header": "Audience",
+                    "question": "Who is the target audience?",
+                    "options": [],
+                    "multi_select": false
+                }]
+            }),
+            summary: "Ask for a new detail".to_string(),
+        };
+        assert!(
+            replay_answered_user_question_if_match(&new_question_tool, Some(&answered_context),)
+                .is_none(),
+            "a genuinely new question must still wait for the user"
+        );
+
+        let mixed_question_tool = PlannedLocalTool {
+            tool_call_id: "call_agent_name_and_audience".to_string(),
+            name: "ask_user_question".to_string(),
+            arguments: json!({
+                "questions": [
+                    {
+                        "id": "agent-name",
+                        "header": "Name",
+                        "question": "Please confirm the final name for this agent.",
+                        "options": [],
+                        "multi_select": false
+                    },
+                    {
+                        "id": "agent-audience",
+                        "header": "Audience",
+                        "question": "Who is the target audience?",
+                        "options": [],
+                        "multi_select": false
+                    }
+                ]
+            }),
+            summary: "Ask one answered and one new question".to_string(),
+        };
+        let filtered =
+            filter_answered_user_questions_from_tool(mixed_question_tool, Some(&answered_context));
+        assert_eq!(filtered.arguments["questions"].as_array().unwrap().len(), 1);
+        assert_eq!(filtered.arguments["questions"][0]["id"], "agent-audience");
+    }
+
+    #[test]
+    fn agent_loop_continues_when_model_repeats_an_answered_question() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_answered_question_loop_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("Create an agent");
+        let answered_context = json!({
+            "answeredQuestions": [{
+                "id": "agent-name",
+                "header": "Name",
+                "question": "What should the agent name be?",
+                "selected": [],
+                "custom": "Frontend Creator"
+            }]
+        });
+        let model_call_count = Cell::new(0);
+        let answer_seen = Cell::new(false);
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_agent_name_again".to_string(),
+                        name: "ask_user_question".to_string(),
+                        arguments: json!({
+                            "questions": [{
+                                "id": "agent-name-repeated",
+                                "header": "Name",
+                                "question": "What should the agent name be?",
+                                "options": [],
+                                "multi_select": false
+                            }]
+                        }),
+                        summary: "Ask for the agent name again".to_string(),
+                    }],
+                );
+            }
+            answer_seen.set(request.messages.iter().any(|message| {
+                serde_json::to_string(message)
+                    .unwrap_or_default()
+                    .contains("Frontend Creator")
+            }));
+            test_model_result("Draft created", Vec::new())
+        };
+        let tool_runner = |_request: ToolExecutionRequest| {
+            panic!("the repeated answered question must not reach the real tool runner")
+        };
+
+        let result = run_agent_loop_with_answered_user_question(
+            "chat-answered-question-loop",
+            "runtime-answered-question-loop",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            Some(&answered_context),
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok());
+        assert_eq!(result.stopped_reason, "no_tool_calls");
+        assert_eq!(result.model_steps.len(), 2);
+        assert_eq!(result.tool_results.len(), 1);
+        assert_eq!(result.tool_results[0].content["reused"], true);
+        assert!(answer_seen.get());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn user_question_answer_blocks_a_second_supplement_round() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_block_followup_question_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("Create an agent");
+        let answered_context = json!({
+            "answeredQuestions": [{
+                "id": "agent-name",
+                "header": "Name",
+                "question": "What should the agent name be?",
+                "selected": [],
+                "custom": "Frontend Creator"
+            }]
+        });
+        let model_call_count = Cell::new(0);
+        let block_seen = Cell::new(false);
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_agent_audience_after_answer".to_string(),
+                        name: "ask_user_question".to_string(),
+                        arguments: json!({
+                            "questions": [{
+                                "id": "agent-audience",
+                                "header": "Audience",
+                                "question": "Who is the target audience?",
+                                "options": [],
+                                "multi_select": false
+                            }]
+                        }),
+                        summary: "Ask a second supplement round".to_string(),
+                    }],
+                );
+            }
+            block_seen.set(request.messages.iter().any(|message| {
+                serde_json::to_string(message)
+                    .unwrap_or_default()
+                    .contains("followupQuestionBlocked")
+            }));
+            test_model_result("Draft created with reasonable defaults", Vec::new())
+        };
+        let tool_runner = |_request: ToolExecutionRequest| {
+            panic!("a second supplement round must not reach the real tool runner")
+        };
+
+        let result = run_agent_loop_with_answered_user_question(
+            "chat-block-followup-question",
+            "runtime-block-followup-question",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            Some(&answered_context),
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok());
+        assert_eq!(result.stopped_reason, "no_tool_calls");
+        assert_eq!(result.model_steps.len(), 2);
+        assert_eq!(result.tool_results.len(), 1);
+        assert_eq!(
+            result.tool_results[0].content["followupQuestionBlocked"],
+            true
+        );
+        assert!(block_seen.get());
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -15210,6 +16032,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            user_question_answer: None,
             resume_from_checkpoint: false,
         });
 
@@ -15256,6 +16079,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            user_question_answer: None,
             resume_from_checkpoint: false,
         };
         let model_request = build_model_request(&request, "你好");
@@ -15695,6 +16519,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            user_question_answer: None,
             resume_from_checkpoint: false,
         };
         let model_request = build_model_request(&request, "请分析附件");
@@ -15832,6 +16657,7 @@ mod tests {
             }],
             mcp_config: json!({}),
             permission_decision: None,
+            user_question_answer: None,
             resume_from_checkpoint: false,
         };
         let model_request = build_model_request(&request, "请分析附件");
@@ -17345,6 +18171,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            user_question_answer: None,
             resume_from_checkpoint: false,
         };
 
@@ -17474,6 +18301,7 @@ mod tests {
                 grant_scope: Some("once".to_string()),
                 comment: None,
             }),
+            user_question_answer: None,
             resume_from_checkpoint: false,
         });
 
@@ -19130,6 +19958,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            user_question_answer: None,
             resume_from_checkpoint: false,
         });
 
@@ -19288,6 +20117,7 @@ mod tests {
             backend_context: None,
             mcp_config: json!({}),
             permission_decision: None,
+            user_question_answer: None,
             resume_from_checkpoint: false,
         });
 

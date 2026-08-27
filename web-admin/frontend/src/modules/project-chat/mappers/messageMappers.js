@@ -367,7 +367,10 @@ export function mapHistoryMessage(item) {
     [buildPendingInteractionOperation(sourceContext.pending_interaction)].filter(Boolean),
   );
   return {
-    id: String(item?.id || ""),
+    id: String(item?.id || item?.message_id || item?.messageId || ""),
+    messageId: String(
+      item?.messageId || item?.message_id || item?.id || "",
+    ).trim(),
     role: String(item?.role || "assistant"),
     content: String(item?.content || ""),
     // Keep the canonical answer id when restoring server history.  The chat

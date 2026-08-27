@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    :title="isUpdateMode ? '确认更新 AI 智能体' : '确认创建 AI 智能体'"
+    :title="isUpdateMode ? '确认更新 AI 智能体' : '待确认的 AI 智能体'"
     width="min(880px, calc(100vw - 32px))"
     destroy-on-close
     class="employee-draft-create-dialog"
@@ -201,7 +201,7 @@
         :disabled="!payload"
         @click="handleConfirm"
       >
-        {{ isUpdateMode ? "更新并同步" : "创建并绑定" }}
+        {{ isUpdateMode ? "确认更新" : "确认创建" }}
       </el-button>
     </template>
   </el-dialog>

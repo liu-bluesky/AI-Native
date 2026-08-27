@@ -15,6 +15,7 @@
     "test:chat-initial-load": "node ./scripts/check-project-chat-initial-load.mjs",
     "test:composer-entry-points": "node ./scripts/check-project-chat-composer-entry-points.mjs",
     "test:employee-creation": "node ./scripts/check-project-chat-employee-creation.mjs",
+    "test:workspace-file-errors": "node ./scripts/check-workspace-file-errors.mjs",
     "test:tool-intent": "node ./scripts/check-project-chat-tool-intent.mjs",
     "test:thinking-display": "node ./scripts/check-project-chat-thinking-display.mjs",
     "test:local-chat-history": "node ./scripts/check-project-chat-local-history.mjs",

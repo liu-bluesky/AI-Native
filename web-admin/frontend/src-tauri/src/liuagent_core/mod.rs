@@ -72,7 +72,10 @@ pub use types::{
 
 use tools::command::{check_command_risk, run_command, run_command_with_output_sink_and_cancel};
 use tools::deploy::{deploy_workspace_files_to_target, get_project_deploy_options};
-use tools::file::{apply_patch, delete_file, list_files, list_local_resources, read_file, read_local_resource, search_text, write_file};
+use tools::file::{
+    apply_patch, delete_file, list_files, list_local_resources, read_file, read_local_resource,
+    search_text, write_file,
+};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
 use tools::media::execute_media_tool;
 use tools::network::{download_file, http_get, http_post, web_extract, web_search};
@@ -104,6 +107,7 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
         );
     }
     let result = match name.as_str() {
+        "ask_user_question" => ask_user_question(&tool_call_id, &request.arguments),
         "list_files" => list_files(&request.workspace_path, &request.arguments),
         "read_file" => read_file(&request.workspace_path, &request.arguments),
         "list_local_resources" => list_local_resources(&request.arguments),
@@ -198,6 +202,106 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
     }
 }
 
+fn ask_user_question(
+    tool_call_id: &str,
+    arguments: &serde_json::Value,
+) -> Result<(serde_json::Value, String), ToolError> {
+    let questions = arguments
+        .get("questions")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            ToolError::new(
+                "tool.schema_invalid",
+                "ask_user_question.questions must be a non-empty array",
+            )
+        })?;
+    if questions.is_empty() || questions.len() > 3 {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "ask_user_question.questions must contain 1 to 3 items",
+        ));
+    }
+    let mut normalized_questions = Vec::with_capacity(questions.len());
+    for (index, question) in questions.iter().enumerate() {
+        let text = question
+            .get("question")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ToolError::new(
+                    "tool.schema_invalid",
+                    format!("ask_user_question.questions[{index}].question is required"),
+                )
+            })?;
+        let id = question
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("question-{}", index + 1));
+        let header = question
+            .get("header")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        let options = question
+            .get("options")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .take(5)
+                    .filter_map(|option| {
+                        let label = option
+                            .get("label")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())?;
+                        Some(serde_json::json!({
+                            "label": label,
+                            "description": option
+                                .get("description")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::trim)
+                                .unwrap_or("")
+                        }))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let multi_select = question
+            .get("multi_select")
+            .or_else(|| question.get("multiSelect"))
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                ToolError::new(
+                    "tool.schema_invalid",
+                    format!(
+                        "ask_user_question.questions[{index}].multi_select is required and must be boolean"
+                    ),
+                )
+            })?;
+        normalized_questions.push(serde_json::json!({
+            "id": id,
+            "question": text,
+            "header": header,
+            "options": options,
+            "multiSelect": multi_select
+        }));
+    }
+    let request = serde_json::json!({
+        "requestId": format!("question_{tool_call_id}"),
+        "toolCallId": tool_call_id,
+        "questions": normalized_questions
+    });
+    Err(ToolError::new(
+        "interaction.user_input_required",
+        request.to_string(),
+    ))
+}
+
 fn direct_tool_disabled_reason(name: &str, arguments: &serde_json::Value) -> Option<String> {
     if matches!(name, "list_bot_projects" | "switch_project_workspace")
         && arguments
@@ -255,7 +359,8 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 26);
+        assert_eq!(tools.len(), 27);
+        assert!(tools.iter().any(|item| item.name == "ask_user_question"));
         assert!(tools.iter().any(|item| item.name == "read_file"));
         assert!(tools.iter().any(|item| item.name == "delete_file"));
         assert!(tools.iter().any(|item| item.name == "run_command"));
@@ -291,6 +396,88 @@ mod tests {
         for name in ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"] {
             assert!(!tools.iter().any(|item| item.name == name));
         }
+    }
+
+    #[test]
+    fn ask_user_question_returns_structured_waiting_request() {
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_agent_name".to_string()),
+            name: "ask_user_question".to_string(),
+            arguments: json!({
+                "questions": [{
+                    "id": "agent-name",
+                    "header": "名称",
+                    "question": "智能体名称是什么？",
+                    "options": [{
+                        "label": "前端助手",
+                        "description": "面向前端开发工作"
+                    }],
+                    "multi_select": false
+                }]
+            }),
+            workspace_path: String::new(),
+            permission_decision: None,
+        });
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "interaction.user_input_required");
+        assert_eq!(
+            result.content["userQuestionRequest"]["requestId"],
+            "question_call_agent_name"
+        );
+        assert_eq!(
+            result.content["userQuestionRequest"]["questions"][0]["id"],
+            "agent-name"
+        );
+    }
+
+    #[test]
+    fn ask_user_question_rejects_missing_multi_select() {
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_missing_multi_select".to_string()),
+            name: "ask_user_question".to_string(),
+            arguments: json!({
+                "questions": [{
+                    "id": "agent-stack",
+                    "question": "需要哪些技术栈？",
+                    "options": []
+                }]
+            }),
+            workspace_path: String::new(),
+            permission_decision: None,
+        });
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "tool.schema_invalid");
+        assert!(result.error.contains("multi_select"));
+    }
+
+    #[test]
+    fn ask_user_question_preserves_multi_select_true() {
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_multi_stack".to_string()),
+            name: "ask_user_question".to_string(),
+            arguments: json!({
+                "questions": [{
+                    "id": "agent-stack",
+                    "question": "需要哪些技术栈？",
+                    "options": [
+                        {"label": "Vue"},
+                        {"label": "Python"}
+                    ],
+                    "multi_select": true
+                }]
+            }),
+            workspace_path: String::new(),
+            permission_decision: None,
+        });
+
+        assert!(!result.ok);
+        assert_eq!(result.error_code, "interaction.user_input_required");
+        assert_eq!(
+            result.content["userQuestionRequest"]["questions"][0]["multiSelect"],
+            true
+        );
     }
 
     #[test]

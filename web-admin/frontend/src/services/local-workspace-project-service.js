@@ -9,15 +9,10 @@ import {
   readNativeWorkspaceFile,
   writeNativeWorkspaceFile,
 } from "@/utils/native-desktop-bridge.js";
+import { isWorkspaceFileMissing } from "@/utils/workspace-file-errors.js";
 import { pickWorkspaceDirectory } from "@/utils/workspace-picker.js";
 
 const DEFAULT_AI_ENTRY_FILE = "AIENTRY.md";
-
-function isWorkspaceFileMissing(error) {
-  return /not found|no such file|os error 2|系统找不到指定的文件|找不到指定的文件|不存在/i.test(
-    String(error?.message || error?.detail || error || ""),
-  );
-}
 
 export async function initializeLocalWorkspaceProjectAiEntryFile(project) {
   const projectId = String(project?.id || "").trim();

@@ -868,7 +868,11 @@ async function handleSubmit() {
     );
     router.push("/employees");
   } catch (e) {
-    ElMessage.error(e.detail || (isEdit.value ? "保存失败" : "创建失败"));
+    ElMessage.error(
+      String(
+        e?.detail || e?.message || e || (isEdit.value ? "保存失败" : "创建失败"),
+      ).trim(),
+    );
   } finally {
     submitting.value = false;
   }

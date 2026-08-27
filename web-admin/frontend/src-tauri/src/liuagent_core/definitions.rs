@@ -9,6 +9,50 @@ use super::types::ToolDefinition;
 pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
+            name: "ask_user_question",
+            description: "当缺少只能由用户决定的信息、需要用户确认方案，或需要用户从少量选项中选择时使用。调用后 Runtime 会暂停当前工具循环并展示问题；收到答案后会从同一个工具调用继续。一次最多提出 3 个具体问题。每个问题必须明确设置 multi_select：互斥答案只能选一个时设为 false；多个答案可以同时成立、用户可能需要组合选择时设为 true。不要用它报告内部错误，也不要把可以自行读取或推断的信息交给用户。",
+            action: "interaction.ask_user",
+            risk: "low",
+            requires_approval: false,
+            scope: "session",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "questions": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "question": {"type": "string"},
+                                "header": {"type": "string"},
+                                "options": {
+                                    "type": "array",
+                                    "maxItems": 5,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {"type": "string"},
+                                            "description": {"type": "string"}
+                                        },
+                                        "required": ["label"]
+                                    }
+                                },
+                                "multi_select": {
+                                    "type": "boolean",
+                                    "description": "是否允许同时选择多个选项。互斥方向、唯一名称、单一受众设为 false；技术栈、能力范围、交付物、需要同时包含的内容设为 true。"
+                                }
+                            },
+                            "required": ["id", "question", "multi_select"]
+                        }
+                    }
+                },
+                "required": ["questions"]
+            }),
+        },
+        ToolDefinition {
             name: "update_execution_plan",
             description: "为当前复杂任务创建或更新执行计划。仅当任务确实需要多个步骤时调用；简单问答不要调用。steps 必须是按执行顺序排列的具体步骤，数量 2-8；同一时刻最多一个 in_progress，已完成步骤不得退回 pending 或 in_progress。",
             action: "plan.update",

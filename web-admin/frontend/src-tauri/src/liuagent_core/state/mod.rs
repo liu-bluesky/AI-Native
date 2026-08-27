@@ -83,6 +83,12 @@ pub fn write_runtime_artifacts(
         .filter(|result| result.error_code == "permission.required")
         .filter_map(|result| result.content.get("permissionRequest").cloned())
         .collect::<Vec<_>>();
+    let pending_user_questions = input
+        .tool_results
+        .iter()
+        .filter(|result| result.error_code == "interaction.user_input_required")
+        .filter_map(|result| result.content.get("userQuestionRequest").cloned())
+        .collect::<Vec<_>>();
     let pending_tool_calls = input
         .tool_results
         .iter()
@@ -146,7 +152,8 @@ pub fn write_runtime_artifacts(
             "context": input.agent_run_context.clone()
         });
     }
-    let mut persisted_run_state = merge_runtime_run_state(run_state, pending_permissions);
+    let mut persisted_run_state =
+        merge_runtime_run_state(run_state, pending_permissions, pending_user_questions);
     let interruption_reason = input
         .retry_decision
         .get("failure_type")
@@ -261,7 +268,13 @@ pub fn write_runtime_artifacts(
                 "kind": "work-facts",
                 "session_id": input.session_id,
                 "phase": "local_chat",
-                "step": if input.waiting_for == Some("approval") { "waiting_tool_permission" } else { "model_tool_loop" },
+                "step": if input.waiting_for == Some("approval") {
+                    "waiting_tool_permission"
+                } else if input.waiting_for == Some("user_question") {
+                    "waiting_user_question"
+                } else {
+                    "model_tool_loop"
+                },
                 "status": input.run_status,
                 "goal": input.user_message,
                 "facts": [
@@ -274,6 +287,8 @@ pub fn write_runtime_artifacts(
                 ],
                 "risks": if input.waiting_for == Some("approval") {
                     vec!["waiting_for_permission"]
+                } else if input.waiting_for == Some("user_question") {
+                    vec!["waiting_for_user_input"]
                 } else {
                     Vec::<&str>::new()
                 }
@@ -295,7 +310,11 @@ pub fn write_runtime_artifacts(
     })
 }
 
-fn merge_runtime_run_state(mut run_state: Value, pending_permissions: Vec<Value>) -> Value {
+fn merge_runtime_run_state(
+    mut run_state: Value,
+    pending_permissions: Vec<Value>,
+    pending_user_questions: Vec<Value>,
+) -> Value {
     if !run_state
         .as_object()
         .is_some_and(|object| !object.is_empty())
@@ -306,6 +325,10 @@ fn merge_runtime_run_state(mut run_state: Value, pending_permissions: Vec<Value>
         object.insert(
             "pending_permissions".to_string(),
             json!(pending_permissions),
+        );
+        object.insert(
+            "pending_user_questions".to_string(),
+            json!(pending_user_questions),
         );
         object
             .entry("pending_adapter_actions".to_string())
@@ -1070,8 +1093,15 @@ fn build_transcript_events(input: &RuntimePersistenceInput<'_>, now: u128) -> Ve
     let pending_request_id = input
         .tool_results
         .iter()
-        .find(|result| result.error_code == "permission.required")
-        .and_then(|result| result.content.get("permissionRequest"))
+        .find_map(|result| {
+            if result.error_code == "permission.required" {
+                result.content.get("permissionRequest")
+            } else if result.error_code == "interaction.user_input_required" {
+                result.content.get("userQuestionRequest")
+            } else {
+                None
+            }
+        })
         .and_then(|request| request.get("requestId"))
         .and_then(Value::as_str);
     let pending_tool_call_ids = input

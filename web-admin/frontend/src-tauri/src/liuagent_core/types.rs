@@ -62,6 +62,7 @@ pub struct LocalChatRequest {
     pub mcp_config: Value,
     pub backend_context: Option<LocalBackendContext>,
     pub permission_decision: Option<PermissionDecisionInput>,
+    pub user_question_answer: Option<UserQuestionAnswerInput>,
     #[serde(default)]
     pub resume_from_checkpoint: bool,
 }
@@ -102,6 +103,7 @@ impl Default for LocalChatRequest {
             mcp_config: json!({}),
             backend_context: None,
             permission_decision: None,
+            user_question_answer: None,
             resume_from_checkpoint: false,
         }
     }
@@ -1112,6 +1114,10 @@ impl ToolExecutionResult {
             serde_json::from_str::<Value>(&error.message)
                 .map(|request| json!({"permissionRequest": request}))
                 .unwrap_or_else(|_| json!({}))
+        } else if error.code == "interaction.user_input_required" {
+            serde_json::from_str::<Value>(&error.message)
+                .map(|request| json!({"userQuestionRequest": request}))
+                .unwrap_or_else(|_| json!({}))
         } else if status == "no_signal" {
             json!({
                 "status": status,
@@ -1149,6 +1155,7 @@ fn tool_error_status(error_code: &str) -> &'static str {
     match error_code {
         "tool.timeout" => "no_signal",
         "permission.required" => "waiting",
+        "interaction.user_input_required" => "waiting",
         _ => "failed",
     }
 }
@@ -1185,6 +1192,24 @@ pub struct PermissionDecisionInput {
     pub decision: String,
     pub grant_scope: Option<String>,
     pub comment: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestionAnswerInput {
+    pub request_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub answers: Vec<UserQuestionAnswerItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestionAnswerItem {
+    pub id: String,
+    #[serde(default)]
+    pub selected: Vec<String>,
+    pub custom: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

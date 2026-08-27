@@ -47,6 +47,23 @@ pub fn approval_required_event(
     )
 }
 
+pub fn user_question_required_event(
+    event_id: String,
+    runtime_session_id: &str,
+    chat_session_id: &str,
+    user_question_request: Value,
+    created_at_epoch_ms: u128,
+) -> Value {
+    agent_runtime_event(
+        event_id,
+        runtime_session_id,
+        chat_session_id,
+        "user_question_required",
+        user_question_request,
+        created_at_epoch_ms,
+    )
+}
+
 pub fn state_changed_event(
     event_id: String,
     runtime_session_id: &str,

@@ -842,6 +842,13 @@ export async function startNativeLiuAgentLocalChat(request = {}) {
               typeof request.permission_decision === "object"
             ? request.permission_decision
             : null,
+      userQuestionAnswer:
+        request?.userQuestionAnswer && typeof request.userQuestionAnswer === "object"
+          ? request.userQuestionAnswer
+          : request?.user_question_answer &&
+              typeof request.user_question_answer === "object"
+            ? request.user_question_answer
+            : null,
       resumeFromCheckpoint: Boolean(
         request?.resumeFromCheckpoint || request?.resume_from_checkpoint,
       ),

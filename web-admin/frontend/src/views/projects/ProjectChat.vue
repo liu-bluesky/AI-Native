@@ -1344,6 +1344,81 @@
               </el-button>
             </div>
           </div>
+          <div
+            v-if="currentLocalLiuAgentUserQuestionPrompt"
+            class="chat-approval-banner chat-approval-banner--local-agent chat-user-question-banner"
+          >
+            <div class="chat-approval-banner__head">
+              <span class="chat-approval-banner__icon">💬</span>
+              <div class="chat-approval-banner__title-wrap">
+                <strong>需要你补充信息</strong>
+                <div class="chat-approval-banner__meta">
+                  <span>继续当前任务</span>
+                  <span v-if="currentLocalLiuAgentUserQuestionPrompt.queueLabel">
+                    {{ currentLocalLiuAgentUserQuestionPrompt.queueLabel }}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <p class="chat-approval-banner__desc">
+              回答后会从同一个智能体工具调用继续，不会把信息不足当成创建失败。
+            </p>
+            <div class="chat-user-question-banner__questions">
+              <div
+                v-for="question in currentLocalLiuAgentUserQuestionPrompt.questions"
+                :key="question.id"
+                class="chat-user-question-banner__item"
+              >
+                <strong>{{ question.header || "请确认" }}</strong>
+                <p>{{ question.question }}</p>
+                <el-checkbox-group
+                  v-if="question.options.length && question.multiSelect"
+                  v-model="localLiuAgentUserQuestionAnswers[question.id].selected"
+                  @change="handleLocalLiuAgentUserQuestionOptionChange(question.id)"
+                >
+                  <el-checkbox
+                    v-for="option in question.options"
+                    :key="option.label"
+                    :label="option.label"
+                  >
+                    {{ option.label }}
+                    <small v-if="option.description">{{ option.description }}</small>
+                  </el-checkbox>
+                </el-checkbox-group>
+                <el-radio-group
+                  v-else-if="question.options.length"
+                  v-model="localLiuAgentUserQuestionAnswers[question.id].choice"
+                  @change="handleLocalLiuAgentUserQuestionOptionChange(question.id)"
+                >
+                  <el-radio
+                    v-for="option in question.options"
+                    :key="option.label"
+                    :label="option.label"
+                  >
+                    {{ option.label }}
+                    <small v-if="option.description">{{ option.description }}</small>
+                  </el-radio>
+                </el-radio-group>
+                <el-input
+                  v-model="localLiuAgentUserQuestionAnswers[question.id].custom"
+                  :type="question.options.length ? 'text' : 'textarea'"
+                  :rows="question.options.length ? undefined : 2"
+                  :placeholder="question.options.length ? '也可以直接输入；输入内容将替代上方选项' : '请输入你的回答'"
+                  @input="handleLocalLiuAgentUserQuestionCustomInput(question.id, $event)"
+                />
+              </div>
+            </div>
+            <div class="chat-approval-banner__actions">
+              <el-button
+                size="small"
+                type="primary"
+                :loading="localLiuAgentUserQuestionSubmitting"
+                @click="submitCurrentLocalLiuAgentUserQuestion"
+              >
+                提交并继续
+              </el-button>
+            </div>
+          </div>
           <section
             v-if="activeComposerPlan"
             class="composer-plan-panel"
@@ -2831,6 +2906,7 @@ import { isMediaBuildFeatureEnabled } from "@/config/buildFeatures.js";
 import { DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT } from "@/config/desktopAgentPrompts.js";
 import { openLocalWorkspaceProjectFromPicker } from "@/services/local-workspace-project-service.js";
 import { saveLocalAgentDirectoryResources } from "@/services/local-agent-directory-service.js";
+import { isWorkspaceFileMissing } from "@/utils/workspace-file-errors.js";
 import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
@@ -4786,6 +4862,10 @@ const localLiuAgentToolTasks = new Set();
 const localLiuAgentPendingPermissions = new Map();
 const localLiuAgentPendingPermissionVersion = ref(0);
 const localLiuAgentPermissionSubmitting = ref(false);
+const localLiuAgentPendingUserQuestions = new Map();
+const localLiuAgentPendingUserQuestionVersion = ref(0);
+const localLiuAgentUserQuestionAnswers = ref({});
+const localLiuAgentUserQuestionSubmitting = ref(false);
 const LOCAL_LIUAGENT_AUTH_LEVEL_STORAGE_KEY = "local_liuagent_auth_level";
 const LOCAL_LIUAGENT_TRUSTED_WORKSPACES_STORAGE_KEY =
   "local_liuagent_trusted_workspaces";
@@ -9447,6 +9527,8 @@ const composerPlaceholder = computed(() =>
     ? "项目终端已连接，直接输入命令或交互内容，按 Enter 发送。"
     : currentChatSessionLocalLiuAgentWaitingPermission.value
       ? "请先处理输入框上方的本机操作授权；处理后系统会自动继续执行。"
+      : currentChatSessionLocalLiuAgentWaitingUserQuestion.value
+        ? "请先回答输入框上方的问题；提交后系统会继续当前任务。"
       : "输入需求，本地 liuAgent 会在桌面端调用模型并按模型结构化工具调用执行。",
 );
 const composerHintText = computed(() => {
@@ -14128,16 +14210,35 @@ function assistantAnswerIdentity(row) {
   return String(row?.answerId || row?.answer_id || "").trim();
 }
 
+function chatMessageIdentity(row) {
+  return String(
+    row?.messageId || row?.message_id || row?.id || "",
+  ).trim();
+}
+
 function mergeDuplicateAssistantAnswerRows(rows) {
   const mergedRows = [];
+  const messageIndexById = new Map();
   const assistantIndexByAnswerId = new Map();
   for (const row of Array.isArray(rows) ? rows : []) {
+    const messageId = chatMessageIdentity(row);
+    const existingMessageIndex = messageId
+      ? messageIndexById.get(messageId)
+      : undefined;
+    if (existingMessageIndex !== undefined) {
+      mergedRows[existingMessageIndex] = mergeHistoryRowWithRuntimeSnapshot(
+        mergedRows[existingMessageIndex],
+        row,
+      );
+      continue;
+    }
     const answerId = assistantAnswerIdentity(row);
     const existingIndex = answerId
       ? assistantIndexByAnswerId.get(answerId)
       : undefined;
     if (existingIndex === undefined) {
       mergedRows.push(row);
+      if (messageId) messageIndexById.set(messageId, mergedRows.length - 1);
       if (answerId) assistantIndexByAnswerId.set(answerId, mergedRows.length - 1);
       continue;
     }
@@ -15548,6 +15649,7 @@ const canSend = computed(() => {
   if (currentChatSessionLocalLiuAgentWaitingPermission.value) {
     return Boolean(String(draftText.value || "").trim());
   }
+  if (currentChatSessionLocalLiuAgentWaitingUserQuestion.value) return false;
   if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
     return false;
   }
@@ -15588,6 +15690,7 @@ const isProjectOptionalEmployeeCreate = computed(
 const isComposerDisabled = computed(() => {
   if (isTerminalInteractionMode.value) return false;
   if (currentChatSessionLocalLiuAgentWaitingPermission.value) return false;
+  if (currentChatSessionLocalLiuAgentWaitingUserQuestion.value) return true;
   if (isProjectOptionalEmployeeCreate.value) return false;
   if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
     return true;
@@ -19243,6 +19346,146 @@ const currentChatSessionLocalLiuAgentWaitingPermission = computed(
   () => currentLocalLiuAgentPendingPermissions.value.length > 0,
 );
 
+function normalizeLocalLiuAgentUserQuestions(request = {}) {
+  return (Array.isArray(request?.questions) ? request.questions : [])
+    .slice(0, 3)
+    .map((question, index) => ({
+      id: String(question?.id || `question-${index + 1}`).trim(),
+      question: String(question?.question || "").trim(),
+      header: String(question?.header || "").trim(),
+      options: (Array.isArray(question?.options) ? question.options : [])
+        .slice(0, 5)
+        .map((option) => ({
+          label: String(option?.label || "").trim(),
+          description: String(option?.description || "").trim(),
+        }))
+        .filter((option) => option.label),
+      multiSelect: Boolean(question?.multiSelect || question?.multi_select),
+    }))
+    .filter((question) => question.id && question.question);
+}
+
+function resetLocalLiuAgentUserQuestionAnswers(request = {}) {
+  localLiuAgentUserQuestionAnswers.value = Object.fromEntries(
+    normalizeLocalLiuAgentUserQuestions(request).map((question) => [
+      question.id,
+      { choice: "", selected: [], custom: "" },
+    ]),
+  );
+}
+
+function handleLocalLiuAgentUserQuestionOptionChange(questionId = "") {
+  const normalizedQuestionId = String(questionId || "").trim();
+  const draft = localLiuAgentUserQuestionAnswers.value?.[normalizedQuestionId];
+  if (!draft) return;
+  draft.custom = "";
+}
+
+function handleLocalLiuAgentUserQuestionCustomInput(questionId = "", value = "") {
+  if (!String(value || "").trim()) return;
+  const normalizedQuestionId = String(questionId || "").trim();
+  const draft = localLiuAgentUserQuestionAnswers.value?.[normalizedQuestionId];
+  if (!draft) return;
+  draft.choice = "";
+  draft.selected = [];
+}
+
+function setLocalLiuAgentPendingUserQuestion(requestId, pending = {}) {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (!normalizedRequestId || !pending || typeof pending !== "object") return;
+  const existing = localLiuAgentPendingUserQuestions.get(normalizedRequestId);
+  localLiuAgentPendingUserQuestions.set(normalizedRequestId, {
+    ...(existing || {}),
+    ...pending,
+    requestId: normalizedRequestId,
+    createdAt:
+      Number(existing?.createdAt || pending.createdAt || Date.now()) || Date.now(),
+    updatedAt: Date.now(),
+  });
+  resetLocalLiuAgentUserQuestionAnswers(pending.userQuestionRequest || {});
+  localLiuAgentPendingUserQuestionVersion.value += 1;
+  syncChatLoadingWithCurrentSession();
+}
+
+function deleteLocalLiuAgentPendingUserQuestion(requestId) {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (!normalizedRequestId) return false;
+  const deleted = localLiuAgentPendingUserQuestions.delete(normalizedRequestId);
+  if (deleted) {
+    localLiuAgentPendingUserQuestionVersion.value += 1;
+    localLiuAgentUserQuestionAnswers.value = {};
+    syncChatLoadingWithCurrentSession();
+  }
+  return deleted;
+}
+
+function clearLocalLiuAgentUserQuestionsForChatSession(chatSessionId = "") {
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  let deleted = false;
+  for (const [requestId, pending] of localLiuAgentPendingUserQuestions.entries()) {
+    const pendingChatSessionId = String(
+      pending?.activeChatSessionId || pending?.localChatPayload?.chatSessionId || "",
+    ).trim();
+    if (normalizedChatSessionId && pendingChatSessionId !== normalizedChatSessionId) {
+      continue;
+    }
+    localLiuAgentPendingUserQuestions.delete(requestId);
+    deleted = true;
+  }
+  localLiuAgentUserQuestionAnswers.value = {};
+  if (deleted) {
+    localLiuAgentPendingUserQuestionVersion.value += 1;
+  }
+  syncChatLoadingWithCurrentSession();
+  return deleted;
+}
+
+function localLiuAgentPendingUserQuestionsForChatSession(chatSessionId = "") {
+  localLiuAgentPendingUserQuestionVersion.value;
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedChatSessionId) return [];
+  return Array.from(localLiuAgentPendingUserQuestions.values())
+    .filter((pending) => {
+      const pendingChatSessionId = String(
+        pending?.activeChatSessionId || pending?.localChatPayload?.chatSessionId || "",
+      ).trim();
+      return pendingChatSessionId === normalizedChatSessionId;
+    })
+    .sort(
+      (a, b) =>
+        (Number(a.createdAt || 0) || 0) - (Number(b.createdAt || 0) || 0),
+    );
+}
+
+const currentLocalLiuAgentPendingUserQuestions = computed(() =>
+  localLiuAgentPendingUserQuestionsForChatSession(currentChatSessionId.value),
+);
+
+const currentLocalLiuAgentPendingUserQuestion = computed(
+  () => currentLocalLiuAgentPendingUserQuestions.value[0] || null,
+);
+
+const currentChatSessionLocalLiuAgentWaitingUserQuestion = computed(
+  () => currentLocalLiuAgentPendingUserQuestions.value.length > 0,
+);
+
+const currentLocalLiuAgentUserQuestionPrompt = computed(() => {
+  const pending = currentLocalLiuAgentPendingUserQuestion.value;
+  if (!pending) return null;
+  const questions = normalizeLocalLiuAgentUserQuestions(
+    pending.userQuestionRequest || {},
+  );
+  if (!questions.length) return null;
+  return {
+    requestId: String(pending.requestId || "").trim(),
+    questions,
+    queueLabel:
+      currentLocalLiuAgentPendingUserQuestions.value.length > 1
+        ? `队列 1/${currentLocalLiuAgentPendingUserQuestions.value.length}`
+        : "",
+  };
+});
+
 async function clearLocalLiuAgentPendingPermissionsForChatSession(
   chatSessionId = currentChatSessionId.value,
   reason = "已停止本地智能体执行，已取消待授权操作",
@@ -19707,6 +19950,65 @@ function localLiuAgentPermissionRequestFromChatResult(result = {}) {
       toolName: String(toolResult?.name || "").trim(),
       toolCallId: String(
         toolResult?.toolCallId || toolResult?.tool_call_id || "",
+      ).trim(),
+    };
+  }
+  return null;
+}
+
+function localLiuAgentUserQuestionRequestFromChatResult(result = {}) {
+  for (const event of localLiuAgentRuntimeEventsFromResult(result)) {
+    if (String(event?.type || "").trim() !== "user_question_required") continue;
+    const payload = localLiuAgentRuntimeEventPayload(event);
+    const requestId = String(
+      payload?.requestId || payload?.request_id || "",
+    ).trim();
+    const questions = normalizeLocalLiuAgentUserQuestions(payload);
+    if (!requestId || !questions.length) continue;
+    return {
+      ...payload,
+      requestId,
+      questions,
+      toolName: String(payload?.toolName || payload?.tool_name || "").trim(),
+      toolCallId: String(
+        payload?.toolCallId || payload?.tool_call_id || "",
+      ).trim(),
+    };
+  }
+  const toolResults = Array.isArray(result?.toolResults)
+    ? result.toolResults
+    : Array.isArray(result?.tool_results)
+      ? result.tool_results
+      : [];
+  for (const toolResult of toolResults) {
+    const request =
+      toolResult?.content?.userQuestionRequest &&
+      typeof toolResult.content.userQuestionRequest === "object"
+        ? toolResult.content.userQuestionRequest
+        : null;
+    if (!request) continue;
+    const errorCode = String(
+      toolResult?.errorCode ||
+        toolResult?.error_code ||
+        result?.errorCode ||
+        result?.error_code ||
+        "",
+    ).trim();
+    if (errorCode && errorCode !== "interaction.user_input_required") continue;
+    const requestId = String(request?.requestId || request?.request_id || "").trim();
+    const questions = normalizeLocalLiuAgentUserQuestions(request);
+    if (!requestId || !questions.length) continue;
+    return {
+      ...request,
+      requestId,
+      questions,
+      toolName: String(toolResult?.name || "").trim(),
+      toolCallId: String(
+        request?.toolCallId ||
+          request?.tool_call_id ||
+          toolResult?.toolCallId ||
+          toolResult?.tool_call_id ||
+          "",
       ).trim(),
     };
   }
@@ -20659,6 +20961,7 @@ function hasLiveExecutionActivity() {
     Boolean(getActiveRequestId()) ||
     currentChatSessionLocalLiuAgentRunning.value ||
     currentChatSessionLocalLiuAgentWaitingPermission.value ||
+    currentChatSessionLocalLiuAgentWaitingUserQuestion.value ||
     externalAgentWarmupLoading.value ||
     currentChatSessionNativeExternalAgentRunning.value ||
     backgroundTerminalCount.value > 0 ||
@@ -21523,8 +21826,14 @@ function applyRealtimeChatMessagePayload(eventData) {
   const row = mapHistoryMessage(messagePayload);
   if (!row.id) return null;
   const incomingAnswerId = assistantAnswerIdentity(row);
+  const incomingMessageId = chatMessageIdentity(row);
   const existingIndex = messages.value.findIndex((item) => {
-    if (String(item?.id || "") === row.id) return true;
+    if (
+      incomingMessageId &&
+      chatMessageIdentity(item) === incomingMessageId
+    ) {
+      return true;
+    }
     return Boolean(
       incomingAnswerId && assistantAnswerIdentity(item) === incomingAnswerId,
     );
@@ -22547,6 +22856,155 @@ async function submitCurrentLocalLiuAgentPermissionAction(actionKey) {
     await submitLocalLiuAgentPermissionAction(operation, actionKey);
   } finally {
     localLiuAgentPermissionSubmitting.value = false;
+  }
+}
+
+function formatLocalLiuAgentUserQuestionAnswerMessage(answerRecords = []) {
+  const details = answerRecords
+    .map((record) => {
+      const question = String(record?.question || record?.header || "补充信息").trim();
+      return `问题：${question}\n回答：${String(record?.value || "").trim()}`;
+    })
+    .filter(Boolean)
+    .join("\n\n");
+  return ["补充上方问题：", details].filter(Boolean).join("\n\n");
+}
+
+function formatLocalLiuAgentUserQuestionResumePrompt(
+  originalPrompt = "",
+  answerRecords = [],
+) {
+  const answerContext = answerRecords
+    .map(
+      (record) =>
+        `问题：${record.question}\n用户最终回答：${record.value}`,
+    )
+    .join("\n\n");
+  return [
+    String(originalPrompt || "").trim(),
+    "",
+    "用户刚刚提交了以下最终补充信息：",
+    answerContext,
+    "这些内容已经由用户确认。请直接继续当前任务，不得再次询问相同问题；非关键细节采用合理默认值。",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function submitCurrentLocalLiuAgentUserQuestion() {
+  const pending = currentLocalLiuAgentPendingUserQuestion.value;
+  const prompt = currentLocalLiuAgentUserQuestionPrompt.value;
+  const requestId = String(pending?.requestId || prompt?.requestId || "").trim();
+  if (!pending || !prompt || !requestId) {
+    ElMessage.warning("当前没有等待回答的问题");
+    return;
+  }
+  const answers = [];
+  const answerRecords = [];
+  for (const question of prompt.questions) {
+    const draft = localLiuAgentUserQuestionAnswers.value?.[question.id] || {};
+    const optionSelected = question.multiSelect
+      ? (Array.isArray(draft.selected) ? draft.selected : [])
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+      : [String(draft.choice || "").trim()].filter(Boolean);
+    const custom = String(draft.custom || "").trim();
+    const selected = custom ? [] : optionSelected;
+    if (!selected.length && !custom) {
+      ElMessage.warning(`请回答：${question.question}`);
+      return;
+    }
+    answers.push({
+      id: question.id,
+      selected,
+      custom: custom || null,
+    });
+    answerRecords.push({
+      id: question.id,
+      header: question.header,
+      question: question.question,
+      value: custom || selected.join("、"),
+    });
+  }
+  const localChatPayload = pending.localChatPayload || {};
+  const row = localLiuAgentPendingPermissionRow(pending);
+  if (!row) {
+    ElMessage.warning("问题对应的回答消息已不存在，请重新发送需求");
+    return;
+  }
+  const answerMessageContent =
+    formatLocalLiuAgentUserQuestionAnswerMessage(answerRecords);
+  const originalPrompt = String(
+    pending.finalUserPrompt || localChatPayload.message || "",
+  ).trim();
+  const userMessage = {
+    id: createLocalMessageId(),
+    role: "user",
+    content: answerMessageContent,
+    images: [],
+    videos: [],
+    audios: [],
+    attachments: [],
+    time: nowText(),
+  };
+  const rowIndex = messages.value.indexOf(row);
+  if (rowIndex >= 0) {
+    messages.value.splice(rowIndex, 1);
+  }
+  messages.value.push(userMessage, row);
+  localLiuAgentUserQuestionSubmitting.value = true;
+  deleteLocalLiuAgentPendingUserQuestion(requestId);
+  try {
+    await sendLocalLiuAgentChatRequest({
+      projectId: String(localChatPayload.projectId || selectedProjectId.value || "").trim(),
+      activeChatSessionId: String(
+        pending.activeChatSessionId || localChatPayload.chatSessionId || currentChatSessionId.value,
+      ).trim(),
+      userMessage,
+      assistantMessage: row,
+      finalUserPrompt: formatLocalLiuAgentUserQuestionResumePrompt(
+        originalPrompt,
+        answerRecords,
+      ),
+      historyRows: Array.isArray(localChatPayload.history)
+        ? localChatPayload.history
+        : [],
+      displayUserMessageContent: String(
+        pending.displayUserMessageContent || userMessage.content || "",
+      ).trim(),
+      sourceContext: {
+        ...(pending.sourceContext || {}),
+        resumed_from_user_question: true,
+        user_question_answer_message_id: userMessage.id,
+        user_question_answer: answerMessageContent,
+      },
+      attachments: Array.isArray(localChatPayload.attachments)
+        ? localChatPayload.attachments
+        : [],
+      mediaTools: Array.isArray(localChatPayload.mediaTools)
+        ? localChatPayload.mediaTools
+        : [],
+      persistUserMessage: true,
+      resumeFromCheckpoint: true,
+      userQuestionAnswer: {
+        requestId,
+        toolCallId: String(
+          pending.userQuestionRequest?.toolCallId ||
+            pending.userQuestionRequest?.tool_call_id ||
+            "",
+        ).trim(),
+        answers,
+      },
+      workspacePath: String(localChatPayload.workspacePath || "").trim(),
+      providerId: String(localChatPayload.providerId || "").trim(),
+      modelName: String(localChatPayload.modelName || "").trim(),
+    });
+  } catch (error) {
+    setLocalLiuAgentPendingUserQuestion(requestId, pending);
+    ElMessage.error(error?.message || "提交回答后继续执行失败");
+  } finally {
+    localLiuAgentUserQuestionSubmitting.value = false;
+    scrollToBottom();
   }
 }
 
@@ -25331,6 +25789,16 @@ function clearRouteCreateChatSessionFlag() {
   void router.replace({ query: nextQuery }).catch(() => {});
 }
 
+function markRouteAsNewChatSession() {
+  const nextQuery = {
+    ...route.query,
+    [CREATE_CHAT_SESSION_QUERY_KEY]: "1",
+  };
+  delete nextQuery.chat_session_id;
+  delete nextQuery.message_id;
+  void router.replace({ query: nextQuery }).catch(() => {});
+}
+
 function clearLocalRuntimeTaskRouteAction() {
   if (!String(route.query[LOCAL_RUNTIME_TASK_ACTION_QUERY_KEY] || "").trim())
     return;
@@ -26812,6 +27280,7 @@ const employeeDraftAutoRuleSourceLabels = computed(() =>
 );
 
 function getEmployeeDraftCard(item) {
+  if (item?.employeeDraftCancelled || item?.employeeDraftSuperseded) return null;
   const rawDraft = extractEmployeeDraftPayload(item?.content || "");
   if (!rawDraft) return null;
   const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
@@ -26836,62 +27305,195 @@ function resetEmployeeDraftDialogState() {
   employeeDraftAddToProject.value = false;
 }
 
-function handleStartEmployeeCreation() {
-  toggleComposerAssist("employee_create");
+function normalizeEmployeeDraftConfirmationText(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
-function buildFallbackEmployeeDraftForCreation(item) {
-  const context = messages.value
-    .slice(-12)
-    .map((row) => String(row?.content || "").trim())
-    .concat(String(item?.content || "").trim())
-    .join("\n");
-  const usesNest = /nestjs|nest\.js/i.test(context);
-  const usesNode = /node(?:\.js)?/i.test(context);
-  const isFrontend = /前端|frontend|vue|react|界面|响应式|组件/i.test(context);
-  const isBackend = /后端|backend|nestjs|接口|数据库|鉴权/i.test(context);
-  const stackLabel = usesNest ? "Node.js/NestJS" : usesNode ? "Node.js" : "现有项目技术栈";
-  const roleLabel = isFrontend && !isBackend ? "前端" : "后端";
-  const isFrontendRole = roleLabel === "前端";
-  return {
-    name: `${stackLabel} ${roleLabel}智能体`,
-    description: isFrontendRole
-      ? `面向${stackLabel}项目的前端开发智能体，负责界面、交互、响应式适配与质量验证。`
-      : `面向${stackLabel}项目的后端开发智能体，负责接口、数据、鉴权、测试与排障。`,
-    goal: isFrontendRole
-      ? `使用${stackLabel}完成清晰、可维护且可验证的前端实现。`
-      : `使用${stackLabel}完成可靠的后端接口与服务开发。`,
-    role: isFrontendRole ? "frontend_engineer" : "backend_engineer",
-    industry: "软件研发",
-    skills: isFrontendRole
-      ? [stackLabel, "组件开发", "响应式布局", "可访问性", "前端测试"]
-      : [stackLabel, "REST API", "数据库", "鉴权", "接口测试"],
-    rule_titles: isFrontendRole
-      ? ["前端组件开发规则", "交互与响应式规则", "前端质量验证规则"]
-      : ["后端接口开发规则", "数据库与鉴权规则", "测试与排障规则"],
-    rule_domains: isFrontendRole
-      ? ["前端开发", "用户体验", "质量保障"]
-      : ["后端开发", "服务安全", "质量保障"],
-    style_hints: ["先检查现有代码", "优先复用项目约定", "输出可验证结果"],
-    default_workflow: isFrontendRole
-      ? [
-          "检查前端结构与现有组件",
-          "设计并实现界面与交互变更",
-          "检查响应式与可访问性",
-          "运行前端测试或构建",
-          "汇总改动与验证结果",
-        ]
-      : [
-          "检查项目结构与现有接口",
-          "设计并实现后端变更",
-          "补充或运行接口测试",
-          "检查鉴权、错误处理与部署影响",
-          "汇总改动与验证结果",
-        ],
-    tool_usage_policy: "仅在必要时使用工具，执行有副作用的操作前先说明范围。",
-    memory_scope: "project",
-    memory_retention_days: 90,
+function classifyEmployeeDraftConfirmationText(value = "") {
+  const normalized = normalizeEmployeeDraftConfirmationText(value);
+  if (!normalized) return "none";
+  if (
+    new Set([
+      "确定",
+      "确认",
+      "好的",
+      "可以",
+      "同意",
+      "没问题",
+      "创建",
+      "确认创建",
+      "确定创建",
+      "好的创建",
+      "可以创建",
+      "没问题创建",
+      "好的创建没问题",
+      "就这样创建",
+      "按这个创建",
+      "按此创建",
+      "更新",
+      "确认更新",
+      "确定更新",
+      "按这个更新",
+    ]).has(normalized)
+  ) {
+    return "confirm";
+  }
+  if (
+    new Set([
+      "取消",
+      "取消创建",
+      "不创建",
+      "先不创建",
+      "取消更新",
+      "不更新",
+      "先不更新",
+    ]).has(normalized)
+  ) {
+    return "cancel";
+  }
+  return "revise";
+}
+
+function latestPendingEmployeeDraftCandidate() {
+  if (
+    employeeDraftDialogItem.value &&
+    employeeDraftDialogPayload.value &&
+    !employeeDraftDialogItem.value.employeeDraftCreatedName &&
+    !employeeDraftDialogItem.value.employeeDraftCancelled &&
+    !employeeDraftDialogItem.value.employeeDraftSuperseded
+  ) {
+    return {
+      item: employeeDraftDialogItem.value,
+      payload: employeeDraftDialogPayload.value,
+      mode: employeeDraftDialogMode.value,
+    };
+  }
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const item = messages.value[index];
+    if (
+      item?.role === "user" ||
+      item?.employeeDraftCreatedName ||
+      item?.employeeDraftCancelled ||
+      item?.employeeDraftSuperseded
+    ) {
+      continue;
+    }
+    const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
+    if (!["draft", "create", "update"].includes(intent)) continue;
+    const rawDraft = extractEmployeeDraftPayload(item?.content || "");
+    if (!rawDraft) continue;
+    const payload =
+      intent === "update"
+        ? buildEmployeeUpdateDraftPayload(rawDraft)
+        : buildEmployeeAutoCreatePayload(rawDraft);
+    if (!payload) continue;
+    return { item, payload, mode: intent === "update" ? "update" : "create" };
+  }
+  return null;
+}
+
+function supersedeOtherPendingEmployeeDrafts(activeItem = null) {
+  for (const item of messages.value) {
+    if (
+      !item ||
+      item === activeItem ||
+      item.role === "user" ||
+      item.employeeDraftCreatedName ||
+      item.employeeDraftCancelled ||
+      item.employeeDraftSuperseded
+    ) {
+      continue;
+    }
+    const intent = extractEmployeeIntentPayload(item.content || "")?.intent;
+    if (!["draft", "create", "update"].includes(intent)) continue;
+    if (!extractEmployeeDraftPayload(item.content || "")) continue;
+    item.employeeDraftSuperseded = true;
+  }
+  if (
+    employeeDraftDialogItem.value &&
+    employeeDraftDialogItem.value !== activeItem &&
+    !employeeDraftDialogItem.value.employeeDraftCreatedName &&
+    !employeeDraftDialogItem.value.employeeDraftCancelled
+  ) {
+    employeeDraftDialogItem.value.employeeDraftSuperseded = true;
+  }
+}
+
+function applyEmployeeDraftConfirmationCandidate(candidate = null) {
+  if (!candidate?.item || !candidate?.payload) return false;
+  employeeDraftDialogMode.value = candidate.mode === "update" ? "update" : "create";
+  employeeDraftDialogPayload.value = candidate.payload;
+  employeeDraftDialogItem.value = candidate.item;
+  employeeDraftAutoCreateSkills.value = true;
+  employeeDraftAutoCreateRules.value = true;
+  employeeDraftAddToProject.value =
+    employeeDraftDialogMode.value === "update" ||
+    Boolean(String(selectedProjectId.value || "").trim());
+  return true;
+}
+
+async function appendEmployeeDraftConfirmationUserMessage(text = "") {
+  const content = String(text || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!content || !chatSessionId) return null;
+  const userMessage = {
+    id: createLocalMessageId(),
+    role: "user",
+    content,
+    images: [],
+    videos: [],
+    audios: [],
+    attachments: [],
+    time: nowText(),
   };
+  messages.value.push(userMessage);
+  const persisted = await persistLocalLiuAgentChatMessage({
+    projectId: selectedProjectId.value,
+    chatSessionId,
+    message: userMessage,
+    role: "user",
+    workspacePath: localLiuAgentWorkspacePath(),
+    sourceContext: {
+      source: "employee_draft_confirmation",
+      employee_draft_confirmation: true,
+    },
+  });
+  if (persisted) userMessage.historyPersisted = true;
+  return userMessage;
+}
+
+async function submitPendingEmployeeDraftConfirmationIfNeeded(text = "") {
+  const candidate = latestPendingEmployeeDraftCandidate();
+  if (!candidate) return false;
+  const action = classifyEmployeeDraftConfirmationText(text);
+  if (action === "none") return false;
+  if (action === "revise") {
+    candidate.item.employeeDraftSuperseded = true;
+    employeeDraftDialogVisible.value = false;
+    resetEmployeeDraftDialogState();
+    return false;
+  }
+  await appendEmployeeDraftConfirmationUserMessage(text);
+  resetDraft();
+  if (action === "cancel") {
+    candidate.item.employeeDraftCancelled = true;
+    employeeDraftDialogVisible.value = false;
+    resetEmployeeDraftDialogState();
+    ElMessage.info("已取消当前智能体草稿");
+    scrollToBottom();
+    return true;
+  }
+  if (!applyEmployeeDraftConfirmationCandidate(candidate)) return false;
+  await confirmEmployeeDraftCreation();
+  scrollToBottom();
+  return true;
+}
+
+function handleStartEmployeeCreation() {
+  toggleComposerAssist("employee_create");
 }
 
 async function autoCreateEmployeeFromDraftMessage(
@@ -26902,12 +27504,10 @@ async function autoCreateEmployeeFromDraftMessage(
     return false;
   }
   const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
-  if (intent !== "create") {
+  if (!["draft", "create"].includes(intent)) {
     return false;
   }
-  const rawDraft =
-    extractEmployeeDraftPayload(item?.content || "") ||
-    buildFallbackEmployeeDraftForCreation(item);
+  const rawDraft = extractEmployeeDraftPayload(item?.content || "");
   const payload = buildEmployeeAutoCreatePayload(rawDraft);
   if (!payload?.name) {
     ElMessage.warning("智能体草稿缺少名称，尚未创建；请先补充智能体名称");
@@ -26921,6 +27521,7 @@ async function autoCreateEmployeeFromDraftMessage(
 }
 
 async function openEmployeeDraftCreateDialog(item, payload) {
+  supersedeOtherPendingEmployeeDrafts(item);
   employeeDraftDialogMode.value = "create";
   employeeDraftDialogPayload.value = payload;
   employeeDraftDialogItem.value = item;
@@ -26946,20 +27547,11 @@ function resolveEmployeeUpdateTarget(rawDraft = {}) {
   );
 }
 
-async function autoUpdateEmployeeFromDraftMessage(item) {
-  if (!item || item.employeeDraftUpdatedName) return false;
-  const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
-  if (intent !== "update") return false;
-  const rawDraft = extractEmployeeDraftPayload(item?.content || "");
-  if (!rawDraft) return false;
+function buildEmployeeUpdateDraftPayload(rawDraft = {}) {
   const target = resolveEmployeeUpdateTarget(rawDraft);
-  if (!target) {
-    ElMessage.warning("更新智能体前，请在当前会话中只选择一个目标智能体");
-    return false;
-  }
+  if (!target) return null;
   const draft = normalizeEmployeeDraftPayload(rawDraft);
-  employeeDraftDialogMode.value = "update";
-  employeeDraftDialogPayload.value = {
+  return {
     ...draft,
     employee_id: String(target.id || "").trim(),
     name: String(target.name || draft.name || "未命名智能体").trim(),
@@ -26968,12 +27560,126 @@ async function autoUpdateEmployeeFromDraftMessage(item) {
     role: draft.role || normalizeEmployeeDraftRole(target.role),
     add_to_current_project: true,
   };
+}
+
+async function autoUpdateEmployeeFromDraftMessage(item) {
+  if (!item || item.employeeDraftUpdatedName) return false;
+  const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
+  if (intent !== "update") return false;
+  const rawDraft = extractEmployeeDraftPayload(item?.content || "");
+  if (!rawDraft) return false;
+  const payload = buildEmployeeUpdateDraftPayload(rawDraft);
+  if (!payload) {
+    ElMessage.warning("更新智能体前，请在当前会话中只选择一个目标智能体");
+    return false;
+  }
+  supersedeOtherPendingEmployeeDrafts(item);
+  employeeDraftDialogMode.value = "update";
+  employeeDraftDialogPayload.value = payload;
   employeeDraftDialogItem.value = item;
   employeeDraftAutoCreateSkills.value = true;
   employeeDraftAutoCreateRules.value = true;
   employeeDraftAddToProject.value = true;
   employeeDraftDialogVisible.value = true;
   return true;
+}
+
+async function pauseLocalLiuAgentPendingUserQuestionsForChatSession(
+  chatSessionId = currentChatSessionId.value,
+) {
+  const pendingItems =
+    localLiuAgentPendingUserQuestionsForChatSession(chatSessionId);
+  if (!pendingItems.length) return false;
+  const workspacePath = String(
+    pendingItems[0]?.localChatPayload?.workspacePath ||
+      localLiuAgentWorkspacePath(),
+  ).trim();
+  const paused = await pauseNativeLiuAgentLocalChat({
+    projectId: selectedProjectId.value,
+    chatSessionId,
+    workspacePath,
+    reason: "manual_pause",
+  });
+  if (!paused) return false;
+  for (const pending of pendingItems) {
+    const requestId = String(pending?.requestId || "").trim();
+    const row = localLiuAgentPendingPermissionRow(pending);
+    if (requestId) {
+      localLiuAgentPendingUserQuestions.delete(requestId);
+    }
+    if (!row) continue;
+    pauseOpenMessageOperations(row);
+    appendMessageProcessLog(row, {
+      level: "warning",
+      text: "任务已暂停，待回答问题和执行详情已保留。",
+      autoExpand: true,
+    });
+    row.processExpanded = true;
+    await persistLocalLiuAgentAssistantState({
+      projectId: selectedProjectId.value,
+      chatSessionId,
+      assistantMessage: row,
+      fallbackContent: LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      preserveVisibleContent: true,
+      workspacePath,
+      sourceContext: {
+        ...(pending?.sourceContext || {}),
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
+        recovery_reason: "manual_pause",
+      },
+    });
+  }
+  localLiuAgentPendingUserQuestionVersion.value += 1;
+  localLiuAgentUserQuestionAnswers.value = {};
+  syncChatLoadingWithCurrentSession();
+  scrollToBottom();
+  return true;
+}
+
+async function handleEmployeeIntentAfterAssistantResponse(
+  item,
+  { assistActionId = "" } = {},
+) {
+  const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
+  switch (intent) {
+    case "create": {
+      const opened = await autoCreateEmployeeFromDraftMessage(item, {
+        resetAssist: assistActionId === "employee_create",
+      });
+      if (!opened) {
+        console.warn("employee create intent did not produce a confirmable draft");
+      }
+      return;
+    }
+    case "update": {
+      const opened = await autoUpdateEmployeeFromDraftMessage(item);
+      if (!opened) {
+        console.warn("employee update intent did not produce a confirmable draft");
+      }
+      return;
+    }
+    case "draft": {
+      const opened = await autoCreateEmployeeFromDraftMessage(item, {
+        resetAssist: assistActionId === "employee_create",
+      });
+      if (!opened) {
+        console.warn("employee draft intent did not produce a confirmable draft");
+      }
+      return;
+    }
+    case "question":
+      return;
+    default:
+      if (assistActionId === "employee_create") {
+        console.debug(
+          "employee creation response omitted the optional intent protocol; preserving the assistant reply",
+        );
+      }
+  }
 }
 
 async function confirmEmployeeDraftCreation(options = {}) {
@@ -27012,7 +27718,11 @@ async function confirmEmployeeDraftCreation(options = {}) {
       stripEmployeeIntentBlock(stripEmployeeDraftBlock(item.content)),
     );
     item.content = `${visibleContent}\n\n${updated ? "已更新智能体" : "已创建智能体"}：${item.employeeDraftCreatedName}`.trim();
+    if (!updated) {
+      clearLocalLiuAgentUserQuestionsForChatSession(currentChatSessionId.value);
+    }
     employeeDraftDialogVisible.value = false;
+    resetEmployeeDraftDialogState();
   } catch (error) {
     ElMessage.error(
       error?.message ||
@@ -30193,7 +30903,9 @@ async function fetchChatSessions(
     rememberCurrentChatSessionMessages();
     rememberCurrentChatSessionComposerState();
     currentChatSessionId.value = resolved;
-    applyChatSessionComposerState(projectId, resolved);
+    if (!options.preserveComposerState) {
+      applyChatSessionComposerState(projectId, resolved);
+    }
     rememberChatSession(projectId, resolved);
     return resolved;
   } catch (err) {
@@ -30591,6 +31303,13 @@ async function createChatSession(options = {}) {
       resetTerminalPanel();
       scrollToBottom();
     }
+    if (
+      options.switchTo !== false &&
+      String(route.query[CREATE_CHAT_SESSION_QUERY_KEY] || "").trim() === "1" &&
+      !String(route.query.chat_session_id || "").trim()
+    ) {
+      replaceRouteWithChatSession(session.id);
+    }
     return session;
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "创建新对话失败");
@@ -30658,6 +31377,10 @@ async function handleCreateNewConversation() {
     ElMessage.warning("对话记录加载中，请稍后再新建对话");
     return;
   }
+  markRouteAsNewChatSession();
+  activeChatHistoryLoadingKey = "";
+  chatHistoryLoading.value = false;
+  chatHistoryLoadingMore.value = false;
   if (
     !String(selectedProjectId.value || "").trim() &&
     ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
@@ -32746,12 +33469,7 @@ async function createDefaultAiEntryFile() {
         return;
       }
     } catch (err) {
-      const message = String(err?.detail || err?.message || err || "");
-      if (
-        !/not found|no such file|os error 2|系统找不到指定的文件|找不到指定的文件|不存在/i.test(
-          message,
-        )
-      ) {
+      if (!isWorkspaceFileMissing(err)) {
         throw err;
       }
     }
@@ -33110,6 +33828,7 @@ async function sendLocalLiuAgentChatRequest({
   mediaTools = [],
   persistUserMessage = true,
   resumeFromCheckpoint = false,
+  userQuestionAnswer = null,
   workspacePath: requestedWorkspacePath = "",
   providerId: requestedProviderId = "",
   modelName: requestedModelName = "",
@@ -33236,6 +33955,10 @@ async function sendLocalLiuAgentChatRequest({
     permissionDecision: localLiuAgentFullAccessEnabled(workspacePath)
       ? buildLocalLiuAgentPermissionDecision("", {}, { fullAccess: true })
       : null,
+    userQuestionAnswer:
+      userQuestionAnswer && typeof userQuestionAnswer === "object"
+        ? userQuestionAnswer
+        : null,
     resumeFromCheckpoint,
   };
   await saveLocalLiuAgentSessionOfflineCache({
@@ -33512,6 +34235,85 @@ async function sendLocalLiuAgentChatRequest({
     deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
     syncChatLoadingWithCurrentSession();
     persistLocalLiuAgentActiveRunMessages(activeRun);
+    return result;
+  }
+  const localUserQuestionRequest =
+    localLiuAgentUserQuestionRequestFromChatResult(result);
+  if (localUserQuestionRequest) {
+    updateLocalAiTask(activeRun.localTaskId, {
+      status: "waiting_user",
+      currentStep: "等待用户补充信息",
+      lastOutput: "智能体已暂停，等待用户回答必要问题。",
+      recoverable: true,
+    });
+    const requestId = String(localUserQuestionRequest?.requestId || "").trim();
+    if (requestId) {
+      setLocalLiuAgentPendingUserQuestion(requestId, {
+        kind: "local_chat",
+        localChatPayload,
+        userQuestionRequest: localUserQuestionRequest,
+        assistantMessageId: assistantMessage.id,
+        userMessageId: userMessage.id,
+        activeChatSessionId,
+        displayUserMessageContent,
+        finalUserPrompt,
+        sourceContext,
+      });
+    }
+    assistantMessage.content =
+      String(assistantMessage.content || "").trim() ||
+      "我还需要你补充少量信息，回答后会继续当前任务。";
+    appendMessageProcessLog(assistantMessage, {
+      text: "等待你回答问题，提交后将继续同一个 Agent Loop",
+      level: "warning",
+    });
+    await persistLocalLiuAgentAssistantState({
+      projectId,
+      chatSessionId: activeChatSessionId,
+      assistantMessage,
+      fallbackContent: assistantMessage.content,
+      workspacePath,
+      sourceContext: {
+        ...sourceContext,
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        user_question_request_id: requestId,
+        ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
+      },
+    });
+    await upsertProjectChatRequirementRecord({
+      chatSessionId: activeChatSessionId,
+      status: "waiting_user",
+      rootGoal: displayUserMessageContent || finalUserPrompt,
+      messageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      resultSummary: assistantMessage.content,
+      verificationResult:
+        "模型已通过 ask_user_question 请求必要信息，Runtime 等待回答后继续。",
+      source: "desktop_local_agent",
+      sourceContext: {
+        ...sourceContext,
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        user_question_request_id: requestId,
+        ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
+      },
+    });
+    await saveLocalLiuAgentSessionOfflineCache({
+      projectId,
+      chatSessionId: activeChatSessionId,
+      workspacePath,
+      status: "waiting_user",
+      userMessage,
+      assistantMessage,
+      historyRows,
+      rootGoal: displayUserMessageContent || finalUserPrompt,
+      modelRuntime,
+      result,
+    });
+    persistLocalLiuAgentActiveRunMessages(activeRun);
+    deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
+    syncChatLoadingWithCurrentSession();
     return result;
   }
   const localPermissionRequest =
@@ -34068,6 +34870,10 @@ async function stopGeneration() {
     ElMessage.info("任务已暂停，待授权节点已保存");
     return;
   }
+  if (await pauseLocalLiuAgentPendingUserQuestionsForChatSession()) {
+    ElMessage.info("任务已暂停，待回答问题已保存");
+    return;
+  }
   const currentRequestId = getActiveRequestId();
   if (currentRequestId) {
     const pending = pendingRequests.get(currentRequestId);
@@ -34190,6 +34996,10 @@ async function sendGlobalChatWithoutProject() {
 }
 
 function explainBlockedSend() {
+  if (currentChatSessionLocalLiuAgentWaitingUserQuestion.value) {
+    ElMessage.warning("请先回答输入框上方的问题；提交后会继续当前任务");
+    return;
+  }
   if (currentChatSessionLocalLiuAgentWaitingPermission.value) {
     ElMessage.warning("请先处理输入框上方的本机授权；处理后会自动继续执行");
     return;
@@ -34262,6 +35072,18 @@ async function doSend(options = {}) {
     ElMessage.warning(
       "当前正在等待本机授权，请回复确认、取消，或使用授权卡片按钮",
     );
+    return;
+  }
+  if (currentChatSessionLocalLiuAgentWaitingUserQuestion.value) {
+    ElMessage.warning("当前正在等待必要信息，请使用问题卡片提交回答");
+    return;
+  }
+
+  if (
+    await submitPendingEmployeeDraftConfirmationIfNeeded(
+      String(draftText.value || "").trim(),
+    )
+  ) {
     return;
   }
 
@@ -34503,11 +35325,6 @@ async function doSend(options = {}) {
     } catch (err) {
       console.warn("employee draft catalog load failed", err);
     }
-    if (!assistToolNames.length && selectedProjectId.value) {
-      ElMessage.warning(
-        "当前项目没有可用的远程能力检索工具，本次会回退为基于本地目录的自动创建",
-      );
-    }
   }
   const slashCommandRequiresTools = ["host_run", "lark_cli"].includes(
     String(slashCommand?.entry?.kind || "").trim(),
@@ -34536,6 +35353,11 @@ async function doSend(options = {}) {
       effectiveUserPrompt,
       "",
       "请根据用户真实意图选择 question、draft、create 或 update；create 用于新建 AI Employee，update 用于修改当前会话选中的单个 AI Employee。",
+      "当运行时提供 ask_user_question 工具且缺少只能由用户决定的信息时，必须优先调用 ask_user_question 暂停并等待回答；收到工具结果后继续原任务。只有工具不可用时才回退为可见正文提问和 question 结构化结果。",
+      "调用 ask_user_question 时，每个问题必须显式设置 multi_select。唯一名称、单一受众、互斥方向设为 false；技术栈、能力范围、交付物等可以组合选择的内容设为 true。",
+      "收到 ask_user_question 工具答案后，必须把 selected 和 custom 视为用户已经给出的最终回答；custom 非空时代表用户直接输入的答案并替代该题 selected。不得重复询问已经回答的方向、名称、受众等内容，也不得开启第二轮补充信息；仍缺少非关键细节时采用合理默认值并继续生成草稿。",
+      "当信息不足、存在多个合理方向或缺少用户才能决定的内容时，必须选择 question，并在可见正文中提出最多 3 个具体问题；禁止只返回结构化协议。",
+      "当信息已经足够形成方案、但仍需要用户补充或确认时选择 draft，并在可见正文中简要说明草稿状态和下一步。",
       "当用户明确要求创建智能体时，回答末尾附带仅供系统读取的结构化结果；不要在可见正文中解释、复制或展示协议、字段名、系统规则或内部处理过程。",
       "当用户要求补充当前智能体的技能、规则、职责或工作流时，必须返回 update 结构化结果和智能体草稿；草稿只描述本次变更，不能仅回复“已应用/已确认”。",
       "如果上一轮已经生成未命名的智能体草稿，而用户随后只补充名称（例如“名字叫前端创作助手”），必须沿用上一轮草稿内容合并新名称，重新返回完整创建草稿；不要创建“未命名智能体”，不要把命名补充当成新的无关需求，也不要宣称已经完成。",
@@ -34573,6 +35395,15 @@ async function doSend(options = {}) {
     return;
   }
   if (!activeChatSessionId) {
+    const composerAssistBeforeSessionCreation = activeComposerAssist.value;
+    const composerToolCommandBeforeSessionCreation =
+      activeComposerToolCommandId.value;
+    const selectedEmployeeIdsBeforeSessionCreation = [
+      ...(selectedEmployeeIds.value || []),
+    ];
+    const externalAgentTypeBeforeSessionCreation = String(
+      projectChatSettings.value.external_agent_type || "",
+    ).trim();
     const created = await createChatSession({
       switchTo: true,
       title: displayUserMessageContent,
@@ -34580,6 +35411,26 @@ async function doSend(options = {}) {
     activeChatSessionId = String(created?.id || "").trim();
     if (!activeChatSessionId) {
       return;
+    }
+    activeComposerAssist.value = composerAssistBeforeSessionCreation;
+    activeComposerToolCommandId.value = composerToolCommandBeforeSessionCreation;
+    selectedEmployeeIds.value = selectedEmployeeIdsBeforeSessionCreation;
+    rememberChatSessionComposerState(
+      selectedProjectId.value,
+      activeChatSessionId,
+      {
+        draftText: "",
+        uploadFiles: [],
+        activeComposerAssist: composerAssistBeforeSessionCreation,
+        activeComposerToolCommandId: composerToolCommandBeforeSessionCreation,
+        singleRoundAnswerOnly: singleRoundAnswerOnly.value,
+      },
+    );
+    if (externalAgentTypeBeforeSessionCreation) {
+      projectChatSettings.value = {
+        ...projectChatSettings.value,
+        external_agent_type: externalAgentTypeBeforeSessionCreation,
+      };
     }
   }
   if (
@@ -34674,31 +35525,9 @@ async function doSend(options = {}) {
         employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
       },
     });
-    if (
-      extractEmployeeIntentPayload(assistantMessage.content)?.intent ===
-      "create"
-    ) {
-      const opened = await autoCreateEmployeeFromDraftMessage(assistantMessage, {
-        resetAssist: effectiveAssistAction?.id === "employee_create",
-      });
-      if (!opened) {
-        ElMessage.warning(
-          "模型已请求创建，但未返回有效的智能体草稿，请重新生成后再试",
-        );
-      }
-    } else if (
-      extractEmployeeIntentPayload(assistantMessage.content)?.intent ===
-      "update"
-    ) {
-      const opened = await autoUpdateEmployeeFromDraftMessage(assistantMessage);
-      if (!opened) {
-        ElMessage.warning(
-          "模型已请求更新，但当前会话未选定唯一智能体或未返回有效更新草稿",
-        );
-      }
-    } else if (effectiveAssistAction?.id === "employee_create") {
-      ElMessage.warning("未识别到模型创建意图，请重新生成后再试");
-    }
+    await handleEmployeeIntentAfterAssistantResponse(assistantMessage, {
+      assistActionId: effectiveAssistAction?.id,
+    });
   } catch (err) {
     const errorMessage = String(err?.message || "未知错误").trim();
     showManualCloseErrorDialog(
@@ -34989,6 +35818,12 @@ async function resolveAvailableProjectId(preferredId = "") {
 async function loadSelectedProjectConversation(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
+  const {
+    chatSessionId: routeChatSessionId,
+    createNewSession: routeCreateNewSession,
+  } = routeChatTarget();
+  const shouldCreateWindowSession =
+    routeCreateNewSession && !routeChatSessionId;
   const resetEmptyConversationState = async () => {
     currentChatSessionId.value = "";
     rememberChatSession(normalizedProjectId, "");
@@ -34999,17 +35834,13 @@ async function loadSelectedProjectConversation(projectId) {
     messages.value = [];
     chatHistoryLoadedCount.value = 0;
     chatHistoryReachedEnd.value = false;
-    applyChatSessionComposerState(normalizedProjectId, "");
+    if (!shouldCreateWindowSession) {
+      applyChatSessionComposerState(normalizedProjectId, "");
+    }
     applyTaskTreePayload(null);
     resetTerminalPanel();
     await focusChatComposerTextarea();
   };
-  const {
-    chatSessionId: routeChatSessionId,
-    createNewSession: routeCreateNewSession,
-  } = routeChatTarget();
-  const shouldCreateWindowSession =
-    routeCreateNewSession && !routeChatSessionId;
   const loadingKey = [
     normalizedProjectId,
     String(routeChatSessionId || "").trim(),
@@ -35029,10 +35860,10 @@ async function loadSelectedProjectConversation(projectId) {
         {
           allowFallback: !shouldCreateWindowSession,
           useRemembered: !shouldCreateWindowSession,
+          preserveComposerState: shouldCreateWindowSession,
         },
       );
       if (shouldCreateWindowSession) {
-        clearRouteCreateChatSessionFlag();
         if (localChatSessionId) {
           replaceRouteWithChatSession(localChatSessionId);
         } else {
@@ -35072,6 +35903,7 @@ async function loadSelectedProjectConversation(projectId) {
           ? [restoredTask.chatSessionId]
           : [],
         useRemembered: !shouldCreateWindowSession,
+        preserveComposerState: shouldCreateWindowSession,
       },
     );
     if (restoredTask?.chatSessionId) {
@@ -35085,7 +35917,6 @@ async function loadSelectedProjectConversation(projectId) {
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
     if (shouldCreateWindowSession) {
-      clearRouteCreateChatSessionFlag();
       if (chatSessionId) {
         replaceRouteWithChatSession(chatSessionId);
       } else {
@@ -35612,6 +36443,41 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+.chat-user-question-banner {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: color-mix(in srgb, var(--el-bg-color, #fff) 92%, #eff6ff 8%);
+  box-shadow: 0 8px 24px rgba(30, 64, 175, 0.12);
+}
+.chat-user-question-banner .chat-approval-banner__icon {
+  width: auto;
+  height: auto;
+  margin-top: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.chat-user-question-banner__questions {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.chat-user-question-banner__item {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border-radius: 8px;
+  background: var(--el-bg-color, #fff);
+}
+.chat-user-question-banner__item > p {
+  margin: 0;
+  color: var(--el-text-color-regular, #606266);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.chat-user-question-banner__item small {
+  margin-left: 4px;
+  color: var(--el-text-color-secondary, #909399);
 }
 
 .composer-plan-panel {
