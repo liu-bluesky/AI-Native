@@ -378,6 +378,20 @@ export function mapHistoryMessage(item) {
     reasoningContent: String(
       item?.reasoningContent || item?.reasoning_content || "",
     ).trim(),
+    trajectoryBlocks: String(
+      item?.reasoningContent || item?.reasoning_content || "",
+    ).trim()
+      ? [
+          {
+            id: "reasoning:history",
+            index: 0,
+            kind: "reasoning",
+            text: String(
+              item?.reasoningContent || item?.reasoning_content || "",
+            ).trim(),
+          },
+        ]
+      : [],
     displayMode: String(item?.display_mode || "").trim(),
     terminalLog: Array.isArray(runtimeTrace.terminal_log)
       ? runtimeTrace.terminal_log

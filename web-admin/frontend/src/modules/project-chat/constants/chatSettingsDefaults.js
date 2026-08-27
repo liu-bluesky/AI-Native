@@ -38,7 +38,7 @@ export const CHAT_SETTINGS_DEFAULTS = {
   thinking_mode: "disabled",
   reasoning_effort: "high",
   system_prompt: "",
-  auto_use_tools: false,
+  auto_use_tools: true,
   auto_use_tools_explicit: false,
   enabled_project_tool_names: [],
   tool_priority: [],

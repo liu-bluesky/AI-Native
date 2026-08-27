@@ -15,6 +15,8 @@
     "test:chat-initial-load": "node ./scripts/check-project-chat-initial-load.mjs",
     "test:composer-entry-points": "node ./scripts/check-project-chat-composer-entry-points.mjs",
     "test:employee-creation": "node ./scripts/check-project-chat-employee-creation.mjs",
+    "test:tool-intent": "node ./scripts/check-project-chat-tool-intent.mjs",
+    "test:thinking-display": "node ./scripts/check-project-chat-thinking-display.mjs",
     "test:local-chat-history": "node ./scripts/check-project-chat-local-history.mjs",
     "test:global-mcp": "node ./scripts/check-project-chat-global-mcp.mjs",
     "test:local-liuagent-chat": "node ./scripts/check-local-liuagent-chat.mjs",

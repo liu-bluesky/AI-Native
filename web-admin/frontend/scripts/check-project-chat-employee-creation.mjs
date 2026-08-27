@@ -7,12 +7,12 @@ const source = await readFile(
 );
 
 const requestEnd = source.indexOf(
-  "    if (effectiveAssistAction?.id === \"employee_create\") {",
+  'extractEmployeeIntentPayload(assistantMessage.content)?.intent ===\n      "create"',
 );
 assert.notEqual(
   requestEnd,
   -1,
-  "创建智能体模式必须在模型回复完成后处理草稿",
+  "创建智能体必须在模型回复并明确返回 create 意图后处理草稿",
 );
 
 const createCall = source.indexOf(
@@ -25,8 +25,8 @@ assert.ok(
 );
 
 assert.ok(
-  source.includes("resetAssist: true"),
-  "草稿创建完成后必须清理创建智能体辅助状态",
+  source.includes('resetAssist: effectiveAssistAction?.id === "employee_create"'),
+  "手动创建智能体辅助状态必须在草稿确认流程后清理",
 );
 
 console.log("project chat employee creation trigger check passed.");

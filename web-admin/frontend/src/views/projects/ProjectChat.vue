@@ -326,520 +326,271 @@
                             </div>
                           </template>
                           <div
-                            v-if="shouldShowMessageProcess(item, idx)"
-                            class="message-process-shell"
+                            v-if="isMessageThinkingPlaceholder(item, idx)"
+                            class="message-thinking-live"
+                            aria-live="polite"
                           >
-                            <button
-                              type="button"
-                              class="message-process-shell__toggle"
-                              :aria-expanded="item.processExpanded"
-                              @click="toggleMessageProcessExpanded(item)"
+                            <span>Thinking</span>
+                            <span
+                              class="message-thinking-live__dots"
+                              aria-hidden="true"
                             >
-                              <span class="message-process-shell__title-wrap">
-                                <span class="message-process-shell__eyebrow">
-                                  {{ messageProcessEyebrow(item, idx) }}
-                                </span>
-                                <span class="message-process-shell__title">
-                                  {{ messageProcessTitle(item, idx) }}
-                                </span>
-                              </span>
-                              <span class="message-process-shell__meta">
-                                <el-button
-                                  v-if="
-                                    operationPrimaryActionLabel(
-                                      primaryMessageProcessOperation(item),
-                                    )
-                                  "
-                                  size="small"
-                                  type="primary"
-                                  plain
-                                  class="message-process-shell__primary-action"
-                                  @click.stop="
-                                    handleOperationPrimaryAction(
-                                      primaryMessageProcessOperation(item),
-                                    )
-                                  "
-                                >
-                                  {{
-                                    operationPrimaryActionLabel(
-                                      primaryMessageProcessOperation(item),
-                                    )
-                                  }}
-                                </el-button>
-                                <span
-                                  v-if="messageProcessStateLabel(item, idx)"
-                                  class="message-process-shell__state"
-                                  :class="`is-${messageProcessStateTone(item, idx)}`"
-                                >
-                                  {{ messageProcessStateLabel(item, idx) }}
-                                </span>
-                                <span
-                                  v-if="messageProcessStepCount(item, idx)"
-                                  class="message-process-shell__count"
-                                >
-                                  {{ messageProcessStepCount(item, idx) }} 项
-                                </span>
-                                <span class="message-process-shell__toggle-label">
-                                  {{ item.processExpanded ? "收起详情" : "查看详情" }}
-                                </span>
-                                <span
-                                  class="message-process-shell__chevron"
-                                  :class="{ 'is-expanded': item.processExpanded }"
-                                  aria-hidden="true"
-                                >⌄</span>
-                              </span>
-                            </button>
+                              <i></i><i></i><i></i>
+                            </span>
+                          </div>
+                          <div
+                            v-if="shouldShowMessageTrajectory(item, idx)"
+                            class="message-trajectory"
+                          >
                             <div
-                              v-show="item.processExpanded"
-                              class="message-process-shell__body"
+                              v-if="messageReasoningBlocks(item).length"
+                              class="message-thinking-quote"
+                            >
+                              <button
+                                type="button"
+                                class="message-thinking-quote__toggle"
+                                :aria-expanded="isMessageTrajectoryExpanded(item)"
+                                @click="toggleMessageTrajectoryExpanded(item)"
+                              >
+                                Thinking
+                                <span
+                                  class="message-thinking-quote__chevron"
+                                  :class="{
+                                    'is-expanded': isMessageTrajectoryExpanded(item),
+                                  }"
+                                  aria-hidden="true"
+                                >
+                                  <svg viewBox="0 0 16 16" width="12" height="12">
+                                    <path
+                                      d="m6 3 5 5-5 5"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      stroke-linecap="round"
+                                      stroke-linejoin="round"
+                                      stroke-width="1.5"
+                                    />
+                                  </svg>
+                                </span>
+                              </button>
+                              <div
+                                v-if="isMessageTrajectoryExpanded(item)"
+                                class="message-thinking-quote__content"
+                              >
+                                <div
+                                  v-for="block in messageReasoningBlocks(item)"
+                                  :key="block.id"
+                                  class="message-thinking-quote__block"
+                                  v-html="trajectoryReasoningBlockHtml(block.text)"
+                                ></div>
+                              </div>
+                            </div>
+                            <div
+                              v-if="messageTrajectoryRuntimeSummary(item, idx)"
+                              class="message-trajectory__current-step"
+                            >
+                              <span class="message-trajectory__current-dot"></span>
+                              <span class="message-trajectory__current-label">
+                                本地 Runtime
+                              </span>
+                              <span class="message-trajectory__current-state">
+                                {{ messageTrajectoryRuntimeSummary(item, idx) }}
+                              </span>
+                            </div>
+                            <div
+                              v-if="messageTrajectoryExecutionSteps(item).length"
+                              class="message-trajectory__execution-steps"
                             >
                               <div
-                                v-if="messageProcessOperations(item).length"
-                                class="message-operations"
+                                v-for="operation in messageTrajectoryExecutionSteps(item)"
+                                :key="operation.id"
+                                class="message-trajectory__execution-step"
+                                :class="`is-${operation.phase}`"
                               >
-                                <article
-                                  v-for="operation in messageProcessOperations(
-                                    item,
-                                  )"
-                                  :key="operation.id"
-                                  class="message-operation-card"
-                                  :class="`is-${operation.phase}`"
+                                <span class="message-trajectory__step-icon">
+                                  {{ operation.phase === "completed" ? "✓" : "•" }}
+                                </span>
+                                <span class="message-trajectory__step-title">
+                                  {{ operation.title }}
+                                </span>
+                                <span
+                                  v-if="operation.summary"
+                                  class="message-trajectory__step-state"
                                 >
-                                  <div class="message-operation-card__head">
-                                    <div
-                                      class="message-operation-card__title-wrap"
-                                    >
-                                      <span
-                                        class="message-operation-card__title"
-                                      >
-                                        {{ operation.title }}
-                                      </span>
-                                      <span
-                                        v-if="operation.summary"
-                                        class="message-operation-card__summary"
-                                      >
-                                        {{ operation.summary }}
-                                      </span>
-                                    </div>
-                                    <span class="message-operation-card__badge">
-                                      {{ operationPhaseLabel(operation) }}
+                                  {{ operation.summary }}
+                                </span>
+                              </div>
+                            </div>
+                            <ul
+                              v-if="messageTrajectoryToolCalls(item).length"
+                              class="message-trajectory__tool-calls"
+                            >
+                              <li
+                                v-for="operation in messageTrajectoryToolCalls(item)"
+                                :key="operation.id"
+                              >
+                                <button
+                                  type="button"
+                                  class="message-trajectory__tool-call"
+                                  :aria-expanded="isMessageTrajectoryToolExpanded(item, operation)"
+                                  :title="operation.title"
+                                  @click="toggleMessageTrajectoryToolDetail(item, operation)"
+                                >
+                                  <svg
+                                    class="message-trajectory__tool-icon"
+                                    width="12"
+                                    height="12"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"
+                                      stroke="currentColor"
+                                      stroke-width="1.8"
+                                      stroke-linecap="round"
+                                      stroke-linejoin="round"
+                                    />
+                                  </svg>
+                                  <span class="message-trajectory__tool-text">
+                                    <span class="message-trajectory__tool-name">
+                                      {{ operation.title }}
                                     </span>
-                                  </div>
-                                  <div
-                                    v-if="operationRiskLabel(operation)"
-                                    class="message-operation-card__risk"
-                                    :class="`is-${operationRiskTone(operation)}`"
-                                  >
-                                    {{ operationRiskLabel(operation) }}
-                                  </div>
-                                  <div
-                                    v-if="
-                                      operationRuntimeMetaTags(operation).length
-                                    "
-                                    class="message-operation-card__meta-tags"
-                                  >
                                     <span
-                                      v-for="tag in operationRuntimeMetaTags(
-                                        operation,
-                                      )"
-                                      :key="tag"
-                                      class="message-operation-card__meta-tag"
+                                      v-if="messageTrajectoryToolPreview(operation)"
+                                      class="message-trajectory__tool-preview"
                                     >
-                                      {{ tag }}
+                                      {{ messageTrajectoryToolPreview(operation) }}
                                     </span>
-                                  </div>
-                                  <ol
-                                    v-if="operationPlanSteps(operation).length"
-                                    class="message-operation-card__plan"
-                                  >
-                                    <li
-                                      v-for="(
-                                        step, stepIndex
-                                      ) in operationPlanSteps(operation)"
-                                      :key="String(step.step_id || stepIndex)"
-                                      class="message-operation-card__plan-step"
-                                      :class="`is-${planStepPhase(step)}`"
-                                    >
-                                      <span
-                                        class="message-operation-card__plan-check"
-                                      >
-                                        <CircleCheck
-                                          v-if="
-                                            planStepPhase(step) === 'completed'
-                                          "
-                                          :size="13"
-                                        />
-                                        <span v-else>{{ stepIndex + 1 }}</span>
-                                      </span>
-                                      <span
-                                        class="message-operation-card__plan-main"
-                                      >
-                                        <span
-                                          class="message-operation-card__plan-title"
-                                        >
-                                          {{
-                                            step.title ||
-                                            `步骤 ${stepIndex + 1}`
-                                          }}
-                                        </span>
-                                        <span
-                                          v-if="step.summary"
-                                          class="message-operation-card__plan-summary"
-                                        >
-                                          {{ step.summary }}
-                                        </span>
-                                      </span>
-                                      <span
-                                        class="message-operation-card__plan-status"
-                                      >
-                                        {{ planStepStatusLabel(step) }}
-                                      </span>
-                                    </li>
-                                  </ol>
-                                  <p
-                                    v-else-if="operation.detail"
-                                    class="message-operation-card__detail"
-                                  >
+                                  </span>
+                                </button>
+                                <div
+                                  v-if="isMessageTrajectoryToolExpanded(item, operation)"
+                                  class="message-trajectory__tool-detail"
+                                >
+                                  <p v-if="operation.detail">
                                     {{ operation.detail }}
                                   </p>
+                                  <pre v-if="operationCommand(operation)">命令：{{ operationCommand(operation) }}</pre>
+                                  <pre v-if="operationCwd(operation)">工作目录：{{ operationCwd(operation) }}</pre>
+                                  <pre v-if="operationArguments(operation)">参数：{{ operationArguments(operation) }}</pre>
+                                  <pre v-if="operationOutput(operation)">输出：{{ operationOutput(operation) }}</pre>
                                   <div
-                                    v-if="
-                                      operationCommand(operation) ||
-                                      operationCwd(operation) ||
-                                      operationExitCode(operation)
-                                    "
-                                    class="message-operation-card__command"
-                                  >
-                                    <div
-                                      v-if="operationCwd(operation)"
-                                      class="message-operation-card__command-meta"
-                                    >
-                                      cwd={{ operationCwd(operation) }}
-                                    </div>
-                                    <pre
-                                      v-if="operationCommand(operation)"
-                                      class="message-operation-card__command-pre"
-                                      >{{ operationCommand(operation) }}</pre
-                                    >
-                                    <div
-                                      v-if="operationExitCode(operation)"
-                                      class="message-operation-card__command-meta"
-                                    >
-                                      exit={{ operationExitCode(operation) }}
-                                    </div>
-                                  </div>
-                                  <div
-                                    v-if="operationOutput(operation)"
-                                    class="message-operation-card__output"
-                                  >
-                                    <div
-                                      class="message-operation-card__output-label"
-                                    >
-                                      输出摘要
-                                    </div>
-                                    <pre
-                                      class="message-operation-card__output-pre"
-                                      >{{ operationOutput(operation) }}</pre
-                                    >
-                                  </div>
-                                  <p
-                                    v-if="operationActionHint(operation)"
-                                    class="message-operation-card__action"
-                                  >
-                                    {{ operationActionHint(operation) }}
-                                  </p>
-                                  <div
-                                    v-if="
-                                      messageOperationInteractionFormJson(
-                                        operation,
-                                      ) &&
-                                      !isMessageFooterActionOperation(
-                                        item,
-                                        operation,
-                                      )
-                                    "
-                                    class="message-operation-card__form"
-                                    :class="{
-                                      'is-submitted':
-                                        operationInteractionSubmittedHint(
-                                          operation,
-                                        ),
-                                    }"
-                                  >
-                                    <div
-                                      class="message-operation-card__form-head"
-                                    >
-                                      <div>
-                                        <strong>{{
-                                          operationInteractionTitle(operation)
-                                        }}</strong>
-                                        <p>
-                                          {{
-                                            operationInteractionDescription(
-                                              operation,
-                                            )
-                                          }}
-                                        </p>
-                                      </div>
-                                      <el-tag size="small" effect="plain">
-                                        结构化交互
-                                      </el-tag>
-                                    </div>
-                                    <ElementEasyForm
-                                      :form-json="
-                                        messageOperationInteractionFormJson(
-                                          operation,
-                                        )
-                                      "
-                                      class="message-operation-card__easy-form"
-                                    />
-                                    <div
-                                      class="message-operation-card__form-actions"
-                                    >
-                                      <el-button
-                                        v-if="
-                                          operationInteractionCanFallbackToTerminal(
-                                            operation,
-                                          ) &&
-                                          !operationInteractionSubmittedHint(
-                                            operation,
-                                          )
-                                        "
-                                        text
-                                        @click="
-                                          dismissOperationInteractionForm(
-                                            operation,
-                                          )
-                                        "
-                                      >
-                                        {{
-                                          operationInteractionFallbackLabel(
-                                            operation,
-                                          )
-                                        }}
-                                      </el-button>
-                                      <el-button
-                                        type="primary"
-                                        :disabled="
-                                          !canSubmitOperationInteraction(
-                                            operation,
-                                          ) ||
-                                          Boolean(
-                                            operationInteractionSubmittedHint(
-                                              operation,
-                                            ),
-                                          )
-                                        "
-                                        @click="
-                                          submitOperationInteraction(operation)
-                                        "
-                                      >
-                                        {{
-                                          operationInteractionSubmittedHint(
-                                            operation,
-                                          )
-                                            ? "已提交，继续执行中"
-                                            : operationInteractionSubmitLabel(
-                                                operation,
-                                              )
-                                        }}
-                                      </el-button>
-                                    </div>
-                                  </div>
-                                  <div
-                                    v-if="
-                                      operationInteractionSubmittedHint(
-                                        operation,
-                                      )
-                                    "
-                                    class="message-operation-card__submitted"
-                                  >
-                                    {{
-                                      operationInteractionSubmittedHint(
-                                        operation,
-                                      )
-                                    }}
-                                  </div>
-                                  <div
-                                    v-if="
-                                      operationActionButtons(operation)
-                                        .length &&
-                                      !isMessageFooterActionOperation(
-                                        item,
-                                        operation,
-                                      )
-                                    "
-                                    class="message-operation-card__actions"
+                                    v-if="operationActionButtons(operation).length"
+                                    class="message-trajectory__tool-actions"
                                   >
                                     <el-button
-                                      v-for="action in operationActionButtons(
-                                        operation,
-                                      )"
+                                      v-for="action in operationActionButtons(operation)"
                                       :key="`${operation.id}-${action.key}`"
                                       size="small"
-                                      :type="
-                                        action.type === 'danger'
-                                          ? 'danger'
-                                          : 'primary'
-                                      "
+                                      :type="action.type === 'danger' ? 'danger' : 'primary'"
                                       :plain="action.type !== 'danger'"
-                                      @click="
-                                        handleOperationAction(
-                                          operation,
-                                          action.key,
-                                        )
-                                      "
+                                      @click.stop="handleOperationAction(operation, action.key)"
                                     >
                                       {{ action.label }}
                                     </el-button>
                                   </div>
-                                </article>
-                              </div>
+                                </div>
+                              </li>
+                            </ul>
+                            <div
+                              v-if="messageProcessDisplayEntries(item).length"
+                              class="message-process-stream"
+                            >
                               <div
-                                v-if="messageProcessDisplayEntries(item).length"
-                                class="message-process-stream"
+                                v-for="entry in messageProcessDisplayEntries(
+                                  item,
+                                )"
+                                :key="entry.id"
+                                class="message-process-stream__item"
+                                :class="[
+                                  `is-${entry.level}`,
+                                  `is-kind-${messageProcessEntryKind(entry)}`,
+                                ]"
                               >
+                                <span class="message-process-stream__dot"></span>
                                 <div
-                                  v-for="entry in messageProcessDisplayEntries(
-                                    item,
-                                  )"
-                                  :key="entry.id"
-                                  class="message-process-stream__item"
-                                  :class="[
-                                    `is-${entry.level}`,
-                                    `is-kind-${messageProcessEntryKind(entry)}`,
-                                  ]"
+                                  class="message-process-entry"
+                                  :class="{
+                                    'is-latest':
+                                      entry.id === messageProcessLatestEntryId(item),
+                                  }"
                                 >
-                                  <span
-                                    class="message-process-stream__dot"
-                                  ></span>
-                                  <div
-                                    class="message-process-entry"
-                                    :class="{
-                                      'is-latest':
-                                        entry.id ===
-                                        messageProcessLatestEntryId(item),
-                                    }"
-                                  >
-                                    <div class="message-process-entry__head">
-                                      <span
-                                        class="message-process-entry__title"
-                                      >
-                                        {{ messageProcessEntryTitle(entry) }}
-                                      </span>
-                                      <span
-                                        v-if="messageProcessEntryStatus(entry)"
-                                        class="message-process-entry__status"
-                                      >
-                                        {{ messageProcessEntryStatus(entry) }}
-                                      </span>
-                                    </div>
-                                    <div
-                                      v-if="
-                                        messageProcessEntryMeta(entry).length
-                                      "
-                                      class="message-process-entry__meta"
+                                  <div class="message-process-entry__head">
+                                    <span class="message-process-entry__title">
+                                      {{ messageProcessEntryTitle(entry) }}
+                                    </span>
+                                    <span
+                                      v-if="messageProcessEntryStatus(entry)"
+                                      class="message-process-entry__status"
                                     >
-                                      <span
-                                        v-for="meta in messageProcessEntryMeta(
-                                          entry,
-                                        )"
-                                        :key="meta"
-                                        class="message-process-entry__meta-item"
-                                      >
-                                        {{ meta }}
-                                      </span>
-                                    </div>
-                                    <ul
-                                      v-if="
-                                        messageProcessEntrySummary(entry).length
-                                      "
-                                      class="message-process-entry__summary"
-                                    >
-                                      <li
-                                        v-for="summary in messageProcessEntrySummary(
-                                          entry,
-                                        )"
-                                        :key="summary"
-                                      >
-                                        {{ summary }}
-                                      </li>
-                                    </ul>
-                                    <div
-                                      v-if="
-                                        messageProcessEntryChildRows(entry)
-                                          .length
-                                      "
-                                      class="message-process-entry__children"
-                                    >
-                                      <div
-                                        v-for="child in messageProcessEntryChildRows(
-                                          entry,
-                                        )"
-                                        :key="child.id"
-                                        class="message-process-entry__child"
-                                        :class="`is-${child.level}`"
-                                      >
-                                        <span
-                                          class="message-process-entry__child-title"
-                                        >
-                                          {{ child.title }}
-                                        </span>
-                                        <span
-                                          v-if="child.summary"
-                                          class="message-process-entry__child-summary"
-                                        >
-                                          {{ child.summary }}
-                                        </span>
-                                      </div>
-                                    </div>
-                                    <div
-                                      v-if="
-                                        messageProcessEntryDiffLines(entry)
-                                          .length
-                                      "
-                                      class="message-process-entry__diff"
-                                    >
-                                      <div
-                                        v-for="line in messageProcessEntryDiffLines(
-                                          entry,
-                                        )"
-                                        :key="line.id"
-                                        class="message-process-entry__diff-line"
-                                        :class="`is-${line.tone}`"
-                                      >
-                                        {{ line.text }}
-                                      </div>
-                                    </div>
-                                    <details
-                                      v-if="messageProcessEntryCode(entry)"
-                                      class="message-process-entry__details"
-                                    >
-                                      <summary>
-                                        {{
-                                          messageProcessEntryCodeLabel(entry)
-                                        }}
-                                      </summary>
-                                      <pre
-                                        class="message-process-entry__code"
-                                        >{{
-                                          messageProcessEntryCode(entry)
-                                        }}</pre
-                                      >
-                                    </details>
-                                    <details
-                                      v-if="messageProcessEntryJson(entry)"
-                                      class="message-process-entry__details"
-                                    >
-                                      <summary>查看结构化数据</summary>
-                                      <pre
-                                        class="message-process-entry__code"
-                                        >{{
-                                          messageProcessEntryJson(entry)
-                                        }}</pre
-                                      >
-                                    </details>
+                                      {{ messageProcessEntryStatus(entry) }}
+                                    </span>
                                   </div>
+                                  <div
+                                    v-if="messageProcessEntryMeta(entry).length"
+                                    class="message-process-entry__meta"
+                                  >
+                                    <span
+                                      v-for="meta in messageProcessEntryMeta(entry)"
+                                      :key="meta"
+                                      class="message-process-entry__meta-item"
+                                    >
+                                      {{ meta }}
+                                    </span>
+                                  </div>
+                                  <ul
+                                    v-if="messageProcessEntrySummary(entry).length"
+                                    class="message-process-entry__summary"
+                                  >
+                                    <li
+                                      v-for="summary in messageProcessEntrySummary(entry)"
+                                      :key="summary"
+                                    >
+                                      {{ summary }}
+                                    </li>
+                                  </ul>
+                                  <div
+                                    v-if="messageProcessEntryChildRows(entry).length"
+                                    class="message-process-entry__children"
+                                  >
+                                    <div
+                                      v-for="child in messageProcessEntryChildRows(entry)"
+                                      :key="child.id"
+                                      class="message-process-entry__child"
+                                      :class="`is-${child.level}`"
+                                    >
+                                      <span class="message-process-entry__child-title">
+                                        {{ child.title }}
+                                      </span>
+                                      <span
+                                        v-if="child.summary"
+                                        class="message-process-entry__child-summary"
+                                      >
+                                        {{ child.summary }}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div
+                                    v-if="messageProcessEntryDiffLines(entry).length"
+                                    class="message-process-entry__diff"
+                                  >
+                                    <div
+                                      v-for="line in messageProcessEntryDiffLines(entry)"
+                                      :key="line.id"
+                                      class="message-process-entry__diff-line"
+                                      :class="`is-${line.tone}`"
+                                    >
+                                      {{ line.text }}
+                                    </div>
+                                  </div>
+                                  <pre
+                                    v-if="messageProcessEntryCode(entry)"
+                                    class="message-process-entry__code"
+                                  >{{ messageProcessEntryCode(entry) }}</pre>
+                                  <pre
+                                    v-if="messageProcessEntryJson(entry)"
+                                    class="message-process-entry__code"
+                                  >{{ messageProcessEntryJson(entry) }}</pre>
                                 </div>
                               </div>
                             </div>
@@ -3133,6 +2884,7 @@ import {
 import {
   CHAT_BASE_ROUTE_PATH,
   EMPLOYEE_DRAFT_BLOCK_RE,
+  EMPLOYEE_INTENT_BLOCK_RE,
   AGENT_COMMAND,
   AGENT_COMMAND_ALIASES,
   FILE_COMMAND,
@@ -3515,6 +3267,8 @@ const mcpModules = ref({
 });
 const runtimeExternalTools = ref([]);
 const messages = ref([]);
+const expandedMessageTrajectoryId = ref("");
+const expandedMessageTrajectoryToolId = ref("");
 const activeComposerPlan = ref(null);
 const composerPlanExpanded = ref(true);
 const activeComposerPlanOwnerId = ref("");
@@ -10655,13 +10409,72 @@ function localLiuAgentRuntimeEventProcessLogEntry(
   };
 }
 
+function mergeTrajectoryBlockText(current, incoming) {
+  const previous = String(current || "");
+  const next = String(incoming || "");
+  if (!next) return previous;
+  if (!previous || previous === next || previous.startsWith(next)) {
+    return previous || next;
+  }
+  if (next.startsWith(previous)) return next;
+  return `${previous}${next}`;
+}
+
+function upsertMessageTrajectoryBlock(row, { index = 0, kind, text } = {}) {
+  if (!row || !text || !["reasoning", "text"].includes(kind)) return null;
+  const blockIndex = Math.max(0, Number(index) || 0);
+  const blocks = Array.isArray(row.trajectoryBlocks)
+    ? [...row.trajectoryBlocks]
+    : [];
+  const id = `model:${blockIndex}:${kind}`;
+  const existing = blocks.find((block) => block?.id === id);
+  if (existing) {
+    existing.text = mergeTrajectoryBlockText(existing.text, text);
+  } else {
+    blocks.push({ id, index: blockIndex, kind, text: String(text) });
+    blocks.sort((left, right) => Number(left.index || 0) - Number(right.index || 0));
+  }
+  row.trajectoryBlocks = blocks;
+  return blocks.find((block) => block?.id === id) || null;
+}
+
 function applyLocalLiuAgentReasoningContent(row, event = {}) {
-  if (!row || String(event?.type || "").trim() !== "model_step") return false;
+  if (!row) return false;
+  const type = String(event?.type || "").trim();
   const payload = localLiuAgentRuntimeEventPayload(event);
+  const blockIndex =
+    Number(payload?.block_index ?? payload?.blockIndex ?? payload?.index ?? 1) -
+    (type === "model_step" ? 1 : 0);
+  if (["reasoning_delta", "reasoning-delta"].includes(type)) {
+    const delta = String(payload?.delta || "");
+    if (!delta) return false;
+    upsertMessageTrajectoryBlock(row, {
+      index: blockIndex,
+      kind: "reasoning",
+      text: delta,
+    });
+    row.reasoningContent = messageThinkingContent(row);
+    return true;
+  }
+  if (["text_delta", "text-delta"].includes(type)) {
+    return Boolean(
+      upsertMessageTrajectoryBlock(row, {
+        index: blockIndex,
+        kind: "text",
+        text: String(payload?.delta || ""),
+      }),
+    );
+  }
+  if (type !== "model_step") return false;
   const reasoningContent = String(
     payload?.reasoning_content || payload?.reasoningContent || "",
   ).trim();
   if (!reasoningContent) return false;
+  upsertMessageTrajectoryBlock(row, {
+    index: blockIndex,
+    kind: "reasoning",
+    text: reasoningContent,
+  });
   row.reasoningContent = reasoningContent;
   return true;
 }
@@ -11039,8 +10852,12 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
       );
       continue;
     }
-    applyLocalLiuAgentReasoningContent(row, event);
-    applyLocalLiuAgentModelStepFailure(row, event, context);
+  applyLocalLiuAgentReasoningContent(row, event);
+  if (["reasoning_delta", "reasoning-delta", "text_delta", "text-delta"].includes(eventType)) {
+    markLocalLiuAgentRuntimeEventSeen(event);
+    return true;
+  }
+  applyLocalLiuAgentModelStepFailure(row, event, context);
     const operation = localLiuAgentRuntimeEventOperation(event, {
       ...context,
       assistantMessageId: row.id,
@@ -11491,6 +11308,10 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
     return true;
   }
   applyLocalLiuAgentReasoningContent(row, event);
+  if (["reasoning_delta", "reasoning-delta", "text_delta", "text-delta"].includes(eventType)) {
+    markLocalLiuAgentRuntimeEventSeen(event);
+    return true;
+  }
   const operation = localLiuAgentRuntimeEventOperation(event, {
     chatSessionId,
     workspacePath: run.workspacePath,
@@ -12446,9 +12267,7 @@ const showPauseGenerationButton = computed(
     (chatLoading.value ||
       Boolean(getActiveRequestId()) ||
       currentChatSessionLocalLiuAgentRunning.value ||
-      currentChatSessionNativeExternalAgentRunning.value) &&
-    !isAwaitingUserInteraction.value &&
-    !isTerminalInteractionMode.value,
+      currentChatSessionNativeExternalAgentRunning.value),
 );
 
 const backgroundTerminalCount = computed(() => {
@@ -13206,7 +13025,7 @@ const composerAssistActions = computed(() => {
     ].filter(Boolean),
     promptOnly: true,
     instruction:
-      "请先调用当前可用的系统能力检索工具和 MCP 能力，补全最合适的技能、规则建议与工作流，再把用户需求整理成一个可直接创建的 AI 智能体草稿；输出先给简短说明，最后必须附带一个严格 JSON 的 ```employee-draft``` 代码块。若从 prompts.chat 或其他外部能力中提炼出可直接落地的规则，请写入 rule_drafts 数组（title、domain、content，可选 source_label、source_url）；系统会据此创建本地规则并绑定到智能体身上。",
+      "请先调用当前可用的系统能力检索工具和 MCP 能力，补全最合适的技能、规则建议与工作流，再把用户需求整理成一个可直接创建的 AI 智能体草稿；输出先给简短说明，最后必须附带严格 JSON 的 ```employee-intent```（intent 固定为 create）和 ```employee-draft``` 代码块。若从 prompts.chat 或其他外部能力中提炼出可直接落地的规则，请写入 rule_drafts 数组（title、domain、content，可选 source_label、source_url）；系统会据此创建本地规则并绑定到智能体身上。",
   });
   if (toolMap.search_prompts || toolMap.get_prompt) {
     actions.push({
@@ -13480,16 +13299,6 @@ const chatHistoryLoading = ref(false);
 const chatHistoryLoadingMore = ref(false);
 const chatHistoryReachedEnd = ref(false);
 let activeChatHistoryLoadingKey = "";
-const ACTIONABLE_OPERATION_HINT_RE =
-  /(帮我|替我|给我|你来|请你|直接|现在|马上|代办|执行|运行|跑一下|检查|检测|查一下|查询一下|查看一下|创建|修改|更新|修复|部署|安装|登录|登陆|授权|认证|鉴权|发送|发一条|同步|拉取|提交|构建|测试|验证)/i;
-const ACTIONABLE_OPERATION_TARGET_RE =
-  /(lark-cli|飞书|feishu|lark|终端|命令|脚本|接口|api|数据库|文件|项目|代码|git|npm|pnpm|yarn|uv|python|docker|登录|登陆|授权|认证|鉴权|oauth|auth|login|sign in)/i;
-const EXPLANATION_ONLY_OPERATION_RE =
-  /(怎么|如何|怎样|教程|步骤|说明|文档|用法|命令是什么|应该怎么|how\s+to|what\s+command|docs?|guide|manual)/i;
-const IMPERATIVE_OPERATION_RE =
-  /(帮我|替我|你来|请你|直接|现在|马上|代办|执行|运行|跑一下|登录一下|登陆一下|授权一下|检查一下|检测一下|处理一下|做一下)/i;
-const LARK_OPERATION_RE = /(lark-cli|飞书|feishu|\blark\b)/i;
-
 function chatSessionMessageCacheKey(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
@@ -14245,23 +14054,64 @@ function filterDeletedPersistedRows(rows, deletedMessageIds) {
   });
 }
 
+function assistantAnswerIdentity(row) {
+  if (String(row?.role || "").trim() !== "assistant") return "";
+  return String(row?.answerId || row?.answer_id || "").trim();
+}
+
+function mergeDuplicateAssistantAnswerRows(rows) {
+  const mergedRows = [];
+  const assistantIndexByAnswerId = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const answerId = assistantAnswerIdentity(row);
+    const existingIndex = answerId
+      ? assistantIndexByAnswerId.get(answerId)
+      : undefined;
+    if (existingIndex === undefined) {
+      mergedRows.push(row);
+      if (answerId) assistantIndexByAnswerId.set(answerId, mergedRows.length - 1);
+      continue;
+    }
+    mergedRows[existingIndex] = mergeHistoryRowWithRuntimeSnapshot(
+      mergedRows[existingIndex],
+      row,
+    );
+  }
+  return mergedRows;
+}
+
 function applyPersistedChatRuntimeRows(historyRows, runtimePayload) {
   const deletedMessageIds = persistedRuntimeDeletedMessageIds(runtimePayload);
-  const rows = filterDeletedPersistedRows(historyRows, deletedMessageIds);
-  const runtimeRows = Array.isArray(runtimePayload?.messages)
-    ? runtimePayload.messages
+  const rows = mergeDuplicateAssistantAnswerRows(
+    filterDeletedPersistedRows(historyRows, deletedMessageIds),
+  );
+  const runtimeRows = mergeDuplicateAssistantAnswerRows(
+    Array.isArray(runtimePayload?.messages)
+      ? runtimePayload.messages
         .map(normalizeRuntimeMessageSnapshot)
         .filter(Boolean)
         .filter((row) => !deletedMessageIds.has(row.id))
-    : [];
+      : [],
+  );
   if (!runtimeRows.length) return rows;
   const runtimeById = new Map(runtimeRows.map((item) => [item.id, item]));
+  const runtimeByAnswerId = new Map(
+    runtimeRows
+      .map((item) => [assistantAnswerIdentity(item), item])
+      .filter(([answerId]) => Boolean(answerId)),
+  );
   const historyIds = new Set(rows.map((row) => String(row?.id || "").trim()));
+  const historyAnswerIds = new Set(
+    rows.map(assistantAnswerIdentity).filter(Boolean),
+  );
+  const mergedRuntimeIds = new Set();
   const mergedRows = rows.map((row) => {
-    const runtimeRow = runtimeById.get(String(row?.id || "").trim());
-    return runtimeRow
-      ? mergeHistoryRowWithRuntimeSnapshot(row, runtimeRow)
-      : row;
+    const runtimeRow =
+      runtimeById.get(String(row?.id || "").trim()) ||
+      runtimeByAnswerId.get(assistantAnswerIdentity(row));
+    if (!runtimeRow) return row;
+    mergedRuntimeIds.add(runtimeRow.id);
+    return mergeHistoryRowWithRuntimeSnapshot(row, runtimeRow);
   });
   const keepRuntimeOnlyIds = new Set();
   runtimeRows.forEach((row, index) => {
@@ -14276,10 +14126,19 @@ function applyPersistedChatRuntimeRows(historyRows, runtimePayload) {
   });
   const runtimeOnlyRows = runtimeRows.filter((row) => {
     const id = String(row?.id || "").trim();
-    return id && !historyIds.has(id) && keepRuntimeOnlyIds.has(id);
+    const answerId = assistantAnswerIdentity(row);
+    return (
+      id &&
+      !mergedRuntimeIds.has(id) &&
+      !historyIds.has(id) &&
+      (!answerId || !historyAnswerIds.has(answerId)) &&
+      keepRuntimeOnlyIds.has(id)
+    );
   });
-  if (mergedRows.length) return [...mergedRows, ...runtimeOnlyRows];
-  return runtimeRows;
+  if (mergedRows.length) {
+    return mergeDuplicateAssistantAnswerRows([...mergedRows, ...runtimeOnlyRows]);
+  }
+  return mergeDuplicateAssistantAnswerRows(runtimeRows);
 }
 
 function findNativeExternalAgentRuntimeMessage(runtimeSnapshot = null) {
@@ -14663,10 +14522,34 @@ function extractEmployeeDraftPayload(text) {
   }
 }
 
+function extractEmployeeIntentPayload(text) {
+  const content = String(text || "");
+  const match = content.match(EMPLOYEE_INTENT_BLOCK_RE);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(String(match[1] || "").trim());
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const intent = String(parsed.intent || "").trim().toLowerCase();
+    return ["question", "draft", "create"].includes(intent)
+      ? { intent }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function stripEmployeeDraftBlock(text) {
   const content = String(text || "");
   if (!content) return "";
   return content.replace(EMPLOYEE_DRAFT_BLOCK_RE, "").trim();
+}
+
+function stripEmployeeIntentBlock(text) {
+  const content = String(text || "");
+  if (!content) return "";
+  return content.replace(EMPLOYEE_INTENT_BLOCK_RE, "").trim();
 }
 
 function normalizeEmployeeDraftPayload(raw) {
@@ -15230,7 +15113,7 @@ function normalizeProjectChatSettings(raw) {
           source.auto_use_tools,
           CHAT_SETTINGS_DEFAULTS.auto_use_tools,
         )
-      : false,
+      : CHAT_SETTINGS_DEFAULTS.auto_use_tools,
     image_generate_four_views: coerceBooleanSetting(
       source.image_generate_four_views,
       CHAT_SETTINGS_DEFAULTS.image_generate_four_views,
@@ -15274,10 +15157,8 @@ function resolveNumericChatSetting(
   return base;
 }
 
-function projectChatToolsExplicitlyEnabled() {
-  return Boolean(projectChatSettings.value.auto_use_tools_explicit)
-    ? Boolean(projectChatSettings.value.auto_use_tools)
-    : false;
+function projectChatToolsEnabled() {
+  return Boolean(projectChatSettings.value.auto_use_tools);
 }
 
 function normalizeChatSelectedEmployeeIds(
@@ -15478,7 +15359,7 @@ const isComposerDisabled = computed(() => {
 
 function formatContent(text, structuredMedia = {}) {
   const displayText = stripInternalProtocolContentForDisplay(
-    stripEmployeeDraftBlock(text),
+    stripEmployeeIntentBlock(stripEmployeeDraftBlock(text)),
   );
   if (!displayText) return "";
   const deduplicatedText = stripStructuredMediaDuplicatesFromMarkdown(
@@ -16398,9 +16279,49 @@ function appendMessageProcessLog(row, source = {}) {
 }
 
 function toggleMessageProcessExpanded(row) {
-  if (!row) return;
-  row.processExpanded = !Boolean(row.processExpanded);
-  row.processExpandedUserToggled = true;
+  toggleMessageTrajectoryExpanded(row);
+}
+
+function messageTrajectoryId(row) {
+  return String(row?.id || "").trim();
+}
+
+function isMessageTrajectoryExpanded(row) {
+  const messageId = messageTrajectoryId(row);
+  return Boolean(
+    messageId && !collapsedMessageTrajectoryIds.value.has(messageId),
+  );
+}
+
+function toggleMessageTrajectoryExpanded(row) {
+  const messageId = messageTrajectoryId(row);
+  if (!messageId) return;
+  const collapsedIds = new Set(collapsedMessageTrajectoryIds.value);
+  if (collapsedIds.has(messageId)) collapsedIds.delete(messageId);
+  else collapsedIds.add(messageId);
+  collapsedMessageTrajectoryIds.value = collapsedIds;
+}
+
+function messageTrajectoryToolId(row, operation) {
+  const messageId = messageTrajectoryId(row);
+  const operationId = String(operation?.id || "").trim();
+  return messageId && operationId ? `${messageId}:${operationId}` : "";
+}
+
+function isMessageTrajectoryToolExpanded(row, operation) {
+  const targetId = messageTrajectoryToolId(row, operation);
+  return Boolean(
+    targetId && !collapsedMessageTrajectoryToolIds.value.has(targetId),
+  );
+}
+
+function toggleMessageTrajectoryToolDetail(row, operation) {
+  const targetId = messageTrajectoryToolId(row, operation);
+  if (!targetId) return;
+  const collapsedIds = new Set(collapsedMessageTrajectoryToolIds.value);
+  if (collapsedIds.has(targetId)) collapsedIds.delete(targetId);
+  else collapsedIds.add(targetId);
+  collapsedMessageTrajectoryToolIds.value = collapsedIds;
 }
 
 function openMessageProcessForActiveRun(row, options = {}) {
@@ -17408,11 +17329,68 @@ function isCompletedRequestSummaryOperation(operation, row) {
   );
 }
 
-function shouldShowInlineThinkingState(row, idx) {
-  return (
-    chatLoading.value === true &&
-    idx === messages.value.length - 1 &&
-    !String(row?.content || "").trim()
+function messageThinkingContent(row) {
+  return messageReasoningBlocks(row)
+    .map((block) => String(block?.text || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function messageReasoningBlocks(row) {
+  const blocks = Array.isArray(row?.trajectoryBlocks)
+    ? row.trajectoryBlocks
+        .filter((block) => block?.kind === "reasoning" && block?.text)
+        .sort((left, right) => Number(left?.index || 0) - Number(right?.index || 0))
+    : [];
+  if (blocks.length) return blocks;
+  const fallback = String(row?.reasoningContent || row?.reasoning_content || "").trim();
+  return fallback
+    ? [{ id: "reasoning:legacy", index: 0, kind: "reasoning", text: fallback }]
+    : [];
+}
+
+function trajectoryReasoningBlockHtml(text) {
+  const content = String(text || "").trim();
+  if (!content) return "";
+  try {
+    return renderProjectChatMarkdown(content);
+  } catch {
+    return content.replace(/[&<>"']/g, (character) => {
+      const entities = {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      };
+      return entities[character] || character;
+    });
+  }
+}
+
+function shouldShowMessageThinking(row, idx) {
+  return Boolean(messageThinkingContent(row));
+}
+
+function isMessageThinkingPlaceholder(row, idx) {
+  if (!chatLoading.value || row?.role !== "assistant") return false;
+  if (
+    String(row?.content || "").trim() ||
+    messageReasoningBlocks(row).length ||
+    messageTrajectoryToolCalls(row).length
+  ) {
+    return false;
+  }
+  const lastMessage = messages.value[messages.value.length - 1];
+  return lastMessage === row || lastMessage?.id === row?.id;
+}
+
+function shouldShowMessageTrajectory(row, idx) {
+  return Boolean(
+    messageReasoningBlocks(row).length ||
+      messageTrajectoryToolCalls(row).length ||
+      messageTrajectoryExecutionSteps(row).length ||
+      messageProcessDisplayEntries(row).length,
   );
 }
 
@@ -17446,12 +17424,6 @@ function messageBodyHtml(row, idx) {
       : {},
   );
   if (content) return content;
-  if (
-    shouldShowInlineThinkingState(row, idx) &&
-    !shouldShowMessageProcess(row, idx)
-  ) {
-    return "思考中...";
-  }
   return "";
 }
 
@@ -17662,15 +17634,6 @@ function messageLiveProgressItems(row, idx) {
             : phase === "blocked"
               ? "提示"
               : "进行中",
-    });
-  }
-  if (!items.length && shouldShowInlineThinkingState(row, idx)) {
-    items.push({
-      id: "thinking",
-      phase: "running",
-      title: "模型正在生成回复",
-      summary: "",
-      phaseLabel: "进行中",
     });
   }
   return items.slice(-12);
@@ -20227,6 +20190,101 @@ function messageProcessOperations(row) {
   );
 }
 
+function isMessageTrajectoryToolCall(operation) {
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  return (
+    ["tool", "command", "terminal", "auth", "approval"].includes(kind) ||
+    Boolean(String(meta.tool_name || meta.toolName || "").trim())
+  );
+}
+
+function messageTrajectoryToolCalls(row) {
+  return messageProcessOperations(row).filter(isMessageTrajectoryToolCall);
+}
+
+function messageTrajectoryExecutionSteps(row) {
+  return messageProcessOperations(row).filter(
+    (operation) => !isMessageTrajectoryToolCall(operation),
+  );
+}
+
+function messageTrajectoryExecutionEntries(row) {
+  return messageProcessDisplayEntries(row).filter((entry) => {
+    const kind = messageProcessEntryKind(entry);
+    return !["thinking", "goal"].includes(kind);
+  });
+}
+
+function messageTrajectoryExecutionEntryPreview(entry) {
+  return compactLocalLiuAgentInline(
+    messageProcessEntrySummary(entry).join(" · "),
+    220,
+  );
+}
+
+function messageTrajectoryExecutionEntryCode(entry) {
+  return clipMultilineProcessText(messageProcessEntryCode(entry), 24, 1800);
+}
+
+function messageTrajectoryRuntimeSummary(row, idx) {
+  const phase = messageProcessLifecyclePhase(row, idx);
+  if (phase === "waiting_user") return "正在等待你的确认";
+  if (phase === "blocked") return "当前任务已暂停，等待继续";
+  if (phase === "failed") return "本轮执行未完成，请查看结果说明";
+  if (phase === "completed") return "执行记录已写入本地工作区";
+  if (phase === "running") {
+    const activeTool = messageTrajectoryToolCalls(row).some(
+      (operation) => normalizeOperationPhase(operation?.phase) === "running",
+    );
+    if (activeTool) return "正在调用工具处理任务";
+    return "正在推进当前任务";
+  }
+  return shouldShowMessageTrajectory(row, idx) ? "正在准备任务执行" : "";
+}
+
+function messageTrajectoryCurrentStep(row, idx) {
+  const operation = primaryMessageProcessOperation(row);
+  if (operation) {
+    return String(operation.title || "正在执行当前步骤").trim();
+  }
+  const entries = messageProcessDisplayEntries(row);
+  const latestEntry = entries[entries.length - 1];
+  return latestEntry ? messageProcessEntryTitle(latestEntry) : "";
+}
+
+function messageTrajectoryToolPreview(operation) {
+  return compactLocalLiuAgentInline(
+    String(
+      operation?.summary ||
+        operationCommand(operation) ||
+        operation?.meta?.arguments_preview ||
+        operation?.meta?.argumentsPreview ||
+        "",
+    ).trim(),
+    120,
+  );
+}
+
+function operationArguments(operation) {
+  const meta = operationMeta(operation);
+  const preview = String(
+    meta.arguments_preview || meta.argumentsPreview || "",
+  ).trim();
+  if (preview) return preview;
+  const argumentsValue = meta.arguments || meta.params || meta.parameters;
+  if (!argumentsValue) return "";
+  if (typeof argumentsValue === "string") return argumentsValue.trim();
+  try {
+    return JSON.stringify(argumentsValue, null, 2);
+  } catch {
+    return String(argumentsValue).trim();
+  }
+}
+
 function isOperationAwaitingInteraction(operation) {
   if (!operation) return false;
   const phase = normalizeOperationPhase(operation?.phase || operation?.status);
@@ -21192,9 +21250,13 @@ function applyRealtimeChatMessagePayload(eventData) {
   }
   const row = mapHistoryMessage(messagePayload);
   if (!row.id) return null;
-  const existingIndex = messages.value.findIndex(
-    (item) => String(item?.id || "") === row.id,
-  );
+  const incomingAnswerId = assistantAnswerIdentity(row);
+  const existingIndex = messages.value.findIndex((item) => {
+    if (String(item?.id || "") === row.id) return true;
+    return Boolean(
+      incomingAnswerId && assistantAnswerIdentity(item) === incomingAnswerId,
+    );
+  });
   if (existingIndex >= 0) {
     const existing = messages.value[existingIndex];
     const hasNextContent = Boolean(String(row.content || "").trim());
@@ -21776,7 +21838,7 @@ async function continueChatWithInteractionPayload(payloadText) {
       finalUserPrompt: appendModelGenerationInstruction(text),
       activeSessionSourceContext,
       historyRows,
-      effectiveAutoUseTools: projectChatToolsExplicitlyEnabled(),
+      effectiveAutoUseTools: projectChatToolsEnabled(),
       effectiveToolPriority: mergeToolPriority(
         projectChatSettings.value.tool_priority || [],
         [],
@@ -21884,7 +21946,7 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
     model_name: selectedModelName.value || undefined,
     temperature: Number(temperature.value),
     system_prompt: undefined,
-    auto_use_tools: projectChatToolsExplicitlyEnabled(),
+    auto_use_tools: projectChatToolsEnabled(),
     tool_priority: mergeToolPriority(
       projectChatSettings.value.tool_priority || [],
       [],
@@ -25544,60 +25606,6 @@ function resolveSlashCommand(text) {
   };
 }
 
-function isActionableOperationPrompt(text) {
-  const normalized = String(text || "").trim();
-  if (!normalized) return false;
-  const explanationOnly =
-    EXPLANATION_ONLY_OPERATION_RE.test(normalized) &&
-    !IMPERATIVE_OPERATION_RE.test(normalized);
-  if (explanationOnly) return false;
-  return (
-    ACTIONABLE_OPERATION_HINT_RE.test(normalized) &&
-    ACTIONABLE_OPERATION_TARGET_RE.test(normalized)
-  );
-}
-
-function isEmployeeCreateRequest(text) {
-  const normalized = String(text || "").trim();
-  if (!normalized) return false;
-  const agentTarget = "(?:智能体|AI\\s*(?:员工|agent)|agent)";
-  const createAction = "(?:创建|新建|新增|生成|配置|设立)";
-  return new RegExp(
-    `(?:${createAction}.{0,16}${agentTarget}|${agentTarget}.{0,16}${createAction})`,
-    "i",
-  ).test(normalized);
-}
-
-function isLarkOperationPrompt(text) {
-  return LARK_OPERATION_RE.test(String(text || "").trim());
-}
-
-function buildAgenticOperationInstruction(sourcePrompt) {
-  const original = String(sourcePrompt || "").trim();
-  return [
-    "本轮用户意图：代办执行请求。",
-    "执行要求：",
-    "- 你必须优先使用当前项目可用工具或项目终端完成操作，不要只给用户命令、步骤或教程。",
-    "- 如果需要登录、授权或认证，先检查当前状态；未登录时直接发起登录/授权流程，并把授权链接或交互卡片返回给前端等待用户完成。",
-    "- 授权完成后继续执行原始任务；不要要求用户重复输入同一条命令。",
-    "- 只有在工具不可用、权限不足或缺少必要信息时，才说明阻塞原因和需要用户提供的具体信息。",
-    "- 最终回复必须基于真实工具执行结果，说明已完成什么、还有什么未完成。",
-    original ? `原始用户请求：${original}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function appendAgenticOperationInstruction(prompt, sourcePrompt) {
-  return [
-    String(prompt || "").trim(),
-    "",
-    buildAgenticOperationInstruction(sourcePrompt),
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
 function toggleComposerToolCommand(item) {
   const commandId = String(item?.id || "").trim();
   if (!commandId) return;
@@ -26531,6 +26539,8 @@ const employeeDraftAutoRuleSourceLabels = computed(() =>
 function getEmployeeDraftCard(item) {
   const rawDraft = extractEmployeeDraftPayload(item?.content || "");
   if (!rawDraft) return null;
+  const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
+  if (intent && !["draft", "create"].includes(intent)) return null;
   return buildEmployeeDraftCard(rawDraft);
 }
 
@@ -26559,6 +26569,10 @@ async function autoCreateEmployeeFromDraftMessage(
   { resetAssist = false } = {},
 ) {
   if (!item || item.employeeDraftCreatedName) {
+    return false;
+  }
+  const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
+  if (intent !== "create") {
     return false;
   }
   const rawDraft = extractEmployeeDraftPayload(item?.content || "");
@@ -27887,7 +27901,7 @@ async function sendMergedFollowupRequest(
   );
   const effectiveAutoUseTools = singleRoundAnswerOnly.value
     ? false
-    : projectChatToolsExplicitlyEnabled();
+    : projectChatToolsEnabled();
   const effectiveSelectedProjectToolNames = effectiveAutoUseTools
     ? selectedProjectToolNames.value
     : [];
@@ -33785,17 +33799,8 @@ async function doSend(options = {}) {
           (item) => item.id === slashCommand.entry.assistActionId,
         ) || null
       : null;
-  const inferredEmployeeCreateAction =
-    !slashAssistAction &&
-    !activeComposerAssistMeta.value &&
-    isEmployeeCreateRequest(text)
-      ? composerAssistActions.value.find((item) => item.id === "employee_create") ||
-        null
-      : null;
   const effectiveAssistAction =
-    slashAssistAction ||
-    activeComposerAssistMeta.value ||
-    inferredEmployeeCreateAction;
+    slashAssistAction || activeComposerAssistMeta.value;
   let userPrompt = "";
   if (slashCommand?.entry?.kind === "stats_report") {
     try {
@@ -33907,20 +33912,6 @@ async function doSend(options = {}) {
     slashCommand?.entry?.toolNames || [],
     20,
   );
-  const shouldUseAgenticOperation =
-    !slashCommand &&
-    !shouldInjectAssistPrompt &&
-    !singleRoundAnswerOnly.value &&
-    isActionableOperationPrompt(userPrompt);
-  if (
-    shouldUseAgenticOperation &&
-    isLarkOperationPrompt(userPrompt) &&
-    !String(skillResourceDirectoryResolved.value || "").trim()
-  ) {
-    setSkillResourceDirectory(resolveLarkCliSkillDirectory(), {
-      silent: true,
-    });
-  }
   // 本机命令统一由 Tauri runtime 的 run_command 提供。
   const operationToolNames = [];
   const effectiveUserPrompt = shouldInjectAssistPrompt
@@ -33936,10 +33927,21 @@ async function doSend(options = {}) {
         .filter(Boolean)
         .join("\n")
     : userPrompt;
-  const executionUserPrompt = shouldUseAgenticOperation
-    ? appendAgenticOperationInstruction(effectiveUserPrompt, userPrompt)
-    : effectiveUserPrompt;
-  const finalUserPrompt = appendModelGenerationInstruction(executionUserPrompt);
+  const finalUserPrompt = appendModelGenerationInstruction(
+    [
+      effectiveUserPrompt,
+      "",
+      "智能体意图协议（必须遵守）：",
+      "- 先根据用户真实意图回答，不得由关键词或猜测触发创建。",
+      "- 最终回答末尾必须附带严格 JSON 的 ```employee-intent``` 代码块，intent 只能是 question、draft 或 create。",
+      "- 用户询问能力、可行性、步骤或示例（例如“你可以创建智能体吗？”）时，intent 必须为 question，且不得输出 employee-draft。",
+      "- 用户只要求方案或草稿时，intent 为 draft；仅在此时输出 ```employee-draft``` 草稿代码块。",
+      "- 只有用户明确要求现在创建智能体时，intent 才能为 create，并且必须同时输出有效的 ```employee-draft``` 草稿代码块。",
+      "- intent 为 create 只会打开用户确认窗口；未确认前不得声称文件已经创建。",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
   const effectiveToolPriority = mergeToolPriority(
     projectChatSettings.value.tool_priority || [],
     [...operationToolNames, ...assistToolNames],
@@ -33947,12 +33949,11 @@ async function doSend(options = {}) {
   const effectiveAutoUseTools =
     slashCommandRequiresTools ||
     activeCommandToolNames.length > 0 ||
-    shouldUseAgenticOperation ||
     (assistAction && assistToolNames.length)
       ? true
       : singleRoundAnswerOnly.value
         ? false
-        : projectChatToolsExplicitlyEnabled();
+        : projectChatToolsEnabled();
   const effectiveSelectedProjectToolNames = effectiveAutoUseTools
     ? normalizeStringList([
         ...selectedProjectToolNames.value,
@@ -34071,15 +34072,20 @@ async function doSend(options = {}) {
         employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
       },
     });
-    if (effectiveAssistAction?.id === "employee_create") {
+    if (
+      extractEmployeeIntentPayload(assistantMessage.content)?.intent ===
+      "create"
+    ) {
       const opened = await autoCreateEmployeeFromDraftMessage(assistantMessage, {
-        resetAssist: true,
+        resetAssist: effectiveAssistAction?.id === "employee_create",
       });
       if (!opened) {
         ElMessage.warning(
-          "未识别到可创建的智能体草稿，请重新生成后再试",
+          "模型已请求创建，但未返回有效的智能体草稿，请重新生成后再试",
         );
       }
+    } else if (effectiveAssistAction?.id === "employee_create") {
+      ElMessage.warning("未识别到模型创建意图，请重新生成后再试");
     }
   } catch (err) {
     const errorMessage = String(err?.message || "未知错误").trim();

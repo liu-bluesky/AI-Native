@@ -7,6 +7,7 @@ export const CODE_COPIED_ICON_HTML =
 export const CODE_PREVIEW_ICON_HTML =
   '<span class="el-icon chat-code-block__icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><path fill="currentColor" d="M942.2 486.2C847.4 334.6 691 224 512 224S176.6 334.6 81.8 486.2a48.9 48.9 0 0 0 0 51.6C176.6 689.4 333 800 512 800s335.4-110.6 430.2-262.2a48.9 48.9 0 0 0 0-51.6M512 736c-147.8 0-279-88.5-363.1-224C233 376.5 364.2 288 512 288s279 88.5 363.1 224C791 647.5 659.8 736 512 736m0-352a128 128 0 1 0 0 256 128 128 0 0 0 0-256m0 192a64 64 0 1 1 0-128 64 64 0 0 1 0 128" /></svg></span>';
 export const EMPLOYEE_DRAFT_BLOCK_RE = /```employee-draft\s*([\s\S]*?)```/i;
+export const EMPLOYEE_INTENT_BLOCK_RE = /```employee-intent\s*([\s\S]*?)```/i;
 export const PREVIEWABLE_CODE_LANGUAGES = new Set(["vue", "html", "htm"]);
 export const PROJECT_STATS_COMMAND = "/stats-report";
 export const PROJECT_STATS_COMMAND_ALIASES = [];

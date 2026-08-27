@@ -27,8 +27,13 @@ assert.match(
 );
 assert.match(
   projectChatSource,
-  /function isEmployeeCreateRequest[\s\S]*inferredEmployeeCreateAction[\s\S]*employee_create/s,
-  "自然语言创建智能体请求必须自动进入创建流程",
+  /智能体意图协议（必须遵守）[\s\S]*employee-intent[\s\S]*question、draft 或 create/s,
+  "智能体创建意图必须由模型结构化输出",
+);
+assert.equal(
+  projectChatSource.includes("isExplicitEmployeeCreateRequest"),
+  false,
+  "前端不能用正则猜测用户是否要创建智能体",
 );
 assert.match(
   composerSource,

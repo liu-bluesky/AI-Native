@@ -91,6 +91,12 @@ const TOOL_OBSERVATION_MAX_DEPTH: usize = 6;
 const DESKTOP_BOT_GLOBAL_PROJECT_ID: &str = "desktop-bot-global";
 const DIRECT_HISTORY_CONTEXT_MAX_MESSAGES: usize = 4;
 
+#[derive(Debug, Clone)]
+enum ModelStreamDelta {
+    Reasoning(String),
+    Text(String),
+}
+
 static LOCAL_CHAT_PAUSE_REQUESTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static LOCAL_CHAT_ACTIVE_RUNS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -4678,8 +4684,44 @@ fn run_agent_loop(
     permission_decision: Option<super::types::PermissionDecisionInput>,
     event_sink: Option<&dyn Fn(Value)>,
 ) -> AgentLoopResult {
-    let interruptible_model_runner =
-        |request: &ModelStepRequest| run_model_step_interruptible(run_key, request);
+    let next_stream_block_index = Cell::new(0usize);
+    let next_stream_event_sequence = Cell::new(0usize);
+    let interruptible_model_runner = |request: &ModelStepRequest| {
+        let block_index = next_stream_block_index.get();
+        next_stream_block_index.set(block_index.saturating_add(1));
+        let emit_stream_delta = |delta: ModelStreamDelta| {
+            let sequence = next_stream_event_sequence.get();
+            next_stream_event_sequence.set(sequence.saturating_add(1));
+            let (event_type, text) = match delta {
+                ModelStreamDelta::Reasoning(text) => ("reasoning_delta", text),
+                ModelStreamDelta::Text(text) => ("text_delta", text),
+            };
+            if text.is_empty() {
+                return;
+            }
+            if let Some(sink) = event_sink {
+                let created_at = epoch_millis();
+                sink(json!({
+                    "event_id": format!("evt_{runtime_session_id}_stream_{block_index}_{sequence}"),
+                    "runtime_session_id": runtime_session_id,
+                    "run_id": runtime_session_id,
+                    "chat_session_id": run_key,
+                    "type": event_type,
+                    "payload": {
+                        "block_index": block_index,
+                        "delta": text,
+                        "created_at_epoch_ms": created_at,
+                    },
+                    "created_at_epoch_ms": created_at,
+                }));
+            }
+        };
+        run_model_step_interruptible_with_stream_deltas(
+            run_key,
+            request,
+            Some(&emit_stream_delta),
+        )
+    };
     run_agent_loop_with(
         run_key,
         runtime_session_id,
@@ -4694,6 +4736,14 @@ fn run_agent_loop(
 }
 
 fn run_model_step_interruptible(run_key: &str, request: &ModelStepRequest) -> ModelStepResult {
+    run_model_step_interruptible_with_stream_deltas(run_key, request, None)
+}
+
+fn run_model_step_interruptible_with_stream_deltas(
+    run_key: &str,
+    request: &ModelStepRequest,
+    on_stream_delta: Option<&dyn Fn(ModelStreamDelta)>,
+) -> ModelStepResult {
     if local_chat_pause_requested(run_key) {
         return ModelStepResult::failed(
             request,
@@ -4704,12 +4754,31 @@ fn run_model_step_interruptible(run_key: &str, request: &ModelStepRequest) -> Mo
     let request_for_worker = request.clone();
     let request_for_pause = request.clone();
     let (sender, receiver) = mpsc::channel();
+    let (stream_sender, stream_receiver) = mpsc::channel();
     thread::spawn(move || {
-        let _ = sender.send(run_model_step(&request_for_worker));
+        let emit_stream_delta = |delta: ModelStreamDelta| {
+            let _ = stream_sender.send(delta);
+        };
+        let _ = sender.send(run_model_step_with_stream_deltas(
+            &request_for_worker,
+            Some(&emit_stream_delta),
+        ));
     });
     loop {
+        while let Ok(delta) = stream_receiver.try_recv() {
+            if let Some(callback) = on_stream_delta {
+                callback(delta);
+            }
+        }
         match receiver.recv_timeout(Duration::from_millis(25)) {
-            Ok(result) => return result,
+            Ok(result) => {
+                while let Ok(delta) = stream_receiver.try_recv() {
+                    if let Some(callback) = on_stream_delta {
+                        callback(delta);
+                    }
+                }
+                return result;
+            }
             Err(mpsc::RecvTimeoutError::Timeout) if local_chat_pause_requested(run_key) => {
                 return ModelStepResult::failed(
                     &request_for_pause,
@@ -9911,6 +9980,13 @@ fn format_attachment_size(size: u64) -> String {
 }
 
 fn run_model_step(request: &ModelStepRequest) -> ModelStepResult {
+    run_model_step_with_stream_deltas(request, None)
+}
+
+fn run_model_step_with_stream_deltas(
+    request: &ModelStepRequest,
+    on_stream_delta: Option<&dyn Fn(ModelStreamDelta)>,
+) -> ModelStepResult {
     if local_chat_pause_requested(&request.run_key) {
         return ModelStepResult::failed(
             request,
@@ -9919,7 +9995,9 @@ fn run_model_step(request: &ModelStepRequest) -> ModelStepResult {
         );
     }
     match request.mode.as_str() {
-        "direct-openai-compatible" => run_openai_compatible_model_step(request),
+        "direct-openai-compatible" => {
+            run_openai_compatible_model_step_with_stream_deltas(request, on_stream_delta)
+        }
         "backend-gateway" => {
             if request.gateway_url.trim().is_empty() {
                 return ModelStepResult::skipped(
@@ -9958,6 +10036,13 @@ fn is_ollama_compatible_runtime(request: &ModelStepRequest) -> bool {
 }
 
 fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResult {
+    run_openai_compatible_model_step_with_stream_deltas(request, None)
+}
+
+fn run_openai_compatible_model_step_with_stream_deltas(
+    request: &ModelStepRequest,
+    on_stream_delta: Option<&dyn Fn(ModelStreamDelta)>,
+) -> ModelStepResult {
     if local_chat_pause_requested(&request.run_key) {
         return ModelStepResult::failed(
             request,
@@ -10098,7 +10183,11 @@ fn run_openai_compatible_model_step(request: &ModelStepRequest) -> ModelStepResu
         .map(|value| value.to_ascii_lowercase().contains("text/event-stream"))
         .unwrap_or(false);
     let parsed_response = if is_streaming_response {
-        match parse_openai_compatible_streaming_response(response, &request.run_key) {
+        match parse_openai_compatible_streaming_response_with_deltas(
+            response,
+            &request.run_key,
+            on_stream_delta,
+        ) {
             Ok(value) => value,
             Err(err) => return ModelStepResult::failed(request, "model.response_invalid", err),
         }
@@ -10461,13 +10550,29 @@ fn parse_openai_compatible_streaming_response(
     response: Response,
     run_key: &str,
 ) -> Result<ParsedModelResponse, String> {
+    parse_openai_compatible_streaming_response_with_deltas(response, run_key, None)
+}
+
+fn parse_openai_compatible_streaming_response_with_deltas(
+    response: Response,
+    run_key: &str,
+    on_stream_delta: Option<&dyn Fn(ModelStreamDelta)>,
+) -> Result<ParsedModelResponse, String> {
     let reader = BufReader::new(response);
-    parse_openai_compatible_streaming_reader(reader, run_key)
+    parse_openai_compatible_streaming_reader_with_deltas(reader, run_key, on_stream_delta)
 }
 
 fn parse_openai_compatible_streaming_reader<R: BufRead>(
     reader: R,
     run_key: &str,
+) -> Result<ParsedModelResponse, String> {
+    parse_openai_compatible_streaming_reader_with_deltas(reader, run_key, None)
+}
+
+fn parse_openai_compatible_streaming_reader_with_deltas<R: BufRead>(
+    reader: R,
+    run_key: &str,
+    on_stream_delta: Option<&dyn Fn(ModelStreamDelta)>,
 ) -> Result<ParsedModelResponse, String> {
     let mut content = String::new();
     let mut reasoning_content = String::new();
@@ -10500,9 +10605,15 @@ fn parse_openai_compatible_streaming_reader<R: BufRead>(
             };
             if let Some(value) = stringify_model_content(message.content) {
                 merge_openai_stream_text(&mut content, &value);
+                if let Some(callback) = on_stream_delta {
+                    callback(ModelStreamDelta::Text(value));
+                }
             }
             if let Some(value) = stringify_model_content(message.reasoning_content) {
                 merge_openai_stream_text(&mut reasoning_content, &value);
+                if let Some(callback) = on_stream_delta {
+                    callback(ModelStreamDelta::Reasoning(value));
+                }
             }
             if let Some(calls) = message.tool_calls {
                 merge_openai_tool_call_chunks(&mut tool_chunks, calls)?;
