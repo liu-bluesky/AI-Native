@@ -14707,6 +14707,7 @@ function normalizeEmployeeDraftPayload(raw) {
         source_url: String(draft?.source_url || "").trim(),
       }))
       .filter((draft) => draft.title || draft.domain || draft.content),
+    auto_create_missing_rules: item.auto_create_missing_rules !== false,
     style_hints: normalizeStringList(item.style_hints || [], 12),
     default_workflow: normalizeEmployeeDraftWorkflow(
       item.default_workflow || [],
@@ -26274,6 +26275,61 @@ function matchRulesFromDraft(draft, ruleCatalog) {
   return bindings;
 }
 
+function buildMissingEmployeeRuleDrafts(employee, rules = []) {
+  if (employee?.auto_create_missing_rules === false) return [];
+  const existingRules = Array.isArray(rules) ? rules : [];
+  const existingTitles = new Set(
+    existingRules.map((rule) => normalizeMatchKey(rule?.title)),
+  );
+  const existingDomains = new Set(
+    existingRules.map((rule) => normalizeMatchKey(rule?.domain)),
+  );
+  const drafts = Array.isArray(employee?.rule_drafts)
+    ? employee.rule_drafts.slice()
+    : [];
+  const draftTitles = new Set(
+    drafts.map((rule) => normalizeMatchKey(rule?.title)),
+  );
+  const draftDomains = new Set(
+    drafts.map((rule) => normalizeMatchKey(rule?.domain)),
+  );
+  const domains = normalizeStringList(employee?.rule_domains || [], 20);
+  const fallbackDomain = domains[0] || "通用";
+  const employeeName = String(employee?.name || "该智能体").trim() || "该智能体";
+  const addDraft = ({ title, domain }) => {
+    const normalizedTitle = normalizeMatchKey(title);
+    const normalizedDomain = normalizeMatchKey(domain);
+    if (!normalizedTitle || existingTitles.has(normalizedTitle) || draftTitles.has(normalizedTitle)) {
+      return;
+    }
+    drafts.push({
+      title: String(title).trim(),
+      domain: String(domain || fallbackDomain).trim() || "通用",
+      content: [
+        `适用于${employeeName}的${String(domain || fallbackDomain).trim() || "通用"}工作规则。`,
+        "执行任务前确认目标、边界和所需输入；信息不足时先提出澄清问题。",
+        "执行中记录关键决策、使用的工具与可验证结果；涉及高风险操作时先请求确认。",
+        "完成后输出结果摘要、验证方式和后续建议。",
+      ].join("\n"),
+      source_label: "AI Employee 自动补全",
+    });
+    draftTitles.add(normalizedTitle);
+    if (normalizedDomain) draftDomains.add(normalizedDomain);
+  };
+
+  for (const [index, title] of normalizeStringList(employee?.rule_titles || [], 30).entries()) {
+    addDraft({ title, domain: domains[index] || fallbackDomain });
+  }
+  for (const domain of domains) {
+    const normalizedDomain = normalizeMatchKey(domain);
+    if (!normalizedDomain || existingDomains.has(normalizedDomain) || draftDomains.has(normalizedDomain)) {
+      continue;
+    }
+    addDraft({ title: `${employeeName} ${domain}工作规则`, domain });
+  }
+  return drafts;
+}
+
 function buildEmployeeDraftCard(rawDraft) {
   const draft = normalizeEmployeeDraftPayload(rawDraft);
   const skillCatalog = Array.isArray(employeeDraftCatalog.value.skills)
@@ -28878,9 +28934,9 @@ async function handleQuickCreateEmployee(payload) {
     }
 
     const rules = Array.isArray(relations.rules) ? [...relations.rules] : [];
-    for (const rawRule of Array.isArray(payload.rule_drafts)
-      ? payload.rule_drafts
-      : []) {
+    const ruleDrafts = buildMissingEmployeeRuleDrafts(employee, rules);
+    employee.rule_drafts = ruleDrafts;
+    for (const rawRule of ruleDrafts) {
       const title = String(rawRule?.title || "").trim();
       if (!title) continue;
       const ruleId = String(

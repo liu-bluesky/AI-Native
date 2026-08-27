@@ -1,6 +1,6 @@
 [package]
 name = "ai-employee-factory-desktop"
-version = "0.1.15"
+version = "0.1.16"
 description = "AI 员工工厂桌面端"
 authors = ["AI Employee Factory"]
 edition = "2021"
