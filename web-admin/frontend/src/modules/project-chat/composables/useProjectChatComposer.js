@@ -5,6 +5,7 @@ export function useProjectChatComposer(options = {}) {
     draftText,
     uploadFiles,
     activeComposerAssist,
+    activeComposerToolCommandId,
     singleRoundAnswerOnly,
     slashCommandHighlightIndex,
     getCacheKey,
@@ -39,6 +40,11 @@ export function useProjectChatComposer(options = {}) {
         ? state.uploadFiles.map(normalizeComposerUploadItem).filter(Boolean)
         : [],
       activeComposerAssist: String(state.activeComposerAssist || "").trim(),
+      activeComposerToolCommandId: String(
+        state.activeComposerToolCommandId ??
+          activeComposerToolCommandId?.value ??
+          "",
+      ).trim(),
       singleRoundAnswerOnly: Boolean(state.singleRoundAnswerOnly),
     });
   }
@@ -51,6 +57,7 @@ export function useProjectChatComposer(options = {}) {
       draftText: draftText?.value,
       uploadFiles: uploadFiles?.value,
       activeComposerAssist: activeComposerAssist?.value,
+      activeComposerToolCommandId: activeComposerToolCommandId?.value,
       singleRoundAnswerOnly: singleRoundAnswerOnly?.value,
     });
   }
@@ -65,6 +72,11 @@ export function useProjectChatComposer(options = {}) {
     activeComposerAssist.value = String(
       state?.activeComposerAssist || "",
     ).trim();
+    if (activeComposerToolCommandId) {
+      activeComposerToolCommandId.value = String(
+        state?.activeComposerToolCommandId || "",
+      ).trim();
+    }
     singleRoundAnswerOnly.value = Boolean(state?.singleRoundAnswerOnly);
     slashCommandHighlightIndex.value = 0;
   }
@@ -77,6 +89,7 @@ export function useProjectChatComposer(options = {}) {
       draftText: "",
       uploadFiles: [],
       activeComposerAssist: activeComposerAssist?.value,
+      activeComposerToolCommandId: activeComposerToolCommandId?.value,
       singleRoundAnswerOnly: singleRoundAnswerOnly?.value,
     });
   }

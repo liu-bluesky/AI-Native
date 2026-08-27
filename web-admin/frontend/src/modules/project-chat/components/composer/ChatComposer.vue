@@ -36,27 +36,6 @@
         </div>
       </div>
       <div
-        v-else-if="showWorkingStatusBar"
-        class="chat-working-status"
-        role="status"
-        aria-live="polite"
-      >
-        <div class="chat-working-status__main">
-          <span class="chat-working-status__dot"></span>
-          <strong>{{ workingStatusTitle }}</strong>
-          <span>{{ workingStatusElapsedLabel }}</span>
-        </div>
-        <div class="chat-working-status__meta">
-          <span
-            v-for="item in workingStatusMetaItems"
-            :key="item"
-            class="chat-working-status__item"
-          >
-            {{ item }}
-          </span>
-        </div>
-      </div>
-      <div
         ref="inputWrapperRef"
         class="chat-input-wrapper"
         :class="{
@@ -449,15 +428,11 @@ const props = defineProps([
   "showAgentWorkflowStatusStrip",
   "showLocalAgentAuthLevel",
   "showPauseGenerationButton",
-  "showWorkingStatusBar",
   "attachmentSupported",
   "attachmentMode",
   "attachmentModeLabel",
   "uploadAccept",
   "uploadFiles",
-  "workingStatusElapsedLabel",
-  "workingStatusMetaItems",
-  "workingStatusTitle",
 ]);
 
 const emit = defineEmits([

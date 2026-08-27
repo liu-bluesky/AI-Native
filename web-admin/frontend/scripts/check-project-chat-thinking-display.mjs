@@ -52,6 +52,11 @@ assert.match(
 );
 assert.match(
   projectChatSource,
+  /function messageThinkingDurationLabel[\s\S]*reasoningDurationMs[\s\S]*messageTrajectorySummary/s,
+  "已思考用时必须来自 reasoning 事件而不是整轮 Runtime 时长",
+);
+assert.match(
+  projectChatSource,
   /v-for="block in messageReasoningBlocks\(item\)"/,
   "Thinking 详情必须按 reasoning block 渲染",
 );

@@ -14,11 +14,28 @@ const [projectChatSource, composerSource] = await Promise.all([
     "utf8",
   ),
 ]);
+const composerStateSource = await readFile(
+  new URL(
+    "../src/modules/project-chat/composables/useProjectChatComposer.js",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 assert.match(
   projectChatSource,
-  /const composerVisibleToolCommands = computed\([\s\S]*assist_employee_create[\s\S]*package_deploy[\s\S]*image/s,
-  "创建智能体、打包部署和图片快捷入口必须从工具栏隐藏",
+  /const composerVisibleToolCommands = computed\([\s\S]*package_deploy/s,
+  "打包部署入口保持隐藏",
+);
+assert.doesNotMatch(
+  projectChatSource,
+  /!\["assist_employee_create", "package_deploy", "image"\]\.includes/,
+  "创建智能体和图片入口必须在输入框展示",
+);
+assert.match(
+  composerStateSource,
+  /activeComposerToolCommandId[\s\S]*composerCache\.set[\s\S]*activeComposerToolCommandId/s,
+  "图片等输入框快捷选择必须按当前会话缓存",
 );
 assert.match(
   projectChatSource,
@@ -27,8 +44,8 @@ assert.match(
 );
 assert.match(
   projectChatSource,
-  /智能体意图协议（必须遵守）[\s\S]*employee-intent[\s\S]*question、draft 或 create/s,
-  "智能体创建意图必须由模型结构化输出",
+  /AI Employee 智能体实体草稿[\s\S]*HTML、CSS、JavaScript[\s\S]*实际创建智能体必须经过用户确认/s,
+  "智能体创建必须按实体语义处理并经过用户确认",
 );
 assert.equal(
   projectChatSource.includes("isExplicitEmployeeCreateRequest"),

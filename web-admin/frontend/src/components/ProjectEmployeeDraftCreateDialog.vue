@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="确认创建 AI 智能体"
+    :title="isUpdateMode ? '确认更新 AI 智能体' : '确认创建 AI 智能体'"
     width="min(880px, calc(100vw - 32px))"
     destroy-on-close
     class="employee-draft-create-dialog"
@@ -15,7 +15,7 @@
     >
       <div class="employee-draft-dialog__summary">
         <div class="employee-draft-dialog__title">
-          {{ payload.name || "未命名智能体" }}
+          {{ payload.name || "待补充名称" }}
         </div>
         <div
           v-if="payload.description"
@@ -162,7 +162,9 @@
       </div>
 
       <div class="employee-draft-dialog__section">
-        <div class="employee-draft-dialog__section-title">创建策略</div>
+        <div class="employee-draft-dialog__section-title">
+          {{ isUpdateMode ? "更新策略" : "创建策略" }}
+        </div>
         <div class="employee-draft-dialog__section-hint">
           智能体技能仍以草稿内容和系统自动补齐为准。规则来源不在这里选择，而是由系统按后台配置自动生成。
         </div>
@@ -180,6 +182,7 @@
             inactive-text="手动处理规则"
           />
           <el-switch
+            v-if="!isUpdateMode"
             v-model="addToProject"
             inline-prompt
             active-text="加入当前项目"
@@ -198,14 +201,14 @@
         :disabled="!payload"
         @click="handleConfirm"
       >
-        创建并绑定
+        {{ isUpdateMode ? "更新并同步" : "创建并绑定" }}
       </el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup>
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 
 const props = defineProps({
   modelValue: {
@@ -252,6 +255,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  mode: {
+    type: String,
+    default: "create",
+  },
 });
 
 const emit = defineEmits(["update:modelValue", "confirm", "close"]);
@@ -259,6 +266,7 @@ const emit = defineEmits(["update:modelValue", "confirm", "close"]);
 const autoCreateSkills = ref(true);
 const autoCreateRules = ref(true);
 const addToProject = ref(false);
+const isUpdateMode = computed(() => props.mode === "update");
 
 watch(
   () => [props.modelValue, props.payload, props.canAddToProject],
