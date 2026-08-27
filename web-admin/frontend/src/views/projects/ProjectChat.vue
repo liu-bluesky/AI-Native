@@ -30656,6 +30656,7 @@ async function handleCreateNewConversation() {
     chatHistoryLoadedCount.value = 0;
     chatHistoryReachedEnd.value = false;
     activeComposerAssist.value = "";
+    activeComposerToolCommandId.value = "";
     resetDraft();
     scrollToBottom();
     return;
@@ -30674,6 +30675,7 @@ async function handleCreateNewConversation() {
     chatHistoryLoadedCount.value = 0;
     chatHistoryReachedEnd.value = false;
     activeComposerAssist.value = "";
+    activeComposerToolCommandId.value = "";
     resetDraft();
     applyTaskTreePayload(null);
     resetTerminalPanel();
@@ -30693,6 +30695,7 @@ async function handleCreateNewConversation() {
   chatHistoryLoadedCount.value = 0;
   chatHistoryReachedEnd.value = false;
   activeComposerAssist.value = "";
+  activeComposerToolCommandId.value = "";
   resetDraft();
   applyTaskTreePayload(null);
   resetTerminalPanel();

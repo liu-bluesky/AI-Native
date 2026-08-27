@@ -39,6 +39,11 @@ assert.match(
 );
 assert.match(
   projectChatSource,
+  /function handleCreateNewConversation\([\s\S]*activeComposerAssist\.value = ""[\s\S]*activeComposerToolCommandId\.value = ""/s,
+  "新建会话必须清空当前会话的工具选择",
+);
+assert.match(
+  projectChatSource,
   /:tool-command-items="composerVisibleToolCommands"/,
   "对话框必须使用过滤后的工具入口列表",
 );
