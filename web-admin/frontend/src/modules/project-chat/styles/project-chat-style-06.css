@@ -104,6 +104,7 @@
 }
 
 .message-process-stream {
+  position: relative;
   display: grid;
   gap: 10px;
   margin-top: 12px;
@@ -111,6 +112,16 @@
   border-radius: 14px;
   background: rgba(248, 250, 252, 0.82);
   border: 1px solid rgba(226, 232, 240, 0.82);
+}
+
+.message-process-stream::before {
+  content: "";
+  position: absolute;
+  top: 22px;
+  bottom: 22px;
+  left: 18px;
+  width: 1px;
+  background: #e2e8f0;
 }
 
 .message-process-stream__item {
@@ -122,6 +133,11 @@
   color: #334155;
   font-size: 13px;
   line-height: 1.6;
+}
+
+.message-process-stream__item.is-kind-thinking .message-process-stream__dot,
+.message-process-entry.is-latest .message-process-stream__dot {
+  animation: message-process-pulse 1.5s ease-in-out infinite;
 }
 
 .message-process-stream__dot {
@@ -166,6 +182,20 @@
   min-width: 0;
   display: grid;
   gap: 7px;
+}
+
+.message-process-entry.is-latest .message-process-entry__title {
+  color: #1d4ed8;
+}
+
+@keyframes message-process-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.12);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(14, 165, 233, 0.04);
+  }
 }
 
 .message-process-entry__head {

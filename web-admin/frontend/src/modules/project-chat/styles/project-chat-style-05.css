@@ -300,7 +300,7 @@
     rgba(255, 255, 255, 0.94),
     rgba(248, 250, 252, 0.94)
   );
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
   overflow: hidden;
 }
 
@@ -310,7 +310,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 13px 16px;
+  padding: 14px 16px;
   border: 0;
   background: transparent;
   color: #111827;
@@ -347,6 +347,28 @@
   color: #4b5563;
   font-size: 12px;
   font-weight: 500;
+}
+
+.message-process-shell__toggle-label {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.message-process-shell__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: #94a3b8;
+  font-size: 17px;
+  line-height: 1;
+  transition: transform 180ms ease-out;
+}
+
+.message-process-shell__chevron.is-expanded {
+  transform: rotate(180deg);
 }
 
 .message-process-shell__primary-action {

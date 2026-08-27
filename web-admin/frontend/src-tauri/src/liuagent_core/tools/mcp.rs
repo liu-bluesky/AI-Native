@@ -16,6 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::liuagent_core::args::{required_string_arg, string_arg};
 use crate::liuagent_core::permission::require_approval;
+use crate::liuagent_core::tools::process::configure_process_group;
+use crate::liuagent_core::tools::toolchain::{merged_path, resolve_command};
 use crate::liuagent_core::types::{PermissionDecisionInput, ToolError};
 use crate::liuagent_core::workspace::{resolve_workspace_child, resolve_workspace_root};
 
@@ -660,6 +662,7 @@ struct ServerConfig {
     framing: String,
     url: String,
     headers: Vec<(String, String)>,
+    env: Vec<(String, String)>,
 }
 
 fn read_registry_config(root: &Path, arguments: &Value) -> Result<Value, ToolError> {
@@ -784,6 +787,7 @@ fn resolve_server_config(
         .trim()
         .to_ascii_lowercase();
     let headers = parse_config_headers(&value)?;
+    let environment = parse_config_environment(&value)?;
     Ok(ServerConfig {
         name,
         transport,
@@ -793,7 +797,26 @@ fn resolve_server_config(
         framing,
         url,
         headers,
+        env: environment,
     })
+}
+
+fn parse_config_environment(value: &Value) -> Result<Vec<(String, String)>, ToolError> {
+    let Some(environment) = value.get("env").and_then(Value::as_object) else {
+        return Ok(Vec::new());
+    };
+    environment
+        .iter()
+        .map(|(key, value)| {
+            let value = value.as_str().ok_or_else(|| {
+                ToolError::new(
+                    "mcp.config_invalid",
+                    format!("MCP environment value must be string: {key}"),
+                )
+            })?;
+            Ok((key.to_string(), value.to_string()))
+        })
+        .collect()
 }
 
 fn resolve_server_url(value: &Value, arguments: &Value) -> Result<String, ToolError> {
@@ -1118,19 +1141,35 @@ fn run_stdio_command(
             format!("create MCP stderr failed: {err}"),
         )
     })?;
-    let mut child = Command::new(&server.command)
+    let resolved = resolve_command(&server.command);
+    let mut command = Command::new(&resolved.program);
+    command
         .args(&server.args)
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
-        .map_err(|err| {
-            ToolError::new(
-                "mcp.failed",
-                format!("spawn MCP server {} failed: {err}", server.name),
-            )
-        })?;
+        .stderr(Stdio::from(stderr_file));
+    let configured_path = server
+        .env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var("PATH").ok());
+    if let Some(path) = merged_path(&resolved.search_paths, configured_path.as_deref()) {
+        command.env("PATH", path);
+    }
+    for (key, value) in &server.env {
+        if !key.eq_ignore_ascii_case("PATH") {
+            command.env(key, value);
+        }
+    }
+    configure_process_group(&mut command);
+    let mut child = command.spawn().map_err(|err| {
+        ToolError::new(
+            "mcp.failed",
+            format!("spawn MCP server {} failed: {err}", server.name),
+        )
+    })?;
     if let Some(stdin) = child.stdin.as_mut() {
         let messages = vec![
             json!({

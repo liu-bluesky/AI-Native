@@ -332,6 +332,7 @@
                             <button
                               type="button"
                               class="message-process-shell__toggle"
+                              :aria-expanded="item.processExpanded"
                               @click="toggleMessageProcessExpanded(item)"
                             >
                               <span class="message-process-shell__title-wrap">
@@ -378,9 +379,14 @@
                                 >
                                   {{ messageProcessStepCount(item, idx) }} 项
                                 </span>
-                                <span>{{
-                                  item.processExpanded ? "收起" : "展开"
-                                }}</span>
+                                <span class="message-process-shell__toggle-label">
+                                  {{ item.processExpanded ? "收起详情" : "查看详情" }}
+                                </span>
+                                <span
+                                  class="message-process-shell__chevron"
+                                  :class="{ 'is-expanded': item.processExpanded }"
+                                  aria-hidden="true"
+                                >⌄</span>
                               </span>
                             </button>
                             <div
@@ -707,7 +713,14 @@
                                   <span
                                     class="message-process-stream__dot"
                                   ></span>
-                                  <div class="message-process-entry">
+                                  <div
+                                    class="message-process-entry"
+                                    :class="{
+                                      'is-latest':
+                                        entry.id ===
+                                        messageProcessLatestEntryId(item),
+                                    }"
+                                  >
                                     <div class="message-process-entry__head">
                                       <span
                                         class="message-process-entry__title"
@@ -1651,7 +1664,7 @@
             :composer-placeholder="composerPlaceholder"
             :is-composer-disabled="isComposerDisabled"
             :is-chat-settings-display-ready="isChatSettingsDisplayReady"
-            :tool-command-items="composerSlashCommands"
+            :tool-command-items="composerVisibleToolCommands"
             :active-tool-command-id="activeComposerToolCommandId"
             :is-external-agent-mode="isExternalAgentMode"
             :provider-model-groups="providerModelGroups"
@@ -13377,6 +13390,15 @@ const composerSlashCommands = computed(() => {
   return commands.filter((item) => visibleCommandIds.has(item.id));
 });
 
+const composerVisibleToolCommands = computed(() =>
+  composerSlashCommands.value.filter(
+    (item) =>
+      !["assist_employee_create", "package_deploy", "image"].includes(
+        String(item?.id || "").trim(),
+      ),
+  ),
+);
+
 function normalizeSlashCommandToken(value) {
   return String(value || "")
     .trim()
@@ -17489,7 +17511,17 @@ function primaryMessageProcessOperation(row) {
 }
 
 function messageProcessEyebrow(row, idx) {
-  return "执行过程";
+  const phase = messageProcessLifecyclePhase(row, idx);
+  if (phase === "running") return "思考中";
+  if (phase === "waiting_user") return "等待你的决定";
+  if (phase === "completed") return "已完成";
+  if (phase === "failed" || phase === "blocked") return "需要处理";
+  return "智能体活动";
+}
+
+function messageProcessLatestEntryId(row) {
+  const entries = messageProcessDisplayEntries(row);
+  return entries.length ? entries[entries.length - 1].id : "";
 }
 
 function messageProcessStateTone(row, idx) {
@@ -17531,7 +17563,7 @@ function messageProcessTitle(row, idx) {
     return summary || title || detail || "执行出现异常";
   }
   if (phase === "running") {
-    return summary || title || detail || "正在执行中";
+    return summary || title || detail || latestLogText || "正在思考下一步";
   }
   if (phase === "completed") {
     return summary || title || detail || "已完成本轮执行";
@@ -25524,6 +25556,17 @@ function isActionableOperationPrompt(text) {
   );
 }
 
+function isEmployeeCreateRequest(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return false;
+  const agentTarget = "(?:智能体|AI\\s*(?:员工|agent)|agent)";
+  const createAction = "(?:创建|新建|新增|生成|配置|设立)";
+  return new RegExp(
+    `(?:${createAction}.{0,16}${agentTarget}|${agentTarget}.{0,16}${createAction})`,
+    "i",
+  ).test(normalized);
+}
+
 function isLarkOperationPrompt(text) {
   return LARK_OPERATION_RE.test(String(text || "").trim());
 }
@@ -32430,14 +32473,8 @@ async function sendLocalLiuAgentChatRequest({
   });
   if (!resumeFromCheckpoint) {
     appendMessageProcessLog(assistantMessage, {
-      text: [
-        "本轮目标",
-        `  - ${displayUserMessageContent || finalUserPrompt}`,
-        `  - 工作区：${workspacePath}`,
-        "  - 执行方式：桌面端本地智能体",
-      ]
-        .filter(Boolean)
-        .join("\n"),
+      text: `目标：${displayUserMessageContent || finalUserPrompt}`,
+      kind: "goal",
       level: "info",
     });
   }
@@ -32595,8 +32632,9 @@ async function sendLocalLiuAgentChatRequest({
   });
   appendMessageProcessLog(assistantMessage, {
     text: resumeFromCheckpoint
-      ? "继续执行\n  - 已读取本地 checkpoint\n  - 正在从暂停节点继续推理\n  - 已有执行详情保持不变"
-      : "开始执行\n  - 正在创建本地模型请求\n  - 后续会按“理解目标、规划工具、执行工具、整理结果”展示进度",
+      ? "已恢复任务，正在继续思考下一步"
+      : "正在理解你的目标",
+    kind: "thinking",
     level: "info",
     autoExpand: true,
   });
@@ -33691,8 +33729,17 @@ async function doSend(options = {}) {
           (item) => item.id === slashCommand.entry.assistActionId,
         ) || null
       : null;
+  const inferredEmployeeCreateAction =
+    !slashAssistAction &&
+    !activeComposerAssistMeta.value &&
+    isEmployeeCreateRequest(text)
+      ? composerAssistActions.value.find((item) => item.id === "employee_create") ||
+        null
+      : null;
   const effectiveAssistAction =
-    slashAssistAction || activeComposerAssistMeta.value;
+    slashAssistAction ||
+    activeComposerAssistMeta.value ||
+    inferredEmployeeCreateAction;
   let userPrompt = "";
   if (slashCommand?.entry?.kind === "stats_report") {
     try {
@@ -33968,6 +34015,16 @@ async function doSend(options = {}) {
         employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
       },
     });
+    if (effectiveAssistAction?.id === "employee_create") {
+      const opened = await autoCreateEmployeeFromDraftMessage(assistantMessage, {
+        resetAssist: true,
+      });
+      if (!opened) {
+        ElMessage.warning(
+          "未识别到可创建的智能体草稿，请重新生成后再试",
+        );
+      }
+    }
   } catch (err) {
     const errorMessage = String(err?.message || "未知错误").trim();
     showManualCloseErrorDialog(

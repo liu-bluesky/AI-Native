@@ -250,19 +250,11 @@
                 <el-icon><Plus /></el-icon>
               </el-button>
             </el-tooltip>
-            <span
-              class="attachment-hint"
-              :class="{
-                'is-disabled': !attachmentSupported || !selectedProjectId,
-              }"
-            >
-              <el-icon><Document /></el-icon>
-              <span>{{ attachmentHintText }}</span>
-            </span>
+
             <el-button
               v-if="isChatSettingsDisplayReady"
               class="chat-model-routing-trigger"
-              :disabled="chatLoading || !providerModelGroups.length"
+              :disabled="chatLoading"
               @click="modelRoutingDialogVisible = true"
             >
               <el-icon><Setting /></el-icon>
@@ -528,16 +520,6 @@ const localAgentAuthLevelOptions = [
 const localAgentAuthLevelModel = computed({
   get: () => props.localAgentAuthLevel || "ask",
   set: (value) => emit("update:localAgentAuthLevel", value),
-});
-
-const attachmentHintText = computed(() => {
-  if (!props.attachmentSupported) {
-    return `当前模型不支持附件${props.attachmentModeLabel ? `（${props.attachmentModeLabel}）` : ""}`;
-  }
-  if (!props.selectedProjectId) {
-    return "选择项目后可上传";
-  }
-  return "可上传文件";
 });
 
 function emitFileChange(uploadFile, uploadFiles) {

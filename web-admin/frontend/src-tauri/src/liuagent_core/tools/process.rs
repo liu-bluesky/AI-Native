@@ -18,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::liuagent_core::args::{number_arg, required_string_arg};
 use crate::liuagent_core::permission::require_approval;
+use crate::liuagent_core::tools::toolchain::configure_command_environment;
 use crate::liuagent_core::types::{PermissionDecisionInput, ToolError};
 use crate::liuagent_core::workspace::{resolve_workspace_root, workspace_relative_path};
 
@@ -276,6 +277,7 @@ pub fn spawn_background_process(
 ) -> Result<(Value, String), ToolError> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
     let mut command = Command::new(shell);
+    configure_command_environment(&mut command);
     command
         .arg("-lc")
         .arg(command_text)
