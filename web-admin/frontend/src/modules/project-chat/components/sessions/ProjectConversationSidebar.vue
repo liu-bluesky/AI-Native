@@ -77,6 +77,7 @@
           :deleting-session-id="deletingSessionId"
           @select="emit('select-session', { sessionId: $event })"
           @delete="emit('delete-session', { session: $event })"
+          @rename="emit('rename-session', $event)"
         />
         <div v-else class="chat-session-history__empty">
           请在右上方选择项目后查看会话
@@ -129,6 +130,7 @@ const emit = defineEmits([
   "clear-current",
   "select-session",
   "delete-session",
+  "rename-session",
   "logout",
 ]);
 

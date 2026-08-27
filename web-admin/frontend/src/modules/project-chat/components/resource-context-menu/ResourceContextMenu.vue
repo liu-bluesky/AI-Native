@@ -15,6 +15,14 @@
         <span>{{ openLabel }}</span>
       </button>
       <button
+        v-if="canRename"
+        type="button"
+        role="menuitem"
+        @click="$emit('rename')"
+      >
+        <span>{{ renameLabel }}</span>
+      </button>
+      <button
         v-if="canRemove"
         type="button"
         role="menuitem"
@@ -49,6 +57,8 @@ const props = defineProps({
   canAppend: { type: Boolean, default: false },
   canOpen: { type: Boolean, default: false },
   openLabel: { type: String, default: "在新窗口打开" },
+  canRename: { type: Boolean, default: false },
+  renameLabel: { type: String, default: "修改名称" },
   canRemove: { type: Boolean, default: false },
   removeLabel: { type: String, default: "移除" },
   canDownload: { type: Boolean, default: false },
@@ -60,6 +70,7 @@ const props = defineProps({
 defineEmits([
   "append",
   "open",
+  "rename",
   "remove",
   "download",
   "copy-address",
@@ -70,6 +81,7 @@ defineEmits([
 const hasResourceActions = computed(
   () =>
     props.canOpen ||
+    props.canRename ||
     props.canDownload ||
     props.canCopyAddress ||
     props.canCopyFile ||

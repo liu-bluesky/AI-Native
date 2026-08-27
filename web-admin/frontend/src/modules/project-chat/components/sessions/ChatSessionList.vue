@@ -19,6 +19,7 @@
             class="chat-session-chip"
             :class="{ 'is-active': currentSessionId === session.id }"
             @click="$emit('select', session.id)"
+            @contextmenu.prevent.stop="openSessionContextMenu($event, session)"
           >
             <div class="chat-session-chip__row">
               <span class="chat-session-chip__title">
@@ -49,12 +50,23 @@
     <div v-else-if="!loading" class="chat-session-empty">
       暂无历史会话
     </div>
+    <ResourceContextMenu
+      :visible="sessionContextMenu.visible"
+      :x="sessionContextMenu.x"
+      :y="sessionContextMenu.y"
+      can-rename
+      rename-label="修改会话名称"
+      @rename="renameContextMenuSession"
+    />
   </div>
 </template>
 
 <script setup>
+import { onBeforeUnmount, onMounted, reactive } from "vue";
 import { Delete } from "@element-plus/icons-vue";
+import { ElMessageBox } from "element-plus";
 import { formatRelativeDateTime } from "@/utils/date.js";
+import ResourceContextMenu from "@/modules/project-chat/components/resource-context-menu/ResourceContextMenu.vue";
 import {
   formatChatSessionSourceLabel,
 } from "@/modules/project-chat/mappers/messageMappers.js";
@@ -78,7 +90,83 @@ defineProps({
   },
 });
 
-defineEmits(["select", "delete"]);
+const emit = defineEmits(["select", "delete", "rename"]);
+
+const sessionContextMenu = reactive({
+  visible: false,
+  x: 0,
+  y: 0,
+  session: null,
+});
+
+function closeSessionContextMenu() {
+  sessionContextMenu.visible = false;
+  sessionContextMenu.session = null;
+}
+
+function openSessionContextMenu(event, session) {
+  const menuWidth = 220;
+  const menuHeight = 56;
+  sessionContextMenu.x = Math.max(
+    8,
+    Math.min(Number(event?.clientX || 0), window.innerWidth - menuWidth - 8),
+  );
+  sessionContextMenu.y = Math.max(
+    8,
+    Math.min(Number(event?.clientY || 0), window.innerHeight - menuHeight - 8),
+  );
+  sessionContextMenu.session = session;
+  sessionContextMenu.visible = true;
+}
+
+async function renameContextMenuSession() {
+  const session = sessionContextMenu.session;
+  closeSessionContextMenu();
+  if (!session?.id) return;
+  try {
+    const { value } = await ElMessageBox.prompt(
+      "请输入新的会话名称",
+      "修改会话名称",
+      {
+        inputValue: sessionDisplayTitle(session),
+        inputPlaceholder: "会话名称",
+        inputValidator: (input) => {
+          const title = String(input || "").trim();
+          if (!title) return "会话名称不能为空";
+          if (title.length > 80) return "会话名称不能超过 80 个字符";
+          return true;
+        },
+        confirmButtonText: "保存",
+        cancelButtonText: "取消",
+      },
+    );
+    emit("rename", { session, title: String(value || "").trim() });
+  } catch (_error) {
+    // 用户取消修改时无需提示。
+  }
+}
+
+function handleGlobalPointerDown(event) {
+  if (!sessionContextMenu.visible) return;
+  if (event?.target?.closest?.(".resource-context-menu")) return;
+  closeSessionContextMenu();
+}
+
+function handleGlobalKeydown(event) {
+  if (event?.key === "Escape") closeSessionContextMenu();
+}
+
+onMounted(() => {
+  window.addEventListener("pointerdown", handleGlobalPointerDown);
+  window.addEventListener("keydown", handleGlobalKeydown);
+  window.addEventListener("scroll", closeSessionContextMenu, true);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("pointerdown", handleGlobalPointerDown);
+  window.removeEventListener("keydown", handleGlobalKeydown);
+  window.removeEventListener("scroll", closeSessionContextMenu, true);
+});
 
 function formatChatSessionMeta(session) {
   const count = Number(session?.message_count || 0);
@@ -93,6 +181,8 @@ function formatChatSessionMeta(session) {
 }
 
 function sessionDisplayTitle(session) {
+  const explicitTitle = String(session?.title || "").trim();
+  if (explicitTitle && explicitTitle !== "新对话") return explicitTitle;
   return (
     String(
       session?.latest_requirement ||
@@ -100,7 +190,7 @@ function sessionDisplayTitle(session) {
         session?.rootGoal ||
         session?.preview ||
         session?.last_message ||
-        session?.title ||
+        explicitTitle ||
         "",
     ).trim() || "新对话"
   );

@@ -9,7 +9,7 @@ const DESKTOP_DOCK_ORDER_STORAGE_KEY = "desktop_dock_order";
 const DESKTOP_SHORTCUT_APP_IDS_STORAGE_KEY = "desktop_shortcut_app_ids";
 const DESKTOP_SHORTCUT_DEFAULTS_VERSION_STORAGE_KEY = "desktop_shortcut_defaults_version";
 const DESKTOP_SHORTCUT_LAYOUT_STORAGE_KEY = "desktop_shortcut_layout";
-const DESKTOP_SHORTCUT_DEFAULTS_VERSION = 2;
+const DESKTOP_SHORTCUT_DEFAULTS_VERSION = 3;
 const DESKTOP_REQUIRED_DOCK_APP_IDS = ["chat", "tasks", "workbench", "settings-providers"];
 const REMOVED_DESKTOP_APP_IDS = new Set([
   "work-logs",
@@ -592,7 +592,20 @@ export const DESKTOP_SETTINGS_ITEMS = DESKTOP_APP_ITEMS.filter(
     item.id !== "settings-home" &&
     !REMOVED_DESKTOP_APP_IDS.has(item.id),
 );
-const DESKTOP_DEFAULT_SHORTCUT_APP_IDS = DESKTOP_LAUNCHER_ITEMS.map((item) => item.id);
+export const DESKTOP_DEFAULT_SHORTCUT_APP_IDS = [
+  "chat",
+  "settings-home",
+  "agent-supervision",
+  "settings-bot-connectors",
+  "workbench",
+  "settings-ftp-credentials",
+  "desktop-task-manager",
+  "settings-providers",
+  "tasks",
+  "feedback",
+  "projects",
+  "settings-system",
+];
 const DESKTOP_OPTIONAL_DOCK_APP_IDS = DESKTOP_APP_ITEMS
   .filter((item) => !REMOVED_DESKTOP_APP_IDS.has(item.id))
   .map((item) => item.id)
@@ -726,7 +739,7 @@ export function getStoredDesktopShortcutAppIds() {
     if (storedVersion >= DESKTOP_SHORTCUT_DEFAULTS_VERSION) return normalized;
     const migrated = normalizeStoredDesktopShortcutAppIds([
       ...normalized,
-      "feedback",
+      ...DESKTOP_DEFAULT_SHORTCUT_APP_IDS,
     ]);
     window.localStorage.setItem(
       DESKTOP_SHORTCUT_APP_IDS_STORAGE_KEY,

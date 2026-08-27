@@ -33,6 +33,7 @@
           @clear-current="clearMessages"
           @select-session="selectChatSession"
           @delete-session="deleteChatSession"
+          @rename-session="renameChatSession"
           @logout="logoutFromChat"
         />
 
@@ -30639,6 +30640,16 @@ async function updateChatSession(chatSessionId, options = {}) {
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "更新会话失败");
     return null;
+  }
+}
+
+async function renameChatSession(payload = {}) {
+  const session = payload?.session;
+  const title = String(payload?.title || "").trim();
+  if (!session?.id || !title) return;
+  const updated = await updateChatSession(session.id, { title });
+  if (updated) {
+    ElMessage.success("会话名称已修改");
   }
 }
 
