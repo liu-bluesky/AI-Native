@@ -5200,6 +5200,11 @@ fn run_agent_loop_with_answered_user_question(
 ) -> AgentLoopResult {
     let mut hydrated_request = base_request.clone();
     hydrate_mcp_tool_snapshot(&mut hydrated_request);
+    if answered_user_question.is_some() {
+        if let Some(config) = hydrated_request.mcp_config.as_object_mut() {
+            config.insert("_answered_user_question".to_string(), json!(true));
+        }
+    }
     let base_request = &hydrated_request;
     let mut messages = base_request.messages.clone();
     let mut model_steps = Vec::new();
@@ -10884,11 +10889,20 @@ fn tool_definitions_for_request(request: &ModelStepRequest) -> Vec<super::types:
         .filter(|definition| {
             tool_available_for_request(definition, request)
                 && !(definition.name == "ask_user_question"
-                    && is_non_task_conversation(&request.user_message))
+                    && (is_non_task_conversation(&request.user_message)
+                        || request_has_answered_user_question(request)))
                 && (!is_employee_creation_mode(request)
                     || employee_creation_tool_allowed(definition.name))
         })
         .collect()
+}
+
+fn request_has_answered_user_question(request: &ModelStepRequest) -> bool {
+    request
+        .mcp_config
+        .get("_answered_user_question")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn is_non_task_conversation(user_message: &str) -> bool {
@@ -14117,6 +14131,18 @@ mod tests {
         assert!(is_non_task_conversation(" hello "));
         assert!(is_non_task_conversation("你能做什么？"));
         assert!(!is_non_task_conversation("你好，请帮我创建一个智能体"));
+    }
+
+    #[test]
+    fn answered_user_question_omits_user_question_pause_tool() {
+        let mut request = test_model_request("创建一个 AI Employee");
+        request.mcp_config = json!({ "_answered_user_question": true });
+        let tool_names = tool_definitions_for_request(&request)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<HashSet<_>>();
+
+        assert!(!tool_names.contains("ask_user_question"));
     }
 
     #[test]

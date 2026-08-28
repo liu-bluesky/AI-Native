@@ -57,14 +57,14 @@ assert.doesNotMatch(
 
 assert.match(
   source,
-  /当信息不足、存在多个合理方向或缺少用户才能决定的内容时，必须选择 question，并在可见正文中提出最多 3 个具体问题/,
-  "创建智能体提示必须要求模型在信息不足时可见追问",
+  /用户已给出名称，且至少给出一项技术\/能力和一项预期交付物时，信息已足够：直接生成完整草稿，不得再次补充提问/,
+  "创建智能体已有名称、能力和交付物时必须直接生成草稿",
 );
 
 assert.match(
   source,
-  /当运行时提供 ask_user_question 工具且缺少只能由用户决定的信息时，必须优先调用 ask_user_question/,
-  "创建智能体缺少用户决策信息时必须优先使用可恢复提问工具",
+  /仅当名称、能力方向、预期交付物这三类信息全部缺失，或缺少会导致草稿无法成立的唯一关键决策时，才可调用 ask_user_question/,
+  "创建智能体只能为唯一关键决策请求补充信息",
 );
 assert.match(
   source,
@@ -112,6 +112,16 @@ assert.match(
   /用户刚刚提交了以下最终补充信息[\s\S]*不得再次询问相同问题/,
   "恢复提示必须明确禁止重复询问已经回答的问题",
 );
+assert.match(
+  source,
+  /收到 ask_user_question 的工具结果后，selected 和 custom 都是最终答案：不得再次调用 ask_user_question，也不得以自然语言要求继续补充，必须直接生成草稿/,
+  "创建流程收到补充答案后必须直接生成草稿",
+);
+assert.match(
+  runtimeSource,
+  /answered_user_question\.is_some\(\)[\s\S]*_answered_user_question[\s\S]*request_has_answered_user_question\(request\)/s,
+  "补充答案续跑时 Runtime 不得再次暴露 ask_user_question 工具",
+);
 
 assert.ok(
   source.includes("function formatLocalLiuAgentUserQuestionAnswerMessage(") &&
@@ -158,8 +168,8 @@ assert.match(
 
 assert.match(
   source,
-  /每个问题必须显式设置 multi_select[\s\S]*可以组合选择的内容设为 true/s,
-  "提问提示必须明确区分单选和多选语义",
+  /只有缺少会导致草稿无法成立的唯一关键决策时才调用 ask_user_question[\s\S]*不得再次调用 ask_user_question/s,
+  "创建流程必须限制追问到唯一关键决策，并在回答后禁止再次提问",
 );
 
 assert.ok(
@@ -217,6 +227,31 @@ assert.match(
   source,
   /创建草稿至少提供 1 个技能候选和 1 个规则候选/s,
   "创建草稿必须产出可选择的技能和规则候选",
+);
+assert.match(
+  source,
+  /读取到 0 个本地技能或规则是正常结果[\s\S]*生成新的技能与规则候选及完整草稿/s,
+  "空资源目录不能阻止创建模式直接生成技能、规则和草稿",
+);
+assert.match(
+  source,
+  /创建模式还必须追加一个 ```employee-intent``` 代码块/s,
+  "创建草稿必须明确返回可被宿主消费的 create intent",
+);
+assert.match(
+  source,
+  /function createEmployeeCreationProtocolRecoveryQuestion[\s\S]*employee_creation_protocol_recovery[\s\S]*智能体主要职责/s,
+  "创建模式普通文本补充信息必须转为可提交的问题卡片",
+);
+assert.match(
+  source,
+  /restartAfterProtocolRecovery[\s\S]*resumeFromCheckpoint: !restartAfterProtocolRecovery/s,
+  "协议恢复问题提交后必须启动新创建回合而非恢复不存在的工具 checkpoint",
+);
+assert.match(
+  source,
+  /parsedIntent \|\|[\s\S]*assistActionId === "employee_create"[\s\S]*\? "create"/s,
+  "创建模式只有草稿时也必须自动进入确认流程",
 );
 assert.match(
   source,
@@ -338,13 +373,28 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
-  /const assistAction = effectiveAssistAction;[\s\S]*if \(assistAction\?\.id === "employee_create"\)[\s\S]*activeComposerAssist\.value = ""/s,
-  "创建智能体辅助模式必须在发送后立即消费",
+  /function clearEmployeeCreationComposerAssist\(\) \{[\s\S]*activeComposerAssist\.value = ""[\s\S]*activeComposerToolCommandId\.value = ""[\s\S]*rememberCurrentChatSessionComposerState\(\);/s,
+  "创建智能体辅助状态只能在创建成功后显式清理并同步会话缓存",
 );
 assert.match(
+  source,
+  /if \(!updated\) \{[\s\S]*clearLocalLiuAgentUserQuestionsForChatSession\(currentChatSessionId\.value\);[\s\S]*clearEmployeeCreationComposerAssist\(\);/s,
+  "创建成功后必须清理创建智能体辅助状态",
+);
+assert.doesNotMatch(
+  source,
+  /const assistAction = effectiveAssistAction;[\s\S]*if \(assistAction\?\.id === "employee_create"\)[\s\S]*activeComposerAssist\.value = ""/s,
+  "普通发送不得提前清理创建智能体辅助状态",
+);
+assert.doesNotMatch(
   composerStateSource,
-  /activeAssist === "employee_create" \? "" : activeAssist[\s\S]*activeToolCommandId === "assist_employee_create"/s,
-  "恢复会话时不得保留创建智能体辅助模式",
+  /activeAssist === "employee_create" \? "" : activeAssist|activeToolCommandId === "assist_employee_create"/s,
+  "会话缓存不得在普通发送后丢弃创建智能体辅助状态",
+);
+assert.match(
+  source,
+  /async function handleCreateNewConversation\(\) \{[\s\S]*activeComposerAssist\.value = "";[\s\S]*activeComposerToolCommandId\.value = "";/s,
+  "新建会话必须清理工具栏的创建智能体辅助状态",
 );
 assert.match(
   source,

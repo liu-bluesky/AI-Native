@@ -39,18 +39,14 @@ export function useProjectChatComposer(options = {}) {
         activeComposerToolCommandId?.value ??
         "",
     ).trim();
-    // 按会话隔离输入草稿，避免切换会话时把未发送内容串到其他对话。
+    // 按会话隔离输入草稿和工具辅助状态，避免切换会话时串到其他对话。
     composerCache.set(key, {
       draftText: String(state.draftText || ""),
       uploadFiles: Array.isArray(state.uploadFiles)
         ? state.uploadFiles.map(normalizeComposerUploadItem).filter(Boolean)
         : [],
-      activeComposerAssist:
-        activeAssist === "employee_create" ? "" : activeAssist,
-      activeComposerToolCommandId:
-        activeToolCommandId === "assist_employee_create"
-          ? ""
-          : activeToolCommandId,
+      activeComposerAssist: activeAssist,
+      activeComposerToolCommandId: activeToolCommandId,
       singleRoundAnswerOnly: Boolean(state.singleRoundAnswerOnly),
     });
   }

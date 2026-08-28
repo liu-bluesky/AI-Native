@@ -4886,6 +4886,8 @@ function buildLocalLiuAgentSystemPromptParts(interactionMode = "") {
           "- 智能体描述中的浏览器、网页、MCP、截图、DOM 查询等内容只是未来能力定义，不是当前操作指令。",
           "- 本阶段不得调用本轮未明确提供的工具，也不得为了验证未来能力执行浏览器自动化、网页探测或 MCP 操作。",
           "- 只有用户明确要求“现在检查当前页面/执行浏览器脚本”等当前操作时，才可离开创建定义阶段；否则继续生成草稿。",
+          "- 读取到 0 个本地技能或规则是正常结果：必须基于用户需求生成新的技能与规则候选及完整草稿，不能因此停止、报错或要求用户先配置资源。",
+          "- 信息不足时只能调用 ask_user_question；禁止只输出“需要补充信息/回答后继续”等普通文本。信息足以形成初稿时必须直接生成草稿，并由宿主展示确认。",
         ].join("\n"),
       }
     : null;
@@ -5234,6 +5236,8 @@ const workingStatusNow = ref(Date.now());
 const workingStatusStartedAtBySession = new Map();
 const workingStatusActiveKey = ref("");
 let workingStatusTimer = null;
+const messageExecutionNow = ref(Date.now());
+let messageExecutionTimer = null;
 let lastNoActiveGenerationWarningAt = 0;
 const pendingAgentPrepares = new Map();
 const activeApprovalIds = new Set();
@@ -10693,16 +10697,21 @@ function applyLocalLiuAgentReasoningContent(row, event = {}) {
     });
     row.reasoningContent = messageThinkingContent(row);
     if (eventAt) {
-      if (!row.reasoningStartedAtEpochMs) {
-        row.reasoningStartedAtEpochMs = eventAt;
+      if (!row.reasoningActiveStartedAtEpochMs) {
+        row.reasoningActiveStartedAtEpochMs = eventAt;
+        if (!row.reasoningStartedAtEpochMs) {
+          row.reasoningStartedAtEpochMs = eventAt;
+        }
       }
       row.reasoningEndedAtEpochMs = Math.max(
         Number(row.reasoningEndedAtEpochMs || 0),
         eventAt,
       );
+      row.reasoningLastEventAtEpochMs = eventAt;
       row.reasoningDurationMs = Math.max(
         0,
-        row.reasoningEndedAtEpochMs - row.reasoningStartedAtEpochMs,
+        Number(row.reasoningCompletedDurationMs || 0) +
+          eventAt - Number(row.reasoningActiveStartedAtEpochMs || eventAt),
       );
     }
     return true;
@@ -10728,6 +10737,24 @@ function applyLocalLiuAgentReasoningContent(row, event = {}) {
   });
   row.reasoningContent = reasoningContent;
   return true;
+}
+
+function pauseLocalLiuAgentReasoningTiming(row) {
+  if (!row) return;
+  const activeStartedAt = normalizeLocalLiuAgentRuntimeEpochMs(
+    row.reasoningActiveStartedAtEpochMs,
+  );
+  const lastEventAt = normalizeLocalLiuAgentRuntimeEpochMs(
+    row.reasoningLastEventAtEpochMs,
+  );
+  if (!activeStartedAt || !lastEventAt || lastEventAt < activeStartedAt) return;
+  row.reasoningCompletedDurationMs = Math.max(
+    Number(row.reasoningCompletedDurationMs || 0),
+    Number(row.reasoningDurationMs || 0),
+  );
+  row.reasoningDurationMs = row.reasoningCompletedDurationMs;
+  row.reasoningActiveStartedAtEpochMs = 0;
+  row.reasoningLastEventAtEpochMs = 0;
 }
 
 function modelStepFailureMessageFromEvent(event = {}) {
@@ -10980,14 +11007,18 @@ function updateLocalLiuAgentRuntimeTimingFromResult(
 }
 
 function messageAgentRuntimeDurationLabel(row = {}) {
+  const startedAt = normalizeLocalLiuAgentRuntimeEpochMs(
+    row?.messageExecutionStartedAtEpochMs || row?.agentRuntimeStartedAtEpochMs,
+  );
+  if (startedAt && isMessageExecutionActive(row)) {
+    const elapsedMs = Math.max(0, messageExecutionNow.value - startedAt);
+    return `耗时 ${formatDurationMs(elapsedMs)}`;
+  }
   const durationMs =
     Number(
       row?.messageExecutionDurationMs || row?.agentRuntimeDurationMs || 0,
     ) || 0;
   if (durationMs > 0) return `耗时 ${formatDurationMs(durationMs)}`;
-  const startedAt = normalizeLocalLiuAgentRuntimeEpochMs(
-    row?.messageExecutionStartedAtEpochMs || row?.agentRuntimeStartedAtEpochMs,
-  );
   if (
     !startedAt ||
     row?.messageExecutionEndedAtEpochMs ||
@@ -10995,8 +11026,8 @@ function messageAgentRuntimeDurationLabel(row = {}) {
   ) {
     return "";
   }
-  const elapsedMs = Date.now() - startedAt;
-  return elapsedMs > 0 ? `已运行 ${formatDurationMs(elapsedMs)}` : "";
+  const elapsedMs = Math.max(0, messageExecutionNow.value - startedAt);
+  return elapsedMs > 0 ? `耗时 ${formatDurationMs(elapsedMs)}` : "";
 }
 
 function messageThinkingDurationLabel(row = {}) {
@@ -11441,6 +11472,47 @@ function deleteLocalLiuAgentActiveRun(chatSessionId = "", expectedRun = null) {
 const currentChatSessionLocalLiuAgentRunning = computed(() =>
   Boolean(localLiuAgentActiveRunForChatSession(currentChatSessionId.value)),
 );
+
+function isMessageExecutionActive(row = {}) {
+  if (String(row?.role || "").trim() !== "assistant") return false;
+  const messageId = String(row?.id || "").trim();
+  if (!messageId) return false;
+  localLiuAgentActiveRunVersion.value;
+  const hasActiveLocalRun = Array.from(localLiuAgentActiveRuns.values()).some(
+    (run) => String(run?.assistantMessageId || "").trim() === messageId,
+  );
+  if (hasActiveLocalRun) return true;
+  const lastMessage = messages.value[messages.value.length - 1];
+  return Boolean(
+    chatLoading.value === true &&
+      String(lastMessage?.id || "").trim() === messageId,
+  );
+}
+
+function syncMessageExecutionTimer() {
+  const hasActiveExecution = messages.value.some((row) =>
+    isMessageExecutionActive(row),
+  );
+  if (hasActiveExecution) {
+    messageExecutionNow.value = Date.now();
+    if (messageExecutionTimer !== null) return;
+    messageExecutionTimer = window.setInterval(() => {
+      messageExecutionNow.value = Date.now();
+    }, 1000);
+    return;
+  }
+  if (messageExecutionTimer !== null) {
+    window.clearInterval(messageExecutionTimer);
+    messageExecutionTimer = null;
+  }
+}
+
+function stopMessageExecutionTimer() {
+  if (messageExecutionTimer !== null) {
+    window.clearInterval(messageExecutionTimer);
+    messageExecutionTimer = null;
+  }
+}
 
 function localLiuAgentActiveRunRows(run) {
   if (Array.isArray(run?.rows)) return run.rows;
@@ -19879,6 +19951,62 @@ const currentChatSessionLocalLiuAgentWaitingUserQuestion = computed(
   () => currentLocalLiuAgentPendingUserQuestions.value.length > 0,
 );
 
+function createEmployeeCreationProtocolRecoveryQuestion({
+  assistantMessage,
+  userMessage,
+  activeChatSessionId,
+  localChatPayload,
+  displayUserMessageContent = "",
+  finalUserPrompt = "",
+  sourceContext = {},
+  localTaskId = "",
+} = {}) {
+  const messageId = String(assistantMessage?.id || "").trim();
+  const chatSessionId = String(activeChatSessionId || "").trim();
+  if (!messageId || !chatSessionId) return false;
+  const requestId = `employee-create-protocol:${messageId}`;
+  if (localLiuAgentPendingUserQuestions.has(requestId)) return true;
+  setLocalLiuAgentPendingUserQuestion(requestId, {
+    kind: "employee_creation_protocol_recovery",
+    localChatPayload,
+    userQuestionRequest: {
+      requestId,
+      questions: [
+        {
+          id: "employee_primary_responsibility",
+          header: "智能体主要职责",
+          question: "请用一句话说明这个智能体最重要的工作内容和期望交付结果。",
+          options: [],
+          multi_select: false,
+        },
+      ],
+    },
+    assistantMessageId: messageId,
+    userMessageId: String(userMessage?.id || "").trim(),
+    activeChatSessionId: chatSessionId,
+    displayUserMessageContent,
+    finalUserPrompt,
+    sourceContext,
+  });
+  assistantMessage.employeeDraftAwaitingInput = true;
+  assistantMessage.content =
+    String(assistantMessage.content || "").trim() ||
+    "请补充智能体的主要职责，提交后我会继续生成可确认的智能体草稿。";
+  appendMessageProcessLog(assistantMessage, {
+    text: "创建智能体缺少结构化草稿，已转为可提交的职责补充问题",
+    level: "warning",
+  });
+  if (localTaskId) {
+    updateLocalAiTask(localTaskId, {
+      status: "waiting_user",
+      currentStep: "等待补充智能体主要职责",
+      lastOutput: "回答后将重新生成可确认的智能体草稿。",
+      recoverable: true,
+    });
+  }
+  return true;
+}
+
 const currentLocalLiuAgentUserQuestionPrompt = computed(() => {
   const pending = currentLocalLiuAgentPendingUserQuestion.value;
   if (!pending) return null;
@@ -23342,6 +23470,8 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
     });
   }
   const localChatPayload = pending.localChatPayload || {};
+  const restartAfterProtocolRecovery =
+    String(pending.kind || "").trim() === "employee_creation_protocol_recovery";
   const row = localLiuAgentPendingPermissionRow(pending);
   if (!row) {
     ElMessage.warning("问题对应的回答消息已不存在，请重新发送需求");
@@ -23390,6 +23520,7 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
       sourceContext: {
         ...(pending.sourceContext || {}),
         resumed_from_user_question: true,
+        employee_creation_protocol_recovery: restartAfterProtocolRecovery,
         user_question_answer_message_id: userMessage.id,
         user_question_answer: answerMessageContent,
       },
@@ -23400,16 +23531,18 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
         ? localChatPayload.mediaTools
         : [],
       persistUserMessage: true,
-      resumeFromCheckpoint: true,
-      userQuestionAnswer: {
-        requestId,
-        toolCallId: String(
-          pending.userQuestionRequest?.toolCallId ||
-            pending.userQuestionRequest?.tool_call_id ||
-            "",
-        ).trim(),
-        answers,
-      },
+      resumeFromCheckpoint: !restartAfterProtocolRecovery,
+      userQuestionAnswer: restartAfterProtocolRecovery
+        ? null
+        : {
+            requestId,
+            toolCallId: String(
+              pending.userQuestionRequest?.toolCallId ||
+                pending.userQuestionRequest?.tool_call_id ||
+                "",
+            ).trim(),
+            answers,
+          },
       workspacePath: String(localChatPayload.workspacePath || "").trim(),
       providerId: String(localChatPayload.providerId || "").trim(),
       modelName: String(localChatPayload.modelName || "").trim(),
@@ -26795,6 +26928,16 @@ function toggleComposerToolCommand(item) {
   }
 }
 
+function clearEmployeeCreationComposerAssist() {
+  if (activeComposerAssist.value === "employee_create") {
+    activeComposerAssist.value = "";
+  }
+  if (activeComposerToolCommandId.value === "assist_employee_create") {
+    activeComposerToolCommandId.value = "";
+  }
+  rememberCurrentChatSessionComposerState();
+}
+
 async function fetchProjectStatsAiReport(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) {
@@ -27367,11 +27510,15 @@ function buildEmployeeDraftAssistContext() {
     "- 用户提到 HTML/CSS/JavaScript 等内容时，将其作为智能体的技术栈、技能和职责范围；不要输出 type=frontend-html、implementation.files 或 requested_features 页面 schema。",
     "- 先用 3 到 6 行说明你推荐这个智能体的定位。",
     "- 最后必须追加一个 ```employee-draft``` 代码块，内容是严格 JSON，不要写注释。",
+    "- 创建模式还必须追加一个 ```employee-intent``` 代码块，内容固定为 {\"intent\":\"create\"}。",
     "- JSON 必须包含：name、description、goal、skills、skill_drafts、rule_ids、rule_drafts、style_hints、default_workflow、tool_usage_policy、memory_scope、memory_retention_days。",
     "- 创建草稿至少提供 1 个技能候选和 1 个规则候选，供用户在确认弹窗中多选；不得只给名称或领域而不提供可写入内容。",
     "- 每个新技能必须同时出现在 skills 和 skill_drafts 中；skill_drafts 的每项必须有 id、name、content，content 是独立、可执行的 Markdown。已有本地技能可只使用其 ID。",
     "- 每个新规则必须写入 rule_drafts；每项必须有 title、domain、content。已有本地规则使用 rule_ids。",
     "- 用户未勾选的候选不会创建或绑定，因此不要生成与用户目标无关的技能和规则。",
+    "- 没有本地技能或规则时，必须生成新的 skill_drafts 和 rule_drafts；这不是向用户追问的理由。",
+    "- 用户已给出名称，且至少给出一项技术/能力和一项预期交付物时，信息已足够：直接生成完整草稿，不得再次补充提问。",
+    "- 仅当名称、能力方向、预期交付物这三类信息全部缺失，或缺少会导致草稿无法成立的唯一关键决策时，才可调用 ask_user_question；非关键细节一律采用合理默认值。",
   ]
     .filter(Boolean)
     .join("\n");
@@ -28232,7 +28379,13 @@ async function handleEmployeeIntentAfterAssistantResponse(
   item,
   { assistActionId = "" } = {},
 ) {
-  const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
+  const parsedIntent = extractEmployeeIntentPayload(item?.content || "")?.intent;
+  const intent =
+    parsedIntent ||
+    (assistActionId === "employee_create" &&
+    extractEmployeeDraftPayload(item?.content || "")
+      ? "create"
+      : "");
   switch (intent) {
     case "create": {
       const opened = await autoCreateEmployeeFromDraftMessage(item, {
@@ -28343,6 +28496,7 @@ async function confirmEmployeeDraftCreation(options = {}) {
     item.content = `${visibleContent}\n\n${updated ? "已更新智能体" : "已创建智能体"}：${item.employeeDraftCreatedName}`.trim();
     if (!updated) {
       clearLocalLiuAgentUserQuestionsForChatSession(currentChatSessionId.value);
+      clearEmployeeCreationComposerAssist();
     }
     employeeDraftDialogVisible.value = false;
     resetEmployeeDraftDialogState();
@@ -34987,6 +35141,7 @@ async function sendLocalLiuAgentChatRequest({
     localLiuAgentUserQuestionRequestFromChatResult(result);
   if (localUserQuestionRequest) {
     assistantMessage.employeeDraftAwaitingInput = true;
+    pauseLocalLiuAgentReasoningTiming(assistantMessage);
     updateLocalAiTask(activeRun.localTaskId, {
       status: "waiting_user",
       currentStep: "等待用户补充信息",
@@ -35185,6 +35340,27 @@ async function sendLocalLiuAgentChatRequest({
   if (!assistantMessage.content && !ok && !shouldAutoResume) {
     assistantMessage.content = `执行失败：${String(result?.error || "桌面端本地对话失败").trim()}`;
   }
+  const employeeIntent = extractEmployeeIntentPayload(
+    assistantMessage.content || "",
+  )?.intent;
+  const hasConfirmableEmployeeDraft = Boolean(
+    extractEmployeeDraftPayload(assistantMessage.content || ""),
+  );
+  const employeeCreationProtocolRecovery =
+    ok &&
+    !shouldAutoResume &&
+    String(interactionMode || "").trim() === "employee_create" &&
+    !hasConfirmableEmployeeDraft &&
+    createEmployeeCreationProtocolRecoveryQuestion({
+      assistantMessage,
+      userMessage,
+      activeChatSessionId,
+      localChatPayload,
+      displayUserMessageContent,
+      finalUserPrompt,
+      sourceContext,
+      localTaskId: activeRun.localTaskId,
+    });
   if (!ok && !shouldAutoResume) {
     const runtimeError = String(
       result?.error ||
@@ -35222,17 +35398,26 @@ async function sendLocalLiuAgentChatRequest({
     operationId: `local-agent:${assistantMessage.id}`,
     kind: "request",
     title: "桌面本地 Agent Runtime",
-    summary: ok
+    summary: employeeCreationProtocolRecovery
+      ? "等待补充智能体主要职责"
+      : ok
       ? "本地会话完成"
       : shouldAutoResume
         ? `连接暂时中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动继续`
         : "本地会话失败",
     detail: String(result?.error || "").trim(),
-    phase: ok ? "completed" : shouldAutoResume ? "running" : "failed",
+    phase: employeeCreationProtocolRecovery
+      ? "waiting_user"
+      : ok
+        ? "completed"
+        : shouldAutoResume
+          ? "running"
+          : "failed",
     actionType: "none",
     meta: {
       local_liuagent_operation: "true",
-      local_liuagent_recoverable: ok ? "false" : "true",
+      local_liuagent_recoverable:
+        employeeCreationProtocolRecovery || !ok ? "true" : "false",
       local_liuagent_resuming: "false",
       local_liuagent_auto_resume_retry_number: String(autoResumeRetryNumber),
       local_liuagent_auto_resume_pending: shouldAutoResume ? "true" : "false",
@@ -35270,15 +35455,23 @@ async function sendLocalLiuAgentChatRequest({
     });
   }
   appendMessageProcessLog(assistantMessage, {
-    text: ok
+    text: employeeCreationProtocolRecovery
+      ? "创建智能体未返回可确认草稿，正在等待补充主要职责后重新生成"
+      : ok
       ? "主模型对话已完成（桌面端编排），执行记录已写入 workspace"
       : shouldAutoResume
         ? `模型步骤中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动从 checkpoint 继续（第 ${nextAutoResumeRetryNumber}/${LOCAL_LIUAGENT_AUTO_RESUME_MAX_RETRIES} 次）`
         : "主模型对话执行失败",
-    level: ok ? "success" : shouldAutoResume ? "warning" : "error",
-    autoExpand: !ok,
+    level: employeeCreationProtocolRecovery
+      ? "warning"
+      : ok
+        ? "success"
+        : shouldAutoResume
+          ? "warning"
+          : "error",
+    autoExpand: employeeCreationProtocolRecovery || !ok,
   });
-  if (!shouldAutoResume) {
+  if (!shouldAutoResume && !employeeCreationProtocolRecovery) {
     collapseMessageProcessAfterFinalAnswer(assistantMessage);
   }
   if (shouldAutoResume) {
@@ -35296,16 +35489,24 @@ async function sendLocalLiuAgentChatRequest({
     });
   }
   updateLocalAiTask(activeRun.localTaskId, {
-    status: ok ? "done" : shouldAutoResume ? "reconnecting" : "failed",
-    currentStep: ok
-      ? "任务已完成"
+    status: employeeCreationProtocolRecovery
+      ? "waiting_user"
+      : ok
+        ? "done"
+        : shouldAutoResume
+          ? "reconnecting"
+          : "failed",
+    currentStep: employeeCreationProtocolRecovery
+      ? "等待补充智能体主要职责"
+      : ok
+        ? "任务已完成"
       : shouldAutoResume
         ? "连接暂时中断，正在等待自动继续"
         : "本地 Runtime 执行失败",
     lastOutput: String(
       assistantMessage.content || result?.error || result?.summary || "",
     ).trim(),
-    recoverable: !ok,
+    recoverable: employeeCreationProtocolRecovery || !ok,
   });
   persistLocalLiuAgentActiveRunMessages(activeRun);
   deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
@@ -35324,12 +35525,20 @@ async function sendLocalLiuAgentChatRequest({
       });
       await upsertProjectChatRequirementRecord({
         chatSessionId: activeChatSessionId,
-        status: ok ? "done" : shouldAutoResume ? "in_progress" : "blocked",
+        status: employeeCreationProtocolRecovery
+          ? "waiting_user"
+          : ok
+            ? "done"
+            : shouldAutoResume
+              ? "in_progress"
+              : "blocked",
         rootGoal: displayUserMessageContent || finalUserPrompt,
         messageId: userMessage.id,
         assistantMessageId: assistantMessage.id,
         resultSummary: assistantMessage.content,
-        verificationResult: ok
+        verificationResult: employeeCreationProtocolRecovery
+          ? "模型未返回创建协议，宿主已要求补充智能体主要职责后重新生成草稿。"
+          : ok
           ? "桌面端 Tauri 本地 runtime 已返回 assistant 内容，并写入 workspace requirement 记录。"
           : shouldAutoResume
             ? `模型或网络连接暂时中断，计划进行第 ${nextAutoResumeRetryNumber} 次 checkpoint 自动续跑。`
@@ -35352,7 +35561,13 @@ async function sendLocalLiuAgentChatRequest({
         projectId,
         chatSessionId: activeChatSessionId,
         workspacePath,
-        status: ok ? "done" : shouldAutoResume ? "in_progress" : "blocked",
+        status: employeeCreationProtocolRecovery
+          ? "waiting_user"
+          : ok
+            ? "done"
+            : shouldAutoResume
+              ? "in_progress"
+              : "blocked",
         userMessage,
         assistantMessage,
         historyRows,
@@ -36057,12 +36272,6 @@ async function doSend(options = {}) {
       .join("\n\n");
   }
   const assistAction = effectiveAssistAction;
-  if (assistAction?.id === "employee_create") {
-    activeComposerAssist.value = "";
-    if (activeComposerToolCommandId.value === "assist_employee_create") {
-      activeComposerToolCommandId.value = "";
-    }
-  }
   const assistToolNames = normalizeStringList(
     assistAction?.toolNames || [],
     20,
@@ -36102,21 +36311,20 @@ async function doSend(options = {}) {
         .filter(Boolean)
         .join("\n")
     : userPrompt;
+  const employeeCreationInstructions =
+    assistAction?.id === "employee_create"
+      ? [
+          "当前是 AI Employee 创建流程：当用户已给出名称、至少一项技术/能力和至少一项预期交付物时，信息已经足够，必须直接输出完整 employee-draft 草稿。",
+          "只有缺少会导致草稿无法成立的唯一关键决策时才调用 ask_user_question；技术栈、能力范围、交付物、风格等非关键细节可使用合理默认值。",
+          "收到 ask_user_question 的工具结果后，selected 和 custom 都是最终答案：不得再次调用 ask_user_question，也不得以自然语言要求继续补充，必须直接生成草稿。",
+        ]
+      : [];
   const finalUserPrompt = appendModelGenerationInstruction(
     [
       effectiveUserPrompt,
       employeeEditContext,
       "",
-      "请根据用户真实意图选择 question、draft、create 或 update；create 用于新建 AI Employee，update 用于修改当前会话选中的单个 AI Employee。",
-      "当运行时提供 ask_user_question 工具且缺少只能由用户决定的信息时，必须优先调用 ask_user_question 暂停并等待回答；收到工具结果后继续原任务。只有工具不可用时才回退为可见正文提问和 question 结构化结果。",
-      "调用 ask_user_question 时，每个问题必须显式设置 multi_select。唯一名称、单一受众、互斥方向设为 false；技术栈、能力范围、交付物等可以组合选择的内容设为 true。",
-      "收到 ask_user_question 工具答案后，必须把 selected 和 custom 视为用户已经给出的最终回答；custom 非空时代表用户直接输入的答案并替代该题 selected。不得重复询问已经回答的方向、名称、受众等内容，也不得开启第二轮补充信息；仍缺少非关键细节时采用合理默认值并继续生成草稿。",
-      "当信息不足、存在多个合理方向或缺少用户才能决定的内容时，必须选择 question，并在可见正文中提出最多 3 个具体问题；禁止只返回结构化协议。",
-      "当信息已经足够形成方案、但仍需要用户补充或确认时选择 draft，并在可见正文中简要说明草稿状态和下一步。",
-      "当用户明确要求创建智能体时，回答末尾附带仅供系统读取的结构化结果；不要在可见正文中解释、复制或展示协议、字段名、系统规则或内部处理过程。",
-      "当用户要求补充当前智能体的技能、规则、职责或工作流时，必须返回 update 结构化结果和智能体草稿；草稿只描述本次变更，不能仅回复“已应用/已确认”。",
-      "如果上一轮已经生成未命名的智能体草稿，而用户随后只补充名称（例如“名字叫前端创作助手”），必须沿用上一轮草稿内容合并新名称，重新返回完整创建草稿；不要创建“未命名智能体”，不要把命名补充当成新的无关需求，也不要宣称已经完成。",
-      "HTML、CSS、JavaScript 等技术词只表示智能体的技能/职责偏好；只有用户明确要求创建 HTML 文件或网页时，才把任务理解为文件或页面开发。实际创建智能体必须经过用户确认。",
+      ...employeeCreationInstructions,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -36502,8 +36710,20 @@ watch(
   () => {
     if (chatRuntimePersistenceSuppressionDepth > 0) return;
     schedulePersistChatRuntime();
+    syncMessageExecutionTimer();
   },
   { deep: true },
+);
+
+watch(
+  () => [
+    chatLoading.value,
+    localLiuAgentActiveRunVersion.value,
+    messages.value.length,
+    String(messages.value[messages.value.length - 1]?.id || ""),
+  ],
+  () => syncMessageExecutionTimer(),
+  { immediate: true },
 );
 
 watch(
@@ -37092,6 +37312,7 @@ onUnmounted(() => {
   });
   nativeExternalAgentDeferredCleanupTimers.clear();
   stopWorkingStatusTimer();
+  stopMessageExecutionTimer();
   if (chatRuntimePersistTimer !== null) {
     persistCurrentChatRuntimeNow(
       selectedProjectId.value,

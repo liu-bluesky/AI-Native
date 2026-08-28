@@ -57,6 +57,31 @@ assert.match(
 );
 assert.match(
   projectChatSource,
+  /function pauseLocalLiuAgentReasoningTiming[\s\S]*reasoningCompletedDurationMs[\s\S]*reasoningActiveStartedAtEpochMs = 0/s,
+  "等待用户补充时必须暂停思考计时，不能把等待间隔算入模型思考",
+);
+assert.match(
+  projectChatSource,
+  /if \(localUserQuestionRequest\) \{[\s\S]*pauseLocalLiuAgentReasoningTiming\(assistantMessage\);/s,
+  "出现补充问题时必须结束当前思考计时段",
+);
+assert.match(
+  projectChatSource,
+  /function isMessageExecutionActive[\s\S]*function syncMessageExecutionTimer/s,
+  "未结束的助手消息必须有独立的响应式耗时刷新机制",
+);
+assert.match(
+  projectChatSource,
+  /function messageAgentRuntimeDurationLabel[\s\S]*isMessageExecutionActive\(row\)[\s\S]*messageExecutionNow\.value[\s\S]*耗时/s,
+  "运行中的消息耗时必须优先使用当前时间持续累计",
+);
+assert.match(
+  projectChatSource,
+  /watch\(\s*\(\) => \[[\s\S]*localLiuAgentActiveRunVersion\.value[\s\S]*syncMessageExecutionTimer/s,
+  "活动运行状态变化必须启动或停止消息耗时刷新",
+);
+assert.match(
+  projectChatSource,
   /v-for="block in messageReasoningBlocks\(item\)"/,
   "Thinking 详情必须按 reasoning block 渲染",
 );
