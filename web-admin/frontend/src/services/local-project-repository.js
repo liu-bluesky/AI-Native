@@ -89,10 +89,15 @@ function mergeMigratedLocalRecord(key, nativeValue, legacyValue) {
     };
   }
   if (key === HIDDEN_WORKSPACE_PROJECT_IDS_STORAGE_KEY) {
-    return [...new Set([...(nativeValue || []), ...(legacyValue || [])])];
+    const nativeIds = Array.isArray(nativeValue) ? nativeValue : [];
+    const legacyIds = Array.isArray(legacyValue) ? legacyValue : [];
+    return [...new Set([...nativeIds, ...legacyIds])];
   }
   if (key === STORAGE_KEY || key.startsWith(ENTITY_STORAGE_PREFIX)) {
-    return mergeProjectRecords(nativeValue || [], legacyValue || []);
+    return mergeProjectRecords(
+      Array.isArray(nativeValue) ? nativeValue : [],
+      Array.isArray(legacyValue) ? legacyValue : [],
+    );
   }
   return nativeValue ?? legacyValue;
 }

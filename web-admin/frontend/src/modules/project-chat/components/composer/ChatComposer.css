@@ -796,6 +796,47 @@
   font-weight: 600;
 }
 
+.chat-thinking-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 8px 2px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.chat-thinking-mode__label {
+  flex: 0 0 auto;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.chat-thinking-mode__control :deep(.el-switch__label) {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chat-thinking-mode__control {
+  flex: 0 0 72px;
+  width: 72px;
+}
+
+.chat-thinking-mode__control :deep(.el-select__wrapper) {
+  min-height: 28px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.92);
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.18) inset;
+}
+
+.chat-thinking-mode__control :deep(.el-select__selected-item) {
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .hint-text {
   display: none;
   color: #6b7280;

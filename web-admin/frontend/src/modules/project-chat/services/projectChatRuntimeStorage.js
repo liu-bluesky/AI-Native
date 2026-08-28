@@ -1,5 +1,6 @@
 import {
   readNativeProjectChatRuntime,
+  readNativeProjectChatMessageSnapshot,
   writeNativeProjectChatRuntime,
 } from "@/utils/native-desktop-bridge.js";
 import {
@@ -21,6 +22,24 @@ export async function readPersistedChatRuntime(projectId, chatSessionId) {
     return null;
   }
   return readNativeProjectChatRuntime(
+    normalizedProjectId,
+    normalizedChatSessionId,
+    resolveCurrentUsername(),
+  );
+}
+
+export async function readPersistedChatMessageSnapshot(projectId, chatSessionId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId || !normalizedChatSessionId) return [];
+  await enqueueChatSessionStorageOperation(
+    normalizedProjectId,
+    async () => undefined,
+  );
+  if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
+    return [];
+  }
+  return readNativeProjectChatMessageSnapshot(
     normalizedProjectId,
     normalizedChatSessionId,
     resolveCurrentUsername(),

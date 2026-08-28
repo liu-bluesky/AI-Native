@@ -168,9 +168,14 @@ function renderSkillDefinition(skill, employee) {
       skill.description,
   );
   if (!markdown) {
-    throw new Error(
-      `技能「${name}」缺少真实内容，已阻止写入通用占位模板。请提供该技能的 Markdown 定义后重试。`,
-    );
+    const error = new Error(`技能「${name}」缺少独立 Markdown 内容`);
+    error.code = "employee.skill_markdown_missing";
+    error.recoverable = true;
+    error.skill = {
+      id: cleanText(skill?.id),
+      name,
+    };
+    throw error;
   }
   return markdown;
 }
@@ -326,7 +331,8 @@ export async function listLocalProjectAgents({ projectId = "" } = {}) {
 
   let items = [];
   try {
-    items = await listNativeWorkspaceFiles({ workspacePath: directories.agent });
+    const listing = await listNativeWorkspaceFiles({ workspacePath: directories.agent });
+    items = Array.isArray(listing?.items) ? listing.items : [];
   } catch (error) {
     if (!/目录不存在|not exist|no such file/i.test(String(error?.message || error))) {
       throw error;
@@ -430,6 +436,27 @@ export async function saveLocalAgentDirectoryResources({ employee, skills = [], 
   const projectId = cleanText(employee?.project_id) || cleanText(readSelectedProjectId());
   if (!projectId) throw new Error("请先在 AI 对话中选择项目");
   const { project, relations, settings, directories } = resolveDirectories(projectId);
+  const missingSkills = skills
+    .map((skill) => {
+      try {
+        renderSkillDefinition(skill, employee);
+        return null;
+      } catch (error) {
+        if (error?.code !== "employee.skill_markdown_missing") throw error;
+        return error.skill || {
+          id: cleanText(skill?.id),
+          name: cleanText(skill?.name) || cleanText(skill?.id),
+        };
+      }
+    })
+    .filter(Boolean);
+  if (missingSkills.length) {
+    const error = new Error("创建前发现技能缺少独立 Markdown 内容");
+    error.code = "employee.skill_markdown_missing";
+    error.recoverable = true;
+    error.skills = missingSkills;
+    throw error;
+  }
   const agentPath = `${safeFileSegment(id, "agent")}/AGENT.md`;
   const writtenAgent = await mergeDirectoryFile({
     directory: directories.agent,

@@ -33,7 +33,8 @@
     "tauri:check": "node ./src-tauri/check-tauri-shell.mjs",
     "release:lt-code": "node ./scripts/release-lt-code.mjs",
     "release:lt-code:mac": "node ./scripts/release-lt-code.mjs --platform mac",
-    "release:lt-code:windows": "node ./scripts/release-lt-code.mjs --platform windows"
+    "release:lt-code:windows": "node ./scripts/release-lt-code.mjs --platform windows",
+    "test:structured-interaction": "node ./scripts/check-structured-interaction-protocol.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

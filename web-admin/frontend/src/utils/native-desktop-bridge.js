@@ -80,6 +80,7 @@ const TAURI_COMMAND_NAMES = {
   projectChatUpsertSession: "project_chat_upsert_session",
   projectChatReplaceSessions: "project_chat_replace_sessions",
   projectChatReadRuntime: "project_chat_read_runtime",
+  projectChatReadMessageSnapshot: "project_chat_read_message_snapshot",
   projectChatWriteRuntime: "project_chat_write_runtime",
   projectChatDeleteSession: "project_chat_delete_session",
   localAiTaskList: "local_ai_task_list",
@@ -257,6 +258,20 @@ export async function readNativeProjectChatRuntime(
     chatSessionId: String(chatSessionId || "").trim(),
     username: String(username || "").trim(),
   });
+}
+
+export async function readNativeProjectChatMessageSnapshot(
+  projectId,
+  chatSessionId,
+  username,
+) {
+  requireNativeProjectChatStore();
+  const result = await invokeNativeDesktopBridge("projectChatReadMessageSnapshot", {
+    projectId: String(projectId || "").trim(),
+    chatSessionId: String(chatSessionId || "").trim(),
+    username: String(username || "").trim(),
+  });
+  return Array.isArray(result) ? result : [];
 }
 
 export async function writeNativeProjectChatRuntime(

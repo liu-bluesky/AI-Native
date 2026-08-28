@@ -269,6 +269,21 @@
                 />
               </el-select>
             </div>
+            <div class="chat-thinking-mode">
+              <span class="chat-thinking-mode__label">思考模式</span>
+              <el-select
+                v-model="thinkingModeModel"
+                class="chat-thinking-mode__control"
+                size="small"
+                :disabled="chatLoading"
+                :teleported="true"
+              >
+                <el-option label="关闭" value="disabled" />
+                <el-option label="低" value="low" />
+                <el-option label="中" value="medium" />
+                <el-option label="高" value="high" />
+              </el-select>
+            </div>
           </div>
           <div class="footer-right">
             <span class="hint-text">{{ composerHintText }}</span>
@@ -417,6 +432,8 @@ const props = defineProps([
   "isDragging",
   "isExternalAgentMode",
   "localAgentAuthLevel",
+  "thinkingMode",
+  "reasoningEffort",
   "modelProviderOffline",
   "modelRoutingMode",
   "modelRoutingRoles",
@@ -455,6 +472,8 @@ const emit = defineEmits([
   "update:draftText",
   "update:inputFocused",
   "update:localAgentAuthLevel",
+  "update:thinkingMode",
+  "update:reasoningEffort",
   "update:manualModelOptionValue",
   "update:modelRoleSelection",
   "update:modelRoutingMode",
@@ -495,6 +514,21 @@ const localAgentAuthLevelOptions = [
 const localAgentAuthLevelModel = computed({
   get: () => props.localAgentAuthLevel || "ask",
   set: (value) => emit("update:localAgentAuthLevel", value),
+});
+
+const thinkingModeModel = computed({
+  get: () =>
+    props.thinkingMode === "enabled"
+      ? props.reasoningEffort || "high"
+      : "disabled",
+  set: (value) => {
+    if (value === "disabled") {
+      emit("update:thinkingMode", "disabled");
+      return;
+    }
+    emit("update:thinkingMode", "enabled");
+    emit("update:reasoningEffort", value);
+  },
 });
 
 function emitFileChange(uploadFile, uploadFiles) {

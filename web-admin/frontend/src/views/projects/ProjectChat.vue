@@ -1162,6 +1162,36 @@
                               已同步至本地目录：{{ item.employeeDraftCreatedName }}
                             </span>
                           </div>
+                          <div
+                            v-else
+                            class="message-employee-draft__actions"
+                          >
+                            <el-button
+                              size="small"
+                              @click="continueEmployeeDraftRefinement(item)"
+                            >
+                              继续完善
+                            </el-button>
+                            <el-button
+                              size="small"
+                              type="primary"
+                              @click="openEmployeeDraftConfirmation(item)"
+                            >
+                              确认{{
+                                extractEmployeeIntentPayload(item.content || '')
+                                  ?.intent === 'update'
+                                  ? '更新'
+                                  : '创建'
+                              }}
+                            </el-button>
+                            <el-button
+                              size="small"
+                              text
+                              @click="cancelEmployeeDraft(item)"
+                            >
+                              取消
+                            </el-button>
+                          </div>
                         </div>
                         <div
                           v-if="canViewAiRequestContext(item)"
@@ -1484,6 +1514,8 @@
             v-model:draft-text="draftText"
             v-model:input-focused="inputFocused"
             v-model:local-agent-auth-level="localLiuAgentAuthLevelModel"
+            v-model:thinking-mode="projectChatSettings.thinking_mode"
+            v-model:reasoning-effort="projectChatSettings.reasoning_effort"
             :model-routing-mode="modelRoutingMode"
             :model-routing-roles="modelRoutingRoles"
             :manual-model-option-value="manualModelOptionValue"
@@ -2272,6 +2304,26 @@
                             v-model="projectChatSettings.history_limit"
                             :min="1"
                             :max="50"
+                          />
+                        </div>
+                      </article>
+                      <article class="settings-module-row">
+                        <div class="settings-module-row__icon">
+                          <el-icon><RefreshRight /></el-icon>
+                        </div>
+                        <div class="settings-module-row__main">
+                          <strong>可恢复问题最大修复轮数</strong>
+                          <span
+                            >技能内容缺失、参数不完整等可恢复问题会交给 AI 继续处理；不可恢复错误仍会停止。</span
+                          >
+                        </div>
+                        <div class="settings-module-row__control">
+                          <el-input-number
+                            v-model="projectChatSettings.recoverable_issue_max_attempts"
+                            :min="1"
+                            :max="50"
+                            :step="1"
+                            controls-position="right"
                           />
                         </div>
                       </article>
@@ -3100,6 +3152,7 @@ import {
 import { normalizeAiEntryFileForSave } from "@/modules/project-chat/mappers/workspaceMappers.js";
 import {
   clearPersistedChatRuntime as clearLocalPersistedChatRuntime,
+  readPersistedChatMessageSnapshot as readLocalPersistedChatMessageSnapshot,
   readPersistedChatRuntime as readLocalPersistedChatRuntime,
   writePersistedChatRuntime as writeLocalPersistedChatRuntime,
 } from "@/modules/project-chat/services/projectChatRuntimeStorage.js";
@@ -3162,6 +3215,7 @@ import {
   normalizeDoneEventExecutionState,
   normalizeProjectChatWsEvent,
 } from "@/modules/project-chat/services/projectChatWsProtocol.js";
+import { buildStructuredInteractionPrompt } from "@/modules/project-chat/services/structuredInteractionProtocol.js";
 import {
   CHAT_SETTINGS_DEFAULTS,
   LEGACY_CHAT_ALLOWED_FILE_TYPES,
@@ -4859,6 +4913,7 @@ function buildLocalLiuAgentSystemPromptParts() {
         "- 用户要求给当前智能体补充、修改、调整、完善技能、规则、职责、指令或工作流时，必须先读取当前智能体的真实本地定义，再基于原文提出差异和修改意见，生成 update 意图和仅包含本次变更的更新草稿，交给宿主确认并真实写入；不得凭空捏造，也不得只用自然语言声称已经应用。更新范围仅限当前会话明确选择的单个智能体。",
         "- 编辑智能体必须经过宿主确认弹窗；在用户确认前不得执行任何写入。若无法读取现有定义或没有唯一目标，必须停止生成 update 草稿并明确说明原因。",
         "- 当用户询问能力或工具时，只说明本轮实际提供且可调用的工具；不要把宿主确认动作、未配置的媒体能力或隐藏快捷入口伪装成普通工具。",
+        buildStructuredInteractionPrompt(),
       ].join("\n"),
     },
     {
@@ -11541,6 +11596,34 @@ function isLocalLiuAgentRuntimeEventForActiveRun(event = {}, run = {}) {
   return !createdAt || !startedAt || createdAt >= startedAt - 100;
 }
 
+async function reconcileRestoredLocalLiuAgentRun(run) {
+  if (!run?.restoredFromRuntimeState || run.cancelled) return;
+  const now = Date.now();
+  if (now - (Number(run.lastRecoveryCheckAt || 0) || 0) < 1_500) return;
+  run.lastRecoveryCheckAt = now;
+  const projectId = String(run.projectId || "").trim();
+  const chatSessionId = String(run.chatSessionId || "").trim();
+  const workspacePath = String(run.workspacePath || "").trim();
+  if (!projectId || !chatSessionId || !workspacePath) return;
+  const result = await recoverNativeLiuAgentRuntimeState({
+    projectId,
+    chatSessionId,
+    workspacePath,
+  }).catch(() => null);
+  if (!result?.ok) return;
+  const state = result.state && typeof result.state === "object" ? result.state : {};
+  const runState =
+    state.run_state && typeof state.run_state === "object" ? state.run_state : {};
+  const status = String(runState.status || "").trim().toLowerCase();
+  if (!status || status === "running") return;
+  deleteLocalLiuAgentActiveRun(chatSessionId, run);
+  await restoreLocalLiuAgentRuntimeState(
+    projectId,
+    chatSessionId,
+    localLiuAgentActiveRunRows(run),
+  );
+}
+
 async function pollLocalLiuAgentRuntimeEventsOnce() {
   if (localLiuAgentRuntimeEventPollInFlight) return;
   if (!localLiuAgentActiveRuns.size) {
@@ -11577,6 +11660,7 @@ async function pollLocalLiuAgentRuntimeEventsOnce() {
         if (!handled) break;
         if (eventId) run.lastRuntimeEventId = eventId;
       }
+      await reconcileRestoredLocalLiuAgentRun(run);
     }
   } catch (err) {
     console.warn("poll local liuAgent runtime events failed", err);
@@ -11913,7 +11997,16 @@ async function restoreLocalLiuAgentRuntimeState(
     .trim()
     .toLowerCase();
   if (
-    !["waiting_approval", "failed", "paused"].includes(status) &&
+    ![
+      "running",
+      "waiting_approval",
+      "waiting_user",
+      "failed",
+      "paused",
+      "completed",
+      "done",
+      "cancelled",
+    ].includes(status) &&
     !backgroundJobs.length &&
     ![
       "resume_from_checkpoint",
@@ -11934,15 +12027,90 @@ async function restoreLocalLiuAgentRuntimeState(
     chatSessionId: activeChatSessionId,
     workspacePath,
   });
-  if (status === "waiting_approval") {
+  const runtimeEvents = localLiuAgentRuntimeEventsFromResult(result);
+  const userMessage = localLiuAgentUserMessageFromRuntimeEvents(runtimeEvents);
+  const assistantMessageId =
+    localLiuAgentAssistantMessageIdFromRuntimeEvents(runtimeEvents) || row.id;
+  const latestRuntimeEventId = [...runtimeEvents]
+    .reverse()
+    .map((event) => String(event?.event_id || event?.eventId || "").trim())
+    .find(Boolean);
+  const startedAt =
+    runtimeEvents
+      .map((event) => localLiuAgentRuntimeEventCreatedAt(event))
+      .find((value) => value > 0) || Date.now();
+  const restoredTask = registerLocalAiTask({
+    projectId: activeProjectId,
+    projectName: currentProjectLabel.value,
+    chatSessionId: activeChatSessionId,
+    assistantMessageId,
+    userMessageId: String(userMessage?.messageId || "").trim(),
+    title: String(userMessage?.content || row.content || "本地 AI 任务").trim(),
+    status:
+      status === "completed" || status === "done"
+        ? "done"
+        : status === "paused"
+          ? "interrupted"
+          : status,
+    currentStep:
+      status === "running"
+        ? "已恢复刷新前正在执行的本地 Runtime"
+        : "已恢复本地 Runtime 状态",
+    workspacePath,
+    recoverable: ["waiting_approval", "waiting_user", "failed", "paused"].includes(
+      status,
+    ),
+  });
+  if (status === "running") {
+    const activeRun = {
+      chatSessionId: activeChatSessionId,
+      projectId: activeProjectId,
+      rows: messages.value,
+      assistantMessageId,
+      userMessageId: String(userMessage?.messageId || "").trim(),
+      rootGoal: String(userMessage?.content || row.content || "").trim(),
+      workspacePath,
+      cancelled: false,
+      startedAt,
+      lastRuntimeEventId: latestRuntimeEventId || "",
+      localTaskId: restoredTask.id,
+      restoredFromRuntimeState: true,
+    };
+    applyLocalLiuAgentRuntimeTiming(row, {
+      startedAt,
+      running: true,
+    });
+    upsertMessageOperation(row, {
+      operationId: `local-agent-running:${row.id}`,
+      kind: "request",
+      title: "桌面本地 Agent Runtime",
+      summary: "已恢复刷新前正在执行的任务",
+      detail: "运行轨迹已从本机状态恢复，后续模型和工具事件会继续追加。",
+      phase: "running",
+      actionType: "none",
+      meta: {
+        local_liuagent_operation: "true",
+        agent_runtime_event: "true",
+        source: "tauri_liuagent_local_chat",
+        chat_session_id: activeChatSessionId,
+        cwd: workspacePath,
+        restored_from_runtime_state: "true",
+      },
+    });
+    appendMessageProcessLog(row, {
+      text: "页面刷新后已恢复任务状态，继续接收本地 Runtime 事件",
+      kind: "thinking",
+      level: "info",
+      autoExpand: true,
+    });
+    row.processExpanded = true;
+    setLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
+  } else if (status === "waiting_approval") {
     const permissionRequest =
       localLiuAgentPendingPermissionFromRecovery(result);
     const requestId = String(
       permissionRequest?.requestId || permissionRequest?.request_id || "",
     ).trim();
-    const userMessage = localLiuAgentUserMessageFromRuntimeEvents(
-      localLiuAgentRuntimeEventsFromResult(result),
-    );
     if (!permissionRequest || !requestId || !userMessage?.content) return;
     let modelRuntime = null;
     try {
@@ -11950,10 +12118,6 @@ async function restoreLocalLiuAgentRuntimeState(
     } catch (_error) {
       modelRuntime = null;
     }
-    const assistantMessageId =
-      localLiuAgentAssistantMessageIdFromRuntimeEvents(
-        localLiuAgentRuntimeEventsFromResult(result),
-      ) || row.id;
     const localChatPayload = {
       projectId: activeProjectId,
       chatSessionId: activeChatSessionId,
@@ -12000,6 +12164,60 @@ async function restoreLocalLiuAgentRuntimeState(
       text: "已恢复上次待授权的本地 liuAgent 会话",
       level: "warning",
     });
+  } else if (status === "waiting_user") {
+    const userQuestionRequest = localLiuAgentUserQuestionRequestFromChatResult(
+      result,
+    );
+    const requestId = String(
+      userQuestionRequest?.requestId || userQuestionRequest?.request_id || "",
+    ).trim();
+    if (requestId && userMessage?.content) {
+      let modelRuntime = null;
+      try {
+        modelRuntime = await buildLocalLiuAgentModelRuntime();
+      } catch (_error) {
+        modelRuntime = null;
+      }
+      setLocalLiuAgentPendingUserQuestion(requestId, {
+        kind: "local_chat",
+        localChatPayload: {
+          projectId: activeProjectId,
+          chatSessionId: activeChatSessionId,
+          messageId: userMessage.messageId,
+          assistantMessageId,
+          message: userMessage.content,
+          workspacePath,
+          history: [],
+          providerId: selectedProviderId.value || defaultProviderId.value || "",
+          modelName: selectedModelName.value || defaultModelName.value || "",
+          systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
+          temperature: Number(
+            temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
+          ),
+          modelRuntime,
+          aiEntryFile: String(projectAiEntryFile.value || "").trim(),
+          mcpConfig: {
+            ...effectiveMcpConfig.value,
+            localResourceDirectories: buildLocalResourceDirectoriesPayload(),
+          },
+          mediaTools: localLiuAgentMediaTools.value,
+        },
+        userQuestionRequest,
+        assistantMessageId,
+        userMessageId: userMessage.messageId,
+        activeChatSessionId,
+        displayUserMessageContent: userMessage.content,
+        finalUserPrompt: userMessage.content,
+        sourceContext: {
+          restored_from_local_runtime_state: true,
+        },
+      });
+      row.employeeDraftAwaitingInput = true;
+      appendMessageProcessLog(row, {
+        text: "已恢复等待补充信息的本地 liuAgent 会话",
+        level: "warning",
+      });
+    }
   } else if (["failed", "paused"].includes(status)) {
     const hasNoSignal =
       resumeDecision === "continue_waiting" ||
@@ -12058,6 +12276,7 @@ async function restoreLocalLiuAgentRuntimeState(
     activeChatSessionId,
     messages.value,
   );
+  syncChatLoadingWithCurrentSession();
   schedulePersistChatRuntime();
 }
 
@@ -13938,6 +14157,10 @@ async function readPersistedChatRuntime(projectId, chatSessionId) {
   return readLocalPersistedChatRuntime(projectId, chatSessionId);
 }
 
+async function readPersistedChatMessageSnapshot(projectId, chatSessionId) {
+  return readLocalPersistedChatMessageSnapshot(projectId, chatSessionId);
+}
+
 function writePersistedChatRuntime(projectId, chatSessionId, payload) {
   if (isChatSessionDeleted(projectId, chatSessionId)) {
     return Promise.resolve(false);
@@ -15050,9 +15273,11 @@ function mergeEmployeeSkillDefinitions(skillCatalog, skillIds, skillDrafts) {
     ).trim();
     const name = String(draft.name || existing.name || skillId).trim();
     if (!content) {
-      throw new Error(
-        `技能「${name}」缺少独立 Markdown 内容，已停止创建，避免写入与其他技能相同的占位模板。`,
-      );
+      const error = new Error(`技能「${name}」缺少独立 Markdown 内容`);
+      error.code = "employee.skill_markdown_missing";
+      error.recoverable = true;
+      error.skills = [{ id: skillId, name }];
+      throw error;
     }
     const contentFingerprint = content
       .replace(/^---[\s\S]*?---\s*/m, "")
@@ -15625,6 +15850,11 @@ function normalizeProjectChatSettings(raw) {
     tool_priority: normalizeStringList(
       source.tool_priority || CHAT_SETTINGS_DEFAULTS.tool_priority,
     ),
+    recoverable_issue_max_attempts: resolveNumericChatSetting(
+      source.recoverable_issue_max_attempts,
+      CHAT_SETTINGS_DEFAULTS.recoverable_issue_max_attempts,
+      { min: 1, max: 50 },
+    ),
     allowed_file_types: normalizeChatAllowedFileTypes(
       source.allowed_file_types,
     ),
@@ -15873,6 +16103,10 @@ function stripInternalProtocolContentForDisplay(text) {
   if (!output) return "";
   output = output
     .replace(/(^|\n)[ \t]*(?:智能体意图协议|employee-intent|employee-draft)[^\n]*/gi, "$1")
+    .replace(
+      /```(?:structured-interaction|structured_interaction|interaction-json)\s*\n[\s\S]*?```/gi,
+      "",
+    )
     .replace(
       /<\uFF5C\uFF5CDSML\uFF5C\uFF5Ctool_calls\b[^>]*>[\s\S]*?<\/\uFF5C\uFF5CDSML\uFF5C\uFF5Ctool_calls>/gi,
       "",
@@ -22687,6 +22921,11 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
       CHAT_SETTINGS_DEFAULTS.history_limit,
       { min: 1, max: 50 },
     ),
+    recoverable_issue_max_attempts: resolveNumericChatSetting(
+      projectChatSettings.value.recoverable_issue_max_attempts,
+      CHAT_SETTINGS_DEFAULTS.recoverable_issue_max_attempts,
+      { min: 1, max: 50 },
+    ),
     answer_style: String(
       projectChatSettings.value.answer_style ||
         CHAT_SETTINGS_DEFAULTS.answer_style,
@@ -26993,7 +27232,8 @@ function resolveLarkCliSkillDirectory() {
 function buildFormJsonCommandPrompt(commandPrompt) {
   const normalizedPrompt = String(commandPrompt || "").trim();
   return [
-    "请根据下面的字段或表单需求，生成 element-easy-form 的 ElementEasyForm 可直接渲染的 formJson。",
+    "这是一个明确要求表单渲染的快捷命令。请根据下面的字段或表单需求，生成 element-easy-form 的 ElementEasyForm 可直接渲染的 formJson。",
+    "普通需求不要默认使用本格式；普通需求应优先使用渠道无关的 structured_interaction 协议，由 AI 和宿主共同决定最终呈现方式。",
     "",
     "输出要求：",
     "- 必须输出一个严格 JSON 代码块，代码块语言标记必须是 form-json。",
@@ -27430,7 +27670,13 @@ const employeeDraftAutoRuleSourceLabels = computed(() =>
 );
 
 function getEmployeeDraftCard(item) {
-  if (item?.employeeDraftCancelled || item?.employeeDraftSuperseded) return null;
+  if (
+    item?.employeeDraftCancelled ||
+    item?.employeeDraftSuperseded ||
+    item?.employeeDraftAwaitingInput
+  ) {
+    return null;
+  }
   const rawDraft = extractEmployeeDraftPayload(item?.content || "");
   if (!rawDraft) return null;
   const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
@@ -27583,6 +27829,51 @@ function applyEmployeeDraftConfirmationCandidate(candidate = null) {
     employeeDraftDialogMode.value === "update" ||
     Boolean(String(selectedProjectId.value || "").trim());
   return true;
+}
+
+function openEmployeeDraftConfirmation(item) {
+  if (!item || item.employeeDraftCreatedName) return;
+  const intent = extractEmployeeIntentPayload(item.content || "")?.intent;
+  const rawDraft = extractEmployeeDraftPayload(item.content || "");
+  const payload =
+    intent === "update"
+      ? buildEmployeeUpdateDraftPayload(rawDraft)
+      : buildEmployeeAutoCreatePayload(rawDraft);
+  if (!payload) {
+    ElMessage.warning(
+      intent === "update"
+        ? "请先在当前会话中只选择一个要更新的智能体"
+        : "智能体草稿缺少名称，请先继续完善",
+    );
+    return;
+  }
+  supersedeOtherPendingEmployeeDrafts(item);
+  applyEmployeeDraftConfirmationCandidate({
+    item,
+    payload,
+    mode: intent === "update" ? "update" : "create",
+  });
+  employeeDraftDialogVisible.value = true;
+}
+
+function continueEmployeeDraftRefinement(item) {
+  if (!item) return;
+  item.employeeDraftSuperseded = true;
+  employeeDraftDialogVisible.value = false;
+  resetEmployeeDraftDialogState();
+  draftText.value = "请基于刚才的智能体草稿继续完善：";
+  rememberCurrentChatSessionComposerState();
+  ElMessage.info("已保留当前草稿，请补充希望调整的内容");
+}
+
+function cancelEmployeeDraft(item) {
+  if (!item) return;
+  item.employeeDraftCancelled = true;
+  if (employeeDraftDialogItem.value === item) {
+    employeeDraftDialogVisible.value = false;
+    resetEmployeeDraftDialogState();
+  }
+  ElMessage.info("已取消当前智能体草稿");
 }
 
 async function appendEmployeeDraftConfirmationUserMessage(text = "") {
@@ -27877,6 +28168,38 @@ async function confirmEmployeeDraftCreation(options = {}) {
     employeeDraftDialogVisible.value = false;
     resetEmployeeDraftDialogState();
   } catch (error) {
+    if (error?.recoverable && error?.code === "employee.skill_markdown_missing") {
+      const repairAttempts = Number(item.employeeDraftRepairAttempts || 0);
+      const maxRepairAttempts = resolveNumericChatSetting(
+        projectChatSettings.value.recoverable_issue_max_attempts,
+        CHAT_SETTINGS_DEFAULTS.recoverable_issue_max_attempts,
+        { min: 1, max: 50 },
+      );
+      if (repairAttempts < maxRepairAttempts) {
+        item.employeeDraftRepairAttempts = repairAttempts + 1;
+        item.employeeDraftSuperseded = true;
+        employeeDraftDialogVisible.value = false;
+        resetEmployeeDraftDialogState();
+        const missingSkills = (Array.isArray(error.skills) ? error.skills : [])
+          .map((skill) => `${skill.name || skill.id} (${skill.id || "无 ID"})`)
+          .join("、");
+        draftText.value = [
+          "继续处理刚才的智能体创建任务，不要重新询问已经回答的信息。",
+          `创建前检查发现以下技能缺少独立 Markdown 定义：${missingSkills || "未命名技能"}。`,
+          "请为每个缺失技能生成独立、真实、可执行的 Markdown 内容，至少包含适用范围、工作规则、输入输出和验证方式。",
+          "保留原智能体名称、职责、工作流和用户已确认的内容，只补齐缺失技能定义，然后返回完整的 create 草稿供我再次确认。",
+          "这不是最终失败，而是创建前的可恢复问题；不要把错误原文直接展示给用户。",
+        ].join("\n");
+        ElMessage.info("发现技能定义缺失，正在让 AI 补齐后重新生成创建草稿");
+        await nextTick();
+        await doSend();
+        return;
+      }
+      ElMessage.error(
+        `技能定义连续 ${maxRepairAttempts} 次未补齐，请点击“继续完善”后补充技能内容`,
+      );
+      return;
+    }
     ElMessage.error(
       error?.message ||
         (employeeDraftDialogMode.value === "update"
@@ -29645,7 +29968,8 @@ async function fetchChatParameterOptions() {
 }
 
 async function fetchProjects() {
-  projects.value = readLocalWorkspaceProjects()
+  const localProjects = readLocalWorkspaceProjects();
+  projects.value = (Array.isArray(localProjects) ? localProjects : [])
     .map(normalizeOfflineProjectListItem)
     .filter(Boolean);
   projectListOffline.value = true;
@@ -30913,11 +31237,27 @@ function resolveExistingChatSessionId(excludedSessionIds = []) {
   ).trim();
 }
 
+const CHAT_LOAD_DEBUG_ENABLED = import.meta.env.DEV;
+
+function chatLoadDebug(stage, startedAt, details = {}) {
+  if (!CHAT_LOAD_DEBUG_ENABLED) return;
+  const elapsedMs = Math.round(performance.now() - startedAt);
+  console.info("[project-chat:load]", stage, {
+    elapsedMs,
+    ...details,
+  });
+}
+
 async function fetchChatSessions(
   projectId,
   preferredSessionId = "",
   options = {},
 ) {
+  const startedAt = performance.now();
+  chatLoadDebug("sessions:start", startedAt, {
+    projectId: String(projectId || "").trim(),
+    preferredSessionId: String(preferredSessionId || "").trim(),
+  });
   if (!projectId) {
     chatSessionsLoading.value = false;
     chatSessions.value = [];
@@ -31019,8 +31359,17 @@ async function fetchChatSessions(
       applyChatSessionComposerState(projectId, resolved);
     }
     rememberChatSession(projectId, resolved);
+    chatLoadDebug("sessions:complete", startedAt, {
+      projectId: String(projectId || "").trim(),
+      sessionCount: chatSessions.value.length,
+      resolvedSessionId: resolved,
+    });
     return resolved;
   } catch (err) {
+    chatLoadDebug("sessions:error", startedAt, {
+      projectId: String(projectId || "").trim(),
+      error: String(err?.message || err || "unknown"),
+    });
     ElMessage.error(err?.detail || err?.message || "加载会话列表失败");
     return String(currentChatSessionId.value || "").trim();
   } finally {
@@ -31099,7 +31448,14 @@ async function fetchChatHistory(
   chatSessionId = currentChatSessionId.value,
   options = {},
 ) {
+  const startedAt = performance.now();
   const append = options.append === true;
+  const normalizedProjectId = String(projectId || "").trim();
+  chatLoadDebug("history:start", startedAt, {
+    projectId: normalizedProjectId,
+    sessionId: String(chatSessionId || "").trim(),
+    append,
+  });
   if (!projectId) {
     activeChatHistoryLoadingKey = "";
     chatHistoryLoading.value = false;
@@ -31183,6 +31539,12 @@ async function fetchChatHistory(
         !cachedRuntimeRows || cachedRuntimeRows.length <= immediateRows.length;
       rememberChatSession(projectId, normalizedSessionId);
       scrollToBottom();
+      chatLoadDebug("history:immediate-render", startedAt, {
+        projectId: normalizedProjectId,
+        sessionId: normalizedSessionId,
+        rowCount: immediateRows.length,
+        source: Array.isArray(rememberedRows) ? "remembered" : "runtime-cache",
+      });
     }
   }
   const offset = Math.max(0, Number(options.offset ?? 0) || 0);
@@ -31194,10 +31556,21 @@ async function fetchChatHistory(
   const previousScrollHeight = Number(container?.scrollHeight || 0);
   const previousScrollTop = Number(container?.scrollTop || 0);
   try {
-    const [remoteHistoryResult, runtimePayload] = await Promise.all([
+    chatLoadDebug("snapshot:request", startedAt, {
+      projectId: normalizedProjectId,
+      sessionId: normalizedSessionId,
+    });
+    const [remoteHistoryResult, messageSnapshot] = await Promise.all([
       Promise.resolve({ ok: false, data: null }),
-      fetchPersistedChatRuntime(projectId, normalizedSessionId),
+      append
+        ? Promise.resolve([])
+        : readPersistedChatMessageSnapshot(projectId, normalizedSessionId),
     ]);
+    chatLoadDebug("snapshot:complete", startedAt, {
+      projectId: normalizedProjectId,
+      sessionId: normalizedSessionId,
+      rowCount: Array.isArray(messageSnapshot) ? messageSnapshot.length : 0,
+    });
     if (
       !isCurrentChatSession(projectId, normalizedSessionId) ||
       (!append && activeChatHistoryLoadingKey !== loadingKey)
@@ -31207,6 +31580,86 @@ async function fetchChatHistory(
     const remoteRows = remoteHistoryResult.ok
       ? (remoteHistoryResult.data?.messages || []).map(mapHistoryMessage)
       : [];
+    if (!append) {
+      const snapshotRows = mergeDuplicateAssistantAnswerRows(
+        (Array.isArray(messageSnapshot) ? messageSnapshot : [])
+          .map(normalizeRuntimeMessageSnapshot)
+          .filter(Boolean),
+      );
+      const nextRows = hasImmediateRows && immediateRows.length
+        ? immediateRows
+        : snapshotRows;
+      await applyChatMessagesWithoutPersisting(nextRows);
+      rememberChatSessionMessages(projectId, normalizedSessionId, messages.value);
+      chatHistoryLoadedCount.value = messages.value.length;
+      chatHistoryReachedEnd.value = true;
+      rememberChatSession(projectId, normalizedSessionId);
+      if (activeChatHistoryLoadingKey === loadingKey) {
+        activeChatHistoryLoadingKey = "";
+        chatHistoryLoading.value = false;
+      }
+      scrollToBottom();
+      chatLoadDebug("history:snapshot-rendered", startedAt, {
+        projectId: normalizedProjectId,
+        sessionId: normalizedSessionId,
+        rowCount: messages.value.length,
+      });
+      window.setTimeout(() => {
+        const runtimeStartedAt = performance.now();
+        chatLoadDebug("runtime:request", runtimeStartedAt, {
+          projectId: normalizedProjectId,
+          sessionId: normalizedSessionId,
+        });
+        void fetchPersistedChatRuntime(projectId, normalizedSessionId)
+          .then(async (runtimePayload) => {
+          chatLoadDebug("runtime:read-complete", runtimeStartedAt, {
+            projectId: normalizedProjectId,
+            sessionId: normalizedSessionId,
+            rowCount: Array.isArray(runtimePayload?.messages)
+              ? runtimePayload.messages.length
+              : 0,
+          });
+          if (!isCurrentChatSession(projectId, normalizedSessionId)) return;
+          const mergedRows = applyPersistedChatRuntimeRows(
+            messages.value,
+            runtimePayload,
+          );
+          await applyChatMessagesWithoutPersisting(mergedRows);
+          rememberChatSessionMessages(projectId, normalizedSessionId, messages.value);
+          chatHistoryLoadedCount.value = messages.value.length;
+          restoreComposerPlanStateFromRuntimePayload(
+            projectId,
+            normalizedSessionId,
+            runtimePayload,
+          );
+          void fetchChatTaskTree(projectId, normalizedSessionId, { silent: true });
+          await restoreInteractiveChatRuntime(
+            projectId,
+            normalizedSessionId,
+            messages.value,
+            runtimePayload,
+          );
+          chatLoadDebug("runtime:restore-complete", runtimeStartedAt, {
+            projectId: normalizedProjectId,
+            sessionId: normalizedSessionId,
+            rowCount: messages.value.length,
+          });
+          })
+          .catch((error) => {
+            chatLoadDebug("runtime:error", runtimeStartedAt, {
+              projectId: normalizedProjectId,
+              sessionId: normalizedSessionId,
+              error: String(error?.message || error || "unknown"),
+            });
+            console.warn("restore persisted chat runtime failed", error);
+          });
+      }, 0);
+      return;
+    }
+    const runtimePayload = await fetchPersistedChatRuntime(
+      projectId,
+      normalizedSessionId,
+    );
     // 本地持久化历史已按 offset/limit 截取，不能再次重复截切。
     const localRows = applyPersistedChatRuntimeRows([], runtimePayload);
     const historyRows = remoteHistoryResult.ok
@@ -31280,6 +31733,12 @@ async function fetchChatHistory(
       scrollToBottom();
     }
   } catch (err) {
+    chatLoadDebug("history:error", startedAt, {
+      projectId: normalizedProjectId,
+      sessionId: normalizedSessionId,
+      append,
+      error: String(err?.message || err || "unknown"),
+    });
     if (
       !isCurrentChatSession(projectId, normalizedSessionId) ||
       (!append && activeChatHistoryLoadingKey !== loadingKey)
@@ -31545,9 +32004,7 @@ async function handleCreateNewConversation() {
   resetDraft();
   applyTaskTreePayload(null);
   resetTerminalPanel();
-  if (isCurrentChatSession(projectId, activeChatSessionId)) {
-    scrollToBottom();
-  }
+  scrollToBottom();
   await focusChatComposerTextarea();
 }
 
@@ -33759,7 +34216,7 @@ async function sendProjectChatRequest({
       displayUserMessageContent: localUserMessage.content,
       sourceContext: activeSessionSourceContext,
       attachments: [],
-      mediaTools: [],
+      mediaTools: localLiuAgentMediaTools.value,
       persistUserMessage: Boolean(userMessageId),
       providerId,
       modelName,
@@ -34352,6 +34809,7 @@ async function sendLocalLiuAgentChatRequest({
   const localUserQuestionRequest =
     localLiuAgentUserQuestionRequestFromChatResult(result);
   if (localUserQuestionRequest) {
+    assistantMessage.employeeDraftAwaitingInput = true;
     updateLocalAiTask(activeRun.localTaskId, {
       status: "waiting_user",
       currentStep: "等待用户补充信息",
@@ -35639,9 +36097,18 @@ async function doSend(options = {}) {
         employee_ids: normalizeStringList(selectedEmployeeIds.value || [], 20),
       },
     });
-    await handleEmployeeIntentAfterAssistantResponse(assistantMessage, {
-      assistActionId: effectiveAssistAction?.id,
-    });
+    const waitingForUserInput = localLiuAgentPendingUserQuestionsForChatSession(
+      activeChatSessionId,
+    ).some(
+      (pending) =>
+        String(pending?.assistantMessageId || "").trim() ===
+        String(assistantMessage.id || "").trim(),
+    );
+    if (!waitingForUserInput) {
+      await handleEmployeeIntentAfterAssistantResponse(assistantMessage, {
+        assistActionId: effectiveAssistAction?.id,
+      });
+    }
   } catch (err) {
     const errorMessage = String(err?.message || "未知错误").trim();
     showManualCloseErrorDialog(
@@ -35932,6 +36399,10 @@ async function resolveAvailableProjectId(preferredId = "") {
 async function loadSelectedProjectConversation(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) return;
+  const startedAt = performance.now();
+  chatLoadDebug("conversation:start", startedAt, {
+    projectId: normalizedProjectId,
+  });
   const {
     chatSessionId: routeChatSessionId,
     createNewSession: routeCreateNewSession,
@@ -35963,8 +36434,41 @@ async function loadSelectedProjectConversation(projectId) {
   if (selectedProjectConversationLoadingKey === loadingKey) return;
   selectedProjectConversationLoadingKey = loadingKey;
   agentStatusExpanded.value = false;
+  const hintedChatHistoryPromise = routeChatSessionId
+    ? fetchChatHistory(normalizedProjectId, routeChatSessionId).then((result) => {
+        chatLoadDebug("history:route-hint-complete", startedAt, {
+          projectId: normalizedProjectId,
+          sessionId: String(routeChatSessionId || "").trim(),
+        });
+        return result;
+      })
+    : null;
   try {
-    await fetchProvidersByProject(normalizedProjectId);
+    const providerStartedAt = performance.now();
+    const providersPromise = fetchProvidersByProject(normalizedProjectId).then(
+      (result) => {
+        chatLoadDebug("providers:complete", providerStartedAt, {
+          projectId: normalizedProjectId,
+        });
+        return result;
+      },
+      (error) => {
+        chatLoadDebug("providers:error", providerStartedAt, {
+          projectId: normalizedProjectId,
+          error: String(error?.message || error || "unknown"),
+        });
+        throw error;
+      },
+    );
+    void providersPromise.catch((error) => {
+      chatLoadDebug("providers:background-error", startedAt, {
+        projectId: normalizedProjectId,
+        error: String(error?.message || error || "unknown"),
+      });
+    });
+    if (hintedChatHistoryPromise) {
+      await hintedChatHistoryPromise;
+    }
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
     if (projectListOffline.value) {
@@ -35994,7 +36498,12 @@ async function loadSelectedProjectConversation(projectId) {
       }
       if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
         return;
-      await fetchChatHistory(normalizedProjectId, localChatSessionId);
+      if (
+        !hintedChatHistoryPromise ||
+        localChatSessionId !== String(routeChatSessionId || "").trim()
+      ) {
+        await fetchChatHistory(normalizedProjectId, localChatSessionId);
+      }
       await refreshPendingLocalLiuAgentOutboxCount({
         projectId: normalizedProjectId,
         chatSessionId: localChatSessionId,
@@ -36020,6 +36529,10 @@ async function loadSelectedProjectConversation(projectId) {
         preserveComposerState: shouldCreateWindowSession,
       },
     );
+    chatLoadDebug("conversation:session-resolved", startedAt, {
+      projectId: normalizedProjectId,
+      sessionId: chatSessionId,
+    });
     if (restoredTask?.chatSessionId) {
       const restoredChatSessionId = String(
         restoredTask.chatSessionId || "",
@@ -36048,7 +36561,12 @@ async function loadSelectedProjectConversation(projectId) {
     ) {
       return;
     }
-    await fetchChatHistory(normalizedProjectId, chatSessionId);
+    if (
+      !hintedChatHistoryPromise ||
+      chatSessionId !== String(routeChatSessionId || "").trim()
+    ) {
+      await fetchChatHistory(normalizedProjectId, chatSessionId);
+    }
     void restoreOngoingTaskFromServer(normalizedProjectId, { silent: true })
       .then((ongoingTask) => {
         if (
@@ -36066,6 +36584,10 @@ async function loadSelectedProjectConversation(projectId) {
     await applyLocalRuntimeTaskRouteAction();
     await applyProjectDeployDraftFromRoute();
   } finally {
+    chatLoadDebug("conversation:complete", startedAt, {
+      projectId: normalizedProjectId,
+      sessionId: String(currentChatSessionId.value || "").trim(),
+    });
     if (selectedProjectConversationLoadingKey === loadingKey) {
       selectedProjectConversationLoadingKey = "";
     }

@@ -2,6 +2,7 @@ import {
   hasAuthorizationPromptText,
   stripTerminalControlSequences,
 } from "@/modules/project-chat/mappers/terminalMappers.js";
+import { normalizeStructuredInteraction } from "./structuredInteractionProtocol.js";
 
 const HEARTBEAT_EVENT_TYPES = new Set(["ready", "pong"]);
 
@@ -51,6 +52,7 @@ export function normalizeProjectChatWsEvent(eventData) {
     requestId: String(source.request_id || "").trim(),
     taskId: String(source.task_id || "").trim(),
     chatSessionId: String(source.chat_session_id || "").trim(),
+    structuredInteraction: normalizeStructuredInteraction(source),
   };
 }
 

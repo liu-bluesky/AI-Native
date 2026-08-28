@@ -1096,7 +1096,7 @@ fn list_workspace_files(
     workspace_path: String,
     path: Option<String>,
 ) -> Result<WorkspaceFileListResult, String> {
-    let root = resolve_workspace_root(&workspace_path)?;
+    let root = resolve_existing_workspace_root(&workspace_path)?;
     let directory = resolve_workspace_child(&root, path.unwrap_or_default())?;
     if !directory.exists() {
         return Err("目录不存在".to_string());
@@ -1160,7 +1160,7 @@ fn read_workspace_file(
     workspace_path: String,
     path: String,
 ) -> Result<WorkspaceFileReadResult, String> {
-    let root = resolve_workspace_root(&workspace_path)?;
+    let root = resolve_existing_workspace_root(&workspace_path)?;
     let target = resolve_workspace_write_target(&root, path)?;
     if !target.exists() {
         return Err("文件不存在".to_string());
@@ -1206,7 +1206,7 @@ fn read_workspace_file(
 
 #[tauri::command]
 fn delete_workspace_file(workspace_path: String, path: String) -> Result<bool, String> {
-    let root = resolve_workspace_root(&workspace_path)?;
+    let root = resolve_existing_workspace_root(&workspace_path)?;
     let target = resolve_workspace_child(&root, path)?;
     if !target.exists() {
         return Ok(false);
@@ -2604,6 +2604,24 @@ fn resolve_workspace_root(workspace_path: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+fn resolve_existing_workspace_root(workspace_path: &str) -> Result<PathBuf, String> {
+    let raw = workspace_path.trim();
+    if raw.is_empty() {
+        return Err("缺少工作区路径".to_string());
+    }
+    let raw_root = PathBuf::from(raw);
+    if !raw_root.exists() {
+        return Err("目录不存在".to_string());
+    }
+    let root = raw_root
+        .canonicalize()
+        .map_err(|err| format!("工作区不可访问：{err}"))?;
+    if !root.is_dir() {
+        return Err("工作区路径不是目录".to_string());
+    }
+    Ok(root)
+}
+
 fn resolve_workspace_child(root: &Path, raw_path: String) -> Result<PathBuf, String> {
     let raw = raw_path.trim();
     let candidate = if raw.is_empty() {
@@ -3260,6 +3278,7 @@ fn main() {
             project_chat_store::project_chat_upsert_session,
             project_chat_store::project_chat_replace_sessions,
             project_chat_store::project_chat_read_runtime,
+            project_chat_store::project_chat_read_message_snapshot,
             project_chat_store::project_chat_write_runtime,
             project_chat_store::project_chat_delete_session,
             project_chat_store::local_ai_task_list,

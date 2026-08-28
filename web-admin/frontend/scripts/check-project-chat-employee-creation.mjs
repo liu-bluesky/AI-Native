@@ -5,6 +5,13 @@ const source = await readFile(
   new URL("../src/views/projects/ProjectChat.vue", import.meta.url),
   "utf8",
 );
+const settingsDefaultsSource = await readFile(
+  new URL(
+    "../src/modules/project-chat/constants/chatSettingsDefaults.js",
+    import.meta.url,
+  ),
+  "utf8",
+);
 const dialogSource = await readFile(
   new URL("../src/components/ProjectEmployeeDraftCreateDialog.vue", import.meta.url),
   "utf8",
@@ -219,8 +226,8 @@ assert.match(
 );
 assert.match(
   directoryServiceSource,
-  /function renderSkillDefinition\([\s\S]*缺少真实内容[\s\S]*阻止写入通用占位模板/s,
-  "目录写入层必须拒绝将空技能写成重复占位模板",
+  /function renderSkillDefinition\([\s\S]*employee\.skill_markdown_missing[\s\S]*recoverable = true/s,
+  "目录写入层必须将空技能标记为可恢复问题",
 );
 assert.doesNotMatch(
   directoryServiceSource,
@@ -229,3 +236,44 @@ assert.doesNotMatch(
 );
 
 console.log("project chat employee creation trigger check passed.");
+
+assert.match(
+  source,
+  /if \(localUserQuestionRequest\) \{[\s\S]*assistantMessage\.employeeDraftAwaitingInput = true/s,
+  "等待补充信息时必须标记中间智能体草稿，禁止进入确认阶段",
+);
+assert.match(
+  source,
+  /employee\.skill_markdown_missing[\s\S]*await doSend\(\)/s,
+  "缺失技能 Markdown 时必须回传 AI 继续补全并重新进入循环",
+);
+assert.match(
+  settingsDefaultsSource,
+  /recoverable_issue_max_attempts:\s*20/,
+  "自动修复轮数必须提供默认 20 次配置",
+);
+assert.match(
+  source,
+  /const maxRepairAttempts = resolveNumericChatSetting\([\s\S]*recoverable_issue_max_attempts[\s\S]*if \(repairAttempts < maxRepairAttempts\)/s,
+  "自动修复必须读取对话设置，而不是固定为两次",
+);
+assert.match(
+  source,
+  /recoverable_issue_max_attempts:\s*resolveNumericChatSetting\([\s\S]*CHAT_SETTINGS_DEFAULTS\.recoverable_issue_max_attempts/s,
+  "项目对话设置保存 payload 必须包含自动修复轮数",
+);
+assert.match(
+  source,
+  /function getEmployeeDraftCard\(item\) \{[\s\S]*employeeDraftAwaitingInput/s,
+  "等待补充信息的中间草稿不得渲染为待确认卡片",
+);
+assert.match(
+  source,
+  /const waitingForUserInput = localLiuAgentPendingUserQuestionsForChatSession\([\s\S]*if \(!waitingForUserInput\) \{[\s\S]*handleEmployeeIntentAfterAssistantResponse/s,
+  "有未回答问题时不得打开智能体草稿确认流程",
+);
+assert.match(
+  source,
+  /继续完善[\s\S]*确认\{\{[\s\S]*取消/s,
+  "待确认智能体草稿必须提供继续完善、确认和取消操作",
+);

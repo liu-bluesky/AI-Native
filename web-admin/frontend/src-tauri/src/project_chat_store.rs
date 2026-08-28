@@ -3,12 +3,18 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use tauri::Manager;
 
 const JSON_STORE_VERSION: i64 = 1;
 const JSON_STORE_DIRECTORY: &str = "project-chat-data";
 const SQLITE_MIGRATION_MARKER: &str = ".sqlite-runtime-migration-v1.complete";
 const SQLITE_CANONICAL_MIGRATION_KEY: &str = "desktop-project-chat-v1";
+static INITIALIZED_CANONICAL_DATABASES: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
+
+fn initialized_canonical_databases() -> &'static Mutex<BTreeSet<PathBuf>> {
+    INITIALIZED_CANONICAL_DATABASES.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
 
 fn normalized(value: &str, field: &str) -> Result<String, String> {
     let value = value.trim();
@@ -314,6 +320,14 @@ fn ensure_canonical_sqlite_schema(connection: &Connection) -> Result<(), String>
                  updated_at TEXT NOT NULL DEFAULT '',
                  PRIMARY KEY (username, project_id, chat_session_id)
              );
+             CREATE TABLE IF NOT EXISTS desktop_project_chat_message_snapshots (
+                 username TEXT NOT NULL,
+                 project_id TEXT NOT NULL,
+                 chat_session_id TEXT NOT NULL,
+                 messages_json TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT '',
+                 PRIMARY KEY (username, project_id, chat_session_id)
+             );
              CREATE TABLE IF NOT EXISTS desktop_project_chat_metadata (
                  key TEXT PRIMARY KEY,
                  value TEXT NOT NULL
@@ -371,6 +385,33 @@ fn upsert_canonical_runtime(
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(username, project_id, chat_session_id) DO UPDATE SET
                  runtime_json = excluded.runtime_json,
+                 updated_at = excluded.updated_at",
+            params![username, project_id, chat_session_id, payload, updated_at],
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn upsert_canonical_message_snapshot(
+    connection: &Connection,
+    username: &str,
+    project_id: &str,
+    chat_session_id: &str,
+    runtime: &Value,
+    updated_at: &str,
+) -> Result<(), String> {
+    let messages = runtime
+        .get("messages")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let payload = serde_json::to_string(&messages).map_err(|err| err.to_string())?;
+    connection
+        .execute(
+            "INSERT INTO desktop_project_chat_message_snapshots
+                 (username, project_id, chat_session_id, messages_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(username, project_id, chat_session_id) DO UPDATE SET
+                 messages_json = excluded.messages_json,
                  updated_at = excluded.updated_at",
             params![username, project_id, chat_session_id, payload, updated_at],
         )
@@ -661,7 +702,13 @@ fn migrate_json_store_to_canonical(connection: &Connection, root: &Path) -> Resu
 
 fn open_canonical_database(app: &tauri::AppHandle) -> Result<Connection, String> {
     let path = database_path(app)?;
-    let connection = Connection::open(path).map_err(|err| err.to_string())?;
+    let connection = Connection::open(&path).map_err(|err| err.to_string())?;
+    let mut initialized = initialized_canonical_databases()
+        .lock()
+        .map_err(|_| "本机聊天数据库初始化锁不可用".to_string())?;
+    if initialized.contains(&path) {
+        return Ok(connection);
+    }
     ensure_canonical_sqlite_schema(&connection)?;
     let migrated = connection
         .query_row(
@@ -683,6 +730,7 @@ fn open_canonical_database(app: &tauri::AppHandle) -> Result<Connection, String>
             )
             .map_err(|err| err.to_string())?;
     }
+    initialized.insert(path);
     Ok(connection)
 }
 
@@ -1595,22 +1643,13 @@ fn list_canonical_sessions(
             row.map_err(|err| err.to_string())?;
         let session =
             serde_json::from_str::<Value>(&session_json).map_err(|err| err.to_string())?;
-        let runtime_json = connection
-            .query_row(
-                "SELECT runtime_json FROM desktop_project_chat_runtimes
-                 WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
-                params![username, stored_project_id, chat_session_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|err| err.to_string())?;
-        let runtime = runtime_json
-            .as_ref()
-            .map(|value| serde_json::from_str::<Value>(value).map_err(|err| err.to_string()))
-            .transpose()?
-            .unwrap_or_else(|| json!({}));
-        let mut merged =
-            merge_session_with_runtime(&chat_session_id, Some(&session), &runtime, &updated_at);
+        let mut merged = session;
+        if value_text(&merged, &["id"]).is_empty() {
+            merged["id"] = Value::String(chat_session_id.clone());
+        }
+        if value_text(&merged, &["updated_at"]).is_empty() {
+            merged["updated_at"] = Value::String(updated_at);
+        }
         merged["project_id"] = Value::String(stored_project_id);
         sessions.push(merged);
     }
@@ -1792,6 +1831,54 @@ pub fn project_chat_read_runtime(
 }
 
 #[tauri::command]
+pub fn project_chat_read_message_snapshot(
+    app: tauri::AppHandle,
+    username: String,
+    project_id: String,
+    chat_session_id: String,
+) -> Result<Vec<Value>, String> {
+    let username = normalized(&username, "用户名")?;
+    let project_id = normalized(&project_id, "项目 ID")?;
+    let chat_session_id = normalized(&chat_session_id, "聊天会话 ID")?;
+    let connection = open_canonical_database(&app)?;
+    let snapshot = connection
+        .query_row(
+            "SELECT messages_json FROM desktop_project_chat_message_snapshots
+             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
+            params![username, project_id, chat_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+    if let Some(value) = snapshot {
+        return serde_json::from_str::<Vec<Value>>(&value).map_err(|err| err.to_string());
+    }
+    let runtime = connection
+        .query_row(
+            "SELECT runtime_json FROM desktop_project_chat_runtimes
+             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
+            params![username, project_id, chat_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+    let messages = runtime
+        .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+        .and_then(|value| value.get("messages").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+    let payload = serde_json::to_string(&messages).map_err(|err| err.to_string())?;
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO desktop_project_chat_message_snapshots
+                 (username, project_id, chat_session_id, messages_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+            params![username, project_id, chat_session_id, payload],
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(messages)
+}
+
+#[tauri::command]
 pub fn project_chat_write_runtime(
     app: tauri::AppHandle,
     username: String,
@@ -1851,6 +1938,14 @@ pub fn project_chat_write_runtime(
     );
     session["project_id"] = Value::String(project_id.clone());
     upsert_canonical_runtime(
+        &connection,
+        &username,
+        &project_id,
+        &chat_session_id,
+        &merged_payload,
+        &activity_updated_at,
+    )?;
+    upsert_canonical_message_snapshot(
         &connection,
         &username,
         &project_id,
