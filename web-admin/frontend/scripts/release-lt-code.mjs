@@ -167,6 +167,22 @@ async function buildWindowsInstaller(repository, branch, version, windowsDirecto
   }
 }
 
+async function verifyReleaseVersions(expectedVersion) {
+  const versionFiles = [
+    ['package-lock.json', JSON.parse(await readFile(path.join(projectDirectory, 'package-lock.json'), 'utf8')).version],
+    ['src-tauri/tauri.conf.json', JSON.parse(await readFile(path.join(projectDirectory, 'src-tauri', 'tauri.conf.json'), 'utf8')).version],
+  ];
+  const cargoManifest = await readFile(path.join(projectDirectory, 'src-tauri', 'Cargo.toml'), 'utf8');
+  const cargoVersion = /^version\s*=\s*"([^"]+)"/m.exec(cargoManifest)?.[1];
+  versionFiles.push(['src-tauri/Cargo.toml', cargoVersion]);
+
+  const mismatches = versionFiles.filter(([, version]) => version !== expectedVersion);
+  if (mismatches.length > 0) {
+    const details = mismatches.map(([file, version]) => `${file}: ${version || '未找到'}`).join('，');
+    throw new Error(`发布版本不一致，package.json 为 ${expectedVersion}，${details}`);
+  }
+}
+
 async function main() {
   const platform = releasePlatform();
   const includesMac = platform === 'all' || platform === 'mac';
@@ -179,6 +195,7 @@ async function main() {
   const packagePath = path.join(projectDirectory, 'package.json');
   const currentVersion = JSON.parse(await readFile(packagePath, 'utf8')).version;
   const version = currentVersion;
+  await verifyReleaseVersions(version);
   const releaseDirectory = path.join(projectDirectory, '发布包', `LT code v${version}`);
   const windowsDirectory = path.join(releaseDirectory, 'Windows · 64 位');
 
