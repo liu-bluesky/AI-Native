@@ -5,19 +5,23 @@ const source = await readFile(
   new URL("../src/views/projects/ProjectChat.vue", import.meta.url),
   "utf8",
 );
-const settingsDefaultsSource = await readFile(
-  new URL(
-    "../src/modules/project-chat/constants/chatSettingsDefaults.js",
-    import.meta.url,
-  ),
-  "utf8",
-);
 const dialogSource = await readFile(
   new URL("../src/components/ProjectEmployeeDraftCreateDialog.vue", import.meta.url),
   "utf8",
 );
 const directoryServiceSource = await readFile(
   new URL("../src/services/local-agent-directory-service.js", import.meta.url),
+  "utf8",
+);
+const runtimeSource = await readFile(
+  new URL("../src-tauri/src/liuagent_core/runtime.rs", import.meta.url),
+  "utf8",
+);
+const composerStateSource = await readFile(
+  new URL(
+    "../src/modules/project-chat/composables/useProjectChatComposer.js",
+    import.meta.url,
+  ),
   "utf8",
 );
 
@@ -61,6 +65,16 @@ assert.match(
   source,
   /当运行时提供 ask_user_question 工具且缺少只能由用户决定的信息时，必须优先调用 ask_user_question/,
   "创建智能体缺少用户决策信息时必须优先使用可恢复提问工具",
+);
+assert.match(
+  source,
+  /function ensureLocalLiuAgentUserQuestionAnswer\([\s\S]*answers\[normalizedQuestionId\] = \{ choice: "", selected: \[\], custom: "" \}/s,
+  "补充问题答案必须在绑定前安全初始化",
+);
+assert.match(
+  source,
+  /v-model="ensureLocalLiuAgentUserQuestionAnswer\(question\.id\)\.selected"[\s\S]*v-model="ensureLocalLiuAgentUserQuestionAnswer\(question\.id\)\.choice"[\s\S]*v-model="ensureLocalLiuAgentUserQuestionAnswer\(question\.id\)\.custom"/s,
+  "补充问题的单选、多选和自定义输入必须使用安全答案绑定",
 );
 
 assert.match(
@@ -201,8 +215,18 @@ assert.match(
 
 assert.match(
   source,
-  /skill_drafts 必须为每个 skills 项提供 id、name、content/s,
-  "草稿协议必须要求每项技能携带独立 Markdown 内容",
+  /创建草稿至少提供 1 个技能候选和 1 个规则候选/s,
+  "创建草稿必须产出可选择的技能和规则候选",
+);
+assert.match(
+  source,
+  /每个新技能必须同时出现在 skills 和 skill_drafts 中/s,
+  "新技能必须包含可写入的独立定义",
+);
+assert.match(
+  source,
+  /每个新规则必须写入 rule_drafts/s,
+  "新规则必须包含可写入的独立定义",
 );
 assert.match(
   source,
@@ -211,8 +235,8 @@ assert.match(
 );
 assert.match(
   source,
-  /function mergeEmployeeSkillDefinitions\([\s\S]*缺少独立 Markdown 内容[\s\S]*Markdown 内容相同/s,
-  "缺失或重复的技能内容时必须阻止创建，不能继续写入通用模板",
+  /const selectedSkills = employee\.skills\.map[\s\S]*selectedSkills\.length !== employee\.skills\.length/s,
+  "勾选的技能必须全部解析为可写入定义",
 );
 assert.match(
   source,
@@ -226,13 +250,33 @@ assert.match(
 );
 assert.match(
   directoryServiceSource,
-  /function renderSkillDefinition\([\s\S]*employee\.skill_markdown_missing[\s\S]*recoverable = true/s,
-  "目录写入层必须将空技能标记为可恢复问题",
+  /const definedSkills = preserveExistingResources[\s\S]*skills\.filter\(hasSkillDefinition\);/s,
+  "目录写入层必须校验新建技能具有独立定义",
 );
 assert.doesNotMatch(
   directoryServiceSource,
   /此技能由 AI Employee 本地智能体配置引用。/,
   "目录写入层不得保留技能通用占位正文",
+);
+assert.match(
+  directoryServiceSource,
+  /const AGENT_METADATA_FILE = "\.ai-employee\.json";/,
+  "完整智能体配置必须写入独立 sidecar 文件",
+);
+assert.match(
+  directoryServiceSource,
+  /function agentDirectoryName\([\s\S]*function skillDirectoryName\([\s\S]*function ruleDirectoryName\(/s,
+  "智能体、技能和规则必须使用可读名称加稳定短 ID 的目录名",
+);
+assert.match(
+  directoryServiceSource,
+  /path: `\$\{directoryName\}\/AGENT\.md`,[\s\S]*path: `\$\{directoryName\}\/\$\{AGENT_METADATA_FILE\}`/s,
+  "智能体正文与机器配置必须分别写入 Markdown 和 sidecar 文件",
+);
+assert.doesNotMatch(
+  directoryServiceSource,
+  /function mergeManagedBlock\(/,
+  "新建定义文件不得再写入受管区块注释",
 );
 
 console.log("project chat employee creation trigger check passed.");
@@ -242,25 +286,65 @@ assert.match(
   /if \(localUserQuestionRequest\) \{[\s\S]*assistantMessage\.employeeDraftAwaitingInput = true/s,
   "等待补充信息时必须标记中间智能体草稿，禁止进入确认阶段",
 );
-assert.match(
+assert.doesNotMatch(
   source,
   /employee\.skill_markdown_missing[\s\S]*await doSend\(\)/s,
-  "缺失技能 Markdown 时必须回传 AI 继续补全并重新进入循环",
+  "缺失技能不得触发自动补全重试",
 );
 assert.match(
-  settingsDefaultsSource,
-  /recoverable_issue_max_attempts:\s*20/,
-  "自动修复轮数必须提供默认 20 次配置",
+  dialogSource,
+  /<el-checkbox-group[\s\S]*selectedSkillIds[\s\S]*<el-checkbox-group[\s\S]*selectedRuleKeys/s,
+  "确认弹窗必须提供技能和规则多选",
+);
+assert.match(
+  dialogSource,
+  /selected_skill_ids:[\s\S]*selected_rule_keys:/s,
+  "确认弹窗必须回传勾选的技能和规则",
 );
 assert.match(
   source,
-  /const maxRepairAttempts = resolveNumericChatSetting\([\s\S]*recoverable_issue_max_attempts[\s\S]*if \(repairAttempts < maxRepairAttempts\)/s,
-  "自动修复必须读取对话设置，而不是固定为两次",
+  /const selectedSkillIds = normalizeStringList[\s\S]*const selectedRuleKeys = normalizeStringList[\s\S]*rule_drafts: ruleDrafts/s,
+  "创建处理必须只接收勾选的技能和规则",
 );
 assert.match(
   source,
-  /recoverable_issue_max_attempts:\s*resolveNumericChatSetting\([\s\S]*CHAT_SETTINGS_DEFAULTS\.recoverable_issue_max_attempts/s,
-  "项目对话设置保存 payload 必须包含自动修复轮数",
+  /writtenSkills\.length !== selectedSkills\.length[\s\S]*writtenRules\.length !== selectedRules\.length/s,
+  "创建后必须校验技能和规则完整写入",
+);
+assert.match(
+  source,
+  /mediaTools: localLiuAgentMediaTools\.value,[\s\S]*interactionMode:[\s\S]*employee_create/s,
+  "主聊天创建请求必须传入 employee_create 模式",
+);
+assert.match(
+  source,
+  /const isEmployeeCreationMode = normalizedInteractionMode === "employee_create";[\s\S]*const employeeOrchestrationPart = isEmployeeCreationMode[\s\S]*employeeOrchestrationPart/s,
+  "智能体创建编排提示只能在 employee_create 模式下注入",
+);
+assert.doesNotMatch(
+  source,
+  /id: "desktop_local_agent:employee_natural_language_orchestration",\s*source: "desktop_local_agent\.employee_natural_language_orchestration",\s*scope: "global"/s,
+  "普通聊天不得全局注入智能体创建编排提示",
+);
+assert.match(
+  runtimeSource,
+  /fn hydrate_mcp_tool_snapshot\([\s\S]*request\.selected_mcp_tools = discovered;/s,
+  "MCP 工具发现必须完整注入当前模型请求",
+);
+assert.doesNotMatch(
+  runtimeSource,
+  /fn select_mcp_catalog_tools\(/,
+  "MCP 工具查询不得依赖服务自身提供目录工具",
+);
+assert.match(
+  source,
+  /const assistAction = effectiveAssistAction;[\s\S]*if \(assistAction\?\.id === "employee_create"\)[\s\S]*activeComposerAssist\.value = ""/s,
+  "创建智能体辅助模式必须在发送后立即消费",
+);
+assert.match(
+  composerStateSource,
+  /activeAssist === "employee_create" \? "" : activeAssist[\s\S]*activeToolCommandId === "assist_employee_create"/s,
+  "恢复会话时不得保留创建智能体辅助模式",
 );
 assert.match(
   source,

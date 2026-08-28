@@ -7,10 +7,13 @@ use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Url;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,8 +24,95 @@ use crate::liuagent_core::tools::toolchain::{merged_path, resolve_command};
 use crate::liuagent_core::types::{PermissionDecisionInput, ToolError};
 use crate::liuagent_core::workspace::{resolve_workspace_child, resolve_workspace_root};
 
-const MCP_TIMEOUT_MS: u64 = 10_000;
+const MCP_TIMEOUT_MS: u64 = 60_000;
 const MAX_MCP_OUTPUT_CHARS: usize = 120_000;
+
+struct McpStdioSession {
+    child: Child,
+    stdin: ChildStdin,
+    responses: Receiver<Result<Value, String>>,
+    framing: String,
+    next_request_id: i64,
+}
+
+impl McpStdioSession {
+    fn request(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout_ms: u64,
+    ) -> Result<Value, ToolError> {
+        if let Some(status) = self.child.try_wait().map_err(|err| {
+            ToolError::new("mcp.failed", format!("check MCP server failed: {err}"))
+        })? {
+            return Err(ToolError::new(
+                "mcp.failed",
+                format!("MCP server exited before request: {status}"),
+            ));
+        }
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        write_mcp_request(
+            &mut self.stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            }),
+            &self.framing,
+        )?;
+        self.stdin.flush().map_err(|err| {
+            ToolError::new("mcp.failed", format!("flush MCP stdin failed: {err}"))
+        })?;
+        let started = Instant::now();
+        let timeout = Duration::from_millis(timeout_ms);
+        loop {
+            let remaining = timeout.checked_sub(started.elapsed()).ok_or_else(|| {
+                ToolError::new(
+                    "mcp.failed",
+                    format!("MCP server timed out after {timeout_ms}ms"),
+                )
+            })?;
+            let message = self.responses.recv_timeout(remaining).map_err(|err| {
+                ToolError::new("mcp.failed", format!("read MCP response failed: {err}"))
+            })?;
+            let value = message.map_err(|message| ToolError::new("mcp.failed", message))?;
+            if value.get("id").and_then(Value::as_i64) != Some(request_id) {
+                continue;
+            }
+            if let Some(error) = value.get("error") {
+                return Err(ToolError::new(
+                    "mcp.failed",
+                    format!("MCP returned error: {}", summarize_json_value(error)),
+                ));
+            }
+            return Ok(value.get("result").cloned().unwrap_or_else(|| json!({})));
+        }
+    }
+
+    fn notify_initialized(&mut self) -> Result<(), ToolError> {
+        write_mcp_request(
+            &mut self.stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {},
+            }),
+            &self.framing,
+        )?;
+        self.stdin
+            .flush()
+            .map_err(|err| ToolError::new("mcp.failed", format!("flush MCP stdin failed: {err}")))
+    }
+
+    fn shutdown(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+static STDIO_MCP_SESSIONS: OnceLock<Mutex<HashMap<String, McpStdioSession>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct DiscoveredMcpTool {
@@ -176,24 +266,53 @@ pub fn discover_mcp_tools(
     let config = read_registry_config(&root, &arguments)?;
     let mut discovered = Vec::new();
     for (server, _) in server_entries(&config)? {
-        let response = invoke_mcp_method(
-            workspace_path,
-            &arguments,
-            &server,
-            "tools/list",
-            json!({}),
-            MCP_TIMEOUT_MS,
-        )?;
-        for tool in response
-            .get("tools")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            discovered.push(DiscoveredMcpTool::from_wire_tool(&server, tool)?);
+        for tool in list_mcp_tools_on_server(workspace_path, &arguments, &server)? {
+            discovered.push(DiscoveredMcpTool::from_wire_tool(&server, &tool)?);
         }
     }
     Ok(discovered)
+}
+
+fn list_mcp_tools_on_server(
+    workspace_path: &str,
+    arguments: &Value,
+    server: &str,
+) -> Result<Vec<Value>, ToolError> {
+    let mut tools = Vec::new();
+    let mut cursor = None::<String>;
+    loop {
+        let params = cursor
+            .as_deref()
+            .map(|cursor| json!({"cursor": cursor}))
+            .unwrap_or_else(|| json!({}));
+        let response = invoke_mcp_method(
+            workspace_path,
+            arguments,
+            server,
+            "tools/list",
+            params,
+            MCP_TIMEOUT_MS,
+        )?;
+        tools.extend(
+            response
+                .get("tools")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
+        let next_cursor = response
+            .get("nextCursor")
+            .or_else(|| response.get("next_cursor"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if next_cursor.is_none() || next_cursor == cursor {
+            return Ok(tools);
+        }
+        cursor = next_cursor;
+    }
 }
 
 pub fn select_mcp_tools_for_goal(
@@ -562,19 +681,9 @@ fn resolve_mcp_tool_on_server(
     server: &str,
     tool_name: &str,
 ) -> Result<DiscoveredMcpTool, ToolError> {
-    let response = invoke_mcp_method(
-        workspace_path,
-        arguments,
-        server,
-        "tools/list",
-        json!({}),
-        MCP_TIMEOUT_MS,
-    )?;
-    let tool = response
-        .get("tools")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+    let tools = list_mcp_tools_on_server(workspace_path, arguments, server)?;
+    let tool = tools
+        .iter()
         .find(|tool| tool.get("name").and_then(Value::as_str) == Some(tool_name.trim()))
         .ok_or_else(|| {
             ToolError::new(
@@ -636,8 +745,7 @@ fn invoke_mcp_method(
     let server_config = resolve_server_config(&config, server, arguments)?;
     match server_config.transport {
         McpTransport::Stdio => {
-            let output = run_stdio_command(&root, &server_config, method, params, timeout_ms)?;
-            parse_json_rpc_result(&output, 2)
+            run_persistent_stdio_command(&root, &server_config, method, params, timeout_ms)
         }
         McpTransport::Http | McpTransport::Sse => {
             run_http_json_rpc(&server_config, method, params, timeout_ms)
@@ -1110,6 +1218,211 @@ fn parse_sse_json_payload(body: &str) -> Result<Value, ToolError> {
         "mcp.failed",
         "MCP event-stream did not contain JSON data",
     ))
+}
+
+fn run_persistent_stdio_command(
+    root: &Path,
+    server: &ServerConfig,
+    method: &str,
+    params: Value,
+    timeout_ms: u64,
+) -> Result<Value, ToolError> {
+    let key = stdio_session_key(root, server)?;
+    let sessions = STDIO_MCP_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut sessions = sessions
+        .lock()
+        .map_err(|_| ToolError::new("mcp.failed", "MCP stdio session registry is unavailable"))?;
+    let needs_session = match sessions.get_mut(&key) {
+        Some(session) => session
+            .child
+            .try_wait()
+            .map_err(|err| ToolError::new("mcp.failed", format!("check MCP server failed: {err}")))?
+            .is_some(),
+        None => true,
+    };
+    if needs_session {
+        if let Some(mut stale) = sessions.remove(&key) {
+            stale.shutdown();
+        }
+        sessions.insert(key.clone(), start_stdio_session(root, server, timeout_ms)?);
+    }
+    let result = sessions
+        .get_mut(&key)
+        .expect("MCP stdio session inserted")
+        .request(method, params, timeout_ms);
+    if result.is_err() {
+        if let Some(mut failed) = sessions.remove(&key) {
+            failed.shutdown();
+        }
+    }
+    result
+}
+
+fn stdio_session_key(root: &Path, server: &ServerConfig) -> Result<String, ToolError> {
+    let cwd = resolve_workspace_child(root, &server.cwd, true)?;
+    let mut environment = server.env.clone();
+    environment.sort();
+    Ok(serde_json::to_string(&json!({
+        "command": server.command,
+        "args": server.args,
+        "cwd": cwd,
+        "env": environment,
+        "framing": server.framing,
+    }))
+    .unwrap_or_else(|_| format!("{}:{}", server.name, cwd.display())))
+}
+
+fn start_stdio_session(
+    root: &Path,
+    server: &ServerConfig,
+    timeout_ms: u64,
+) -> Result<McpStdioSession, ToolError> {
+    let cwd = resolve_workspace_child(root, &server.cwd, true)?;
+    if !cwd.is_dir() {
+        return Err(ToolError::new(
+            "mcp.config_invalid",
+            "server.cwd is not a directory",
+        ));
+    }
+    let resolved = resolve_command(&server.command);
+    let mut command = Command::new(&resolved.program);
+    command
+        .args(&server.args)
+        .current_dir(&cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let configured_path = server
+        .env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var("PATH").ok());
+    if let Some(path) = merged_path(&resolved.search_paths, configured_path.as_deref()) {
+        command.env("PATH", path);
+    }
+    for (key, value) in &server.env {
+        if !key.eq_ignore_ascii_case("PATH") {
+            command.env(key, value);
+        }
+    }
+    configure_process_group(&mut command);
+    let mut child = command.spawn().map_err(|err| {
+        ToolError::new(
+            "mcp.failed",
+            format!("spawn MCP server {} failed: {err}", server.name),
+        )
+    })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ToolError::new("mcp.failed", "MCP server stdin is unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ToolError::new("mcp.failed", "MCP server stdout is unavailable"))?;
+    if let Some(stderr) = child.stderr.take() {
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut buffer = String::new();
+            while reader.read_line(&mut buffer).unwrap_or(0) > 0 {
+                buffer.clear();
+            }
+        });
+    }
+    let framing = server.framing.clone();
+    let (sender, responses) = mpsc::channel();
+    thread::spawn(move || forward_stdio_responses(stdout, framing, sender));
+    let mut session = McpStdioSession {
+        child,
+        stdin,
+        responses,
+        framing: server.framing.clone(),
+        next_request_id: 1,
+    };
+    if let Err(error) = session.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "liuagent-core", "version": "0.1.0"}
+        }),
+        timeout_ms,
+    ) {
+        session.shutdown();
+        return Err(error);
+    }
+    if let Err(error) = session.notify_initialized() {
+        session.shutdown();
+        return Err(error);
+    }
+    Ok(session)
+}
+
+fn forward_stdio_responses(
+    stdout: ChildStdout,
+    framing: String,
+    sender: mpsc::Sender<Result<Value, String>>,
+) {
+    let mut reader = BufReader::new(stdout);
+    loop {
+        match read_stdio_response(&mut reader, &framing) {
+            Ok(Some(value)) => {
+                if sender.send(Ok(value)).is_err() {
+                    return;
+                }
+            }
+            Ok(None) => return,
+            Err(error) => {
+                let _ = sender.send(Err(error));
+                return;
+            }
+        }
+    }
+}
+
+fn read_stdio_response(
+    reader: &mut BufReader<ChildStdout>,
+    framing: &str,
+) -> Result<Option<Value>, String> {
+    loop {
+        let mut line = String::new();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|err| format!("read MCP stdout failed: {err}"))?;
+        if read == 0 {
+            return Ok(None);
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !matches!(framing, "line-json" | "jsonl" | "newline")
+            && trimmed.to_ascii_lowercase().starts_with("content-length:")
+        {
+            let length = trimmed
+                .split_once(':')
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                .ok_or_else(|| "MCP response has invalid Content-Length".to_string())?;
+            let mut separator = String::new();
+            reader
+                .read_line(&mut separator)
+                .map_err(|err| format!("read MCP frame separator failed: {err}"))?;
+            let mut body = vec![0; length];
+            reader
+                .read_exact(&mut body)
+                .map_err(|err| format!("read MCP frame body failed: {err}"))?;
+            return serde_json::from_slice(&body)
+                .map(Some)
+                .map_err(|err| format!("parse MCP frame response failed: {err}"));
+        }
+        if !trimmed.starts_with('{') {
+            continue;
+        }
+        return serde_json::from_str(trimmed)
+            .map(Some)
+            .map_err(|err| format!("parse MCP response failed: {err}"));
+    }
 }
 
 fn run_stdio_command(
@@ -1664,5 +1977,20 @@ mod tests {
         let selected = select_mcp_tools_for_goal(tools, "当前可用 MCP 服务有哪些", 8);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].name, "list_runtime_mcp_servers");
+    }
+
+    #[test]
+    fn writes_line_json_requests_for_reusable_stdio_sessions() {
+        let mut output = Vec::new();
+        write_mcp_request(
+            &mut output,
+            &json!({"jsonrpc": "2.0", "id": 7, "method": "tools/list", "params": {}}),
+            "line-json",
+        )
+        .expect("write request");
+        assert_eq!(
+            String::from_utf8(output).expect("UTF-8"),
+            "{\"id\":7,\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"params\":{}}\n"
+        );
     }
 }

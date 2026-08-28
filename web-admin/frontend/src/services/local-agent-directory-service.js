@@ -14,16 +14,7 @@ import {
 } from "@/utils/native-desktop-bridge.js";
 import { isWorkspaceFileMissing } from "@/utils/workspace-file-errors.js";
 
-const MANAGED_BLOCK_PREFIX = "<!-- ai-employee:";
-const AGENT_METADATA_PREFIX = "<!-- ai-employee:agent-metadata:";
-
-function encodeAgentMetadata(value) {
-  try {
-    return encodeURIComponent(JSON.stringify(value));
-  } catch {
-    return "";
-  }
-}
+const AGENT_METADATA_FILE = ".ai-employee.json";
 
 function decodeAgentMetadata(value) {
   try {
@@ -66,32 +57,42 @@ function safeFileSegment(value, fallback) {
   const normalized = cleanText(value)
     .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
     .replace(/\s+/g, "-")
+    .replace(/[. ]+$/g, "")
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return normalized || fallback;
+  const candidate = normalized || fallback;
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(candidate)
+    ? `${candidate}-file`
+    : candidate;
 }
 
-function blockMarkers(kind, id) {
-  const key = `${kind}:${id}`;
-  return {
-    start: `${MANAGED_BLOCK_PREFIX}${key}:start -->`,
-    end: `${MANAGED_BLOCK_PREFIX}${key}:end -->`,
-  };
+function shortStableId(value) {
+  const normalized = cleanText(value);
+  const suffix = normalized.match(/([a-z0-9]{6,12})$/i)?.[1];
+  if (suffix) return suffix.toLowerCase();
+  let hash = 2166136261;
+  for (const character of normalized) {
+    hash ^= character.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(6, "0").slice(-8);
 }
 
-function mergeManagedBlock(existingContent, kind, id, blockContent) {
-  const existing = String(existingContent || "").trimEnd();
-  const { start, end } = blockMarkers(kind, id);
-  const nextBlock = `${start}\n${blockContent.trim()}\n${end}`;
-  const startIndex = existing.indexOf(start);
-  if (startIndex === -1) {
-    return existing ? `${existing}\n\n${nextBlock}\n` : `${nextBlock}\n`;
-  }
-  const endIndex = existing.indexOf(end, startIndex);
-  if (endIndex === -1) {
-    throw new Error("本地定义文件中的 AI Employee 区块不完整，请先修复后再保存");
-  }
-  return `${existing.slice(0, startIndex)}${nextBlock}${existing.slice(endIndex + end.length)}\n`;
+function readableResourceName(value, id, fallback) {
+  const label = safeFileSegment(value, fallback).slice(0, 48).replace(/-+$/g, "") || fallback;
+  return `${label}--${shortStableId(id)}`;
+}
+
+function agentDirectoryName(employee) {
+  return readableResourceName(employee?.name, employee?.id, "agent");
+}
+
+function skillDirectoryName(skill) {
+  return readableResourceName(skill?.name, skill?.id, "skill");
+}
+
+function ruleDirectoryName(rule) {
+  return readableResourceName(rule?.title || rule?.name, rule?.id, "rule");
 }
 
 async function readDirectoryFile(directory, path) {
@@ -102,12 +103,6 @@ async function readDirectoryFile(directory, path) {
     if (isWorkspaceFileMissing(error)) return "";
     throw error;
   }
-}
-
-async function mergeDirectoryFile({ directory, path, kind, id, content }) {
-  const current = await readDirectoryFile(directory, path);
-  const merged = mergeManagedBlock(current, kind, id, content);
-  return writeNativeWorkspaceFile({ workspacePath: directory, path, content: merged });
 }
 
 function renderList(items) {
@@ -121,13 +116,7 @@ function renderContent(value, fallback = "") {
 
 function renderAgentDefinition(employee, skills, rules) {
   const title = cleanText(employee.name) || employee.id;
-  const metadata = encodeAgentMetadata({
-    version: 1,
-    agent: employee,
-    skill_ids: skills.map((item) => cleanText(item?.id)).filter(Boolean),
-    rule_ids: rules.map((item) => cleanText(item?.id)).filter(Boolean),
-  });
-  return `${metadata ? `${AGENT_METADATA_PREFIX}${metadata} -->\n` : ""}# ${title}
+  return `# ${title}
 
 ## 基础信息
 - ID: ${employee.id}
@@ -155,10 +144,22 @@ ${renderContent(employee.tool_usage_policy, "按任务需要选择已绑定技�
 ${renderList(skills.map((item) => `${cleanText(item.name) || item.id} (${item.id})`))}
 
 ## 绑定规则
-${renderList(rules.map((item) => `${cleanText(item.title) || item.id} (${item.id})`))}`;
+${renderList(rules.map((item) => `${cleanText(item.title) || item.id} (${item.id})`))}
+`;
 }
 
-function renderSkillDefinition(skill, employee) {
+function renderAgentMetadata(employee, skills, rules, directoryName) {
+  return `${JSON.stringify({
+    version: 2,
+    kind: "agent",
+    directory_name: directoryName,
+    agent: employee,
+    skill_ids: skills.map((item) => cleanText(item?.id)).filter(Boolean),
+    rule_ids: rules.map((item) => cleanText(item?.id)).filter(Boolean),
+  }, null, 2)}\n`;
+}
+
+function renderSkillDefinition(skill) {
   const name = cleanText(skill.name) || skill.id;
   const markdown = cleanText(
     skill.markdown ||
@@ -177,10 +178,22 @@ function renderSkillDefinition(skill, employee) {
     };
     throw error;
   }
-  return markdown;
+  return markdown.endsWith("\n") ? markdown : `${markdown}\n`;
 }
 
-function renderRuleDefinition(rule, employee) {
+function hasSkillDefinition(skill) {
+  return Boolean(
+    cleanText(
+      skill?.markdown ||
+        skill?.content ||
+        skill?.definition ||
+        skill?.instructions ||
+        skill?.description,
+    ),
+  );
+}
+
+function renderRuleDefinition(rule) {
   const title = cleanText(rule.title || rule.name) || rule.id;
   const content = renderContent(rule.content || rule.body || rule.description);
   return `# ${title}
@@ -189,10 +202,8 @@ function renderRuleDefinition(rule, employee) {
 ${cleanText(rule.domain) || "通用"}
 
 ## 规则正文
-${content || "此规则由 AI Employee 本地智能体配置引用。"}
-
-## 被智能体使用
-- ${cleanText(employee.name) || employee.id} (${employee.id})`;
+${content || "未填写"}
+`;
 }
 
 function resolveDirectories(projectId) {
@@ -248,29 +259,34 @@ function parseLegacyAgentDefinition(content, fallbackId) {
   };
 }
 
-function parseAgentDefinition(content, fallbackId) {
+function parseAgentMetadata(value, fallbackId) {
+  const metadata = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const agent = metadata?.agent;
+  if (!agent || typeof agent !== "object" || Array.isArray(agent)) return null;
+  return {
+    ...agent,
+    id: cleanText(agent.id) || fallbackId,
+    skills: Array.isArray(agent.skills)
+      ? agent.skills.map(cleanText).filter(Boolean)
+      : Array.isArray(metadata.skill_ids)
+        ? metadata.skill_ids.map(cleanText).filter(Boolean)
+        : [],
+    rules: Array.isArray(agent.rules)
+      ? agent.rules.map(cleanText).filter(Boolean)
+      : Array.isArray(metadata.rule_ids)
+        ? metadata.rule_ids.map(cleanText).filter(Boolean)
+        : [],
+  };
+}
+
+function parseAgentDefinition(content, fallbackId, metadata) {
+  const sidecarAgent = parseAgentMetadata(metadata, fallbackId);
+  if (sidecarAgent) return sidecarAgent;
   const marker = String(content || "").match(
     /<!--\s*ai-employee:agent-metadata:([\s\S]*?)\s*-->/i,
   );
-  const metadata = decodeAgentMetadata(marker?.[1]);
-  const agent = metadata?.agent;
-  if (agent && typeof agent === "object" && !Array.isArray(agent)) {
-    return {
-      ...agent,
-      id: cleanText(agent.id) || fallbackId,
-      skills: Array.isArray(agent.skills)
-        ? agent.skills.map(cleanText).filter(Boolean)
-        : Array.isArray(metadata.skill_ids)
-          ? metadata.skill_ids.map(cleanText).filter(Boolean)
-          : [],
-      rules: Array.isArray(agent.rules)
-        ? agent.rules.map(cleanText).filter(Boolean)
-        : Array.isArray(metadata.rule_ids)
-          ? metadata.rule_ids.map(cleanText).filter(Boolean)
-          : [],
-    };
-  }
-  return parseLegacyAgentDefinition(content, fallbackId);
+  const legacyAgent = parseAgentMetadata(decodeAgentMetadata(marker?.[1]), fallbackId);
+  return legacyAgent || parseLegacyAgentDefinition(content, fallbackId);
 }
 
 function agentIndexRecord(agent) {
@@ -319,6 +335,27 @@ function repairLocalAgentIndex(projectId, agents, relations = {}) {
   });
 }
 
+function directoryNameFromFilePath(filePath) {
+  return cleanText(filePath)
+    .replace(/\\/g, "/")
+    .split("/")
+    .slice(-2, -1)[0];
+}
+
+async function removeAgentDefinitionFiles(directory, directoryName) {
+  if (!directoryName) return;
+  for (const filename of ["AGENT.md", AGENT_METADATA_FILE]) {
+    try {
+      await deleteNativeWorkspaceFile({
+        workspacePath: directory,
+        path: `${directoryName}/${filename}`,
+      });
+    } catch (error) {
+      if (!isWorkspaceFileMissing(error)) throw error;
+    }
+  }
+}
+
 export function getLocalAgentDirectories(projectId) {
   return resolveDirectories(projectId).directories;
 }
@@ -338,32 +375,49 @@ export async function listLocalProjectAgents({ projectId = "" } = {}) {
       throw error;
     }
   }
-  const agents = [];
+  const agentsById = new Map();
   for (const item of items) {
     if (String(item?.kind || "") !== "directory") continue;
-    const directoryId = safeFileSegment(item?.name, "agent");
+    const directoryName = cleanText(item?.name);
+    if (!directoryName) continue;
     try {
       const file = await readNativeWorkspaceFile({
         workspacePath: directories.agent,
-        path: `${directoryId}/AGENT.md`,
+        path: `${directoryName}/AGENT.md`,
       });
-      const agent = parseAgentDefinition(file?.content, directoryId);
+      const metadataContent = await readDirectoryFile(
+        directories.agent,
+        `${directoryName}/${AGENT_METADATA_FILE}`,
+      );
+      let metadata = null;
+      try {
+        metadata = metadataContent ? JSON.parse(metadataContent) : null;
+      } catch {
+        console.warn("本地智能体侧车配置格式无效，已回退读取 Markdown", directoryName);
+      }
+      const agent = parseAgentDefinition(file?.content, directoryName, metadata);
       const id = cleanText(agent?.id);
       if (!id) continue;
-      agents.push({
+      const candidate = {
         ...agent,
         id,
         project_id: resolvedProjectId,
+        directory_name: directoryName,
         directory_path: directories.agent,
-        file_path: `${directories.agent.replace(/[\\/]+$/, "")}/${directoryId}/AGENT.md`,
+        file_path: `${directories.agent.replace(/[\\/]+$/, "")}/${directoryName}/AGENT.md`,
         updated_at: cleanText(agent?.updated_at) || new Date(item?.modifiedAtEpochMs || item?.modified_at_epoch_ms || Date.now()).toISOString(),
-      });
+      };
+      const existing = agentsById.get(id);
+      if (!existing || (metadata && !existing._has_sidecar)) {
+        agentsById.set(id, { ...candidate, _has_sidecar: Boolean(metadata) });
+      }
     } catch (error) {
       if (!isWorkspaceFileMissing(error)) {
         console.warn("读取项目智能体定义失败", error);
       }
     }
   }
+  const agents = Array.from(agentsById.values()).map(({ _has_sidecar, ...agent }) => agent);
   agents.sort((left, right) => cleanText(left.name).localeCompare(cleanText(right.name), "zh-CN"));
   repairLocalAgentIndex(resolvedProjectId, agents, relations);
   return agents;
@@ -376,12 +430,6 @@ export async function updateLocalProjectAgent(agentId, patch = {}, { projectId =
   const agents = await listLocalProjectAgents({ projectId: resolvedProjectId });
   const existing = agents.find((item) => cleanText(item?.id) === id);
   if (!existing) throw new Error("项目目录中未找到该智能体定义");
-  const { directories } = resolveDirectories(resolvedProjectId);
-  const directoryId = cleanText(existing.file_path)
-    .replace(/\\/g, "/")
-    .split("/")
-    .slice(-2, -1)[0];
-  if (!directoryId) throw new Error("智能体定义路径无效");
   const next = {
     ...existing,
     ...(patch && typeof patch === "object" ? patch : {}),
@@ -389,16 +437,11 @@ export async function updateLocalProjectAgent(agentId, patch = {}, { projectId =
     project_id: resolvedProjectId,
     updated_at: new Date().toISOString(),
   };
-  await mergeDirectoryFile({
-    directory: directories.agent,
-    path: `${directoryId}/AGENT.md`,
-    kind: "agent",
-    id,
-    content: renderAgentDefinition(
-      next,
-      (Array.isArray(next.skills) ? next.skills : []).map((skillId) => ({ id: skillId })),
-      (Array.isArray(next.rules) ? next.rules : []).map((ruleId) => ({ id: ruleId })),
-    ),
+  await saveLocalAgentDirectoryResources({
+    employee: next,
+    skills: (Array.isArray(next.skills) ? next.skills : []).map((skillId) => ({ id: skillId, name: skillId, description: "已绑定技能，请在技能目录中维护定义。" })),
+    rules: (Array.isArray(next.rules) ? next.rules : []).map((ruleId) => ({ id: ruleId, title: ruleId, description: "已绑定规则，请在规则目录中维护正文。" })),
+    preserveExistingResources: true,
   });
   return (await listLocalProjectAgents({ projectId: resolvedProjectId })).find(
     (item) => cleanText(item?.id) === id,
@@ -413,20 +456,20 @@ export async function deleteLocalProjectAgent(agentId, { projectId = "" } = {}) 
   const existing = agents.find((item) => cleanText(item?.id) === id);
   if (!existing) return false;
   const { directories } = resolveDirectories(resolvedProjectId);
-  const directoryId = cleanText(existing.file_path)
-    .replace(/\\/g, "/")
-    .split("/")
-    .slice(-2, -1)[0];
-  if (!directoryId) throw new Error("智能体定义路径无效");
-  await deleteNativeWorkspaceFile({
-    workspacePath: directories.agent,
-    path: `${directoryId}/AGENT.md`,
-  });
+  await removeAgentDefinitionFiles(
+    directories.agent,
+    cleanText(existing.directory_name) || directoryNameFromFilePath(existing.file_path),
+  );
   await listLocalProjectAgents({ projectId: resolvedProjectId });
   return true;
 }
 
-export async function saveLocalAgentDirectoryResources({ employee, skills = [], rules = [] } = {}) {
+export async function saveLocalAgentDirectoryResources({
+  employee,
+  skills = [],
+  rules = [],
+  preserveExistingResources = false,
+} = {}) {
   const id = cleanText(employee?.id);
   if (!id) throw new Error("缺少智能体 ID");
   if (!hasNativeDesktopBridge()) {
@@ -436,72 +479,85 @@ export async function saveLocalAgentDirectoryResources({ employee, skills = [], 
   const projectId = cleanText(employee?.project_id) || cleanText(readSelectedProjectId());
   if (!projectId) throw new Error("请先在 AI 对话中选择项目");
   const { project, relations, settings, directories } = resolveDirectories(projectId);
-  const missingSkills = skills
-    .map((skill) => {
-      try {
-        renderSkillDefinition(skill, employee);
-        return null;
-      } catch (error) {
-        if (error?.code !== "employee.skill_markdown_missing") throw error;
-        return error.skill || {
-          id: cleanText(skill?.id),
-          name: cleanText(skill?.name) || cleanText(skill?.id),
-        };
-      }
-    })
-    .filter(Boolean);
-  if (missingSkills.length) {
-    const error = new Error("创建前发现技能缺少独立 Markdown 内容");
-    error.code = "employee.skill_markdown_missing";
-    error.recoverable = true;
-    error.skills = missingSkills;
-    throw error;
+  const definedSkills = preserveExistingResources
+    ? skills
+    : skills.filter(hasSkillDefinition);
+  if (!preserveExistingResources && definedSkills.length !== skills.length) {
+    throw new Error("存在缺少独立 Markdown 内容的技能，无法保存智能体");
   }
-  const agentPath = `${safeFileSegment(id, "agent")}/AGENT.md`;
-  const writtenAgent = await mergeDirectoryFile({
-    directory: directories.agent,
-    path: agentPath,
-    kind: "agent",
-    id,
-    content: renderAgentDefinition(employee, skills, rules),
-  });
+  const normalizedEmployee = {
+    ...employee,
+    skills: definedSkills.map((skill) => cleanText(skill?.id)).filter(Boolean),
+    rules: rules.map((rule) => cleanText(rule?.id)).filter(Boolean),
+    project_id: projectId,
+    updated_at: new Date().toISOString(),
+  };
+  const existingAgents = await listLocalProjectAgents({ projectId });
+  const existing = existingAgents.find((item) => cleanText(item?.id) === id);
+  const directoryName = agentDirectoryName(normalizedEmployee);
+  const previousDirectoryName = cleanText(existing?.directory_name) || directoryNameFromFilePath(existing?.file_path);
+
+  const skillWrites = (preserveExistingResources ? [] : definedSkills).map((skill) => ({
+    skill,
+    directoryName: skillDirectoryName(skill),
+    path: `${skillDirectoryName(skill)}/SKILL.md`,
+    content: renderSkillDefinition(skill),
+  }));
+  const ruleWrites = (preserveExistingResources ? [] : rules)
+    .filter((rule) => cleanText(rule?.id))
+    .map((rule) => ({
+      rule,
+      directoryName: ruleDirectoryName(rule),
+      path: `${ruleDirectoryName(rule)}/RULE.md`,
+      content: renderRuleDefinition(rule),
+    }));
 
   const writtenSkills = [];
-  for (const skill of skills) {
-    const skillId = cleanText(skill?.id);
-    if (!skillId) continue;
-    const path = `${safeFileSegment(skillId, "skill")}/SKILL.md`;
-    await mergeDirectoryFile({
-      directory: directories.skill,
-      path,
-      kind: "skill",
-      id,
-      content: renderSkillDefinition(skill, employee),
+  for (const item of skillWrites) {
+    await writeNativeWorkspaceFile({
+      workspacePath: directories.skill,
+      path: item.path,
+      content: item.content,
     });
-    writtenSkills.push({ id: skillId, file_path: `${directories.skill}/${path}` });
+    writtenSkills.push({
+      id: cleanText(item.skill?.id),
+      file_path: `${directories.skill}/${item.path}`,
+    });
   }
 
   const writtenRules = [];
-  for (const rule of rules) {
-    const ruleId = cleanText(rule?.id);
-    if (!ruleId) continue;
-    const path = `${safeFileSegment(ruleId, "rule")}.md`;
-    await mergeDirectoryFile({
-      directory: directories.rule,
-      path,
-      kind: "rule",
-      id: `${ruleId}:${id}`,
-      content: renderRuleDefinition(rule, employee),
+  for (const item of ruleWrites) {
+    await writeNativeWorkspaceFile({
+      workspacePath: directories.rule,
+      path: item.path,
+      content: item.content,
     });
-    writtenRules.push({ id: ruleId, file_path: `${directories.rule}/${path}` });
+    writtenRules.push({
+      id: cleanText(item.rule?.id),
+      file_path: `${directories.rule}/${item.path}`,
+    });
+  }
+
+  const agentPath = `${directoryName}/AGENT.md`;
+  await writeNativeWorkspaceFile({
+    workspacePath: directories.agent,
+    path: agentPath,
+    content: renderAgentDefinition(normalizedEmployee, definedSkills, rules),
+  });
+  const writtenAgent = await writeNativeWorkspaceFile({
+    workspacePath: directories.agent,
+    path: `${directoryName}/${AGENT_METADATA_FILE}`,
+    content: renderAgentMetadata(normalizedEmployee, definedSkills, rules, directoryName),
+  });
+  if (previousDirectoryName && previousDirectoryName !== directoryName) {
+    await removeAgentDefinitionFiles(directories.agent, previousDirectoryName);
   }
 
   const nextEmployee = {
-    ...employee,
-    project_id: projectId,
+    ...normalizedEmployee,
+    directory_name: directoryName,
     directory_path: directories.agent,
     file_path: `${directories.agent}/${agentPath}`,
-    updated_at: new Date().toISOString(),
   };
   updateLocalProjectRelations(projectId, {
     ...relations,

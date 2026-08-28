@@ -1403,7 +1403,7 @@
                 <p>{{ question.question }}</p>
                 <el-checkbox-group
                   v-if="question.options.length && question.multiSelect"
-                  v-model="localLiuAgentUserQuestionAnswers[question.id].selected"
+                  v-model="ensureLocalLiuAgentUserQuestionAnswer(question.id).selected"
                   @change="handleLocalLiuAgentUserQuestionOptionChange(question.id)"
                 >
                   <el-checkbox
@@ -1417,7 +1417,7 @@
                 </el-checkbox-group>
                 <el-radio-group
                   v-else-if="question.options.length"
-                  v-model="localLiuAgentUserQuestionAnswers[question.id].choice"
+                  v-model="ensureLocalLiuAgentUserQuestionAnswer(question.id).choice"
                   @change="handleLocalLiuAgentUserQuestionOptionChange(question.id)"
                 >
                   <el-radio
@@ -1430,7 +1430,7 @@
                   </el-radio>
                 </el-radio-group>
                 <el-input
-                  v-model="localLiuAgentUserQuestionAnswers[question.id].custom"
+                  v-model="ensureLocalLiuAgentUserQuestionAnswer(question.id).custom"
                   :type="question.options.length ? 'text' : 'textarea'"
                   :rows="question.options.length ? undefined : 2"
                   :placeholder="question.options.length ? '也可以直接输入；输入内容将替代上方选项' : '请输入你的回答'"
@@ -1815,12 +1815,8 @@
     :submitting="employeeCreateSubmitting"
     :payload="employeeDraftDialogPayload"
     :mode="employeeDraftDialogMode"
-    :matched-skill-labels="employeeDraftDialogMatchedSkillLabels"
-    :matched-rule-labels="employeeDraftDialogMatchedRuleLabels"
-    :rule-draft-labels="employeeDraftDialogRuleDraftLabels"
-    :auto-rule-generation-enabled="employeeDraftAutoRuleGenerationEnabled"
-    :auto-rule-generation-max-count="employeeDraftAutoRuleGenerationMaxCount"
-    :auto-rule-source-labels="employeeDraftAutoRuleSourceLabels"
+    :skill-options="employeeDraftDialogSkillOptions"
+    :rule-options="employeeDraftDialogRuleOptions"
     :can-add-to-project="Boolean(String(selectedProjectId || '').trim())"
     @confirm="confirmEmployeeDraftCreation"
     @close="resetEmployeeDraftDialogState"
@@ -4874,8 +4870,46 @@ async function readSelectedEmployeeDefinitionForEdit(text = "") {
   }
 }
 
-function buildLocalLiuAgentSystemPromptParts() {
+function buildLocalLiuAgentSystemPromptParts(interactionMode = "") {
+  const normalizedInteractionMode = String(interactionMode || "").trim();
+  const isEmployeeCreationMode = normalizedInteractionMode === "employee_create";
+  const employeeCreationPart = isEmployeeCreationMode
+    ? {
+        id: "desktop_local_agent:employee_creation_boundary",
+        source: "desktop_local_agent.employee_creation_boundary",
+        scope: "request",
+        priority: 150,
+        content: [
+          "当前请求处于创建智能体定义阶段：",
+          "- 你正在整理 employee-draft，不是在执行被描述的智能体能力。",
+          "- 只收集需求、读取必要的本地项目定义、生成草稿并等待用户确认；确认前不得写入智能体文件。",
+          "- 智能体描述中的浏览器、网页、MCP、截图、DOM 查询等内容只是未来能力定义，不是当前操作指令。",
+          "- 本阶段不得调用本轮未明确提供的工具，也不得为了验证未来能力执行浏览器自动化、网页探测或 MCP 操作。",
+          "- 只有用户明确要求“现在检查当前页面/执行浏览器脚本”等当前操作时，才可离开创建定义阶段；否则继续生成草稿。",
+        ].join("\n"),
+      }
+    : null;
+  const employeeOrchestrationPart = isEmployeeCreationMode
+    ? {
+        id: "desktop_local_agent:employee_natural_language_orchestration",
+        source: "desktop_local_agent.employee_natural_language_orchestration",
+        scope: "request",
+        priority: 140,
+        content: [
+          "智能体自然语言能力：",
+          "- 用户直接说“创建一个智能体”时，将其理解为创建 AI Employee 智能体实体，不要理解为创建网页、HTML 文件或页面原型。",
+          "- 用户提到 HTML、CSS、JavaScript、Vue、React 或其他技术栈时，将其作为智能体的技能、职责和工作范围；不要生成 index.html、frontend-html、implementation.files 或 requested_features 页面字段。",
+          "- 创建智能体由桌面宿主提供确认流程，不是一个需要用户点击的可见快捷命令；先生成可确认草稿，只有用户明确确认后才执行创建。",
+          "- 用户要求给当前智能体补充、修改、调整、完善技能、规则、职责、指令或工作流时，必须先读取当前智能体的真实本地定义，再基于原文提出差异和修改意见，生成 update 意图和仅包含本次变更的更新草稿，交给宿主确认并真实写入；不得凭空捏造，也不得只用自然语言声称已经应用。更新范围仅限当前会话明确选择的单个智能体。",
+          "- 编辑智能体必须经过宿主确认弹窗；在用户确认前不得执行任何写入。若无法读取现有定义或没有唯一目标，必须停止生成 update 草稿并明确说明原因。",
+          "- 当用户询问能力或工具时，只说明本轮实际提供且可调用的工具；不要把宿主确认动作、未配置的媒体能力或隐藏快捷入口伪装成普通工具。",
+          buildStructuredInteractionPrompt(),
+        ].join("\n"),
+      }
+    : null;
   return [
+    employeeCreationPart,
+    employeeOrchestrationPart,
     {
       id: "desktop_local_agent:entry_policy",
       source: "desktop_local_agent.entry_policy",
@@ -4901,29 +4935,13 @@ function buildLocalLiuAgentSystemPromptParts() {
       ].join("\n"),
     },
     {
-      id: "desktop_local_agent:employee_natural_language_orchestration",
-      source: "desktop_local_agent.employee_natural_language_orchestration",
-      scope: "global",
-      priority: 108,
-      content: [
-        "智能体自然语言能力：",
-        "- 用户直接说“创建一个智能体”时，将其理解为创建 AI Employee 智能体实体，不要理解为创建网页、HTML 文件或页面原型。",
-        "- 用户提到 HTML、CSS、JavaScript、Vue、React 或其他技术栈时，将其作为智能体的技能、职责和工作范围；不要生成 index.html、frontend-html、implementation.files 或 requested_features 页面字段。",
-        "- 创建智能体由桌面宿主提供确认流程，不是一个需要用户点击的可见快捷命令；先生成可确认草稿，只有用户明确确认后才执行创建。",
-        "- 用户要求给当前智能体补充、修改、调整、完善技能、规则、职责、指令或工作流时，必须先读取当前智能体的真实本地定义，再基于原文提出差异和修改意见，生成 update 意图和仅包含本次变更的更新草稿，交给宿主确认并真实写入；不得凭空捏造，也不得只用自然语言声称已经应用。更新范围仅限当前会话明确选择的单个智能体。",
-        "- 编辑智能体必须经过宿主确认弹窗；在用户确认前不得执行任何写入。若无法读取现有定义或没有唯一目标，必须停止生成 update 草稿并明确说明原因。",
-        "- 当用户询问能力或工具时，只说明本轮实际提供且可调用的工具；不要把宿主确认动作、未配置的媒体能力或隐藏快捷入口伪装成普通工具。",
-        buildStructuredInteractionPrompt(),
-      ].join("\n"),
-    },
-    {
       id: "deployment:persona",
       source: "project_chat_settings.system_prompt",
       scope: "project",
       priority: 100,
       content: String(systemPrompt.value || "").trim(),
     },
-  ].filter((part) => part.content);
+  ].filter((part) => part && part.content);
 }
 
 const activeMcpSource = ref("system");
@@ -15272,13 +15290,7 @@ function mergeEmployeeSkillDefinitions(skillCatalog, skillIds, skillDrafts) {
         "",
     ).trim();
     const name = String(draft.name || existing.name || skillId).trim();
-    if (!content) {
-      const error = new Error(`技能「${name}」缺少独立 Markdown 内容`);
-      error.code = "employee.skill_markdown_missing";
-      error.recoverable = true;
-      error.skills = [{ id: skillId, name }];
-      throw error;
-    }
+    if (!content) continue;
     const contentFingerprint = content
       .replace(/^---[\s\S]*?---\s*/m, "")
       .split("\n")
@@ -19758,18 +19770,32 @@ function resetLocalLiuAgentUserQuestionAnswers(request = {}) {
   );
 }
 
+function ensureLocalLiuAgentUserQuestionAnswer(questionId = "") {
+  const normalizedQuestionId = String(questionId || "").trim();
+  if (!normalizedQuestionId) {
+    return { choice: "", selected: [], custom: "" };
+  }
+  const answers = localLiuAgentUserQuestionAnswers.value;
+  if (!answers[normalizedQuestionId] || typeof answers[normalizedQuestionId] !== "object") {
+    answers[normalizedQuestionId] = { choice: "", selected: [], custom: "" };
+  }
+  const answer = answers[normalizedQuestionId];
+  if (!Array.isArray(answer.selected)) answer.selected = [];
+  if (typeof answer.choice !== "string") answer.choice = "";
+  if (typeof answer.custom !== "string") answer.custom = "";
+  return answer;
+}
+
 function handleLocalLiuAgentUserQuestionOptionChange(questionId = "") {
   const normalizedQuestionId = String(questionId || "").trim();
-  const draft = localLiuAgentUserQuestionAnswers.value?.[normalizedQuestionId];
-  if (!draft) return;
+  const draft = ensureLocalLiuAgentUserQuestionAnswer(normalizedQuestionId);
   draft.custom = "";
 }
 
 function handleLocalLiuAgentUserQuestionCustomInput(questionId = "", value = "") {
   if (!String(value || "").trim()) return;
   const normalizedQuestionId = String(questionId || "").trim();
-  const draft = localLiuAgentUserQuestionAnswers.value?.[normalizedQuestionId];
-  if (!draft) return;
+  const draft = ensureLocalLiuAgentUserQuestionAnswer(normalizedQuestionId);
   draft.choice = "";
   draft.selected = [];
 }
@@ -23387,7 +23413,25 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
       workspacePath: String(localChatPayload.workspacePath || "").trim(),
       providerId: String(localChatPayload.providerId || "").trim(),
       modelName: String(localChatPayload.modelName || "").trim(),
+      interactionMode: String(
+        localChatPayload?.mcpConfig?._interaction_mode || "",
+      ).trim(),
     });
+    const waitingForNextUserInput =
+      localLiuAgentPendingUserQuestionsForChatSession(
+        String(
+          pending.activeChatSessionId ||
+            localChatPayload.chatSessionId ||
+            currentChatSessionId.value,
+        ).trim(),
+      ).some(
+        (nextPending) =>
+          String(nextPending?.assistantMessageId || "").trim() ===
+          String(row?.id || "").trim(),
+      );
+    if (!waitingForNextUserInput) {
+      await handleEmployeeIntentAfterAssistantResponse(row);
+    }
   } catch (error) {
     setLocalLiuAgentPendingUserQuestion(requestId, pending);
     ElMessage.error(error?.message || "提交回答后继续执行失败");
@@ -27323,10 +27367,11 @@ function buildEmployeeDraftAssistContext() {
     "- 用户提到 HTML/CSS/JavaScript 等内容时，将其作为智能体的技术栈、技能和职责范围；不要输出 type=frontend-html、implementation.files 或 requested_features 页面 schema。",
     "- 先用 3 到 6 行说明你推荐这个智能体的定位。",
     "- 最后必须追加一个 ```employee-draft``` 代码块，内容是严格 JSON，不要写注释。",
-    "- JSON 至少包含：name、description、goal、skills、skill_drafts、rule_domains、style_hints、default_workflow、tool_usage_policy、memory_scope、memory_retention_days。",
-    "- skills 字段里优先放技能 ID；skill_drafts 必须为每个 skills 项提供 id、name、content。content 必须是该技能独立的真实 Markdown（至少包含适用范围、工作规则、输入输出或验证方式），不得复用“此技能由 AI Employee 本地智能体配置引用”等占位模板。",
-    "- rule_domains 优先输出领域名；rule_titles 可补充你认为最关键的规则标题。",
-    "- 如果从外部提示词或技能模板中提炼出了可直接落地的智能体规则，请额外输出 rule_drafts 数组；每项包含 title、domain、content，可选 source_label、source_url。",
+    "- JSON 必须包含：name、description、goal、skills、skill_drafts、rule_ids、rule_drafts、style_hints、default_workflow、tool_usage_policy、memory_scope、memory_retention_days。",
+    "- 创建草稿至少提供 1 个技能候选和 1 个规则候选，供用户在确认弹窗中多选；不得只给名称或领域而不提供可写入内容。",
+    "- 每个新技能必须同时出现在 skills 和 skill_drafts 中；skill_drafts 的每项必须有 id、name、content，content 是独立、可执行的 Markdown。已有本地技能可只使用其 ID。",
+    "- 每个新规则必须写入 rule_drafts；每项必须有 title、domain、content。已有本地规则使用 rule_ids。",
+    "- 用户未勾选的候选不会创建或绑定，因此不要生成与用户目标无关的技能和规则。",
   ]
     .filter(Boolean)
     .join("\n");
@@ -27499,8 +27544,8 @@ function buildEmployeeAutoCreatePayload(rawDraft) {
       365,
       Math.max(7, Number(draft.memory_retention_days || 90)),
     ),
-    auto_create_missing_skills: true,
-    auto_create_missing_rules: true,
+    auto_create_missing_skills: false,
+    auto_create_missing_rules: false,
   };
 }
 
@@ -27553,6 +27598,108 @@ const employeeDraftDialogMatchedRuleLabels = computed(() =>
     rule.domain ? `${rule.title} (${rule.domain})` : rule.title,
   ),
 );
+
+const employeeDraftDialogSkillOptions = computed(() => {
+  const payload = employeeDraftDialogPayload.value;
+  if (!payload) return [];
+  const relations = getLocalProjectRelations(selectedProjectId.value);
+  const catalog = Array.isArray(relations?.skills) ? relations.skills : [];
+  const options = new Map();
+  const addOption = ({ value, name, description = "", ready = false, source = "" }) => {
+    const key = String(value || "").trim();
+    if (!key || options.has(key)) return;
+    options.set(key, {
+      value: key,
+      label: String(name || key).trim(),
+      description: String(description || "").trim(),
+      ready: Boolean(ready),
+      source: String(source || "").trim(),
+    });
+  };
+  const drafts = Array.isArray(payload.skill_drafts) ? payload.skill_drafts : [];
+  for (const draft of drafts) {
+    const value = String(draft?.id || draft?.name || "").trim();
+    if (!value) continue;
+    addOption({
+      value,
+      name: draft?.name || value,
+      description: draft?.description,
+      ready: Boolean(String(draft?.content || "").trim()),
+      source: "新建技能定义",
+    });
+  }
+  for (const rawSkill of Array.isArray(payload.skills) ? payload.skills : []) {
+    const value = String(rawSkill?.id || rawSkill || "").trim();
+    if (!value) continue;
+    const existing = catalog.find(
+      (skill) =>
+        normalizeMatchKey(skill?.id) === normalizeMatchKey(value) ||
+        normalizeMatchKey(skill?.name) === normalizeMatchKey(value),
+    );
+    addOption({
+      value,
+      name: existing?.name || value,
+      description: existing?.description || "",
+      ready: Boolean(
+        String(
+          existing?.markdown ||
+            existing?.content ||
+            existing?.definition ||
+            existing?.instructions ||
+            existing?.description ||
+            "",
+        ).trim(),
+      ),
+      source: existing ? "已有本地技能" : "等待技能定义",
+    });
+  }
+  return [...options.values()];
+});
+
+const employeeDraftDialogRuleOptions = computed(() => {
+  const payload = employeeDraftDialogPayload.value;
+  if (!payload) return [];
+  const relations = getLocalProjectRelations(selectedProjectId.value);
+  const catalog = Array.isArray(relations?.rules) ? relations.rules : [];
+  const options = new Map();
+  const addOption = ({ value, title, domain = "", ready = false, source = "" }) => {
+    const key = String(value || "").trim();
+    if (!key || options.has(key)) return;
+    options.set(key, {
+      value: key,
+      label: String(title || key).trim(),
+      description: String(domain || "").trim(),
+      ready: Boolean(ready),
+      source: String(source || "").trim(),
+    });
+  };
+  for (const rule of employeeDraftDialogMatchedRuleBindings.value) {
+    const existing = catalog.find(
+      (item) => String(item?.id || "").trim() === String(rule.id || "").trim(),
+    );
+    addOption({
+      value: rule.id,
+      title: rule.title || rule.id,
+      domain: rule.domain,
+      ready: Boolean(
+        String(existing?.content || existing?.body || existing?.description || "").trim(),
+      ),
+      source: "已有本地规则",
+    });
+  }
+  for (const draft of Array.isArray(payload.rule_drafts) ? payload.rule_drafts : []) {
+    const title = String(draft?.title || "").trim();
+    if (!title) continue;
+    addOption({
+      value: `draft:${normalizeMatchKey(title)}`,
+      title,
+      domain: draft?.domain,
+      ready: Boolean(String(draft?.content || "").trim()),
+      source: "新建规则定义",
+    });
+  }
+  return [...options.values()];
+});
 
 function syncSkillResourceDirectoryDraft() {
   skillResourceDirectoryDraft.value = readPreferredSkillResourceDirectory(
@@ -27696,8 +27843,8 @@ function resetEmployeeDraftDialogState() {
   employeeDraftDialogPayload.value = null;
   employeeDraftDialogItem.value = null;
   employeeDraftDialogMode.value = "create";
-  employeeDraftAutoCreateSkills.value = true;
-  employeeDraftAutoCreateRules.value = true;
+  employeeDraftAutoCreateSkills.value = false;
+  employeeDraftAutoCreateRules.value = false;
   employeeDraftAddToProject.value = false;
 }
 
@@ -27823,8 +27970,8 @@ function applyEmployeeDraftConfirmationCandidate(candidate = null) {
   employeeDraftDialogMode.value = candidate.mode === "update" ? "update" : "create";
   employeeDraftDialogPayload.value = candidate.payload;
   employeeDraftDialogItem.value = candidate.item;
-  employeeDraftAutoCreateSkills.value = true;
-  employeeDraftAutoCreateRules.value = true;
+  employeeDraftAutoCreateSkills.value = employeeDraftDialogMode.value === "update";
+  employeeDraftAutoCreateRules.value = employeeDraftDialogMode.value === "update";
   employeeDraftAddToProject.value =
     employeeDraftDialogMode.value === "update" ||
     Boolean(String(selectedProjectId.value || "").trim());
@@ -27966,8 +28113,8 @@ async function openEmployeeDraftCreateDialog(item, payload) {
   employeeDraftDialogMode.value = "create";
   employeeDraftDialogPayload.value = payload;
   employeeDraftDialogItem.value = item;
-  employeeDraftAutoCreateSkills.value = true;
-  employeeDraftAutoCreateRules.value = true;
+  employeeDraftAutoCreateSkills.value = false;
+  employeeDraftAutoCreateRules.value = false;
   employeeDraftAddToProject.value = Boolean(
     String(selectedProjectId.value || "").trim(),
   );
@@ -28135,23 +28282,55 @@ async function confirmEmployeeDraftCreation(options = {}) {
       employeeDraftDialogMode.value === "update"
         ? handleQuickUpdateEmployee
         : handleQuickCreateEmployee;
+    const selectedSkillIds = normalizeStringList(
+      options?.selected_skill_ids || payload.skills || [],
+      30,
+    );
+    const selectedRuleKeys = normalizeStringList(
+      options?.selected_rule_keys || [],
+      30,
+    );
+    const selectedRuleIds = selectedRuleKeys.filter(
+      (value) => !value.startsWith("draft:"),
+    );
+    const selectedRuleDraftKeys = new Set(
+      selectedRuleKeys
+        .filter((value) => value.startsWith("draft:"))
+        .map((value) => value.slice("draft:".length)),
+    );
+    const selectedSkillKeys = new Set(
+      selectedSkillIds.map((value) => normalizeMatchKey(value)),
+    );
+    const skillDrafts = (Array.isArray(payload.skill_drafts)
+      ? payload.skill_drafts
+      : []
+    ).filter((draft) =>
+      selectedSkillKeys.has(normalizeMatchKey(draft?.id || draft?.name)),
+    );
+    const ruleDrafts = (Array.isArray(payload.rule_drafts)
+      ? payload.rule_drafts
+      : []
+    ).filter((draft) =>
+      selectedRuleDraftKeys.has(normalizeMatchKey(draft?.title)),
+    );
+    if (
+      employeeDraftDialogMode.value === "create" &&
+      (!selectedSkillIds.length || (!selectedRuleIds.length && !ruleDrafts.length))
+    ) {
+      throw new Error("请至少勾选一项技能和一项规则后再创建智能体");
+    }
     const employee = await handler({
       ...payload,
-      skills: Array.isArray(payload.skills) ? payload.skills : [],
-      skill_drafts: Array.isArray(payload.skill_drafts)
-        ? payload.skill_drafts
-        : [],
-      rule_drafts: Array.isArray(payload.rule_drafts)
-        ? payload.rule_drafts
-        : [],
+      skills: selectedSkillIds,
+      skill_drafts: skillDrafts,
+      rule_ids: selectedRuleIds,
+      rule_titles: [],
+      rule_domains: [],
+      rule_drafts: ruleDrafts,
       add_to_current_project:
         options?.add_to_current_project ?? employeeDraftAddToProject.value,
-      auto_create_missing_skills:
-        options?.auto_create_missing_skills ??
-        employeeDraftAutoCreateSkills.value,
-      auto_create_missing_rules:
-        options?.auto_create_missing_rules ??
-        employeeDraftAutoCreateRules.value,
+      auto_create_missing_skills: false,
+      auto_create_missing_rules: false,
     });
     const updated = employeeDraftDialogMode.value === "update";
     item.employeeDraftCreatedName = String(
@@ -28168,38 +28347,6 @@ async function confirmEmployeeDraftCreation(options = {}) {
     employeeDraftDialogVisible.value = false;
     resetEmployeeDraftDialogState();
   } catch (error) {
-    if (error?.recoverable && error?.code === "employee.skill_markdown_missing") {
-      const repairAttempts = Number(item.employeeDraftRepairAttempts || 0);
-      const maxRepairAttempts = resolveNumericChatSetting(
-        projectChatSettings.value.recoverable_issue_max_attempts,
-        CHAT_SETTINGS_DEFAULTS.recoverable_issue_max_attempts,
-        { min: 1, max: 50 },
-      );
-      if (repairAttempts < maxRepairAttempts) {
-        item.employeeDraftRepairAttempts = repairAttempts + 1;
-        item.employeeDraftSuperseded = true;
-        employeeDraftDialogVisible.value = false;
-        resetEmployeeDraftDialogState();
-        const missingSkills = (Array.isArray(error.skills) ? error.skills : [])
-          .map((skill) => `${skill.name || skill.id} (${skill.id || "无 ID"})`)
-          .join("、");
-        draftText.value = [
-          "继续处理刚才的智能体创建任务，不要重新询问已经回答的信息。",
-          `创建前检查发现以下技能缺少独立 Markdown 定义：${missingSkills || "未命名技能"}。`,
-          "请为每个缺失技能生成独立、真实、可执行的 Markdown 内容，至少包含适用范围、工作规则、输入输出和验证方式。",
-          "保留原智能体名称、职责、工作流和用户已确认的内容，只补齐缺失技能定义，然后返回完整的 create 草稿供我再次确认。",
-          "这不是最终失败，而是创建前的可恢复问题；不要把错误原文直接展示给用户。",
-        ].join("\n");
-        ElMessage.info("发现技能定义缺失，正在让 AI 补齐后重新生成创建草稿");
-        await nextTick();
-        await doSend();
-        return;
-      }
-      ElMessage.error(
-        `技能定义连续 ${maxRepairAttempts} 次未补齐，请点击“继续完善”后补充技能内容`,
-      );
-      return;
-    }
     ElMessage.error(
       error?.message ||
         (employeeDraftDialogMode.value === "update"
@@ -30533,12 +30680,11 @@ async function handleQuickCreateEmployee(payload) {
 
     const selectedSkills = employee.skills.map((skillId) => {
       const id = String(skillId?.id || skillId || "").trim();
-      return (
-        skills.find(
-          (item) => String(item?.id || item?.name || "").trim() === id,
-        ) || { id, name: id }
+      return skills.find(
+        (item) => String(item?.id || item?.name || "").trim() === id,
       );
     }).filter((item) => String(item?.id || "").trim());
+    employee.skills = selectedSkills.map((skill) => String(skill.id || "").trim());
     const selectedRules = rules.filter((rule) => {
       const ruleId = String(rule?.id || "").trim();
       return (
@@ -30548,6 +30694,12 @@ async function handleQuickCreateEmployee(payload) {
         )
       );
     });
+    if (selectedSkills.length !== employee.skills.length) {
+      throw new Error("选中的技能缺少可写入定义，请重新选择技能候选");
+    }
+    if (!selectedRules.length) {
+      throw new Error("选中的规则缺少可写入定义，请重新选择规则候选");
+    }
     employee.rule_ids = [...new Set(selectedRules.map((rule) => String(rule.id || "").trim()).filter(Boolean))];
     employee.rule_bindings = selectedRules.map((rule) => ({
       id: String(rule.id || "").trim(),
@@ -30555,11 +30707,17 @@ async function handleQuickCreateEmployee(payload) {
       domain: String(rule.domain || "").trim(),
     }));
 
-    const { employee: directoryEmployee, directories } = await saveLocalAgentDirectoryResources({
+    const { employee: directoryEmployee, directories, writtenSkills, writtenRules } = await saveLocalAgentDirectoryResources({
       employee,
       skills: selectedSkills,
       rules: selectedRules,
     });
+    if (
+      writtenSkills.length !== selectedSkills.length ||
+      writtenRules.length !== selectedRules.length
+    ) {
+      throw new Error("智能体关联的技能或规则未完整写入本地目录");
+    }
     Object.assign(projectChatSettings.value, {
       agent_directory: directories.agent,
       skill_directory: directories.skill,
@@ -30601,7 +30759,9 @@ async function handleQuickCreateEmployee(payload) {
     ElMessage.success(`智能体「${directoryEmployee.name}」已加入当前项目并同步本地目录`);
     return directoryEmployee;
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "创建智能体失败");
+    if (!(err?.recoverable && err?.code === "employee.skill_markdown_missing")) {
+      ElMessage.error(err?.detail || err?.message || "创建智能体失败");
+    }
     throw err;
   } finally {
     employeeCreateSubmitting.value = false;
@@ -30782,7 +30942,11 @@ async function handleQuickUpdateEmployee(payload) {
     ElMessage.success(`智能体「${savedEmployee.name}」的技能与规则已更新`);
     return savedEmployee;
   } catch (error) {
-    ElMessage.error(error?.detail || error?.message || "更新智能体失败");
+    if (
+      !(error?.recoverable && error?.code === "employee.skill_markdown_missing")
+    ) {
+      ElMessage.error(error?.detail || error?.message || "更新智能体失败");
+    }
     throw error;
   } finally {
     employeeCreateSubmitting.value = false;
@@ -34215,6 +34379,8 @@ async function sendProjectChatRequest({
       historyRows,
       displayUserMessageContent: localUserMessage.content,
       sourceContext: activeSessionSourceContext,
+      interactionMode:
+        assistAction?.id === "employee_create" ? "employee_create" : "",
       attachments: [],
       mediaTools: localLiuAgentMediaTools.value,
       persistUserMessage: Boolean(userMessageId),
@@ -34401,6 +34567,7 @@ async function sendLocalLiuAgentChatRequest({
   workspacePath: requestedWorkspacePath = "",
   providerId: requestedProviderId = "",
   modelName: requestedModelName = "",
+  interactionMode = "",
 }) {
   const workspacePath = String(
     requestedWorkspacePath || localLiuAgentWorkspacePath(),
@@ -34504,7 +34671,7 @@ async function sendLocalLiuAgentChatRequest({
     history: historyRows,
     providerId,
     modelName,
-    systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
+    systemPromptParts: buildLocalLiuAgentSystemPromptParts(interactionMode),
     temperature: Number(
       temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
     ),
@@ -34512,6 +34679,16 @@ async function sendLocalLiuAgentChatRequest({
     aiEntryFile: String(projectAiEntryFile.value || "").trim(),
     mcpConfig: {
       ...effectiveMcpConfig.value,
+      ...(String(interactionMode || "").trim()
+        ? { _interaction_mode: String(interactionMode).trim() }
+        : {}),
+      runtimeOptions: {
+        recoverableIssueMaxAttempts: resolveNumericChatSetting(
+          projectChatSettings.value.recoverable_issue_max_attempts,
+          CHAT_SETTINGS_DEFAULTS.recoverable_issue_max_attempts,
+          { min: 1, max: 50 },
+        ),
+      },
       localResourceDirectories: {
         agent: String(projectChatSettings.value.agent_directory || "").trim(),
         skill: String(projectChatSettings.value.skill_directory || "").trim(),
@@ -35880,6 +36057,12 @@ async function doSend(options = {}) {
       .join("\n\n");
   }
   const assistAction = effectiveAssistAction;
+  if (assistAction?.id === "employee_create") {
+    activeComposerAssist.value = "";
+    if (activeComposerToolCommandId.value === "assist_employee_create") {
+      activeComposerToolCommandId.value = "";
+    }
+  }
   const assistToolNames = normalizeStringList(
     assistAction?.toolNames || [],
     20,
@@ -36080,6 +36263,8 @@ async function doSend(options = {}) {
       displayUserMessageContent,
       attachments: localLiuAgentAttachments,
       mediaTools: localLiuAgentMediaTools.value,
+      interactionMode:
+        effectiveAssistAction?.id === "employee_create" ? "employee_create" : "",
       providerId: requestModelTarget.providerId,
       modelName: requestModelTarget.modelName,
       sourceContext: {

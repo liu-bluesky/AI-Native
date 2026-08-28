@@ -33,18 +33,24 @@ export function useProjectChatComposer(options = {}) {
   function rememberChatSessionComposerState(projectId, chatSessionId, state) {
     const key = cacheKey(projectId, chatSessionId);
     if (!key || !state || typeof state !== "object") return;
+    const activeAssist = String(state.activeComposerAssist || "").trim();
+    const activeToolCommandId = String(
+      state.activeComposerToolCommandId ??
+        activeComposerToolCommandId?.value ??
+        "",
+    ).trim();
     // 按会话隔离输入草稿，避免切换会话时把未发送内容串到其他对话。
     composerCache.set(key, {
       draftText: String(state.draftText || ""),
       uploadFiles: Array.isArray(state.uploadFiles)
         ? state.uploadFiles.map(normalizeComposerUploadItem).filter(Boolean)
         : [],
-      activeComposerAssist: String(state.activeComposerAssist || "").trim(),
-      activeComposerToolCommandId: String(
-        state.activeComposerToolCommandId ??
-          activeComposerToolCommandId?.value ??
-          "",
-      ).trim(),
+      activeComposerAssist:
+        activeAssist === "employee_create" ? "" : activeAssist,
+      activeComposerToolCommandId:
+        activeToolCommandId === "assist_employee_create"
+          ? ""
+          : activeToolCommandId,
       singleRoundAnswerOnly: Boolean(state.singleRoundAnswerOnly),
     });
   }

@@ -50,150 +50,67 @@
       </div>
 
       <div class="employee-draft-dialog__section">
-        <div class="employee-draft-dialog__section-title">本地已匹配能力</div>
-        <div class="employee-draft-dialog__grid">
-          <div class="employee-draft-dialog__panel">
-            <div class="employee-draft-dialog__panel-title">
-              技能 {{ matchedSkillLabels.length }}
-            </div>
-            <div class="employee-draft-dialog__tag-list">
-              <el-tag
-                v-for="label in matchedSkillLabels"
-                :key="`employee-draft-skill-${label}`"
-                size="small"
-                effect="plain"
-              >
-                {{ label }}
-              </el-tag>
-              <span
-                v-if="!matchedSkillLabels.length"
-                class="employee-draft-dialog__empty"
-              >
-                暂无可直接匹配的本地技能，将按下面开关决定是否自动补齐。
-              </span>
-            </div>
-          </div>
-          <div class="employee-draft-dialog__panel">
-            <div class="employee-draft-dialog__panel-title">
-              规则 {{ matchedRuleLabels.length }}
-            </div>
-            <div class="employee-draft-dialog__tag-list">
-              <el-tag
-                v-for="label in matchedRuleLabels"
-                :key="`employee-draft-rule-${label}`"
-                size="small"
-                effect="plain"
-                type="success"
-              >
-                {{ label }}
-              </el-tag>
-              <span
-                v-if="!matchedRuleLabels.length"
-                class="employee-draft-dialog__empty"
-              >
-                暂无可直接匹配的本地规则，将按下面开关决定是否自动补齐。
-              </span>
-            </div>
-            <div
-              v-if="ruleDraftLabels.length"
-              class="employee-draft-dialog__subsection"
-            >
-              <div class="employee-draft-dialog__subsection-title">
-                待落地规则草稿 {{ ruleDraftLabels.length }}
-              </div>
-              <div class="employee-draft-dialog__tag-list">
-                <el-tag
-                  v-for="label in ruleDraftLabels"
-                  :key="`employee-draft-rule-draft-${label}`"
-                  size="small"
-                  effect="plain"
-                  type="warning"
-                >
-                  {{ label }}
-                </el-tag>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="employee-draft-dialog__section">
-        <div class="employee-draft-dialog__section-head">
-          <div class="employee-draft-dialog__section-title">规则自动生成</div>
-          <el-tag
-            size="small"
-            effect="plain"
-            :type="autoRuleGenerationEnabled ? 'success' : 'info'"
-          >
-            {{ autoRuleGenerationEnabled ? "系统已启用" : "系统已停用" }}
-          </el-tag>
-        </div>
-        <div class="employee-draft-dialog__section-hint">
-          规则不再由当前页面手动选择。创建时系统会按后台配置自动补全规则草稿，再落地并绑定到当前智能体。
-        </div>
-        <div class="employee-draft-dialog__grid">
-          <div class="employee-draft-dialog__panel">
-            <div class="employee-draft-dialog__panel-title">当前策略</div>
-            <div class="employee-draft-dialog__tag-list">
-              <el-tag
-                size="small"
-                effect="plain"
-                :type="autoRuleGenerationEnabled ? 'success' : 'info'"
-              >
-                {{
-                  autoRuleGenerationEnabled
-                    ? "自动生成已启用"
-                    : "自动生成已停用"
-                }}
-              </el-tag>
-              <el-tag
-                v-if="autoRuleGenerationEnabled"
-                size="small"
-                effect="plain"
-                type="warning"
-              >
-                最多 {{ autoRuleGenerationMaxCount }} 条
-              </el-tag>
-              <el-tag
-                v-for="label in autoRuleSourceLabels"
-                :key="`employee-draft-rule-source-${label}`"
-                size="small"
-                effect="plain"
-              >
-                {{ label }}
-              </el-tag>
-            </div>
-            <div class="employee-draft-dialog__empty">
-              {{
-                autoRuleGenerationEnabled
-                  ? "系统会结合智能体描述、已选技能和系统规则源自动补全规则。"
-                  : "当前系统配置已关闭自动补规则，仅使用已匹配规则和已有规则草稿。"
-              }}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="employee-draft-dialog__section">
         <div class="employee-draft-dialog__section-title">
-          {{ isUpdateMode ? "更新策略" : "创建策略" }}
+          选择要{{ isUpdateMode ? "更新" : "创建并绑定" }}的能力
         </div>
         <div class="employee-draft-dialog__section-hint">
-          智能体技能仍以草稿内容和系统自动补齐为准。规则来源不在这里选择，而是由系统按后台配置自动生成。
+          勾选项会写入对应技能和规则目录，并绑定到当前智能体；未勾选项不会创建或绑定。
+        </div>
+        <div class="employee-draft-dialog__grid">
+          <div class="employee-draft-dialog__panel">
+            <div class="employee-draft-dialog__panel-title">
+              技能候选 {{ skillOptions.length }}
+            </div>
+            <el-checkbox-group
+              v-model="selectedSkillIds"
+              class="employee-draft-dialog__option-list"
+            >
+              <el-checkbox
+                v-for="option in skillOptions"
+                :key="`employee-draft-skill-${option.value}`"
+                :label="option.value"
+                :disabled="!option.ready"
+              >
+                <span>{{ option.label }}</span>
+                <small v-if="option.source">{{ option.source }}</small>
+                <small v-if="option.description">{{ option.description }}</small>
+              </el-checkbox>
+            </el-checkbox-group>
+            <div
+              v-if="!skillOptions.length"
+              class="employee-draft-dialog__empty"
+            >
+              草稿未产出可写入的技能定义，请先继续完善草稿。
+            </div>
+          </div>
+          <div class="employee-draft-dialog__panel">
+            <div class="employee-draft-dialog__panel-title">
+              规则候选 {{ ruleOptions.length }}
+            </div>
+            <el-checkbox-group
+              v-model="selectedRuleKeys"
+              class="employee-draft-dialog__option-list"
+            >
+              <el-checkbox
+                v-for="option in ruleOptions"
+                :key="`employee-draft-rule-${option.value}`"
+                :label="option.value"
+                :disabled="!option.ready"
+              >
+                <span>{{ option.label }}</span>
+                <small v-if="option.source">{{ option.source }}</small>
+                <small v-if="option.description">{{ option.description }}</small>
+              </el-checkbox>
+            </el-checkbox-group>
+            <div
+              v-if="!ruleOptions.length"
+              class="employee-draft-dialog__empty"
+            >
+              草稿未产出可写入的规则定义，请先继续完善草稿。
+            </div>
+          </div>
         </div>
         <div class="employee-draft-dialog__switches">
-          <el-switch
-            v-model="autoCreateSkills"
-            inline-prompt
-            active-text="自动补技能"
-            inactive-text="手动处理技能"
-          />
-          <el-switch
-            v-model="autoCreateRules"
-            inline-prompt
-            active-text="自动补规则"
-            inactive-text="手动处理规则"
-          />
           <el-switch
             v-if="!isUpdateMode"
             v-model="addToProject"
@@ -211,7 +128,7 @@
       <el-button
         type="primary"
         :loading="submitting"
-        :disabled="!payload"
+        :disabled="!payload || (!isUpdateMode && !hasRequiredSelections)"
         @click="handleConfirm"
       >
         {{ isUpdateMode ? "确认更新" : "确认创建" }}
@@ -240,27 +157,11 @@ const props = defineProps({
     type: Object,
     default: null,
   },
-  matchedSkillLabels: {
+  skillOptions: {
     type: Array,
     default: () => [],
   },
-  matchedRuleLabels: {
-    type: Array,
-    default: () => [],
-  },
-  ruleDraftLabels: {
-    type: Array,
-    default: () => [],
-  },
-  autoRuleGenerationEnabled: {
-    type: Boolean,
-    default: true,
-  },
-  autoRuleGenerationMaxCount: {
-    type: Number,
-    default: 3,
-  },
-  autoRuleSourceLabels: {
+  ruleOptions: {
     type: Array,
     default: () => [],
   },
@@ -276,10 +177,13 @@ const props = defineProps({
 
 const emit = defineEmits(["update:modelValue", "confirm", "close"]);
 
-const autoCreateSkills = ref(true);
-const autoCreateRules = ref(true);
+const selectedSkillIds = ref([]);
+const selectedRuleKeys = ref([]);
 const addToProject = ref(false);
 const isUpdateMode = computed(() => props.mode === "update");
+const hasRequiredSelections = computed(
+  () => selectedSkillIds.value.length > 0 && selectedRuleKeys.value.length > 0,
+);
 
 function readableValue(value) {
   if (value == null) return "";
@@ -323,11 +227,15 @@ const saveContentPreview = computed(() => {
 });
 
 watch(
-  () => [props.modelValue, props.payload, props.canAddToProject],
+  () => [props.modelValue, props.payload, props.skillOptions, props.ruleOptions, props.canAddToProject],
   ([visible]) => {
     if (!visible) return;
-    autoCreateSkills.value = true;
-    autoCreateRules.value = true;
+    selectedSkillIds.value = props.skillOptions
+      .filter((option) => option?.ready)
+      .map((option) => option.value);
+    selectedRuleKeys.value = props.ruleOptions
+      .filter((option) => option?.ready)
+      .map((option) => option.value);
     addToProject.value = Boolean(props.canAddToProject);
   },
   { immediate: true, deep: true },
@@ -343,8 +251,8 @@ function handleClose() {
 
 function handleConfirm() {
   emit("confirm", {
-    auto_create_missing_skills: autoCreateSkills.value,
-    auto_create_missing_rules: autoCreateRules.value,
+    selected_skill_ids: selectedSkillIds.value,
+    selected_rule_keys: selectedRuleKeys.value,
     add_to_current_project: addToProject.value,
   });
 }
@@ -490,6 +398,30 @@ function handleConfirm() {
   gap: 12px;
   width: 100%;
   min-width: 0;
+}
+
+.employee-draft-dialog__option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.employee-draft-dialog__option-list :deep(.el-checkbox) {
+  align-items: flex-start;
+  height: auto;
+  margin-right: 0;
+  white-space: normal;
+}
+
+.employee-draft-dialog__option-list :deep(.el-checkbox__label) {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  line-height: 1.45;
+}
+
+.employee-draft-dialog__option-list small {
+  color: var(--el-text-color-secondary);
 }
 
 @media (max-width: 767px) {

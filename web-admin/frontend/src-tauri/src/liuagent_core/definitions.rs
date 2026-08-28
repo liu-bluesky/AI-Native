@@ -10,7 +10,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "ask_user_question",
-            description: "当缺少只能由用户决定的信息、需要用户确认方案，或需要用户从少量选项中选择时使用。调用后 Runtime 会暂停当前工具循环并展示问题；收到答案后会从同一个工具调用继续。一次最多提出 3 个具体问题。每个问题必须明确设置 multi_select：互斥答案只能选一个时设为 false；多个答案可以同时成立、用户可能需要组合选择时设为 true。不要用它报告内部错误，也不要把可以自行读取或推断的信息交给用户。",
+            description: "仅当用户已经提出明确任务，且缺少会改变执行结果、只能由用户决定、无法从上下文读取或安全采用默认值的关键信息时使用。调用后 Runtime 会暂停当前工具循环并展示问题；收到答案后会从同一个工具调用继续。不要把问候、闲聊、能力咨询、泛泛的“想做什么”澄清、内部错误、可自行读取/推断的信息或非关键偏好交给用户；非关键缺失应采用合理默认值并继续。一次最多提出 3 个具体问题。每个问题必须明确设置 multi_select：互斥答案只能选一个时设为 false；多个答案可以同时成立、用户可能需要组合选择时设为 true。",
             action: "interaction.ask_user",
             risk: "low",
             requires_approval: false,
