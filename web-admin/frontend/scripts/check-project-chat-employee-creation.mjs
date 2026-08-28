@@ -17,6 +17,10 @@ const runtimeSource = await readFile(
   new URL("../src-tauri/src/liuagent_core/runtime.rs", import.meta.url),
   "utf8",
 );
+const nativeBridgeSource = await readFile(
+  new URL("../src/utils/native-desktop-bridge.js", import.meta.url),
+  "utf8",
+);
 const composerStateSource = await readFile(
   new URL(
     "../src/modules/project-chat/composables/useProjectChatComposer.js",
@@ -292,6 +296,16 @@ assert.doesNotMatch(
   directoryServiceSource,
   /此技能由 AI Employee 本地智能体配置引用。/,
   "目录写入层不得保留技能通用占位正文",
+);
+assert.match(
+  directoryServiceSource,
+  /async function removeAgentDefinitionDirectory\([\s\S]*deleteNativeWorkspaceDirectory[\s\S]*export async function deleteLocalProjectAgent[\s\S]*await removeAgentDefinitionDirectory/s,
+  "删除智能体必须递归清理其目录后再刷新本地索引",
+);
+assert.match(
+  nativeBridgeSource,
+  /deleteWorkspaceDirectory: "delete_workspace_directory"[\s\S]*export async function deleteNativeWorkspaceDirectory/s,
+  "前端原生桥必须暴露工作区目录删除命令",
 );
 assert.match(
   directoryServiceSource,

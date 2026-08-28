@@ -1207,7 +1207,7 @@ fn read_workspace_file(
 #[tauri::command]
 fn delete_workspace_file(workspace_path: String, path: String) -> Result<bool, String> {
     let root = resolve_existing_workspace_root(&workspace_path)?;
-    let target = resolve_workspace_child(&root, path)?;
+    let target = resolve_workspace_write_target(&root, path)?;
     if !target.exists() {
         return Ok(false);
     }
@@ -1216,6 +1216,42 @@ fn delete_workspace_file(workspace_path: String, path: String) -> Result<bool, S
     }
     fs::remove_file(target).map_err(|err| format!("删除文件失败：{err}"))?;
     Ok(true)
+}
+
+#[tauri::command]
+fn delete_workspace_directory(workspace_path: String, path: String) -> Result<bool, String> {
+    if path.trim().is_empty() {
+        return Err("缺少目录路径".to_string());
+    }
+    let root = resolve_existing_workspace_root(&workspace_path)?;
+    let target = resolve_workspace_write_target(&root, path)?;
+    if target == root {
+        return Err("不能删除项目工作区根目录".to_string());
+    }
+    if !target.exists() {
+        return Ok(false);
+    }
+    if !target.is_dir() {
+        return Err("只能删除目录，不能删除文件".to_string());
+    }
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match fs::remove_dir_all(&target) {
+            Ok(()) => return Ok(true),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(80 * (attempt + 1)));
+                }
+            }
+        }
+    }
+    Err(format!(
+        "删除目录失败：{}",
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "未知错误".to_string())
+    ))
 }
 
 #[tauri::command]
@@ -3221,6 +3257,7 @@ fn main() {
             list_workspace_files,
             read_workspace_file,
             delete_workspace_file,
+            delete_workspace_directory,
             preview_workspace_diff,
             prepare_workspace_file_write,
             write_workspace_file,
@@ -3443,6 +3480,38 @@ mod tests {
         let changes = liuagent_core::list_changes(&root).unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].change_type, "added");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_directory_delete_removes_nested_agent_files_without_removing_root() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-employee-delete-agent-directory-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let agent_directory = root.join("agents").join("frontend-architect");
+        fs::create_dir_all(agent_directory.join("resources")).unwrap();
+        fs::write(agent_directory.join("AGENT.md"), "# Frontend Architect\n").unwrap();
+        fs::write(agent_directory.join("resources").join("notes.md"), "keep no residue").unwrap();
+        let root = fs::canonicalize(root).unwrap();
+
+        assert!(delete_workspace_directory(
+            root.to_string_lossy().to_string(),
+            "agents/frontend-architect".to_string(),
+        )
+        .unwrap());
+        assert!(root.exists());
+        assert!(!root.join("agents").join("frontend-architect").exists());
+        assert!(!delete_workspace_directory(
+            root.to_string_lossy().to_string(),
+            "agents/frontend-architect".to_string(),
+        )
+        .unwrap());
+        assert!(delete_workspace_directory(root.to_string_lossy().to_string(), String::new()).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

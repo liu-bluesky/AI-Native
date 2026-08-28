@@ -4763,6 +4763,27 @@ fn replay_answered_user_question_if_match(
     ))
 }
 
+fn model_content_requests_followup_user_input_after_answer(content: &str) -> bool {
+    let normalized = content.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    [
+        "还需要",
+        "需要你补充",
+        "请补充",
+        "请提供",
+        "缺少信息",
+        "信息不足",
+        "need more information",
+        "need you to provide",
+        "please provide",
+        "please clarify",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
 fn block_followup_user_question_after_final_answer(
     tool: &PlannedLocalTool,
     answered_context: Option<&Value>,
@@ -5215,6 +5236,7 @@ fn run_agent_loop_with_answered_user_question(
     let mut attempts = Vec::new();
     let mut verification_reprompts = 0usize;
     let mut acceptance_gate_reprompts = 0usize;
+    let mut answered_user_question_text_reprompts = 0usize;
     let mut last_acceptance_gate: Option<AcceptanceGateResult> = None;
     let mut model_plan_tree: Option<planning::TaskTree> = None;
     let mut model_plan_event_index = 0_u64;
@@ -5367,6 +5389,18 @@ fn run_agent_loop_with_answered_user_question(
                 &current_planned_tools,
                 &request,
             );
+        }
+        if current_planned_tools.is_empty()
+            && answered_user_question.is_some()
+            && model_content_requests_followup_user_input_after_answer(&model_result.content)
+            && answered_user_question_text_reprompts < 1
+        {
+            answered_user_question_text_reprompts += 1;
+            messages.push(RuntimeModelMessage::simple(
+                "user",
+                "Runtime 已确认用户已完成补充。刚才要求继续补充的正文无效，不得向用户展示或再次追问；请直接根据已有回答和合理默认值生成完整的最终草稿。",
+            ));
+            continue;
         }
         if current_planned_tools.is_empty() {
             if !pending_background_processes.is_empty() {
@@ -15361,6 +15395,62 @@ mod tests {
             true
         );
         assert!(block_seen.get());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn answered_user_question_discards_plain_text_followup_prompt() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_block_plain_text_followup_question_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let request = test_model_request("创建一个 AI Employee");
+        let answered_context = json!({
+            "answeredQuestions": [{
+                "id": "agent-name",
+                "header": "Name",
+                "question": "What should the agent name be?",
+                "selected": [],
+                "custom": "Frontend Architect"
+            }]
+        });
+        let model_call_count = Cell::new(0);
+        let correction_seen = Cell::new(false);
+        let model_runner = |request: &ModelStepRequest| {
+            let index = model_call_count.get();
+            model_call_count.set(index + 1);
+            if index == 0 {
+                return test_model_result("我还需要你补充少量信息，回答后会继续当前任务。", Vec::new());
+            }
+            correction_seen.set(request.messages.iter().any(|message| {
+                serde_json::to_string(message)
+                    .unwrap_or_default()
+                    .contains("刚才要求继续补充的正文无效")
+            }));
+            test_model_result("已生成完整 AI Employee 草稿", Vec::new())
+        };
+        let tool_runner = |_request: ToolExecutionRequest| {
+            panic!("plain text followup should be corrected before any tool call")
+        };
+
+        let result = run_agent_loop_with_answered_user_question(
+            "chat-block-plain-text-followup-question",
+            "runtime-block-plain-text-followup-question",
+            &request,
+            &prompt_stack_from_model_request(&request),
+            &dir,
+            None,
+            Some(&answered_context),
+            None,
+            &model_runner,
+            &tool_runner,
+        );
+
+        assert!(result.ok());
+        assert_eq!(result.model_steps.len(), 2);
+        assert_eq!(result.final_model_result().content, "已生成完整 AI Employee 草稿");
+        assert!(correction_seen.get());
         let _ = fs::remove_dir_all(dir);
     }
 

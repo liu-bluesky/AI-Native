@@ -7,7 +7,7 @@ import {
 import { readSelectedProjectId } from "@/modules/project-chat/services/projectChatStorage.js";
 import {
   hasNativeDesktopBridge,
-  deleteNativeWorkspaceFile,
+  deleteNativeWorkspaceDirectory,
   listNativeWorkspaceFiles,
   readNativeWorkspaceFile,
   writeNativeWorkspaceFile,
@@ -342,17 +342,17 @@ function directoryNameFromFilePath(filePath) {
     .slice(-2, -1)[0];
 }
 
-async function removeAgentDefinitionFiles(directory, directoryName) {
-  if (!directoryName) return;
-  for (const filename of ["AGENT.md", AGENT_METADATA_FILE]) {
-    try {
-      await deleteNativeWorkspaceFile({
-        workspacePath: directory,
-        path: `${directoryName}/${filename}`,
-      });
-    } catch (error) {
-      if (!isWorkspaceFileMissing(error)) throw error;
-    }
+async function removeAgentDefinitionDirectory(directory, directoryName) {
+  if (!directoryName) {
+    throw new Error("智能体目录信息缺失，无法安全删除");
+  }
+  try {
+    await deleteNativeWorkspaceDirectory({
+      workspacePath: directory,
+      path: directoryName,
+    });
+  } catch (error) {
+    if (!isWorkspaceFileMissing(error)) throw error;
   }
 }
 
@@ -456,7 +456,7 @@ export async function deleteLocalProjectAgent(agentId, { projectId = "" } = {}) 
   const existing = agents.find((item) => cleanText(item?.id) === id);
   if (!existing) return false;
   const { directories } = resolveDirectories(resolvedProjectId);
-  await removeAgentDefinitionFiles(
+  await removeAgentDefinitionDirectory(
     directories.agent,
     cleanText(existing.directory_name) || directoryNameFromFilePath(existing.file_path),
   );
@@ -550,7 +550,7 @@ export async function saveLocalAgentDirectoryResources({
     content: renderAgentMetadata(normalizedEmployee, definedSkills, rules, directoryName),
   });
   if (previousDirectoryName && previousDirectoryName !== directoryName) {
-    await removeAgentDefinitionFiles(directories.agent, previousDirectoryName);
+    await removeAgentDefinitionDirectory(directories.agent, previousDirectoryName);
   }
 
   const nextEmployee = {

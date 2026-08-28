@@ -25,6 +25,7 @@ const TAURI_COMMAND_NAMES = {
   prepareWorkspaceFileWrite: "prepare_workspace_file_write",
   writeWorkspaceFile: "write_workspace_file",
   deleteWorkspaceFile: "delete_workspace_file",
+  deleteWorkspaceDirectory: "delete_workspace_directory",
   listWorkspaceFileChanges: "list_workspace_file_changes",
   acceptWorkspaceFileChange: "accept_workspace_file_change",
   revertWorkspaceFileChange: "revert_workspace_file_change",
@@ -1819,6 +1820,12 @@ export async function deleteNativeWorkspaceFile(options = {}) {
   const workspacePath = String(options?.workspacePath || options?.workspace_path || "").trim();
   const path = String(options?.path || "").trim();
   return invokeNativeDesktopBridge("deleteWorkspaceFile", { workspacePath, path });
+}
+
+export async function deleteNativeWorkspaceDirectory(options = {}) {
+  const workspacePath = String(options?.workspacePath || options?.workspace_path || "").trim();
+  const path = String(options?.path || "").trim();
+  return invokeNativeDesktopBridge("deleteWorkspaceDirectory", { workspacePath, path });
 }
 
 export async function listNativeWorkspaceFileChanges(options = {}) {
