@@ -2905,7 +2905,10 @@ import {
 import { isMediaBuildFeatureEnabled } from "@/config/buildFeatures.js";
 import { DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT } from "@/config/desktopAgentPrompts.js";
 import { openLocalWorkspaceProjectFromPicker } from "@/services/local-workspace-project-service.js";
-import { saveLocalAgentDirectoryResources } from "@/services/local-agent-directory-service.js";
+import {
+  listLocalProjectAgents,
+  saveLocalAgentDirectoryResources,
+} from "@/services/local-agent-directory-service.js";
 import { isWorkspaceFileMissing } from "@/utils/workspace-file-errors.js";
 import {
   pickWorkspaceDirectory,
@@ -4764,6 +4767,59 @@ function buildLocalResourceDirectoriesPayload() {
   };
 }
 
+function isEmployeeUpdateRequest(text = "") {
+  return /智能体.*(更新|修改|补充|增加|调整|完善|变更)|(?:更新|修改|补充|增加|调整|完善|变更).*智能体/i.test(
+    String(text || "").trim(),
+  );
+}
+
+async function readSelectedEmployeeDefinitionForEdit(text = "") {
+  if (!isEmployeeUpdateRequest(text)) return "";
+  const ids = normalizeStringList(selectedEmployeeIds.value || [], 20);
+  if (ids.length !== 1) {
+    return "当前编辑请求没有唯一选中的智能体；不得猜测目标，也不得生成 update 草稿。请先让用户只选择一个智能体。";
+  }
+  const employeeId = ids[0];
+  const employee = (projectEmployees.value || []).find(
+    (item) => String(item?.id || "").trim() === employeeId,
+  );
+  const directory = String(projectChatSettings.value.agent_directory || "").trim();
+  if (!directory) {
+    return "当前智能体目录未配置，无法读取现有定义；不得凭空生成 update 草稿。";
+  }
+  const rawFilePath = String(employee?.file_path || "").trim();
+  const normalizedDirectory = directory.replace(/[\\/]+$/, "");
+  const relativePath = rawFilePath.startsWith(`${normalizedDirectory}/`)
+    ? rawFilePath.slice(normalizedDirectory.length + 1)
+    : rawFilePath.startsWith(`${normalizedDirectory}\\`)
+      ? rawFilePath.slice(normalizedDirectory.length + 1)
+      : `${employeeId}/AGENT.md`;
+  try {
+    const result = await readNativeWorkspaceFile({
+      workspacePath: directory,
+      path: relativePath,
+    });
+    const content = String(result?.content || "").trim();
+    if (!content) {
+      return "已读取现有智能体定义，但文件为空；不得凭空补写未被用户要求的内容。";
+    }
+    return [
+      "编辑前已从本地工作区读取当前智能体定义。",
+      `目标智能体：${employee?.name || employeeId} (${employeeId})`,
+      `实际文件：${relativePath}`,
+      "当前定义原文（只能基于此内容提出修改意见）：",
+      content.slice(0, 24000),
+      content.length > 24000 ? "（原文超过 24000 字符，以上为前缀；不得臆造未读取部分。）" : "",
+      "编辑规则：先指出当前内容与用户要求的差异，再生成只包含本次变更的 update 草稿；未在原文或用户要求中出现的字段保持不变。",
+    ].filter(Boolean).join("\n");
+  } catch (error) {
+    if (isWorkspaceFileMissing(error)) {
+      return `无法读取当前智能体定义文件 ${relativePath}；不得凭空生成 update 草稿，请先提示用户检查本地目录。`;
+    }
+    return `读取当前智能体定义失败：${String(error?.message || error || "未知错误")}; 不得凭空生成 update 草稿。`;
+  }
+}
+
 function buildLocalLiuAgentSystemPromptParts() {
   return [
     {
@@ -4800,7 +4856,8 @@ function buildLocalLiuAgentSystemPromptParts() {
         "- 用户直接说“创建一个智能体”时，将其理解为创建 AI Employee 智能体实体，不要理解为创建网页、HTML 文件或页面原型。",
         "- 用户提到 HTML、CSS、JavaScript、Vue、React 或其他技术栈时，将其作为智能体的技能、职责和工作范围；不要生成 index.html、frontend-html、implementation.files 或 requested_features 页面字段。",
         "- 创建智能体由桌面宿主提供确认流程，不是一个需要用户点击的可见快捷命令；先生成可确认草稿，只有用户明确确认后才执行创建。",
-        "- 用户要求给当前智能体补充技能、规则或职责时，必须生成 update 意图和更新草稿，交给宿主确认并真实写入；不得只用自然语言声称已经应用。更新范围仅限当前会话明确选择的单个智能体。",
+        "- 用户要求给当前智能体补充、修改、调整、完善技能、规则、职责、指令或工作流时，必须先读取当前智能体的真实本地定义，再基于原文提出差异和修改意见，生成 update 意图和仅包含本次变更的更新草稿，交给宿主确认并真实写入；不得凭空捏造，也不得只用自然语言声称已经应用。更新范围仅限当前会话明确选择的单个智能体。",
+        "- 编辑智能体必须经过宿主确认弹窗；在用户确认前不得执行任何写入。若无法读取现有定义或没有唯一目标，必须停止生成 update 草稿并明确说明原因。",
         "- 当用户询问能力或工具时，只说明本轮实际提供且可调用的工具；不要把宿主确认动作、未配置的媒体能力或隐藏快捷入口伪装成普通工具。",
       ].join("\n"),
     },
@@ -14856,9 +14913,33 @@ function stripEmployeeIntentBlock(text) {
   return output.trim();
 }
 
+function readableEmployeeDraftValue(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(readableEmployeeDraftValue).filter(Boolean).join("\n");
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "";
+  }
+}
+
 function normalizeEmployeeDraftPayload(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
   const instructions = normalizeStringList(item.instructions || [], 20);
+  const skillDrafts = (Array.isArray(item.skill_drafts) ? item.skill_drafts : [])
+    .map((draft) => ({
+      id: String(draft?.id || draft?.skill_id || "").trim(),
+      name: String(draft?.name || draft?.title || "").trim(),
+      description: String(draft?.description || "").trim(),
+      content: readableEmployeeDraftValue(draft?.content || draft?.markdown),
+    }))
+    .filter((draft) => draft.id || draft.name || draft.content);
   const legacyFrontendHtml = String(item.type || "").trim() === "frontend-html";
   const legacyFeatureSkills = normalizeStringList(
     item.requested_features || [],
@@ -14892,15 +14973,19 @@ function normalizeEmployeeDraftPayload(raw) {
     language: String(item.language || "zh-CN").trim() || "zh-CN",
     skills: normalizeStringList(
       [
-        ...(Array.isArray(item.skills) ? item.skills : []),
+        ...(Array.isArray(item.skills) ? item.skills : []).map(
+          (skill) => skill?.id || skill?.name || skill,
+        ),
         ...(Array.isArray(item.skill_ids) ? item.skill_ids : []),
         ...(Array.isArray(item.skill_names) ? item.skill_names : []),
         ...(Array.isArray(item.skill_keywords) ? item.skill_keywords : []),
+        ...skillDrafts.map((draft) => draft.id || draft.name),
         ...(legacyFrontendHtml ? ["HTML", "CSS", "JavaScript"] : []),
         ...legacyFeatureSkills,
       ],
       20,
     ),
+    skill_drafts: skillDrafts,
     rule_ids: normalizeStringList(item.rule_ids || [], 30),
     rule_titles: normalizeStringList(item.rule_titles || [], 30),
     rule_domains: normalizeStringList(
@@ -14914,7 +14999,7 @@ function normalizeEmployeeDraftPayload(raw) {
       .map((draft) => ({
         title: String(draft?.title || "").trim(),
         domain: String(draft?.domain || "").trim(),
-        content: String(draft?.content || "").trim(),
+      content: readableEmployeeDraftValue(draft?.content),
         source_label: String(draft?.source_label || "").trim(),
         source_url: String(draft?.source_url || "").trim(),
       }))
@@ -14927,10 +15012,75 @@ function normalizeEmployeeDraftPayload(raw) {
     default_workflow: normalizeEmployeeDraftWorkflow(
       item.default_workflow || [],
     ),
-    tool_usage_policy: String(item.tool_usage_policy || "").trim(),
+    tool_usage_policy: readableEmployeeDraftValue(item.tool_usage_policy),
     memory_scope: String(item.memory_scope || "project").trim() || "project",
     memory_retention_days: Number(item.memory_retention_days || 90),
   };
+}
+
+function mergeEmployeeSkillDefinitions(skillCatalog, skillIds, skillDrafts) {
+  const skills = Array.isArray(skillCatalog) ? [...skillCatalog] : [];
+  const contentOwners = new Map();
+  const draftMap = new Map(
+    (Array.isArray(skillDrafts) ? skillDrafts : [])
+      .map((draft) => [
+        normalizeMatchKey(draft?.id || draft?.name),
+        draft,
+      ])
+      .filter(([key]) => key),
+  );
+  for (const rawSkill of Array.isArray(skillIds) ? skillIds : []) {
+    const skillId = String(rawSkill?.id || rawSkill || "").trim();
+    if (!skillId) continue;
+    const index = skills.findIndex(
+      (skill) =>
+        normalizeMatchKey(skill?.id) === normalizeMatchKey(skillId) ||
+        normalizeMatchKey(skill?.name) === normalizeMatchKey(skillId),
+    );
+    const existing = index >= 0 ? skills[index] : {};
+    const draft = draftMap.get(normalizeMatchKey(skillId)) || {};
+    const content = String(
+      draft.content ||
+        existing.content ||
+        existing.markdown ||
+        existing.definition ||
+        existing.instructions ||
+        existing.description ||
+        "",
+    ).trim();
+    const name = String(draft.name || existing.name || skillId).trim();
+    if (!content) {
+      throw new Error(
+        `技能「${name}」缺少独立 Markdown 内容，已停止创建，避免写入与其他技能相同的占位模板。`,
+      );
+    }
+    const contentFingerprint = content
+      .replace(/^---[\s\S]*?---\s*/m, "")
+      .split("\n")
+      .filter((line) => !/^\s*#\s+/.test(line))
+      .map((line) => line.trim().replace(/\s+/g, " "))
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+    const duplicateOwner = contentOwners.get(contentFingerprint);
+    if (duplicateOwner && duplicateOwner !== skillId) {
+      throw new Error(
+        `技能「${name}」与「${duplicateOwner}」的 Markdown 内容相同，已停止创建，避免批量写入同一模板。`,
+      );
+    }
+    contentOwners.set(contentFingerprint, skillId);
+    const next = {
+      ...existing,
+      id: String(existing.id || draft.id || skillId).trim(),
+      name,
+      description: String(draft.description || existing.description || "").trim(),
+      content,
+      source: existing.source || "local_project_chat",
+    };
+    if (index >= 0) skills.splice(index, 1, next);
+    else skills.push(next);
+  }
+  return skills;
 }
 
 function normalizeEmployeeDraftRole(value) {
@@ -26933,8 +27083,8 @@ function buildEmployeeDraftAssistContext() {
     "- 用户提到 HTML/CSS/JavaScript 等内容时，将其作为智能体的技术栈、技能和职责范围；不要输出 type=frontend-html、implementation.files 或 requested_features 页面 schema。",
     "- 先用 3 到 6 行说明你推荐这个智能体的定位。",
     "- 最后必须追加一个 ```employee-draft``` 代码块，内容是严格 JSON，不要写注释。",
-    "- JSON 至少包含：name、description、goal、skills、rule_domains、style_hints、default_workflow、tool_usage_policy、memory_scope、memory_retention_days。",
-    "- skills 字段里优先放技能 ID；如果拿不准，可放技能名称或关键词。",
+    "- JSON 至少包含：name、description、goal、skills、skill_drafts、rule_domains、style_hints、default_workflow、tool_usage_policy、memory_scope、memory_retention_days。",
+    "- skills 字段里优先放技能 ID；skill_drafts 必须为每个 skills 项提供 id、name、content。content 必须是该技能独立的真实 Markdown（至少包含适用范围、工作规则、输入输出或验证方式），不得复用“此技能由 AI Employee 本地智能体配置引用”等占位模板。",
     "- rule_domains 优先输出领域名；rule_titles 可补充你认为最关键的规则标题。",
     "- 如果从外部提示词或技能模板中提炼出了可直接落地的智能体规则，请额外输出 rule_drafts 数组；每项包含 title、domain、content，可选 source_label、source_url。",
   ]
@@ -27697,6 +27847,9 @@ async function confirmEmployeeDraftCreation(options = {}) {
     const employee = await handler({
       ...payload,
       skills: Array.isArray(payload.skills) ? payload.skills : [],
+      skill_drafts: Array.isArray(payload.skill_drafts)
+        ? payload.skill_drafts
+        : [],
       rule_drafts: Array.isArray(payload.rule_drafts)
         ? payload.rule_drafts
         : [],
@@ -29770,9 +29923,9 @@ async function fetchProvidersByProject(projectId) {
         relations.chat_settings && typeof relations.chat_settings === "object"
           ? relations.chat_settings
           : {};
-      const localEmployees = Array.isArray(relations.employees)
-        ? relations.employees
-        : [];
+      const localEmployees = await listLocalProjectAgents({
+        projectId: normalizedProjectId,
+      });
       const localSkills = Array.isArray(relations.skills)
         ? relations.skills
         : [];
@@ -29780,12 +29933,6 @@ async function fetchProvidersByProject(projectId) {
       const localTools = Array.isArray(relations.project_tools)
         ? relations.project_tools
         : [];
-      void syncPendingLocalAgentDirectories(
-        normalizedProjectId,
-        localEmployees,
-        localSkills,
-        localRules,
-      );
       const settings = applyLocalConnectorRuntimeSettings({
         ...CHAT_SETTINGS_DEFAULTS,
         ...localSettings,
@@ -29914,7 +30061,15 @@ async function fetchProvidersByProject(projectId) {
       runtimeExternalTools.value = [];
       externalMcpTotal.value = 0;
       updateLocalProjectRelations(normalizedProjectId, {
-        employees: localEmployees,
+        agent_index: localEmployees.map((item) => ({
+          id: String(item?.id || "").trim(),
+          name: String(item?.name || "").trim(),
+          project_id: normalizedProjectId,
+          directory_path: String(item?.directory_path || "").trim(),
+          file_path: String(item?.file_path || "").trim(),
+          updated_at: String(item?.updated_at || "").trim(),
+        })).filter((item) => item.id),
+        employees: [],
         skills: localSkills,
         rules: localRules,
         project_tools: localTools,
@@ -29990,8 +30145,8 @@ async function handleQuickCreateEmployee(payload) {
     const employee = {
       id: employeeId,
       name: String(payload.name || "未命名智能体").trim(),
-      description: String(payload.description || "").trim(),
-      goal: String(payload.goal || "").trim(),
+      description: readableEmployeeDraftValue(payload.description),
+      goal: readableEmployeeDraftValue(payload.goal),
       role: normalizeEmployeeDraftRole(payload.role),
       instructions: normalizeStringList(payload.instructions || [], 20),
       tone: String(payload.tone || "professional").trim(),
@@ -30014,7 +30169,7 @@ async function handleQuickCreateEmployee(payload) {
       default_workflow: Array.isArray(payload.default_workflow)
         ? payload.default_workflow
         : [],
-      tool_usage_policy: String(payload.tool_usage_policy || "").trim(),
+      tool_usage_policy: readableEmployeeDraftValue(payload.tool_usage_policy),
       memory_scope: String(payload.memory_scope || "project").trim(),
       memory_retention_days: Number(payload.memory_retention_days || 90),
       auto_evolve: true,
@@ -30024,37 +30179,12 @@ async function handleQuickCreateEmployee(payload) {
       created_at: new Date().toISOString(),
     };
 
-    const employees = Array.isArray(relations.employees)
-      ? relations.employees.filter(
-          (item) => String(item?.id || "") !== employeeId,
-        )
-      : [];
-    employees.push(employee);
-
-    const skills = Array.isArray(relations.skills) ? [...relations.skills] : [];
-    for (const rawSkill of Array.isArray(payload.skills)
-      ? payload.skills
-      : []) {
-      const skillId = String(rawSkill?.id || rawSkill || "").trim();
-      if (
-        !skillId ||
-        skills.some(
-          (item) => String(item?.id || item?.name || "").trim() === skillId,
-        )
-      ) {
-        continue;
-      }
-      skills.push({
-        id: skillId,
-        name: String(rawSkill?.name || skillId).trim(),
-        source: "local_project_chat",
-      });
-      upsertLocalEntity("skills", {
-        id: skillId,
-        name: String(rawSkill?.name || skillId).trim(),
-        source: "local_project_chat",
-      });
-    }
+    const skills = mergeEmployeeSkillDefinitions(
+      relations.skills,
+      employee.skills,
+      employee.skill_drafts,
+    );
+    for (const skill of skills) upsertLocalEntity("skills", skill);
 
     const rules = Array.isArray(relations.rules) ? [...relations.rules] : [];
     const ruleDrafts = buildMissingEmployeeRuleDrafts(employee, rules);
@@ -30111,16 +30241,10 @@ async function handleQuickCreateEmployee(payload) {
       skill_directory: directories.skill,
       rule_directory: directories.rule,
     });
-    upsertLocalEntity("employees", directoryEmployee);
     const directoryRelations = getLocalProjectRelations(projectId);
-    const directoryEmployees = Array.isArray(directoryRelations.employees)
-      ? directoryRelations.employees.filter(
-          (item) => String(item?.id || "").trim() !== employeeId,
-        )
-      : [];
-    directoryEmployees.push(directoryEmployee);
     updateLocalProjectRelations(projectId, {
-      employees: directoryEmployees,
+      ...directoryRelations,
+      employees: [],
       skills,
       rules,
       chat_settings: {
@@ -30133,8 +30257,8 @@ async function handleQuickCreateEmployee(payload) {
         ],
       },
     });
-    projectEmployees.value = directoryEmployees;
-    selectedEmployeeIds.value = directoryEmployees.map((item) => String(item.id));
+    projectEmployees.value = await listLocalProjectAgents({ projectId });
+    selectedEmployeeIds.value = projectEmployees.value.map((item) => String(item.id));
     employeeDraftCatalog.value = {
       ...employeeDraftCatalog.value,
       skills: skills.map((skill) => ({
@@ -30168,9 +30292,7 @@ async function handleQuickUpdateEmployee(payload) {
     const employeeId = String(payload?.employee_id || "").trim();
     if (!employeeId) throw new Error("缺少要更新的智能体 ID");
     const relations = getLocalProjectRelations(projectId);
-    const employees = Array.isArray(relations.employees)
-      ? [...relations.employees]
-      : [];
+    const employees = await listLocalProjectAgents({ projectId });
     const employeeIndex = employees.findIndex(
       (item) => String(item?.id || "").trim() === employeeId,
     );
@@ -30197,7 +30319,7 @@ async function handleQuickUpdateEmployee(payload) {
       ruleDraftMap.set(normalizeMatchKey(title), {
         title,
         domain: String(draft?.domain || "").trim(),
-        content: String(draft?.content || "").trim(),
+        content: readableEmployeeDraftValue(draft?.content),
         source_label: String(draft?.source_label || "").trim(),
         source_url: String(draft?.source_url || "").trim(),
       });
@@ -30206,15 +30328,20 @@ async function handleQuickUpdateEmployee(payload) {
       ...existing,
       name: String(existing.name || payload.name || "未命名智能体").trim(),
       description:
-        String(payload.description || "").trim() ||
-        String(existing.description || "").trim(),
+        readableEmployeeDraftValue(payload.description) ||
+        readableEmployeeDraftValue(existing.description),
       goal:
-        String(payload.goal || "").trim() || String(existing.goal || "").trim(),
+        readableEmployeeDraftValue(payload.goal) ||
+        readableEmployeeDraftValue(existing.goal),
       role:
         normalizeEmployeeDraftRole(payload.role) ||
         normalizeEmployeeDraftRole(existing.role),
       instructions: mergeList(existing.instructions, payload.instructions, 30),
       skills: mergeList(existing.skills, payload.skills, 40),
+      skill_drafts: [
+        ...(Array.isArray(existing.skill_drafts) ? existing.skill_drafts : []),
+        ...(Array.isArray(payload.skill_drafts) ? payload.skill_drafts : []),
+      ],
       rule_ids: mergeList(existing.rule_ids, payload.rule_ids, 60),
       rule_titles: mergeList(existing.rule_titles, payload.rule_titles, 40),
       rule_domains: mergeList(existing.rule_domains, payload.rule_domains, 30),
@@ -30237,24 +30364,12 @@ async function handleQuickUpdateEmployee(payload) {
       updated_at: new Date().toISOString(),
     };
 
-    const skills = Array.isArray(relations.skills) ? [...relations.skills] : [];
-    for (const rawSkill of employee.skills) {
-      const skillId = String(rawSkill?.id || rawSkill || "").trim();
-      if (!skillId) continue;
-      if (
-        !skills.some(
-          (item) => String(item?.id || item?.name || "").trim() === skillId,
-        )
-      ) {
-        const skill = {
-          id: skillId,
-          name: String(rawSkill?.name || skillId).trim(),
-          source: "local_project_chat",
-        };
-        skills.push(skill);
-        upsertLocalEntity("skills", skill);
-      }
-    }
+    const skills = mergeEmployeeSkillDefinitions(
+      relations.skills,
+      employee.skills,
+      employee.skill_drafts,
+    );
+    for (const skill of skills) upsertLocalEntity("skills", skill);
 
     const rules = Array.isArray(relations.rules) ? [...relations.rules] : [];
     employee.rule_drafts = buildMissingEmployeeRuleDrafts(employee, rules);
@@ -30269,7 +30384,7 @@ async function handleQuickUpdateEmployee(payload) {
           id: `local-rule-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           title,
           domain: String(draft?.domain || "").trim(),
-          content: String(draft?.content || "").trim(),
+        content: readableEmployeeDraftValue(draft?.content),
           source: "local_project_chat",
         };
         rules.push(rule);
@@ -30313,10 +30428,9 @@ async function handleQuickUpdateEmployee(payload) {
         skills: selectedSkills,
         rules: selectedRules,
       });
-    employees.splice(employeeIndex, 1, savedEmployee);
     updateLocalProjectRelations(projectId, {
       ...relations,
-      employees,
+      employees: [],
       skills,
       rules,
     });
@@ -30325,8 +30439,7 @@ async function handleQuickUpdateEmployee(payload) {
       skill_directory: directories.skill,
       rule_directory: directories.rule,
     });
-    upsertLocalEntity("employees", savedEmployee);
-    projectEmployees.value = employees;
+    projectEmployees.value = await listLocalProjectAgents({ projectId });
     employeeDraftCatalog.value = {
       ...employeeDraftCatalog.value,
       skills: skills.map((skill) => ({
@@ -30401,7 +30514,6 @@ async function syncPendingLocalAgentDirectories(
         skills: selectedSkills,
         rules: selectedRules,
       });
-      upsertLocalEntity("employees", savedEmployee);
     } catch (error) {
       console.warn("同步本地智能体目录失败", error);
     } finally {
@@ -30558,7 +30670,7 @@ async function saveProjectChatSettings(silent = false) {
       ...relations,
       workspace_path: workspacePath,
       chat_settings: payload,
-      employees: projectEmployees.value,
+      employees: [],
       project_tools: selectedProjectToolNames.value.map((toolName) => ({
         tool_name: toolName,
         enabled: true,
@@ -35326,6 +35438,7 @@ async function doSend(options = {}) {
       console.warn("employee draft catalog load failed", err);
     }
   }
+  const employeeEditContext = await readSelectedEmployeeDefinitionForEdit(userPrompt);
   const slashCommandRequiresTools = ["host_run", "lark_cli"].includes(
     String(slashCommand?.entry?.kind || "").trim(),
   );
@@ -35351,6 +35464,7 @@ async function doSend(options = {}) {
   const finalUserPrompt = appendModelGenerationInstruction(
     [
       effectiveUserPrompt,
+      employeeEditContext,
       "",
       "请根据用户真实意图选择 question、draft、create 或 update；create 用于新建 AI Employee，update 用于修改当前会话选中的单个 AI Employee。",
       "当运行时提供 ask_user_question 工具且缺少只能由用户决定的信息时，必须优先调用 ask_user_question 暂停并等待回答；收到工具结果后继续原任务。只有工具不可用时才回退为可见正文提问和 question 结构化结果。",

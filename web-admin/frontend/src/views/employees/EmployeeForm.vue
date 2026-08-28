@@ -467,10 +467,12 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import {
   readLocalEntities,
-  upsertLocalEntity,
 } from "@/services/local-project-repository.js";
 import { readSelectedProjectId } from "@/modules/project-chat/services/projectChatStorage.js";
-import { saveLocalAgentDirectoryResources } from "@/services/local-agent-directory-service.js";
+import {
+  listLocalProjectAgents,
+  saveLocalAgentDirectoryResources,
+} from "@/services/local-agent-directory-service.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -749,12 +751,12 @@ function addWorkflowPreset(preset) {
 async function fetchDetail() {
   const employeeId = String(route.params.id || "");
   if (!employeeId) return true;
-  const employee = readLocalEntities("employees").find(
+  const employee = (await listLocalProjectAgents()).find(
     (item) => String(item?.id || "").trim() === employeeId,
   );
   if (!employee) {
     ElMessage.warning("未找到本地智能体");
-    await router.replace("/employees");
+    await router.replace("/agents");
     return false;
   }
   Object.assign(form, {
@@ -862,11 +864,10 @@ async function handleSubmit() {
       skills: selectedSkillsForSave,
       rules: selectedRulesForSave,
     });
-    upsertLocalEntity("employees", employee);
     ElMessage.success(
       isEdit.value ? "本地智能体已保存并同步目录" : `智能体「${employee.name}」已创建并写入本地目录`,
     );
-    router.push("/employees");
+    router.push("/agents");
   } catch (e) {
     ElMessage.error(
       String(

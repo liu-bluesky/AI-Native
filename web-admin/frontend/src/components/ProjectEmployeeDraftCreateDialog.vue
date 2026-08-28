@@ -37,6 +37,19 @@
       </div>
 
       <div class="employee-draft-dialog__section">
+        <div class="employee-draft-dialog__section-title">工具使用策略</div>
+        <pre class="employee-draft-dialog__content-preview">{{ readableToolUsagePolicy || "未配置" }}</pre>
+      </div>
+
+      <div class="employee-draft-dialog__section">
+        <div class="employee-draft-dialog__section-title">保存内容预览</div>
+        <div class="employee-draft-dialog__section-hint">
+          以下内容按可读文本展示，确认后才会写入智能体定义文件和本地项目数据。
+        </div>
+        <pre class="employee-draft-dialog__content-preview">{{ saveContentPreview }}</pre>
+      </div>
+
+      <div class="employee-draft-dialog__section">
         <div class="employee-draft-dialog__section-title">本地已匹配能力</div>
         <div class="employee-draft-dialog__grid">
           <div class="employee-draft-dialog__panel">
@@ -268,6 +281,47 @@ const autoCreateRules = ref(true);
 const addToProject = ref(false);
 const isUpdateMode = computed(() => props.mode === "update");
 
+function readableValue(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(readableValue).filter(Boolean).join("\n");
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+const readableToolUsagePolicy = computed(() =>
+  readableValue(props.payload?.tool_usage_policy),
+);
+
+const saveContentPreview = computed(() => {
+  const payload = props.payload || {};
+  return readableValue({
+    name: payload.name || "",
+    description: payload.description || "",
+    goal: payload.goal || "",
+    role: payload.role || "",
+    instructions: payload.instructions || [],
+    style_hints: payload.style_hints || [],
+    default_workflow: payload.default_workflow || [],
+    tool_usage_policy: readableToolUsagePolicy.value,
+    skills: payload.skills || [],
+    skill_drafts: payload.skill_drafts || [],
+    rule_ids: payload.rule_ids || [],
+    rule_titles: payload.rule_titles || [],
+    rule_drafts: payload.rule_drafts || [],
+    memory_scope: payload.memory_scope || "project",
+    memory_retention_days: payload.memory_retention_days || 90,
+  }) || "暂无可保存内容";
+});
+
 watch(
   () => [props.modelValue, props.payload, props.canAddToProject],
   ([visible]) => {
@@ -363,6 +417,22 @@ function handleConfirm() {
   color: #64748b;
   font-size: 12px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.employee-draft-dialog__content-preview {
+  max-height: 260px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #334155;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

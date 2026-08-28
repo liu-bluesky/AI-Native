@@ -317,6 +317,16 @@ fn ensure_canonical_sqlite_schema(connection: &Connection) -> Result<(), String>
              CREATE TABLE IF NOT EXISTS desktop_project_chat_metadata (
                  key TEXT PRIMARY KEY,
                  value TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS desktop_local_ai_tasks (
+                 task_id TEXT PRIMARY KEY,
+                 task_json TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS desktop_local_records (
+                 record_key TEXT PRIMARY KEY,
+                 value_json TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT ''
              );",
         )
         .map_err(|err| err.to_string())
@@ -2044,6 +2054,103 @@ pub fn project_chat_delete_session(
         )
         .map_err(|err| err.to_string())?;
     transaction.commit().map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn local_ai_task_list(app: tauri::AppHandle) -> Result<Vec<Value>, String> {
+    let connection = open_canonical_database(&app)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT task_json FROM desktop_local_ai_tasks
+             ORDER BY updated_at DESC, task_id ASC",
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|err| err.to_string())?;
+    rows.map(|row| {
+        let payload = row.map_err(|err| err.to_string())?;
+        serde_json::from_str::<Value>(&payload).map_err(|err| err.to_string())
+    })
+    .collect()
+}
+
+#[tauri::command]
+pub fn local_ai_task_replace(app: tauri::AppHandle, tasks: Vec<Value>) -> Result<bool, String> {
+    let mut connection = open_canonical_database(&app)?;
+    let transaction = connection.transaction().map_err(|err| err.to_string())?;
+    transaction
+        .execute("DELETE FROM desktop_local_ai_tasks", [])
+        .map_err(|err| err.to_string())?;
+    for task in tasks {
+        let task_id = normalized(
+            task.get("id").and_then(Value::as_str).unwrap_or_default(),
+            "本地 AI 任务 ID",
+        )?;
+        let updated_at = value_text(
+            &task,
+            &["updatedAt", "updated_at", "createdAt", "created_at"],
+        );
+        let task_json = serde_json::to_string(&task).map_err(|err| err.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO desktop_local_ai_tasks(task_id, task_json, updated_at)
+                 VALUES (?1, ?2, ?3)",
+                params![task_id, task_json, updated_at],
+            )
+            .map_err(|err| err.to_string())?;
+    }
+    transaction.commit().map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn local_record_list(app: tauri::AppHandle) -> Result<Vec<Value>, String> {
+    let connection = open_canonical_database(&app)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT record_key, value_json, updated_at FROM desktop_local_records
+             ORDER BY record_key ASC",
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|err| err.to_string())?;
+    rows.map(|row| {
+        let (key, value_json, updated_at) = row.map_err(|err| err.to_string())?;
+        let value = serde_json::from_str::<Value>(&value_json).map_err(|err| err.to_string())?;
+        Ok(json!({ "key": key, "value": value, "updated_at": updated_at }))
+    })
+    .collect()
+}
+
+#[tauri::command]
+pub fn local_record_write(
+    app: tauri::AppHandle,
+    key: String,
+    value: Value,
+) -> Result<bool, String> {
+    let key = normalized(&key, "本地记录键")?;
+    let value_json = serde_json::to_string(&value).map_err(|err| err.to_string())?;
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    let connection = open_canonical_database(&app)?;
+    connection
+        .execute(
+            "INSERT INTO desktop_local_records(record_key, value_json, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(record_key) DO UPDATE SET
+                 value_json = excluded.value_json,
+                 updated_at = excluded.updated_at",
+            params![key, value_json, updated_at],
+        )
+        .map_err(|err| err.to_string())?;
     Ok(true)
 }
 

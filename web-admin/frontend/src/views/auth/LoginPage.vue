@@ -43,7 +43,7 @@
         </el-form-item>
 
         <div class="login-form__options">
-          <el-checkbox v-model="form.rememberPassword">记住密码</el-checkbox>
+          <el-checkbox v-model="form.rememberPassword">记住账号</el-checkbox>
         </div>
 
         <el-form-item class="login-form__submit">
@@ -112,7 +112,6 @@ let motionMedia = null;
 onMounted(() => {
   const remembered = getRememberedLoginInfo();
   form.username = remembered.username;
-  form.password = remembered.enabled ? remembered.password : "";
   form.rememberPassword = remembered.enabled;
   void nextTick(playLoginMotion);
 });
@@ -146,7 +145,6 @@ async function handleLogin() {
     persistRememberedLoginInfo({
       enabled: form.rememberPassword,
       username: form.username.trim(),
-      password: form.password,
     });
     ElMessage.success("登录成功");
     await router.replace(resolveSafeRedirectPath(route.query.redirect, "/workbench"));

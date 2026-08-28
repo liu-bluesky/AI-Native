@@ -1205,6 +1205,20 @@ fn read_workspace_file(
 }
 
 #[tauri::command]
+fn delete_workspace_file(workspace_path: String, path: String) -> Result<bool, String> {
+    let root = resolve_workspace_root(&workspace_path)?;
+    let target = resolve_workspace_child(&root, path)?;
+    if !target.exists() {
+        return Ok(false);
+    }
+    if !target.is_file() {
+        return Err("只能删除文件，不能删除目录".to_string());
+    }
+    fs::remove_file(target).map_err(|err| format!("删除文件失败：{err}"))?;
+    Ok(true)
+}
+
+#[tauri::command]
 fn preview_workspace_diff(
     workspace_path: String,
     path: Option<String>,
@@ -3188,6 +3202,7 @@ fn main() {
             get_runtime_info,
             list_workspace_files,
             read_workspace_file,
+            delete_workspace_file,
             preview_workspace_diff,
             prepare_workspace_file_write,
             write_workspace_file,
@@ -3247,6 +3262,10 @@ fn main() {
             project_chat_store::project_chat_read_runtime,
             project_chat_store::project_chat_write_runtime,
             project_chat_store::project_chat_delete_session,
+            project_chat_store::local_ai_task_list,
+            project_chat_store::local_ai_task_replace,
+            project_chat_store::local_record_list,
+            project_chat_store::local_record_write,
             project_chat_store::agent_supervision_search_answers,
             project_chat_store::agent_supervision_get_answer,
             project_chat_store::agent_supervision_find_answer

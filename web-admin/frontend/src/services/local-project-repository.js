@@ -1,3 +1,9 @@
+import {
+  hasNativeDesktopBridge,
+  listNativeLocalRecords,
+  writeNativeLocalRecord,
+} from "@/utils/native-desktop-bridge.js";
+
 const STORAGE_KEY = "local_projects_cache";
 const RELATIONS_STORAGE_KEY = "local_project_relations";
 const ENTITY_STORAGE_PREFIX = "local_entities_";
@@ -6,6 +12,8 @@ const HIDDEN_WORKSPACE_PROJECT_IDS_STORAGE_KEY =
   "local_hidden_workspace_project_ids";
 const GLOBAL_PROJECT_CATALOG_VERSION = 1;
 let projectCatalogSyncTimer = null;
+const localRecordCache = new Map();
+const localRecordWriteQueues = new Map();
 
 function canUseStorage() {
   return typeof window !== "undefined" && Boolean(window.localStorage);
@@ -13,6 +21,131 @@ function canUseStorage() {
 
 function canUseNativeProjectCatalog() {
   return typeof window !== "undefined";
+}
+
+function readLegacyLocalRecord(key, fallback) {
+  if (!canUseStorage()) return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw === null ? fallback : JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function writeLegacyLocalRecord(key, value) {
+  if (!canUseStorage()) return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
+
+function removeLegacyLocalRecord(key) {
+  if (!canUseStorage()) return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {}
+}
+
+function readLocalRecord(key, fallback) {
+  if (localRecordCache.has(key)) return localRecordCache.get(key);
+  const value = readLegacyLocalRecord(key, fallback);
+  localRecordCache.set(key, value);
+  return value;
+}
+
+function queueNativeLocalRecordWrite(key, value) {
+  const previous = localRecordWriteQueues.get(key) || Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(() => writeNativeLocalRecord(key, value));
+  localRecordWriteQueues.set(key, next);
+  return next.finally(() => {
+    if (localRecordWriteQueues.get(key) === next) {
+      localRecordWriteQueues.delete(key);
+    }
+  });
+}
+
+function writeLocalRecord(key, value) {
+  localRecordCache.set(key, value);
+  if (hasNativeDesktopBridge()) {
+    void queueNativeLocalRecordWrite(key, value)
+      .then((saved) => {
+        if (saved === true) removeLegacyLocalRecord(key);
+      })
+      .catch(() => writeLegacyLocalRecord(key, value));
+  } else {
+    writeLegacyLocalRecord(key, value);
+  }
+  return value;
+}
+
+function mergeMigratedLocalRecord(key, nativeValue, legacyValue) {
+  if (key === RELATIONS_STORAGE_KEY) {
+    return {
+      ...(nativeValue && typeof nativeValue === "object" ? nativeValue : {}),
+      ...(legacyValue && typeof legacyValue === "object" ? legacyValue : {}),
+    };
+  }
+  if (key === HIDDEN_WORKSPACE_PROJECT_IDS_STORAGE_KEY) {
+    return [...new Set([...(nativeValue || []), ...(legacyValue || [])])];
+  }
+  if (key === STORAGE_KEY || key.startsWith(ENTITY_STORAGE_PREFIX)) {
+    return mergeProjectRecords(nativeValue || [], legacyValue || []);
+  }
+  return nativeValue ?? legacyValue;
+}
+
+export async function hydrateLocalProjectRepository() {
+  if (!canUseStorage() || !hasNativeDesktopBridge()) return false;
+  const legacyKeys = new Set([
+    STORAGE_KEY,
+    RELATIONS_STORAGE_KEY,
+    HIDDEN_WORKSPACE_PROJECT_IDS_STORAGE_KEY,
+  ]);
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index) || "";
+    if (
+      key.startsWith(ENTITY_STORAGE_PREFIX) &&
+      key !== `${ENTITY_STORAGE_PREFIX}employees`
+    ) {
+      legacyKeys.add(key);
+    }
+  }
+  const legacyRecords = new Map(
+    [...legacyKeys].map((key) => [key, readLocalRecord(key, key === RELATIONS_STORAGE_KEY ? {} : [])]),
+  );
+  try {
+    const nativeRecords = await listNativeLocalRecords();
+    for (const record of nativeRecords) {
+      const key = String(record?.key || "").trim();
+      if (!key) continue;
+    }
+    await Promise.all(
+      [...legacyRecords.entries()]
+        .map(async ([key, value]) => {
+          const nativeValue = nativeRecords.find(
+            (record) => String(record?.key || "").trim() === key,
+          )?.value;
+          const mergedValue = mergeMigratedLocalRecord(key, nativeValue, value);
+          localRecordCache.set(key, mergedValue);
+          const saved = await queueNativeLocalRecordWrite(key, mergedValue);
+          if (saved === true) removeLegacyLocalRecord(key);
+        }),
+    );
+    for (const record of nativeRecords) {
+      const key = String(record?.key || "").trim();
+      if (!key || legacyRecords.has(key)) continue;
+      localRecordCache.set(key, record?.value);
+      removeLegacyLocalRecord(key);
+    }
+    window.dispatchEvent(new CustomEvent("local-projects-updated"));
+    window.dispatchEvent(new CustomEvent("local-entities-updated"));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function projectCatalogEntries(projects = []) {
@@ -277,18 +410,13 @@ export function syncLocalFtpCredentialsToNative() {
 }
 
 function readRelations() {
-  if (!canUseStorage()) return {};
-  try {
-    const value = JSON.parse(window.localStorage.getItem(RELATIONS_STORAGE_KEY) || "{}");
-    return value && typeof value === "object" ? value : {};
-  } catch {
-    return {};
-  }
+  const value = readLocalRecord(RELATIONS_STORAGE_KEY, {});
+  return value && typeof value === "object" ? value : {};
 }
 
 function writeRelations(relations) {
   if (canUseStorage()) {
-    window.localStorage.setItem(RELATIONS_STORAGE_KEY, JSON.stringify(relations));
+    writeLocalRecord(RELATIONS_STORAGE_KEY, relations);
     window.dispatchEvent(new CustomEvent("local-project-relations-updated", { detail: relations }));
   }
   scheduleNativeProjectCatalogSync(readLocalProjects());
@@ -485,18 +613,9 @@ export function mergeLocalProjectSources(
 }
 
 function readOfflineProjectListSnapshot() {
-  if (!canUseStorage()) return [];
-  try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(OFFLINE_PROJECT_LIST_STORAGE_KEY) || "[]",
-    );
-    if (Array.isArray(parsed)) return normalizeProjects(parsed);
-    return Array.isArray(parsed?.projects)
-      ? normalizeProjects(parsed.projects)
-      : [];
-  } catch {
-    return [];
-  }
+  const parsed = readLocalRecord(OFFLINE_PROJECT_LIST_STORAGE_KEY, []);
+  if (Array.isArray(parsed)) return normalizeProjects(parsed);
+  return Array.isArray(parsed?.projects) ? normalizeProjects(parsed.projects) : [];
 }
 
 export function isLocalProjectMode() {
@@ -504,10 +623,9 @@ export function isLocalProjectMode() {
 }
 
 export function readLocalProjects() {
-  if (!canUseStorage()) return [];
   try {
     const cachedProjects = normalizeProjects(
-      JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "[]"),
+      readLocalRecord(STORAGE_KEY, []),
     );
     const relationProjects = Object.entries(readAllLocalProjectRelations()).map(
       ([id, relation]) =>
@@ -527,11 +645,8 @@ export function readLocalProjects() {
 }
 
 function readHiddenWorkspaceProjectIds() {
-  if (!canUseStorage()) return new Set();
   try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(HIDDEN_WORKSPACE_PROJECT_IDS_STORAGE_KEY) || "[]",
-    );
+    const parsed = readLocalRecord(HIDDEN_WORKSPACE_PROJECT_IDS_STORAGE_KEY, []);
     return new Set(
       (Array.isArray(parsed) ? parsed : [])
         .map((value) => String(value || "").trim())
@@ -547,9 +662,9 @@ function writeHiddenWorkspaceProjectIds(ids) {
     .map((value) => String(value || "").trim())
     .filter(Boolean);
   if (canUseStorage()) {
-    window.localStorage.setItem(
+    writeLocalRecord(
       HIDDEN_WORKSPACE_PROJECT_IDS_STORAGE_KEY,
-      JSON.stringify(normalized),
+      normalized,
     );
     window.dispatchEvent(
       new CustomEvent("local-workspace-projects-updated", { detail: normalized }),
@@ -692,7 +807,7 @@ export function getLocalProject(projectId) {
 export function writeLocalProjects(projects) {
   const normalized = mergeProjectRecords(projects);
   if (canUseStorage()) {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    writeLocalRecord(STORAGE_KEY, normalized);
     window.dispatchEvent(new CustomEvent("local-projects-updated", { detail: normalized }));
   }
   scheduleNativeProjectCatalogSync(normalized);
@@ -737,13 +852,10 @@ export function filterLocalProjects(projects, filters = {}) {
 }
 
 export function readLocalEntities(entityName) {
-  if (!canUseStorage()) return [];
   const key = `${ENTITY_STORAGE_PREFIX}${String(entityName || "").trim()}`;
   if (key === ENTITY_STORAGE_PREFIX) return [];
   try {
-    return normalizeProjects(
-      JSON.parse(window.localStorage.getItem(key) || "[]"),
-    );
+    return normalizeProjects(readLocalRecord(key, []));
   } catch {
     return [];
   }
@@ -753,7 +865,7 @@ export function writeLocalEntities(entityName, entities) {
   const key = `${ENTITY_STORAGE_PREFIX}${String(entityName || "").trim()}`;
   const normalized = normalizeProjects(entities);
   if (canUseStorage() && key !== ENTITY_STORAGE_PREFIX) {
-    window.localStorage.setItem(key, JSON.stringify(normalized));
+    writeLocalRecord(key, normalized);
     window.dispatchEvent(
       new CustomEvent("local-entities-updated", {
         detail: { entityName, entities: normalized },

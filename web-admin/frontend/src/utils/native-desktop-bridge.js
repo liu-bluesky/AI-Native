@@ -24,6 +24,7 @@ const TAURI_COMMAND_NAMES = {
   previewWorkspaceDiff: "preview_workspace_diff",
   prepareWorkspaceFileWrite: "prepare_workspace_file_write",
   writeWorkspaceFile: "write_workspace_file",
+  deleteWorkspaceFile: "delete_workspace_file",
   listWorkspaceFileChanges: "list_workspace_file_changes",
   acceptWorkspaceFileChange: "accept_workspace_file_change",
   revertWorkspaceFileChange: "revert_workspace_file_change",
@@ -81,6 +82,10 @@ const TAURI_COMMAND_NAMES = {
   projectChatReadRuntime: "project_chat_read_runtime",
   projectChatWriteRuntime: "project_chat_write_runtime",
   projectChatDeleteSession: "project_chat_delete_session",
+  localAiTaskList: "local_ai_task_list",
+  localAiTaskReplace: "local_ai_task_replace",
+  localRecordList: "local_record_list",
+  localRecordWrite: "local_record_write",
   agentSupervisionSearchAnswers: "agent_supervision_search_answers",
   agentSupervisionGetAnswer: "agent_supervision_get_answer",
   agentSupervisionFindAnswer: "agent_supervision_find_answer",
@@ -279,6 +284,33 @@ export async function deleteNativeProjectChatSession(
     projectId: String(projectId || "").trim(),
     chatSessionId: String(chatSessionId || "").trim(),
     username: String(username || "").trim(),
+  });
+}
+
+export async function listNativeLocalAiTasks() {
+  requireNativeProjectChatStore();
+  const result = await invokeNativeDesktopBridge("localAiTaskList");
+  return Array.isArray(result) ? result : [];
+}
+
+export async function replaceNativeLocalAiTasks(tasks) {
+  requireNativeProjectChatStore();
+  return invokeNativeDesktopBridge("localAiTaskReplace", {
+    tasks: Array.isArray(tasks) ? tasks : [],
+  });
+}
+
+export async function listNativeLocalRecords() {
+  requireNativeProjectChatStore();
+  const result = await invokeNativeDesktopBridge("localRecordList");
+  return Array.isArray(result) ? result : [];
+}
+
+export async function writeNativeLocalRecord(key, value) {
+  requireNativeProjectChatStore();
+  return invokeNativeDesktopBridge("localRecordWrite", {
+    key: String(key || "").trim(),
+    value: value && typeof value === "object" ? value : value ?? null,
   });
 }
 
@@ -1766,6 +1798,12 @@ export async function writeNativeWorkspaceFile(options = {}) {
     content,
     expectedCurrentHash,
   });
+}
+
+export async function deleteNativeWorkspaceFile(options = {}) {
+  const workspacePath = String(options?.workspacePath || options?.workspace_path || "").trim();
+  const path = String(options?.path || "").trim();
+  return invokeNativeDesktopBridge("deleteWorkspaceFile", { workspacePath, path });
 }
 
 export async function listNativeWorkspaceFileChanges(options = {}) {

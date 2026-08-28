@@ -1,3 +1,9 @@
+import {
+  hasNativeDesktopBridge,
+  listNativeLocalAiTasks,
+  replaceNativeLocalAiTasks,
+} from "@/utils/native-desktop-bridge.js";
+
 const LOCAL_AI_TASKS_STORAGE_KEY = "desktop_local_ai_tasks";
 export const LOCAL_AI_TASKS_UPDATED_EVENT = "desktop-local-ai-tasks-updated";
 
@@ -10,6 +16,10 @@ const ACTIVE_STATUSES = new Set([
   "cancelling",
   "interrupted",
 ]);
+const COMPLETED_TASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_STORED_LOCAL_AI_TASKS = 100;
+let tasksCache = null;
+let nativeTaskWriteQueue = Promise.resolve();
 
 function canUseWindow() {
   return typeof window !== "undefined";
@@ -74,7 +84,7 @@ function normalizeTask(input = {}) {
   };
 }
 
-function readTasks() {
+function readLegacyTasks() {
   if (!canUseWindow()) return [];
   try {
     const parsed = JSON.parse(window.localStorage.getItem(LOCAL_AI_TASKS_STORAGE_KEY) || "[]");
@@ -92,12 +102,104 @@ function sortTasks(tasks) {
   });
 }
 
+function normalizeStoredTasks(tasks) {
+  const retentionCutoff = Date.now() - COMPLETED_TASK_RETENTION_MS;
+  return sortTasks(
+    (Array.isArray(tasks) ? tasks : [])
+      .map((item) => normalizeTask(item))
+      .filter((task) => {
+        if (isLocalAiTaskActive(task)) return true;
+        const updatedAt = new Date(task.updatedAt).getTime();
+        return !Number.isFinite(updatedAt) || updatedAt >= retentionCutoff;
+      }),
+  ).slice(0, MAX_STORED_LOCAL_AI_TASKS);
+}
+
+function mergeStoredTasks(...taskLists) {
+  const merged = new Map();
+  for (const task of taskLists.flat()) {
+    const normalized = normalizeTask(task);
+    const existing = merged.get(normalized.id);
+    if (!existing) {
+      merged.set(normalized.id, normalized);
+      continue;
+    }
+    const existingUpdatedAt = new Date(existing.updatedAt).getTime() || 0;
+    const incomingUpdatedAt = new Date(normalized.updatedAt).getTime() || 0;
+    if (incomingUpdatedAt >= existingUpdatedAt) {
+      merged.set(normalized.id, normalized);
+    }
+  }
+  return normalizeStoredTasks([...merged.values()]);
+}
+
+function emitTasksUpdated(tasks) {
+  if (!canUseWindow()) return;
+  window.dispatchEvent(new CustomEvent(LOCAL_AI_TASKS_UPDATED_EVENT, { detail: { tasks } }));
+}
+
+function removeLegacyTasks() {
+  if (!canUseWindow()) return;
+  try {
+    window.localStorage.removeItem(LOCAL_AI_TASKS_STORAGE_KEY);
+  } catch {}
+}
+
+function writeLegacyTasks(tasks) {
+  if (!canUseWindow()) return;
+  try {
+    window.localStorage.setItem(LOCAL_AI_TASKS_STORAGE_KEY, JSON.stringify(tasks));
+  } catch {}
+}
+
+function persistNativeTasks(tasks) {
+  nativeTaskWriteQueue = nativeTaskWriteQueue
+    .catch(() => undefined)
+    .then(() => replaceNativeLocalAiTasks(tasks));
+  return nativeTaskWriteQueue;
+}
+
+function readTasks() {
+  if (tasksCache === null) {
+    tasksCache = normalizeStoredTasks(readLegacyTasks());
+  }
+  return tasksCache;
+}
+
 function writeTasks(tasks) {
-  if (!canUseWindow()) return [];
-  const normalized = sortTasks((Array.isArray(tasks) ? tasks : []).map((item) => normalizeTask(item)));
-  window.localStorage.setItem(LOCAL_AI_TASKS_STORAGE_KEY, JSON.stringify(normalized));
-  window.dispatchEvent(new CustomEvent(LOCAL_AI_TASKS_UPDATED_EVENT, { detail: { tasks: normalized } }));
+  const normalized = normalizeStoredTasks(tasks);
+  tasksCache = normalized;
+  emitTasksUpdated(normalized);
+  if (hasNativeDesktopBridge()) {
+    void persistNativeTasks(normalized)
+      .then((saved) => {
+        if (saved === true) removeLegacyTasks();
+      })
+      .catch(() => writeLegacyTasks(normalized));
+  } else if (canUseWindow()) {
+    writeLegacyTasks(normalized);
+  }
   return normalized;
+}
+
+export async function hydrateLocalAiTasks() {
+  const legacyTasks = readTasks();
+  if (!hasNativeDesktopBridge()) return legacyTasks;
+  try {
+    const storedTasks = normalizeStoredTasks(await listNativeLocalAiTasks());
+    const mergedTasks = mergeStoredTasks(storedTasks, readTasks());
+    tasksCache = mergedTasks;
+    const saved = await persistNativeTasks(mergedTasks);
+    if (saved === true) removeLegacyTasks();
+    emitTasksUpdated(mergedTasks);
+    return mergedTasks;
+  } catch {
+    return legacyTasks;
+  }
+}
+
+export function pruneStoredLocalAiTasks() {
+  return writeTasks(readTasks());
 }
 
 export function listLocalAiTasks(options = {}) {
@@ -117,8 +219,7 @@ export function isLocalAiTaskActive(task = {}) {
 
 export function registerLocalAiTask(input = {}) {
   const task = normalizeTask({ ...input, status: input.status || "queued", updatedAt: nowIso() });
-  const tasks = readTasks();
-  const next = tasks.filter((item) => item.id !== task.id);
+  const next = readTasks().filter((item) => item.id !== task.id);
   return writeTasks([task, ...next]).find((item) => item.id === task.id) || task;
 }
 

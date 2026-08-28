@@ -6,11 +6,11 @@
         <el-button
           v-if="canUpdateEmployeeEntry"
           type="primary"
-          @click="$router.push(`/employees/${route.params.id}/edit`)"
+          @click="$router.push(`/agents/${route.params.id}/edit`)"
         >
           编辑
         </el-button>
-        <el-button @click="$router.push(`/employees/${route.params.id}/usage`)">使用统计</el-button>
+        <el-button @click="$router.push(`/agents/${route.params.id}/usage`)">使用统计</el-button>
         <el-button v-if="canDeleteEmployeeEntry" type="danger" @click="handleDelete">删除</el-button>
         <el-button @click="$router.back()">返回</el-button>
       </div>
@@ -111,6 +111,8 @@ import {
   getOwnershipDeniedMessage,
 } from '@/utils/ownership.js'
 import { canDeleteEmployee, canUpdateEmployee } from '@/utils/employee-permissions.js'
+import { isLocalProjectMode } from '@/services/local-project-repository.js'
+import { deleteLocalProjectAgent, listLocalProjectAgents } from '@/services/local-agent-directory-service.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -146,6 +148,14 @@ const displayWorkflow = computed(() => {
 async function fetchDetail() {
   loading.value = true
   try {
+    if (isLocalProjectMode()) {
+      const local = (await listLocalProjectAgents()).find(
+        (item) => String(item?.id || '').trim() === String(route.params.id || '').trim(),
+      )
+      if (!local) throw new Error('未找到项目目录中的智能体定义')
+      Object.assign(emp, local)
+      return
+    }
     const { employee } = await api.get(`/employees/${route.params.id}`)
     Object.assign(emp, employee)
   } catch {
@@ -162,9 +172,15 @@ async function handleDelete() {
   }
   await ElMessageBox.confirm(`确定删除智能体「${emp.name}」？`, '确认')
   try {
+    if (isLocalProjectMode()) {
+      await deleteLocalProjectAgent(route.params.id)
+      ElMessage.success('已从项目目录删除智能体定义')
+      router.push('/agents')
+      return
+    }
     await api.delete(`/employees/${route.params.id}`)
     ElMessage.success('已删除')
-    router.push('/employees')
+    router.push('/agents')
   } catch {
     ElMessage.error('删除失败')
   }

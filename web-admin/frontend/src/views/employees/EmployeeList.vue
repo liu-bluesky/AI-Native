@@ -12,7 +12,7 @@
         <el-button
           v-if="canCreateEmployeeEntry"
           type="primary"
-          @click="$router.push('/employees/create')"
+          @click="$router.push('/agents/create')"
           >创建智能体</el-button
         >
       </div>
@@ -27,7 +27,7 @@
     <el-table :data="employees" v-loading="loading" stripe class="employee-table">
       <el-table-column prop="id" label="ID" width="140" />
       <el-table-column prop="name" label="名称" width="160" />
-      <el-table-column label="创建人" width="120">
+      <el-table-column label="来源项目" width="180">
         <template #default="{ row }">
           {{ formatRecordOwner(row) }}
         </template>
@@ -670,10 +670,12 @@ import {
 import { resolveSettingsAwarePanelPath } from "@/utils/chat-settings-route.js";
 import {
   isLocalProjectMode,
-  readLocalEntities,
-  removeLocalEntity,
-  upsertLocalEntity,
 } from "@/services/local-project-repository.js";
+import {
+  deleteLocalProjectAgent,
+  listLocalProjectAgents,
+  updateLocalProjectAgent,
+} from "@/services/local-agent-directory-service.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -913,10 +915,10 @@ function getOverflowEmployeeActions(row) {
 function handleEmployeeAction(row, actionKey) {
   switch (actionKey) {
     case "detail":
-      router.push(`/employees/${row.id}`);
+      router.push(`/agents/${row.id}`);
       break;
     case "edit":
-      router.push(`/employees/${row.id}/edit`);
+      router.push(`/agents/${row.id}/edit`);
       break;
     case "mcp-config":
       showEmployeeMcpConfig(row);
@@ -934,7 +936,7 @@ function handleEmployeeAction(row, actionKey) {
       void showEmployeeManual(row);
       break;
     case "usage":
-      router.push(`/employees/${row.id}/usage`);
+      router.push(`/agents/${row.id}/usage`);
       break;
     case "feedback":
       router.push(`/agent-feedback/${row.id}`);
@@ -960,7 +962,7 @@ async function fetchList() {
   loading.value = true;
   try {
     if (isLocalProjectMode()) {
-      employees.value = readLocalEntities("employees");
+      employees.value = await listLocalProjectAgents();
       return;
     }
     const { employees: list } = await api.get("/employees");
@@ -1133,9 +1135,9 @@ async function handleDelete(row) {
   await ElMessageBox.confirm(`确定删除智能体「${row.name}」？`, "确认");
   try {
     if (isLocalProjectMode()) {
-      removeLocalEntity("employees", row.id);
-      employees.value = readLocalEntities("employees");
-      ElMessage.success("已从本地删除");
+      await deleteLocalProjectAgent(row.id);
+      await fetchList();
+      ElMessage.success("已从项目目录删除智能体定义");
       return;
     }
     await api.delete(`/employees/${row.id}`);
@@ -1161,9 +1163,9 @@ async function enableEmployeeMcp(row) {
   try {
     loading.value = true;
     if (isLocalProjectMode()) {
-      const updated = upsertLocalEntity("employees", { ...row, mcp_enabled: true });
+      const updated = await updateLocalProjectAgent(row.id, { mcp_enabled: true });
       employees.value = employees.value.map((item) => item.id === updated.id ? updated : item);
-      ElMessage.success("已在本地开启智能体 MCP 标记");
+      ElMessage.success("已更新项目目录中的智能体 MCP 配置");
       showEmployeeMcpConfig(updated);
       return;
     }
@@ -1191,9 +1193,9 @@ async function disableEmployeeMcp(row) {
   try {
     loading.value = true;
     if (isLocalProjectMode()) {
-      const updated = upsertLocalEntity("employees", { ...row, mcp_enabled: false });
+      const updated = await updateLocalProjectAgent(row.id, { mcp_enabled: false });
       employees.value = employees.value.map((item) => item.id === updated.id ? updated : item);
-      ElMessage.success("已在本地关闭智能体 MCP 标记");
+      ElMessage.success("已更新项目目录中的智能体 MCP 配置");
       if (currentEmployee.value?.id === row.id) showMcpConfig.value = false;
       return;
     }
@@ -1219,9 +1221,9 @@ async function enableFeedbackUpgrade(row) {
   try {
     loading.value = true;
     if (isLocalProjectMode()) {
-      const updated = upsertLocalEntity("employees", { ...row, feedback_upgrade_enabled: true });
+      const updated = await updateLocalProjectAgent(row.id, { feedback_upgrade_enabled: true });
       employees.value = employees.value.map((item) => item.id === updated.id ? updated : item);
-      ElMessage.success("已在本地开启反馈升级标记");
+      ElMessage.success("已更新项目目录中的智能体反馈配置");
       return;
     }
     await api.put(`/employees/${row.id}`, { feedback_upgrade_enabled: true });
@@ -1246,9 +1248,9 @@ async function disableFeedbackUpgrade(row) {
   try {
     loading.value = true;
     if (isLocalProjectMode()) {
-      const updated = upsertLocalEntity("employees", { ...row, feedback_upgrade_enabled: false });
+      const updated = await updateLocalProjectAgent(row.id, { feedback_upgrade_enabled: false });
       employees.value = employees.value.map((item) => item.id === updated.id ? updated : item);
-      ElMessage.success("已在本地关闭反馈升级标记");
+      ElMessage.success("已更新项目目录中的智能体反馈配置");
       return;
     }
     await api.put(`/employees/${row.id}`, { feedback_upgrade_enabled: false });

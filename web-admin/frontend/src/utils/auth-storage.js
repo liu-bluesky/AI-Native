@@ -106,7 +106,6 @@ function normalizeRememberLoginInfo(payload = {}) {
   return {
     enabled,
     username: enabled ? username : '',
-    password: enabled ? String(payload.password || '') : '',
   }
 }
 
@@ -128,6 +127,13 @@ export function getRememberedLoginInfo() {
     normalizeRememberLoginInfo(),
   )
   const normalized = normalizeRememberLoginInfo(stored)
+  if (stored?.password) {
+    if (normalized.enabled) {
+      setJsonStorageValue(REMEMBER_LOGIN_INFO_STORAGE_KEY, normalized)
+    } else {
+      removeJsonStorageValue(REMEMBER_LOGIN_INFO_STORAGE_KEY)
+    }
+  }
   if (stored?.enabled === true && !normalized.enabled) {
     removeJsonStorageValue(REMEMBER_LOGIN_INFO_STORAGE_KEY)
   }

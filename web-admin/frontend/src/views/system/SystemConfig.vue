@@ -2951,7 +2951,7 @@ function broadcastSystemConfigUpdated(config, extraDetail = {}) {
   try {
     window.localStorage?.setItem(
       SYSTEM_CONFIG_UPDATED_STORAGE_KEY,
-      JSON.stringify(detail),
+      JSON.stringify({ version: 1, updatedAt: detail.updatedAt }),
     );
   } catch {
     // Same-window CustomEvent is still enough when localStorage is unavailable.

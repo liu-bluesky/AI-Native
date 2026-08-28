@@ -19,6 +19,9 @@ import {
   readGlobalBotConnectorConfigFile,
   readGlobalMcpConfigFile,
 } from './modules/project-chat/services/projectChatStorage.js'
+import { removeLegacyLocalRuntimeSnapshots } from './utils/local-storage-migrations.js'
+import { hydrateLocalAiTasks } from './utils/local-ai-task-store.js'
+import { hydrateLocalProjectRepository } from './services/local-project-repository.js'
 import {
   hasNativeDesktopBridge,
   listNativeFeishuLocalBotListeners,
@@ -35,6 +38,9 @@ import {
 } from './services/local-main-model-runtime.js'
 
 const router = useRouter()
+removeLegacyLocalRuntimeSnapshots()
+void hydrateLocalAiTasks()
+void hydrateLocalProjectRepository()
 let onlineHeartbeatTimer = null
 let localBotSyncTimer = null
 let localBotSyncPending = false

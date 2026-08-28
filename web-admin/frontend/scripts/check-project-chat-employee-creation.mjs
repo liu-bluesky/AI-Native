@@ -9,6 +9,10 @@ const dialogSource = await readFile(
   new URL("../src/components/ProjectEmployeeDraftCreateDialog.vue", import.meta.url),
   "utf8",
 );
+const directoryServiceSource = await readFile(
+  new URL("../src/services/local-agent-directory-service.js", import.meta.url),
+  "utf8",
+);
 
 assert.match(
   source,
@@ -186,6 +190,42 @@ assert.match(
   source,
   /case "update":[\s\S]*autoUpdateEmployeeFromDraftMessage/s,
   "模型 update 意图必须触发智能体更新草稿",
+);
+
+assert.match(
+  source,
+  /skill_drafts 必须为每个 skills 项提供 id、name、content/s,
+  "草稿协议必须要求每项技能携带独立 Markdown 内容",
+);
+assert.match(
+  source,
+  /function normalizeEmployeeDraftPayload\([\s\S]*skill_drafts: skillDrafts/s,
+  "草稿解析必须保留技能 Markdown 定义",
+);
+assert.match(
+  source,
+  /function mergeEmployeeSkillDefinitions\([\s\S]*缺少独立 Markdown 内容[\s\S]*Markdown 内容相同/s,
+  "缺失或重复的技能内容时必须阻止创建，不能继续写入通用模板",
+);
+assert.match(
+  source,
+  /handleQuickCreateEmployee\([\s\S]*mergeEmployeeSkillDefinitions\([\s\S]*employee\.skill_drafts/s,
+  "创建智能体时必须把每项技能的独立内容传入目录写入层",
+);
+assert.match(
+  source,
+  /handleQuickUpdateEmployee\([\s\S]*mergeEmployeeSkillDefinitions\([\s\S]*employee\.skill_drafts/s,
+  "更新智能体时必须保留并使用每项技能的独立内容",
+);
+assert.match(
+  directoryServiceSource,
+  /function renderSkillDefinition\([\s\S]*缺少真实内容[\s\S]*阻止写入通用占位模板/s,
+  "目录写入层必须拒绝将空技能写成重复占位模板",
+);
+assert.doesNotMatch(
+  directoryServiceSource,
+  /此技能由 AI Employee 本地智能体配置引用。/,
+  "目录写入层不得保留技能通用占位正文",
 );
 
 console.log("project chat employee creation trigger check passed.");
