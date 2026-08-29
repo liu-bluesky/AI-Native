@@ -44,6 +44,7 @@ const TAURI_COMMAND_NAMES = {
   readGlobalFtpCredentialsFile: "read_global_ftp_credentials_file",
   writeGlobalFtpCredentialsFile: "write_global_ftp_credentials_file",
   openExternalUrl: "open_external_url",
+  openLocalFile: "open_local_file",
   copyResourceFileToClipboard: "copy_resource_file_to_clipboard",
   saveResourceFile: "save_resource_file",
   persistProjectChatAsset: "persist_project_chat_asset",
@@ -693,6 +694,19 @@ export async function openNativeExternalUrl(url = "") {
   if (!normalizedUrl) return false;
   const result = await invokeNativeDesktopBridge("openExternalUrl", {
     url: normalizedUrl,
+  });
+  return result === true || result?.opened === true;
+}
+
+export async function openNativeLocalFile(options = {}) {
+  const workspacePath = String(
+    options?.workspacePath || options?.workspace_path || "",
+  ).trim();
+  const path = String(options?.path || "").trim();
+  if (!workspacePath || !path) return false;
+  const result = await invokeNativeDesktopBridge("openLocalFile", {
+    workspacePath,
+    path,
   });
   return result === true || result?.opened === true;
 }

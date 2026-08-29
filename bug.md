@@ -1,17 +1,23 @@
-                                                                                                                                                                                 
-  1. 技能内容模板化                                                                                                                                                              
-      - 20 个 SKILL.md 几乎完全相同；差异主要是技能标题，另有少量空行差异。                                                                                                      
-  2. 技能没有实际能力定义                                                                                                                                                        
-      - 文件正文未包含 CSS、Python、SQL 等各自的具体职责、规则或示例，只是通用“被 AI Employee 使用”的占位说明。                                                                  
-  3. “追加 PHP”会产生伪变更                                                                                                                                                      
-      - 若继续沿用当前生成规则，PHP 只会得到同样的空模板，不会写入草稿中声明的 PHP 开发、框架、接口、数据库和性能优化能力。                                                      
-  4. 变更检测不可靠                                                                                                                                                              
-      - 若按完整文本比较，技能名称或空行就会被当作内容差异；若按模板内容比较，又可能把不同技能误判为重复。                                                                       
-  5. 确认流程状态错误                                                                                                                                                            
-      - 草稿生成后应停留在“等待确认”，但当前会出现确认弹框不展示、卡片折叠或卡住的问题。                                                                                         
-  6. 完成态过早展示                                                                                                                                                              
-      - 用户尚未确认、文件尚未写入时，不应显示“已完成”；应展示“思考中 / 探索中 / 等待确认”及计时。                                                                               
-  7. 对象渲染错误                                                                                                                                                                
-      - “工具使用策略”和“保存内容”直接渲染对象，导致界面显示 [object Object]，用户无法核对实际将保存的内容。                                                                     
-  8. 确认弹框缺少有效预览                                                                                                                                                        
-      - 弹框应明确展示目标技能文件、创建/更新类型、写入后的真实 Markdown 内容，以及确认/取消操作。
+• 完成内容
+
+- 结果卡片从二态 completed 改为多状态：执行中、已暂停、等待回答、等待授权、失败、完成。
+- 暂停后显示“任务已暂停 / 待继续”，追问显示“等待补充信息”，授权显示“等待本机授权”。
+- 恢复执行、追问、授权、失败、完成分支都会写入明确状态，避免继续后沿用旧的“任务尚未完成”。
+- 保留原有 checkpoint/session 恢复逻辑，不重复执行成功的工具操作，兼容 macOS 和 Windows。
+
+文件
+
+- web-admin/frontend/src/modules/project-chat/components/messages/LocalTaskResultSummary.vue:6
+- web-admin/frontend/src/modules/project-chat/components/messages/LocalTaskResultSummary.vue:65
+- web-admin/frontend/src/views/projects/ProjectChat.vue:34697
+- web-admin/frontend/src/views/projects/ProjectChat.vue:35058
+- web-admin/frontend/src/views/projects/ProjectChat.vue:35165
+- web-admin/frontend/src/views/projects/ProjectChat.vue:35249
+- web-admin/frontend/src/views/projects/ProjectChat.vue:35338
+- web-admin/frontend/src/views/projects/ProjectChat.vue:35518
+
+验证
+
+- npm run test:local-task-result 通过。
+- npm run build 通过。
+- npm run test:pause-state 仍失败，但失败是仓库现有断言与当前暂停代码顺序不匹配，并非构建或本次状态卡片改动导致。

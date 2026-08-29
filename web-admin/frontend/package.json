@@ -18,6 +18,8 @@
     "test:workspace-file-errors": "node ./scripts/check-workspace-file-errors.mjs",
     "test:tool-intent": "node ./scripts/check-project-chat-tool-intent.mjs",
     "test:thinking-display": "node ./scripts/check-project-chat-thinking-display.mjs",
+    "test:chat-language": "node ./scripts/check-project-chat-language-following.mjs",
+    "test:local-task-result": "node ./scripts/check-project-chat-local-task-result.mjs",
     "test:local-chat-history": "node ./scripts/check-project-chat-local-history.mjs",
     "test:global-mcp": "node ./scripts/check-project-chat-global-mcp.mjs",
     "test:local-liuagent-chat": "node ./scripts/check-local-liuagent-chat.mjs",

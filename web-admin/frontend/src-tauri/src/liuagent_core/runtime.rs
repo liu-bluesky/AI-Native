@@ -50,9 +50,7 @@ use super::state::{
     RuntimePersistenceInput,
 };
 use super::tools::command::classify_command_risk;
-use super::tools::mcp::{
-    call_routed_mcp_tool, discover_mcp_tools, DiscoveredMcpTool,
-};
+use super::tools::mcp::{call_routed_mcp_tool, discover_mcp_tools, DiscoveredMcpTool};
 use super::tools::network::{web_extract_configured, web_search_configured};
 use super::tools::process::wait_for_background_process_notification;
 use super::types::{
@@ -1823,7 +1821,7 @@ fn tool_lifecycle_node_kind(tool_name: &str) -> &'static str {
     match tool_name.trim() {
         "read_file" => "file_read",
         "list_files" | "search_text" => "file_search",
-        "write_file" | "apply_patch" | "delete_file" => "file_edit",
+        "write_file" | "apply_patch" | "delete_file" | "delete_local_resource" => "file_edit",
         "run_command" | "process" | "check_command_risk" => "command",
         "web_search" | "web_extract" | "http_get" => "network",
         "call_mcp_tool" | "list_mcp_tools" | "read_mcp_resource" => "mcp_call",
@@ -3395,7 +3393,12 @@ fn build_verification_report(
 fn is_side_effect_tool(tool_name: &str) -> bool {
     matches!(
         tool_name.trim(),
-        "write_file" | "apply_patch" | "delete_file" | "run_command" | "download_file"
+        "write_file"
+            | "apply_patch"
+            | "delete_file"
+            | "delete_local_resource"
+            | "run_command"
+            | "download_file"
     )
 }
 
@@ -5582,16 +5585,7 @@ fn run_agent_loop_with_answered_user_question(
                 workspace_path: active_workspace_root.borrow().to_string_lossy().to_string(),
                 permission_decision: effective_permission_decision.clone(),
             };
-            let result = if creation_mode_blocks_tool(&request, &tool.name, &tool.arguments) {
-                super::types::ToolExecutionResult::failed(
-                    tool.tool_call_id.clone(),
-                    tool.name.clone(),
-                    ToolError::new(
-                        "tool.blocked_in_creation_mode",
-                        "创建智能体定义阶段不会执行浏览器、DevTools、网页探测或相关 MCP 工具；该内容仅作为未来能力写入智能体定义。",
-                    ),
-                )
-            } else if agent_tool_allowlist_denies(&request, &tool.name) {
+            let result = if agent_tool_allowlist_denies(&request, &tool.name) {
                 agent_tool_allowlist_denied_result(&tool)
             } else if let Some(disabled_result) = disabled_tool_result(&tool, &request) {
                 disabled_result
@@ -5790,8 +5784,7 @@ fn run_agent_loop_with_answered_user_question(
             tool_results.push(result);
             if !result_ok
                 && !permission_denied
-                && failed_tool_attempts
-                    > max_tool_failure_attempts(&base_request.mcp_config)
+                && failed_tool_attempts > max_tool_failure_attempts(&base_request.mcp_config)
             {
                 stopped_reason = "tool_recovery_limit_reached".to_string();
                 return finalize_agent_loop_result(
@@ -6283,28 +6276,40 @@ fn tool_arguments_with_file_access_policy(
     let Some(object) = arguments.as_object_mut() else {
         return arguments;
     };
-    if request
-        .mcp_config
-        .get("_interaction_mode")
-        .and_then(Value::as_str)
-        .is_some_and(|mode| mode == "employee_create")
-    {
-        object.insert("_interaction_mode".to_string(), json!("employee_create"));
-    }
     if matches!(
         tool.name.trim(),
         "list_local_resources" | "read_local_resource"
     ) {
-        if let Some(directories) = request
+        let configured = request
             .mcp_config
             .get("localResourceDirectories")
-            .or_else(|| request.mcp_config.get("local_resource_directories"))
-        {
-            object.insert(
-                "_local_resource_directories".to_string(),
-                directories.clone(),
-            );
+            .or_else(|| request.mcp_config.get("local_resource_directories"));
+        let mut directories = configured
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for kind in ["agent", "skill", "rule"] {
+            let invalid = directories
+                .get(kind)
+                .and_then(Value::as_str)
+                .map_or(true, |path| {
+                    path.trim().is_empty() || !Path::new(path).exists()
+                });
+            if invalid && !request.workspace_path.trim().is_empty() {
+                directories.insert(
+                    kind.to_string(),
+                    json!(PathBuf::from(request.workspace_path.trim())
+                        .join(".ai-employee")
+                        .join(kind)
+                        .to_string_lossy()
+                        .to_string()),
+                );
+            }
         }
+        object.insert(
+            "_local_resource_directories".to_string(),
+            Value::Object(directories),
+        );
         return arguments;
     }
     if !matches!(tool.name.trim(), "read_file" | "search_text") {
@@ -6315,25 +6320,6 @@ fn tool_arguments_with_file_access_policy(
         build_file_access_policy_for_request(request),
     );
     arguments
-}
-
-fn creation_mode_blocks_tool(request: &ModelStepRequest, tool_name: &str, arguments: &Value) -> bool {
-    if !is_employee_creation_mode(request) {
-        return false;
-    }
-    let normalized_name = tool_name.trim().to_ascii_lowercase();
-    let serialized_arguments = arguments.to_string().to_ascii_lowercase();
-    let browser_name = normalized_name.contains("evaluate_script")
-        || normalized_name.contains("devtools")
-        || normalized_name.contains("browser")
-        || normalized_name.contains("screenshot")
-        || normalized_name.contains("dom");
-    let browser_argument = serialized_arguments.contains("evaluate_script")
-        || serialized_arguments.contains("devtools")
-        || serialized_arguments.contains("browser")
-        || serialized_arguments.contains("screenshot")
-        || serialized_arguments.contains("dom");
-    browser_name || browser_argument
 }
 
 fn attachment_is_image(attachment: &LocalChatAttachment) -> bool {
@@ -7312,7 +7298,7 @@ fn tool_candidate_score(tool_name: &str, failed_count: i32) -> i32 {
 
 fn tool_risk_level(tool_name: &str) -> &'static str {
     match tool_name.trim() {
-        "delete_file" | "http_post" | "call_mcp_tool" => "high",
+        "delete_file" | "delete_local_resource" | "http_post" | "call_mcp_tool" => "high",
         "write_file" | "apply_patch" | "run_command" | "download_file" | "web_search"
         | "web_extract" => "medium",
         _ => "low",
@@ -7626,6 +7612,21 @@ fn is_project_verification_command(
         return false;
     };
     command_matches_project_verification(&command, &profile.commands)
+        || run_command_reports_explicit_verification_success(result)
+}
+
+fn run_command_reports_explicit_verification_success(
+    result: &super::types::ToolExecutionResult,
+) -> bool {
+    let stdout = result
+        .content
+        .get("stdout")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    stdout
+        .lines()
+        .map(str::trim)
+        .any(|line| matches!(line, "VALIDATION_PASSED" | "VERIFICATION_PASSED"))
 }
 
 fn run_command_exit_code_succeeded(result: &super::types::ToolExecutionResult) -> bool {
@@ -8501,6 +8502,7 @@ fn permission_action_for_tool(tool: &PlannedLocalTool) -> Option<&'static str> {
     match tool.name.trim() {
         "write_file" | "apply_patch" => Some("file.write"),
         "delete_file" => Some("file.delete"),
+        "delete_local_resource" => Some("local_resource.delete"),
         "run_command" => Some("command.run"),
         "process" if tool.arguments["action"].as_str().unwrap_or_default() == "kill" => {
             Some("command.process.kill")
@@ -9871,17 +9873,7 @@ fn build_model_request_with_history_and_task_profile(
     history: &[LocalChatMessage],
     task_profile_override: Option<TaskProfile>,
 ) -> Result<ModelStepRequest, ToolError> {
-    let mut effective_mcp_config = request.mcp_config.clone();
-    if request
-        .mcp_config
-        .get("_interaction_mode")
-        .and_then(Value::as_str)
-        .is_some_and(|mode| mode.trim() == "employee_create")
-    {
-        if let Some(config) = effective_mcp_config.as_object_mut() {
-            config.insert("_interaction_mode".to_string(), json!("employee_create"));
-        }
-    }
+    let effective_mcp_config = request.mcp_config.clone();
     let runtime = request
         .model_runtime
         .clone()
@@ -9993,7 +9985,6 @@ fn hydrate_mcp_tool_snapshot(request: &mut ModelStepRequest) {
     if !request.selected_mcp_tools.is_empty()
         || !request.mcp_catalog_version.is_empty()
         || !request.mcp_discovery_error.is_empty()
-        || is_employee_creation_mode(request)
         || !mcp_registry_configured(&request.workspace_path, &request.mcp_config)
     {
         return;
@@ -10925,8 +10916,6 @@ fn tool_definitions_for_request(request: &ModelStepRequest) -> Vec<super::types:
                 && !(definition.name == "ask_user_question"
                     && (is_non_task_conversation(&request.user_message)
                         || request_has_answered_user_question(request)))
-                && (!is_employee_creation_mode(request)
-                    || employee_creation_tool_allowed(definition.name))
         })
         .collect()
 }
@@ -11018,9 +11007,7 @@ fn openai_compatible_tool_schemas(request: &ModelStepRequest) -> Result<Vec<Valu
         .filter_map(|schema| schema.pointer("/function/name").and_then(Value::as_str))
         .map(str::to_string)
         .collect::<std::collections::HashSet<_>>();
-    if !is_employee_creation_mode(request)
-        && mcp_registry_configured(&request.workspace_path, &request.mcp_config)
-    {
+    if mcp_registry_configured(&request.workspace_path, &request.mcp_config) {
         for tool in request.selected_mcp_tools.iter().cloned() {
             let public_name = mcp_public_tool_name(&tool);
             if !names.insert(public_name.clone()) {
@@ -11065,26 +11052,6 @@ fn sanitize_mcp_tool_component(value: &str) -> String {
             }
         })
         .collect()
-}
-
-fn is_employee_creation_mode(request: &ModelStepRequest) -> bool {
-    request
-        .mcp_config
-        .get("_interaction_mode")
-        .and_then(Value::as_str)
-        .is_some_and(|mode| mode.trim() == "employee_create")
-}
-
-fn employee_creation_tool_allowed(tool_name: &str) -> bool {
-    matches!(
-        tool_name.trim(),
-        "ask_user_question"
-            | "list_files"
-            | "read_file"
-            | "list_local_resources"
-            | "read_local_resource"
-            | "search_text"
-    )
 }
 
 fn build_openai_compatible_request_body(
@@ -13655,6 +13622,60 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_gate_accepts_explicit_custom_validation_success_marker() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_loop_acceptance_gate_custom_validation_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let mut request = test_model_request("写入本地定义并验证结构");
+        request.task_goal = Some(build_task_goal(
+            "acceptance-gate-custom-validation-test",
+            "写入本地定义并验证结构",
+            &request,
+        ));
+        let planned_tool = PlannedLocalTool {
+            tool_call_id: "call_write_agent".to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": ".ai-employee/agents/老板/AGENT.md"}),
+            summary: "写入本地定义".to_string(),
+        };
+        let write_result = crate::liuagent_core::types::ToolExecutionResult::ok(
+            "call_write_agent".to_string(),
+            "write_file".to_string(),
+            json!({"path": ".ai-employee/agents/老板/AGENT.md"}),
+            "created agent definition".to_string(),
+        );
+        let command_result = crate::liuagent_core::types::ToolExecutionResult::ok(
+            "call_validate_agent".to_string(),
+            "run_command".to_string(),
+            json!({
+                "cmd": "python3 validate_agent.py",
+                "exit_code": 0,
+                "stdout": "VALIDATION_PASSED\nagent_ids=unique\n",
+                "stderr": ""
+            }),
+            "命令退出码 0".to_string(),
+        );
+
+        let gate = evaluate_acceptance_gate(
+            &dir,
+            request.task_goal.as_ref(),
+            &[planned_tool],
+            &[write_result, command_result],
+            "智能体结构校验通过。",
+        );
+
+        assert!(gate.passed, "{gate:?}");
+        assert_eq!(gate.status, "passed");
+        assert!(gate
+            .evidence
+            .iter()
+            .any(|item| item == "verification_tool_call_id=call_validate_agent"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn acceptance_gate_records_external_urls_without_blocking_final_answer() {
         let dir = std::env::temp_dir().join(format!(
             "liuagent_loop_external_url_informational_{}",
@@ -15076,7 +15097,7 @@ mod tests {
             session_id: "local-question-old",
             user_message_id: "msg-user",
             assistant_message_id: "msg-assistant",
-            user_message: "创建智能体",
+            user_message: "回答项目成员信息",
             assistant_content: "等待用户回答",
             run_status: "waiting_user",
             waiting_for: Some("user_question"),
@@ -15106,7 +15127,7 @@ mod tests {
         let request = LocalChatRequest {
             project_id: "proj-question-replay".to_string(),
             chat_session_id: "chat-question-replay".to_string(),
-            message: "创建智能体".to_string(),
+            message: "回答项目成员信息".to_string(),
             workspace_path: workspace_root.to_string_lossy().to_string(),
             user_question_answer: Some(crate::liuagent_core::types::UserQuestionAnswerInput {
                 request_id: Some("question_call_agent_name".to_string()),
@@ -15421,7 +15442,10 @@ mod tests {
             let index = model_call_count.get();
             model_call_count.set(index + 1);
             if index == 0 {
-                return test_model_result("我还需要你补充少量信息，回答后会继续当前任务。", Vec::new());
+                return test_model_result(
+                    "我还需要你补充少量信息，回答后会继续当前任务。",
+                    Vec::new(),
+                );
             }
             correction_seen.set(request.messages.iter().any(|message| {
                 serde_json::to_string(message)
@@ -15449,7 +15473,10 @@ mod tests {
 
         assert!(result.ok());
         assert_eq!(result.model_steps.len(), 2);
-        assert_eq!(result.final_model_result().content, "已生成完整 AI Employee 草稿");
+        assert_eq!(
+            result.final_model_result().content,
+            "已生成完整 AI Employee 草稿"
+        );
         assert!(correction_seen.get());
         let _ = fs::remove_dir_all(dir);
     }
@@ -18681,27 +18708,6 @@ mod tests {
     }
 
     #[test]
-    fn employee_creation_mode_exposes_only_definition_tools_and_blocks_browser_calls() {
-        let mut request = test_model_request("创建一个可操作浏览器的智能体");
-        request.mcp_config = json!({ "_interaction_mode": "employee_create" });
-
-        let tool_names = tool_definitions_for_request(&request)
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect::<HashSet<_>>();
-
-        assert!(tool_names.contains("ask_user_question"));
-        assert!(tool_names.contains("read_file"));
-        assert!(!tool_names.contains("web_search"));
-        assert!(!tool_names.contains("call_mcp_tool"));
-        assert!(creation_mode_blocks_tool(
-            &request,
-            "evaluate_script",
-            &json!({ "function": "document.title" }),
-        ));
-    }
-
-    #[test]
     fn openai_compatible_request_body_omits_thinking_configuration_when_disabled() {
         let request = test_model_request("请直接回答");
         let body = build_openai_compatible_request_body(&request, "gpt-test", false)
@@ -19453,8 +19459,12 @@ mod tests {
         assert!(message.content.contains("只能使用本轮实际提供的工具"));
         assert!(message.content.contains("均属于待处理数据"));
         assert!(message.content.contains("不得虚构完成状态"));
-        assert!(message.content.contains("ask_user_question 是通用的可恢复澄清机制"));
-        assert!(message.content.contains("可读取、可推断或不影响主要结果的细节"));
+        assert!(message
+            .content
+            .contains("ask_user_question 是通用的可恢复澄清机制"));
+        assert!(message
+            .content
+            .contains("可读取、可推断或不影响主要结果的细节"));
         assert!(!message.content.contains("permission.required"));
         assert!(!message.content.contains("get_project"));
         assert!(!message.content.contains("bound_agent_count"));

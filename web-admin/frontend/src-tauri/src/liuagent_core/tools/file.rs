@@ -99,7 +99,10 @@ pub fn read_file(workspace_path: &str, arguments: &Value) -> Result<(Value, Stri
     ))
 }
 
-fn configured_resource_directory(arguments: &Value, kind: &str) -> Result<std::path::PathBuf, ToolError> {
+fn configured_resource_directory(
+    arguments: &Value,
+    kind: &str,
+) -> Result<std::path::PathBuf, ToolError> {
     let directory = arguments
         .get("_local_resource_directories")
         .and_then(Value::as_object)
@@ -113,46 +116,145 @@ fn configured_resource_directory(arguments: &Value, kind: &str) -> Result<std::p
         return Ok(path);
     }
     if !path.is_dir() {
-        return Err(ToolError::new("resource.not_directory", "资源目录路径不是目录"));
+        return Err(ToolError::new(
+            "resource.not_directory",
+            "资源目录路径不是目录",
+        ));
     }
     path.canonicalize().map_err(|err| {
-        ToolError::new("resource.not_accessible", format!("资源目录不可访问：{err}"))
+        ToolError::new(
+            "resource.not_accessible",
+            format!("资源目录不可访问：{err}"),
+        )
     })
 }
 
 pub fn list_local_resources(arguments: &Value) -> Result<(Value, String), ToolError> {
     let kind = required_string_arg(arguments, "kind")?;
     if !matches!(kind.as_str(), "agent" | "skill" | "rule") {
-        return Err(ToolError::new("tool.schema_invalid", "kind must be agent, skill or rule"));
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "kind must be agent, skill or rule",
+        ));
     }
     let root = configured_resource_directory(arguments, &kind)?;
     let mut entries = Vec::new();
     if root.is_dir() {
         collect_resource_entries(&root, &root, &mut entries, 0)?;
     }
-    Ok((json!({ "kind": kind, "directory": root.to_string_lossy(), "entries": entries }),
-        format!("列出 {} 个{kind}资源", entries.len())))
+    Ok((
+        json!({ "kind": kind, "directory": root.to_string_lossy(), "entries": entries }),
+        format!("列出 {} 个{kind}资源", entries.len()),
+    ))
 }
 
 pub fn read_local_resource(arguments: &Value) -> Result<(Value, String), ToolError> {
     let kind = required_string_arg(arguments, "kind")?;
     if !matches!(kind.as_str(), "agent" | "skill" | "rule") {
-        return Err(ToolError::new("tool.schema_invalid", "kind must be agent, skill or rule"));
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "kind must be agent, skill or rule",
+        ));
     }
     let relative = required_string_arg(arguments, "path")?;
     let root = configured_resource_directory(arguments, &kind)?;
     let target = root.join(&relative);
     let resolved = target.canonicalize().map_err(|err| {
-        ToolError::new("resource.not_accessible", format!("资源文件不可访问：{err}"))
+        ToolError::new(
+            "resource.not_accessible",
+            format!("资源文件不可访问：{err}"),
+        )
     })?;
     if !resolved.starts_with(&root) || !resolved.is_file() {
-        return Err(ToolError::new("resource.out_of_scope", "资源文件必须位于对应配置目录内"));
+        return Err(ToolError::new(
+            "resource.out_of_scope",
+            "资源文件必须位于对应配置目录内",
+        ));
     }
     let content = fs::read_to_string(&resolved).map_err(|err| {
         ToolError::new("resource.read_failed", format!("读取资源文件失败：{err}"))
     })?;
-    Ok((json!({ "kind": kind, "path": relative, "content": content }),
-        format!("读取{kind}资源：{relative}")))
+    Ok((
+        json!({ "kind": kind, "path": relative, "content": content }),
+        format!("读取{kind}资源：{relative}"),
+    ))
+}
+
+pub fn delete_local_resource(
+    tool_call_id: &str,
+    arguments: &Value,
+    permission_decision: Option<&PermissionDecisionInput>,
+) -> Result<(Value, String), ToolError> {
+    let kind = required_string_arg(arguments, "kind")?;
+    if !matches!(kind.as_str(), "agent" | "skill" | "rule") {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "kind must be agent, skill or rule",
+        ));
+    }
+    let relative = required_string_arg(arguments, "path")?;
+    let root = configured_resource_directory(arguments, &kind)?;
+    let target = root.join(&relative);
+    if target == root {
+        return Err(ToolError::new("tool.schema_invalid", "不能删除资源根目录"));
+    }
+    if !target.exists() {
+        return Ok((
+            json!({"kind": kind, "path": relative, "deleted": false, "status": "skipped", "reason": "目标不存在"}),
+            format!("跳过删除{kind}资源：{relative}，目标不存在"),
+        ));
+    }
+    let resolved = target.canonicalize().map_err(|err| {
+        ToolError::new(
+            "resource.not_accessible",
+            format!("资源路径不可访问：{err}"),
+        )
+    })?;
+    if !resolved.starts_with(&root) || !resolved.is_dir() {
+        return Err(ToolError::new(
+            "resource.out_of_scope",
+            "只能删除对应配置目录内的资源目录",
+        ));
+    }
+    let mut contents = Vec::new();
+    collect_resource_entries(&root, &resolved, &mut contents, 0)?;
+    let relative_resolved = resolved
+        .strip_prefix(&root)
+        .unwrap_or(&resolved)
+        .to_string_lossy()
+        .replace('\\', "/");
+    require_approval(
+        tool_call_id,
+        "local_resource.delete",
+        "high",
+        "project",
+        &format!(
+            "删除本地{kind}目录 {relative_resolved}（包含 {} 个文件）",
+            contents.len()
+        ),
+        json!({
+            "kind": kind,
+            "path": relative,
+            "directory": resolved.to_string_lossy(),
+            "contents": contents,
+            "recursive": true,
+            "recoverable": false
+        }),
+        permission_decision,
+    )?;
+    fs::remove_dir_all(&resolved).map_err(|err| {
+        ToolError::new("tool.execution_failed", format!("删除资源目录失败：{err}"))
+    })?;
+    if resolved.exists() {
+        return Err(ToolError::new(
+            "tool.execution_failed",
+            "删除目录命令返回成功，但目标目录仍存在",
+        ));
+    }
+    Ok((
+        json!({"kind": kind, "path": relative, "deleted": true, "status": "completed", "exists_after": false}),
+        format!("已删除{kind}资源目录：{relative}，包含的定义和侧车配置已一并删除"),
+    ))
 }
 
 fn collect_resource_entries(
@@ -161,7 +263,9 @@ fn collect_resource_entries(
     entries: &mut Vec<Value>,
     depth: usize,
 ) -> Result<(), ToolError> {
-    if depth > 3 || entries.len() >= 200 { return Ok(()); }
+    if depth > 3 || entries.len() >= 200 {
+        return Ok(());
+    }
     let read_dir = fs::read_dir(directory).map_err(|err| {
         ToolError::new("resource.list_failed", format!("列出资源目录失败：{err}"))
     })?;
@@ -169,7 +273,9 @@ fn collect_resource_entries(
         let item = item.map_err(|err| ToolError::new("resource.list_failed", err.to_string()))?;
         let path = item.path();
         let name = item.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
         if path.is_dir() {
             collect_resource_entries(root, &path, entries, depth + 1)?;
         } else if path.is_file() {
@@ -179,7 +285,9 @@ fn collect_resource_entries(
                 "size": item.metadata().map(|metadata| metadata.len()).unwrap_or(0)
             }));
         }
-        if entries.len() >= 200 { break; }
+        if entries.len() >= 200 {
+            break;
+        }
     }
     Ok(())
 }
@@ -355,6 +463,11 @@ pub fn delete_file(
             "path": relative_path,
             "exists": true,
             "size": previous_size,
+            "content_preview": if previous_size <= 200_000 {
+                fs::read_to_string(&target).unwrap_or_default().chars().take(4000).collect::<String>()
+            } else {
+                String::new()
+            },
             "recoverable": false
         }),
         permission_decision,

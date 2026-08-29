@@ -326,76 +326,22 @@
                               }}
                             </div>
                           </template>
-                          <div
+                          <ChatReasoningRow
                             v-if="isMessageThinkingPlaceholder(item, idx)"
-                            class="message-thinking-live"
-                            aria-live="polite"
-                          >
-                            <span>Thinking</span>
-                            <span
-                              class="message-thinking-live__dots"
-                              aria-hidden="true"
-                            >
-                              <i></i><i></i><i></i>
-                            </span>
-                          </div>
+                            running
+                          />
                           <div
                             v-if="shouldShowMessageTrajectory(item, idx)"
                             class="message-trajectory"
                           >
-                            <button
-                              type="button"
-                              class="message-trajectory__summary"
-                              :class="{
-                                'is-expanded': isMessageTrajectoryExpanded(item, idx),
-                                'is-running':
-                                  messageProcessLifecyclePhase(item, idx) === 'running',
-                              }"
-                              :aria-expanded="isMessageTrajectoryExpanded(item, idx)"
-                              @click="toggleMessageTrajectoryExpanded(item, idx)"
-                            >
-                              <span
-                                class="message-trajectory__summary-icon"
-                                aria-hidden="true"
-                              >
-                                ✧
-                              </span>
-                              <span class="message-trajectory__summary-label">
-                                {{ messageTrajectorySummary(item, idx) }}
-                              </span>
-                              <span
-                                class="message-trajectory__summary-chevron"
-                                aria-hidden="true"
-                              >
-                                <svg viewBox="0 0 16 16" width="12" height="12">
-                                  <path
-                                    d="m6 3 5 5-5 5"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="1.5"
-                                  />
-                                </svg>
-                              </span>
-                            </button>
-                            <div
-                              v-if="isMessageTrajectoryExpanded(item, idx)"
-                              class="message-trajectory__panel"
-                            >
-                              <div
-                                v-if="messageReasoningBlocks(item).length"
-                                class="message-thinking-quote"
-                              >
-                                <div class="message-thinking-quote__content">
-                                <div
-                                  v-for="block in messageReasoningBlocks(item)"
-                                  :key="block.id"
-                                  class="message-thinking-quote__block"
-                                  v-html="trajectoryReasoningBlockHtml(block.text)"
-                                ></div>
-                                </div>
-                              </div>
+                            <ChatReasoningRow
+                              v-if="messageReasoningBlocks(item).length"
+                              :blocks="messageReasoningBlocks(item)"
+                              :running="messageProcessLifecyclePhase(item, idx) === 'running'"
+                              :duration="messageThinkingDurationLabel(item)"
+                              :render-html="trajectoryReasoningBlockHtml"
+                            />
+                            <div class="message-trajectory__panel">
                             <div
                               v-if="messageTrajectoryRuntimeSummary(item, idx)"
                               class="message-trajectory__current-step"
@@ -408,108 +354,85 @@
                                 {{ messageTrajectoryRuntimeSummary(item, idx) }}
                               </span>
                             </div>
-                            <div
-                              v-if="messageTrajectoryExecutionSteps(item).length"
-                              class="message-trajectory__execution-steps"
+                            <details
+                              v-if="
+                                messageTrajectoryExecutionSteps(item).length ||
+                                messageTrajectoryToolCalls(item).length
+                              "
+                              :open="item.processExpanded === true"
+                              @toggle="handleMessageProcessDetailsToggle(item, $event)"
+                              class="message-trajectory__execution-details"
                             >
-                              <div
-                                v-for="operation in messageTrajectoryExecutionSteps(item)"
-                                :key="operation.id"
-                                class="message-trajectory__execution-step"
-                                :class="`is-${operation.phase}`"
-                              >
-                                <span class="message-trajectory__step-icon">
-                                  {{ operation.phase === "completed" ? "✓" : "•" }}
+                              <summary>
+                                <span>执行步骤</span>
+                                <span>
+                                  {{
+                                    messageTrajectoryExecutionSteps(item).length +
+                                    messageTrajectoryToolCalls(item).length
+                                  }}
+                                  项
                                 </span>
-                                <span class="message-trajectory__step-title">
-                                  {{ operation.title }}
-                                </span>
-                                <span
-                                  v-if="operation.summary"
-                                  class="message-trajectory__step-state"
+                              </summary>
+                              <div class="message-trajectory__execution-details-body">
+                                <div
+                                  v-if="messageTrajectoryExecutionSteps(item).length"
+                                  class="message-trajectory__execution-steps"
                                 >
-                                  {{ operation.summary }}
-                                </span>
-                              </div>
-                            </div>
-                            <ul
-                              v-if="messageTrajectoryToolCalls(item).length"
-                              class="message-trajectory__tool-calls"
-                            >
-                              <li
-                                v-for="operation in messageTrajectoryToolCalls(item)"
-                                :key="operation.id"
-                              >
-                                <button
-                                  type="button"
-                                  class="message-trajectory__tool-call"
-                                  :aria-expanded="isMessageTrajectoryToolExpanded(item, operation)"
-                                  :title="operation.title"
-                                  @click="toggleMessageTrajectoryToolDetail(item, operation)"
-                                >
-                                  <svg
-                                    class="message-trajectory__tool-icon"
-                                    width="12"
-                                    height="12"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    aria-hidden="true"
+                                  <div
+                                    v-for="operation in messageTrajectoryExecutionSteps(item)"
+                                    :key="operation.id"
+                                    class="message-trajectory__execution-step"
+                                    :class="`is-${operation.phase}`"
                                   >
-                                    <path
-                                      d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"
-                                      stroke="currentColor"
-                                      stroke-width="1.8"
-                                      stroke-linecap="round"
-                                      stroke-linejoin="round"
-                                    />
-                                  </svg>
-                                  <span class="message-trajectory__tool-text">
-                                    <span class="message-trajectory__tool-name">
+                                    <span class="message-trajectory__step-icon">
+                                      {{ operation.phase === "completed" ? "✓" : "•" }}
+                                    </span>
+                                    <span class="message-trajectory__step-title">
                                       {{ operation.title }}
                                     </span>
                                     <span
-                                      v-if="messageTrajectoryToolPreview(operation)"
-                                      class="message-trajectory__tool-preview"
+                                      v-if="operation.summary"
+                                      class="message-trajectory__step-state"
                                     >
-                                      {{ messageTrajectoryToolPreview(operation) }}
+                                      {{ operation.summary }}
                                     </span>
-                                  </span>
-                                </button>
-                                <div
-                                  v-if="isMessageTrajectoryToolExpanded(item, operation)"
-                                  class="message-trajectory__tool-detail"
-                                >
-                                  <p v-if="operation.detail">
-                                    {{ operation.detail }}
-                                  </p>
-                                  <pre v-if="operationCommand(operation)">命令：{{ operationCommand(operation) }}</pre>
-                                  <pre v-if="operationCwd(operation)">工作目录：{{ operationCwd(operation) }}</pre>
-                                  <pre v-if="operationArguments(operation)">参数：{{ operationArguments(operation) }}</pre>
-                                  <pre v-if="operationOutput(operation)">输出：{{ operationOutput(operation) }}</pre>
-                                  <div
-                                    v-if="operationActionButtons(operation).length"
-                                    class="message-trajectory__tool-actions"
-                                  >
-                                    <el-button
-                                      v-for="action in operationActionButtons(operation)"
-                                      :key="`${operation.id}-${action.key}`"
-                                      size="small"
-                                      :type="action.type === 'danger' ? 'danger' : 'primary'"
-                                      :plain="action.type !== 'danger'"
-                                      @click.stop="handleOperationAction(operation, action.key)"
-                                    >
-                                      {{ action.label }}
-                                    </el-button>
                                   </div>
                                 </div>
-                              </li>
-                            </ul>
-                            <div
-                              v-if="messageProcessDisplayEntries(item).length"
-                              class="message-process-stream message-trajectory__execution-panel"
+                                <div
+                                  v-if="messageTrajectoryToolCalls(item).length"
+                                  class="message-trajectory__tool-calls"
+                                >
+                                  <ChatToolCallRow
+                                    v-for="operation in messageTrajectoryToolCalls(item)"
+                                    :key="operation.id"
+                                    :operation="operation"
+                                    :title="operation.title"
+                                    :preview="messageTrajectoryToolPreview(operation)"
+                                    :detail="operation.detail"
+                                    :command="operationCommand(operation)"
+                                    :cwd="operationCwd(operation)"
+                                    :arguments-text="operationArguments(operation)"
+                                    :output="operationOutput(operation)"
+                                    :exit-code="operationExitCode(operation)"
+                                    :actions="operationActionButtons(operation)"
+                                    @action="handleOperationAction(operation, $event)"
+                                  />
+                                </div>
+                              </div>
+                            </details>
+                            <details
+                              v-if="messageTrajectoryAdvancedEntries(item).length"
+                              :open="item.processExpanded === true"
+                              @toggle="handleMessageProcessDetailsToggle(item, $event)"
+                              class="message-trajectory__inspect"
                             >
+                              <summary>
+                                <span>执行详情</span>
+                                <span>{{ messageTrajectoryAdvancedEntries(item).length }} 条</span>
+                              </summary>
+                              <div class="message-process-stream message-trajectory__execution-panel">
                               <div
-                                v-for="entry in messageProcessDisplayEntries(
+                                v-for="entry in messageTrajectoryAdvancedEntries(
                                   item,
                                 )"
                                 :key="entry.id"
@@ -550,17 +473,12 @@
                                       {{ meta }}
                                     </span>
                                   </div>
-                                  <ul
-                                    v-if="messageProcessEntrySummary(entry).length"
+                                  <div
+                                    v-if="messageTrajectoryExecutionEntryPreview(entry)"
                                     class="message-process-entry__summary"
                                   >
-                                    <li
-                                      v-for="summary in messageProcessEntrySummary(entry)"
-                                      :key="summary"
-                                    >
-                                      {{ summary }}
-                                    </li>
-                                  </ul>
+                                    {{ messageTrajectoryExecutionEntryPreview(entry) }}
+                                  </div>
                                   <div
                                     v-if="messageProcessEntryChildRows(entry).length"
                                     class="message-process-entry__children"
@@ -605,7 +523,8 @@
                                   >{{ messageProcessEntryJson(entry) }}</pre>
                                 </div>
                               </div>
-                            </div>
+                              </div>
+                            </details>
                             </div>
                           </div>
                           <div
@@ -613,6 +532,14 @@
                             class="message-text"
                             v-html="messageBodyHtml(item, idx)"
                           ></div>
+                          <LocalTaskResultSummary
+                            v-if="
+                              item.role === 'assistant' &&
+                              shouldShowLocalTaskResultSummary(item.localTaskSummary)
+                            "
+                            :summary="item.localTaskSummary"
+                            @open-path="openLocalTaskResultPath"
+                          />
                           <div
                             v-if="messageFooterInteractionOperation(item)"
                             class="message-footer-action message-footer-action--form"
@@ -1073,7 +1000,7 @@
                           <div class="message-employee-draft__head">
                             <div>
                               <div class="message-employee-draft__eyebrow">
-                                待确认的 AI 智能体
+                                待确认的智能体更新
                               </div>
                               <div class="message-employee-draft__title">
                                 {{
@@ -1083,18 +1010,7 @@
                               </div>
                             </div>
                             <div class="message-employee-draft__pills">
-                              <span class="employee-draft-pill">
-                                技能
-                                {{
-                                  getEmployeeDraftCard(item).matched_skill_count
-                                }}
-                              </span>
-                              <span class="employee-draft-pill">
-                                规则
-                                {{
-                                  getEmployeeDraftCard(item).matched_rule_count
-                                }}
-                              </span>
+                              <span class="employee-draft-pill">仅更新已有定义</span>
                             </div>
                           </div>
                           <div
@@ -1177,12 +1093,7 @@
                               type="primary"
                               @click="openEmployeeDraftConfirmation(item)"
                             >
-                              确认{{
-                                extractEmployeeIntentPayload(item.content || '')
-                                  ?.intent === 'update'
-                                  ? '更新'
-                                  : '创建'
-                              }}
+                              确认更新
                             </el-button>
                             <el-button
                               size="small"
@@ -1391,7 +1302,7 @@
               </div>
             </div>
             <p class="chat-approval-banner__desc">
-              回答后会从同一个智能体工具调用继续，不会把信息不足当成创建失败。
+              回答后会从同一个智能体工具调用继续，不会把信息不足当成执行失败。
             </p>
             <div class="chat-user-question-banner__questions">
               <div
@@ -1815,9 +1726,6 @@
     :submitting="employeeCreateSubmitting"
     :payload="employeeDraftDialogPayload"
     :mode="employeeDraftDialogMode"
-    :skill-options="employeeDraftDialogSkillOptions"
-    :rule-options="employeeDraftDialogRuleOptions"
-    :can-add-to-project="Boolean(String(selectedProjectId || '').trim())"
     @confirm="confirmEmployeeDraftCreation"
     @close="resetEmployeeDraftDialogState"
   />
@@ -1946,6 +1854,8 @@
         <div
           v-if="activeSettingsPanel === 'chat'"
           class="settings-center-stage__body settings-center-stage__body--chat"
+          @wheel.stop
+          @touchmove.stop
         >
           <div class="settings-chat-layout settings-chat-layout--single">
             <div class="settings-chat-main settings-chat-main--wide">
@@ -2779,7 +2689,7 @@
           </div>
         </div>
         <div v-else class="settings-center-stage__body">
-          <router-view />
+          <component :is="settingsChildComponent" v-if="settingsChildComponent" />
         </div>
       </section>
     </div>
@@ -2868,6 +2778,13 @@ import ProjectEmployeeDraftCreateDialog from "@/components/ProjectEmployeeDraftC
 import ChatComposer from "@/modules/project-chat/components/composer/ChatComposer.vue";
 import ChatMediaParameterPopover from "@/modules/project-chat/components/composer/ChatMediaParameterPopover.vue";
 import ChatMessageList from "@/modules/project-chat/components/messages/ChatMessageList.vue";
+import ChatReasoningRow from "@/modules/project-chat/components/messages/ChatReasoningRow.vue";
+import ChatToolCallRow from "@/modules/project-chat/components/messages/ChatToolCallRow.vue";
+import LocalTaskResultSummary from "@/modules/project-chat/components/messages/LocalTaskResultSummary.vue";
+import {
+  appendChatResponseLanguageInstruction,
+  buildChatResponseLanguageInstruction,
+} from "@/modules/project-chat/services/chatResponseLanguage.js";
 import ChatContextBar from "@/modules/project-chat/components/layout/ChatContextBar.vue";
 import ProjectConversationSidebar from "@/modules/project-chat/components/sessions/ProjectConversationSidebar.vue";
 import ChatTaskTreePanel from "@/modules/project-chat/components/task-tree/ChatTaskTreePanel.vue";
@@ -2876,6 +2793,16 @@ import CodePreviewDialog from "@/modules/project-chat/components/code-preview/Co
 import FileChangesDrawer from "@/modules/project-chat/components/file-changes/FileChangesDrawer.vue";
 import SkillResourceDialog from "@/modules/project-chat/components/skill-resource/SkillResourceDialog.vue";
 import ResourceContextMenu from "@/modules/project-chat/components/resource-context-menu/ResourceContextMenu.vue";
+import SystemConfig from "@/views/system/SystemConfig.vue";
+import SystemBotConnectors from "@/views/system/SystemBotConnectors.vue";
+import SystemFtpCredentials from "@/views/system/SystemFtpCredentials.vue";
+import DesktopWallpaperSettings from "@/views/desktop/DesktopWallpaperSettings.vue";
+import ChangelogManager from "@/views/system/ChangelogManager.vue";
+import ProjectList from "@/views/projects/ProjectList.vue";
+import ProjectDetail from "@/views/projects/ProjectDetail.vue";
+import MemoryManager from "@/views/memory/MemoryManager.vue";
+import AccountCenter from "@/views/account/AccountCenter.vue";
+import UserSettings from "@/views/users/UserSettings.vue";
 import { useProjectChatComposer } from "@/modules/project-chat/composables/useProjectChatComposer.js";
 import { useProjectChatPendingRequests } from "@/modules/project-chat/composables/useProjectChatPendingRequests.js";
 import { useProjectChatNativeAgent } from "@/modules/project-chat/composables/useProjectChatNativeAgent.js";
@@ -2954,6 +2881,7 @@ import { isMediaBuildFeatureEnabled } from "@/config/buildFeatures.js";
 import { DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT } from "@/config/desktopAgentPrompts.js";
 import { openLocalWorkspaceProjectFromPicker } from "@/services/local-workspace-project-service.js";
 import {
+  deleteLocalProjectAgent,
   listLocalProjectAgents,
   saveLocalAgentDirectoryResources,
 } from "@/services/local-agent-directory-service.js";
@@ -2986,6 +2914,7 @@ import {
   prepareNativeExternalAgentLaunch,
   prepareNativeWorkspaceFileWrite,
   openNativeDesktopDevtools,
+  openNativeLocalFile,
   previewNativeWorkspaceDiff,
   readNativeWorkspaceFile,
   revertNativeWorkspaceFileChange,
@@ -3054,7 +2983,6 @@ import {
   buildHtmlPreviewSrcdoc,
   buildVuePreviewSrcdoc,
 } from "@/modules/project-chat/services/projectChatCodePreview.js";
-import { fetchEmployeeDraftCatalog } from "@/modules/project-chat/services/projectChatEmployeeDraftApi.js";
 import {
   formatAgentRuntimeEventPhase,
   formatAgentRuntimeEventSummary,
@@ -3290,10 +3218,6 @@ const showLocalRuntimeSettings =
     : ["1", "true", "yes", "on"].includes(
         rawLocalRuntimeSettingsFlag.toLowerCase(),
       );
-const EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS = {
-  prompts_chat_curated: "系统规则源",
-};
-
 // 开放未选择项目时的通用对话模式，复用现有 sendGlobalChatWithoutProject 逻辑。
 const ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT = true;
 const GLOBAL_PROJECT_CHAT_LOCAL_PROJECT_ID = "global-assistant";
@@ -3406,8 +3330,6 @@ const mcpModules = ref({
 });
 const runtimeExternalTools = ref([]);
 const messages = ref([]);
-const expandedMessageTrajectoryId = ref("");
-const expandedMessageTrajectoryToolId = ref("");
 const activeComposerPlan = ref(null);
 const composerPlanExpanded = ref(true);
 const activeComposerPlanOwnerId = ref("");
@@ -3418,24 +3340,11 @@ const chatSessionsLoading = ref(false);
 const projectChatSessionsById = ref({});
 const projectChatSessionsLoadingById = ref({});
 const groupChatLiveStatuses = ref({});
-const employeeDraftCatalog = ref({
-  skills: [],
-  rules: [],
-  loaded_at: 0,
-});
 const employeeDraftDialogVisible = ref(false);
 const employeeDraftDialogLoading = ref(false);
 const employeeDraftDialogPayload = ref(null);
 const employeeDraftDialogItem = ref(null);
-const employeeDraftDialogMode = ref("create");
-const employeeDraftAutoCreateSkills = ref(true);
-const employeeDraftAutoCreateRules = ref(true);
-const employeeDraftAddToProject = ref(false);
-const employeeDraftAutoRuleGenerationEnabled = ref(true);
-const employeeDraftAutoRuleGenerationSourceFilters = ref([
-  "prompts_chat_curated",
-]);
-const employeeDraftAutoRuleGenerationMaxCount = ref(3);
+const employeeDraftDialogMode = ref("update");
 const skillResourceDialogVisible = ref(false);
 const skillResourceDirectoryDraft = ref("");
 const skillResourceDirectoryPicking = ref(false);
@@ -3528,6 +3437,7 @@ const visibleSettingsModuleNavItems = computed(() =>
     settingsModuleMatches(item.keywords, item.scope),
   ),
 );
+
 const effectiveWebToolsConfig = ref({});
 const globalWebToolsConfig = ref({});
 const projectWebToolsConfig = ref({});
@@ -4870,48 +4780,20 @@ async function readSelectedEmployeeDefinitionForEdit(text = "") {
   }
 }
 
-function buildLocalLiuAgentSystemPromptParts(interactionMode = "") {
-  const normalizedInteractionMode = String(interactionMode || "").trim();
-  const isEmployeeCreationMode = normalizedInteractionMode === "employee_create";
-  const employeeCreationPart = isEmployeeCreationMode
-    ? {
-        id: "desktop_local_agent:employee_creation_boundary",
-        source: "desktop_local_agent.employee_creation_boundary",
-        scope: "request",
-        priority: 150,
-        content: [
-          "当前请求处于创建智能体定义阶段：",
-          "- 你正在整理 employee-draft，不是在执行被描述的智能体能力。",
-          "- 只收集需求、读取必要的本地项目定义、生成草稿并等待用户确认；确认前不得写入智能体文件。",
-          "- 智能体描述中的浏览器、网页、MCP、截图、DOM 查询等内容只是未来能力定义，不是当前操作指令。",
-          "- 本阶段不得调用本轮未明确提供的工具，也不得为了验证未来能力执行浏览器自动化、网页探测或 MCP 操作。",
-          "- 只有用户明确要求“现在检查当前页面/执行浏览器脚本”等当前操作时，才可离开创建定义阶段；否则继续生成草稿。",
-          "- 读取到 0 个本地技能或规则是正常结果：必须基于用户需求生成新的技能与规则候选及完整草稿，不能因此停止、报错或要求用户先配置资源。",
-          "- 信息不足时只能调用 ask_user_question；禁止只输出“需要补充信息/回答后继续”等普通文本。信息足以形成初稿时必须直接生成草稿，并由宿主展示确认。",
-        ].join("\n"),
-      }
-    : null;
-  const employeeOrchestrationPart = isEmployeeCreationMode
-    ? {
-        id: "desktop_local_agent:employee_natural_language_orchestration",
-        source: "desktop_local_agent.employee_natural_language_orchestration",
-        scope: "request",
-        priority: 140,
-        content: [
-          "智能体自然语言能力：",
-          "- 用户直接说“创建一个智能体”时，将其理解为创建 AI Employee 智能体实体，不要理解为创建网页、HTML 文件或页面原型。",
-          "- 用户提到 HTML、CSS、JavaScript、Vue、React 或其他技术栈时，将其作为智能体的技能、职责和工作范围；不要生成 index.html、frontend-html、implementation.files 或 requested_features 页面字段。",
-          "- 创建智能体由桌面宿主提供确认流程，不是一个需要用户点击的可见快捷命令；先生成可确认草稿，只有用户明确确认后才执行创建。",
-          "- 用户要求给当前智能体补充、修改、调整、完善技能、规则、职责、指令或工作流时，必须先读取当前智能体的真实本地定义，再基于原文提出差异和修改意见，生成 update 意图和仅包含本次变更的更新草稿，交给宿主确认并真实写入；不得凭空捏造，也不得只用自然语言声称已经应用。更新范围仅限当前会话明确选择的单个智能体。",
-          "- 编辑智能体必须经过宿主确认弹窗；在用户确认前不得执行任何写入。若无法读取现有定义或没有唯一目标，必须停止生成 update 草稿并明确说明原因。",
-          "- 当用户询问能力或工具时，只说明本轮实际提供且可调用的工具；不要把宿主确认动作、未配置的媒体能力或隐藏快捷入口伪装成普通工具。",
-          buildStructuredInteractionPrompt(),
-        ].join("\n"),
-      }
-    : null;
+function buildLocalLiuAgentSystemPromptParts(
+  interactionMode = "",
+  languageSource = "",
+) {
   return [
-    employeeCreationPart,
-    employeeOrchestrationPart,
+    {
+      id: "desktop_local_agent:response_language",
+      source: "desktop_local_agent.response_language",
+      scope: "request",
+      priority: 180,
+      content: buildChatResponseLanguageInstruction(
+        latestUserMessageLanguageSource(languageSource),
+      ),
+    },
     {
       id: "desktop_local_agent:entry_policy",
       source: "desktop_local_agent.entry_policy",
@@ -5311,8 +5193,8 @@ const chatSurface = computed(() => {
   return "local-runner";
 });
 const chatSurfaceMark = computed(() => "LT");
-const chatSurfaceName = computed(() => "本地运行");
-const chatSurfaceMeta = computed(() => "新建项目");
+const chatSurfaceName = computed(() => "LTCode");
+const chatSurfaceMeta = computed(() => "本地智能体");
 const canUseExternalAgent = computed(
   () =>
     hasSelectedProject.value &&
@@ -9138,6 +9020,22 @@ const activeSettingsPanelMeta = computed(() => {
     SETTINGS_CENTER_PANEL_META.chat
   );
 });
+
+const settingsChildComponent = computed(() => {
+  const path = String(route.path || "");
+  if (!isChatSettingsRoutePath(path) || path.endsWith("/chat")) return null;
+  if (path.endsWith("/system/config")) return SystemConfig;
+  if (path.endsWith("/system/bot-connectors")) return SystemBotConnectors;
+  if (path.endsWith("/system/ftp-credentials")) return SystemFtpCredentials;
+  if (path.endsWith("/desktop/background")) return DesktopWallpaperSettings;
+  if (path.endsWith("/changelog-entries")) return ChangelogManager;
+  if (path.endsWith("/projects")) return ProjectList;
+  if (/\/projects\/[^/]+$/.test(path)) return ProjectDetail;
+  if (/\/memory\/[^/]+$/.test(path)) return MemoryManager;
+  if (path.endsWith("/account/settings")) return UserSettings;
+  if (path.endsWith("/account")) return AccountCenter;
+  return null;
+});
 const isSettingsCenterRoute = computed(() =>
   isChatSettingsRoutePath(route.path),
 );
@@ -9546,12 +9444,29 @@ function buildModelGenerationInstruction(
 function appendModelGenerationInstruction(
   prompt,
   parameterMode = currentModelParameterMode.value,
+  languageSource = "",
 ) {
   const instruction = buildModelGenerationInstruction(parameterMode);
-  if (!instruction) return prompt;
-  return [String(prompt || "").trim(), "", instruction]
-    .filter(Boolean)
-    .join("\n");
+  const promptWithModelInstruction = instruction
+    ? [String(prompt || "").trim(), "", instruction].filter(Boolean).join("\n")
+    : String(prompt || "").trim();
+  return appendChatResponseLanguageInstruction(
+    promptWithModelInstruction,
+    latestUserMessageLanguageSource(languageSource) || prompt,
+  );
+}
+
+function latestUserMessageLanguageSource(preferred = "") {
+  const normalizedPreferred = String(preferred || "").trim();
+  if (normalizedPreferred) return normalizedPreferred;
+  const latestUserMessage = [...messages.value]
+    .reverse()
+    .find(
+      (item) =>
+        String(item?.role || "").trim().toLowerCase() === "user" &&
+        String(item?.content || "").trim(),
+    );
+  return String(latestUserMessage?.content || "").trim();
 }
 
 watch(currentModelParameterMode, (nextMode) => {
@@ -9644,16 +9559,12 @@ const groupedChatSessions = computed(() => {
     items,
   }));
 });
-const starterPrompts = computed(() => [
-  "检查当前工作区状态并给出下一步",
-  "帮我执行一个需要本机环境的任务",
-  "用系统模型分析并调用本地工具处理",
-]);
-const emptyStateTitle = computed(() => "启动本地运行窗口");
+const starterPrompts = computed(() => []);
+const emptyStateTitle = computed(() => "你好，我是 LTCode");
 const emptyStateText = computed(() =>
   hasSelectedProject.value
-    ? "当前入口复用系统已配置的大模型 Provider，不使用 Ollama；需要执行命令、读写文件或调用飞书时，会通过本机运行环境和审批流程推进。"
-    : "选择项目后可带入项目工作区、智能体、规则和工具；模型仍使用系统供应商配置，本地窗口只负责执行和权限边界。",
+    ? "输入目标，智能体将持续执行。"
+    : "选择项目或直接输入目标，智能体将持续执行。",
 );
 
 const composerPlaceholder = computed(() =>
@@ -9663,7 +9574,7 @@ const composerPlaceholder = computed(() =>
       ? "请先处理输入框上方的本机操作授权；处理后系统会自动继续执行。"
       : currentChatSessionLocalLiuAgentWaitingUserQuestion.value
         ? "请先回答输入框上方的问题；提交后系统会继续当前任务。"
-      : "输入需求，本地 liuAgent 会在桌面端调用模型并按模型结构化工具调用执行。",
+      : "输入目标，智能体将持续执行",
 );
 const composerHintText = computed(() => {
   if (isTerminalInteractionMode.value) {
@@ -10001,8 +9912,14 @@ function localLiuAgentRuntimeEventPhase(event = {}) {
   if (type === "background_notification") return "completed";
   if (type === "model_step")
     return payload?.ok === false ? "failed" : "completed";
-  if (type === "tool_result")
+  if (type === "tool_result") {
+    const result = payload?.content || payload?.result;
+    const resultStatus = String(
+      payload?.status || result?.status || result?.state || "",
+    ).trim().toLowerCase();
+    if (resultStatus === "skipped") return "skipped";
     return payload?.ok === false ? "failed" : "completed";
+  }
   if (type === "command_finished")
     return payload?.ok === false ? "failed" : "completed";
   if (type === "state_changed") {
@@ -10034,6 +9951,7 @@ function localLiuAgentToolTraceVerb(toolName = "") {
   if (normalized === "write_file") return "写入文件";
   if (normalized === "apply_patch") return "应用补丁";
   if (normalized === "delete_file") return "删除文件";
+  if (normalized === "delete_local_resource") return "删除本地资源目录";
   if (["http_get", "http_post", "download_file"].includes(normalized))
     return "访问网络";
   if (
@@ -10101,14 +10019,15 @@ function localLiuAgentToolTraceSubject(payload = {}) {
 
 function localLiuAgentToolResultLabel(toolName = "") {
   const normalized = String(toolName || "").trim();
-  if (normalized === "list_files") return "List files";
-  if (normalized === "search_text") return "Search text";
-  if (normalized === "read_file") return "Read file";
+  if (normalized === "list_files") return "查看目录";
+  if (normalized === "search_text") return "搜索文本";
+  if (normalized === "read_file") return "读取文件";
   if (normalized === "run_command") return "执行命令";
   if (normalized === "check_command_risk") return "检查命令风险";
-  if (normalized === "write_file") return "Write file";
-  if (normalized === "apply_patch") return "Apply patch";
-  if (normalized === "delete_file") return "Delete file";
+  if (normalized === "write_file") return "写入文件";
+  if (normalized === "apply_patch") return "应用补丁";
+  if (normalized === "delete_file") return "删除文件";
+  if (normalized === "delete_local_resource") return "删除本地资源目录";
   if (normalized === "http_get") return "HTTP GET";
   if (normalized === "http_post") return "HTTP POST";
   if (normalized === "download_file") return "下载文件";
@@ -10289,10 +10208,25 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
       preview.cmd || preview.command || "",
       260,
     );
+    const targetPath = compactLocalLiuAgentInline(
+      preview.directory || preview.path || "",
+      520,
+    );
+    const contents = Array.isArray(preview.contents)
+      ? preview.contents
+          .map((item) => String(item?.path || item?.name || "").trim())
+          .filter(Boolean)
+          .slice(0, 30)
+      : [];
     return [
       "等待授权",
       toolName ? `  - 工具：${toolName}` : "",
       cmd ? `  - 命令：${cmd}` : "",
+      targetPath ? `  - 删除路径：${targetPath}` : "",
+      contents.length ? `  - 删除内容：${contents.join("、")}` : "",
+      preview.content_preview
+        ? `  - 文件内容摘要：${compactLocalLiuAgentInline(preview.content_preview, 1000)}`
+        : "",
       action ? `  - 动作：${action}` : "",
       risk ? `  - 风险：${risk}` : "",
     ]
@@ -10440,7 +10374,11 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
       payload?.tool_name || payload?.toolName || "",
     ).trim();
     const summary = String(payload?.summary || "").trim();
-    return [`完成：${localLiuAgentToolResultLabel(toolName)}`, summary]
+    const result = payload?.content || payload?.result;
+    const skipped = String(payload?.status || result?.status || "")
+      .trim()
+      .toLowerCase() === "skipped";
+    return [`${skipped ? "已跳过" : "完成"}：${localLiuAgentToolResultLabel(toolName)}`, summary]
       .filter(Boolean)
       .join(" · ");
   }
@@ -10486,11 +10424,44 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
   const argumentsPreview = String(
     payload?.arguments_preview || payload?.argumentsPreview || "",
   ).trim();
+  const toolCallId = String(
+    payload?.tool_call_id || payload?.toolCallId || "",
+  ).trim();
+  const commandId = String(
+    payload?.command_id || payload?.commandId || payload?.session_id || "",
+  ).trim();
   const operationId =
     type === "approval_required" && requestId
       ? localLiuAgentPermissionOperationId(requestId, eventId)
-      : eventId ||
-        `local-agent-event:${runtimeSessionId || context.assistantMessageId || "unknown"}:${type}`;
+      : toolCallId && ["tool_call_started", "tool_result"].includes(type)
+        ? `local-tool:${toolCallId}`
+        : commandId &&
+            ["command_started", "command_output_chunk", "command_finished"].includes(
+              type,
+            )
+          ? `local-command:${commandId}`
+          : eventId ||
+            `local-agent-event:${runtimeSessionId || context.assistantMessageId || "unknown"}:${type}`;
+  const resultContent = payload?.content ?? payload?.result ?? payload?.output;
+  let outputPreview = String(
+    payload?.output_preview ||
+      payload?.outputPreview ||
+      payload?.stdout_preview ||
+      payload?.stdoutPreview ||
+      payload?.text ||
+      "",
+  ).trim();
+  if (!outputPreview && resultContent !== undefined && resultContent !== null) {
+    try {
+      outputPreview =
+        typeof resultContent === "string"
+          ? resultContent
+          : JSON.stringify(resultContent, null, 2);
+    } catch {
+      outputPreview = String(resultContent || "").trim();
+    }
+  }
+  outputPreview = clipText(outputPreview, 6000);
   return {
     operationId,
     kind:
@@ -10516,9 +10487,9 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
         : type === "command_started"
           ? "执行命令"
           : type === "command_output_chunk"
-            ? "Command output"
+            ? "命令输出"
             : type === "command_finished"
-              ? "Command finished"
+              ? "命令执行完成"
               : type === "background_waiting"
                 ? "等待后台任务通知"
                 : type === "background_notification"
@@ -10567,13 +10538,15 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
       tool_index: Number(payload?.tool_index || payload?.toolIndex || 0) || 0,
       tool_count: Number(payload?.tool_count || payload?.toolCount || 0) || 0,
       arguments_preview: argumentsPreview,
-      tool_call_id: String(
-        payload?.tool_call_id || payload?.toolCallId || "",
-      ).trim(),
+      tool_call_id: toolCallId,
       tool_result_id: String(
         payload?.tool_result_id || payload?.toolResultId || "",
       ).trim(),
       cwd: String(context.workspacePath || "").trim(),
+      command: String(payload?.cmd || payload?.command || "").trim(),
+      exit_code: String(payload?.exit_code ?? payload?.exitCode ?? "").trim(),
+      output_preview: outputPreview,
+      error: String(payload?.error || payload?.error_code || "").trim(),
     },
   };
 }
@@ -10593,7 +10566,7 @@ function localLiuAgentRuntimeEventProcessKind(event = {}) {
     return "command";
   if (toolName === "read_file") return "file_read";
   if (["list_files", "search_text"].includes(toolName)) return "file_search";
-  if (["write_file", "apply_patch", "delete_file"].includes(toolName))
+  if (["write_file", "apply_patch", "delete_file", "delete_local_resource"].includes(toolName))
     return "file_edit";
   if (
     ["call_mcp_tool", "list_mcp_tools", "read_mcp_resource"].includes(toolName)
@@ -10864,7 +10837,15 @@ function shouldUpsertLocalLiuAgentRuntimeOperation(
   if (!operation) return false;
   const type = String(event?.type || "").trim();
   if (type === "approval_required") return false;
-  return shouldShowMessageOperationCard(operation);
+  return [
+    "tool_call_started",
+    "tool_result",
+    "command_started",
+    "command_output_chunk",
+    "command_finished",
+    "background_waiting",
+    "background_notification",
+  ].includes(type);
 }
 
 function normalizeLocalLiuAgentRuntimeEpochMs(value) {
@@ -11589,10 +11570,38 @@ async function revealWorkspaceFileChangesAfterMutation(workspacePath = "") {
 }
 
 function handleNativeLiuAgentRuntimeEvent(event = {}) {
-  const chatSessionId = String(
-    event?.chat_session_id || event?.chatSessionId || "",
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  const eventChatSessionId = String(
+    event?.chat_session_id ||
+      event?.chatSessionId ||
+      payload?.chat_session_id ||
+      payload?.chatSessionId ||
+      "",
   ).trim();
-  const run = localLiuAgentActiveRunForChatSession(chatSessionId);
+  let chatSessionId = eventChatSessionId;
+  let run = localLiuAgentActiveRunForChatSession(chatSessionId);
+  if (!run) {
+    const runtimeSessionId = String(
+      event?.runtime_session_id ||
+        event?.runtimeSessionId ||
+        payload?.runtime_session_id ||
+        payload?.runtimeSessionId ||
+        "",
+    ).trim();
+    const activeRuns = Array.from(localLiuAgentActiveRuns.entries());
+    const matched = runtimeSessionId
+      ? activeRuns.find(
+          ([, candidate]) =>
+            String(candidate?.runtimeSessionId || "").trim() ===
+            runtimeSessionId,
+        )
+      : null;
+    const fallback = matched || (activeRuns.length === 1 ? activeRuns[0] : null);
+    if (fallback) {
+      chatSessionId = fallback[0];
+      run = fallback[1];
+    }
+  }
   if (!run || run.cancelled) return false;
   const row = localLiuAgentActiveRunRow(run);
   if (!row) return false;
@@ -11600,13 +11609,12 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
   updateLocalLiuAgentRuntimeTimingFromEvent(row, event, {
     startedAt: run.startedAt,
   });
-  const payload = localLiuAgentRuntimeEventPayload(event);
   const eventType = String(event?.type || "").trim();
   const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
   if (
     eventType === "tool_result" &&
     payload?.ok !== false &&
-    ["write_file", "apply_patch", "delete_file"].includes(toolName) &&
+    ["write_file", "apply_patch", "delete_file", "delete_local_resource"].includes(toolName) &&
     isCurrentChatSession(run.projectId, chatSessionId)
   ) {
     void revealWorkspaceFileChangesAfterMutation(run.workspacePath);
@@ -12218,7 +12226,10 @@ async function restoreLocalLiuAgentRuntimeState(
       history: [],
       providerId: selectedProviderId.value || defaultProviderId.value || "",
       modelName: selectedModelName.value || defaultModelName.value || "",
-      systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
+      systemPromptParts: buildLocalLiuAgentSystemPromptParts(
+        "",
+        userMessage.content,
+      ),
       temperature: Number(
         temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
       ),
@@ -12280,7 +12291,10 @@ async function restoreLocalLiuAgentRuntimeState(
           history: [],
           providerId: selectedProviderId.value || defaultProviderId.value || "",
           modelName: selectedModelName.value || defaultModelName.value || "",
-          systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
+          systemPromptParts: buildLocalLiuAgentSystemPromptParts(
+            "",
+            userMessage.content,
+          ),
           temperature: Number(
             temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
           ),
@@ -13512,24 +13526,15 @@ const composerAssistActions = computed(() => {
   const toolMap = promptsChatToolMap.value;
   const actions = [];
   actions.push({
-    id: "employee_create",
-    icon: "employee",
-    label: "创建智能体",
-    shortDesc: "描述职责，自动创建智能体",
-    activeText:
-      "本轮会整理 AI 智能体实体草稿，补全技能和规则建议，并在你确认后创建。",
-    seedText:
-      "我要创建一个新智能体，主要负责【在这里补充角色职责】。请按当前项目技术栈整理职责、技能、规则和工作方式，生成智能体草稿，待我确认后再创建。",
-    toolNames: [
-      toolMap.search_skills,
-      toolMap.get_skill,
-      toolMap.search_prompts,
-      toolMap.get_prompt,
-      toolMap.improve_prompt,
-    ].filter(Boolean),
+    id: "employee_delete",
+    icon: "delete",
+    label: "删除智能体",
+    shortDesc: "确认后删除智能体定义",
+    activeText: "本轮会识别目标智能体并展示文件路径，确认后才删除。",
+    seedText: "请删除智能体【填写名称】。先确认目标和文件路径，等我确认后再删除。",
     promptOnly: true,
     instruction:
-      "请先调用当前实际可用的系统能力检索工具和 MCP 能力，再把用户需求整理成 AI Employee 智能体实体草稿；用户提到的 HTML、CSS、JavaScript、Vue 或其他技术栈，只能写入智能体的 role、skills、goal、instructions 或 workflow，绝不能解释为创建网页文件、index.html 或 frontend-html 页面原型。输出先给简短说明，最后附带仅供系统读取的严格 JSON 协议；不要向用户解释、复制或展示协议字段。实际创建必须等待用户在草稿卡片中确认。若从 prompts.chat 或其他外部能力中提炼出可直接落地的智能体规则，请写入 rule_drafts 数组（title、domain、content，可选 source_label、source_url）。",
+      "当前请求是删除业务智能体定义。只能识别唯一目标并输出 employee-intent JSON：{\"intent\":\"delete\",\"employee_id\":\"已有 ID 或空字符串\",\"name\":\"名称或空字符串\"}。确认前不得调用删除、写入或其他破坏性工具；目标不唯一时必须先询问用户。",
   });
   if (toolMap.search_prompts || toolMap.get_prompt) {
     actions.push({
@@ -13593,7 +13598,6 @@ function buildAssistSlashCommand(actionId) {
     .trim()
     .toLowerCase();
   if (!normalized) return "/";
-  if (normalized === "employee_create") return "/employee-create";
   if (normalized === "prompt_search") return "/prompt-search";
   if (normalized === "prompt_improve") return "/prompt-improve";
   if (normalized === "skill_search") return "/skill-search";
@@ -13705,10 +13709,8 @@ const composerSlashCommands = computed(() => {
     toolNames: ["generate_image", "edit_image"],
   });
   const visibleCommandIds = new Set([
-    "assist_employee_create",
     "package_deploy",
     "form_json",
-    "image",
   ]);
   return commands.filter((item) => visibleCommandIds.has(item.id));
 });
@@ -14314,6 +14316,17 @@ function normalizeRuntimeMessageSnapshot(row) {
     id,
     role: String(row.role || "assistant"),
     content: String(row.content || ""),
+    localTaskSummary:
+      row.localTaskSummary && typeof row.localTaskSummary === "object"
+        ? row.localTaskSummary
+        : row.local_task_summary && typeof row.local_task_summary === "object"
+          ? row.local_task_summary
+          : null,
+    localTaskBaseline: Array.isArray(row.localTaskBaseline)
+      ? row.localTaskBaseline.slice()
+      : Array.isArray(row.local_task_baseline)
+        ? row.local_task_baseline.slice()
+        : [],
     answerId: String(row.answerId || row.answer_id || "").trim(),
     images: normalizePersistedMessageMediaUrls(row.images),
     videos: normalizePersistedMessageMediaUrls(row.videos),
@@ -15072,12 +15085,16 @@ function extractEmployeeIntentPayload(text) {
       .map((item) => item.value)
       .find((item) => {
         const intent = String(item?.intent || "").trim().toLowerCase();
-        return ["question", "draft", "create", "update"].includes(intent);
+        return ["question", "update", "delete"].includes(intent);
       });
   if (!parsed) return null;
   const intent = String(parsed.intent || "").trim().toLowerCase();
-  return ["question", "draft", "create", "update"].includes(intent)
-    ? { intent }
+  return ["question", "update", "delete"].includes(intent)
+    ? {
+        intent,
+        employee_id: String(parsed.employee_id || parsed.employeeId || "").trim(),
+        name: String(parsed.name || parsed.employee_name || "").trim(),
+      }
     : null;
 }
 
@@ -15200,7 +15217,7 @@ function stripEmployeeDraftBlock(text) {
     EMPLOYEE_DRAFT_BLOCK_RE,
   );
   const intent = extractEmployeeIntentPayload(text)?.intent;
-  if (!["draft", "create", "update"].includes(intent)) return output;
+  if (intent !== "update") return output;
   const draftObject = extractJsonObjectsFromText(output).find((item) =>
     isEmployeeDraftPayloadLike(item.value),
   );
@@ -15218,7 +15235,7 @@ function stripEmployeeIntentBlock(text) {
   );
   const intentObject = extractJsonObjectsFromText(output).find((item) => {
     const intent = String(item.value?.intent || "").trim().toLowerCase();
-    return ["question", "draft", "create", "update"].includes(intent);
+    return ["question", "update", "delete"].includes(intent);
   });
   if (intentObject) {
     output = `${output.slice(0, intentObject.start)}${output.slice(intentObject.end)}`;
@@ -15326,8 +15343,6 @@ function normalizeEmployeeDraftPayload(raw) {
       item.default_workflow || [],
     ),
     tool_usage_policy: readableEmployeeDraftValue(item.tool_usage_policy),
-    memory_scope: String(item.memory_scope || "project").trim() || "project",
-    memory_retention_days: Number(item.memory_retention_days || 90),
   };
 }
 
@@ -16129,7 +16144,6 @@ const canSend = computed(() => {
   }
   if (
     !String(selectedProjectId.value || "").trim() &&
-    activeComposerAssistMeta.value?.id !== "employee_create" &&
     !ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
   ) {
     return false;
@@ -16137,25 +16151,15 @@ const canSend = computed(() => {
   if (String(draftText.value || "").trim()) return true;
   if (isExternalAgentMode.value) return false;
   if (!String(selectedProjectId.value || "").trim()) {
-    return (
-      activeComposerAssistMeta.value?.id === "employee_create" ||
-      ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-    );
+    return ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT;
   }
   return uploadFiles.value.length > 0 || composerContextRefs.value.length > 0;
 });
-
-const isProjectOptionalEmployeeCreate = computed(
-  () =>
-    !String(selectedProjectId.value || "").trim() &&
-    activeComposerAssistMeta.value?.id === "employee_create",
-);
 
 const isComposerDisabled = computed(() => {
   if (isTerminalInteractionMode.value) return false;
   if (currentChatSessionLocalLiuAgentWaitingPermission.value) return false;
   if (currentChatSessionLocalLiuAgentWaitingUserQuestion.value) return true;
-  if (isProjectOptionalEmployeeCreate.value) return false;
   if (hasSelectedProject.value && !isChatSettingsDisplayReady.value) {
     return true;
   }
@@ -16642,6 +16646,31 @@ async function openWorkspaceFile(path = "") {
   }
 }
 
+async function openLocalTaskResultPath(path = "") {
+  const normalizedPath = String(path || "").trim();
+  if (!normalizedPath) return;
+  if (!projectWorkspaceResolved.value) {
+    ElMessage.warning("请先选择当前项目的本机工作区");
+    return;
+  }
+  try {
+    nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
+    if (!nativeDesktopBridgeAvailable.value) {
+      throw new Error("文件路径打开仅支持桌面客户端");
+    }
+    const opened = await openNativeLocalFile({
+      workspacePath: projectWorkspaceResolved.value,
+      path: normalizedPath,
+    });
+    if (!opened) {
+      throw new Error("系统未能打开文件选择器");
+    }
+    ElMessage.success("已打开系统文件选择器，请选择打开方式");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "打开文件失败");
+  }
+}
+
 function handleWorkspaceFileClick(item) {
   const itemPath = String(item?.path || "").trim();
   if (!itemPath && String(item?.kind || "") !== "directory") return;
@@ -17091,59 +17120,17 @@ function appendMessageProcessLog(row, source = {}) {
   return entry;
 }
 
-function toggleMessageProcessExpanded(row) {
-  toggleMessageTrajectoryExpanded(row);
-}
-
-function messageTrajectoryId(row) {
-  return String(row?.id || "").trim();
-}
-
-function isMessageTrajectoryExpanded(row, idx = -1) {
-  const messageId = messageTrajectoryId(row);
-  if (!messageId) return false;
-  const state = expandedMessageTrajectoryId.value;
-  if (state === `expanded:${messageId}`) return true;
-  if (state === `collapsed:${messageId}`) return false;
-  return messageProcessLifecyclePhase(row, idx) !== "completed";
-}
-
-function toggleMessageTrajectoryExpanded(row, idx = -1) {
-  const messageId = messageTrajectoryId(row);
-  if (!messageId) return;
-  expandedMessageTrajectoryId.value = isMessageTrajectoryExpanded(row, idx)
-    ? `collapsed:${messageId}`
-    : `expanded:${messageId}`;
-}
-
-function messageTrajectoryToolId(row, operation) {
-  const messageId = messageTrajectoryId(row);
-  const operationId = String(operation?.id || "").trim();
-  return messageId && operationId ? `${messageId}:${operationId}` : "";
-}
-
-function isMessageTrajectoryToolExpanded(row, operation) {
-  const targetId = messageTrajectoryToolId(row, operation);
-  return Boolean(
-    targetId && expandedMessageTrajectoryToolId.value !== `collapsed:${targetId}`,
-  );
-}
-
-function toggleMessageTrajectoryToolDetail(row, operation) {
-  const targetId = messageTrajectoryToolId(row, operation);
-  if (!targetId) return;
-  expandedMessageTrajectoryToolId.value = isMessageTrajectoryToolExpanded(
-    row,
-    operation,
-  )
-    ? `collapsed:${targetId}`
-    : "";
-}
-
 function openMessageProcessForActiveRun(row, options = {}) {
   if (!row) return;
   if (!options.force && row.processExpandedUserToggled) return;
   row.processExpanded = true;
+}
+
+function handleMessageProcessDetailsToggle(row, event) {
+  if (!row || event?.isTrusted === false) return;
+  row.processExpanded = Boolean(event?.currentTarget?.open);
+  row.processExpandedUserToggled = true;
+  schedulePersistChatRuntime();
 }
 
 function collapseMessageProcessAfterFinalAnswer(row) {
@@ -17589,7 +17576,7 @@ function inferMessageProcessEntryKind(entry = {}) {
     return "command";
   if (["read_file"].includes(toolName)) return "file_read";
   if (["list_files", "search_text"].includes(toolName)) return "file_search";
-  if (["write_file", "apply_patch", "delete_file"].includes(toolName))
+  if (["write_file", "apply_patch", "delete_file", "delete_local_resource"].includes(toolName))
     return "file_edit";
   if (
     ["call_mcp_tool", "list_mcp_tools", "read_mcp_resource"].includes(toolName)
@@ -18094,7 +18081,6 @@ function shouldShowMessageOperationCard(operation) {
 
 function isVisibleProcessOperation(operation) {
   if (!operation) return false;
-  if (!shouldShowMessageOperationCard(operation)) return false;
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   if (String(meta.hide_in_message_process || "").trim() === "true") {
@@ -19642,6 +19628,7 @@ async function saveLocalLiuAgentSessionOfflineCache({
               id: assistantMessage.id,
               content: assistantMessage.content,
               reasoning_content: assistantMessage.reasoningContent || "",
+              local_task_summary: assistantMessage.localTaskSummary || null,
               time: assistantMessage.time,
             }
           : null,
@@ -19950,62 +19937,6 @@ const currentLocalLiuAgentPendingUserQuestion = computed(
 const currentChatSessionLocalLiuAgentWaitingUserQuestion = computed(
   () => currentLocalLiuAgentPendingUserQuestions.value.length > 0,
 );
-
-function createEmployeeCreationProtocolRecoveryQuestion({
-  assistantMessage,
-  userMessage,
-  activeChatSessionId,
-  localChatPayload,
-  displayUserMessageContent = "",
-  finalUserPrompt = "",
-  sourceContext = {},
-  localTaskId = "",
-} = {}) {
-  const messageId = String(assistantMessage?.id || "").trim();
-  const chatSessionId = String(activeChatSessionId || "").trim();
-  if (!messageId || !chatSessionId) return false;
-  const requestId = `employee-create-protocol:${messageId}`;
-  if (localLiuAgentPendingUserQuestions.has(requestId)) return true;
-  setLocalLiuAgentPendingUserQuestion(requestId, {
-    kind: "employee_creation_protocol_recovery",
-    localChatPayload,
-    userQuestionRequest: {
-      requestId,
-      questions: [
-        {
-          id: "employee_primary_responsibility",
-          header: "智能体主要职责",
-          question: "请用一句话说明这个智能体最重要的工作内容和期望交付结果。",
-          options: [],
-          multi_select: false,
-        },
-      ],
-    },
-    assistantMessageId: messageId,
-    userMessageId: String(userMessage?.id || "").trim(),
-    activeChatSessionId: chatSessionId,
-    displayUserMessageContent,
-    finalUserPrompt,
-    sourceContext,
-  });
-  assistantMessage.employeeDraftAwaitingInput = true;
-  assistantMessage.content =
-    String(assistantMessage.content || "").trim() ||
-    "请补充智能体的主要职责，提交后我会继续生成可确认的智能体草稿。";
-  appendMessageProcessLog(assistantMessage, {
-    text: "创建智能体缺少结构化草稿，已转为可提交的职责补充问题",
-    level: "warning",
-  });
-  if (localTaskId) {
-    updateLocalAiTask(localTaskId, {
-      status: "waiting_user",
-      currentStep: "等待补充智能体主要职责",
-      lastOutput: "回答后将重新生成可确认的智能体草稿。",
-      recoverable: true,
-    });
-  }
-  return true;
-}
 
 const currentLocalLiuAgentUserQuestionPrompt = computed(() => {
   const pending = currentLocalLiuAgentPendingUserQuestion.value;
@@ -21310,11 +21241,32 @@ function messageTrajectoryExecutionEntries(row) {
   });
 }
 
+function messageTrajectoryAdvancedEntries(row) {
+  const toolKinds = new Set([
+    "tool_call",
+    "tool_result",
+    "file_read",
+    "file_search",
+    "file_edit",
+    "command",
+    "command_output",
+    "mcp_call",
+    "permission",
+  ]);
+  return messageProcessDisplayEntries(row).filter((entry) => {
+    const kind = messageProcessEntryKind(entry);
+    if (["thinking", "goal", "lifecycle"].includes(kind)) return false;
+    if (toolKinds.has(kind)) return false;
+    return Boolean(
+      messageProcessEntryEventType(entry) ||
+        ["progress_update", "model_call", "verification"].includes(kind),
+    );
+  });
+}
+
 function messageTrajectoryExecutionEntryPreview(entry) {
-  return compactLocalLiuAgentInline(
-    messageProcessEntrySummary(entry).join(" · "),
-    220,
-  );
+  const summaries = messageProcessEntrySummary(entry);
+  return compactLocalLiuAgentInline(summaries[0] || "", 220);
 }
 
 function messageTrajectoryExecutionEntryCode(entry) {
@@ -21335,27 +21287,6 @@ function messageTrajectoryRuntimeSummary(row, idx) {
     return "正在推进当前任务";
   }
   return shouldShowMessageTrajectory(row, idx) ? "正在准备任务执行" : "";
-}
-
-function messageTrajectorySummary(row, idx) {
-  const phase = messageProcessLifecyclePhase(row, idx);
-  const hasThinking = Boolean(messageThinkingContent(row));
-  const thinkingDuration = messageThinkingDurationLabel(row);
-  if (phase === "completed") {
-    if (hasThinking) {
-      return thinkingDuration ? `已思考（${thinkingDuration}）` : "已思考";
-    }
-    return "已完成";
-  }
-  if (phase === "running") {
-    if (hasThinking) {
-      return thinkingDuration
-        ? `正在思考（${thinkingDuration}）`
-        : "正在思考";
-    }
-    return "正在处理";
-  }
-  return messageTrajectoryRuntimeSummary(row, idx);
 }
 
 function messageTrajectoryCurrentStep(row, idx) {
@@ -21458,7 +21389,7 @@ function isGenericRequestLifecycleOperation(operation) {
     .toLowerCase();
   if (kind !== "request") return false;
   const title = String(operation?.title || "").trim();
-  if (title !== "本轮执行") return false;
+  if (!["本轮执行", "桌面本地 Agent Runtime"].includes(title)) return false;
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   return !(
@@ -21471,9 +21402,16 @@ function isGenericRequestLifecycleOperation(operation) {
 function shouldHideGenericRequestLifecycleOperation(operation, row) {
   const phase = normalizeOperationPhase(operation?.phase || operation?.status);
   if (phase === "waiting_user") return false;
+  if (!isGenericRequestLifecycleOperation(operation)) return false;
+  const operationId = String(operation?.operationId || operation?.id || "").trim();
+  const hasProjectedOperation = rawMessageOperations(row).some((item) => {
+    const itemId = String(item?.operationId || item?.id || "").trim();
+    return itemId !== operationId && isMessageTrajectoryToolCall(item);
+  });
   return (
-    hasNonTerminalUserWaitingOperation(row) &&
-    isGenericRequestLifecycleOperation(operation)
+    hasNonTerminalUserWaitingOperation(row) ||
+    hasProjectedOperation ||
+    messageProcessLogEntries(row).length > 0
   );
 }
 
@@ -22955,6 +22893,7 @@ async function continueChatWithInteractionPayload(payloadText) {
       assistantMessage,
       assistantIndex,
       finalUserPrompt: appendModelGenerationInstruction(text),
+      languageSource,
       activeSessionSourceContext,
       historyRows,
       effectiveAutoUseTools: projectChatToolsEnabled(),
@@ -23064,7 +23003,14 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
     provider_id: selectedProviderId.value || undefined,
     model_name: selectedModelName.value || undefined,
     temperature: Number(temperature.value),
-    system_prompt: undefined,
+    system_prompt: [
+      String(systemPrompt.value || "").trim(),
+      buildChatResponseLanguageInstruction(
+        latestUserMessageLanguageSource(payloadText),
+      ),
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
     auto_use_tools: projectChatToolsEnabled(),
     tool_priority: mergeToolPriority(
       projectChatSettings.value.tool_priority || [],
@@ -23187,6 +23133,8 @@ function operationActionButtons(operation) {
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   if (String(meta.local_liuagent_recoverable || "").trim() === "true") {
     if (!hasNativeDesktopBridge()) return [];
+    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    if (phase !== "blocked") return [];
     if (String(meta.local_liuagent_resuming || "").trim() === "true") return [];
     return [{ key: "local_liuagent_resume", label: "继续执行" }];
   }
@@ -23434,6 +23382,30 @@ function formatLocalLiuAgentUserQuestionResumePrompt(
     .join("\n");
 }
 
+function resumeLocalLiuAgentUserQuestionRow(row) {
+  if (!row) return;
+  row.employeeDraftAwaitingInput = false;
+  row.operations = rawMessageOperations(row).map((operation) => {
+    const phase = normalizeOperationPhase(
+      operation?.phase || operation?.status,
+    );
+    if (!["running", "pending", "waiting_user"].includes(phase)) {
+      return operation;
+    }
+    return {
+      ...operation,
+      phase: "completed",
+      actionType: "none",
+      summary: "已提交补充信息，继续原任务",
+      updatedAt: nowText(),
+    };
+  });
+  appendMessageProcessLog(row, {
+    text: "已收到补充信息，正在同一个 Agent Loop 中继续执行。",
+    level: "success",
+  });
+}
+
 async function submitCurrentLocalLiuAgentUserQuestion() {
   const pending = currentLocalLiuAgentPendingUserQuestion.value;
   const prompt = currentLocalLiuAgentUserQuestionPrompt.value;
@@ -23470,8 +23442,6 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
     });
   }
   const localChatPayload = pending.localChatPayload || {};
-  const restartAfterProtocolRecovery =
-    String(pending.kind || "").trim() === "employee_creation_protocol_recovery";
   const row = localLiuAgentPendingPermissionRow(pending);
   if (!row) {
     ElMessage.warning("问题对应的回答消息已不存在，请重新发送需求");
@@ -23482,21 +23452,25 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
   const originalPrompt = String(
     pending.finalUserPrompt || localChatPayload.message || "",
   ).trim();
-  const userMessage = {
-    id: createLocalMessageId(),
-    role: "user",
-    content: answerMessageContent,
-    images: [],
-    videos: [],
-    audios: [],
-    attachments: [],
-    time: nowText(),
-  };
-  const rowIndex = messages.value.indexOf(row);
-  if (rowIndex >= 0) {
-    messages.value.splice(rowIndex, 1);
-  }
-  messages.value.push(userMessage, row);
+  const originalUserMessage =
+    messages.value.find(
+      (item) =>
+        item?.role === "user" &&
+        String(item?.id || "").trim() ===
+          String(pending.userMessageId || "").trim(),
+    ) ||
+    [...messages.value]
+      .slice(0, Math.max(0, messages.value.indexOf(row)))
+      .reverse()
+      .find((item) => item?.role === "user") || {
+      id:
+        String(pending.userMessageId || "").trim() ||
+        `local-question-user:${row.id}`,
+      role: "user",
+      content: originalPrompt,
+      time: nowText(),
+    };
+  resumeLocalLiuAgentUserQuestionRow(row);
   localLiuAgentUserQuestionSubmitting.value = true;
   deleteLocalLiuAgentPendingUserQuestion(requestId);
   try {
@@ -23505,7 +23479,7 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
       activeChatSessionId: String(
         pending.activeChatSessionId || localChatPayload.chatSessionId || currentChatSessionId.value,
       ).trim(),
-      userMessage,
+      userMessage: originalUserMessage,
       assistantMessage: row,
       finalUserPrompt: formatLocalLiuAgentUserQuestionResumePrompt(
         originalPrompt,
@@ -23515,13 +23489,11 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
         ? localChatPayload.history
         : [],
       displayUserMessageContent: String(
-        pending.displayUserMessageContent || userMessage.content || "",
+        pending.displayUserMessageContent || originalUserMessage.content || "",
       ).trim(),
       sourceContext: {
         ...(pending.sourceContext || {}),
         resumed_from_user_question: true,
-        employee_creation_protocol_recovery: restartAfterProtocolRecovery,
-        user_question_answer_message_id: userMessage.id,
         user_question_answer: answerMessageContent,
       },
       attachments: Array.isArray(localChatPayload.attachments)
@@ -23530,19 +23502,17 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
       mediaTools: Array.isArray(localChatPayload.mediaTools)
         ? localChatPayload.mediaTools
         : [],
-      persistUserMessage: true,
-      resumeFromCheckpoint: !restartAfterProtocolRecovery,
-      userQuestionAnswer: restartAfterProtocolRecovery
-        ? null
-        : {
-            requestId,
-            toolCallId: String(
-              pending.userQuestionRequest?.toolCallId ||
-                pending.userQuestionRequest?.tool_call_id ||
-                "",
-            ).trim(),
-            answers,
-          },
+      persistUserMessage: false,
+      resumeFromCheckpoint: true,
+      userQuestionAnswer: {
+        requestId,
+        toolCallId: String(
+          pending.userQuestionRequest?.toolCallId ||
+            pending.userQuestionRequest?.tool_call_id ||
+            "",
+        ).trim(),
+        answers,
+      },
       workspacePath: String(localChatPayload.workspacePath || "").trim(),
       providerId: String(localChatPayload.providerId || "").trim(),
       modelName: String(localChatPayload.modelName || "").trim(),
@@ -23560,13 +23530,14 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
       ).some(
         (nextPending) =>
           String(nextPending?.assistantMessageId || "").trim() ===
-          String(row?.id || "").trim(),
+          String(row.id || "").trim(),
       );
     if (!waitingForNextUserInput) {
       await handleEmployeeIntentAfterAssistantResponse(row);
     }
   } catch (error) {
     setLocalLiuAgentPendingUserQuestion(requestId, pending);
+    row.employeeDraftAwaitingInput = true;
     ElMessage.error(error?.message || "提交回答后继续执行失败");
   } finally {
     localLiuAgentUserQuestionSubmitting.value = false;
@@ -23599,7 +23570,7 @@ async function submitCurrentLocalLiuAgentPermissionReplyIfNeeded(text = "") {
         localLiuAgentWorkspacePath(),
       providerId: selectedProviderId.value || defaultProviderId.value || "",
       modelName: selectedModelName.value || defaultModelName.value || "",
-      systemPromptParts: buildLocalLiuAgentSystemPromptParts(),
+      systemPromptParts: buildLocalLiuAgentSystemPromptParts("", content),
       temperature: Number(
         temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
       ),
@@ -23951,6 +23922,7 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
     ? ""
     : String(row.content || "").trim();
   clearLocalLiuAgentRecoveryPlaceholderContent(row);
+  row.localTaskSummary = null;
   upsertMessageOperation(row, {
     ...currentOperation,
     summary: "正在读取 checkpoint 并继续执行",
@@ -26928,16 +26900,6 @@ function toggleComposerToolCommand(item) {
   }
 }
 
-function clearEmployeeCreationComposerAssist() {
-  if (activeComposerAssist.value === "employee_create") {
-    activeComposerAssist.value = "";
-  }
-  if (activeComposerToolCommandId.value === "assist_employee_create") {
-    activeComposerToolCommandId.value = "";
-  }
-  rememberCurrentChatSessionComposerState();
-}
-
 async function fetchProjectStatsAiReport(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
   if (!normalizedProjectId) {
@@ -27457,154 +27419,10 @@ function buildFormJsonCommandPrompt(commandPrompt) {
   ].join("\n");
 }
 
-async function ensureEmployeeDraftCatalog(force = false) {
-  const now = Date.now();
-  const loadedAt = Number(employeeDraftCatalog.value.loaded_at || 0);
-  if (
-    !force &&
-    employeeDraftCatalog.value.skills.length &&
-    employeeDraftCatalog.value.rules.length &&
-    now - loadedAt < 60_000
-  ) {
-    return employeeDraftCatalog.value;
-  }
-  const { skills, rules } = await fetchEmployeeDraftCatalog();
-  employeeDraftCatalog.value = {
-    skills: (skills || [])
-      .filter(isReusableEmployeeDraftSkill)
-      .map((skill) => ({
-        id: String(skill.id || "").trim(),
-        name: String(skill.name || skill.id || "").trim(),
-        description: String(skill.description || "").trim(),
-        tags: Array.isArray(skill.tags) ? skill.tags : [],
-      })),
-    rules: (rules || []).map((rule) => ({
-      id: String(rule.id || "").trim(),
-      title: String(rule.title || rule.id || "").trim(),
-      domain: String(rule.domain || "").trim(),
-    })),
-    loaded_at: now,
-  };
-  return employeeDraftCatalog.value;
-}
-
-function buildEmployeeDraftAssistContext() {
-  const skillLines = employeeDraftCatalog.value.skills
-    .slice(0, 40)
-    .map(
-      (skill) =>
-        `- ${skill.id} | ${skill.name}${skill.description ? ` | ${clipText(skill.description, 80).replace(/\n/g, " ")}` : ""}`,
-    );
-  const ruleLines = employeeDraftCatalog.value.rules
-    .slice(0, 60)
-    .map((rule) => `- ${rule.id} | ${rule.domain || "未分类"} | ${rule.title}`);
-  return [
-    "系统可用技能目录（优先从这里匹配，不要臆造不存在的技能 ID）：",
-    skillLines.length ? skillLines.join("\n") : "- 暂无本地技能",
-    "",
-    "系统可用规则目录（优先输出 rule_domains / rule_titles，便于系统自动绑定）：",
-    ruleLines.length ? ruleLines.join("\n") : "- 暂无本地规则",
-    "",
-    "输出要求：",
-    "- 这是 AI Employee 智能体实体草稿，不是网页、HTML 文件或前端页面原型。",
-    "- 用户提到 HTML/CSS/JavaScript 等内容时，将其作为智能体的技术栈、技能和职责范围；不要输出 type=frontend-html、implementation.files 或 requested_features 页面 schema。",
-    "- 先用 3 到 6 行说明你推荐这个智能体的定位。",
-    "- 最后必须追加一个 ```employee-draft``` 代码块，内容是严格 JSON，不要写注释。",
-    "- 创建模式还必须追加一个 ```employee-intent``` 代码块，内容固定为 {\"intent\":\"create\"}。",
-    "- JSON 必须包含：name、description、goal、skills、skill_drafts、rule_ids、rule_drafts、style_hints、default_workflow、tool_usage_policy、memory_scope、memory_retention_days。",
-    "- 创建草稿至少提供 1 个技能候选和 1 个规则候选，供用户在确认弹窗中多选；不得只给名称或领域而不提供可写入内容。",
-    "- 每个新技能必须同时出现在 skills 和 skill_drafts 中；skill_drafts 的每项必须有 id、name、content，content 是独立、可执行的 Markdown。已有本地技能可只使用其 ID。",
-    "- 每个新规则必须写入 rule_drafts；每项必须有 title、domain、content。已有本地规则使用 rule_ids。",
-    "- 用户未勾选的候选不会创建或绑定，因此不要生成与用户目标无关的技能和规则。",
-    "- 没有本地技能或规则时，必须生成新的 skill_drafts 和 rule_drafts；这不是向用户追问的理由。",
-    "- 用户已给出名称，且至少给出一项技术/能力和一项预期交付物时，信息已足够：直接生成完整草稿，不得再次补充提问。",
-    "- 仅当名称、能力方向、预期交付物这三类信息全部缺失，或缺少会导致草稿无法成立的唯一关键决策时，才可调用 ask_user_question；非关键细节一律采用合理默认值。",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
 function normalizeMatchKey(value) {
   return String(value || "")
     .trim()
     .toLowerCase();
-}
-
-function isReusableEmployeeDraftSkill(skill) {
-  const tags = Array.isArray(skill?.tags)
-    ? skill.tags.map((item) => normalizeMatchKey(item))
-    : [];
-  return !tags.some((tag) =>
-    ["employee-draft", "system-mcp", "system-mcp-import"].includes(tag),
-  );
-}
-
-function matchSkillsFromDraft(skillHints, skillCatalog) {
-  const hints = normalizeStringList(skillHints || [], 20);
-  if (!hints.length) return [];
-  const matchedIds = [];
-  const seen = new Set();
-  for (const hint of hints) {
-    const target = normalizeMatchKey(hint);
-    if (!target) continue;
-    const exact = skillCatalog.find(
-      (skill) =>
-        normalizeMatchKey(skill.id) === target ||
-        normalizeMatchKey(skill.name) === target,
-    );
-    const partial =
-      exact ||
-      skillCatalog.find((skill) =>
-        [skill.id, skill.name]
-          .map(normalizeMatchKey)
-          .some((text) => text && text.includes(target)),
-      );
-    if (!partial) continue;
-    if (seen.has(partial.id)) continue;
-    seen.add(partial.id);
-    matchedIds.push(partial.id);
-  }
-  return matchedIds;
-}
-
-function matchRulesFromDraft(draft, ruleCatalog) {
-  const bindings = [];
-  const seen = new Set();
-  const addRule = (rule) => {
-    if (!rule?.id || seen.has(rule.id)) return;
-    seen.add(rule.id);
-    bindings.push({
-      id: rule.id,
-      title: rule.title,
-      domain: rule.domain,
-    });
-  };
-
-  for (const ruleId of normalizeStringList(draft.rule_ids || [], 30)) {
-    addRule(
-      ruleCatalog.find(
-        (rule) => normalizeMatchKey(rule.id) === normalizeMatchKey(ruleId),
-      ),
-    );
-  }
-  for (const title of normalizeStringList(draft.rule_titles || [], 30)) {
-    const normalized = normalizeMatchKey(title);
-    addRule(
-      ruleCatalog.find(
-        (rule) =>
-          normalizeMatchKey(rule.title) === normalized ||
-          normalizeMatchKey(rule.title).includes(normalized),
-      ),
-    );
-  }
-  for (const domain of normalizeStringList(draft.rule_domains || [], 20)) {
-    const normalized = normalizeMatchKey(domain);
-    for (const rule of ruleCatalog) {
-      if (normalizeMatchKey(rule.domain) !== normalized) continue;
-      addRule(rule);
-    }
-  }
-  return bindings;
 }
 
 function buildMissingEmployeeRuleDrafts(employee, rules = []) {
@@ -27663,37 +27481,7 @@ function buildMissingEmployeeRuleDrafts(employee, rules = []) {
 }
 
 function buildEmployeeDraftCard(rawDraft) {
-  const draft = normalizeEmployeeDraftPayload(rawDraft);
-  const skillCatalog = Array.isArray(employeeDraftCatalog.value.skills)
-    ? employeeDraftCatalog.value.skills
-    : [];
-  const ruleCatalog = Array.isArray(employeeDraftCatalog.value.rules)
-    ? employeeDraftCatalog.value.rules
-    : [];
-  const matchedSkillIds = matchSkillsFromDraft(draft.skills, skillCatalog);
-  const matchedRuleBindings = matchRulesFromDraft(draft, ruleCatalog);
-  return {
-    ...draft,
-    matched_skill_count: matchedSkillIds.length,
-    matched_rule_count: matchedRuleBindings.length,
-  };
-}
-
-function buildEmployeeAutoCreatePayload(rawDraft) {
-  const draft = normalizeEmployeeDraftPayload(rawDraft);
-  if (!draft.name) return null;
-  return {
-    ...draft,
-    add_to_current_project: Boolean(
-      String(selectedProjectId.value || "").trim(),
-    ),
-    memory_retention_days: Math.min(
-      365,
-      Math.max(7, Number(draft.memory_retention_days || 90)),
-    ),
-    auto_create_missing_skills: false,
-    auto_create_missing_rules: false,
-  };
+  return normalizeEmployeeDraftPayload(rawDraft);
 }
 
 function normalizeEmployeeDraftExternalSkillSite(raw) {
@@ -27704,149 +27492,6 @@ function normalizeEmployeeDraftExternalSkillSite(raw) {
     url: String(raw?.url || "").trim(),
   };
 }
-
-const employeeDraftDialogMatchedSkillIds = computed(() => {
-  const payload = employeeDraftDialogPayload.value;
-  if (!payload) return [];
-  return matchSkillsFromDraft(
-    payload.skills,
-    Array.isArray(employeeDraftCatalog.value.skills)
-      ? employeeDraftCatalog.value.skills
-      : [],
-  );
-});
-
-const employeeDraftDialogMatchedSkillLabels = computed(() => {
-  const skillMap = new Map(
-    (employeeDraftCatalog.value.skills || []).map((skill) => [
-      skill.id,
-      skill.name || skill.id,
-    ]),
-  );
-  return employeeDraftDialogMatchedSkillIds.value.map((id) => {
-    const name = String(skillMap.get(id) || id).trim();
-    return `${name} (${id})`;
-  });
-});
-
-const employeeDraftDialogMatchedRuleBindings = computed(() => {
-  const payload = employeeDraftDialogPayload.value;
-  if (!payload) return [];
-  return matchRulesFromDraft(
-    payload,
-    Array.isArray(employeeDraftCatalog.value.rules)
-      ? employeeDraftCatalog.value.rules
-      : [],
-  );
-});
-
-const employeeDraftDialogMatchedRuleLabels = computed(() =>
-  employeeDraftDialogMatchedRuleBindings.value.map((rule) =>
-    rule.domain ? `${rule.title} (${rule.domain})` : rule.title,
-  ),
-);
-
-const employeeDraftDialogSkillOptions = computed(() => {
-  const payload = employeeDraftDialogPayload.value;
-  if (!payload) return [];
-  const relations = getLocalProjectRelations(selectedProjectId.value);
-  const catalog = Array.isArray(relations?.skills) ? relations.skills : [];
-  const options = new Map();
-  const addOption = ({ value, name, description = "", ready = false, source = "" }) => {
-    const key = String(value || "").trim();
-    if (!key || options.has(key)) return;
-    options.set(key, {
-      value: key,
-      label: String(name || key).trim(),
-      description: String(description || "").trim(),
-      ready: Boolean(ready),
-      source: String(source || "").trim(),
-    });
-  };
-  const drafts = Array.isArray(payload.skill_drafts) ? payload.skill_drafts : [];
-  for (const draft of drafts) {
-    const value = String(draft?.id || draft?.name || "").trim();
-    if (!value) continue;
-    addOption({
-      value,
-      name: draft?.name || value,
-      description: draft?.description,
-      ready: Boolean(String(draft?.content || "").trim()),
-      source: "新建技能定义",
-    });
-  }
-  for (const rawSkill of Array.isArray(payload.skills) ? payload.skills : []) {
-    const value = String(rawSkill?.id || rawSkill || "").trim();
-    if (!value) continue;
-    const existing = catalog.find(
-      (skill) =>
-        normalizeMatchKey(skill?.id) === normalizeMatchKey(value) ||
-        normalizeMatchKey(skill?.name) === normalizeMatchKey(value),
-    );
-    addOption({
-      value,
-      name: existing?.name || value,
-      description: existing?.description || "",
-      ready: Boolean(
-        String(
-          existing?.markdown ||
-            existing?.content ||
-            existing?.definition ||
-            existing?.instructions ||
-            existing?.description ||
-            "",
-        ).trim(),
-      ),
-      source: existing ? "已有本地技能" : "等待技能定义",
-    });
-  }
-  return [...options.values()];
-});
-
-const employeeDraftDialogRuleOptions = computed(() => {
-  const payload = employeeDraftDialogPayload.value;
-  if (!payload) return [];
-  const relations = getLocalProjectRelations(selectedProjectId.value);
-  const catalog = Array.isArray(relations?.rules) ? relations.rules : [];
-  const options = new Map();
-  const addOption = ({ value, title, domain = "", ready = false, source = "" }) => {
-    const key = String(value || "").trim();
-    if (!key || options.has(key)) return;
-    options.set(key, {
-      value: key,
-      label: String(title || key).trim(),
-      description: String(domain || "").trim(),
-      ready: Boolean(ready),
-      source: String(source || "").trim(),
-    });
-  };
-  for (const rule of employeeDraftDialogMatchedRuleBindings.value) {
-    const existing = catalog.find(
-      (item) => String(item?.id || "").trim() === String(rule.id || "").trim(),
-    );
-    addOption({
-      value: rule.id,
-      title: rule.title || rule.id,
-      domain: rule.domain,
-      ready: Boolean(
-        String(existing?.content || existing?.body || existing?.description || "").trim(),
-      ),
-      source: "已有本地规则",
-    });
-  }
-  for (const draft of Array.isArray(payload.rule_drafts) ? payload.rule_drafts : []) {
-    const title = String(draft?.title || "").trim();
-    if (!title) continue;
-    addOption({
-      value: `draft:${normalizeMatchKey(title)}`,
-      title,
-      domain: draft?.domain,
-      ready: Boolean(String(draft?.content || "").trim()),
-      source: "新建规则定义",
-    });
-  }
-  return [...options.values()];
-});
 
 function syncSkillResourceDirectoryDraft() {
   skillResourceDirectoryDraft.value = readPreferredSkillResourceDirectory(
@@ -27939,30 +27584,6 @@ async function copySkillResourceDirectory() {
   }
 }
 
-const employeeDraftDialogRuleDraftLabels = computed(() => {
-  const payload = employeeDraftDialogPayload.value;
-  if (!payload || !Array.isArray(payload.rule_drafts)) return [];
-  return payload.rule_drafts
-    .map((draft) => {
-      const title = String(draft?.title || "").trim();
-      const domain = String(draft?.domain || "").trim();
-      if (!title && !domain) return "";
-      return domain ? `${title || "未命名规则"} (${domain})` : title;
-    })
-    .filter(Boolean);
-});
-
-const employeeDraftAutoRuleSourceLabels = computed(() =>
-  normalizeStringList(
-    (employeeDraftAutoRuleGenerationSourceFilters.value || []).map(
-      (item) =>
-        EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS[String(item || "").trim()] ||
-        "系统规则源",
-    ),
-    6,
-  ),
-);
-
 function getEmployeeDraftCard(item) {
   if (
     item?.employeeDraftCancelled ||
@@ -27974,7 +27595,7 @@ function getEmployeeDraftCard(item) {
   const rawDraft = extractEmployeeDraftPayload(item?.content || "");
   if (!rawDraft) return null;
   const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
-  if (intent && !["draft", "create", "update"].includes(intent)) return null;
+  if (intent !== "update") return null;
   return buildEmployeeDraftCard(rawDraft);
 }
 
@@ -27989,10 +27610,7 @@ function resetEmployeeDraftDialogState() {
   employeeDraftDialogLoading.value = false;
   employeeDraftDialogPayload.value = null;
   employeeDraftDialogItem.value = null;
-  employeeDraftDialogMode.value = "create";
-  employeeDraftAutoCreateSkills.value = false;
-  employeeDraftAutoCreateRules.value = false;
-  employeeDraftAddToProject.value = false;
+  employeeDraftDialogMode.value = "update";
 }
 
 function normalizeEmployeeDraftConfirmationText(value = "") {
@@ -28013,16 +27631,6 @@ function classifyEmployeeDraftConfirmationText(value = "") {
       "可以",
       "同意",
       "没问题",
-      "创建",
-      "确认创建",
-      "确定创建",
-      "好的创建",
-      "可以创建",
-      "没问题创建",
-      "好的创建没问题",
-      "就这样创建",
-      "按这个创建",
-      "按此创建",
       "更新",
       "确认更新",
       "确定更新",
@@ -28072,15 +27680,12 @@ function latestPendingEmployeeDraftCandidate() {
       continue;
     }
     const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
-    if (!["draft", "create", "update"].includes(intent)) continue;
+    if (intent !== "update") continue;
     const rawDraft = extractEmployeeDraftPayload(item?.content || "");
     if (!rawDraft) continue;
-    const payload =
-      intent === "update"
-        ? buildEmployeeUpdateDraftPayload(rawDraft)
-        : buildEmployeeAutoCreatePayload(rawDraft);
+    const payload = buildEmployeeUpdateDraftPayload(rawDraft);
     if (!payload) continue;
-    return { item, payload, mode: intent === "update" ? "update" : "create" };
+    return { item, payload, mode: "update" };
   }
   return null;
 }
@@ -28098,7 +27703,7 @@ function supersedeOtherPendingEmployeeDrafts(activeItem = null) {
       continue;
     }
     const intent = extractEmployeeIntentPayload(item.content || "")?.intent;
-    if (!["draft", "create", "update"].includes(intent)) continue;
+    if (intent !== "update") continue;
     if (!extractEmployeeDraftPayload(item.content || "")) continue;
     item.employeeDraftSuperseded = true;
   }
@@ -28114,30 +27719,21 @@ function supersedeOtherPendingEmployeeDrafts(activeItem = null) {
 
 function applyEmployeeDraftConfirmationCandidate(candidate = null) {
   if (!candidate?.item || !candidate?.payload) return false;
-  employeeDraftDialogMode.value = candidate.mode === "update" ? "update" : "create";
+  employeeDraftDialogMode.value = "update";
   employeeDraftDialogPayload.value = candidate.payload;
   employeeDraftDialogItem.value = candidate.item;
-  employeeDraftAutoCreateSkills.value = employeeDraftDialogMode.value === "update";
-  employeeDraftAutoCreateRules.value = employeeDraftDialogMode.value === "update";
-  employeeDraftAddToProject.value =
-    employeeDraftDialogMode.value === "update" ||
-    Boolean(String(selectedProjectId.value || "").trim());
   return true;
 }
 
 function openEmployeeDraftConfirmation(item) {
   if (!item || item.employeeDraftCreatedName) return;
   const intent = extractEmployeeIntentPayload(item.content || "")?.intent;
+  if (intent !== "update") return;
   const rawDraft = extractEmployeeDraftPayload(item.content || "");
-  const payload =
-    intent === "update"
-      ? buildEmployeeUpdateDraftPayload(rawDraft)
-      : buildEmployeeAutoCreatePayload(rawDraft);
+  const payload = buildEmployeeUpdateDraftPayload(rawDraft);
   if (!payload) {
     ElMessage.warning(
-      intent === "update"
-        ? "请先在当前会话中只选择一个要更新的智能体"
-        : "智能体草稿缺少名称，请先继续完善",
+        "请先在当前会话中只选择一个要更新的智能体",
     );
     return;
   }
@@ -28145,7 +27741,7 @@ function openEmployeeDraftConfirmation(item) {
   applyEmployeeDraftConfirmationCandidate({
     item,
     payload,
-    mode: intent === "update" ? "update" : "create",
+    mode: "update",
   });
   employeeDraftDialogVisible.value = true;
 }
@@ -28227,47 +27823,6 @@ async function submitPendingEmployeeDraftConfirmationIfNeeded(text = "") {
   return true;
 }
 
-function handleStartEmployeeCreation() {
-  toggleComposerAssist("employee_create");
-}
-
-async function autoCreateEmployeeFromDraftMessage(
-  item,
-  { resetAssist = false } = {},
-) {
-  if (!item || item.employeeDraftCreatedName) {
-    return false;
-  }
-  const intent = extractEmployeeIntentPayload(item?.content || "")?.intent;
-  if (!["draft", "create"].includes(intent)) {
-    return false;
-  }
-  const rawDraft = extractEmployeeDraftPayload(item?.content || "");
-  const payload = buildEmployeeAutoCreatePayload(rawDraft);
-  if (!payload?.name) {
-    ElMessage.warning("智能体草稿缺少名称，尚未创建；请先补充智能体名称");
-    return false;
-  }
-  await openEmployeeDraftCreateDialog(item, payload);
-  if (resetAssist && activeComposerAssist.value === "employee_create") {
-    activeComposerAssist.value = "";
-  }
-  return true;
-}
-
-async function openEmployeeDraftCreateDialog(item, payload) {
-  supersedeOtherPendingEmployeeDrafts(item);
-  employeeDraftDialogMode.value = "create";
-  employeeDraftDialogPayload.value = payload;
-  employeeDraftDialogItem.value = item;
-  employeeDraftAutoCreateSkills.value = false;
-  employeeDraftAutoCreateRules.value = false;
-  employeeDraftAddToProject.value = Boolean(
-    String(selectedProjectId.value || "").trim(),
-  );
-  employeeDraftDialogVisible.value = true;
-}
-
 function resolveEmployeeUpdateTarget(rawDraft = {}) {
   const requestedId = String(
     rawDraft?.employee_id || rawDraft?.employeeId || "",
@@ -28312,9 +27867,6 @@ async function autoUpdateEmployeeFromDraftMessage(item) {
   employeeDraftDialogMode.value = "update";
   employeeDraftDialogPayload.value = payload;
   employeeDraftDialogItem.value = item;
-  employeeDraftAutoCreateSkills.value = true;
-  employeeDraftAutoCreateRules.value = true;
-  employeeDraftAddToProject.value = true;
   employeeDraftDialogVisible.value = true;
   return true;
 }
@@ -28375,27 +27927,63 @@ async function pauseLocalLiuAgentPendingUserQuestionsForChatSession(
   return true;
 }
 
+async function handleEmployeeDeleteIntent(item) {
+  const parsed = extractEmployeeIntentPayload(item?.content || "");
+  const requestedId = String(parsed?.employee_id || "").trim();
+  const requestedName = String(parsed?.name || "").trim();
+  const selectedIds = normalizeStringList(selectedEmployeeIds.value || [], 20);
+  const candidates = (projectEmployees.value || []).filter((employee) => {
+    const employeeId = String(employee?.id || "").trim();
+    const employeeName = String(employee?.name || "").trim();
+    if (requestedId) return employeeId === requestedId;
+    if (requestedName) return normalizeMatchKey(employeeName) === normalizeMatchKey(requestedName);
+    return selectedIds.includes(employeeId);
+  });
+  if (candidates.length !== 1) {
+    ElMessage.warning(
+      candidates.length
+        ? "删除智能体前必须明确指定唯一目标"
+        : "未找到要删除的智能体，请提供名称或先选择一个智能体",
+    );
+    return false;
+  }
+  const employee = candidates[0];
+  const directory = String(employee?.directory_path || projectChatSettings.value.agent_directory || "").trim();
+  const filePath = String(employee?.file_path || "").trim() || `${directory}/AGENT.md`;
+  try {
+    await ElMessageBox.confirm(
+      `将删除智能体「${employee.name || employee.id}」及其定义目录。\n\n文件路径：${filePath}\n\n不会删除公共技能和规则目录。此操作不可自动恢复。`,
+      "确认删除智能体",
+      { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" },
+    );
+  } catch {
+    return false;
+  }
+  const deleted = await deleteLocalProjectAgent(employee.id, {
+    projectId: selectedProjectId.value,
+  });
+  if (!deleted) {
+    throw new Error("智能体定义不存在，未执行删除");
+  }
+  projectEmployees.value = await listLocalProjectAgents({
+    projectId: selectedProjectId.value,
+  });
+  selectedEmployeeIds.value = selectedEmployeeIds.value.filter(
+    (id) => String(id || "").trim() !== String(employee.id || "").trim(),
+  );
+  item.content = `${stripInternalProtocolContentForDisplay(stripEmployeeIntentBlock(item.content))}\n\n已删除智能体：${employee.name || employee.id}`.trim();
+  ElMessage.success(`已删除智能体「${employee.name || employee.id}」`);
+  return true;
+}
+
 async function handleEmployeeIntentAfterAssistantResponse(
   item,
   { assistActionId = "" } = {},
 ) {
-  const parsedIntent = extractEmployeeIntentPayload(item?.content || "")?.intent;
-  const intent =
-    parsedIntent ||
-    (assistActionId === "employee_create" &&
-    extractEmployeeDraftPayload(item?.content || "")
-      ? "create"
-      : "");
+  const parsedEmployeeIntent = extractEmployeeIntentPayload(item?.content || "");
+  const parsedIntent = parsedEmployeeIntent?.intent;
+  const intent = parsedIntent;
   switch (intent) {
-    case "create": {
-      const opened = await autoCreateEmployeeFromDraftMessage(item, {
-        resetAssist: assistActionId === "employee_create",
-      });
-      if (!opened) {
-        console.warn("employee create intent did not produce a confirmable draft");
-      }
-      return;
-    }
     case "update": {
       const opened = await autoUpdateEmployeeFromDraftMessage(item);
       if (!opened) {
@@ -28403,23 +27991,14 @@ async function handleEmployeeIntentAfterAssistantResponse(
       }
       return;
     }
-    case "draft": {
-      const opened = await autoCreateEmployeeFromDraftMessage(item, {
-        resetAssist: assistActionId === "employee_create",
-      });
-      if (!opened) {
-        console.warn("employee draft intent did not produce a confirmable draft");
-      }
+    case "delete": {
+      await handleEmployeeDeleteIntent(item);
       return;
     }
     case "question":
       return;
     default:
-      if (assistActionId === "employee_create") {
-        console.debug(
-          "employee creation response omitted the optional intent protocol; preserving the assistant reply",
-        );
-      }
+      return;
   }
 }
 
@@ -28431,81 +28010,38 @@ async function confirmEmployeeDraftCreation(options = {}) {
     return;
   }
   try {
-    const handler =
-      employeeDraftDialogMode.value === "update"
-        ? handleQuickUpdateEmployee
-        : handleQuickCreateEmployee;
-    const selectedSkillIds = normalizeStringList(
-      options?.selected_skill_ids || payload.skills || [],
-      30,
-    );
-    const selectedRuleKeys = normalizeStringList(
-      options?.selected_rule_keys || [],
-      30,
-    );
-    const selectedRuleIds = selectedRuleKeys.filter(
-      (value) => !value.startsWith("draft:"),
-    );
-    const selectedRuleDraftKeys = new Set(
-      selectedRuleKeys
-        .filter((value) => value.startsWith("draft:"))
-        .map((value) => value.slice("draft:".length)),
-    );
-    const selectedSkillKeys = new Set(
-      selectedSkillIds.map((value) => normalizeMatchKey(value)),
-    );
-    const skillDrafts = (Array.isArray(payload.skill_drafts)
-      ? payload.skill_drafts
-      : []
-    ).filter((draft) =>
-      selectedSkillKeys.has(normalizeMatchKey(draft?.id || draft?.name)),
-    );
-    const ruleDrafts = (Array.isArray(payload.rule_drafts)
-      ? payload.rule_drafts
-      : []
-    ).filter((draft) =>
-      selectedRuleDraftKeys.has(normalizeMatchKey(draft?.title)),
-    );
-    if (
-      employeeDraftDialogMode.value === "create" &&
-      (!selectedSkillIds.length || (!selectedRuleIds.length && !ruleDrafts.length))
-    ) {
-      throw new Error("请至少勾选一项技能和一项规则后再创建智能体");
-    }
+    const handler = handleQuickUpdateEmployee;
     const employee = await handler({
       ...payload,
-      skills: selectedSkillIds,
-      skill_drafts: skillDrafts,
-      rule_ids: selectedRuleIds,
-      rule_titles: [],
-      rule_domains: [],
-      rule_drafts: ruleDrafts,
-      add_to_current_project:
-        options?.add_to_current_project ?? employeeDraftAddToProject.value,
-      auto_create_missing_skills: false,
-      auto_create_missing_rules: false,
+      skills: Array.isArray(payload.skills) ? payload.skills : [],
+      skill_drafts: Array.isArray(payload.skill_drafts)
+        ? payload.skill_drafts
+        : [],
+      rule_ids: Array.isArray(payload.rule_ids) ? payload.rule_ids : [],
+      rule_titles: Array.isArray(payload.rule_titles)
+        ? payload.rule_titles
+        : [],
+      rule_domains: Array.isArray(payload.rule_domains)
+        ? payload.rule_domains
+        : [],
+      rule_drafts: Array.isArray(payload.rule_drafts)
+        ? payload.rule_drafts
+        : [],
     });
-    const updated = employeeDraftDialogMode.value === "update";
     item.employeeDraftCreatedName = String(
       employee?.name || payload.name || "",
     ).trim();
-    if (updated) item.employeeDraftUpdatedName = item.employeeDraftCreatedName;
+    item.employeeDraftUpdatedName = item.employeeDraftCreatedName;
     const visibleContent = stripInternalProtocolContentForDisplay(
       stripEmployeeIntentBlock(stripEmployeeDraftBlock(item.content)),
     );
-    item.content = `${visibleContent}\n\n${updated ? "已更新智能体" : "已创建智能体"}：${item.employeeDraftCreatedName}`.trim();
-    if (!updated) {
-      clearLocalLiuAgentUserQuestionsForChatSession(currentChatSessionId.value);
-      clearEmployeeCreationComposerAssist();
-    }
+    item.content = `${visibleContent}\n\n已更新智能体：${item.employeeDraftCreatedName}`.trim();
     employeeDraftDialogVisible.value = false;
     resetEmployeeDraftDialogState();
   } catch (error) {
     ElMessage.error(
       error?.message ||
-        (employeeDraftDialogMode.value === "update"
-          ? "更新智能体失败"
-          : "创建智能体失败"),
+        "更新智能体失败",
     );
   }
 }
@@ -29780,8 +29316,18 @@ async function sendMergedFollowupRequest(
       .filter(Boolean),
   };
 
+  const mergedFollowupPrompt = buildMergedFollowupPrompt(
+    queueItems,
+    filePayload.docsText,
+  );
+  const followupLanguageSource = queueItems
+    .map((item) => String(item?.text || "").trim())
+    .filter(Boolean)
+    .join("\n");
   const finalUserPrompt = appendModelGenerationInstruction(
-    buildMergedFollowupPrompt(queueItems, filePayload.docsText),
+    mergedFollowupPrompt,
+    currentModelParameterMode.value,
+    followupLanguageSource,
   );
   const effectiveAutoUseTools = singleRoundAnswerOnly.value
     ? false
@@ -29800,6 +29346,7 @@ async function sendMergedFollowupRequest(
       assistantMessage,
       assistantIndex,
       finalUserPrompt,
+      languageSource: followupLanguageSource,
       activeSessionSourceContext,
       attachmentNames: filePayload.attachmentNames,
       base64Images: filePayload.base64Images,
@@ -30015,9 +29562,6 @@ function toggleComposerAssist(actionId) {
   );
   if (!action) return;
   activeComposerAssist.value = normalized;
-  if (normalized === "employee_create") {
-    void ensureEmployeeDraftCatalog().catch(() => {});
-  }
   draftText.value = String(action.seedText || "").trim();
 }
 
@@ -30211,21 +29755,6 @@ async function fetchSystemConfig() {
   }
   desktopAgentGlobalPrompt.value = String(
     config?.desktop_agent_global_prompt || "",
-  );
-  employeeDraftAutoRuleGenerationEnabled.value =
-    !Object.prototype.hasOwnProperty.call(
-      config || {},
-      "employee_auto_rule_generation_enabled",
-    ) || !!config?.employee_auto_rule_generation_enabled;
-  employeeDraftAutoRuleGenerationSourceFilters.value = normalizeStringList(
-    config?.employee_auto_rule_generation_source_filters || [
-      "prompts_chat_curated",
-    ],
-    8,
-  );
-  employeeDraftAutoRuleGenerationMaxCount.value = Math.min(
-    6,
-    Math.max(1, Number(config?.employee_auto_rule_generation_max_count || 3)),
   );
 }
 
@@ -30760,168 +30289,6 @@ async function fetchProvidersByProject(projectId) {
   }
 }
 
-async function handleQuickCreateEmployee(payload) {
-  employeeCreateSubmitting.value = true;
-  try {
-    const projectId = String(selectedProjectId.value || "").trim();
-    if (!projectId) throw new Error("请先选择项目");
-    const relations = getLocalProjectRelations(projectId);
-    const employeeId = `local-employee-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const employee = {
-      id: employeeId,
-      name: String(payload.name || "未命名智能体").trim(),
-      description: readableEmployeeDraftValue(payload.description),
-      goal: readableEmployeeDraftValue(payload.goal),
-      role: normalizeEmployeeDraftRole(payload.role),
-      instructions: normalizeStringList(payload.instructions || [], 20),
-      tone: String(payload.tone || "professional").trim(),
-      verbosity: String(payload.verbosity || "concise").trim(),
-      language: String(payload.language || "zh-CN").trim(),
-      skills: Array.isArray(payload.skills) ? payload.skills : [],
-      rule_ids: Array.isArray(payload.rule_ids) ? payload.rule_ids : [],
-      rule_titles: Array.isArray(payload.rule_titles)
-        ? payload.rule_titles
-        : [],
-      rule_domains: Array.isArray(payload.rule_domains)
-        ? payload.rule_domains
-        : [],
-      rule_drafts: Array.isArray(payload.rule_drafts)
-        ? payload.rule_drafts
-        : [],
-      style_hints: Array.isArray(payload.style_hints)
-        ? payload.style_hints
-        : [],
-      default_workflow: Array.isArray(payload.default_workflow)
-        ? payload.default_workflow
-        : [],
-      tool_usage_policy: readableEmployeeDraftValue(payload.tool_usage_policy),
-      memory_scope: String(payload.memory_scope || "project").trim(),
-      memory_retention_days: Number(payload.memory_retention_days || 90),
-      auto_evolve: true,
-      mcp_enabled: true,
-      project_id: projectId,
-      source: "local_project_chat",
-      created_at: new Date().toISOString(),
-    };
-
-    const skills = mergeEmployeeSkillDefinitions(
-      relations.skills,
-      employee.skills,
-      employee.skill_drafts,
-    );
-    for (const skill of skills) upsertLocalEntity("skills", skill);
-
-    const rules = Array.isArray(relations.rules) ? [...relations.rules] : [];
-    const ruleDrafts = buildMissingEmployeeRuleDrafts(employee, rules);
-    employee.rule_drafts = ruleDrafts;
-    for (const rawRule of ruleDrafts) {
-      const title = String(rawRule?.title || "").trim();
-      if (!title) continue;
-      const ruleId = String(
-        rawRule?.id ||
-          `local-rule-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      ).trim();
-      const rule = {
-        id: ruleId,
-        title,
-        domain: String(rawRule?.domain || "").trim(),
-        content: String(rawRule?.content || "").trim(),
-        source: "local_project_chat",
-      };
-      rules.push(rule);
-      upsertLocalEntity("rules", rule);
-    }
-
-    const selectedSkills = employee.skills.map((skillId) => {
-      const id = String(skillId?.id || skillId || "").trim();
-      return skills.find(
-        (item) => String(item?.id || item?.name || "").trim() === id,
-      );
-    }).filter((item) => String(item?.id || "").trim());
-    employee.skills = selectedSkills.map((skill) => String(skill.id || "").trim());
-    const selectedRules = rules.filter((rule) => {
-      const ruleId = String(rule?.id || "").trim();
-      return (
-        employee.rule_ids.includes(ruleId) ||
-        employee.rule_drafts.some(
-          (draft) => String(draft?.title || "").trim() === String(rule?.title || "").trim(),
-        )
-      );
-    });
-    if (selectedSkills.length !== employee.skills.length) {
-      throw new Error("选中的技能缺少可写入定义，请重新选择技能候选");
-    }
-    if (!selectedRules.length) {
-      throw new Error("选中的规则缺少可写入定义，请重新选择规则候选");
-    }
-    employee.rule_ids = [...new Set(selectedRules.map((rule) => String(rule.id || "").trim()).filter(Boolean))];
-    employee.rule_bindings = selectedRules.map((rule) => ({
-      id: String(rule.id || "").trim(),
-      title: String(rule.title || rule.id || "").trim(),
-      domain: String(rule.domain || "").trim(),
-    }));
-
-    const { employee: directoryEmployee, directories, writtenSkills, writtenRules } = await saveLocalAgentDirectoryResources({
-      employee,
-      skills: selectedSkills,
-      rules: selectedRules,
-    });
-    if (
-      writtenSkills.length !== selectedSkills.length ||
-      writtenRules.length !== selectedRules.length
-    ) {
-      throw new Error("智能体关联的技能或规则未完整写入本地目录");
-    }
-    Object.assign(projectChatSettings.value, {
-      agent_directory: directories.agent,
-      skill_directory: directories.skill,
-      rule_directory: directories.rule,
-    });
-    const directoryRelations = getLocalProjectRelations(projectId);
-    updateLocalProjectRelations(projectId, {
-      ...directoryRelations,
-      employees: [],
-      skills,
-      rules,
-      chat_settings: {
-        ...(directoryRelations.chat_settings || {}),
-        selected_employee_ids: [
-          ...new Set([
-            ...(directoryRelations.chat_settings?.selected_employee_ids || []),
-            employeeId,
-          ]),
-        ],
-      },
-    });
-    projectEmployees.value = await listLocalProjectAgents({ projectId });
-    selectedEmployeeIds.value = projectEmployees.value.map((item) => String(item.id));
-    employeeDraftCatalog.value = {
-      ...employeeDraftCatalog.value,
-      skills: skills.map((skill) => ({
-        id: String(skill?.id || "").trim(),
-        name: String(skill?.name || skill?.id || "").trim(),
-        description: String(skill?.description || "").trim(),
-        tags: Array.isArray(skill?.tags) ? skill.tags : [],
-      })),
-      rules: rules.map((rule) => ({
-        id: String(rule?.id || "").trim(),
-        title: String(rule?.title || rule?.id || "").trim(),
-        domain: String(rule?.domain || "").trim(),
-      })),
-      loaded_at: Date.now(),
-    };
-    ElMessage.success(`智能体「${directoryEmployee.name}」已加入当前项目并同步本地目录`);
-    return directoryEmployee;
-  } catch (err) {
-    if (!(err?.recoverable && err?.code === "employee.skill_markdown_missing")) {
-      ElMessage.error(err?.detail || err?.message || "创建智能体失败");
-    }
-    throw err;
-  } finally {
-    employeeCreateSubmitting.value = false;
-  }
-}
-
 async function handleQuickUpdateEmployee(payload) {
   employeeCreateSubmitting.value = true;
   try {
@@ -30993,12 +30360,6 @@ async function handleQuickUpdateEmployee(payload) {
       tool_usage_policy:
         String(payload.tool_usage_policy || "").trim() ||
         String(existing.tool_usage_policy || "").trim(),
-      memory_scope:
-        String(payload.memory_scope || "").trim() ||
-        String(existing.memory_scope || "project").trim(),
-      memory_retention_days: Number(
-        payload.memory_retention_days || existing.memory_retention_days || 90,
-      ),
       updated_at: new Date().toISOString(),
     };
 
@@ -31078,21 +30439,7 @@ async function handleQuickUpdateEmployee(payload) {
       rule_directory: directories.rule,
     });
     projectEmployees.value = await listLocalProjectAgents({ projectId });
-    employeeDraftCatalog.value = {
-      ...employeeDraftCatalog.value,
-      skills: skills.map((skill) => ({
-        id: String(skill?.id || "").trim(),
-        name: String(skill?.name || skill?.id || "").trim(),
-        description: String(skill?.description || "").trim(),
-        tags: Array.isArray(skill?.tags) ? skill.tags : [],
-      })),
-      rules: rules.map((rule) => ({
-        id: String(rule?.id || "").trim(),
-        title: String(rule?.title || rule?.id || "").trim(),
-        domain: String(rule?.domain || "").trim(),
-      })),
-      loaded_at: Date.now(),
-    };
+
     ElMessage.success(`智能体「${savedEmployee.name}」的技能与规则已更新`);
     return savedEmployee;
   } catch (error) {
@@ -32714,6 +32061,7 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
               finalUserPrompt: appendModelGenerationInstruction(
                 buildOperationResumeUserPrompt(resumeCommand, workflowKind),
               ),
+              languageSource: resumeCommand,
               activeSessionSourceContext: normalizeChatSourceContext(
                 currentChatSession.value || {},
               ),
@@ -34511,6 +33859,7 @@ async function sendProjectChatRequest({
   persistHistory = false,
   providerId = selectedProviderId.value || defaultProviderId.value || "",
   modelName = selectedModelName.value || defaultModelName.value || "",
+  languageSource = "",
 }) {
   if (!isExternalAgentMode.value) {
     const normalizedProjectId = String(projectId || "").trim();
@@ -34530,11 +33879,12 @@ async function sendProjectChatRequest({
       userMessage: localUserMessage,
       assistantMessage,
       finalUserPrompt,
+      languageSource,
       historyRows,
-      displayUserMessageContent: localUserMessage.content,
+      displayUserMessageContent:
+        String(languageSource || localUserMessage.content).trim(),
       sourceContext: activeSessionSourceContext,
-      interactionMode:
-        assistAction?.id === "employee_create" ? "employee_create" : "",
+      interactionMode: "",
       attachments: [],
       mediaTools: localLiuAgentMediaTools.value,
       persistUserMessage: Boolean(userMessageId),
@@ -34621,7 +33971,14 @@ async function sendProjectChatRequest({
     provider_id: String(providerId || "").trim() || undefined,
     model_name: String(modelName || "").trim() || undefined,
     temperature: Number(temperature.value),
-    system_prompt: undefined,
+    system_prompt: [
+      String(systemPrompt.value || "").trim(),
+      buildChatResponseLanguageInstruction(
+        latestUserMessageLanguageSource(languageSource) || finalUserPrompt,
+      ),
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
     attachment_names: attachmentNames,
     images: base64Images,
     audio_data_url: String(audioInput?.dataUrl || "").trim(),
@@ -34646,7 +34003,6 @@ async function sendProjectChatRequest({
   requestPayload.enabled_project_tool_names = normalizeStringList(
     [
       ...enabledProjectToolNames,
-      ...(assistAction?.id === "employee_create" ? assistToolNames : []),
     ],
     200,
   );
@@ -34704,6 +34060,72 @@ async function sendProjectChatRequest({
   };
 }
 
+function buildLocalTaskResultSummary({
+  requestDescription = "",
+  result = {},
+  completed = false,
+  status = "",
+  recordPath = "",
+  baselineItems = [],
+} = {}) {
+  const baselineByPath = new Map(
+    (Array.isArray(baselineItems) ? baselineItems : [])
+      .map((item) => [String(item?.path || "").trim(), item])
+      .filter(([path]) => Boolean(path)),
+  );
+  const files = workspaceReviewItems.value
+    .map((item) => ({
+      path: String(item?.path || "").trim(),
+      currentHash: String(item?.currentHash || "").trim(),
+      changeType: ["added", "modified", "deleted"].includes(String(item?.changeType || ""))
+        ? String(item.changeType)
+        : "modified",
+    }))
+    .filter((item) => {
+      if (!item.path) return false;
+      const baseline = baselineByPath.get(item.path);
+      if (!baseline) return true;
+      return (
+        item.changeType !== String(baseline.changeType || "") ||
+        item.currentHash !== String(baseline.currentHash || "").trim()
+      );
+    })
+    .map(({ currentHash, ...item }) => item)
+    .slice(0, 100);
+  const counts = files.reduce((resultCounts, item) => {
+    resultCounts[item.changeType] += 1;
+    return resultCounts;
+  }, { added: 0, modified: 0, deleted: 0 });
+  const changeDescription = files.length
+    ? [`新增 ${counts.added}`, `编辑 ${counts.modified}`, `删除 ${counts.deleted}`]
+        .filter((item) => !item.endsWith(" 0"))
+        .join("，")
+    : "未检测到本地文件改动";
+  const nextSteps = completed
+    ? []
+    : [
+        "检查失败原因或等待缺失的用户授权/补充信息",
+        "从当前 checkpoint 继续执行并重新验证项目状态",
+      ];
+  return {
+    requestDescription: String(requestDescription || "").trim(),
+    changeDescription,
+    files,
+    completed,
+    status: String(status || (completed ? "completed" : "paused")).trim().toLowerCase(),
+    nextSteps,
+    recordPath: String(recordPath || "").trim(),
+    generatedAt: new Date().toISOString(),
+    runtimeSummary: String(result?.summary || result?.error || "").trim(),
+  };
+}
+
+function shouldShowLocalTaskResultSummary(summary) {
+  if (!summary || typeof summary !== "object") return false;
+  if (summary.completed === false) return true;
+  return Array.isArray(summary.files) && summary.files.length > 0;
+}
+
 async function sendLocalLiuAgentChatRequest({
   projectId,
   activeChatSessionId,
@@ -34733,6 +34155,16 @@ async function sendLocalLiuAgentChatRequest({
     throw new Error("请先配置本机工作区");
   }
   clearLocalLiuAgentAutoResumeTimer(activeChatSessionId);
+  if (!Array.isArray(assistantMessage.localTaskBaseline)) {
+    await refreshWorkspaceReviewItems();
+    assistantMessage.localTaskBaseline = workspaceReviewItems.value.map(
+      (item) => ({
+        path: String(item?.path || "").trim(),
+        changeType: String(item?.changeType || "").trim(),
+        currentHash: String(item?.currentHash || "").trim(),
+      }),
+    );
+  }
   if (resumeFromCheckpoint) {
     clearLocalLiuAgentRecoveryPlaceholderContent(assistantMessage);
   }
@@ -34825,7 +34257,10 @@ async function sendLocalLiuAgentChatRequest({
     history: historyRows,
     providerId,
     modelName,
-    systemPromptParts: buildLocalLiuAgentSystemPromptParts(interactionMode),
+    systemPromptParts: buildLocalLiuAgentSystemPromptParts(
+      interactionMode,
+      displayUserMessageContent || finalUserPrompt,
+    ),
     temperature: Number(
       temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
     ),
@@ -34927,14 +34362,6 @@ async function sendLocalLiuAgentChatRequest({
       resumed_from_checkpoint: resumeFromCheckpoint ? "true" : "false",
     },
   });
-  appendMessageProcessLog(assistantMessage, {
-    text: resumeFromCheckpoint
-      ? "已恢复任务，正在继续思考下一步"
-      : "正在理解你的目标",
-    kind: "thinking",
-    level: "info",
-    autoExpand: true,
-  });
   assistantMessage.processExpanded = true;
   syncChatLoadingWithCurrentSession();
   let result;
@@ -34994,6 +34421,15 @@ async function sendLocalLiuAgentChatRequest({
       level: "warning",
       autoExpand: true,
     });
+    assistantMessage.localTaskSummary = buildLocalTaskResultSummary({
+      requestDescription: displayUserMessageContent || finalUserPrompt,
+      result,
+      completed: false,
+      status: "waiting_user",
+      baselineItems: assistantMessage.localTaskBaseline,
+      recordPath:
+        result?.requirementRecordPath || result?.requirement_record_path,
+    });
     await persistLocalLiuAgentAssistantState({
       projectId,
       chatSessionId: activeChatSessionId,
@@ -35020,6 +34456,7 @@ async function sendLocalLiuAgentChatRequest({
       resultSummary:
         String(assistantMessage.content || "").trim() ||
         LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      localTaskSummary: assistantMessage.localTaskSummary,
       verificationResult:
         "桌面 Runtime 已写入 checkpoint，执行轨迹已保留，可继续执行。",
       source: "desktop_local_agent",
@@ -35092,6 +34529,15 @@ async function sendLocalLiuAgentChatRequest({
       level: "warning",
       autoExpand: true,
     });
+    assistantMessage.localTaskSummary = buildLocalTaskResultSummary({
+      requestDescription: displayUserMessageContent || finalUserPrompt,
+      result,
+      completed: false,
+      status: "paused",
+      baselineItems: assistantMessage.localTaskBaseline,
+      recordPath:
+        result?.requirementRecordPath || result?.requirement_record_path,
+    });
     await persistLocalLiuAgentAssistantState({
       projectId,
       chatSessionId: activeChatSessionId,
@@ -35119,6 +34565,7 @@ async function sendLocalLiuAgentChatRequest({
       resultSummary:
         String(assistantMessage.content || "").trim() ||
         LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      localTaskSummary: assistantMessage.localTaskSummary,
       verificationResult: "Runtime 已停止调度并直接保存当前工作节点。",
       source: "desktop_local_agent",
       sourceContext: {
@@ -35165,6 +34612,14 @@ async function sendLocalLiuAgentChatRequest({
     assistantMessage.content =
       String(assistantMessage.content || "").trim() ||
       "我还需要你补充少量信息，回答后会继续当前任务。";
+    assistantMessage.localTaskSummary = buildLocalTaskResultSummary({
+      requestDescription: displayUserMessageContent || finalUserPrompt,
+      result,
+      completed: false,
+      status: "waiting_user",
+      baselineItems: assistantMessage.localTaskBaseline,
+      recordPath: result?.requirementRecordPath || result?.requirement_record_path,
+    });
     appendMessageProcessLog(assistantMessage, {
       text: "等待你回答问题，提交后将继续同一个 Agent Loop",
       level: "warning",
@@ -35190,6 +34645,7 @@ async function sendLocalLiuAgentChatRequest({
       messageId: userMessage.id,
       assistantMessageId: assistantMessage.id,
       resultSummary: assistantMessage.content,
+      localTaskSummary: assistantMessage.localTaskSummary,
       verificationResult:
         "模型已通过 ask_user_question 请求必要信息，Runtime 等待回答后继续。",
       source: "desktop_local_agent",
@@ -35245,6 +34701,14 @@ async function sendLocalLiuAgentChatRequest({
       text: "本机工具执行已暂停，等待你在输入框上方授权",
       level: "warning",
     });
+    assistantMessage.localTaskSummary = buildLocalTaskResultSummary({
+      requestDescription: displayUserMessageContent || finalUserPrompt,
+      result,
+      completed: false,
+      status: "waiting_approval",
+      baselineItems: assistantMessage.localTaskBaseline,
+      recordPath: result?.requirementRecordPath || result?.requirement_record_path,
+    });
     await persistLocalLiuAgentAssistantState({
       projectId,
       chatSessionId: activeChatSessionId,
@@ -35266,6 +34730,7 @@ async function sendLocalLiuAgentChatRequest({
       messageId: userMessage.id,
       assistantMessageId: assistantMessage.id,
       resultSummary: assistantMessage.content,
+      localTaskSummary: assistantMessage.localTaskSummary,
       verificationResult:
         "本地工具调用已在 executor 执行前暂停，等待用户授权。",
       source: "desktop_local_agent",
@@ -35340,27 +34805,6 @@ async function sendLocalLiuAgentChatRequest({
   if (!assistantMessage.content && !ok && !shouldAutoResume) {
     assistantMessage.content = `执行失败：${String(result?.error || "桌面端本地对话失败").trim()}`;
   }
-  const employeeIntent = extractEmployeeIntentPayload(
-    assistantMessage.content || "",
-  )?.intent;
-  const hasConfirmableEmployeeDraft = Boolean(
-    extractEmployeeDraftPayload(assistantMessage.content || ""),
-  );
-  const employeeCreationProtocolRecovery =
-    ok &&
-    !shouldAutoResume &&
-    String(interactionMode || "").trim() === "employee_create" &&
-    !hasConfirmableEmployeeDraft &&
-    createEmployeeCreationProtocolRecoveryQuestion({
-      assistantMessage,
-      userMessage,
-      activeChatSessionId,
-      localChatPayload,
-      displayUserMessageContent,
-      finalUserPrompt,
-      sourceContext,
-      localTaskId: activeRun.localTaskId,
-    });
   if (!ok && !shouldAutoResume) {
     const runtimeError = String(
       result?.error ||
@@ -35394,21 +34838,28 @@ async function sendLocalLiuAgentChatRequest({
       }),
     );
   }
+  if (!shouldAutoResume) {
+    await refreshWorkspaceReviewItems();
+    assistantMessage.localTaskSummary = buildLocalTaskResultSummary({
+      requestDescription: displayUserMessageContent || finalUserPrompt,
+      result,
+      completed: ok,
+      status: ok ? "completed" : shouldAutoResume ? "running" : "failed",
+      baselineItems: assistantMessage.localTaskBaseline,
+      recordPath: result?.requirementRecordPath || result?.requirement_record_path,
+    });
+  }
   upsertMessageOperation(assistantMessage, {
     operationId: `local-agent:${assistantMessage.id}`,
     kind: "request",
     title: "桌面本地 Agent Runtime",
-    summary: employeeCreationProtocolRecovery
-      ? "等待补充智能体主要职责"
-      : ok
+    summary: ok
       ? "本地会话完成"
       : shouldAutoResume
         ? `连接暂时中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动继续`
         : "本地会话失败",
     detail: String(result?.error || "").trim(),
-    phase: employeeCreationProtocolRecovery
-      ? "waiting_user"
-      : ok
+    phase: ok
         ? "completed"
         : shouldAutoResume
           ? "running"
@@ -35416,8 +34867,7 @@ async function sendLocalLiuAgentChatRequest({
     actionType: "none",
     meta: {
       local_liuagent_operation: "true",
-      local_liuagent_recoverable:
-        employeeCreationProtocolRecovery || !ok ? "true" : "false",
+      local_liuagent_recoverable: !ok ? "true" : "false",
       local_liuagent_resuming: "false",
       local_liuagent_auto_resume_retry_number: String(autoResumeRetryNumber),
       local_liuagent_auto_resume_pending: shouldAutoResume ? "true" : "false",
@@ -35455,23 +34905,16 @@ async function sendLocalLiuAgentChatRequest({
     });
   }
   appendMessageProcessLog(assistantMessage, {
-    text: employeeCreationProtocolRecovery
-      ? "创建智能体未返回可确认草稿，正在等待补充主要职责后重新生成"
-      : ok
+    text: ok
       ? "主模型对话已完成（桌面端编排），执行记录已写入 workspace"
       : shouldAutoResume
         ? `模型步骤中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动从 checkpoint 继续（第 ${nextAutoResumeRetryNumber}/${LOCAL_LIUAGENT_AUTO_RESUME_MAX_RETRIES} 次）`
         : "主模型对话执行失败",
-    level: employeeCreationProtocolRecovery
-      ? "warning"
-      : ok
-        ? "success"
-        : shouldAutoResume
-          ? "warning"
-          : "error",
-    autoExpand: employeeCreationProtocolRecovery || !ok,
+    level: ok ? "success" : shouldAutoResume ? "warning" : "error",
+    kind: "lifecycle",
+    autoExpand: !ok,
   });
-  if (!shouldAutoResume && !employeeCreationProtocolRecovery) {
+  if (!shouldAutoResume) {
     collapseMessageProcessAfterFinalAnswer(assistantMessage);
   }
   if (shouldAutoResume) {
@@ -35489,24 +34932,20 @@ async function sendLocalLiuAgentChatRequest({
     });
   }
   updateLocalAiTask(activeRun.localTaskId, {
-    status: employeeCreationProtocolRecovery
-      ? "waiting_user"
-      : ok
-        ? "done"
-        : shouldAutoResume
-          ? "reconnecting"
-          : "failed",
-    currentStep: employeeCreationProtocolRecovery
-      ? "等待补充智能体主要职责"
-      : ok
-        ? "任务已完成"
+    status: ok
+      ? "done"
+      : shouldAutoResume
+        ? "reconnecting"
+        : "failed",
+    currentStep: ok
+      ? "任务已完成"
       : shouldAutoResume
         ? "连接暂时中断，正在等待自动继续"
         : "本地 Runtime 执行失败",
     lastOutput: String(
       assistantMessage.content || result?.error || result?.summary || "",
     ).trim(),
-    recoverable: employeeCreationProtocolRecovery || !ok,
+    recoverable: !ok,
   });
   persistLocalLiuAgentActiveRunMessages(activeRun);
   deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
@@ -35525,20 +34964,13 @@ async function sendLocalLiuAgentChatRequest({
       });
       await upsertProjectChatRequirementRecord({
         chatSessionId: activeChatSessionId,
-        status: employeeCreationProtocolRecovery
-          ? "waiting_user"
-          : ok
-            ? "done"
-            : shouldAutoResume
-              ? "in_progress"
-              : "blocked",
+        status: ok ? "done" : shouldAutoResume ? "in_progress" : "blocked",
         rootGoal: displayUserMessageContent || finalUserPrompt,
         messageId: userMessage.id,
         assistantMessageId: assistantMessage.id,
         resultSummary: assistantMessage.content,
-        verificationResult: employeeCreationProtocolRecovery
-          ? "模型未返回创建协议，宿主已要求补充智能体主要职责后重新生成草稿。"
-          : ok
+        localTaskSummary: assistantMessage.localTaskSummary || null,
+        verificationResult: ok
           ? "桌面端 Tauri 本地 runtime 已返回 assistant 内容，并写入 workspace requirement 记录。"
           : shouldAutoResume
             ? `模型或网络连接暂时中断，计划进行第 ${nextAutoResumeRetryNumber} 次 checkpoint 自动续跑。`
@@ -35561,13 +34993,7 @@ async function sendLocalLiuAgentChatRequest({
         projectId,
         chatSessionId: activeChatSessionId,
         workspacePath,
-        status: employeeCreationProtocolRecovery
-          ? "waiting_user"
-          : ok
-            ? "done"
-            : shouldAutoResume
-              ? "in_progress"
-              : "blocked",
+        status: ok ? "done" : shouldAutoResume ? "in_progress" : "blocked",
         userMessage,
         assistantMessage,
         historyRows,
@@ -36081,14 +35507,6 @@ async function doSend(options = {}) {
     releasePendingInteractionForFollowup(text);
   }
 
-  if (
-    !selectedProjectId.value &&
-    activeComposerAssistMeta.value?.id === "employee_create"
-  ) {
-    ElMessage.warning("请先选择项目后再创建智能体");
-    return;
-  }
-
   if (!selectedProjectId.value) {
     if (ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT) {
       await sendGlobalChatWithoutProject();
@@ -36279,15 +35697,6 @@ async function doSend(options = {}) {
   const shouldInjectAssistPrompt = Boolean(
     assistAction && (assistToolNames.length || assistAction.promptOnly),
   );
-  let assistContextText = "";
-  if (assistAction?.id === "employee_create") {
-    try {
-      await ensureEmployeeDraftCatalog();
-      assistContextText = buildEmployeeDraftAssistContext();
-    } catch (err) {
-      console.warn("employee draft catalog load failed", err);
-    }
-  }
   const employeeEditContext = await readSelectedEmployeeDefinitionForEdit(userPrompt);
   const slashCommandRequiresTools = ["host_run", "lark_cli"].includes(
     String(slashCommand?.entry?.kind || "").trim(),
@@ -36305,29 +35714,20 @@ async function doSend(options = {}) {
         "创作辅助要求：",
         `- 当前已激活：${assistAction.label}`,
         `- ${assistAction.instruction}`,
-        assistContextText,
         "- 最终输出请直接给我可使用的结果，不要只停留在工具原始返回。",
       ]
         .filter(Boolean)
         .join("\n")
     : userPrompt;
-  const employeeCreationInstructions =
-    assistAction?.id === "employee_create"
-      ? [
-          "当前是 AI Employee 创建流程：当用户已给出名称、至少一项技术/能力和至少一项预期交付物时，信息已经足够，必须直接输出完整 employee-draft 草稿。",
-          "只有缺少会导致草稿无法成立的唯一关键决策时才调用 ask_user_question；技术栈、能力范围、交付物、风格等非关键细节可使用合理默认值。",
-          "收到 ask_user_question 的工具结果后，selected 和 custom 都是最终答案：不得再次调用 ask_user_question，也不得以自然语言要求继续补充，必须直接生成草稿。",
-        ]
-      : [];
   const finalUserPrompt = appendModelGenerationInstruction(
     [
       effectiveUserPrompt,
       employeeEditContext,
-      "",
-      ...employeeCreationInstructions,
     ]
       .filter(Boolean)
       .join("\n"),
+    currentModelParameterMode.value,
+    text,
   );
   const effectiveToolPriority = mergeToolPriority(
     projectChatSettings.value.tool_priority || [],
@@ -36471,8 +35871,7 @@ async function doSend(options = {}) {
       displayUserMessageContent,
       attachments: localLiuAgentAttachments,
       mediaTools: localLiuAgentMediaTools.value,
-      interactionMode:
-        effectiveAssistAction?.id === "employee_create" ? "employee_create" : "",
+      interactionMode: "",
       providerId: requestModelTarget.providerId,
       modelName: requestModelTarget.modelName,
       sourceContext: {
@@ -37857,10 +37256,11 @@ onUnmounted(() => {
   grid-template-columns: minmax(280px, 1fr) auto;
   align-items: center;
   gap: 10px;
-  padding: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.88);
-  border-radius: 8px;
-  background: #fff;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
 
 .settings-module-toolbar__search {
@@ -37873,44 +37273,58 @@ onUnmounted(() => {
 
 .settings-module-workspace {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 240px minmax(0, 1fr);
   align-items: start;
-  gap: 12px;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  gap: 18px;
 }
 
 .settings-module-menu {
   position: sticky;
   top: 0;
   display: grid;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 8px;
-  background: #fff;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.06);
 }
 
 .settings-module-menu__item {
   width: 100%;
-  min-height: 72px;
+  min-height: 82px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 3px 8px;
-  padding: 10px;
+  gap: 6px 8px;
+  padding: 13px 14px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 16px;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    transform 160ms ease;
 }
 
 .settings-module-menu__item:hover {
-  background: rgba(248, 250, 252, 0.96);
+  background: rgba(248, 250, 252, 0.88);
+  transform: translateY(-1px);
 }
 
 .settings-module-menu__item.is-active {
-  border-color: rgba(37, 99, 235, 0.24);
-  background: rgba(239, 246, 255, 0.78);
+  border-color: rgba(56, 189, 248, 0.34);
+  background: linear-gradient(
+    180deg,
+    rgba(239, 246, 255, 0.96),
+    rgba(224, 242, 254, 0.74)
+  );
+  box-shadow: 0 8px 18px rgba(14, 116, 144, 0.08);
 }
 
 .settings-module-menu__title {
@@ -37940,15 +37354,24 @@ onUnmounted(() => {
 
 .settings-module-list {
   min-width: 0;
+  min-height: auto;
+  height: auto;
+  max-height: none;
   display: grid;
   gap: 12px;
+  overflow: visible;
 }
 
 .settings-module-section {
   overflow: hidden;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 24px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.88),
+    rgba(248, 250, 252, 0.74)
+  );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 .settings-module-section__head,
@@ -37957,10 +37380,10 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 48px;
-  padding: 10px 14px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.82);
-  background: rgba(248, 250, 252, 0.92);
+  min-height: 60px;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.72);
+  background: rgba(248, 250, 252, 0.52);
 }
 
 .settings-module-section__head > div,
@@ -37988,8 +37411,8 @@ onUnmounted(() => {
   grid-template-columns: 36px minmax(0, 1fr) minmax(180px, auto);
   align-items: center;
   gap: 12px;
-  min-height: 64px;
-  padding: 10px 14px;
+  min-height: 72px;
+  padding: 14px 18px;
   border-bottom: 1px solid rgba(226, 232, 240, 0.76);
 }
 
@@ -38065,8 +37488,8 @@ onUnmounted(() => {
 }
 
 .settings-module-subsection__head {
-  min-height: 44px;
-  background: #fff;
+  min-height: 52px;
+  background: rgba(255, 255, 255, 0.42);
 }
 
 .settings-module-subsection__head strong {
@@ -38085,10 +37508,10 @@ onUnmounted(() => {
 
 .mcp-file-manager {
   width: 100%;
-  padding: 14px;
+  padding: 16px;
   border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 10px;
-  background: rgba(248, 250, 252, 0.72);
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.64);
 }
 
 .mcp-file-manager__head {
@@ -38134,8 +37557,8 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 8px;
-  background: #fff;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .mcp-server-row {
@@ -38143,10 +37566,10 @@ onUnmounted(() => {
   grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 10px;
-  padding: 12px;
+  padding: 14px;
   border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 8px;
-  background: #fff;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .web-tools-provider-row {

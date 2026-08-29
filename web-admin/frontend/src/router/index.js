@@ -1,4 +1,4 @@
-import { createMemoryHistory, createRouter, createWebHashHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
 import { getFallbackPath } from '@/utils/permissions.js'
 import { isChatSettingsRoutePath, resolveSettingsAwarePath } from '@/utils/chat-settings-route.js'
 import { getStoredToken } from '@/utils/auth-storage.js'
@@ -40,31 +40,11 @@ const createDesktopAppRoutes = () => [
       { path: 'account/settings', component: () => import('../views/users/UserSettings.vue') },
           { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
           { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
-          { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
-          { path: 'employees/create', component: () => import('../views/employees/EmployeeCreate.vue') },
-          { path: 'employees/:id/edit', component: () => import('../views/employees/EmployeeEdit.vue') },
-          { path: 'employees/:id/usage', component: () => import('../views/employees/EmployeeUsage.vue') },
-          { path: 'employees/:id', component: () => import('../views/employees/EmployeeDetail.vue') },
-          { path: 'agents', component: () => import('../views/employees/EmployeeList.vue') },
-          { path: 'agents/create', component: () => import('../views/employees/EmployeeCreate.vue') },
-          { path: 'agents/:id/edit', component: () => import('../views/employees/EmployeeEdit.vue') },
-          { path: 'agents/:id/usage', component: () => import('../views/employees/EmployeeUsage.vue') },
-          { path: 'agents/:id', component: () => import('../views/employees/EmployeeDetail.vue') },
           { path: 'memory/:id', component: () => import('../views/memory/MemoryManager.vue') },
         ],
       },
       { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
       { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
-      { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
-      { path: 'employees/create', component: () => import('../views/employees/EmployeeCreate.vue') },
-      { path: 'employees/:id/edit', component: () => import('../views/employees/EmployeeEdit.vue') },
-      { path: 'employees/:id/usage', component: () => import('../views/employees/EmployeeUsage.vue') },
-      { path: 'employees/:id', component: () => import('../views/employees/EmployeeDetail.vue') },
-      { path: 'agents', component: () => import('../views/employees/EmployeeList.vue') },
-      { path: 'agents/create', component: () => import('../views/employees/EmployeeCreate.vue') },
-      { path: 'agents/:id/edit', component: () => import('../views/employees/EmployeeEdit.vue') },
-      { path: 'agents/:id/usage', component: () => import('../views/employees/EmployeeUsage.vue') },
-      { path: 'agents/:id', component: () => import('../views/employees/EmployeeDetail.vue') },
       { path: 'memory/:id', component: () => import('../views/memory/MemoryManager.vue') },
       { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
       { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
@@ -74,17 +54,6 @@ const createDesktopAppRoutes = () => [
       { path: 'account', component: () => import('../views/account/AccountCenter.vue') },
       { path: 'account/settings', component: () => import('../views/users/UserSettings.vue') },
 ]
-
-function createDesktopWindowRoutes() {
-  return [
-    ...createPublicRoutes(),
-    { path: '/', redirect: '/workbench' },
-    ...createDesktopAppRoutes().map((route) => ({
-      ...route,
-      path: `/${String(route.path || '').replace(/^\/+/, '')}`,
-    })),
-  ]
-}
 
 const routes = [
   ...createPublicRoutes(),
@@ -100,18 +69,6 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes,
 })
-
-export function createDesktopWindowRouter(windowId = '') {
-  const desktopRouter = createRouter({
-    history: createMemoryHistory(),
-    routes: createDesktopWindowRoutes(),
-  })
-  Object.defineProperty(desktopRouter, '__aiEmployeeDesktopWindow', {
-    value: { windowId: String(windowId || '').trim() },
-    configurable: true,
-  })
-  return desktopRouter
-}
 
 const PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
 const OFFLINE_DESKTOP_STARTUP_STORAGE_KEY = 'desktop_offline_startup'

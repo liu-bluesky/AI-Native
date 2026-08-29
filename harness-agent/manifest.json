@@ -1,0 +1,19 @@
+{
+  "name": "development-harness-optimizer",
+  "version": "1.0.0",
+  "display_name": "开发 Harness 智能体",
+  "description": "负责性能优化、技术方案设计、用户 UI/UX 优化与视觉美化的工程化开发智能体。",
+  "entry": "AGENT.md",
+  "supported_hosts": ["codex", "claude-code"],
+  "platforms": ["darwin", "win32"],
+  "skills": [
+    "skills/performance-optimization/SKILL.md",
+    "skills/solution-design/SKILL.md",
+    "skills/ui-ux-optimization/SKILL.md"
+  ],
+  "templates": [
+    "templates/performance-report.md",
+    "templates/solution-proposal.md",
+    "templates/ui-review.md"
+  ]
+}

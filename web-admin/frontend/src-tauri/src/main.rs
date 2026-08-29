@@ -1711,6 +1711,19 @@ fn open_external_url(url: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn open_local_file(workspace_path: String, path: String) -> Result<bool, String> {
+    let root = resolve_existing_workspace_root(&workspace_path)?;
+    let target = resolve_workspace_write_target(&root, path)?;
+    if !target.exists() {
+        return Err("文件不存在".to_string());
+    }
+    if !target.is_file() {
+        return Err("路径不是文件".to_string());
+    }
+    open_local_file_with_system(&target)
+}
+
+#[tauri::command]
 fn copy_resource_file_to_clipboard(
     url: String,
     file_name: Option<String>,
@@ -3020,6 +3033,30 @@ fn open_external_url_with_system(url: &str) -> Result<bool, String> {
     Ok(status.success())
 }
 
+fn open_local_file_with_system(path: &Path) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .status()
+        .map_err(|err| format!("打开本地文件失败：{err}"))?;
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("rundll32")
+        .args(["shell32.dll,OpenAs_RunDLL"])
+        .arg(path)
+        .status()
+        .map_err(|err| format!("打开本地文件失败：{err}"))?;
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = Command::new("xdg-open")
+        .arg(path)
+        .status()
+        .map_err(|err| format!("打开本地文件失败：{err}"))?;
+
+    Ok(status.success())
+}
+
 fn workspace_relative_path(root: &Path, path: &Path) -> String {
     let value = path
         .strip_prefix(root)
@@ -3279,6 +3316,7 @@ fn main() {
             read_global_ftp_credentials_file,
             write_global_ftp_credentials_file,
             open_external_url,
+            open_local_file,
             copy_resource_file_to_clipboard,
             save_resource_file,
             persist_project_chat_asset,
@@ -3496,7 +3534,11 @@ mod tests {
         let agent_directory = root.join("agents").join("frontend-architect");
         fs::create_dir_all(agent_directory.join("resources")).unwrap();
         fs::write(agent_directory.join("AGENT.md"), "# Frontend Architect\n").unwrap();
-        fs::write(agent_directory.join("resources").join("notes.md"), "keep no residue").unwrap();
+        fs::write(
+            agent_directory.join("resources").join("notes.md"),
+            "keep no residue",
+        )
+        .unwrap();
         let root = fs::canonicalize(root).unwrap();
 
         assert!(delete_workspace_directory(
@@ -3511,7 +3553,9 @@ mod tests {
             "agents/frontend-architect".to_string(),
         )
         .unwrap());
-        assert!(delete_workspace_directory(root.to_string_lossy().to_string(), String::new()).is_err());
+        assert!(
+            delete_workspace_directory(root.to_string_lossy().to_string(), String::new()).is_err()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

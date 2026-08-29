@@ -29,8 +29,8 @@ assert.match(
 );
 assert.doesNotMatch(
   projectChatSource,
-  /!\["assist_employee_create", "package_deploy", "image"\]\.includes/,
-  "创建智能体和图片入口必须在输入框展示",
+  /const visibleCommandIds = new Set\(\[\s*"package_deploy",\s*"form_json",\s*"image"/s,
+  "图片能力不应作为固定输入框快捷入口展示",
 );
 assert.match(
   composerStateSource,
@@ -47,10 +47,10 @@ assert.match(
   /:tool-command-items="composerVisibleToolCommands"/,
   "对话框必须使用过滤后的工具入口列表",
 );
-assert.match(
+assert.doesNotMatch(
   projectChatSource,
-  /AI Employee 智能体实体草稿[\s\S]*HTML、CSS、JavaScript[\s\S]*实际创建智能体必须经过用户确认/s,
-  "智能体创建必须按实体语义处理并经过用户确认",
+  /employee_create|assist_employee_create|创建智能体|确认创建/,
+  "对话输入区不得保留创建智能体工具或入口",
 );
 assert.equal(
   projectChatSource.includes("isExplicitEmployeeCreateRequest"),

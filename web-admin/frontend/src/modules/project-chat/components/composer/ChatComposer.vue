@@ -234,10 +234,11 @@
               v-if="isChatSettingsDisplayReady"
               class="chat-model-routing-trigger"
               :disabled="chatLoading"
+              title="模型设置"
+              aria-label="模型设置"
               @click="modelRoutingDialogVisible = true"
             >
               <el-icon><Setting /></el-icon>
-              <span class="chat-model-routing-trigger__mode"> 主模型编排 </span>
               <span class="chat-model-routing-trigger__summary">
                 {{ activeModelSummary || "选择模型" }}
               </span>
@@ -249,11 +250,15 @@
               v-if="!isChatSettingsDisplayReady"
               class="chat-model-pill is-loading"
             >
-              项目配置加载中
+              配置加载中
             </div>
             <slot name="media-parameters" />
-            <div v-if="showLocalAgentAuthLevel" class="local-agent-auth-level">
-              <span class="local-agent-auth-level__label">授权级别</span>
+            <div
+              v-if="showLocalAgentAuthLevel"
+              class="local-agent-auth-level"
+              title="授权级别"
+              aria-label="授权级别"
+            >
               <el-select
                 v-model="localAgentAuthLevelModel"
                 class="local-agent-auth-level__control"
@@ -269,8 +274,7 @@
                 />
               </el-select>
             </div>
-            <div class="chat-thinking-mode">
-              <span class="chat-thinking-mode__label">思考模式</span>
+            <div class="chat-thinking-mode" title="思考模式" aria-label="思考模式">
               <el-select
                 v-model="thinkingModeModel"
                 class="chat-thinking-mode__control"
@@ -288,30 +292,27 @@
           <div class="footer-right">
             <span class="hint-text">{{ composerHintText }}</span>
             <el-tooltip
-              v-if="showPauseGenerationButton"
-              content="暂停当前回答"
+              :content="primaryActionIsStop ? '暂停当前回答' : '发送消息'"
               placement="top"
             >
               <el-button
-                class="pause-generation-button"
-                type="danger"
-                plain
-                @click="$emit('stop-generation')"
+                class="send-message-button"
+                :class="{
+                  'is-stop': primaryActionIsStop,
+                  'is-blocked': !primaryActionIsStop && !canSend,
+                }"
+                type="primary"
+                :disabled="!primaryActionIsStop && !canSend"
+                :aria-label="primaryActionIsStop ? '暂停当前回答' : '发送消息'"
+                circle
+                @click="handlePrimaryAction"
               >
-                <el-icon><VideoPause /></el-icon>
-                <span>暂停</span>
+                <el-icon>
+                  <VideoPause v-if="primaryActionIsStop" />
+                  <Promotion v-else />
+                </el-icon>
               </el-button>
             </el-tooltip>
-            <el-button
-              class="send-message-button"
-              :class="{ 'is-blocked': !canSend }"
-              type="primary"
-              :aria-disabled="!canSend"
-              circle
-              @click="$emit('send')"
-            >
-              <el-icon><Promotion /></el-icon>
-            </el-button>
           </div>
         </div>
       </div>
@@ -490,6 +491,25 @@ function openProviderCreateDialog() {
 const safeToolCommandItems = computed(() =>
   Array.isArray(props.toolCommandItems) ? props.toolCommandItems : [],
 );
+
+const hasComposerContent = computed(
+  () =>
+    Boolean(String(props.draftText || "").trim()) ||
+    Boolean(props.uploadFiles?.length) ||
+    Boolean(props.contextRefs?.length),
+);
+
+const primaryActionIsStop = computed(
+  () => Boolean(props.showPauseGenerationButton && !hasComposerContent.value),
+);
+
+function handlePrimaryAction() {
+  if (primaryActionIsStop.value) {
+    emit("stop-generation");
+    return;
+  }
+  emit("send");
+}
 
 const draftTextModel = computed({
   get: () => props.draftText,

@@ -4,117 +4,131 @@
       ref="mountPoint"
       class="desktop-window-host__mount"
       :class="{ 'desktop-window-host__mount--chat': isChatRoute }"
-    />
+    >
+      <component
+        :is="activeComponent"
+        v-if="activeComponent"
+        :key="routeState.fullPath"
+      />
+    </div>
     <div v-if="error" class="desktop-window-host__error">{{ error }}</div>
   </div>
 </template>
 
 <script setup>
-import {
-  computed,
-  createApp,
-  h,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  watch,
-} from "vue";
-import ElementPlus from "element-plus";
-import zhCn from "element-plus/dist/locale/zh-cn.mjs";
-import { RouterView } from "vue-router";
-import { createDesktopWindowRouter } from "@/router";
+import { computed, defineAsyncComponent, onBeforeUnmount, provide, reactive, ref, watch } from "vue";
+import { routeLocationKey, routerKey, routerViewLocationKey } from "vue-router";
 import { normalizeDesktopBridgePath } from "@/utils/desktop-app-bridge.js";
 
 const props = defineProps({
-  windowId: {
-    type: String,
-    required: true,
-  },
-  sourcePath: {
-    type: String,
-    required: true,
-  },
+  windowId: { type: String, required: true },
+  sourcePath: { type: String, required: true },
 });
 
 const emit = defineEmits(["route-change"]);
-
 const mountPoint = ref(null);
 const error = ref("");
-const activeRoutePath = ref("");
-const isChatRoute = computed(() =>
-  String(activeRoutePath.value || props.sourcePath || "").startsWith(
-    "/ai/chat",
-  ),
-);
-let childApp = null;
-let childRouter = null;
-let removeAfterEach = null;
-let disposed = false;
 
-const DesktopWindowRoot = {
-  name: "DesktopWindowRoot",
-  render: () => h(RouterView),
+const componentForPath = [
+  { match: (path) => path === "/workbench", component: defineAsyncComponent(() => import("@/views/desktop/DesktopWorkbench.vue")) },
+  { match: (path) => path === "/desktop/task-manager", component: defineAsyncComponent(() => import("@/views/desktop/DesktopTaskManager.vue")) },
+  { match: (path) => path === "/work-logs", component: defineAsyncComponent(() => import("@/views/desktop/ProjectWorkLog.vue")) },
+  { match: (path) => path === "/tasks", component: defineAsyncComponent(() => import("@/views/tasks/TaskManager.vue")) },
+  { match: (path) => path === "/feedback", component: defineAsyncComponent(() => import("@/views/desktop/DesktopFeedback.vue")) },
+  { match: (path) => path === "/settings-center", component: defineAsyncComponent(() => import("@/views/desktop/SettingsLauncher.vue")) },
+  { match: (path) => path === "/desktop/background", component: defineAsyncComponent(() => import("@/views/desktop/DesktopWallpaperSettings.vue")) },
+  { match: (path) => path === "/ai/chat" || path.startsWith("/ai/chat/settings"), component: defineAsyncComponent(() => import("@/views/projects/ProjectChat.vue")) },
+  { match: (path) => path === "/ai/supervision", component: defineAsyncComponent(() => import("@/views/desktop/AgentSupervision.vue")) },
+  { match: (path) => path === "/projects", component: defineAsyncComponent(() => import("@/views/projects/ProjectList.vue")) },
+  { match: (path) => /^\/projects\/[^/]+$/.test(path), component: defineAsyncComponent(() => import("@/views/projects/ProjectDetail.vue")) },
+  { match: (path) => path === "/memory" || path.startsWith("/memory/"), component: defineAsyncComponent(() => import("@/views/memory/MemoryManager.vue")) },
+  { match: (path) => path === "/system/config", component: defineAsyncComponent(() => import("@/views/system/SystemConfig.vue")) },
+  { match: (path) => path === "/system/bot-connectors", component: defineAsyncComponent(() => import("@/views/system/SystemBotConnectors.vue")) },
+  { match: (path) => path === "/system/ftp-credentials", component: defineAsyncComponent(() => import("@/views/system/SystemFtpCredentials.vue")) },
+  { match: (path) => path === "/changelog-entries", component: defineAsyncComponent(() => import("@/views/system/ChangelogManager.vue")) },
+  { match: (path) => path === "/llm/providers", component: defineAsyncComponent(() => import("@/views/llm/ModelProviderManager.vue")) },
+  { match: (path) => path === "/account", component: defineAsyncComponent(() => import("@/views/account/AccountCenter.vue")) },
+  { match: (path) => path === "/account/settings", component: defineAsyncComponent(() => import("@/views/users/UserSettings.vue")) },
+];
+
+function parseRoute(path) {
+  const normalized = normalizeDesktopBridgePath(path) || "/workbench";
+  const url = new URL(normalized, "http://desktop.local");
+  const routePath = url.pathname || "/workbench";
+  const query = Object.fromEntries(url.searchParams.entries());
+  const params = {};
+  const projectMatch = routePath.match(/^\/projects\/([^/]+)$/);
+  const memoryMatch = routePath.match(/^\/memory\/([^/]+)$/);
+  if (projectMatch) params.id = decodeURIComponent(projectMatch[1]);
+  if (memoryMatch) params.id = decodeURIComponent(memoryMatch[1]);
+  return {
+    path: routePath,
+    fullPath: `${routePath}${url.search}${url.hash}`,
+    query,
+    params,
+    hash: url.hash,
+    name: undefined,
+    matched: [],
+    meta: {},
+  };
+}
+
+const routeState = reactive(parseRoute(props.sourcePath));
+const currentRoute = ref(routeState);
+
+function resolveTarget(location) {
+  if (typeof location === "string") return location;
+  if (!location || typeof location !== "object") return routeState.fullPath;
+  const targetPath = String(location.path || routeState.path || "/workbench");
+  const targetQuery = location.query && typeof location.query === "object"
+    ? new URLSearchParams(location.query).toString()
+    : "";
+  return `${targetPath}${targetQuery ? `?${targetQuery}` : ""}${String(location.hash || "")}`;
+}
+
+function navigate(location) {
+  const nextPath = normalizeDesktopBridgePath(resolveTarget(location)) || "/workbench";
+  const nextRoute = parseRoute(nextPath);
+  Object.assign(routeState, nextRoute);
+  currentRoute.value = routeState;
+  emit("route-change", { path: routeState.fullPath, windowId: props.windowId });
+  return Promise.resolve(routeState);
+}
+
+const windowRouter = {
+  currentRoute,
+  push: navigate,
+  replace: navigate,
+  back: () => Promise.resolve(),
+  forward: () => Promise.resolve(),
+  go: () => Promise.resolve(),
+  resolve: (location) => parseRoute(resolveTarget(location)),
+  isReady: () => Promise.resolve(),
 };
 
-function resolvePath(path) {
-  return normalizeDesktopBridgePath(path) || "/workbench";
-}
+provide(routerKey, windowRouter);
+provide(routeLocationKey, routeState);
+provide(routerViewLocationKey, currentRoute);
 
-async function navigate(path) {
-  if (!childRouter) return;
-  const targetPath = resolvePath(path);
-  if (childRouter.currentRoute.value.fullPath === targetPath) return;
-  await childRouter.replace(targetPath);
-  activeRoutePath.value = String(childRouter.currentRoute.value.path || "");
-}
-
-async function mountDesktopWindow() {
-  try {
-    childRouter = createDesktopWindowRouter(props.windowId);
-    removeAfterEach = childRouter.afterEach((to) => {
-      activeRoutePath.value = String(to.path || "");
-      emit("route-change", {
-        path: to.fullPath,
-      });
-    });
-    await navigate(props.sourcePath);
-    if (disposed || !mountPoint.value) return;
-
-    childApp = createApp(DesktopWindowRoot);
-    childApp.use(ElementPlus, { locale: zhCn });
-    childApp.use(childRouter);
-    childApp.mount(mountPoint.value);
-  } catch (cause) {
-    console.error("初始化桌面窗口组件失败", cause);
-    error.value = String(cause?.message || cause || "窗口加载失败").trim();
-  }
-}
-
-onMounted(() => {
-  void mountDesktopWindow();
-});
+const activeComponent = computed(() =>
+  componentForPath.find((entry) => entry.match(routeState.path))?.component || null,
+);
+const isChatRoute = computed(() =>
+  routeState.path === "/ai/chat" || routeState.path.startsWith("/ai/chat/settings"),
+);
 
 watch(
   () => props.sourcePath,
   (path) => {
-    void navigate(path).catch((cause) => {
-      console.error("切换桌面窗口路由失败", cause);
-      error.value = String(cause?.message || cause || "窗口导航失败").trim();
-    });
+    const nextRoute = parseRoute(path);
+    Object.assign(routeState, nextRoute);
+    currentRoute.value = routeState;
+    error.value = "";
   },
 );
 
 onBeforeUnmount(() => {
-  disposed = true;
-  if (removeAfterEach) {
-    removeAfterEach();
-    removeAfterEach = null;
-  }
-  if (childApp) {
-    childApp.unmount();
-    childApp = null;
-  }
-  childRouter = null;
+  mountPoint.value = null;
 });
 </script>
 
@@ -135,24 +149,26 @@ onBeforeUnmount(() => {
   overflow-y: auto;
 }
 
+.desktop-window-host__mount :deep(> *) {
+  width: 100%;
+  min-height: 0;
+}
+
 .desktop-window-host__mount--chat {
   display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
-.desktop-window-host__mount--chat :deep(> .chat-layout),
-.desktop-window-host__mount--chat :deep(> .settings-center-page) {
+.desktop-window-host__mount--chat :deep(> *) {
   flex: 1 1 auto;
-  width: 100%;
+  min-height: 0;
+}
+
+.desktop-window-host__mount--chat :deep(> .settings-center-page) {
   min-height: 0;
   max-height: 100%;
   height: auto !important;
-}
-
-/* Allow desktop application content to extend and scroll inside its window. */
-.desktop-window-host__mount :deep(> *) {
-  width: 100%;
-  min-height: 100%;
 }
 
 .desktop-window-host__error {

@@ -7,7 +7,7 @@ import {
 import { readSelectedProjectId } from "@/modules/project-chat/services/projectChatStorage.js";
 import {
   hasNativeDesktopBridge,
-  deleteNativeWorkspaceDirectory,
+  deleteNativeWorkspaceFile,
   listNativeWorkspaceFiles,
   readNativeWorkspaceFile,
   writeNativeWorkspaceFile,
@@ -95,6 +95,13 @@ function ruleDirectoryName(rule) {
   return readableResourceName(rule?.title || rule?.name, rule?.id, "rule");
 }
 
+function normalizeProjectWorkspacePath(value) {
+  const normalized = cleanText(value).replace(/[\\/]+$/, "");
+  if (!normalized) return "";
+  const match = normalized.match(/^(.*)[\\/]\.ai-employee[\\/](agents|skills|rules)$/i);
+  return match ? match[1] : normalized;
+}
+
 async function readDirectoryFile(directory, path) {
   try {
     const result = await readNativeWorkspaceFile({ workspacePath: directory, path });
@@ -116,6 +123,16 @@ function renderContent(value, fallback = "") {
 
 function renderAgentDefinition(employee, skills, rules) {
   const title = cleanText(employee.name) || employee.id;
+  const skillLines = skills.length
+    ? skills.map((item) =>
+        `- ${cleanText(item.name) || item.id} (${item.id}) — ../../skills/${skillDirectoryName(item)}/SKILL.md`,
+      )
+    : ["- 未配置（当前智能体不依赖独立技能文件）"];
+  const ruleLines = rules.length
+    ? rules.map((item) =>
+        `- ${cleanText(item.title) || item.id} (${item.id}) — ../../rules/${ruleDirectoryName(item)}/RULE.md`,
+      )
+    : ["- 未配置（当前智能体不依赖独立规则文件）"];
   return `# ${title}
 
 ## 基础信息
@@ -141,14 +158,24 @@ ${renderList(normalizeLines(employee.default_workflow))}
 ${renderContent(employee.tool_usage_policy, "按任务需要选择已绑定技能，并遵循已绑定规则。")}
 
 ## 绑定技能
-${renderList(skills.map((item) => `${cleanText(item.name) || item.id} (${item.id})`))}
+${skillLines.join("\n")}
 
 ## 绑定规则
-${renderList(rules.map((item) => `${cleanText(item.title) || item.id} (${item.id})`))}
+${ruleLines.join("\n")}
 `;
 }
 
 function renderAgentMetadata(employee, skills, rules, directoryName) {
+  const skillBindings = skills.map((item) => ({
+    id: cleanText(item?.id),
+    name: cleanText(item?.name || item?.id),
+    relative_path: `../../skills/${skillDirectoryName(item)}/SKILL.md`,
+  }));
+  const ruleBindings = rules.map((item) => ({
+    id: cleanText(item?.id),
+    title: cleanText(item?.title || item?.name || item?.id),
+    relative_path: `../../rules/${ruleDirectoryName(item)}/RULE.md`,
+  }));
   return `${JSON.stringify({
     version: 2,
     kind: "agent",
@@ -156,6 +183,12 @@ function renderAgentMetadata(employee, skills, rules, directoryName) {
     agent: employee,
     skill_ids: skills.map((item) => cleanText(item?.id)).filter(Boolean),
     rule_ids: rules.map((item) => cleanText(item?.id)).filter(Boolean),
+    resource_paths: {
+      skills_root: "../../skills",
+      rules_root: "../../rules",
+    },
+    skill_bindings: skillBindings,
+    rule_bindings: ruleBindings,
   }, null, 2)}\n`;
 }
 
@@ -212,15 +245,17 @@ function resolveDirectories(projectId) {
   const settings = relations.chat_settings && typeof relations.chat_settings === "object"
     ? relations.chat_settings
     : {};
-  const workspacePath = cleanText(project.workspace_path || relations.workspace_path);
+  const workspacePath = normalizeProjectWorkspacePath(
+    project.workspace_path || relations.workspace_path,
+  );
   if (!workspacePath) {
     throw new Error("请先在 AI 对话中选择项目并配置项目工作区目录");
   }
   const defaultRoot = `${workspacePath.replace(/[\\/]+$/, "")}/.ai-employee`;
   const directories = {
-    agent: cleanText(settings.agent_directory || project.agent_directory) || `${defaultRoot}/agents`,
-    skill: cleanText(settings.skill_directory || project.skill_directory) || `${defaultRoot}/skills`,
-    rule: cleanText(settings.rule_directory || project.rule_directory) || `${defaultRoot}/rules`,
+    agent: `${defaultRoot}/agents`,
+    skill: `${defaultRoot}/skills`,
+    rule: `${defaultRoot}/rules`,
   };
   return { project, relations, settings, directories };
 }
@@ -346,13 +381,22 @@ async function removeAgentDefinitionDirectory(directory, directoryName) {
   if (!directoryName) {
     throw new Error("智能体目录信息缺失，无法安全删除");
   }
-  try {
-    await deleteNativeWorkspaceDirectory({
-      workspacePath: directory,
-      path: directoryName,
-    });
-  } catch (error) {
-    if (!isWorkspaceFileMissing(error)) throw error;
+  const listing = await listNativeWorkspaceFiles({
+    workspacePath: directory,
+    path: directoryName,
+  });
+  const files = Array.isArray(listing?.items)
+    ? listing.items.filter((item) => String(item?.kind || "") === "file")
+    : [];
+  for (const file of files) {
+    try {
+      await deleteNativeWorkspaceFile({
+        workspacePath: directory,
+        path: String(file?.path || file?.name || "").trim(),
+      });
+    } catch (error) {
+      if (!isWorkspaceFileMissing(error)) throw error;
+    }
   }
 }
 
@@ -473,7 +517,7 @@ export async function saveLocalAgentDirectoryResources({
   const id = cleanText(employee?.id);
   if (!id) throw new Error("缺少智能体 ID");
   if (!hasNativeDesktopBridge()) {
-    throw new Error("本地目录同步仅支持桌面端，请在桌面应用中创建智能体");
+    throw new Error("本地目录同步仅支持桌面端，请在桌面应用中更新智能体");
   }
 
   const projectId = cleanText(employee?.project_id) || cleanText(readSelectedProjectId());
@@ -569,7 +613,9 @@ export async function saveLocalAgentDirectoryResources({
     ],
     employees: [],
     chat_settings: { ...settings, agent_directory: directories.agent, skill_directory: directories.skill, rule_directory: directories.rule },
-    workspace_path: cleanText(project.workspace_path || relations.workspace_path),
+    workspace_path: normalizeProjectWorkspacePath(
+      project.workspace_path || relations.workspace_path,
+    ),
   });
   upsertLocalProject({
     ...project,

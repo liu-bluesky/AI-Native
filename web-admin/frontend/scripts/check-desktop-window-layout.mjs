@@ -71,17 +71,22 @@ assert.doesNotMatch(
 assert.match(
   layout,
   /:key="`\$\{window\.id\}:\$\{window\.instanceKey \|\| 0\}`"/,
-  "desktop window refresh must recreate the child application instance",
+  "desktop window refresh must recreate the page component instance",
 );
 assert.match(
   desktopWindowHost,
-  /createDesktopWindowRouter\(props\.windowId\)/,
-  "each desktop window must receive an isolated memory router",
+  /provide\(routerKey, windowRouter\)/,
+  "each desktop window must receive a local route adapter",
 );
 assert.match(
   desktopWindowHost,
-  /childApp\.unmount\(\)/,
-  "closing a desktop window must unmount its child application",
+  /component\n\s+:is="activeComponent"/,
+  "each desktop window must render its page component directly",
+);
+assert.doesNotMatch(
+  desktopWindowHost,
+  /createApp\(|createDesktopWindowRouter\(|childApp\.mount\(/,
+  "desktop windows must not create nested Vue apps or routers",
 );
 assert.doesNotMatch(
   projectChat,

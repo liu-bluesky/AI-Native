@@ -8,9 +8,8 @@
   padding: 22px;
   border-radius: var(--settings-surface-radius);
   background: rgba(255, 255, 255, 0.6);
-  max-height: calc(100vh - 176px);
-  overflow-y: auto;
-  scrollbar-gutter: stable;
+  min-width: 0;
+  overflow: visible;
 }
 
 .settings-parameter-section {

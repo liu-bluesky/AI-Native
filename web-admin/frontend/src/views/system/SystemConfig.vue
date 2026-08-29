@@ -142,15 +142,6 @@
                 <el-switch v-model="form.enable_project_manual_generation" />
               </div>
 
-              <div class="switch-card">
-                <div>
-                  <div class="switch-title">智能体手册旧开关</div>
-                  <div class="switch-desc">
-                    兼容保留字段，当前智能体使用手册已改为直接读取内容，不再调用大模型。
-                  </div>
-                </div>
-                <el-switch v-model="form.enable_employee_manual_generation" />
-              </div>
             </div>
 
             <div class="number-grid">
@@ -177,74 +168,6 @@
               />
               <div class="field-desc">
                 桌面项目聊天会把这里的内容追加到 system prompt 后面。
-              </div>
-            </el-form-item>
-          </el-form>
-        </section>
-
-        <section v-show="activeTab === 'defaults'" class="panel">
-          <div class="panel-head">
-            <div>
-              <p class="panel-kicker">Employees</p>
-              <h3>AI 智能体规则策略</h3>
-              <p>把自动生成规则的开关、来源和内部策略提示词收拢到同一块。</p>
-            </div>
-          </div>
-
-          <el-form label-position="top" class="switch-form">
-            <div class="switch-card employee-rule-config-card">
-              <div>
-                <div class="switch-title">AI 智能体规则自动生成</div>
-                <div class="switch-desc">
-                  创建 AI 智能体时，系统会基于系统级 MCP 规则源自动补全规则草稿，再落地为本地规则并绑定给智能体；对话页不再展示规则来源选择。
-                </div>
-              </div>
-              <el-switch
-                v-model="form.employee_auto_rule_generation_enabled"
-              />
-            </div>
-
-            <div class="number-grid">
-              <el-form-item label="自动生成规则上限">
-                <el-input-number
-                  v-model="form.employee_auto_rule_generation_max_count"
-                  :min="1"
-                  :max="6"
-                />
-                <div class="field-desc">
-                  每次创建智能体最多补全多少条规则草稿。
-                </div>
-              </el-form-item>
-
-              <el-form-item label="规则来源">
-                <el-checkbox-group
-                  v-model="form.employee_auto_rule_generation_source_filters"
-                  class="employee-rule-source-group"
-                >
-                  <el-checkbox
-                    v-for="option in EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS"
-                    :key="option.value"
-                    :value="option.value"
-                  >
-                    {{ option.label }}
-                  </el-checkbox>
-                </el-checkbox-group>
-                <div class="field-desc">
-                  当前先支持系统内置的 prompts.chat curated 规则源。
-                </div>
-              </el-form-item>
-            </div>
-
-            <el-form-item label="规则生成策略提示词">
-              <el-input
-                v-model="form.employee_auto_rule_generation_prompt"
-                type="textarea"
-                :rows="6"
-                resize="vertical"
-                placeholder="用于约束系统在智能体创建时优先生成哪类规则。"
-              />
-              <div class="field-desc">
-                这是后台自动生成规则时使用的内部策略提示词，不直接展示给终端用户。
               </div>
             </el-form-item>
           </el-form>
@@ -680,7 +603,7 @@
             <div>
               <p class="panel-kicker">Discovery</p>
               <h3>外部技能网站目录</h3>
-              <p>创建 AI 智能体时，这些站点会展示在“外部技能候选”区域。</p>
+              <p>这些站点会作为“外部技能参考目录”展示。</p>
             </div>
             <div class="panel-actions">
               <el-button @click="addEmployeeExternalSkillSite">新增站点</el-button>
@@ -1415,8 +1338,6 @@ const DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT =
   "请严格逐字转写用户原话，只输出识别到的中文文本；不要补充、不要改写、不要总结、不要猜测、不要重复上一句；听不清就留空。";
 const DEFAULT_BOT_PLATFORM_CONNECTORS = [];
 const DEFAULT_PUBLIC_CONTACT_CHANNELS = [];
-const DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT =
-  "基于智能体职责、目标、技能建议和 prompts.chat MCP 相关能力，为智能体自动补全 1 到 3 条可直接落地的执行规则。优先生成问题排查、输出规范、风险控制、技术选型相关规则；规则内容必须具体、可执行、可绑定。";
 const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MCP。
 
 详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：
@@ -1525,12 +1446,6 @@ const SYSTEM_CONFIG_TAB_NAMES = [
   "mcp-desktop-agent",
   "mcp-discovery",
 ];
-const EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS = [
-  {
-    label: "prompts.chat curated 规则源",
-    value: "prompts_chat_curated",
-  },
-];
 const SYSTEM_CONFIG_UPDATED_EVENT = "system-config-updated";
 const SYSTEM_CONFIG_UPDATED_STORAGE_KEY = "system-config-updated";
 const GLOBAL_ASSISTANT_MODEL_TYPES = ["text_generation", "multimodal_chat"];
@@ -1559,14 +1474,8 @@ const voiceOutputVoiceCatalogLoading = ref(false);
 const voiceOutputVoiceCatalogMessage = ref("");
 const form = ref({
   enable_project_manual_generation: false,
-  enable_employee_manual_generation: false,
   chat_upload_max_limit: 6,
   desktop_agent_global_prompt: DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT,
-  employee_auto_rule_generation_enabled: true,
-  employee_auto_rule_generation_source_filters: ["prompts_chat_curated"],
-  employee_auto_rule_generation_max_count: 3,
-  employee_auto_rule_generation_prompt:
-    DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT,
   employee_external_skill_sites: [],
   voice_input_enabled: GLOBAL_ASSISTANT_BUILD_FEATURES.voice,
   voice_input_provider_id: "",
@@ -2132,10 +2041,6 @@ function applyConfigToForm(config, options = {}) {
   const payload =
     config && typeof config === "object" && !Array.isArray(config) ? config : {};
   const preservePrompt = Boolean(options.preservePrompt);
-  const hasEmployeeRulePrompt = Object.prototype.hasOwnProperty.call(
-    payload,
-    "employee_auto_rule_generation_prompt",
-  );
   const hasDesktopAgentPrompt = Object.prototype.hasOwnProperty.call(
     payload,
     "desktop_agent_global_prompt",
@@ -2145,39 +2050,11 @@ function applyConfigToForm(config, options = {}) {
     ...form.value,
     enable_project_manual_generation:
       !!payload.enable_project_manual_generation,
-    enable_employee_manual_generation:
-      !!payload.enable_employee_manual_generation,
     chat_upload_max_limit: Number(payload.chat_upload_max_limit || 6),
     desktop_agent_global_prompt:
       hasDesktopAgentPrompt
         ? String(payload.desktop_agent_global_prompt || "")
         : DEFAULT_DESKTOP_AGENT_GLOBAL_PROMPT,
-    employee_auto_rule_generation_enabled:
-      !Object.prototype.hasOwnProperty.call(
-        payload,
-        "employee_auto_rule_generation_enabled",
-      ) || !!payload.employee_auto_rule_generation_enabled,
-    employee_auto_rule_generation_source_filters: Array.isArray(
-      payload.employee_auto_rule_generation_source_filters,
-    ) && payload.employee_auto_rule_generation_source_filters.length
-      ? payload.employee_auto_rule_generation_source_filters
-          .map((item) => String(item || "").trim())
-          .filter(Boolean)
-      : ["prompts_chat_curated"],
-    employee_auto_rule_generation_max_count: Math.min(
-      6,
-      Math.max(1, Number(payload.employee_auto_rule_generation_max_count || 3)),
-    ),
-    employee_auto_rule_generation_prompt:
-      hasEmployeeRulePrompt || !preservePrompt
-        ? String(
-            payload.employee_auto_rule_generation_prompt ||
-              DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT,
-          )
-        : String(
-            form.value.employee_auto_rule_generation_prompt ||
-              DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT,
-          ),
     employee_external_skill_sites: normalizeEmployeeExternalSkillSites(
       payload.employee_external_skill_sites,
     ),
@@ -2811,29 +2688,6 @@ async function saveConfig() {
     const savedConfig = writeLocalSystemConfig({
       enable_project_manual_generation:
         !!form.value.enable_project_manual_generation,
-      enable_employee_manual_generation:
-        !!form.value.enable_employee_manual_generation,
-      chat_upload_max_limit: Number(form.value.chat_upload_max_limit || 6),
-      desktop_agent_global_prompt: String(
-        form.value.desktop_agent_global_prompt || "",
-      ),
-      employee_auto_rule_generation_enabled: Boolean(
-        form.value.employee_auto_rule_generation_enabled,
-      ),
-      employee_auto_rule_generation_source_filters: Array.isArray(
-        form.value.employee_auto_rule_generation_source_filters,
-      )
-        ? form.value.employee_auto_rule_generation_source_filters
-            .map((item) => String(item || "").trim())
-            .filter(Boolean)
-        : ["prompts_chat_curated"],
-      employee_auto_rule_generation_max_count: Number(
-        form.value.employee_auto_rule_generation_max_count || 3,
-      ),
-      employee_auto_rule_generation_prompt: String(
-        form.value.employee_auto_rule_generation_prompt ||
-          DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT,
-      ),
       employee_external_skill_sites: normalizeEmployeeExternalSkillSites(
         form.value.employee_external_skill_sites,
       ),

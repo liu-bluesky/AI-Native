@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    :title="isUpdateMode ? '确认更新 AI 智能体' : '待确认的 AI 智能体'"
+    title="确认更新 AI 智能体"
     width="min(880px, calc(100vw - 32px))"
     destroy-on-close
     class="employee-draft-create-dialog"
@@ -29,10 +29,6 @@
             风格：{{ payload.tone || "professional" }} /
             {{ payload.verbosity || "concise" }}
           </span>
-          <span>
-            记忆：{{ payload.memory_scope || "project" }} /
-            {{ payload.memory_retention_days || 90 }} 天
-          </span>
         </div>
       </div>
 
@@ -50,75 +46,9 @@
       </div>
 
       <div class="employee-draft-dialog__section">
-        <div class="employee-draft-dialog__section-title">
-          选择要{{ isUpdateMode ? "更新" : "创建并绑定" }}的能力
-        </div>
+        <div class="employee-draft-dialog__section-title">更新内容</div>
         <div class="employee-draft-dialog__section-hint">
-          勾选项会写入对应技能和规则目录，并绑定到当前智能体；未勾选项不会创建或绑定。
-        </div>
-        <div class="employee-draft-dialog__grid">
-          <div class="employee-draft-dialog__panel">
-            <div class="employee-draft-dialog__panel-title">
-              技能候选 {{ skillOptions.length }}
-            </div>
-            <el-checkbox-group
-              v-model="selectedSkillIds"
-              class="employee-draft-dialog__option-list"
-            >
-              <el-checkbox
-                v-for="option in skillOptions"
-                :key="`employee-draft-skill-${option.value}`"
-                :label="option.value"
-                :disabled="!option.ready"
-              >
-                <span>{{ option.label }}</span>
-                <small v-if="option.source">{{ option.source }}</small>
-                <small v-if="option.description">{{ option.description }}</small>
-              </el-checkbox>
-            </el-checkbox-group>
-            <div
-              v-if="!skillOptions.length"
-              class="employee-draft-dialog__empty"
-            >
-              草稿未产出可写入的技能定义，请先继续完善草稿。
-            </div>
-          </div>
-          <div class="employee-draft-dialog__panel">
-            <div class="employee-draft-dialog__panel-title">
-              规则候选 {{ ruleOptions.length }}
-            </div>
-            <el-checkbox-group
-              v-model="selectedRuleKeys"
-              class="employee-draft-dialog__option-list"
-            >
-              <el-checkbox
-                v-for="option in ruleOptions"
-                :key="`employee-draft-rule-${option.value}`"
-                :label="option.value"
-                :disabled="!option.ready"
-              >
-                <span>{{ option.label }}</span>
-                <small v-if="option.source">{{ option.source }}</small>
-                <small v-if="option.description">{{ option.description }}</small>
-              </el-checkbox>
-            </el-checkbox-group>
-            <div
-              v-if="!ruleOptions.length"
-              class="employee-draft-dialog__empty"
-            >
-              草稿未产出可写入的规则定义，请先继续完善草稿。
-            </div>
-          </div>
-        </div>
-        <div class="employee-draft-dialog__switches">
-          <el-switch
-            v-if="!isUpdateMode"
-            v-model="addToProject"
-            inline-prompt
-            active-text="加入当前项目"
-            inactive-text="仅创建智能体"
-            :disabled="!canAddToProject"
-          />
+          确认后只更新当前已存在的智能体定义。
         </div>
       </div>
     </div>
@@ -128,17 +58,17 @@
       <el-button
         type="primary"
         :loading="submitting"
-        :disabled="!payload || (!isUpdateMode && !hasRequiredSelections)"
+        :disabled="!payload"
         @click="handleConfirm"
       >
-        {{ isUpdateMode ? "确认更新" : "确认创建" }}
+        确认更新
       </el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed } from "vue";
 
 const props = defineProps({
   modelValue: {
@@ -157,18 +87,6 @@ const props = defineProps({
     type: Object,
     default: null,
   },
-  skillOptions: {
-    type: Array,
-    default: () => [],
-  },
-  ruleOptions: {
-    type: Array,
-    default: () => [],
-  },
-  canAddToProject: {
-    type: Boolean,
-    default: false,
-  },
   mode: {
     type: String,
     default: "create",
@@ -177,13 +95,6 @@ const props = defineProps({
 
 const emit = defineEmits(["update:modelValue", "confirm", "close"]);
 
-const selectedSkillIds = ref([]);
-const selectedRuleKeys = ref([]);
-const addToProject = ref(false);
-const isUpdateMode = computed(() => props.mode === "update");
-const hasRequiredSelections = computed(
-  () => selectedSkillIds.value.length > 0 && selectedRuleKeys.value.length > 0,
-);
 
 function readableValue(value) {
   if (value == null) return "";
@@ -221,25 +132,8 @@ const saveContentPreview = computed(() => {
     rule_ids: payload.rule_ids || [],
     rule_titles: payload.rule_titles || [],
     rule_drafts: payload.rule_drafts || [],
-    memory_scope: payload.memory_scope || "project",
-    memory_retention_days: payload.memory_retention_days || 90,
   }) || "暂无可保存内容";
 });
-
-watch(
-  () => [props.modelValue, props.payload, props.skillOptions, props.ruleOptions, props.canAddToProject],
-  ([visible]) => {
-    if (!visible) return;
-    selectedSkillIds.value = props.skillOptions
-      .filter((option) => option?.ready)
-      .map((option) => option.value);
-    selectedRuleKeys.value = props.ruleOptions
-      .filter((option) => option?.ready)
-      .map((option) => option.value);
-    addToProject.value = Boolean(props.canAddToProject);
-  },
-  { immediate: true, deep: true },
-);
 
 function handleVisibleChange(value) {
   emit("update:modelValue", Boolean(value));
@@ -250,11 +144,7 @@ function handleClose() {
 }
 
 function handleConfirm() {
-  emit("confirm", {
-    selected_skill_ids: selectedSkillIds.value,
-    selected_rule_keys: selectedRuleKeys.value,
-    add_to_current_project: addToProject.value,
-  });
+  emit("confirm");
 }
 </script>
 
