@@ -664,10 +664,13 @@
                         <div class="settings-module-row__main">
                           <strong>{{ plugin.name || plugin.id }}插件</strong>
                           <span>
-                            {{ plugin.description || "本机声明式 MCP 插件" }} ·
+                            {{ plugin.description || "本机可组合运行时插件" }} ·
                             {{
                               plugin.source === "project" ? "项目" : "用户"
                             }}级
+                            <template v-if="plugin.components?.length">
+                              · {{ plugin.components.length }} 个组件</template
+                            >
                             <template v-if="plugin.version">
                               · v{{ plugin.version }}</template
                             >
@@ -678,7 +681,7 @@
                         </div>
                         <el-switch
                           :model-value="isLocalPluginEnabled(plugin)"
-                          :disabled="Boolean(plugin.error) || !plugin.server"
+                          :disabled="Boolean(plugin.error) || !plugin.components?.length"
                           @change="toggleLocalPlugin(plugin, $event)"
                         />
                       </article>
@@ -686,8 +689,12 @@
                         v-if="!localPluginCatalog.length"
                         class="settings-module-hint"
                       >
-                        将插件放入
-                        `.ai-employee/plugins/&lt;plugin-id&gt;/plugin.json`，重新打开设置即可发现。
+                        <strong>暂无本地插件</strong>
+                        <span>
+                          将插件放入项目目录或用户目录下的
+                          <code>.ai-employee/plugins/&lt;plugin-id&gt;/plugin.json</code>，
+                          然后重新打开设置即可加载。
+                        </span>
                       </div>
                       <article class="settings-module-row">
                         <div class="settings-module-row__icon">
@@ -1383,6 +1390,38 @@ export default {
   font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.settings-module-hint {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 8px 40px;
+  padding: 10px 12px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.86);
+}
+
+.settings-module-hint strong {
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-module-hint span {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.settings-module-hint code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: #475569;
+  background: rgba(226, 232, 240, 0.72);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
 }
 
 .settings-module-row__input {

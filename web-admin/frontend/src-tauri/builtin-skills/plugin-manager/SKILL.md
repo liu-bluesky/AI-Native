@@ -12,7 +12,7 @@ description: 管理本地 AI 插件的安装、发现、启用、停用和卸载
 ## 工作流程
 
 1. 先确认目标工作区和插件来源；不确定时询问用户，不要猜测。
-2. 先读取插件清单 `plugin.json`，检查 `id`、`name`、`version`、`type` 和 `server`。
+2. 先读取插件清单 `plugin.json`，检查 `schemaVersion`、`id`、`name`、`version`、`type` 和 `components`。
 3. 安装或更新前展示来源、版本、启动命令、网络地址、环境变量和将要安装的依赖。
 4. 涉及下载、写文件、安装依赖、启动服务或覆盖已有插件时，先取得用户明确确认。
 5. 项目插件写入 `<workspace>/.ai-employee/plugins/<plugin-id>/`；用户级插件写入用户目录下的 `.ai-employee/plugins/`。

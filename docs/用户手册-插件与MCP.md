@@ -1,6 +1,6 @@
 # 插件与 MCP 配置手册
 
-这份文档面向使用桌面端的普通用户。你不需要修改 Rust 或 Vue 代码，只需要准备 MCP Server、放置插件清单，然后在项目聊天设置中启用插件。
+这份文档面向使用桌面端的普通用户。你不需要修改 Rust 或 Vue 代码，只需要准备插件目录、放置插件清单，然后在项目聊天设置中启用插件。
 
 ## 1. 先理解两个概念
 
@@ -9,7 +9,7 @@
 | 插件 | 一组可安装、可启用、可停用的业务能力，例如部署、内部知识库、项目管理 |
 | MCP | 插件与 AI 之间的工具通信协议，MCP Server 才是真正提供工具的程序 |
 
-简单理解：**插件是包装盒，MCP Server 是盒子里的工具。**
+简单理解：**插件是组合包，MCP Server、Skill 和其他运行时组件是包里的能力。**
 
 ## 2. 使用内置插件
 
@@ -57,26 +57,76 @@ Windows：%USERPROFILE%\.ai-employee\plugins\company-search\plugin.json
 
 插件目录只扫描一级子目录。将插件复制完成后，重新打开“插件与工具”设置即可发现。
 
-## 4. 配置 stdio MCP
+## 4. 配置可组合插件
+
+推荐使用 `components` 声明插件中的运行时组件：
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "company-tools",
+  "name": "公司工具",
+  "version": "1.0.0",
+  "description": "公司知识库和项目工具",
+  "type": "runtime",
+  "enabled": true,
+  "content": {
+    "skills": "./skills/",
+    "docs": "./docs/"
+  },
+  "components": [
+    {
+      "id": "company-search",
+      "kind": "mcp",
+      "entry": "./server.mjs",
+      "config": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["server.mjs"]
+      },
+      "enabled": true
+    },
+    {
+      "id": "company-search-skill",
+      "kind": "skill",
+      "entry": "./skills/company-search.md",
+      "enabled": true
+    }
+  ]
+}
+```
+
+当前桌面端会执行 `kind: "mcp"` 的组件，并将同一插件中的多个 MCP Server 分别注入会话。`skill`、`provider` 和 `tool` 组件会被识别并展示为插件组成部分，但对应运行时接入仍需后续实现。
+
+## 5. 配置 stdio MCP
 
 stdio 适合 MCP Server 运行在用户本机上的情况。下面示例使用 Node.js：
 
 ```json
 {
+  "schemaVersion": 1,
   "id": "company-search",
   "name": "公司知识库搜索",
   "version": "1.0.0",
   "description": "搜索公司内部知识库",
   "type": "mcp",
   "enabled": true,
-  "server": {
-    "type": "stdio",
-    "command": "node",
-    "args": ["server.mjs"],
-    "env": {
-      "COMPANY_API_TOKEN": "请替换为自己的 Token"
+  "components": [
+    {
+      "id": "company-search-mcp",
+      "kind": "mcp",
+      "entry": "./server.mjs",
+      "config": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["server.mjs"],
+        "env": {
+          "COMPANY_API_TOKEN": "请替换为自己的 Token"
+        }
+      },
+      "enabled": true
     }
-  },
+  ],
   "tools": ["search_company_docs"]
 }
 ```
@@ -85,11 +135,19 @@ stdio 适合 MCP Server 运行在用户本机上的情况。下面示例使用 N
 
 ```json
 {
-  "server": {
-    "type": "stdio",
-    "command": "python",
-    "args": ["server.py"]
-  }
+  "components": [
+    {
+      "id": "company-search-mcp",
+      "kind": "mcp",
+      "entry": "./server.py",
+      "config": {
+        "type": "stdio",
+        "command": "python",
+        "args": ["server.py"]
+      },
+      "enabled": true
+    }
+  ]
 }
 ```
 
@@ -99,15 +157,22 @@ Windows 如果使用 npm 命令，通常填写：
 
 ```json
 {
-  "server": {
-    "type": "stdio",
-    "command": "npx.cmd",
-    "args": ["-y", "@example/company-search-mcp"]
-  }
+  "components": [
+    {
+      "id": "company-search-mcp",
+      "kind": "mcp",
+      "config": {
+        "type": "stdio",
+        "command": "npx.cmd",
+        "args": ["-y", "@example/company-search-mcp"]
+      },
+      "enabled": true
+    }
+  ]
 }
 ```
 
-## 5. 配置 HTTP 或 SSE MCP
+## 6. 配置 HTTP 或 SSE MCP
 
 如果 MCP Server 已经运行在本机或服务器上，可以使用 HTTP：
 
@@ -118,10 +183,17 @@ Windows 如果使用 npm 命令，通常填写：
   "version": "1.0.0",
   "type": "mcp",
   "enabled": true,
-  "server": {
-    "type": "http",
-    "url": "http://127.0.0.1:8787/mcp"
-  }
+  "components": [
+    {
+      "id": "company-api-mcp",
+      "kind": "mcp",
+      "config": {
+        "type": "http",
+        "url": "http://127.0.0.1:8787/mcp"
+      },
+      "enabled": true
+    }
+  ]
 }
 ```
 
@@ -129,16 +201,23 @@ SSE 示例：
 
 ```json
 {
-  "server": {
-    "type": "sse",
-    "url": "https://example.com/mcp/sse"
-  }
+  "components": [
+    {
+      "id": "company-api-mcp",
+      "kind": "mcp",
+      "config": {
+        "type": "sse",
+        "url": "https://example.com/mcp/sse"
+      },
+      "enabled": true
+    }
+  ]
 }
 ```
 
 HTTP/SSE Server 必须能够从当前电脑访问，并且必须真正实现 MCP 协议，普通 REST API 地址不能直接使用。
 
-## 6. 启用和停用
+## 7. 启用和停用
 
 1. 打开项目聊天。
 2. 进入“设置 → 插件与工具”。
@@ -148,7 +227,7 @@ HTTP/SSE Server 必须能够从当前电脑访问，并且必须真正实现 MCP
 
 项目级插件只影响当前项目。用户级插件可以被多个项目发现，但每个项目仍然可以单独控制是否启用。
 
-## 7. 常见问题
+## 8. 常见问题
 
 ### 找不到插件
 
@@ -163,7 +242,7 @@ HTTP/SSE Server 必须能够从当前电脑访问，并且必须真正实现 MCP
 
 ### 插件显示但无法启用
 
-通常是 `server` 缺失、不是 JSON 对象，或者 MCP Server 配置不完整。先确认 `command + args` 或 `url` 正确。
+通常是 `components` 缺失、不是数组，或者 MCP 组件的 `config` 不完整。先确认 `kind`、`command + args` 或 `url` 正确。
 
 ### MCP 工具没有出现
 
@@ -176,4 +255,3 @@ HTTP/SSE Server 必须能够从当前电脑访问，并且必须真正实现 MCP
 ### MCP Server 会不会自动执行？
 
 插件清单不会被自动下载。只有用户将插件放入插件目录并在设置中启用后，新的本地会话才会连接对应 MCP Server。涉及本地文件、命令或敏感操作时，仍然遵循现有授权确认流程。
-

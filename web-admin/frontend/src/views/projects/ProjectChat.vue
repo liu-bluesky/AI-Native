@@ -1740,6 +1740,17 @@
     @copy-directory="copySkillResourceDirectory"
   />
 
+  <el-dialog
+    v-model="settingsCenterDialogVisible"
+    width="min(1180px, 94vw)"
+    top="4vh"
+    class="project-chat-settings-dialog"
+    append-to-body
+    destroy-on-close
+  >
+    <ProjectChatSettingsContent :context="projectChatSettingsPageContext" />
+  </el-dialog>
+
   <ResourceContextMenu
     :visible="messageContextMenu.visible"
     :x="messageContextMenu.x"
@@ -1839,6 +1850,7 @@ import CodePreviewDialog from "@/modules/project-chat/components/code-preview/Co
 import FileChangesDrawer from "@/modules/project-chat/components/file-changes/FileChangesDrawer.vue";
 import SkillResourceDialog from "@/modules/project-chat/components/skill-resource/SkillResourceDialog.vue";
 import ResourceContextMenu from "@/modules/project-chat/components/resource-context-menu/ResourceContextMenu.vue";
+import ProjectChatSettingsContent from "@/modules/project-chat/components/settings/ProjectChatSettingsContent.vue";
 import SystemConfig from "@/views/system/SystemConfig.vue";
 import SystemBotConnectors from "@/views/system/SystemBotConnectors.vue";
 import SystemFtpCredentials from "@/views/system/SystemFtpCredentials.vue";
@@ -1990,10 +2002,8 @@ import {
   saveNativeResourceFile,
 } from "@/utils/native-desktop-bridge.js";
 import {
-  buildChatSettingsRoute,
   inferSettingsPanelFromPath,
   isChatSettingsRoutePath,
-  resolveSettingsAwarePanelPath,
   stripChatSettingsPrefix,
 } from "@/utils/chat-settings-route.js";
 import {
@@ -2209,7 +2219,6 @@ import {
   terminalChoiceDescription,
   TERMINAL_CHOICE_FALLBACK_PROVIDERS,
 } from "@/modules/project-chat/mappers/terminalMappers.js";
-import { requestDesktopWindowManagerAction } from "@/utils/desktop-window-manager.js";
 import { useProjectChatTaskTreeState } from "@/modules/project-chat/composables/useProjectChatTaskTreeState.js";
 import { useProjectChatTaskTreeActions } from "@/modules/project-chat/composables/useProjectChatTaskTreeActions.js";
 import {
@@ -2747,14 +2756,29 @@ function parseGlobalMcpConfig() {
 function syncEffectiveMcpConfig() {
   const pluginServers = {};
   for (const plugin of localPluginCatalog.value) {
-    if (!isLocalPluginEnabled(plugin) || !plugin?.server || plugin.error) continue;
-    pluginServers[`plugin-${plugin.id}`] = {
-      ...plugin.server,
-      ...(plugin.server.type === "stdio" && !plugin.server.cwd && plugin.rootPath
-        ? { cwd: plugin.rootPath }
-        : {}),
-      enabled: true,
-    };
+    if (!isLocalPluginEnabled(plugin) || plugin?.error) continue;
+    const components = Array.isArray(plugin.components)
+      ? plugin.components.filter(
+          (component) =>
+            component?.kind === "mcp" &&
+            component?.enabled !== false &&
+            component?.config &&
+            typeof component.config === "object" &&
+            !Array.isArray(component.config),
+        )
+      : [];
+    for (const component of components) {
+      const config = component.config;
+      const serverId = String(component.id || `${plugin.id}.mcp`).trim();
+      if (!serverId || !config) continue;
+      pluginServers[`plugin-${plugin.id}-${serverId}`] = {
+        ...config,
+        ...(config.type === "stdio" && !config.cwd && plugin.rootPath
+          ? { cwd: plugin.rootPath }
+          : {}),
+        enabled: true,
+      };
+    }
   }
   effectiveMcpConfig.value = mergeMcpConfigs(
     globalMcpConfig.value,
@@ -2783,7 +2807,12 @@ async function reloadLocalMcpConfig(projectId = selectedProjectId.value) {
         ),
       );
       for (const plugin of localPluginCatalog.value) {
-        if (plugin.enabled && !plugin.error && plugin.server) {
+        if (
+          plugin.enabled &&
+          !plugin.error &&
+          Array.isArray(plugin.components) &&
+          plugin.components.length
+        ) {
           enabled.add(String(plugin.id || "").trim());
         }
       }
@@ -4307,6 +4336,7 @@ const chatTourVisible = ref(false);
 const chatTourCurrent = ref(0);
 const settingsTourVisible = ref(false);
 const settingsTourCurrent = ref(0);
+const settingsCenterDialogVisible = ref(false);
 
 const maxUploadLimit = ref(6);
 const conversationSidebarRef = ref(null);
@@ -28809,31 +28839,7 @@ function openSettingsCenter(panelId = "chat") {
     ? requestedPanelId
     : "chat";
   activeSettingsPanel.value = normalizedPanelId;
-  const targetPath = isSettingsCenterRoute.value
-    ? resolveSettingsAwarePanelPath(route.path, normalizedPanelId, "/chat")
-    : resolveSettingsAwarePanelPath(
-        buildChatSettingsRoute("/chat"),
-        normalizedPanelId,
-        "/chat",
-      );
-  const projectId = String(selectedProjectId.value || "").trim();
-  const targetWithProject =
-    normalizedPanelId === "chat" && projectId
-      ? `${targetPath}${targetPath.includes("?") ? "&" : "?"}project_id=${encodeURIComponent(
-          projectId,
-        )}`
-      : targetPath;
-  if (normalizedPanelId === "chat") {
-    void openRouteInDesktop(router, targetWithProject, {
-      mode: "new-window",
-      appId: "chat",
-      title: "对话设置",
-      eyebrow: "AI Workspace",
-      summary: "调整当前项目的 AI 对话设置。",
-    });
-    return;
-  }
-  void router.push(targetPath);
+  settingsCenterDialogVisible.value = true;
 }
 
 function openComposerExecutionDetail() {
@@ -28860,13 +28866,7 @@ function handleComposerExecutionPrimaryAction() {
 }
 
 function closeSettingsCenter() {
-  const windowId = String(
-    router?.__aiEmployeeDesktopWindow?.windowId || "",
-  ).trim();
-  if (windowId && requestDesktopWindowManagerAction("close", windowId)) {
-    return;
-  }
-  void router.push(CHAT_BASE_ROUTE_PATH);
+  settingsCenterDialogVisible.value = false;
 }
 
 async function startChatTour(force = false) {
@@ -28884,9 +28884,6 @@ async function startSettingsTour(force = false) {
   const roleId = currentRoleId.value;
   if (!force && hasSeenGuideTour("settings", username, roleId)) return;
   chatTourVisible.value = false;
-  if (!isSettingsCenterRoute.value || activeSettingsPanel.value !== "chat") {
-    await router.push(buildChatSettingsRoute("/chat"));
-  }
   settingsTourCurrent.value = 0;
   await nextTick();
   settingsTourVisible.value = true;
@@ -36590,6 +36587,23 @@ onUnmounted(() => {
 
 .web-tools-provider-form :deep(.el-form-item:nth-child(-n + 2)) {
   grid-column: 1 / -1;
+}
+
+.project-chat-settings-dialog :deep(.el-dialog) {
+  max-width: 1180px;
+  height: min(88vh, 820px);
+  margin-bottom: 0;
+}
+
+.project-chat-settings-dialog :deep(.el-dialog__header) {
+  display: none;
+}
+
+.project-chat-settings-dialog :deep(.el-dialog__body) {
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0;
+  overflow: hidden;
 }
 
 </style>

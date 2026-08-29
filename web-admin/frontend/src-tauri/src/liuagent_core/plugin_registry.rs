@@ -71,17 +71,33 @@ const BUILTIN_PLUGINS: &[BuiltinPluginDefinition] = &[
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PluginComponentDescriptor {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub entry: Option<String>,
+    pub config: Option<Value>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalPluginDescriptor {
     pub id: String,
     pub name: String,
     pub version: String,
+    pub schema_version: u32,
     pub description: String,
     pub plugin_type: String,
     pub source: String,
     pub root_path: String,
     pub manifest_path: String,
     pub enabled: bool,
-    pub server: Option<Value>,
+    pub components: Vec<PluginComponentDescriptor>,
+    pub content: Option<Value>,
+    pub interface: Option<Value>,
+    pub runtime: Option<Value>,
+    pub permissions: Option<Value>,
     pub tools: Vec<String>,
     pub error: String,
 }
@@ -94,6 +110,8 @@ struct ExternalPluginManifest {
     name: String,
     #[serde(default)]
     version: String,
+    #[serde(default = "default_schema_version", alias = "schema_version")]
+    schema_version: u32,
     #[serde(default)]
     description: String,
     #[serde(default = "default_plugin_type", alias = "pluginType")]
@@ -101,9 +119,42 @@ struct ExternalPluginManifest {
     #[serde(default = "default_enabled")]
     enabled: bool,
     #[serde(default)]
-    server: Option<Value>,
+    components: Vec<ExternalPluginComponent>,
+    #[serde(default)]
+    content: Option<Value>,
+    #[serde(default)]
+    interface: Option<Value>,
+    #[serde(default)]
+    runtime: Option<Value>,
+    #[serde(default)]
+    permissions: Option<Value>,
     #[serde(default)]
     tools: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalPluginComponent {
+    #[serde(default)]
+    id: String,
+    #[serde(default = "default_component_kind", alias = "type")]
+    kind: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    entry: Option<String>,
+    #[serde(default)]
+    config: Option<Value>,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+}
+
+fn default_schema_version() -> u32 {
+    1
+}
+
+fn default_component_kind() -> String {
+    "mcp".to_string()
 }
 
 fn default_plugin_type() -> String {
@@ -210,13 +261,18 @@ fn read_plugin_manifest(source: &str, root: &Path, manifest_path: &Path) -> Loca
             .unwrap_or("未命名插件")
             .to_string(),
         version: String::new(),
+        schema_version: 1,
         description: String::new(),
         plugin_type: "mcp".to_string(),
         source: source.to_string(),
         root_path: root.to_string_lossy().to_string(),
         manifest_path: manifest_path.to_string_lossy().to_string(),
         enabled: false,
-        server: None,
+        components: Vec::new(),
+        content: None,
+        interface: None,
+        runtime: None,
+        permissions: None,
         tools: Vec::new(),
         error: String::new(),
     };
@@ -246,15 +302,35 @@ fn read_plugin_manifest(source: &str, root: &Path, manifest_path: &Path) -> Loca
         };
     }
     let plugin_type = manifest.plugin_type.trim().to_ascii_lowercase();
-    if plugin_type != "mcp" {
+    if !matches!(plugin_type.as_str(), "mcp" | "runtime" | "bundle") {
         return LocalPluginDescriptor {
             id,
-            error: "仅支持 type 为 mcp 的声明式插件".to_string(),
+            error: "插件 type 只能是 mcp、runtime 或 bundle".to_string(),
             ..base
         };
     }
-    let server = manifest.server.filter(|value| value.is_object());
-    let enabled = manifest.enabled && server.is_some();
+    let components: Vec<PluginComponentDescriptor> = manifest
+        .components
+        .into_iter()
+        .enumerate()
+        .map(|(index, component)| PluginComponentDescriptor {
+            id: if component.id.trim().is_empty() {
+                format!("{id}.component-{}", index + 1)
+            } else {
+                component.id.trim().to_string()
+            },
+            kind: component.kind.trim().to_ascii_lowercase(),
+            name: component.name.trim().to_string(),
+            entry: component
+                .entry
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty()),
+            config: component.config.filter(Value::is_object),
+            enabled: component.enabled,
+        })
+        .filter(|component| !component.kind.is_empty())
+        .collect();
+    let enabled = manifest.enabled && !components.is_empty();
     LocalPluginDescriptor {
         id,
         name: if manifest.name.trim().is_empty() {
@@ -263,13 +339,18 @@ fn read_plugin_manifest(source: &str, root: &Path, manifest_path: &Path) -> Loca
             manifest.name.trim().to_string()
         },
         version: manifest.version.trim().to_string(),
+        schema_version: manifest.schema_version,
         description: manifest.description.trim().to_string(),
         plugin_type,
         source: source.to_string(),
         root_path: root.to_string_lossy().to_string(),
         manifest_path: manifest_path.to_string_lossy().to_string(),
         enabled,
-        server,
+        components,
+        content: manifest.content,
+        interface: manifest.interface,
+        runtime: manifest.runtime,
+        permissions: manifest.permissions,
         tools: manifest
             .tools
             .into_iter()
@@ -340,5 +421,58 @@ mod tests {
     #[test]
     fn preserves_legacy_requests_without_plugin_list() {
         assert!(tool_enabled("deploy_workspace_files_to_target", &json!({})));
+    }
+
+    #[test]
+    fn discovers_composable_plugin_components() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-employee-plugin-registry-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos()
+        ));
+        let plugin_root = root.join(".ai-employee/plugins/company-tools");
+        fs::create_dir_all(&plugin_root).expect("plugin directory should be created");
+        fs::write(
+            plugin_root.join(PLUGIN_MANIFEST_FILE),
+            r#"{
+                "schemaVersion": 1,
+                "id": "company-tools",
+                "name": "公司工具",
+                "type": "runtime",
+                "components": [
+                    {
+                        "id": "search",
+                        "kind": "mcp",
+                        "config": {"type": "stdio", "command": "node"}
+                    },
+                    {
+                        "id": "search-skill",
+                        "kind": "skill",
+                        "entry": "./skills/search.md"
+                    }
+                ]
+            }"#,
+        )
+        .expect("manifest should be written");
+
+        let plugins =
+            discover_local_plugins(root.to_str().expect("temp path should be utf-8"), None)
+                .expect("plugin discovery should succeed");
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].components.len(), 2);
+        assert_eq!(plugins[0].components[0].kind, "mcp");
+        assert_eq!(plugins[0].components[1].kind, "skill");
+        assert_eq!(
+            plugins[0].components[0]
+                .config
+                .as_ref()
+                .and_then(|config| config.get("command")),
+            Some(&json!("node"))
+        );
+
+        fs::remove_dir_all(root).expect("temporary plugin directory should be removed");
     }
 }
