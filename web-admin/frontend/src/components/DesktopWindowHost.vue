@@ -37,7 +37,8 @@ const componentForPath = [
   { match: (path) => path === "/feedback", component: defineAsyncComponent(() => import("@/views/desktop/DesktopFeedback.vue")) },
   { match: (path) => path === "/settings-center", component: defineAsyncComponent(() => import("@/views/desktop/SettingsLauncher.vue")) },
   { match: (path) => path === "/desktop/background", component: defineAsyncComponent(() => import("@/views/desktop/DesktopWallpaperSettings.vue")) },
-  { match: (path) => path === "/ai/chat" || path.startsWith("/ai/chat/settings"), component: defineAsyncComponent(() => import("@/views/projects/ProjectChat.vue")) },
+  { match: (path) => path.startsWith("/ai/chat/settings"), component: defineAsyncComponent(() => import("@/views/projects/ProjectChatSettings.vue")) },
+  { match: (path) => path === "/ai/chat", component: defineAsyncComponent(() => import("@/views/projects/ProjectChat.vue")) },
   { match: (path) => path === "/ai/supervision", component: defineAsyncComponent(() => import("@/views/desktop/AgentSupervision.vue")) },
   { match: (path) => path === "/projects", component: defineAsyncComponent(() => import("@/views/projects/ProjectList.vue")) },
   { match: (path) => /^\/projects\/[^/]+$/.test(path), component: defineAsyncComponent(() => import("@/views/projects/ProjectDetail.vue")) },
@@ -45,6 +46,7 @@ const componentForPath = [
   { match: (path) => path === "/system/config", component: defineAsyncComponent(() => import("@/views/system/SystemConfig.vue")) },
   { match: (path) => path === "/system/bot-connectors", component: defineAsyncComponent(() => import("@/views/system/SystemBotConnectors.vue")) },
   { match: (path) => path === "/system/ftp-credentials", component: defineAsyncComponent(() => import("@/views/system/SystemFtpCredentials.vue")) },
+  { match: (path) => path === "/system/email", component: defineAsyncComponent(() => import("@/views/system/SystemEmail.vue")) },
   { match: (path) => path === "/changelog-entries", component: defineAsyncComponent(() => import("@/views/system/ChangelogManager.vue")) },
   { match: (path) => path === "/llm/providers", component: defineAsyncComponent(() => import("@/views/llm/ModelProviderManager.vue")) },
   { match: (path) => path === "/account", component: defineAsyncComponent(() => import("@/views/account/AccountCenter.vue")) },
@@ -96,6 +98,9 @@ function navigate(location) {
 }
 
 const windowRouter = {
+  __aiEmployeeDesktopWindow: {
+    windowId: props.windowId,
+  },
   currentRoute,
   push: navigate,
   replace: navigate,
@@ -114,7 +119,8 @@ const activeComponent = computed(() =>
   componentForPath.find((entry) => entry.match(routeState.path))?.component || null,
 );
 const isChatRoute = computed(() =>
-  routeState.path === "/ai/chat" || routeState.path.startsWith("/ai/chat/settings"),
+  routeState.path === "/ai/chat" ||
+  routeState.path.startsWith("/ai/chat/settings"),
 );
 
 watch(
@@ -138,6 +144,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -145,8 +152,14 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   min-height: 0;
+  min-width: 0;
+  box-sizing: border-box;
   overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: rgba(100, 116, 139, 0.58) transparent;
 }
 
 .desktop-window-host__mount :deep(> *) {
@@ -163,12 +176,47 @@ onBeforeUnmount(() => {
 .desktop-window-host__mount--chat :deep(> *) {
   flex: 1 1 auto;
   min-height: 0;
+  height: 100%;
 }
 
 .desktop-window-host__mount--chat :deep(> .settings-center-page) {
   min-height: 0;
-  max-height: 100%;
-  height: auto !important;
+  height: 100%;
+  max-height: none;
+}
+
+.desktop-window-host__mount::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.desktop-window-host__mount::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.desktop-window-host__mount::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.58);
+  background-clip: padding-box;
+}
+
+.desktop-window-host__mount--chat :deep(.settings-center-stage__body) {
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: rgba(100, 116, 139, 0.58) transparent;
+}
+
+.desktop-window-host__mount--chat :deep(.settings-center-stage__body::-webkit-scrollbar) {
+  width: 10px;
+  height: 10px;
+}
+
+.desktop-window-host__mount--chat :deep(.settings-center-stage__body::-webkit-scrollbar-thumb) {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.58);
+  background-clip: padding-box;
 }
 
 .desktop-window-host__error {

@@ -1186,6 +1186,7 @@ watch(
 .layout-window-frame {
   min-height: 100%;
   height: 100%;
+  min-width: 0;
   border-radius: 0;
   overflow: hidden;
   background: transparent;
@@ -1194,6 +1195,8 @@ watch(
 .layout-window-frame :deep(.desktop-window-host) {
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   display: block;
 }
 

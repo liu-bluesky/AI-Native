@@ -10734,6 +10734,13 @@ fn tool_disabled_reason(
     request: &ModelStepRequest,
     overrides: ToolAvailabilityOverrides,
 ) -> Option<String> {
+    if let Some(plugin_id) = super::plugin_registry::plugin_id_for_tool(tool_name) {
+        if !super::plugin_registry::tool_enabled(tool_name, &request.mcp_config) {
+            return Some(format!(
+                "{tool_name} is disabled because plugin {plugin_id} is not enabled"
+            ));
+        }
+    }
     match tool_name.trim() {
         "web_search" => {
             let configured = overrides

@@ -7,6 +7,7 @@ mod adapters;
 mod args;
 mod audit;
 mod definitions;
+mod email;
 mod file_change_review;
 mod ftp_credentials;
 mod gateway;
@@ -14,6 +15,7 @@ mod learning;
 mod paths;
 mod permission;
 mod planning;
+mod plugin_registry;
 mod project_catalog;
 mod prompt;
 mod runtime;
@@ -24,6 +26,10 @@ mod types;
 mod workspace;
 
 pub use definitions::builtin_tool_definitions;
+pub use email::{
+    global_qq_email_config_path, parse_qq_email_config, read_global_qq_email_config, send_qq_email,
+    write_global_qq_email_config, SendQqEmailRequest,
+};
 pub use file_change_review::{
     accept_change, capture_baseline, list_changes, revert_change, review_diff_inputs,
     FileChangeReviewItem,
@@ -39,6 +45,7 @@ pub use paths::{
     desktop_runtime_root, ensure_desktop_runtime_migrated, global_user_home_dir,
     normalize_local_backend_api_base_url,
 };
+pub use plugin_registry::{discover_local_plugins, ensure_builtin_skills, LocalPluginDescriptor};
 pub use project_catalog::{
     find_global_project_catalog_entry, global_project_catalog_path, parse_project_catalog_content,
     read_global_project_catalog, write_global_project_catalog, DesktopProjectCatalog,

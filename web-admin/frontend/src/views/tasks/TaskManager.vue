@@ -118,7 +118,7 @@ const completedTasks = computed(() =>
 );
 
 function refreshLocalAiTasks() {
-  localAiTasks.value = listLocalAiTasks();
+  localAiTasks.value = listLocalAiTasks({ longTaskOnly: true });
 }
 
 function isTaskActive(task) {
@@ -136,7 +136,7 @@ function isTaskRemovable(task) {
 async function refreshLocalAiTaskRuntimeStates() {
   refreshLocalAiTasks();
   if (!hasNativeDesktopBridge()) return;
-  const activeTasksSnapshot = listLocalAiTasks({ activeOnly: true });
+  const activeTasksSnapshot = listLocalAiTasks({ activeOnly: true, longTaskOnly: true });
   await Promise.all(
     activeTasksSnapshot.map(async (task) => {
       if (!task.projectId || !task.chatSessionId || !task.workspacePath) return;
@@ -308,8 +308,9 @@ onBeforeUnmount(() => {
 .task-manager {
   position: relative;
   min-height: 100%;
+  height: max-content;
   padding: 30px;
-  overflow: hidden;
+  overflow: visible;
   color: #0f172a;
   background: radial-gradient(circle at 14% 4%, rgba(56, 189, 248, 0.18), transparent 30%), linear-gradient(180deg, #f8fafc, #f1f5f9);
 }

@@ -1310,7 +1310,7 @@ import {
 import { readLocalModelProviders } from "@/services/local-model-runtime.js";
 import {
   readLocalEntities,
-  readLocalProjects,
+  readLocalWorkspaceProjects,
 } from "@/services/local-project-repository.js";
 import { resolveSettingsAwarePath } from "@/utils/chat-settings-route.js";
 import {
@@ -2640,7 +2640,7 @@ async function fetchConfig() {
 }
 
 async function fetchProjectOptions() {
-  projectOptions.value = readLocalProjects()
+  projectOptions.value = readLocalWorkspaceProjects()
     .map((item) => ({
       value: String(item?.id || "").trim(),
       label: String(item?.name || item?.id || "").trim(),

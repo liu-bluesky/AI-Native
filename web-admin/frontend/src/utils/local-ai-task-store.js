@@ -18,6 +18,8 @@ const ACTIVE_STATUSES = new Set([
 ]);
 const COMPLETED_TASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_STORED_LOCAL_AI_TASKS = 100;
+const LONG_RUNNING_TASK_KIND = "long_running";
+const CHAT_TASK_KIND = "chat";
 let tasksCache = null;
 let nativeTaskWriteQueue = Promise.resolve();
 
@@ -47,6 +49,21 @@ function normalizeStatus(value) {
     : "queued";
 }
 
+function normalizeTaskKind(input = {}) {
+  const explicitKind = String(input.taskKind || input.task_kind || "")
+    .trim()
+    .toLowerCase();
+  if (explicitKind === LONG_RUNNING_TASK_KIND) return LONG_RUNNING_TASK_KIND;
+  if (explicitKind === CHAT_TASK_KIND) return CHAT_TASK_KIND;
+  if (input.isLongTask === true || input.is_long_task === true) {
+    return LONG_RUNNING_TASK_KIND;
+  }
+  const status = normalizeStatus(input.status);
+  return input.recoverable === true || ACTIVE_STATUSES.has(status)
+    ? LONG_RUNNING_TASK_KIND
+    : CHAT_TASK_KIND;
+}
+
 function createTaskId(input = {}) {
   const explicitId = String(input.id || input.taskId || input.task_id || "").trim();
   if (explicitId) return explicitId;
@@ -70,6 +87,7 @@ function normalizeTask(input = {}) {
     ).trim(),
     userMessageId: String(input.userMessageId || input.user_message_id || "").trim(),
     title: String(input.title || input.rootGoal || input.root_goal || "本地 AI 任务").trim().slice(0, 120),
+    taskKind: normalizeTaskKind(input),
     status: normalizeStatus(input.status),
     currentStep: String(input.currentStep || input.current_step || "").trim().slice(0, 240),
     lastOutput: String(input.lastOutput || input.last_output || "").trim().slice(0, 2000),
@@ -108,6 +126,7 @@ function normalizeStoredTasks(tasks) {
     (Array.isArray(tasks) ? tasks : [])
       .map((item) => normalizeTask(item))
       .filter((task) => {
+        if (!isLongRunningLocalAiTask(task)) return false;
         if (isLocalAiTaskActive(task)) return true;
         const updatedAt = new Date(task.updatedAt).getTime();
         return !Number.isFinite(updatedAt) || updatedAt >= retentionCutoff;
@@ -204,7 +223,11 @@ export function pruneStoredLocalAiTasks() {
 
 export function listLocalAiTasks(options = {}) {
   const tasks = readTasks();
-  return options.activeOnly ? tasks.filter((task) => isLocalAiTaskActive(task)) : tasks;
+  return tasks.filter((task) => {
+    if (options.longTaskOnly && !isLongRunningLocalAiTask(task)) return false;
+    if (options.activeOnly && !isLocalAiTaskActive(task)) return false;
+    return true;
+  });
 }
 
 export function getLocalAiTask(taskId) {
@@ -215,6 +238,10 @@ export function getLocalAiTask(taskId) {
 
 export function isLocalAiTaskActive(task = {}) {
   return ACTIVE_STATUSES.has(normalizeStatus(task.status));
+}
+
+export function isLongRunningLocalAiTask(task = {}) {
+  return normalizeTaskKind(task) === LONG_RUNNING_TASK_KIND;
 }
 
 export function registerLocalAiTask(input = {}) {

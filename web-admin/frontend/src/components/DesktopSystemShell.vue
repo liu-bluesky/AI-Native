@@ -1737,7 +1737,7 @@ onBeforeUnmount(() => {
 .desktop-system__desktop {
   position: relative;
   min-height: 0;
-  height: 100vh;
+  height: 100%;
   isolation: isolate;
   /* border-radius: 26px; */
   border: 0;
@@ -2018,14 +2018,19 @@ onBeforeUnmount(() => {
 }
 
 .desktop-system__window-body {
+  height: 100%;
   min-height: 0;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
 }
 
 .desktop-system__window-frame {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
   min-height: 0;
   padding: 0;
+  overflow: hidden;
   background: var(--desktop-window-content);
   backface-visibility: hidden;
 }

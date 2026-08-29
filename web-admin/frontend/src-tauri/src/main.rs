@@ -1592,6 +1592,19 @@ fn write_project_mcp_config_file(
 }
 
 #[tauri::command]
+fn liuagent_list_plugins(
+    workspace_path: String,
+) -> Result<Vec<liuagent_core::LocalPluginDescriptor>, String> {
+    let home = liuagent_core::global_user_home_dir();
+    liuagent_core::discover_local_plugins(&workspace_path, home.as_deref())
+}
+
+#[tauri::command]
+fn liuagent_ensure_builtin_skills(workspace_path: String) -> Result<Vec<String>, String> {
+    liuagent_core::ensure_builtin_skills(&workspace_path)
+}
+
+#[tauri::command]
 fn read_global_web_tools_config_file() -> Result<WebToolsConfigFileResult, String> {
     let target = global_web_tools_config_path()?;
     read_web_tools_config_file("global", target, default_web_tools_config())
@@ -1695,6 +1708,41 @@ fn write_global_ftp_credentials_file(content: String) -> Result<WebToolsConfigFi
         exists: true,
         content: format!("{content}\n"),
     })
+}
+
+#[tauri::command]
+fn read_global_qq_email_config_file() -> Result<WebToolsConfigFileResult, String> {
+    let target = liuagent_core::global_qq_email_config_path()?;
+    let config = liuagent_core::read_global_qq_email_config()?;
+    let content = serde_json::to_string_pretty(&config)
+        .map_err(|err| format!("无法序列化 QQ 邮箱配置：{err}"))?;
+    Ok(WebToolsConfigFileResult {
+        scope: "global".to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: target.exists(),
+        content: format!("{content}\n"),
+    })
+}
+
+#[tauri::command]
+fn write_global_qq_email_config_file(content: String) -> Result<WebToolsConfigFileResult, String> {
+    let config = liuagent_core::parse_qq_email_config(&content)?;
+    let config = liuagent_core::write_global_qq_email_config(config)?;
+    let target = liuagent_core::global_qq_email_config_path()?;
+    let content = serde_json::to_string_pretty(&config)
+        .map_err(|err| format!("无法序列化 QQ 邮箱配置：{err}"))?;
+    Ok(WebToolsConfigFileResult {
+        scope: "global".to_string(),
+        path: target.to_string_lossy().to_string(),
+        exists: true,
+        content: format!("{content}\n"),
+    })
+}
+
+#[tauri::command]
+fn send_qq_email(request: liuagent_core::SendQqEmailRequest) -> Result<bool, String> {
+    liuagent_core::send_qq_email(request)?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -3305,6 +3353,8 @@ fn main() {
             write_global_mcp_config_file,
             read_project_mcp_config_file,
             write_project_mcp_config_file,
+            liuagent_list_plugins,
+            liuagent_ensure_builtin_skills,
             read_global_web_tools_config_file,
             write_global_web_tools_config_file,
             read_project_web_tools_config_file,
@@ -3315,6 +3365,9 @@ fn main() {
             write_global_project_catalog_file,
             read_global_ftp_credentials_file,
             write_global_ftp_credentials_file,
+            read_global_qq_email_config_file,
+            write_global_qq_email_config_file,
+            send_qq_email,
             open_external_url,
             open_local_file,
             copy_resource_file_to_clipboard,

@@ -43,6 +43,9 @@ const TAURI_COMMAND_NAMES = {
   writeGlobalProjectCatalogFile: "write_global_project_catalog_file",
   readGlobalFtpCredentialsFile: "read_global_ftp_credentials_file",
   writeGlobalFtpCredentialsFile: "write_global_ftp_credentials_file",
+  readGlobalQqEmailConfigFile: "read_global_qq_email_config_file",
+  writeGlobalQqEmailConfigFile: "write_global_qq_email_config_file",
+  sendQqEmail: "send_qq_email",
   openExternalUrl: "open_external_url",
   openLocalFile: "open_local_file",
   copyResourceFileToClipboard: "copy_resource_file_to_clipboard",
@@ -58,6 +61,8 @@ const TAURI_COMMAND_NAMES = {
   discoverProviderModels: "discover_provider_models",
   testProviderModel: "test_provider_model",
   liuagentBuiltinToolDefinitions: "liuagent_builtin_tool_definitions",
+  liuagentListPlugins: "liuagent_list_plugins",
+  liuagentEnsureBuiltinSkills: "liuagent_ensure_builtin_skills",
   liuagentExecuteTool: "liuagent_execute_tool",
   liuagentUploadProviderFile: "liuagent_upload_provider_file",
   liuagentStartLocalChat: "liuagent_start_local_chat",
@@ -409,6 +414,20 @@ export async function invokeNativeDesktopBridge(method, payload = {}) {
   return null;
 }
 
+export async function listNativeLiuAgentPlugins(workspacePath = "") {
+  const result = await invokeNativeDesktopBridge("liuagentListPlugins", {
+    workspacePath: String(workspacePath || "").trim(),
+  });
+  return Array.isArray(result) ? result : [];
+}
+
+export async function ensureNativeBuiltinSkills(workspacePath = "") {
+  const result = await invokeNativeDesktopBridge("liuagentEnsureBuiltinSkills", {
+    workspacePath: String(workspacePath || "").trim(),
+  });
+  return Array.isArray(result) ? result : [];
+}
+
 export async function pickNativeWorkspaceDirectory(options = {}) {
   const result = await invokeNativeDesktopBridge("pickWorkspaceDirectory", {
     title: String(options?.title || "选择工作区目录").trim(),
@@ -687,6 +706,29 @@ export async function writeNativeGlobalFtpCredentialsFile(content = "") {
     content: String(content || ""),
   });
   return normalizeConfigFileResult(result);
+}
+
+export async function readNativeGlobalQqEmailConfigFile() {
+  const result = await invokeNativeDesktopBridge("readGlobalQqEmailConfigFile");
+  return normalizeConfigFileResult(result);
+}
+
+export async function writeNativeGlobalQqEmailConfigFile(content = "") {
+  const result = await invokeNativeDesktopBridge("writeGlobalQqEmailConfigFile", {
+    content: String(content || ""),
+  });
+  return normalizeConfigFileResult(result);
+}
+
+export async function sendNativeQqEmail(options = {}) {
+  return invokeNativeDesktopBridge("sendQqEmail", {
+    request: {
+      to: String(options.to || ""),
+      cc: String(options.cc || ""),
+      subject: String(options.subject || ""),
+      content: String(options.content || ""),
+    },
+  });
 }
 
 export async function openNativeExternalUrl(url = "") {

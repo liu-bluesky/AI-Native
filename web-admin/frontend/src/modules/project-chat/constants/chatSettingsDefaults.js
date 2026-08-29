@@ -40,6 +40,7 @@ export const CHAT_SETTINGS_DEFAULTS = {
   system_prompt: "",
   auto_use_tools: true,
   auto_use_tools_explicit: false,
+  enabled_plugin_ids: ["project-management", "deployment", "media"],
   enabled_project_tool_names: [],
   tool_priority: [],
   history_limit: 20,

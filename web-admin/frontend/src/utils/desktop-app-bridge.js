@@ -155,6 +155,9 @@ export function requestDesktopShortcutApp(appId, options = {}, router = null) {
   if (desktopWindowIdFromRouter(router)) {
     return dispatchDesktopBridgeEvent("add-desktop-shortcut", payload);
   }
+  if (canUseWindow()) {
+    return dispatchDesktopBridgeEvent("add-desktop-shortcut", payload);
+  }
   return postDesktopBridgeMessage("add-desktop-shortcut", payload);
 }
 

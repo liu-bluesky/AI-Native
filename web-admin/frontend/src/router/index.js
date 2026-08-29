@@ -27,13 +27,14 @@ const createDesktopAppRoutes = () => [
       { path: 'ai/supervision', component: () => import('../views/desktop/AgentSupervision.vue') },
       {
         path: 'ai/chat/settings',
-        component: () => import('../views/projects/ProjectChat.vue'),
+        component: () => import('../views/projects/ProjectChatSettings.vue'),
         children: [
           { path: '', redirect: '/ai/chat/settings/chat' },
           { path: 'chat', component: { render: () => null } },
           { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
           { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
           { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
+          { path: 'system/email', component: () => import('../views/system/SystemEmail.vue') },
           { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
           { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
       { path: 'account', component: () => import('../views/account/AccountCenter.vue') },
@@ -49,6 +50,7 @@ const createDesktopAppRoutes = () => [
       { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
       { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
       { path: 'system/ftp-credentials', component: () => import('../views/system/SystemFtpCredentials.vue') },
+      { path: 'system/email', component: () => import('../views/system/SystemEmail.vue') },
       { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
       { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
       { path: 'account', component: () => import('../views/account/AccountCenter.vue') },

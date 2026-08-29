@@ -25,6 +25,7 @@
     "test:local-liuagent-chat": "node ./scripts/check-local-liuagent-chat.mjs",
     "test:desktop-agent-migration": "node ./scripts/check-desktop-agent-migration.mjs",
     "test:desktop-window-layout": "node ./scripts/check-desktop-window-layout.mjs",
+    "test:long-task-center": "node ./scripts/check-long-task-center.mjs",
     "test:project-chat-file-changes-layout": "node ./scripts/check-project-chat-file-changes-layout.mjs",
     "test:local-bot-runtime": "node ./scripts/check-local-bot-runtime.mjs",
     "test:liuagent-gateway-design": "node ./scripts/check-liuagent-gateway-design.mjs",
