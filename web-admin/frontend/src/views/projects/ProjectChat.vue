@@ -1740,11 +1740,6 @@
     @copy-directory="copySkillResourceDirectory"
   />
 
-  <ProjectChatSettingsContent
-    v-if="isSettingsCenterRoute"
-    :context="projectChatSettingsPageContext"
-  />
-
   <ResourceContextMenu
     :visible="messageContextMenu.visible"
     :x="messageContextMenu.x"
@@ -1844,7 +1839,6 @@ import CodePreviewDialog from "@/modules/project-chat/components/code-preview/Co
 import FileChangesDrawer from "@/modules/project-chat/components/file-changes/FileChangesDrawer.vue";
 import SkillResourceDialog from "@/modules/project-chat/components/skill-resource/SkillResourceDialog.vue";
 import ResourceContextMenu from "@/modules/project-chat/components/resource-context-menu/ResourceContextMenu.vue";
-import ProjectChatSettingsContent from "@/modules/project-chat/components/settings/ProjectChatSettingsContent.vue";
 import SystemConfig from "@/views/system/SystemConfig.vue";
 import SystemBotConnectors from "@/views/system/SystemBotConnectors.vue";
 import SystemFtpCredentials from "@/views/system/SystemFtpCredentials.vue";
@@ -2247,6 +2241,7 @@ import {
   SETTINGS_CENTER_PANEL_META,
   SETTINGS_GUIDE_REASON_MAP,
 } from "@/modules/project-chat/constants/settingsCenterConfig.js";
+import { setProjectChatSettingsContext } from "@/modules/project-chat/services/project-chat-settings-context.js";
 
 const ElementEasyForm = defineAsyncComponent(async () => {
   const [module] = await Promise.all([
@@ -13074,6 +13069,36 @@ function persistComposerPlanStateForChatSession(projectId, chatSessionId) {
     return;
   }
   persistRememberedChatSessionMessages(projectId, chatSessionId);
+}
+
+function settleComposerPlanForChatSession(
+  projectId,
+  chatSessionId,
+) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId || !normalizedChatSessionId) return false;
+  const state = getComposerPlanState(
+    normalizedProjectId,
+    normalizedChatSessionId,
+  );
+  if (!state.plan) return false;
+  rememberComposerPlanState(
+    normalizedProjectId,
+    normalizedChatSessionId,
+    null,
+    "",
+  );
+  if (isCurrentChatSession(normalizedProjectId, normalizedChatSessionId)) {
+    activeComposerPlan.value = null;
+    activeComposerPlanOwnerId.value = "";
+    composerPlanExpanded.value = true;
+  }
+  persistComposerPlanStateForChatSession(
+    normalizedProjectId,
+    normalizedChatSessionId,
+  );
+  return true;
 }
 
 function restoreComposerPlanStateFromRuntimePayload(
@@ -32506,6 +32531,7 @@ function resolvePendingRequest(requestId, pending, content = "") {
   if (!pending || !requestId) return;
   finishMessageExecutionTiming(resolvePendingRequestRow(pending));
   const { chatSessionId } = cleanupRequest(requestId, pending);
+  settleComposerPlanForChatSession(pending.projectId, chatSessionId);
   if (!hasPendingRequestForChatSession(chatSessionId)) {
     clearWorkingStatusStartForChatSession(chatSessionId);
   }
@@ -32518,6 +32544,7 @@ function rejectPendingRequest(requestId, pending, error) {
   if (!pending || !requestId) return;
   finishMessageExecutionTiming(resolvePendingRequestRow(pending));
   const { chatSessionId } = rejectAndCleanupRequest(requestId, pending, error);
+  settleComposerPlanForChatSession(pending.projectId, chatSessionId);
   if (!hasPendingRequestForChatSession(chatSessionId)) {
     clearWorkingStatusStartForChatSession(chatSessionId);
   }
@@ -34329,10 +34356,15 @@ async function buildLocalLiuAgentModelRuntime(
   return runtime;
 }
 
-function resolvePendingRequestFast(requestId, pending, content = "") {
+function resolvePendingRequestFast(
+  requestId,
+  pending,
+  content = "",
+) {
   if (!pending || !requestId) return;
   finishMessageExecutionTiming(resolvePendingRequestRow(pending));
   const { chatSessionId } = cleanupRequest(requestId, pending);
+  settleComposerPlanForChatSession(pending.projectId, chatSessionId);
   if (!hasPendingRequestForChatSession(chatSessionId)) {
     clearWorkingStatusStartForChatSession(chatSessionId);
   }
@@ -35914,6 +35946,7 @@ projectChatSettingsPageContext = {
   webToolsProviderRows,
   webToolsScopeOptions,
 };
+setProjectChatSettingsContext(projectChatSettingsPageContext);
 
 onMounted(async () => {
   loading.value = true;

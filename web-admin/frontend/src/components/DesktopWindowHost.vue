@@ -3,7 +3,10 @@
     <div
       ref="mountPoint"
       class="desktop-window-host__mount"
-      :class="{ 'desktop-window-host__mount--chat': isChatRoute }"
+      :class="{
+        'desktop-window-host__mount--chat': isChatRoute,
+        'desktop-window-host__mount--settings': isSettingsRoute,
+      }"
     >
       <component
         :is="activeComponent"
@@ -119,7 +122,9 @@ const activeComponent = computed(() =>
   componentForPath.find((entry) => entry.match(routeState.path))?.component || null,
 );
 const isChatRoute = computed(() =>
-  routeState.path === "/ai/chat" ||
+  routeState.path === "/ai/chat",
+);
+const isSettingsRoute = computed(() =>
   routeState.path.startsWith("/ai/chat/settings"),
 );
 
@@ -170,6 +175,18 @@ onBeforeUnmount(() => {
 .desktop-window-host__mount--chat {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+.desktop-window-host__mount--settings {
+  overflow-x: hidden;
+  overflow-y: hidden;
+}
+
+.desktop-window-host__mount--settings :deep(> .project-chat-settings-page) {
+  height: 100% !important;
+  min-height: 100%;
+  max-height: 100% !important;
   overflow: hidden;
 }
 

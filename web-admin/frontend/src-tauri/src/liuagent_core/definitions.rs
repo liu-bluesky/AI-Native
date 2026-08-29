@@ -123,6 +123,46 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "list_local_resources",
+            description: "列出当前工作区已配置的本地智能体、技能或规则资源。用户要求查看技能、插件管理说明或本地规则时使用；kind 只能是 agent、skill 或 rule。",
+            action: "resource.read",
+            risk: "low",
+            requires_approval: false,
+            scope: "workspace",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["agent", "skill", "rule"]
+                    }
+                },
+                "required": ["kind"]
+            }),
+        },
+        ToolDefinition {
+            name: "read_local_resource",
+            description: "读取当前工作区已配置的本地智能体、技能或规则文件。用户要求安装、配置或排查插件时，先读取相关 SKILL.md。",
+            action: "resource.read",
+            risk: "low",
+            requires_approval: false,
+            scope: "workspace",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["agent", "skill", "rule"]
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "相对于对应资源目录的路径，例如 plugin-manager/SKILL.md"
+                    }
+                },
+                "required": ["kind", "path"]
+            }),
+        },
+        ToolDefinition {
             name: "search_text",
             description: "在本地 workspace 内搜索文本",
             action: "file.read",
