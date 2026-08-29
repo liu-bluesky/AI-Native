@@ -9,18 +9,18 @@ import {
 
 const interaction = normalizeStructuredInteraction({
   structured_interaction: {
-    id: "create-agent-1",
+    id: "update-agent-1",
     kind: "confirmation",
-    operation: "create_agent",
-    user_message: "我准备创建一个售前客服智能体。",
-    summary: "请确认创建配置",
+    operation: "update_agent",
+    user_message: "我准备更新一个售前客服智能体。",
+    summary: "请确认更新配置",
     data: { name: "售前客服", channels: ["web", "mobile"] },
     fields: [{ name: "name", label: "名称" }],
     presentation_hint: { type: "form", reason: "配置字段较多" },
   },
 });
 
-assert.equal(interaction.id, "create-agent-1");
+assert.equal(interaction.id, "update-agent-1");
 assert.equal(interaction.confirmationRequired, true);
 assert.equal(chooseInteractionPresentation(interaction, { channel: "bot" }), "card");
 assert.equal(chooseInteractionPresentation(interaction, { channel: "web" }), "form");

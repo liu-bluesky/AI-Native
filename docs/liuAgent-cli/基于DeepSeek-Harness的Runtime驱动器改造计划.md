@@ -33,14 +33,14 @@ RuntimeDriver 驱动器
 
 重点借鉴：
 
-| DeepSeek-Harness 设计                              | 当前项目对应目标                       |
-| -------------------------------------------------- | -------------------------------------- |
-| `packages/jobs/jobs/src/types.ts`                  | Job 取消、完成、快照和资源释放         |
-| `packages/jobs/jobs-local/src/index.ts`            | JobRegistry、Owner、并发限制和销毁回收 |
-| `packages/plan/plan-mode/src/index.ts`             | 计划状态持久化和用户审批               |
-| `packages/interaction/user-questions/src/index.ts` | 用户等待支持 AbortSignal               |
-| `docs/architecture.zh.md`                          | 持久事件、实时事件和能力事件分层       |
-| `docs/tool-execution-pipeline.zh.md`               | 权限、超时、重试和工具终态             |
+| DeepSeek-Harness 设计 | 当前项目对应目标 |
+|---|---|
+| `packages/jobs/jobs/src/types.ts` | Job 取消、完成、快照和资源释放 |
+| `packages/jobs/jobs-local/src/index.ts` | JobRegistry、Owner、并发限制和销毁回收 |
+| `packages/plan/plan-mode/src/index.ts` | 计划状态持久化和用户审批 |
+| `packages/interaction/user-questions/src/index.ts` | 用户等待支持 AbortSignal |
+| `docs/architecture.zh.md` | 持久事件、实时事件和能力事件分层 |
+| `docs/tool-execution-pipeline.zh.md` | 权限、超时、重试和工具终态 |
 
 完整功能节点与参考模块路径见：
 

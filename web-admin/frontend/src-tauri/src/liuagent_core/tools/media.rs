@@ -141,14 +141,27 @@ fn execute_direct_image_tool(
     if !status.is_success() {
         let detail =
             extract_error_detail(&payload).unwrap_or_else(|| text.chars().take(800).collect());
-        return Err(ToolError::new(
-            "tool.execution_failed",
+        let error_code = if status.as_u16() == 429 || status.is_server_error() {
+            "tool.provider_unavailable"
+        } else {
+            "tool.execution_failed"
+        };
+        let message = if status.as_u16() == 503
+            && detail
+                .to_ascii_lowercase()
+                .contains("no available compatible accounts")
+        {
+            format!(
+                "图片服务暂时不可用（HTTP 503）：当前供应商没有可用的兼容账户，请稍后重试。地址={endpoint}"
+            )
+        } else {
             format!(
                 "图片模型调用失败，HTTP {}：{}，地址={endpoint}",
                 status.as_u16(),
                 detail
-            ),
-        ));
+            )
+        };
+        return Err(ToolError::new(error_code, message));
     }
     let artifacts = extract_image_artifacts(&payload);
     if artifacts.is_empty() {

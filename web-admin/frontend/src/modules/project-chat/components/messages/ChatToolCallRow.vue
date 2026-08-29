@@ -20,7 +20,11 @@
       </span>
       <span class="chat-tool-row__copy">
         <span class="chat-tool-row__title">{{ title }}</span>
-        <span class="chat-tool-row__summary" :class="{ 'is-error': state === 'error' }">
+        <span
+          v-if="collapsedSummary && collapsedSummary !== title"
+          class="chat-tool-row__summary"
+          :class="{ 'is-error': state === 'error' }"
+        >
           {{ collapsedSummary }}
         </span>
       </span>
@@ -154,12 +158,16 @@ watch(
 .chat-tool-row {
   display: flex;
   flex-direction: column;
+  width: 100%;
+  min-width: 0;
 }
 
 .chat-tool-row__head {
   position: relative;
   display: flex;
+  box-sizing: border-box;
   width: 100%;
+  min-width: 0;
   min-height: 24px;
   align-items: flex-start;
   padding: 0;
@@ -255,6 +263,7 @@ watch(
 }
 
 .chat-tool-row__copy {
+  width: 0;
   min-width: 0;
   flex: 1;
   display: flex;
@@ -266,11 +275,12 @@ watch(
 .chat-tool-row__title {
   max-width: 100%;
   min-width: 0;
-  overflow: hidden;
+  overflow-wrap: anywhere;
   color: #334155;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 18px;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .chat-tool-row__summary {
@@ -280,6 +290,7 @@ watch(
   color: #94a3b8;
   font-size: 12px;
   line-height: 18px;
+  word-break: break-word;
   white-space: normal;
 }
 

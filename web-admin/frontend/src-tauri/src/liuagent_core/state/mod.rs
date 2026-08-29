@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,9 +14,19 @@ use super::paths::desktop_runtime_root;
 use super::types::{ToolError, ToolExecutionResult};
 
 static RUNTIME_STATE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SESSION_EVENT_INDEX: OnceLock<Mutex<HashMap<PathBuf, SessionEventIndex>>> = OnceLock::new();
+
+struct SessionEventIndex {
+    seen_event_ids: HashSet<String>,
+    next_seq: u64,
+}
 
 fn runtime_state_write_lock() -> &'static Mutex<()> {
     RUNTIME_STATE_WRITE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn session_event_index() -> &'static Mutex<HashMap<PathBuf, SessionEventIndex>> {
+    SESSION_EVENT_INDEX.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,6 +39,8 @@ pub struct RuntimeArtifactPaths {
     pub active_session_path: String,
     pub session_history_path: String,
     pub outbox_path: String,
+    pub session_events_path: String,
+    pub session_context_path: String,
     pub runtime_events: Vec<Value>,
 }
 
@@ -220,6 +233,9 @@ pub fn write_runtime_artifacts(
         }),
     )?;
     append_jsonl(&paths.transcript_path, &transcript_events)?;
+    for event in &transcript_events {
+        append_session_event_locked(&paths, event)?;
+    }
     append_jsonl(&paths.audit_path, input.audit_logs)?;
     write_json(
         &paths.active_session_path,
@@ -306,6 +322,8 @@ pub fn write_runtime_artifacts(
         active_session_path: paths.active_session_path.to_string_lossy().to_string(),
         session_history_path: paths.session_history_path.to_string_lossy().to_string(),
         outbox_path: paths.outbox_path.to_string_lossy().to_string(),
+        session_events_path: paths.session_events_path.to_string_lossy().to_string(),
+        session_context_path: paths.session_context_path.to_string_lossy().to_string(),
         runtime_events: transcript_events,
     })
 }
@@ -349,7 +367,75 @@ pub fn append_runtime_event(
     let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
     ensure_parent(&paths.transcript_path)?;
     append_jsonl(&paths.transcript_path, &[event.clone()])?;
+    append_session_event_locked(&paths, event)?;
     persist_runtime_event_checkpoint(&paths, project_id, chat_session_id, event, None)
+}
+
+fn append_session_event_locked(
+    paths: &RuntimeArtifactPathBufs,
+    event: &Value,
+) -> Result<(), ToolError> {
+    ensure_parent(&paths.session_events_path)?;
+    let event_id = event
+        .get("event_id")
+        .or_else(|| event.get("eventId"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let path = paths.session_events_path.clone();
+    let mut indexes = session_event_index()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "session event index lock is poisoned"))?;
+    if !indexes.contains_key(&path) {
+        let existing = if path.exists() {
+            read_jsonl(&path)?
+        } else {
+            Vec::new()
+        };
+        let mut seen_event_ids = HashSet::new();
+        let mut next_seq = 0;
+        for item in existing {
+            if let Some(existing_event_id) = item
+                .get("event_id")
+                .or_else(|| item.get("eventId"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                seen_event_ids.insert(existing_event_id.to_string());
+            }
+            if let Some(seq) = item.get("seq").and_then(Value::as_u64) {
+                next_seq = next_seq.max(seq.saturating_add(1));
+            }
+        }
+        indexes.insert(
+            path.clone(),
+            SessionEventIndex {
+                seen_event_ids,
+                next_seq,
+            },
+        );
+    }
+    let index = indexes
+        .get_mut(&path)
+        .ok_or_else(|| ToolError::new("state.lock_failed", "session event index unavailable"))?;
+    if !event_id.is_empty() && index.seen_event_ids.contains(event_id) {
+        return Ok(());
+    }
+    let seq = index.next_seq;
+    let mut envelope = json!({
+        "seq": seq,
+        "type": event.get("type").cloned().unwrap_or_else(|| json!("runtime/event")),
+        "data": event,
+        "created_at_epoch_ms": epoch_millis()
+    });
+    if let Some(object) = envelope.as_object_mut() {
+        object.insert("event_id".to_string(), json!(event_id));
+    }
+    append_jsonl(&paths.session_events_path, &[envelope])?;
+    index.next_seq = index.next_seq.saturating_add(1);
+    if !event_id.is_empty() {
+        index.seen_event_ids.insert(event_id.to_string());
+    }
+    Ok(())
 }
 
 pub fn pause_runtime_checkpoint(
@@ -392,6 +478,7 @@ pub fn pause_runtime_checkpoint(
         "created_at_epoch_ms": now
     });
     append_jsonl(&paths.transcript_path, &[pause_event.clone()])?;
+    append_session_event_locked(&paths, &pause_event)?;
     persist_runtime_event_checkpoint(
         &paths,
         project_id,
@@ -1013,6 +1100,8 @@ struct RuntimeArtifactPathBufs {
     active_session_path: PathBuf,
     session_history_path: PathBuf,
     outbox_path: PathBuf,
+    session_events_path: PathBuf,
+    session_context_path: PathBuf,
 }
 
 fn normalize_cache_kind(value: &str) -> String {
@@ -1086,7 +1175,76 @@ fn runtime_artifact_paths(
             .join("query-mcp")
             .join("outbox")
             .join(format!("{safe_project_id}__{safe_chat_session_id}.jsonl")),
+        session_events_path: session_dir.join("session-events.jsonl"),
+        session_context_path: session_dir.join("session-context.json"),
     }
+}
+
+pub fn load_session_context(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Option<Value> {
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    fs::read_to_string(paths.session_context_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+}
+
+pub fn append_session_context_event(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    event_type: &str,
+    data: Value,
+) -> Result<(), ToolError> {
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    ensure_parent(&paths.session_events_path)?;
+    ensure_parent(&paths.session_context_path)?;
+    let existing = if paths.session_events_path.exists() {
+        read_jsonl(&paths.session_events_path)?
+    } else {
+        Vec::new()
+    };
+    let seq = existing
+        .iter()
+        .filter_map(|event| event.get("seq").and_then(Value::as_u64))
+        .max()
+        .map(|value| value + 1)
+        .unwrap_or(0);
+    let event = json!({
+        "seq": seq,
+        "type": event_type,
+        "data": data,
+        "created_at_epoch_ms": epoch_millis()
+    });
+    append_jsonl(&paths.session_events_path, &[event.clone()])?;
+    let mut context = read_json_or_default(&paths.session_context_path, json!({}))?;
+    if !context.is_object() {
+        context = json!({});
+    }
+    if let Some(object) = context.as_object_mut() {
+        object.insert("version".to_string(), json!("desktop-session-context/v2"));
+        object.insert("project_id".to_string(), json!(project_id));
+        object.insert("chat_session_id".to_string(), json!(chat_session_id));
+        object.insert("updated_at_epoch_ms".to_string(), json!(epoch_millis()));
+        match event_type {
+            "user/message" => {
+                object.insert("last_user_message".to_string(), event["data"].clone());
+            }
+            "request/header" => {
+                object.insert("request_header".to_string(), event["data"].clone());
+            }
+            "assistant/message" => {
+                object.insert("last_assistant_message".to_string(), event["data"].clone());
+            }
+            _ => {}
+        }
+    }
+    write_json(&paths.session_context_path, &context)
 }
 
 fn build_transcript_events(input: &RuntimePersistenceInput<'_>, now: u128) -> Vec<Value> {
@@ -1323,6 +1481,50 @@ fn read_jsonl(path: &Path) -> Result<Vec<Value>, ToolError> {
 mod tests {
     use super::*;
     use crate::liuagent_core::types::ToolExecutionResult;
+
+    #[test]
+    fn session_context_log_persists_ordered_request_composition() {
+        let dir = std::env::temp_dir().join(format!("liuagent_session_context_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        append_session_context_event(
+            &dir,
+            "proj-test",
+            "chat-session-context",
+            "user/message",
+            json!({
+                "message_id": "msg-1",
+                "content": "美化照片",
+                "attachments": [{"attachmentId": "att-1", "name": "photo.jpg"}],
+                "media_tools": [{"name": "edit_image"}],
+            }),
+        )
+        .unwrap();
+        append_session_context_event(
+            &dir,
+            "proj-test",
+            "chat-session-context",
+            "request/header",
+            json!({
+                "provider_id": "local-provider",
+                "model_name": "gpt-5.6",
+                "tool_manifest": ["edit_image"],
+            }),
+        )
+        .unwrap();
+
+        let paths = runtime_artifact_paths(&dir, "proj-test", "chat-session-context");
+        let events = read_jsonl(&paths.session_events_path).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["seq"], 0);
+        assert_eq!(events[1]["seq"], 1);
+        let context = load_session_context(&dir, "proj-test", "chat-session-context").unwrap();
+        assert_eq!(context["version"], "desktop-session-context/v2");
+        assert_eq!(context["request_header"]["tool_manifest"][0], "edit_image");
+        assert_eq!(
+            context["last_user_message"]["attachments"][0]["attachmentId"],
+            "att-1"
+        );
+    }
 
     #[test]
     fn runtime_events_roll_checkpoint_and_pause_freezes_latest_node() {

@@ -43,11 +43,11 @@ use super::prompt::{
 };
 use super::state::recover_runtime_session;
 use super::state::{
-    append_runtime_event, cleanup_synced_offline_cache, delete_runtime_outbox_entries,
-    list_runtime_events as read_runtime_events, list_runtime_outbox as read_runtime_outbox,
-    load_offline_cache_record, pause_runtime_checkpoint, recover_runtime_state,
-    save_offline_cache_record, write_runtime_artifacts, RuntimeArtifactPaths,
-    RuntimePersistenceInput,
+    append_runtime_event, append_session_context_event, cleanup_synced_offline_cache,
+    delete_runtime_outbox_entries, list_runtime_events as read_runtime_events,
+    list_runtime_outbox as read_runtime_outbox, load_offline_cache_record, load_session_context,
+    pause_runtime_checkpoint, recover_runtime_state, save_offline_cache_record,
+    write_runtime_artifacts, RuntimeArtifactPaths, RuntimePersistenceInput,
 };
 use super::tools::command::classify_command_risk;
 use super::tools::mcp::{call_routed_mcp_tool, discover_mcp_tools, DiscoveredMcpTool};
@@ -326,6 +326,26 @@ fn recover_local_runtime_state_inner(
     let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     let (mut state, runtime_events) =
         recover_runtime_session(&workspace_root, &project_id, &chat_session_id)?;
+    let resume_context =
+        load_requirement_resume_context(&workspace_root, &project_id, &chat_session_id);
+    let session_context = load_session_context(&workspace_root, &project_id, &chat_session_id);
+    if let Some(object) = state.as_object_mut() {
+        if let Some(resume_context) = resume_context {
+            object.insert("resume_context".to_string(), resume_context.clone());
+            if session_context.is_none() {
+                object.insert(
+                    "session_context".to_string(),
+                    json!({
+                        "version": "desktop-session-context/v1",
+                        "resume_context": resume_context,
+                    }),
+                );
+            }
+        }
+        if let Some(session_context) = session_context {
+            object.insert("session_context".to_string(), session_context);
+        }
+    }
     let background_jobs = collect_runtime_background_jobs(&state);
     let resume_judgement = build_resume_judgement(&state, &background_jobs);
     if let Some(object) = state.as_object_mut() {
@@ -347,6 +367,125 @@ fn recover_local_runtime_state_inner(
         error_code: String::new(),
         error: String::new(),
     })
+}
+
+fn load_requirement_resume_context(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Option<Value> {
+    let path = requirement_record_path(&workspace_root.to_path_buf(), project_id, chat_session_id);
+    let raw = fs::read_to_string(path).ok()?;
+    let record = serde_json::from_str::<Value>(&raw).ok()?;
+    record.get("resume_context").cloned()
+}
+
+fn restore_local_chat_request_from_session(
+    request: &mut LocalChatRequest,
+    session_context: Option<Value>,
+) {
+    let Some(last_user_message) = session_context
+        .as_ref()
+        .and_then(|context| context.get("last_user_message"))
+    else {
+        return;
+    };
+    if request.history.is_empty() {
+        if let Some(history) = last_user_message.get("history") {
+            request.history = serde_json::from_value(history.clone()).unwrap_or_default();
+        }
+    }
+    if request.attachments.is_empty() {
+        if let Some(attachments) = last_user_message.get("attachments") {
+            request.attachments = serde_json::from_value(attachments.clone()).unwrap_or_default();
+        }
+    }
+    if request.media_tools.is_empty() {
+        if let Some(media_tools) = last_user_message.get("media_tools") {
+            request.media_tools = serde_json::from_value(media_tools.clone()).unwrap_or_default();
+        }
+    }
+    if request.mcp_config.is_null() || request.mcp_config == json!({}) {
+        if let Some(mcp_config) = last_user_message.get("mcp_config") {
+            request.mcp_config = mcp_config.clone();
+        }
+    }
+    if request.provider_id.is_none() {
+        request.provider_id = last_user_message
+            .get("provider_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+    if request.model_name.is_none() {
+        request.model_name = last_user_message
+            .get("model_name")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+    if let Some(header) = session_context.and_then(|context| context.get("request_header").cloned())
+    {
+        if request.media_tools.is_empty() {
+            request.media_tools = serde_json::from_value(
+                header
+                    .get("media_tools")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+            )
+            .unwrap_or_default();
+        }
+    }
+}
+
+fn session_request_header(request: &ModelStepRequest) -> Value {
+    let mut tool_manifest = tool_definitions_for_request(request)
+        .into_iter()
+        .map(|definition| definition.name.to_string())
+        .collect::<Vec<_>>();
+    tool_manifest.extend(
+        request
+            .selected_mcp_tools
+            .iter()
+            .map(|tool| tool.name.clone()),
+    );
+    tool_manifest.sort();
+    tool_manifest.dedup();
+    json!({
+        "provider_id": request.provider_id,
+        "model_name": request.model_name,
+        "enabled_plugins": if request.media_tools.is_empty() { json!([]) } else { json!(["media"]) },
+        "media_tools": request.media_tools,
+        "tool_manifest": tool_manifest,
+        "mcp_catalog_version": request.mcp_catalog_version,
+        "mcp_discovery_error": request.mcp_discovery_error,
+    })
+}
+
+fn redact_session_mcp_config(mut config: Value) -> Value {
+    if let Some(object) = config.as_object_mut() {
+        let secret_keys = object
+            .keys()
+            .filter(|key| {
+                let normalized = key.to_ascii_lowercase();
+                normalized.contains("key")
+                    || normalized.contains("token")
+                    || normalized.contains("secret")
+                    || normalized.contains("password")
+                    || normalized.contains("authorization")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in secret_keys {
+            object.remove(&key);
+        }
+        for value in object.values_mut() {
+            *value = redact_session_mcp_config(value.take());
+        }
+    } else if let Some(items) = config.as_array_mut() {
+        for value in items {
+            *value = redact_session_mcp_config(value.take());
+        }
+    }
+    config
 }
 
 fn collect_runtime_background_jobs(state: &Value) -> Value {
@@ -733,7 +872,7 @@ fn ack_local_runtime_outbox_inner(
 }
 
 fn start_local_chat_inner(
-    request: LocalChatRequest,
+    mut request: LocalChatRequest,
     event_sink: Option<&dyn Fn(Value)>,
 ) -> Result<LocalChatResult, ToolError> {
     let run_started_at = Instant::now();
@@ -742,6 +881,11 @@ fn start_local_chat_inner(
     let user_message = required_non_empty(&request.message, "message")?;
     let workspace_root = resolve_runtime_workspace_root(&request.workspace_path)?;
     let session_id = format!("local_{}", epoch_millis());
+
+    restore_local_chat_request_from_session(
+        &mut request,
+        load_session_context(&workspace_root, &project_id, &chat_session_id),
+    );
 
     let gateway_result = prepare_local_chat_invocation(&request, &user_message)?;
     let user_message_id = normalized_id(request.message_id.as_deref(), "local_user");
@@ -796,6 +940,31 @@ fn start_local_chat_inner(
         }
     }
     let base_model_request = build_model_request_with_history(&request, &user_message, &[])?;
+    let mut session_header_request = base_model_request.clone();
+    hydrate_mcp_tool_snapshot(&mut session_header_request);
+    append_session_context_event(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        "user/message",
+        json!({
+            "message_id": user_message_id,
+            "content": user_message,
+            "history": request.history.clone(),
+            "attachments": request.attachments.clone(),
+            "media_tools": request.media_tools.clone(),
+            "provider_id": request.provider_id.clone(),
+            "model_name": request.model_name.clone(),
+            "mcp_config": redact_session_mcp_config(request.mcp_config.clone()),
+        }),
+    )?;
+    append_session_context_event(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        "request/header",
+        session_request_header(&session_header_request),
+    )?;
     let context_model_runner =
         |request: &ModelStepRequest| run_model_step_interruptible(&chat_session_id, request);
     let has_context_history = request.history.iter().any(|message| {
@@ -1009,6 +1178,17 @@ fn start_local_chat_inner(
     } else {
         None
     };
+    append_session_context_event(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        "assistant/message",
+        json!({
+            "message_id": assistant_message_id,
+            "content": assistant_content,
+            "status": run_status,
+        }),
+    )?;
     let mut audit_logs = build_tool_audit_logs(
         &session_id,
         &tool_results,
@@ -1560,6 +1740,23 @@ fn build_local_chat_requirement_record(
     record.insert(
         "resume_context".to_string(),
         json!({
+            "version": "desktop-session-context/v1",
+            "message": {
+                "message_id": user_message_id,
+                "content": user_message,
+            },
+            "attachment_refs": model_request
+                .attachments
+                .iter()
+                .map(|attachment| json!({
+                    "attachment_id": attachment.attachment_id,
+                    "name": attachment.name,
+                    "mime_type": attachment.mime_type,
+                    "kind": attachment.kind,
+                    "routing_mode": attachment.routing_mode,
+                    "extraction_status": attachment.extraction_status,
+                }))
+                .collect::<Vec<_>>(),
             "attachments": &model_request.attachments,
             "media_tool_names": model_request
                 .media_tools
@@ -4940,6 +5137,7 @@ impl AgentLoopResult {
         match self.stopped_reason.as_str() {
             "manual_pause" => "runtime.paused".to_string(),
             "runtime_interrupted" => "runtime.interrupted".to_string(),
+            "provider_unavailable" => "tool.provider_unavailable".to_string(),
             "repeated_failure" => "agent_loop.repeated_failure".to_string(),
             "verification_failed" => "agent_loop.verification_failed".to_string(),
             "tool_no_signal" => "agent_loop.no_signal".to_string(),
@@ -4952,6 +5150,9 @@ impl AgentLoopResult {
             "manual_pause" => "desktop local agent paused and checkpointed locally".to_string(),
             "runtime_interrupted" => {
                 "desktop local agent interrupted and checkpointed locally".to_string()
+            }
+            "provider_unavailable" => {
+                "图片服务暂时不可用，当前供应商没有可用的兼容账户".to_string()
             }
             "repeated_failure" => {
                 "agent loop repeated the same failed strategy and failure signature".to_string()
@@ -4979,6 +5180,7 @@ impl AgentLoopResult {
                         .to_string()
                 }
             }
+            "provider_unavailable" => self.final_model_result().error.clone(),
             _ => String::new(),
         }
     }
@@ -5736,6 +5938,26 @@ fn run_agent_loop_with_answered_user_question(
                     awaiting_permission,
                 );
             }
+            if result.error_code == "tool.provider_unavailable" {
+                let attempt = build_agent_loop_attempt(&tool, &result, attempts.len() + 1);
+                attempts.push(attempt);
+                candidate.status = "blocked".to_string();
+                candidate_solutions.push(candidate);
+                tool_results.push(result);
+                stopped_reason = "provider_unavailable".to_string();
+                return finalize_agent_loop_result(
+                    model_steps,
+                    model_input_snapshots,
+                    planned_tools,
+                    tool_results,
+                    candidate_solutions,
+                    attempts,
+                    last_acceptance_gate,
+                    model_plan_tree,
+                    stopped_reason,
+                    awaiting_permission,
+                );
+            }
             if result.ok {
                 if allow_project_workspace_switch {
                     if let Some((project_id, project_workspace_root)) =
@@ -6386,16 +6608,10 @@ fn selected_image_references(
     asset_ids
         .iter()
         .map(|asset_id| {
-            let attachment = attachments
-                .iter()
-                .find(|attachment| {
-                    attachment
-                        .attachment_id
-                        .as_deref()
-                        .map(str::trim)
-                        .is_some_and(|candidate| candidate == asset_id)
-                })
-                .ok_or_else(|| format!("unknown image asset ID: {asset_id}"))?;
+            let attachment =
+                resolve_image_attachment_reference(asset_id, attachments).ok_or_else(|| {
+                    format!("unknown image asset ID: {}", truncate_inline(asset_id, 160))
+                })?;
             if !attachment_is_image(attachment) {
                 return Err(format!("asset ID is not an image: {asset_id}"));
             }
@@ -6403,6 +6619,47 @@ fn selected_image_references(
                 .ok_or_else(|| format!("image asset has no usable content: {asset_id}"))
         })
         .collect()
+}
+
+fn resolve_image_attachment_reference<'a>(
+    raw_reference: &str,
+    attachments: &'a [LocalChatAttachment],
+) -> Option<&'a LocalChatAttachment> {
+    let normalized = raw_reference.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    if let Some(attachment) = attachments.iter().find(|attachment| {
+        attachment
+            .attachment_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|candidate| candidate == normalized)
+    }) {
+        return Some(attachment);
+    }
+    let embedded_reference = normalized
+        .split('|')
+        .map(str::trim)
+        .find(|part| is_supported_image_reference(part));
+    if let Some(reference) = embedded_reference {
+        if let Some(attachment) = attachments
+            .iter()
+            .find(|attachment| attachment_image_reference(attachment).as_deref() == Some(reference))
+        {
+            return Some(attachment);
+        }
+    }
+    if normalized.starts_with("context-ref-") {
+        let image_attachments = attachments
+            .iter()
+            .filter(|attachment| attachment_is_image(attachment))
+            .collect::<Vec<_>>();
+        if image_attachments.len() == 1 {
+            return image_attachments.into_iter().next();
+        }
+    }
+    None
 }
 
 fn tool_arguments_with_backend_context(
@@ -8723,6 +8980,7 @@ fn is_recoverable_tool_failure(
     matches!(
         result.error_code.as_str(),
         "tool.schema_invalid"
+            | "tool.provider_unavailable"
             | "web_search.unconfigured"
             | "web_extract.unconfigured"
             | "mcp.config_missing"
@@ -12724,6 +12982,7 @@ mod tests {
                     images: Vec::new(),
                     videos: Vec::new(),
                     audios: Vec::new(),
+                    attachment_refs: Vec::new(),
                     reasoning_content: None,
                     source_kind: None,
                     diagnostic: None,
@@ -13651,7 +13910,7 @@ mod tests {
             "call_write_agent".to_string(),
             "write_file".to_string(),
             json!({"path": ".ai-employee/agents/老板/AGENT.md"}),
-            "created agent definition".to_string(),
+            "updated agent definition".to_string(),
         );
         let command_result = crate::liuagent_core::types::ToolExecutionResult::ok(
             "call_validate_agent".to_string(),
@@ -14192,12 +14451,12 @@ mod tests {
         assert!(!tool_names.contains("ask_user_question"));
         assert!(is_non_task_conversation(" hello "));
         assert!(is_non_task_conversation("你能做什么？"));
-        assert!(!is_non_task_conversation("你好，请帮我创建一个智能体"));
+        assert!(!is_non_task_conversation("你好，请帮我更新一个智能体"));
     }
 
     #[test]
     fn answered_user_question_omits_user_question_pause_tool() {
-        let mut request = test_model_request("创建一个 AI Employee");
+        let mut request = test_model_request("更新一个 AI Employee");
         request.mcp_config = json!({ "_answered_user_question": true });
         let tool_names = tool_definitions_for_request(&request)
             .into_iter()
@@ -15282,7 +15541,7 @@ mod tests {
             epoch_millis()
         ));
         fs::create_dir_all(&dir).unwrap();
-        let request = test_model_request("Create an agent");
+        let request = test_model_request("Update an existing agent");
         let answered_context = json!({
             "answeredQuestions": [{
                 "id": "agent-name",
@@ -15321,7 +15580,7 @@ mod tests {
                     .unwrap_or_default()
                     .contains("Frontend Creator")
             }));
-            test_model_result("Draft created", Vec::new())
+            test_model_result("Update prepared", Vec::new())
         };
         let tool_runner = |_request: ToolExecutionRequest| {
             panic!("the repeated answered question must not reach the real tool runner")
@@ -15356,7 +15615,7 @@ mod tests {
             epoch_millis()
         ));
         fs::create_dir_all(&dir).unwrap();
-        let request = test_model_request("Create an agent");
+        let request = test_model_request("Update an existing agent");
         let answered_context = json!({
             "answeredQuestions": [{
                 "id": "agent-name",
@@ -15395,7 +15654,7 @@ mod tests {
                     .unwrap_or_default()
                     .contains("followupQuestionBlocked")
             }));
-            test_model_result("Draft created with reasonable defaults", Vec::new())
+            test_model_result("Update prepared with reasonable defaults", Vec::new())
         };
         let tool_runner = |_request: ToolExecutionRequest| {
             panic!("a second supplement round must not reach the real tool runner")
@@ -15433,7 +15692,7 @@ mod tests {
             epoch_millis()
         ));
         fs::create_dir_all(&dir).unwrap();
-        let request = test_model_request("创建一个 AI Employee");
+        let request = test_model_request("更新一个 AI Employee");
         let answered_context = json!({
             "answeredQuestions": [{
                 "id": "agent-name",
@@ -16920,6 +17179,7 @@ mod tests {
             images: vec!["https://example.test/reference.png".to_string()],
             videos: Vec::new(),
             audios: Vec::new(),
+            attachment_refs: Vec::new(),
             reasoning_content: None,
             source_kind: None,
             diagnostic: None,
@@ -17578,6 +17838,57 @@ mod tests {
             execution_args["_reference_images"][0],
             "https://example.test/history-image.png"
         );
+    }
+
+    #[test]
+    fn edit_image_resolves_context_reference_with_embedded_data_url() {
+        let mut request = test_model_request("编辑历史图片");
+        request.media_tools = vec![LocalMediaToolConfig {
+            name: "edit_image".to_string(),
+            provider_id: "provider-image".to_string(),
+            model_name: "image-model".to_string(),
+            ..Default::default()
+        }];
+        request.attachments = vec![LocalChatAttachment {
+            attachment_id: Some("att-original".to_string()),
+            name: "photo.jpg".to_string(),
+            mime_type: Some("image/jpeg".to_string()),
+            size: None,
+            kind: Some("image".to_string()),
+            routing_mode: Some("inline_image".to_string()),
+            extraction_status: Some("image_data_url".to_string()),
+            data_url: Some("data:image/jpeg;base64,PHOTO".to_string()),
+            extracted_text: None,
+            provider_file_id: None,
+            error: None,
+        }];
+        let tool = PlannedLocalTool {
+            tool_call_id: "call-context-image".to_string(),
+            name: "edit_image".to_string(),
+            arguments: json!({
+                "prompt": "提升照片质感",
+                "input_asset_ids": [
+                    "context-ref-0-image|chat-local-1|data:image/jpeg;base64,PHOTO"
+                ]
+            }),
+            summary: "edit image".to_string(),
+        };
+
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            &request.project_id,
+            request.backend_context.as_ref(),
+            &request.mcp_config,
+            &request.media_tools,
+            &request.attachments,
+            tool.arguments.clone(),
+        );
+
+        assert_eq!(
+            execution_args["_reference_images"][0],
+            "data:image/jpeg;base64,PHOTO"
+        );
+        assert!(execution_args.get("_media_validation_error").is_none());
     }
 
     #[test]
@@ -19214,6 +19525,7 @@ mod tests {
                 images: Vec::new(),
                 videos: Vec::new(),
                 audios: Vec::new(),
+                attachment_refs: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
@@ -19226,6 +19538,7 @@ mod tests {
                 images: Vec::new(),
                 videos: Vec::new(),
                 audios: Vec::new(),
+                attachment_refs: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
@@ -19271,6 +19584,7 @@ mod tests {
                 images: Vec::new(),
                 videos: Vec::new(),
                 audios: Vec::new(),
+                attachment_refs: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
@@ -19283,6 +19597,7 @@ mod tests {
                 images: Vec::new(),
                 videos: Vec::new(),
                 audios: Vec::new(),
+                attachment_refs: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
@@ -19295,6 +19610,7 @@ mod tests {
                 images: Vec::new(),
                 videos: Vec::new(),
                 audios: Vec::new(),
+                attachment_refs: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
@@ -19307,6 +19623,7 @@ mod tests {
                 images: Vec::new(),
                 videos: Vec::new(),
                 audios: Vec::new(),
+                attachment_refs: Vec::new(),
                 reasoning_content: None,
                 source_kind: None,
                 diagnostic: None,
@@ -19337,6 +19654,7 @@ mod tests {
             images: Vec::new(),
             videos: Vec::new(),
             audios: Vec::new(),
+            attachment_refs: Vec::new(),
             reasoning_content: None,
             source_kind: None,
             diagnostic: None,
@@ -19362,6 +19680,7 @@ mod tests {
             images: Vec::new(),
             videos: Vec::new(),
             audios: Vec::new(),
+            attachment_refs: Vec::new(),
             reasoning_content: None,
             source_kind: None,
             diagnostic: None,

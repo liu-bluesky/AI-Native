@@ -189,11 +189,6 @@
                                   快捷键
                                 </span>
                                 <span class="message-inline-editor__shortcut">
-                                  <kbd>Cmd/Ctrl</kbd>
-                                  <kbd>Enter</kbd>
-                                  <span>重新生成</span>
-                                </span>
-                                <span class="message-inline-editor__shortcut">
                                   <kbd>Esc</kbd>
                                   <span>取消</span>
                                 </span>
@@ -214,14 +209,6 @@
                                   @click="applyInlineMessageEditToComposer"
                                 >
                                   应用到输入框
-                                </el-button>
-                                <el-button
-                                  type="primary"
-                                  class="message-inline-editor__button message-inline-editor__button--primary"
-                                  :loading="inlineEditingBusy"
-                                  @click="submitInlineMessageEditAndReplay"
-                                >
-                                  保存并重新生成
                                 </el-button>
                               </div>
                             </div>
@@ -1009,9 +996,6 @@
                                 }}
                               </div>
                             </div>
-                            <div class="message-employee-draft__pills">
-                              <span class="employee-draft-pill">仅更新已有定义</span>
-                            </div>
                           </div>
                           <div
                             v-if="getEmployeeDraftCard(item).description"
@@ -1071,11 +1055,11 @@
                             </ol>
                           </div>
                           <div
-                            v-if="item.employeeDraftCreatedName"
+                            v-if="item.employeeDraftUpdatedName"
                             class="message-employee-draft__actions"
                           >
                             <span class="message-employee-draft__success">
-                              已同步至本地目录：{{ item.employeeDraftCreatedName }}
+                              已同步更新至本地目录：{{ item.employeeDraftUpdatedName }}
                             </span>
                           </div>
                           <div
@@ -1084,21 +1068,21 @@
                           >
                             <el-button
                               size="small"
-                              @click="continueEmployeeDraftRefinement(item)"
+                              @click="continueEmployeeUpdateRefinement(item)"
                             >
                               继续完善
                             </el-button>
                             <el-button
                               size="small"
                               type="primary"
-                              @click="openEmployeeDraftConfirmation(item)"
+                              @click="openEmployeeUpdateConfirmation(item)"
                             >
                               确认更新
                             </el-button>
                             <el-button
                               size="small"
                               text
-                              @click="cancelEmployeeDraft(item)"
+                              @click="cancelEmployeeUpdate(item)"
                             >
                               取消
                             </el-button>
@@ -1720,13 +1704,12 @@
     </template>
   </el-dialog>
 
-  <ProjectEmployeeDraftCreateDialog
+  <ProjectEmployeeUpdateDialog
     v-model="employeeDraftDialogVisible"
     :loading="employeeDraftDialogLoading"
-    :submitting="employeeCreateSubmitting"
+    :submitting="employeeUpdateSubmitting"
     :payload="employeeDraftDialogPayload"
-    :mode="employeeDraftDialogMode"
-    @confirm="confirmEmployeeDraftCreation"
+    @confirm="confirmEmployeeUpdate"
     @close="resetEmployeeDraftDialogState"
   />
 
@@ -1831,7 +1814,7 @@ import {
 } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import ProjectEmployeeDraftCreateDialog from "@/components/ProjectEmployeeDraftCreateDialog.vue";
+import ProjectEmployeeUpdateDialog from "@/components/ProjectEmployeeUpdateDialog.vue";
 import ChatComposer from "@/modules/project-chat/components/composer/ChatComposer.vue";
 import ChatMediaParameterPopover from "@/modules/project-chat/components/composer/ChatMediaParameterPopover.vue";
 import ChatMessageList from "@/modules/project-chat/components/messages/ChatMessageList.vue";
@@ -2412,7 +2395,6 @@ const employeeDraftDialogVisible = ref(false);
 const employeeDraftDialogLoading = ref(false);
 const employeeDraftDialogPayload = ref(null);
 const employeeDraftDialogItem = ref(null);
-const employeeDraftDialogMode = ref("update");
 const skillResourceDialogVisible = ref(false);
 const skillResourceDirectoryDraft = ref("");
 const skillResourceDirectoryPicking = ref(false);
@@ -4000,7 +3982,7 @@ const projectWorkspaceDraft = ref("");
 const projectAiEntryFile = ref("");
 const aiEntryFileDraft = ref("");
 const singleRoundAnswerOnly = ref(false);
-const employeeCreateSubmitting = ref(false);
+const employeeUpdateSubmitting = ref(false);
 const activeComposerAssist = ref("");
 const activeComposerToolCommandId = ref("");
 const externalMcpTotal = ref(0);
@@ -4054,6 +4036,7 @@ const localLiuAgentActiveRunVersion = ref(0);
 let nativeLiuAgentRuntimeEventUnlisten = null;
 let localLiuAgentRuntimeEventPollTimer = null;
 let localLiuAgentRuntimeEventPollInFlight = false;
+let nativeLiuAgentRuntimeEventSubscriptionAvailable = false;
 const LOCAL_LIUAGENT_AUTO_RESUME_MAX_RETRIES = 3;
 
 function readLocalLiuAgentAuthLevel() {
@@ -4270,6 +4253,7 @@ const {
   },
 });
 const chatSessionMessageCache = new Map();
+const persistedRuntimeMessageSignaturesBySession = new Map();
 const chatSessionRuntimeCache = new Map();
 const dirtyChatRuntimeSessionKeys = new Set();
 let chatRuntimePersistenceSuppressionDepth = 0;
@@ -10932,15 +10916,27 @@ async function pollLocalLiuAgentRuntimeEventsOnce() {
 }
 
 function startLocalLiuAgentRuntimeEventPolling() {
-  if (localLiuAgentRuntimeEventPollTimer || !hasNativeDesktopBridge()) return;
+  if (
+    localLiuAgentRuntimeEventPollTimer ||
+    nativeLiuAgentRuntimeEventSubscriptionAvailable ||
+    !hasNativeDesktopBridge()
+  ) {
+    return;
+  }
   localLiuAgentRuntimeEventPollTimer = window.setInterval(() => {
     void pollLocalLiuAgentRuntimeEventsOnce();
   }, 600);
   void pollLocalLiuAgentRuntimeEventsOnce();
 }
 
-function stopLocalLiuAgentRuntimeEventPollingIfIdle() {
-  if (localLiuAgentActiveRuns.size > 0 || !localLiuAgentRuntimeEventPollTimer)
+function stopLocalLiuAgentRuntimeEventPollingIfIdle(force = false) {
+  if (
+    !force &&
+    localLiuAgentActiveRuns.size > 0
+  ) {
+    return;
+  }
+  if (!localLiuAgentRuntimeEventPollTimer)
     return;
   window.clearInterval(localLiuAgentRuntimeEventPollTimer);
   localLiuAgentRuntimeEventPollTimer = null;
@@ -10949,15 +10945,23 @@ function stopLocalLiuAgentRuntimeEventPollingIfIdle() {
 
 async function startNativeLiuAgentRuntimeEventSubscription() {
   if (nativeLiuAgentRuntimeEventUnlisten || !hasNativeDesktopBridge()) return;
-  nativeLiuAgentRuntimeEventUnlisten =
-    await subscribeNativeLiuAgentRuntimeEvents(
-      handleNativeLiuAgentRuntimeEvent,
-    );
+  const unlisten = await subscribeNativeLiuAgentRuntimeEvents(
+    handleNativeLiuAgentRuntimeEvent,
+  );
+  nativeLiuAgentRuntimeEventSubscriptionAvailable =
+    unlisten?.available === true;
+  nativeLiuAgentRuntimeEventUnlisten = unlisten;
+  if (nativeLiuAgentRuntimeEventSubscriptionAvailable) {
+    stopLocalLiuAgentRuntimeEventPollingIfIdle(true);
+  } else if (localLiuAgentActiveRuns.size > 0) {
+    startLocalLiuAgentRuntimeEventPolling();
+  }
 }
 
 function stopNativeLiuAgentRuntimeEventSubscription() {
   const unlisten = nativeLiuAgentRuntimeEventUnlisten;
   nativeLiuAgentRuntimeEventUnlisten = null;
+  nativeLiuAgentRuntimeEventSubscriptionAvailable = false;
   if (typeof unlisten === "function") {
     try {
       const result = unlisten();
@@ -11291,6 +11295,25 @@ async function restoreLocalLiuAgentRuntimeState(
   });
   const runtimeEvents = localLiuAgentRuntimeEventsFromResult(result);
   const userMessage = localLiuAgentUserMessageFromRuntimeEvents(runtimeEvents);
+  const recoveredSessionContext =
+    state?.session_context && typeof state.session_context === "object"
+      ? state.session_context?.resume_context || state.session_context
+      : state?.resume_context && typeof state.resume_context === "object"
+        ? state.resume_context
+        : {};
+  const recoveredAttachments = Array.isArray(recoveredSessionContext?.attachments)
+    ? recoveredSessionContext.attachments
+    : Array.isArray(recoveredSessionContext?.attachment_refs)
+      ? recoveredSessionContext.attachment_refs
+      : [];
+  const recoveredHistory = Array.isArray(recoveredSessionContext?.history)
+    ? recoveredSessionContext.history
+    : [];
+  const recoveredMediaTools = Array.isArray(
+    recoveredSessionContext?.media_tools || recoveredSessionContext?.mediaTools,
+  )
+    ? recoveredSessionContext.media_tools || recoveredSessionContext.mediaTools
+    : [];
   const assistantMessageId =
     localLiuAgentAssistantMessageIdFromRuntimeEvents(runtimeEvents) || row.id;
   const latestRuntimeEventId = [...runtimeEvents]
@@ -11395,7 +11418,9 @@ async function restoreLocalLiuAgentRuntimeState(
       assistantMessageId,
       message: userMessage.content,
       workspacePath,
-      history: [],
+      history: recoveredHistory,
+      attachments: recoveredAttachments,
+      mediaTools: recoveredMediaTools,
       providerId: selectedProviderId.value || defaultProviderId.value || "",
       modelName: selectedModelName.value || defaultModelName.value || "",
       systemPromptParts: buildLocalLiuAgentSystemPromptParts(
@@ -11460,7 +11485,8 @@ async function restoreLocalLiuAgentRuntimeState(
           assistantMessageId,
           message: userMessage.content,
           workspacePath,
-          history: [],
+          history: recoveredHistory,
+          attachments: recoveredAttachments,
           providerId: selectedProviderId.value || defaultProviderId.value || "",
           modelName: selectedModelName.value || defaultModelName.value || "",
           systemPromptParts: buildLocalLiuAgentSystemPromptParts(
@@ -11476,7 +11502,9 @@ async function restoreLocalLiuAgentRuntimeState(
             ...effectiveMcpConfig.value,
             localResourceDirectories: buildLocalResourceDirectoriesPayload(),
           },
-          mediaTools: localLiuAgentMediaTools.value,
+          mediaTools: recoveredMediaTools.length
+            ? recoveredMediaTools
+            : localLiuAgentMediaTools.value,
         },
         userQuestionRequest,
         assistantMessageId,
@@ -12697,17 +12725,6 @@ const promptsChatToolMap = computed(() => {
 const composerAssistActions = computed(() => {
   const toolMap = promptsChatToolMap.value;
   const actions = [];
-  actions.push({
-    id: "employee_delete",
-    icon: "delete",
-    label: "删除智能体",
-    shortDesc: "确认后删除智能体定义",
-    activeText: "本轮会识别目标智能体并展示文件路径，确认后才删除。",
-    seedText: "请删除智能体【填写名称】。先确认目标和文件路径，等我确认后再删除。",
-    promptOnly: true,
-    instruction:
-      "当前请求是删除业务智能体定义。只能识别唯一目标并输出 employee-intent JSON：{\"intent\":\"delete\",\"employee_id\":\"已有 ID 或空字符串\",\"name\":\"名称或空字符串\"}。确认前不得调用删除、写入或其他破坏性工具；目标不唯一时必须先询问用户。",
-  });
   if (toolMap.search_prompts || toolMap.get_prompt) {
     actions.push({
       id: "prompt_search",
@@ -13236,6 +13253,9 @@ function forgetChatSessionMessages(projectId, chatSessionId) {
   const key = chatSessionMessageCacheKey(projectId, chatSessionId);
   if (!key) return;
   chatSessionMessageCache.delete(key);
+  persistedRuntimeMessageSignaturesBySession.delete(
+    runtimeMessagePersistKey(projectId, chatSessionId),
+  );
   forgetCachedChatRuntime(projectId, chatSessionId);
   forgetComposerPlanState(projectId, chatSessionId);
 }
@@ -13726,6 +13746,65 @@ function buildPersistedChatRuntimePayload(options = {}) {
   };
 }
 
+function runtimeMessagePersistKey(projectId, chatSessionId) {
+  return `${String(projectId || "").trim()}::${String(chatSessionId || "").trim()}`;
+}
+
+function runtimeMessageSignature(message) {
+  try {
+    return JSON.stringify(message);
+  } catch {
+    return "";
+  }
+}
+
+function buildIncrementalRuntimePayload(
+  payload,
+  projectId,
+  chatSessionId,
+  options = {},
+) {
+  const rows = Array.isArray(payload?.messages) ? payload.messages : [];
+  const key = runtimeMessagePersistKey(projectId, chatSessionId);
+  const previous = persistedRuntimeMessageSignaturesBySession.get(key);
+  const replaceMessages = options.replaceMessages === true;
+  if (replaceMessages || !previous) {
+    return { payload, rows, key, full: true };
+  }
+  const changedRows = rows.filter((row) => {
+    const id = String(row?.id || "").trim();
+    if (!id) return true;
+    return previous.get(id) !== runtimeMessageSignature(row);
+  });
+  const nextPayload = { ...payload };
+  if (changedRows.length) {
+    nextPayload.messages = changedRows;
+  } else {
+    delete nextPayload.messages;
+  }
+  return { payload: nextPayload, rows, key, full: false };
+}
+
+function commitPersistedRuntimeMessageSignatures(
+  key,
+  rows,
+  options = {},
+) {
+  const next = options.replaceMessages
+    ? new Map()
+    : new Map(persistedRuntimeMessageSignaturesBySession.get(key) || []);
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const id = String(row?.id || "").trim();
+    if (id) next.set(id, runtimeMessageSignature(row));
+  }
+  for (const id of Array.isArray(options.deletedMessageIds)
+    ? options.deletedMessageIds
+    : []) {
+    next.delete(String(id || "").trim());
+  }
+  persistedRuntimeMessageSignaturesBySession.set(key, next);
+}
+
 function shouldKeepRuntimeOnlyMessage(row) {
   if (!row) return false;
   if (String(row.displayMode || "").trim() === "external-agent-waiting") {
@@ -14180,6 +14259,12 @@ function persistCurrentChatRuntimeNow(
     deletedMessageIds: options.deletedMessageIds,
   });
   const persistedRows = Array.isArray(payload.messages) ? payload.messages : [];
+  const incremental = buildIncrementalRuntimePayload(
+    payload,
+    normalizedProjectId,
+    normalizedChatSessionId,
+    options,
+  );
   const runtimeKey = chatSessionMessageCacheKey(
     normalizedProjectId,
     normalizedChatSessionId,
@@ -14188,13 +14273,18 @@ function persistCurrentChatRuntimeNow(
   return writePersistedChatRuntime(
     normalizedProjectId,
     normalizedChatSessionId,
-    payload,
+    incremental.payload,
   )
     .then((saved) => {
       if (saved !== true) {
         dirtyChatRuntimeSessionKeys.add(runtimeKey);
         return false;
       }
+      commitPersistedRuntimeMessageSignatures(
+        incremental.key,
+        persistedRows,
+        options,
+      );
       let metadataRows = persistedRows;
       const deletedMessageIds = Array.isArray(options.deletedMessageIds)
         ? options.deletedMessageIds
@@ -17407,9 +17497,21 @@ function shouldShowMessageTrajectory(row, idx) {
   );
 }
 
+const messageBodyHtmlCache = new WeakMap();
+
 function messageBodyHtml(row, idx) {
+  if (!row || typeof row !== "object") return "";
+  const persistedMedia = row?.mediaAssets || row?.media_assets;
+  let fingerprint = `${String(row?.role || "")}\n${String(row?.content || "")}`;
+  try {
+    fingerprint += `\n${JSON.stringify(persistedMedia || [])}`;
+  } catch {
+    fingerprint += "\nmedia";
+  }
+  const cached = messageBodyHtmlCache.get(row);
+  if (cached?.fingerprint === fingerprint) return cached.html;
   const persistedAssets = normalizePersistedMediaAssets(
-    row?.mediaAssets || row?.media_assets,
+    persistedMedia,
   );
   const content = formatContent(
     row?.content,
@@ -17436,8 +17538,9 @@ function messageBodyHtml(row, idx) {
         }
       : {},
   );
-  if (content) return content;
-  return "";
+  const html = content || "";
+  messageBodyHtmlCache.set(row, { fingerprint, html });
+  return html;
 }
 
 function messageProcessStepCount(row, idx) {
@@ -25237,23 +25340,6 @@ function getMessageActions(item, messageIndex) {
       tooltip: "编辑",
       icon: EditPen,
     });
-    actions.push({
-      key: "edit_and_regenerate",
-      tooltip: "编辑后重新生成",
-      icon: RefreshRight,
-    });
-  }
-  if (role !== "user" && canReplayMessageSource(messageIndex)) {
-    actions.push({
-      key: "regenerate",
-      tooltip: "重新生成",
-      icon: RefreshRight,
-    });
-    actions.push({
-      key: "edit_and_regenerate",
-      tooltip: "编辑后重新生成",
-      icon: EditPen,
-    });
   }
   if (hasMessageCopyableContent(item)) {
     actions.push({
@@ -26815,7 +26901,6 @@ function resetEmployeeDraftDialogState() {
   employeeDraftDialogLoading.value = false;
   employeeDraftDialogPayload.value = null;
   employeeDraftDialogItem.value = null;
-  employeeDraftDialogMode.value = "update";
 }
 
 function normalizeEmployeeDraftConfirmationText(value = "") {
@@ -26864,21 +26949,20 @@ function latestPendingEmployeeDraftCandidate() {
   if (
     employeeDraftDialogItem.value &&
     employeeDraftDialogPayload.value &&
-    !employeeDraftDialogItem.value.employeeDraftCreatedName &&
+    !employeeDraftDialogItem.value.employeeDraftUpdatedName &&
     !employeeDraftDialogItem.value.employeeDraftCancelled &&
     !employeeDraftDialogItem.value.employeeDraftSuperseded
   ) {
     return {
       item: employeeDraftDialogItem.value,
       payload: employeeDraftDialogPayload.value,
-      mode: employeeDraftDialogMode.value,
     };
   }
   for (let index = messages.value.length - 1; index >= 0; index -= 1) {
     const item = messages.value[index];
     if (
       item?.role === "user" ||
-      item?.employeeDraftCreatedName ||
+      item?.employeeDraftUpdatedName ||
       item?.employeeDraftCancelled ||
       item?.employeeDraftSuperseded
     ) {
@@ -26901,7 +26985,7 @@ function supersedeOtherPendingEmployeeDrafts(activeItem = null) {
       !item ||
       item === activeItem ||
       item.role === "user" ||
-      item.employeeDraftCreatedName ||
+      item.employeeDraftUpdatedName ||
       item.employeeDraftCancelled ||
       item.employeeDraftSuperseded
     ) {
@@ -26915,7 +26999,7 @@ function supersedeOtherPendingEmployeeDrafts(activeItem = null) {
   if (
     employeeDraftDialogItem.value &&
     employeeDraftDialogItem.value !== activeItem &&
-    !employeeDraftDialogItem.value.employeeDraftCreatedName &&
+    !employeeDraftDialogItem.value.employeeDraftUpdatedName &&
     !employeeDraftDialogItem.value.employeeDraftCancelled
   ) {
     employeeDraftDialogItem.value.employeeDraftSuperseded = true;
@@ -26924,14 +27008,13 @@ function supersedeOtherPendingEmployeeDrafts(activeItem = null) {
 
 function applyEmployeeDraftConfirmationCandidate(candidate = null) {
   if (!candidate?.item || !candidate?.payload) return false;
-  employeeDraftDialogMode.value = "update";
   employeeDraftDialogPayload.value = candidate.payload;
   employeeDraftDialogItem.value = candidate.item;
   return true;
 }
 
-function openEmployeeDraftConfirmation(item) {
-  if (!item || item.employeeDraftCreatedName) return;
+function openEmployeeUpdateConfirmation(item) {
+  if (!item || item.employeeDraftUpdatedName) return;
   const intent = extractEmployeeIntentPayload(item.content || "")?.intent;
   if (intent !== "update") return;
   const rawDraft = extractEmployeeDraftPayload(item.content || "");
@@ -26951,7 +27034,7 @@ function openEmployeeDraftConfirmation(item) {
   employeeDraftDialogVisible.value = true;
 }
 
-function continueEmployeeDraftRefinement(item) {
+function continueEmployeeUpdateRefinement(item) {
   if (!item) return;
   item.employeeDraftSuperseded = true;
   employeeDraftDialogVisible.value = false;
@@ -26961,7 +27044,7 @@ function continueEmployeeDraftRefinement(item) {
   ElMessage.info("已保留当前草稿，请补充希望调整的内容");
 }
 
-function cancelEmployeeDraft(item) {
+function cancelEmployeeUpdate(item) {
   if (!item) return;
   item.employeeDraftCancelled = true;
   if (employeeDraftDialogItem.value === item) {
@@ -27023,7 +27106,7 @@ async function submitPendingEmployeeDraftConfirmationIfNeeded(text = "") {
     return true;
   }
   if (!applyEmployeeDraftConfirmationCandidate(candidate)) return false;
-  await confirmEmployeeDraftCreation();
+  await confirmEmployeeUpdate();
   scrollToBottom();
   return true;
 }
@@ -27069,7 +27152,6 @@ async function autoUpdateEmployeeFromDraftMessage(item) {
     return false;
   }
   supersedeOtherPendingEmployeeDrafts(item);
-  employeeDraftDialogMode.value = "update";
   employeeDraftDialogPayload.value = payload;
   employeeDraftDialogItem.value = item;
   employeeDraftDialogVisible.value = true;
@@ -27207,7 +27289,7 @@ async function handleEmployeeIntentAfterAssistantResponse(
   }
 }
 
-async function confirmEmployeeDraftCreation(options = {}) {
+async function confirmEmployeeUpdate() {
   const payload = employeeDraftDialogPayload.value;
   const item = employeeDraftDialogItem.value;
   if (!payload || !item) {
@@ -27233,14 +27315,13 @@ async function confirmEmployeeDraftCreation(options = {}) {
         ? payload.rule_drafts
         : [],
     });
-    item.employeeDraftCreatedName = String(
+    item.employeeDraftUpdatedName = String(
       employee?.name || payload.name || "",
     ).trim();
-    item.employeeDraftUpdatedName = item.employeeDraftCreatedName;
     const visibleContent = stripInternalProtocolContentForDisplay(
       stripEmployeeIntentBlock(stripEmployeeDraftBlock(item.content)),
     );
-    item.content = `${visibleContent}\n\n已更新智能体：${item.employeeDraftCreatedName}`.trim();
+    item.content = `${visibleContent}\n\n已更新智能体：${item.employeeDraftUpdatedName}`.trim();
     employeeDraftDialogVisible.value = false;
     resetEmployeeDraftDialogState();
   } catch (error) {
@@ -28606,6 +28687,11 @@ function toHistoryRows(sourceMessages, limit = 20) {
         images: extractImages(item),
         videos: extractVideos(item),
         audios: extractAudios(item),
+        attachmentRefs: Array.isArray(item.attachmentRefs)
+          ? item.attachmentRefs.slice()
+          : Array.isArray(item.attachments)
+            ? item.attachments.slice()
+            : [],
         reasoningContent: String(
           item.reasoningContent || item.reasoning_content || "",
         ).trim(),
@@ -29537,7 +29623,7 @@ async function fetchProvidersByProject(projectId) {
 }
 
 async function handleQuickUpdateEmployee(payload) {
-  employeeCreateSubmitting.value = true;
+  employeeUpdateSubmitting.value = true;
   try {
     const projectId = String(selectedProjectId.value || "").trim();
     if (!projectId) throw new Error("请先选择项目");
@@ -29697,7 +29783,7 @@ async function handleQuickUpdateEmployee(payload) {
     }
     throw error;
   } finally {
-    employeeCreateSubmitting.value = false;
+    employeeUpdateSubmitting.value = false;
   }
 }
 
@@ -35116,6 +35202,7 @@ async function doSend(options = {}) {
         .filter(Boolean),
     ),
     attachments: attachmentNames,
+    attachmentRefs: localLiuAgentAttachments,
     contextRefs: visibleContextRefs,
     time: nowText(),
   };

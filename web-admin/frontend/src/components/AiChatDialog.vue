@@ -4,6 +4,8 @@
     :title="title"
     :width="width"
     destroy-on-close
+    @dragover.prevent.stop="handleDragOver"
+    @drop.prevent.stop="handleDrop"
     @update:model-value="handleVisibleChange"
     @close="handleClose"
   >
@@ -179,6 +181,19 @@ function handleCancel() {
 
 function handleExceed() {
   ElMessage.warning(`最多只能上传 ${props.maxImages} 张图片`)
+}
+
+function handleDragOver(event) {
+  if (event?.dataTransfer) {
+    event.dataTransfer.dropEffect = props.allowImage ? 'copy' : 'none'
+  }
+}
+
+function handleDrop(event) {
+  if (!props.allowImage || props.loading || props.disabled) return
+  const files = Array.from(event?.dataTransfer?.files || [])
+  if (!files.length) return
+  files.forEach((file) => uploadRef.value?.handleStart?.(file))
 }
 
 function handleFileRemove() {

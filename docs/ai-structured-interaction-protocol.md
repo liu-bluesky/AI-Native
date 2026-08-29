@@ -9,7 +9,7 @@ AI 先生成渠道无关的结构化交互数据，再根据当前渠道和能�
 - 结构化数据服务系统，不直接原样展示给用户。
 - `user_message` 或 `summary` 必须解释用户将要确认、补充或执行的内容。
 - `presentation_hint` 只是 AI 的推荐，宿主可根据渠道能力调整。
-- 创建、修改、删除和保存操作必须等待用户明确确认。
+- 修改、删除和保存操作必须等待用户明确确认。
 - 同一份协议应能被 Web、桌面、移动端和机器人适配。
 
 ## 最小数据结构
@@ -19,9 +19,9 @@ AI 先生成渠道无关的结构化交互数据，再根据当前渠道和能�
   "version": "1",
   "id": "interaction-1",
   "kind": "clarification | confirmation | data_collection | operation",
-  "operation": "create_agent",
+  "operation": "update_agent",
   "status": "waiting_user",
-  "user_message": "我准备创建一个售前客服智能体，请确认配置。",
+  "user_message": "我准备更新一个售前客服智能体，请确认配置。",
   "summary": "需要确认智能体名称和能力",
   "data": {},
   "fields": [],

@@ -1,10 +1,10 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="确认更新 AI 智能体"
+    title="确认更新智能体"
     width="min(880px, calc(100vw - 32px))"
     destroy-on-close
-    class="employee-draft-create-dialog"
+    class="employee-update-dialog"
     @update:model-value="handleVisibleChange"
     @close="handleClose"
   >
@@ -86,10 +86,6 @@ const props = defineProps({
   payload: {
     type: Object,
     default: null,
-  },
-  mode: {
-    type: String,
-    default: "create",
   },
 });
 

@@ -1982,8 +1982,10 @@ export async function subscribeNativeExternalAgentSessionEvents(handler) {
 }
 
 export async function subscribeNativeLiuAgentRuntimeEvents(handler) {
-  if (typeof handler !== "function") return () => {};
-  if (!hasNativeDesktopBridge()) return () => {};
+  const unavailable = () => {};
+  unavailable.available = false;
+  if (typeof handler !== "function") return unavailable;
+  if (!hasNativeDesktopBridge()) return unavailable;
   const handleEvent = (event) => {
     handler(event?.payload && typeof event.payload === "object" ? event.payload : {});
   };
@@ -2014,9 +2016,9 @@ export async function subscribeNativeLiuAgentRuntimeEvents(handler) {
     }
   }
   if (!unlisteners.length) {
-    return () => {};
+    return unavailable;
   }
-  return () => {
+  const cleanup = () => {
     for (const unlisten of unlisteners) {
       try {
         unlisten?.();
@@ -2025,6 +2027,8 @@ export async function subscribeNativeLiuAgentRuntimeEvents(handler) {
       }
     }
   };
+  cleanup.available = true;
+  return cleanup;
 }
 
 export async function subscribeNativeFeishuLocalBotStatus(handler) {

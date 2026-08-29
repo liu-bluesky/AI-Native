@@ -10,25 +10,35 @@ const IMAGE_EXTENSIONS = new Set([
   "heif",
 ]);
 
-export function extractImages(message) {
-  if (!message || !Array.isArray(message.images)) return [];
-  return message.images
+const mediaExtractionCache = new WeakMap();
+
+function extractMediaUrls(message, field) {
+  if (!message || typeof message !== "object") return [];
+  const values = message[field];
+  if (!Array.isArray(values)) return [];
+  let cached = mediaExtractionCache.get(message);
+  if (!cached) {
+    cached = {};
+    mediaExtractionCache.set(message, cached);
+  }
+  if (cached[field]?.source === values) return cached[field].result;
+  const result = values
     .map((item) => String(item || "").trim())
     .filter(Boolean);
+  cached[field] = { source: values, result };
+  return result;
+}
+
+export function extractImages(message) {
+  return extractMediaUrls(message, "images");
 }
 
 export function extractVideos(message) {
-  if (!message || !Array.isArray(message.videos)) return [];
-  return message.videos
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
+  return extractMediaUrls(message, "videos");
 }
 
 export function extractAudios(message) {
-  if (!message || !Array.isArray(message.audios)) return [];
-  return message.audios
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
+  return extractMediaUrls(message, "audios");
 }
 
 function normalizeComparableMediaUrl(value) {

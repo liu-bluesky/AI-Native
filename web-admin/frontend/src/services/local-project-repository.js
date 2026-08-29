@@ -12,6 +12,7 @@ const HIDDEN_WORKSPACE_PROJECT_IDS_STORAGE_KEY =
   "local_hidden_workspace_project_ids";
 const GLOBAL_PROJECT_CATALOG_VERSION = 1;
 let projectCatalogSyncTimer = null;
+let localRepositoryHydrationPromise = null;
 const localRecordCache = new Map();
 const localRecordWriteQueues = new Map();
 
@@ -93,16 +94,76 @@ function mergeMigratedLocalRecord(key, nativeValue, legacyValue) {
     const legacyIds = Array.isArray(legacyValue) ? legacyValue : [];
     return [...new Set([...nativeIds, ...legacyIds])];
   }
-  if (key === STORAGE_KEY || key.startsWith(ENTITY_STORAGE_PREFIX)) {
+  if (key === STORAGE_KEY) {
     return mergeProjectRecords(
       Array.isArray(nativeValue) ? nativeValue : [],
       Array.isArray(legacyValue) ? legacyValue : [],
     );
   }
+  if (key.startsWith(ENTITY_STORAGE_PREFIX)) {
+    return mergeLocalEntityRecords(nativeValue, legacyValue);
+  }
   return nativeValue ?? legacyValue;
 }
 
-export async function hydrateLocalProjectRepository() {
+function isMissingLocalEntityValue(value) {
+  if (value === undefined || value === null) return true;
+  if (typeof value === "string") return !value.trim();
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+
+function mergeLocalEntityRecord(nativeRecord, legacyRecord) {
+  const native =
+    nativeRecord && typeof nativeRecord === "object" ? nativeRecord : {};
+  const legacy =
+    legacyRecord && typeof legacyRecord === "object" ? legacyRecord : {};
+  const merged = { ...legacy, ...native };
+  for (const [key, value] of Object.entries(legacy)) {
+    if (
+      isMissingLocalEntityValue(native[key]) &&
+      !isMissingLocalEntityValue(value)
+    ) {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+function mergeLocalEntityRecords(nativeValue, legacyValue) {
+  const nativeRecords = Array.isArray(nativeValue) ? nativeValue : [];
+  const legacyRecords = Array.isArray(legacyValue) ? legacyValue : [];
+  const legacyById = new Map(
+    legacyRecords
+      .map((record) => [String(record?.id || "").trim(), record])
+      .filter(([id]) => id),
+  );
+  const seenIds = new Set();
+  const merged = nativeRecords.map((record) => {
+    const id = String(record?.id || "").trim();
+    if (id) seenIds.add(id);
+    return mergeLocalEntityRecord(record, legacyById.get(id));
+  });
+  for (const record of legacyRecords) {
+    const id = String(record?.id || "").trim();
+    if (!id || seenIds.has(id)) continue;
+    merged.push(record);
+  }
+  return merged;
+}
+
+export function hydrateLocalProjectRepository() {
+  if (localRepositoryHydrationPromise) return localRepositoryHydrationPromise;
+  localRepositoryHydrationPromise = hydrateLocalProjectRepositoryOnce().finally(
+    () => {
+      localRepositoryHydrationPromise = null;
+    },
+  );
+  return localRepositoryHydrationPromise;
+}
+
+async function hydrateLocalProjectRepositoryOnce() {
   if (!canUseStorage() || !hasNativeDesktopBridge()) return false;
   const legacyKeys = new Set([
     STORAGE_KEY,
@@ -123,10 +184,6 @@ export async function hydrateLocalProjectRepository() {
   );
   try {
     const nativeRecords = await listNativeLocalRecords();
-    for (const record of nativeRecords) {
-      const key = String(record?.key || "").trim();
-      if (!key) continue;
-    }
     await Promise.all(
       [...legacyRecords.entries()]
         .map(async ([key, value]) => {

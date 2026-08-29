@@ -518,6 +518,7 @@ import {
   readAllLocalProjectRelations,
   readLocalEntities,
   removeLocalEntity,
+  hydrateLocalProjectRepository,
   writeLocalEntities,
   upsertLocalEntity,
 } from "@/services/local-project-repository.js";
@@ -1823,6 +1824,7 @@ async function testConnection(row, modelName = "") {
 }
 
 onMounted(async () => {
+  await hydrateLocalProjectRepository();
   await Promise.all([
     fetchProviders(),
     fetchShareUserOptions(),

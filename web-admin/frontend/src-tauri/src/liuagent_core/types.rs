@@ -247,6 +247,8 @@ pub struct LocalChatMessage {
     pub videos: Vec<String>,
     #[serde(default)]
     pub audios: Vec<String>,
+    #[serde(default, alias = "attachment_refs")]
+    pub attachment_refs: Vec<LocalChatAttachmentRef>,
     #[serde(default, alias = "reasoning_content")]
     pub reasoning_content: Option<String>,
     #[serde(default, alias = "source_kind")]
@@ -255,6 +257,16 @@ pub struct LocalChatMessage {
     pub diagnostic: Option<bool>,
     #[serde(default)]
     pub visibility: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalChatAttachmentRef {
+    pub attachment_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

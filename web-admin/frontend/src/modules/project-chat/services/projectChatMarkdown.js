@@ -38,6 +38,8 @@ export function isPreviewableCodeBlock(content, language) {
 }
 
 const markdownRenderer = new marked.Renderer();
+const MARKDOWN_CACHE_LIMIT = 160;
+const markdownCache = new Map();
 
 markdownRenderer.code = ({ text, lang, escaped }) => {
   const language = normalizeCodeLanguage(lang);
@@ -79,5 +81,15 @@ markdownRenderer.link = function ({ href, title, tokens, text }) {
 };
 
 export function renderProjectChatMarkdown(text) {
-  return marked.parse(String(text || ""), { renderer: markdownRenderer });
+  const normalizedText = String(text || "");
+  if (!normalizedText) return "";
+  const cached = markdownCache.get(normalizedText);
+  if (cached !== undefined) return cached;
+  const rendered = marked.parse(normalizedText, { renderer: markdownRenderer });
+  markdownCache.set(normalizedText, rendered);
+  if (markdownCache.size > MARKDOWN_CACHE_LIMIT) {
+    const oldestKey = markdownCache.keys().next().value;
+    markdownCache.delete(oldestKey);
+  }
+  return rendered;
 }

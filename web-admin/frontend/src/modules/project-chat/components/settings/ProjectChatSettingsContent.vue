@@ -294,102 +294,6 @@
                       </div>
                       <article class="settings-module-row">
                         <div class="settings-module-row__icon">
-                          <el-icon><CollectionTag /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>智能体目录</strong>
-                          <span
-                            >桌面运行会从该目录读取项目智能体定义、提示词和脚本。</span
-                          >
-                        </div>
-                        <div class="settings-module-row__control">
-                          <el-input
-                            v-model="projectChatSettings.agent_directory"
-                            clearable
-                            placeholder="例如 /workspace/.ai-employee/agents"
-                            :disabled="!selectedProjectId"
-                          >
-                            <template #append>
-                              <el-button
-                                :loading="agentDirectoryPicking"
-                                :disabled="
-                                  !selectedProjectId ||
-                                  skillDirectoryPicking ||
-                                  ruleDirectoryPicking
-                                "
-                                @click="pickChatRuntimeDirectory('agent')"
-                              >
-                                选择目录
-                              </el-button>
-                            </template>
-                          </el-input>
-                        </div>
-                      </article>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><FolderOpened /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>技能目录</strong>
-                          <span
-                            >桌面智能体会优先从该目录读取
-                            SKILL.md、模板和脚本。</span
-                          >
-                        </div>
-                        <div class="settings-module-row__control">
-                          <el-input
-                            v-model="projectChatSettings.skill_directory"
-                            clearable
-                            placeholder="例如 /workspace/.ai-employee/skills"
-                            :disabled="!selectedProjectId"
-                          >
-                            <template #append>
-                              <el-button
-                                :loading="skillDirectoryPicking"
-                                :disabled="
-                                  !selectedProjectId || ruleDirectoryPicking
-                                "
-                                @click="pickChatRuntimeDirectory('skill')"
-                              >
-                                选择目录
-                              </el-button>
-                            </template>
-                          </el-input>
-                        </div>
-                      </article>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><Document /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>规则目录</strong>
-                          <span
-                            >桌面智能体会按当前任务从该目录加载相关规则正文。</span
-                          >
-                        </div>
-                        <div class="settings-module-row__control">
-                          <el-input
-                            v-model="projectChatSettings.rule_directory"
-                            clearable
-                            placeholder="例如 /workspace/.ai-employee/rules"
-                            :disabled="!selectedProjectId"
-                          >
-                            <template #append>
-                              <el-button
-                                :loading="ruleDirectoryPicking"
-                                :disabled="
-                                  !selectedProjectId || skillDirectoryPicking
-                                "
-                                @click="pickChatRuntimeDirectory('rule')"
-                              >
-                                选择目录
-                              </el-button>
-                            </template>
-                          </el-input>
-                        </div>
-                      </article>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
                           <el-icon><EditPen /></el-icon>
                         </div>
                         <div class="settings-module-row__main">
@@ -964,11 +868,9 @@ import {
   CollectionTag,
   Connection,
   Cpu,
-  Document,
   DocumentCopy,
   EditPen,
   Files,
-  FolderOpened,
   InfoFilled,
   Operation,
   RefreshRight,
@@ -981,11 +883,9 @@ export default {
     CollectionTag,
     Connection,
     Cpu,
-    Document,
     DocumentCopy,
     EditPen,
     Files,
-    FolderOpened,
     InfoFilled,
     Operation,
     RefreshRight,
