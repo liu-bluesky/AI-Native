@@ -1,0 +1,121 @@
+{
+  "id": "builtin-media-image",
+  "pluginType": "tool",
+  "name": "media-image",
+  "displayName": "图片工具",
+  "description": "提供图片生成和图片编辑能力，并通过标准 Skill 指导 AI 正确选择工具。",
+  "version": "1.0.0",
+  "source": "builtin",
+  "capabilities": [
+    {
+      "id": "builtin.media.image.generate",
+      "kind": "tool",
+      "name": "generate_image",
+      "description": "根据用户明确的描述生成图片。",
+      "selection": {
+        "whenToUse": [
+          "用户明确要求生成图片、插画、海报、图标或视觉素材",
+          "用户提供了新的文字描述，需要创建图片"
+        ],
+        "avoidWhen": [
+          "用户要求修改已有图片",
+          "当前请求只是读取或分析图片信息"
+        ],
+        "recommends": ["builtin.media.image.generation-skill"],
+        "conflicts": ["builtin.media.image.edit"],
+        "priority": 80
+      },
+      "inputSchema": {
+        "$ref": "schemas/generate-image-input.json"
+      },
+      "outputSchema": {
+        "$ref": "schemas/image-output.json"
+      },
+      "metadata": {
+        "toolFile": "tools/generate-image/tool.json",
+        "executor": "tools.media.execute_media_tool",
+        "toolName": "generate_image"
+      }
+    },
+    {
+      "id": "builtin.media.image.edit",
+      "kind": "tool",
+      "name": "edit_image",
+      "description": "编辑当前会话中用户明确选择的图片附件。",
+      "selection": {
+        "whenToUse": [
+          "用户要求修改、重绘、抠图、换背景或变换已有图片",
+          "当前会话存在明确可用的图片资产 ID"
+        ],
+        "avoidWhen": [
+          "用户要求创建全新图片",
+          "没有明确的图片附件或资产 ID"
+        ],
+        "recommends": ["builtin.media.image.editing-skill"],
+        "conflicts": ["builtin.media.image.generate"],
+        "priority": 80
+      },
+      "inputSchema": {
+        "$ref": "schemas/edit-image-input.json"
+      },
+      "outputSchema": {
+        "$ref": "schemas/image-output.json"
+      },
+      "metadata": {
+        "toolFile": "tools/edit-image/tool.json",
+        "executor": "tools.media.execute_media_tool",
+        "toolName": "edit_image"
+      }
+    },
+    {
+      "id": "builtin.media.image.generation-skill",
+      "kind": "skill",
+      "name": "builtin-image-generation",
+      "description": "指导 AI 判断图片生成请求、整理提示词并调用 generate_image。",
+      "selection": {
+        "whenToUse": ["用户要求生成新的图片或视觉素材"],
+        "recommends": ["builtin.media.image.generate"],
+        "priority": 90
+      },
+      "metadata": {
+        "skillFile": "skills/image-generation/SKILL.md",
+        "skillSpec": "project-skill-markdown",
+        "skillSpecVersion": "1"
+      }
+    },
+    {
+      "id": "builtin.media.image.editing-skill",
+      "kind": "skill",
+      "name": "builtin-image-editing",
+      "description": "指导 AI 判断图片编辑请求、校验资产 ID 并调用 edit_image。",
+      "selection": {
+        "whenToUse": ["用户要求修改当前会话中的已有图片"],
+        "recommends": ["builtin.media.image.edit"],
+        "priority": 90
+      },
+      "metadata": {
+        "skillFile": "skills/image-editing/SKILL.md",
+        "skillSpec": "project-skill-markdown",
+        "skillSpecVersion": "1"
+      }
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "provider_id": {"type": "string"},
+      "model_name": {"type": "string"}
+    }
+  },
+  "permissions": {
+    "risk": "low",
+    "requiresApproval": false,
+    "scope": "project"
+  },
+  "lifecycle": {
+    "supportsReload": false,
+    "ownsProcesses": false,
+    "ownsEventListeners": false
+  },
+  "enabled": true
+}

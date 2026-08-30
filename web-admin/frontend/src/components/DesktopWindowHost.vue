@@ -149,18 +149,34 @@ onBeforeUnmount(() => {
 }
 
 .desktop-window-host__mount--settings {
-  display: flex;
+  display: block;
   min-height: 0;
   overflow-x: hidden;
-  overflow-y: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
 }
 
 .desktop-window-host__mount--settings :deep(> .settings-center-page) {
   width: 100%;
-  height: 100% !important;
+  height: auto !important;
+  min-height: 100%;
+  max-height: none !important;
+  overflow: visible;
+}
+
+.desktop-window-host__mount--settings
+  :deep(> .settings-center-page > .settings-center-shell),
+.desktop-window-host__mount--settings
+  :deep(> .settings-center-page .settings-center-stage),
+.desktop-window-host__mount--settings
+  :deep(> .settings-center-page .settings-center-stage__body),
+.desktop-window-host__mount--settings
+  :deep(> .settings-center-page .settings-center-stage__body--chat) {
+  height: auto;
   min-height: 0;
-  max-height: 100% !important;
-  overflow: hidden;
+  max-height: none;
+  overflow: visible;
 }
 
 .desktop-window-host__mount--chat :deep(> .chat-layout) {

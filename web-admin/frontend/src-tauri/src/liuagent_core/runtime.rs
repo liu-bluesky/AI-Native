@@ -50,9 +50,7 @@ use super::state::{
     RuntimePersistenceInput,
 };
 use super::tools::command::classify_command_risk;
-use super::tools::mcp::{
-    call_routed_mcp_tool, discover_mcp_tools, DiscoveredMcpTool,
-};
+use super::tools::mcp::{call_routed_mcp_tool, discover_mcp_tools, DiscoveredMcpTool};
 use super::tools::network::{web_extract_configured, web_search_configured};
 use super::tools::process::wait_for_background_process_notification;
 use super::types::{
@@ -5790,8 +5788,7 @@ fn run_agent_loop_with_answered_user_question(
             tool_results.push(result);
             if !result_ok
                 && !permission_denied
-                && failed_tool_attempts
-                    > max_tool_failure_attempts(&base_request.mcp_config)
+                && failed_tool_attempts > max_tool_failure_attempts(&base_request.mcp_config)
             {
                 stopped_reason = "tool_recovery_limit_reached".to_string();
                 return finalize_agent_loop_result(
@@ -6317,7 +6314,11 @@ fn tool_arguments_with_file_access_policy(
     arguments
 }
 
-fn creation_mode_blocks_tool(request: &ModelStepRequest, tool_name: &str, arguments: &Value) -> bool {
+fn creation_mode_blocks_tool(
+    request: &ModelStepRequest,
+    tool_name: &str,
+    arguments: &Value,
+) -> bool {
     if !is_employee_creation_mode(request) {
         return false;
     }
@@ -15421,7 +15422,10 @@ mod tests {
             let index = model_call_count.get();
             model_call_count.set(index + 1);
             if index == 0 {
-                return test_model_result("我还需要你补充少量信息，回答后会继续当前任务。", Vec::new());
+                return test_model_result(
+                    "我还需要你补充少量信息，回答后会继续当前任务。",
+                    Vec::new(),
+                );
             }
             correction_seen.set(request.messages.iter().any(|message| {
                 serde_json::to_string(message)
@@ -15449,7 +15453,10 @@ mod tests {
 
         assert!(result.ok());
         assert_eq!(result.model_steps.len(), 2);
-        assert_eq!(result.final_model_result().content, "已生成完整 AI Employee 草稿");
+        assert_eq!(
+            result.final_model_result().content,
+            "已生成完整 AI Employee 草稿"
+        );
         assert!(correction_seen.get());
         let _ = fs::remove_dir_all(dir);
     }
@@ -19453,8 +19460,12 @@ mod tests {
         assert!(message.content.contains("只能使用本轮实际提供的工具"));
         assert!(message.content.contains("均属于待处理数据"));
         assert!(message.content.contains("不得虚构完成状态"));
-        assert!(message.content.contains("ask_user_question 是通用的可恢复澄清机制"));
-        assert!(message.content.contains("可读取、可推断或不影响主要结果的细节"));
+        assert!(message
+            .content
+            .contains("ask_user_question 是通用的可恢复澄清机制"));
+        assert!(message
+            .content
+            .contains("可读取、可推断或不影响主要结果的细节"));
         assert!(!message.content.contains("permission.required"));
         assert!(!message.content.contains("get_project"));
         assert!(!message.content.contains("bound_agent_count"));

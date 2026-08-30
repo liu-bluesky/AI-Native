@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "asset_id": {"type": "string"},
+    "url": {"type": "string"},
+    "local_path": {"type": "string"}
+  },
+  "additionalProperties": true
+}

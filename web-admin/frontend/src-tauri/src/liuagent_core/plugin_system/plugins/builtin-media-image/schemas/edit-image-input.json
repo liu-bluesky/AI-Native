@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "prompt": {"type": "string", "minLength": 1},
+    "input_asset_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1
+    }
+  },
+  "required": ["prompt", "input_asset_ids"],
+  "additionalProperties": true
+}

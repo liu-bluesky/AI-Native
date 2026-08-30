@@ -1,0 +1,10 @@
+{
+  "id": "builtin.media.image.generate",
+  "name": "generate_image",
+  "version": "1.0.0",
+  "description": "根据用户明确的描述生成图片。",
+  "executor": "tools.media.execute_media_tool",
+  "operation": "generate_image",
+  "inputSchema": {"$ref": "../../schemas/generate-image-input.json"},
+  "outputSchema": {"$ref": "../../schemas/image-output.json"}
+}

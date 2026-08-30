@@ -3496,7 +3496,11 @@ mod tests {
         let agent_directory = root.join("agents").join("frontend-architect");
         fs::create_dir_all(agent_directory.join("resources")).unwrap();
         fs::write(agent_directory.join("AGENT.md"), "# Frontend Architect\n").unwrap();
-        fs::write(agent_directory.join("resources").join("notes.md"), "keep no residue").unwrap();
+        fs::write(
+            agent_directory.join("resources").join("notes.md"),
+            "keep no residue",
+        )
+        .unwrap();
         let root = fs::canonicalize(root).unwrap();
 
         assert!(delete_workspace_directory(
@@ -3511,7 +3515,9 @@ mod tests {
             "agents/frontend-architect".to_string(),
         )
         .unwrap());
-        assert!(delete_workspace_directory(root.to_string_lossy().to_string(), String::new()).is_err());
+        assert!(
+            delete_workspace_directory(root.to_string_lossy().to_string(), String::new()).is_err()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

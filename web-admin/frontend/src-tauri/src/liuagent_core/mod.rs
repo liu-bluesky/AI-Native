@@ -14,6 +14,7 @@ mod learning;
 mod paths;
 mod permission;
 mod planning;
+pub mod plugin_system;
 mod project_catalog;
 mod prompt;
 mod runtime;
