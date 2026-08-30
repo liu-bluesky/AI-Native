@@ -1695,7 +1695,7 @@
             <template #accessory>
               <div class="chat-composer-workspace">
                 <span class="chat-composer-workspace__icon" aria-hidden="true">
-                  {{ hasSelectedProject ? "⌂" : "+" }}
+                  <el-icon><Document /></el-icon>
                 </span>
                 <select
                   v-model="selectedProjectId"
@@ -8864,7 +8864,7 @@ const starterPrompts = computed(() => [
   "帮我执行一个需要本机环境的任务",
   "用系统模型分析并调用本地工具处理",
 ]);
-const emptyStateTitle = computed(() => "启动本地运行窗口");
+const emptyStateTitle = computed(() => "LT code 标准版");
 const emptyStateText = computed(() =>
   hasSelectedProject.value
     ? "当前入口复用系统已配置的大模型 Provider，不使用 Ollama；需要执行命令、读写文件或调用飞书时，会通过本机运行环境和审批流程推进。"
@@ -37919,6 +37919,24 @@ onUnmounted(() => {
 }
 
 :deep(.chat-sidebar-brand-panel) {
+  display: none;
+}
+
+:deep(.chat-conversation-sidebar__actions) {
+  margin-top: 0;
+  padding: 20px 16px 10px;
+}
+
+:deep(.chat-conversation-sidebar__primary-actions) {
+  display: block;
+}
+
+:deep(.chat-new-project-button),
+:deep(.chat-clear-current-button) {
+  display: none;
+}
+
+:deep(.chat-sidebar-brand-panel) {
   padding: 6px 4px 18px;
 }
 
@@ -37953,14 +37971,80 @@ onUnmounted(() => {
 }
 
 :deep(.chat-new-conversation-button) {
+  width: 100%;
   border-color: #202124 !important;
   background: #202124 !important;
+  color: #f4f5f7 !important;
 }
 
-:deep(.chat-new-project-button) {
-  border-color: #dfdfdc !important;
-  background: #fff !important;
-  color: #3d3f43 !important;
+:deep(.chat-workspace-panel) {
+  padding: 0 16px 12px;
+}
+
+:deep(.chat-workspace-panel__head) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  color: #767873;
+  font-size: 13px;
+}
+
+:deep(.chat-workspace-panel__actions) {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+:deep(.chat-workspace-panel__actions button),
+:deep(.chat-workspace-panel__item > button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #6e706c;
+  font-size: 17px;
+  cursor: pointer;
+}
+
+:deep(.chat-workspace-panel__actions button:hover),
+:deep(.chat-workspace-panel__item > button:hover) {
+  background: #f0f0ed;
+  color: #202124;
+}
+
+:deep(.chat-workspace-panel__item) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 6px;
+  border-radius: 7px;
+  background: #f5f5f2;
+  color: #3d3f43;
+}
+
+:deep(.chat-workspace-panel__folder) {
+  flex: 0 0 auto;
+  color: #5b5d58;
+}
+
+:deep(.chat-workspace-panel__item select) {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  outline: 0;
+  appearance: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 :deep(.chat-session-panel) {
@@ -38115,36 +38199,39 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   max-width: min(100%, 360px);
-  min-height: 28px;
-  padding: 0 28px 0 8px;
-  border: 0;
-  border-radius: 14px;
-  background: transparent;
+  min-height: 34px;
+  padding: 0 30px 0 10px;
+  border: 1px solid #dcdcd8;
+  border-radius: 10px;
+  background: #fff;
   color: #3d3f3b;
+  box-shadow: none;
 }
 
 .chat-composer-workspace:hover {
-  background: #f0f0ed;
+  border-color: #565960;
+  background: #fff;
 }
 
 .chat-composer-workspace__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  margin-right: 5px;
+  width: 20px;
+  margin-right: 6px;
   color: #5b5d58;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .chat-composer-workspace__select {
+  min-width: 0;
   max-width: 280px;
   border: 0;
   outline: 0;
   appearance: none;
   background: transparent;
   color: inherit;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }

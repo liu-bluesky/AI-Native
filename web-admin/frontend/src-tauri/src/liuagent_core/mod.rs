@@ -38,8 +38,8 @@ pub use ftp_credentials::{
 };
 pub use gateway::prepare_agent_invocation;
 pub use paths::{
-    desktop_runtime_root, ensure_desktop_runtime_migrated, global_user_home_dir,
-    normalize_local_backend_api_base_url,
+    desktop_plugin_root, desktop_runtime_root, ensure_desktop_runtime_migrated,
+    global_user_home_dir, normalize_local_backend_api_base_url,
 };
 pub use project_catalog::{
     find_global_project_catalog_entry, global_project_catalog_path, parse_project_catalog_content,

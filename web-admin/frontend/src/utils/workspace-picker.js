@@ -1,5 +1,8 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { pickNativeWorkspaceDirectory } from '@/utils/native-desktop-bridge.js'
+import {
+  hasNativeDesktopBridge,
+  pickNativeWorkspaceDirectory,
+} from '@/utils/native-desktop-bridge.js'
 
 function normalizePathLike(value = '') {
   return String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
@@ -33,15 +36,18 @@ export async function pickWorkspaceDirectory(currentPath = '', options = {}) {
     String(options?.placeholder || '/Users/yourname/project').trim() || '/Users/yourname/project'
   const manualFallback = options?.manualFallback !== false
 
-  try {
-    const nativePicked = await pickNativeWorkspaceDirectory({
-      title,
-      initialPath,
-    })
-    if (nativePicked) return nativePicked
-  } catch (err) {
-    const fallbackMessage = manualFallback ? '系统目录选择器不可用，改为手动填写路径' : '系统目录选择器不可用'
-    ElMessage.warning(err?.detail || err?.message || fallbackMessage)
+  if (hasNativeDesktopBridge()) {
+    try {
+      const nativePicked = await pickNativeWorkspaceDirectory({
+        title,
+        initialPath,
+      })
+      // 原生选择器返回空值表示用户主动取消，不应再弹手动路径输入框。
+      return nativePicked || null
+    } catch (err) {
+      const fallbackMessage = manualFallback ? '系统目录选择器不可用，改为手动填写路径' : '系统目录选择器不可用'
+      ElMessage.warning(err?.detail || err?.message || fallbackMessage)
+    }
   }
 
   if (!manualFallback) {

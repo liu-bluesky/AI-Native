@@ -1,0 +1,31 @@
+{
+  "id": "mcp.example-server",
+  "pluginType": "mcp",
+  "name": "example-server",
+  "displayName": "MCP: example-server",
+  "description": "MCP Server 插件模板；连接后由 tools/list 动态发现工具能力。",
+  "version": "1.0.0",
+  "source": "mcp",
+  "capabilities": [],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "serverId": {"type": "string"},
+      "transport": {"type": "string", "enum": ["stdio", "http", "sse"]},
+      "url": {"type": "string"},
+      "command": {"type": "string"},
+      "args": {"type": "array", "items": {"type": "string"}}
+    }
+  },
+  "permissions": {
+    "risk": "medium",
+    "requiresApproval": true,
+    "scope": "mcp-server"
+  },
+  "lifecycle": {
+    "supportsReload": true,
+    "ownsProcesses": true,
+    "ownsEventListeners": false
+  },
+  "enabled": true
+}

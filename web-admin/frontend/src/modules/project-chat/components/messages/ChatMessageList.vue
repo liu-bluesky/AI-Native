@@ -9,30 +9,7 @@
       </div>
     </div>
     <div v-else-if="!messages.length" class="chat-empty-state">
-      <div class="chat-empty-state__hero">
-        <div class="chat-empty-badge">
-          {{
-            hasSelectedProject
-              ? "Project Context Ready"
-              : hasAccessibleProjects
-                ? "General Chat"
-                : "Access Pending"
-          }}
-        </div>
-        <div class="chat-empty-title">{{ emptyStateTitle }}</div>
-        <div class="chat-empty-text">{{ emptyStateText }}</div>
-      </div>
-      <div v-if="starterPrompts.length" class="chat-empty-actions">
-        <button
-          v-for="prompt in starterPrompts"
-          :key="prompt"
-          type="button"
-          class="chat-empty-action"
-          @click="$emit('apply-starter-prompt', prompt)"
-        >
-          {{ prompt }}
-        </button>
-      </div>
+      <div class="chat-empty-title">{{ emptyStateTitle }}</div>
     </div>
     <template v-else>
       <div

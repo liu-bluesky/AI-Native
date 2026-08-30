@@ -3,16 +3,14 @@ use serde_json::Value;
 use crate::liuagent_core::plugin_system::{PluginManifest, PluginRegistry, PluginRegistryError};
 use crate::liuagent_core::ToolDefinition;
 
-#[path = "builtin-media-image/runtime.rs"]
+#[path = "runtime.rs"]
 mod runtime;
 
 pub use runtime::execute_builtin_media_image_tool;
 
-const PLUGIN_MANIFEST: &str = include_str!("builtin-media-image/plugin.json");
-const GENERATE_IMAGE_INPUT_SCHEMA: &str =
-    include_str!("builtin-media-image/schemas/generate-image-input.json");
-const EDIT_IMAGE_INPUT_SCHEMA: &str =
-    include_str!("builtin-media-image/schemas/edit-image-input.json");
+const PLUGIN_MANIFEST: &str = include_str!("plugin.json");
+const GENERATE_IMAGE_INPUT_SCHEMA: &str = include_str!("schemas/generate-image-input.json");
+const EDIT_IMAGE_INPUT_SCHEMA: &str = include_str!("schemas/edit-image-input.json");
 
 pub fn builtin_media_image_manifest() -> Result<PluginManifest, PluginRegistryError> {
     let manifest: PluginManifest = serde_json::from_str(PLUGIN_MANIFEST).map_err(|error| {

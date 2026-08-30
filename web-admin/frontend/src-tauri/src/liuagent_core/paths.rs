@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use url::Url;
 
 pub const DESKTOP_RUNTIME_DIR_NAME: &str = "desktop-agent-runtime";
+pub const DESKTOP_APP_NAME: &str = "AI Employee";
 const LEGACY_RUNTIME_DIR_NAME: &str = "agent-runtime-v2";
 const MIGRATION_MARKER_FILE: &str = ".legacy-agent-runtime-v2-migration-v1";
 const DESKTOP_OWNED_LEGACY_ENTRIES: &[&str] = &[
@@ -31,6 +32,32 @@ pub fn global_user_home_dir() -> Option<PathBuf> {
         env::var_os("HOMEDRIVE"),
         env::var_os("HOMEPATH"),
     )
+}
+
+pub fn desktop_plugin_root() -> io::Result<PathBuf> {
+    let home = global_user_home_dir().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "user home directory is unavailable",
+        )
+    })?;
+    let root = if cfg!(target_os = "windows") {
+        env::var_os("LOCALAPPDATA")
+            .or_else(|| env::var_os("APPDATA"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Local"))
+            .join(DESKTOP_APP_NAME)
+    } else if cfg!(target_os = "macos") {
+        home.join("Library")
+            .join("Application Support")
+            .join(DESKTOP_APP_NAME)
+    } else {
+        env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".local").join("share"))
+            .join("ai-employee")
+    };
+    Ok(root.join("plugins"))
 }
 
 fn global_user_home_dir_from(

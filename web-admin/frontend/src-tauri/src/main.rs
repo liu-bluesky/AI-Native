@@ -3327,8 +3327,22 @@ fn main() {
             project_chat_store::agent_supervision_find_answer
         ])
         .setup(|app| {
-            let plugin_registry = liuagent_core::plugin_system::builtin_plugins_registry()
+            let mut plugin_registry = liuagent_core::plugin_system::builtin_plugins_registry()
                 .map_err(|error| error.to_string())?;
+            if let Ok(plugin_root) = liuagent_core::desktop_plugin_root() {
+                match liuagent_core::plugin_system::PluginInstaller::load_installed_into_registry(
+                    &plugin_root,
+                    &mut plugin_registry,
+                ) {
+                    Ok(loaded) if loaded > 0 => {
+                        eprintln!("[plugin-registry] loaded {loaded} installed plugin(s)");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!("[plugin-registry] installed plugin load skipped: {error}");
+                    }
+                }
+            }
             let plugin_snapshot = plugin_registry.snapshot();
             eprintln!(
                 "[plugin-registry] registered {} builtin plugin(s), {} capability(ies)",

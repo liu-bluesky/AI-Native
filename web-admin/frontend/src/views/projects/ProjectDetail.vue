@@ -298,12 +298,9 @@ onBeforeUnmount(() => {
   min-height: 0;
   box-sizing: border-box;
   margin: 0 auto;
-  padding: 24px max(20px, calc((100% - 1120px) / 2 + 20px)) 40px;
-  color: #1f2937;
-  background: var(
-    --page-bg,
-    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%)
-  );
+  padding: 32px max(20px, calc((100% - 1080px) / 2 + 20px)) 48px;
+  color: #17191c;
+  background: #f7f7f5;
 }
 
  .folder-settings-page__header {
@@ -311,8 +308,8 @@ onBeforeUnmount(() => {
   align-items: flex-end;
   justify-content: space-between;
   gap: 24px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid #dfe5ec;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #e7e7e4;
 }
 
  .folder-settings-page__heading {
@@ -320,18 +317,18 @@ onBeforeUnmount(() => {
 }
 
  .folder-settings-page__eyebrow {
-  margin-bottom: 8px;
-  color: #64748b;
+  margin-bottom: 7px;
+  color: #767873;
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0;
+  letter-spacing: 0.08em;
 }
 
  .folder-settings-page__heading h1 {
   overflow: hidden;
   margin: 0;
-  color: #111827;
-  font-size: 28px;
+  color: #202124;
+  font-size: 24px;
   font-weight: 650;
   letter-spacing: 0;
   line-height: 1.2;
@@ -340,9 +337,9 @@ onBeforeUnmount(() => {
 }
 
  .folder-settings-page__heading p {
-  margin: 6px 0 0;
-  color: #64748b;
-  font-size: 14px;
+  margin: 7px 0 0;
+  color: #767873;
+  font-size: 13px;
   line-height: 1.5;
 }
 
@@ -354,8 +351,14 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
- .folder-settings-page__header-actions {
+.folder-settings-page__header-actions {
   flex-shrink: 0;
+}
+
+.folder-settings-page__header-actions :deep(.el-button) {
+  height: 38px;
+  border-radius: 10px;
+  box-shadow: none;
 }
 
  .folder-settings-page__header-actions :deep(.el-icon),
@@ -372,26 +375,26 @@ onBeforeUnmount(() => {
 }
 
 .folder-settings-tabs :deep(.el-tabs__nav-wrap::after) {
-  background-color: #dfe5ec;
+  background-color: #e7e7e4;
 }
 
 .folder-settings-tabs :deep(.el-tabs__item) {
   height: 42px;
-  color: #64748b;
+  color: #767873;
   font-weight: 600;
 }
 
 .folder-settings-tabs :deep(.el-tabs__item.is-active) {
-  color: #1d4ed8;
+  color: #202124;
 }
 
 .folder-settings-panel {
   min-height: 360px;
   padding: 24px;
-  border: 1px solid #dfe5ec;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
+  border: 1px solid #e7e7e4;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: none;
 }
 
 .folder-settings-form {
@@ -404,7 +407,7 @@ onBeforeUnmount(() => {
 
 .folder-settings-form__heading h2 {
   margin: 0;
-  color: #334155;
+  color: #202124;
   font-size: 18px;
   font-weight: 600;
   letter-spacing: 0;
@@ -413,7 +416,7 @@ onBeforeUnmount(() => {
 
 .folder-settings-form__heading p {
   margin: 6px 0 0;
-  color: #64748b;
+  color: #767873;
   font-size: 14px;
   line-height: 1.5;
 }

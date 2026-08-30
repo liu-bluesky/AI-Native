@@ -348,12 +348,9 @@ onBeforeUnmount(() => {
   min-height: 100dvh;
   box-sizing: border-box;
   margin: 0 auto;
-  padding: 24px max(20px, calc((100% - 1080px) / 2 + 20px)) 40px;
-  color: #1f2937;
-  background: var(
-    --page-bg,
-    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%)
-  );
+  padding: 32px max(20px, calc((100% - 1080px) / 2 + 20px)) 48px;
+  color: #17191c;
+  background: #f7f7f5;
 }
 
  .workspace-list-page__header {
@@ -361,8 +358,8 @@ onBeforeUnmount(() => {
   align-items: flex-end;
   justify-content: space-between;
   gap: 24px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid #dfe5ec;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #e7e7e4;
 }
 
  .workspace-list-page__heading {
@@ -370,26 +367,26 @@ onBeforeUnmount(() => {
 }
 
  .workspace-list-page__eyebrow {
-  margin-bottom: 8px;
-  color: #64748b;
+  margin-bottom: 7px;
+  color: #767873;
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0;
+  letter-spacing: 0.08em;
 }
 
  .workspace-list-page__heading h1 {
   margin: 0;
-  color: #111827;
-  font-size: 28px;
+  color: #202124;
+  font-size: 24px;
   font-weight: 650;
   letter-spacing: 0;
   line-height: 1.2;
 }
 
  .workspace-list-page__heading p {
-  margin: 6px 0 0;
-  color: #64748b;
-  font-size: 14px;
+  margin: 7px 0 0;
+  color: #767873;
+  font-size: 13px;
   line-height: 1.5;
 }
 
@@ -400,7 +397,23 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
- .workspace-list-page__actions :deep(.el-icon) {
+.workspace-list-page__actions :deep(.el-button) {
+  height: 38px;
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.workspace-list-page__actions :deep(.el-button--primary) {
+  border-color: #202124;
+  background: #202124;
+}
+
+.workspace-list-page__actions :deep(.el-button--primary:hover) {
+  border-color: #3d3f43;
+  background: #3d3f43;
+}
+
+.workspace-list-page__actions :deep(.el-icon) {
   margin-right: 6px;
 }
 
@@ -417,23 +430,34 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
  .workspace-list-page__toolbar h2 {
   margin: 0;
-  color: #334155;
-  font-size: 15px;
+  color: #767873;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
  .workspace-list-page__search {
   width: min(100%, 320px);
 }
 
- .workspace-list {
-  border-top: 1px solid #e2e8f0;
+.workspace-list-page__search :deep(.el-input__wrapper) {
+  min-height: 38px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 0 0 1px #e2e2df inset;
+}
+
+.workspace-list {
+  overflow: hidden;
+  border: 1px solid #e7e7e4;
+  border-radius: 14px;
+  background: #fff;
 }
 
  .workspace-list__item {
@@ -441,13 +465,18 @@ onBeforeUnmount(() => {
   grid-template-columns: 36px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  min-height: 76px;
-  border-bottom: 1px solid #e2e8f0;
+  min-height: 72px;
+  padding: 0 14px;
+  border-bottom: 1px solid #eeeeeb;
   transition: background-color 160ms ease;
 }
 
- .workspace-list__item:hover {
-  background: #f8fafc;
+.workspace-list__item:last-child {
+  border-bottom: 0;
+}
+
+.workspace-list__item:hover {
+  background: #fafaf8;
 }
 
  .workspace-list__icon {
@@ -455,9 +484,9 @@ onBeforeUnmount(() => {
   width: 32px;
   height: 32px;
   place-items: center;
-  border-radius: 6px;
-  background: #e0f2fe;
-  color: #0369a1;
+  border-radius: 9px;
+  background: #f0f0ed;
+  color: #3d3f43;
   font-size: 18px;
 }
 
@@ -473,10 +502,10 @@ onBeforeUnmount(() => {
   padding: 0;
   border: 0;
   background: transparent;
-  color: #1e293b;
+  color: #202124;
   cursor: pointer;
   font: inherit;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   line-height: 1.35;
   text-align: left;
@@ -486,14 +515,14 @@ onBeforeUnmount(() => {
 
  .workspace-list__open:hover,
  .workspace-list__open:focus-visible {
-  color: #2563eb;
+  color: #5c5e63;
   outline: none;
 }
 
  .workspace-list__main p {
   overflow: hidden;
   margin: 4px 0 0;
-  color: #64748b;
+  color: #8a8c87;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   line-height: 1.4;
@@ -505,7 +534,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding-right: 4px;
+  padding-left: 8px;
 }
 
  .workspace-list__actions :deep(.el-icon) {
@@ -514,7 +543,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 640px) {
   .workspace-list-page {
-    padding: 18px 14px 32px;
+    padding: 20px 14px 32px;
   }
 
   .workspace-list-page__header,
@@ -533,7 +562,8 @@ onBeforeUnmount(() => {
 
   .workspace-list__item {
     grid-template-columns: 32px minmax(0, 1fr) auto;
-    gap: 8px;
+    gap: 10px;
+    padding: 0 10px;
   }
 
   .workspace-list__main p {

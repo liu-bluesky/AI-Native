@@ -1,0 +1,8 @@
+{
+  "serverId": "example-server",
+  "transport": "stdio",
+  "command": "replace-with-mcp-server-command",
+  "args": [],
+  "env": {},
+  "enabled": false
+}

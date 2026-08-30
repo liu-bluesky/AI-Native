@@ -10,7 +10,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
-use std::collections::{hash_map::DefaultHasher, HashSet};
+use std::collections::{hash_map::DefaultHasher, BTreeMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
@@ -38,6 +38,8 @@ use super::permission::{
     cached_session_grant_comment, is_full_access_decision, permission_request_id,
 };
 use super::planning;
+use super::plugin_system::adapters::mcp::register_mcp_plugin;
+use super::plugin_system::{PluginManifest, PluginRegistry};
 use super::prompt::{
     tool_is_allowed, PromptRegistry, PromptScope, PromptScopeContext, PromptSection,
     ResolvedPromptSection,
@@ -5263,6 +5265,9 @@ fn run_agent_loop_with_answered_user_question(
     }
     let base_request = &hydrated_request;
     let mut messages = base_request.messages.clone();
+    if let Some(plugin_context) = build_mcp_plugin_context_message(base_request) {
+        messages.push(plugin_context);
+    }
     let mut model_steps = Vec::new();
     let mut model_input_snapshots = Vec::new();
     let mut planned_tools = Vec::new();
@@ -9132,6 +9137,7 @@ struct ModelStepRequest {
     ai_entry_file: String,
     mcp_config: Value,
     selected_mcp_tools: Vec<DiscoveredMcpTool>,
+    mcp_plugins: Vec<PluginManifest>,
     mcp_catalog_version: String,
     mcp_discovery_error: String,
     backend_context: Option<LocalBackendContext>,
@@ -9165,6 +9171,7 @@ impl ModelStepRequest {
             ai_entry_file: self.ai_entry_file.clone(),
             mcp_config: self.mcp_config.clone(),
             selected_mcp_tools: self.selected_mcp_tools.clone(),
+            mcp_plugins: self.mcp_plugins.clone(),
             mcp_catalog_version: self.mcp_catalog_version.clone(),
             mcp_discovery_error: self.mcp_discovery_error.clone(),
             backend_context: self.backend_context.clone(),
@@ -10067,6 +10074,7 @@ fn build_model_request_with_history_and_task_profile(
             .to_string(),
         mcp_config: effective_mcp_config,
         selected_mcp_tools: Vec::new(),
+        mcp_plugins: Vec::new(),
         mcp_catalog_version: String::new(),
         mcp_discovery_error: String::new(),
         backend_context: request.backend_context.clone(),
@@ -10083,6 +10091,7 @@ fn build_model_request_with_history_and_task_profile(
 
 fn hydrate_mcp_tool_snapshot(request: &mut ModelStepRequest) {
     if !request.selected_mcp_tools.is_empty()
+        || !request.mcp_plugins.is_empty()
         || !request.mcp_catalog_version.is_empty()
         || !request.mcp_discovery_error.is_empty()
         || is_employee_creation_mode(request)
@@ -10092,6 +10101,13 @@ fn hydrate_mcp_tool_snapshot(request: &mut ModelStepRequest) {
     }
     match discover_mcp_tools(&request.workspace_path, &request.mcp_config) {
         Ok(discovered) => {
+            match register_discovered_mcp_plugins(&request.mcp_config, &discovered) {
+                Ok(plugins) => request.mcp_plugins = plugins,
+                Err(error) => {
+                    request.mcp_discovery_error = error;
+                    return;
+                }
+            }
             request.mcp_catalog_version = mcp_catalog_version(&discovered);
             request.selected_mcp_tools = discovered;
         }
@@ -10099,6 +10115,74 @@ fn hydrate_mcp_tool_snapshot(request: &mut ModelStepRequest) {
             request.mcp_discovery_error = format!("{}: {}", error.code, error.message);
         }
     }
+}
+
+fn register_discovered_mcp_plugins(
+    mcp_config: &Value,
+    discovered: &[DiscoveredMcpTool],
+) -> Result<Vec<PluginManifest>, String> {
+    let mut tools_by_server = BTreeMap::<String, Vec<DiscoveredMcpTool>>::new();
+    for tool in discovered {
+        tools_by_server
+            .entry(tool.server.clone())
+            .or_default()
+            .push(tool.clone());
+    }
+
+    let mut registry = PluginRegistry::new();
+    for (server, tools) in tools_by_server {
+        let server_config = mcp_config
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .and_then(|servers| servers.get(&server))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        register_mcp_plugin(&mut registry, &server, &server_config, &tools)
+            .map_err(|error| format!("MCP plugin registration failed for {server}: {error}"))?;
+    }
+    Ok(registry
+        .list_plugins()
+        .map(|record| record.manifest.clone())
+        .collect())
+}
+
+fn build_mcp_plugin_context_message(request: &ModelStepRequest) -> Option<RuntimeModelMessage> {
+    if request.mcp_plugins.is_empty() {
+        return None;
+    }
+    let mut lines = vec![
+        "当前已发现并注册的 MCP 插件摘要：".to_string(),
+        "只选择与用户目标匹配的插件能力；调用仍由 Runtime MCP Host 执行权限、参数和连接检查。"
+            .to_string(),
+    ];
+    for plugin in &request.mcp_plugins {
+        lines.push(format!(
+            "- {}@{}：{}（{} 项能力）",
+            plugin.id,
+            plugin.version,
+            plugin.description,
+            plugin.capabilities.len()
+        ));
+        for capability in plugin.capabilities.iter().take(12) {
+            lines.push(format!(
+                "  - {} / {}：{}",
+                capability.id, capability.name, capability.description
+            ));
+        }
+        if plugin.capabilities.len() > 12 {
+            lines.push(format!(
+                "  - 其余 {} 项能力按需从 Tool Schema 选择",
+                plugin.capabilities.len() - 12
+            ));
+        }
+    }
+    Some(RuntimeModelMessage::system_section(
+        "runtime:mcp_plugins",
+        "runtime.mcp_plugins",
+        "runtime",
+        -120,
+        lines.join("\n"),
+    ))
 }
 
 fn mcp_catalog_version(tools: &[DiscoveredMcpTool]) -> String {
@@ -14355,6 +14439,37 @@ mod tests {
         );
         assert!(names.contains(&"mcp__local-catalog__list_project_members"));
         assert!(!names.contains(&"get_project_employee_detail"));
+    }
+
+    #[test]
+    fn discovered_mcp_tools_register_server_plugins_and_publish_summaries() {
+        let tools = vec![DiscoveredMcpTool {
+            server: "github".to_string(),
+            server_id: "github".to_string(),
+            canonical_tool_id: "integrations.github.search".to_string(),
+            domain: "integrations".to_string(),
+            name: "search".to_string(),
+            description: "Search GitHub repositories".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            annotations: Default::default(),
+        }];
+        let plugins = register_discovered_mcp_plugins(
+            &json!({
+                "mcpServers": {
+                    "github": {"type": "http", "url": "https://example.test/mcp"}
+                }
+            }),
+            &tools,
+        )
+        .unwrap();
+        let mut request = test_model_request("搜索代码仓库");
+        request.mcp_plugins = plugins;
+        let message = build_mcp_plugin_context_message(&request).unwrap();
+
+        assert_eq!(request.mcp_plugins[0].id, "mcp.github");
+        assert!(message.content.contains("mcp.github@0.0.0"));
+        assert!(message.content.contains("integrations.github.search"));
+        assert!(!message.content.contains("https://example.test/mcp"));
     }
 
     #[test]
@@ -18748,6 +18863,7 @@ mod tests {
             ai_entry_file: String::new(),
             mcp_config: json!({}),
             selected_mcp_tools: Vec::new(),
+            mcp_plugins: Vec::new(),
             mcp_catalog_version: String::new(),
             mcp_discovery_error: String::new(),
             backend_context: None,

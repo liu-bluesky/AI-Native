@@ -2,6 +2,7 @@
 
 use super::{PluginRegistry, PluginRegistryError};
 
+#[path = "builtin-media-image/mod.rs"]
 mod builtin_media_image;
 
 pub use builtin_media_image::{

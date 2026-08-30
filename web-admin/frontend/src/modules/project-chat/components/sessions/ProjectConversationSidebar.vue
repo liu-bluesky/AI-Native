@@ -51,10 +51,45 @@
       </el-button>
     </div>
 
+    <section class="chat-workspace-panel" aria-labelledby="workspace-panel-title">
+      <div class="chat-workspace-panel__head">
+        <span id="workspace-panel-title">工作区</span>
+        <div class="chat-workspace-panel__actions">
+          <button
+            type="button"
+            aria-label="搜索会话标题"
+            title="搜索会话标题"
+            :class="{ 'is-active': workspaceSearchVisible }"
+            @click="toggleWorkspaceSearch"
+          >
+            <el-icon><Search /></el-icon>
+          </button>
+          <button
+            type="button"
+            aria-label="新建项目"
+            title="新建项目"
+            @click="emit('create-project')"
+          >
+            <el-icon><FolderAdd /></el-icon>
+          </button>
+        </div>
+      </div>
+      <input
+        v-if="workspaceSearchVisible"
+        ref="workspaceSearchInputRef"
+        v-model="workspaceSearchQuery"
+        class="chat-workspace-panel__search"
+        type="search"
+        placeholder="搜索会话标题"
+        aria-label="搜索会话标题"
+        @keydown.esc="closeWorkspaceSearch"
+      />
+    </section>
+
     <div class="chat-session-panel">
       <div class="chat-session-panel__head">
         <div>
-          <div class="chat-session-panel__title">会话历史</div>
+          <div class="chat-session-panel__title">会话</div>
           <div class="chat-session-panel__subtitle">
             {{ hasSelectedProject ? "当前项目" : "先选择一个项目" }}
           </div>
@@ -72,7 +107,7 @@
         <ChatSessionList
           v-if="hasSelectedProject"
           :loading="sessionsLoading"
-          :groups="sessionGroups"
+          :groups="filteredSessionGroups"
           :current-session-id="currentSessionId"
           :deleting-session-id="deletingSessionId"
           @select="emit('select-session', { sessionId: $event })"
@@ -103,8 +138,13 @@
 </template>
 
 <script setup>
-import { ref } from "vue";
-import { DocumentCopy, FolderAdd, Setting } from "@element-plus/icons-vue";
+import { computed, ref } from "vue";
+import {
+  DocumentCopy,
+  FolderAdd,
+  Search,
+  Setting,
+} from "@element-plus/icons-vue";
 import ChatSessionList from "@/modules/project-chat/components/sessions/ChatSessionList.vue";
 
 const props = defineProps({
@@ -136,6 +176,43 @@ const emit = defineEmits([
 
 const settingsButtonRef = ref(null);
 const projectSwitcherRef = ref(null);
+const workspaceSearchVisible = ref(false);
+const workspaceSearchQuery = ref("");
+const workspaceSearchInputRef = ref(null);
+const filteredSessionGroups = computed(() => {
+  const query = String(workspaceSearchQuery.value || "").trim().toLowerCase();
+  if (!query) return props.sessionGroups;
+  return props.sessionGroups
+    .map((group) => ({
+      ...group,
+      items: (Array.isArray(group?.items) ? group.items : []).filter((session) =>
+        [
+          session?.title,
+          session?.latest_requirement,
+          session?.root_goal,
+          session?.rootGoal,
+          session?.preview,
+          session?.last_message,
+        ]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(query)),
+      ),
+    }))
+    .filter((group) => group.items.length);
+});
+
+function toggleWorkspaceSearch() {
+  workspaceSearchVisible.value = !workspaceSearchVisible.value;
+  if (!workspaceSearchVisible.value) workspaceSearchQuery.value = "";
+  if (workspaceSearchVisible.value) {
+    requestAnimationFrame(() => workspaceSearchInputRef.value?.focus?.());
+  }
+}
+
+function closeWorkspaceSearch() {
+  workspaceSearchVisible.value = false;
+  workspaceSearchQuery.value = "";
+}
 
 // 父页的新手引导仍需要定位内部控件，组件只暴露定位锚点，不暴露业务状态。
 defineExpose({
@@ -235,6 +312,27 @@ defineExpose({
   margin-top: 10px;
   margin-bottom: 10px;
   padding: 0;
+}
+
+.chat-workspace-panel__search {
+  display: block;
+  width: 100%;
+  height: 32px;
+  box-sizing: border-box;
+  margin-top: 6px;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.82);
+  color: #334155;
+  font: inherit;
+  font-size: 12px;
+}
+
+.chat-workspace-panel__search:focus {
+  border-color: rgba(56, 189, 248, 0.52);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
 }
 
 .chat-conversation-sidebar__primary-actions {
