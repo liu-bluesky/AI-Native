@@ -13639,6 +13639,7 @@ function normalizeRuntimeMessageSnapshot(row) {
     effectiveToolTotal: Number(row.effectiveToolTotal || 0),
     terminalLog: Array.isArray(row.terminalLog) ? row.terminalLog.slice() : [],
     processExpanded: Boolean(row.processExpanded),
+    answerFinished: Boolean(row.answerFinished || row.answer_finished),
     audit: row.audit && typeof row.audit === "object" ? row.audit : null,
     taskTreeAudit:
       row.taskTreeAudit && typeof row.taskTreeAudit === "object"
@@ -16427,6 +16428,9 @@ function messageTrajectoryId(row) {
 function isMessageTrajectoryExpanded(row, idx = -1) {
   const messageId = messageTrajectoryId(row);
   if (!messageId) return false;
+  if (!isMessageTrajectoryCollapsible(row, idx)) {
+    return true;
+  }
   const state = expandedMessageTrajectoryId.value;
   if (state === `expanded:${messageId}`) return true;
   if (state === `collapsed:${messageId}`) return false;
@@ -16436,9 +16440,25 @@ function isMessageTrajectoryExpanded(row, idx = -1) {
 function toggleMessageTrajectoryExpanded(row, idx = -1) {
   const messageId = messageTrajectoryId(row);
   if (!messageId) return;
+  if (!isMessageTrajectoryCollapsible(row, idx)) {
+    expandedMessageTrajectoryId.value = `expanded:${messageId}`;
+    return;
+  }
   expandedMessageTrajectoryId.value = isMessageTrajectoryExpanded(row, idx)
     ? `collapsed:${messageId}`
     : `expanded:${messageId}`;
+}
+
+function isMessageTrajectoryCollapsible(row, idx = -1) {
+  if (row?.answerFinished === true) return true;
+  if (String(row?.role || "").trim() !== "assistant") return false;
+  if (!String(row?.content || "").trim()) return false;
+  if (hasNonTerminalUserWaitingOperation(row)) return false;
+  return Boolean(
+    row?.messageExecutionEndedAtEpochMs ||
+      row?.agentRuntimeEndedAtEpochMs ||
+      messageAnswerId(row),
+  );
 }
 
 function messageTrajectoryToolId(row, operation) {
@@ -16473,9 +16493,20 @@ function openMessageProcessForActiveRun(row, options = {}) {
 }
 
 function collapseMessageProcessAfterFinalAnswer(row) {
-  if (!row || hasNonTerminalUserWaitingOperation(row)) return;
+  if (
+    !row ||
+    hasNonTerminalUserWaitingOperation(row) ||
+    !String(row?.content || "").trim()
+  ) {
+    return;
+  }
+  row.answerFinished = true;
   row.processExpanded = false;
   row.processExpandedUserToggled = false;
+  const messageId = messageTrajectoryId(row);
+  if (messageId) {
+    expandedMessageTrajectoryId.value = `collapsed:${messageId}`;
+  }
 }
 
 function isCompletedDoneProcessLog(entry) {
@@ -19660,7 +19691,6 @@ function removeLocalLiuAgentPermissionOperation(row, requestId) {
     return !(isLocalPermission && operationRequestId === normalizedRequestId);
   });
   if (row.operations.length !== beforeCount) {
-    collapseMessageProcessAfterFinalAnswer(row);
     return true;
   }
   return false;
