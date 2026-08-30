@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use super::adapters::protocol::{message_event, state_changed_event};
+use super::execution::build_tool_execution_record_value;
 use super::gateway::{epoch_millis, sanitize_path_segment};
 use super::paths::desktop_runtime_root;
 use super::types::{ToolError, ToolExecutionResult};
@@ -193,6 +194,11 @@ pub fn write_runtime_artifacts(
         },
         "operations": input.operations,
         "tool_results": input.tool_results,
+        "execution_records": input
+            .tool_results
+            .iter()
+            .map(build_tool_execution_record_value)
+            .collect::<Vec<_>>(),
         "artifact_paths": {
             "state_path": paths.state_path.to_string_lossy(),
             "transcript_path": paths.transcript_path.to_string_lossy(),

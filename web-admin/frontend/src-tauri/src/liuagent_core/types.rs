@@ -22,7 +22,7 @@ where
     Ok(value as u8)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolExecutionRequest {
     pub tool_call_id: Option<String>,

@@ -9201,6 +9201,24 @@ function localLiuAgentRuntimeEventPayload(event = {}) {
     : {};
 }
 
+function localLiuAgentPostProcessError(payload = {}) {
+  const record =
+    payload?.execution_record && typeof payload.execution_record === "object"
+      ? payload.execution_record
+      : {};
+  if (String(record?.postProcessStatus || "").trim() !== "failed") return null;
+  const detail =
+    payload?.content?.postProcessError &&
+    typeof payload.content.postProcessError === "object"
+      ? payload.content.postProcessError
+      : {};
+  return {
+    code: String(record?.errorCode || detail?.code || "post_process_failed").trim(),
+    phase: String(record?.errorPhase || detail?.phase || "parse").trim(),
+    message: String(record?.errorMessage || detail?.message || "结果处理失败").trim(),
+  };
+}
+
 function localLiuAgentRuntimeEventPhase(event = {}) {
   const type = String(event?.type || "").trim();
   const payload = localLiuAgentRuntimeEventPayload(event);
@@ -9474,6 +9492,7 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
       payload?.tool_name || payload?.toolName || "",
     ).trim();
     const resultLabel = localLiuAgentToolResultLabel(toolName);
+    const postProcessError = localLiuAgentPostProcessError(payload);
     const summary = compactLocalLiuAgentInline(
       payload?.summary || payload?.error_code || payload?.error || "",
       260,
@@ -9485,6 +9504,9 @@ function localLiuAgentRuntimeEventTranscriptText(event = {}) {
     return [
       `完成：${resultLabel}`,
       summary ? `  - ${summary}` : "",
+      postProcessError
+        ? `  - 工具已执行成功，但${postProcessError.phase}阶段报错：${postProcessError.code}\n  - ${postProcessError.message}`
+        : "",
       argumentsPreview ? `  - 参数：${argumentsPreview}` : "",
     ]
       .filter(Boolean)
@@ -9655,7 +9677,14 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
       payload?.tool_name || payload?.toolName || "",
     ).trim();
     const summary = String(payload?.summary || "").trim();
-    return [`完成：${localLiuAgentToolResultLabel(toolName)}`, summary]
+    const postProcessError = localLiuAgentPostProcessError(payload);
+    return [
+      `完成：${localLiuAgentToolResultLabel(toolName)}`,
+      summary,
+      postProcessError
+        ? `工具已成功执行，但结果处理失败：${postProcessError.message}；任务继续执行`
+        : "",
+    ]
       .filter(Boolean)
       .join(" · ");
   }
@@ -9682,6 +9711,7 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
   ).trim();
   const phase = localLiuAgentRuntimeEventPhase(event);
   const summary = localLiuAgentRuntimeEventSummary(event);
+  const postProcessError = localLiuAgentPostProcessError(payload);
   const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
   const modelStepIndex = Number(payload?.index || 0) || 0;
   const providerId = String(
@@ -9757,6 +9787,8 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
           })
         : type === "tool_call_started"
           ? argumentsPreview
+          : postProcessError
+            ? `${postProcessError.code} (${postProcessError.phase})\n${postProcessError.message}`
           : String(payload?.error_code || payload?.error || "").trim(),
     phase,
     actionType: type === "approval_required" ? "approve" : "none",
@@ -9840,7 +9872,9 @@ function localLiuAgentRuntimeEventProcessLogEntry(
       operation?.summary ||
       localLiuAgentRuntimeEventSummary(event),
     level:
-      phase === "failed"
+      localLiuAgentPostProcessError(payload)
+        ? "warning"
+        : phase === "failed"
         ? "error"
         : phase === "waiting_user"
           ? "warning"
@@ -27834,25 +27868,25 @@ function applyStarterPrompt(prompt) {
 
 function handleFileChange(file) {
   const raw = file.raw;
-  if (!raw) return;
+  if (!raw) return false;
   if (!currentModelAttachmentSupported.value) {
     ElMessage.error("当前模型不支持附件输入，请切换模型或粘贴文本内容");
-    return;
+    return false;
   }
   const isImage = isImageFile(raw);
   const isAudio = isAudioFile(raw);
   if (!isAllowedFileType(raw, effectiveUploadAllowedFileTypes.value)) {
     ElMessage.error("文件类型不在当前项目对话设置允许范围内");
-    return;
+    return false;
   }
   const sizeMB = raw.size / (1024 * 1024);
   if (sizeMB > maxFileSizeMb.value) {
     ElMessage.error(`文件超过 ${maxFileSizeMb.value}MB`);
-    return;
+    return false;
   }
   if (uploadFiles.value.length >= effectiveUploadLimit.value) {
     ElMessage.warning(`最多只能上传 ${effectiveUploadLimit.value} 个文件`);
-    return;
+    return false;
   }
 
   if (isImage) {
@@ -27884,6 +27918,53 @@ function handleFileChange(file) {
       `已添加附件：${file.name || raw.name}（${file.sizeLabel}）`,
     );
   }
+  return true;
+}
+
+function imageReferenceFileName(reference, mimeType = "image/png") {
+  const label = String(reference?.label || "历史图片").trim();
+  const safeLabel = label.replace(/[\\/:*?"<>|\n\r]+/g, "_").trim();
+  const extension = String(mimeType || "")
+    .split("/")
+    .pop()
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  return `${safeLabel || "历史图片"}.${extension || "png"}`;
+}
+
+async function buildImageUploadFromContextReference(reference) {
+  const sourceUrl = await materializePersistentMediaUrl(reference?.url, {
+    kind: "image",
+  });
+  if (!sourceUrl || sourceUrl.startsWith("blob:")) {
+    throw new Error("历史图片没有可持久化的地址");
+  }
+  const response = await fetch(sourceUrl);
+  if (!response.ok) {
+    throw new Error(`历史图片读取失败（HTTP ${response.status}）`);
+  }
+  const blob = await response.blob();
+  const mimeType = String(blob.type || reference?.mimeType || "image/png")
+    .trim()
+    .toLowerCase();
+  if (!mimeType.startsWith("image/")) {
+    throw new Error("历史引用不是可编辑的图片文件");
+  }
+  const name = imageReferenceFileName(reference, mimeType);
+  let raw;
+  try {
+    raw = new File([blob], name, { type: mimeType });
+  } catch (_error) {
+    raw = blob;
+    Object.defineProperty(raw, "name", { value: name });
+  }
+  return {
+    raw,
+    name,
+    contextReferenceId: String(reference?.id || "").trim(),
+    sourceReferenceUrl: sourceUrl,
+  };
 }
 
 function resolveUploadProcessingLabel(kind) {
@@ -28335,17 +28416,54 @@ function openAttachmentContextMenu(event, message, attachment, index = 0) {
   ]);
 }
 
-function appendContextMenuSelection() {
-  const previousCount = composerContextRefs.value.length;
-  composerContextRefs.value = mergeContextReferences(
-    composerContextRefs.value,
-    messageContextMenu.references,
-  );
-  const addedCount = composerContextRefs.value.length - previousCount;
+async function appendContextMenuSelection() {
+  const references = Array.isArray(messageContextMenu.references)
+    ? messageContextMenu.references.slice()
+    : [];
   closeMessageContextMenu();
+  if (!references.length) return;
+
+  let addedCount = 0;
+  let failedImageCount = 0;
+  const nonImageReferences = references.filter(
+    (reference) => reference?.type !== "image",
+  );
+  if (nonImageReferences.length) {
+    const previousCount = composerContextRefs.value.length;
+    composerContextRefs.value = mergeContextReferences(
+      composerContextRefs.value,
+      nonImageReferences,
+    );
+    addedCount += composerContextRefs.value.length - previousCount;
+  }
+
+  for (const reference of references.filter(
+    (item) => item?.type === "image",
+  )) {
+    const referenceId = String(reference?.id || "").trim();
+    const sourceUrl = String(reference?.url || "").trim();
+    const alreadyAdded = uploadFiles.value.some(
+      (item) =>
+        String(item?.contextReferenceId || "").trim() === referenceId ||
+        String(item?.sourceReferenceUrl || "").trim() === sourceUrl,
+    );
+    if (alreadyAdded) continue;
+    try {
+      const uploadItem = await buildImageUploadFromContextReference(reference);
+      if (handleFileChange(uploadItem)) {
+        addedCount += 1;
+      }
+    } catch (error) {
+      failedImageCount += 1;
+      ElMessage.error(
+        error?.message || "历史图片无法读取，请重新拖拽原图后再编辑",
+      );
+    }
+  }
+
   if (addedCount > 0) {
     ElMessage.success(`已添加 ${addedCount} 项到 liuAgent 对话`);
-  } else {
+  } else if (!failedImageCount) {
     ElMessage.info("该内容已在当前会话上下文中");
   }
   void focusChatComposerTextarea();

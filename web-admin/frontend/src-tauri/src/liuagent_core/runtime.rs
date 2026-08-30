@@ -29,6 +29,7 @@ use super::adapters::protocol::{
 };
 use super::audit::build_tool_audit_logs;
 use super::definitions::builtin_tool_definitions;
+use super::execution::build_tool_execution_record;
 use super::learning::record_runtime_learning_candidate;
 use super::paths::{
     desktop_runtime_root, ensure_desktop_runtime_migrated, normalize_local_backend_api_base_url,
@@ -89,6 +90,7 @@ const TOOL_OBSERVATION_MAX_ARRAY_ITEMS: usize = 80;
 const TOOL_OBSERVATION_MAX_DEPTH: usize = 6;
 const DESKTOP_BOT_GLOBAL_PROJECT_ID: &str = "desktop-bot-global";
 const DIRECT_HISTORY_CONTEXT_MAX_MESSAGES: usize = 4;
+const DEFAULT_MAX_AUTOMATIC_TOOL_RETRIES: usize = 2;
 
 #[derive(Debug, Clone)]
 enum ModelStreamDelta {
@@ -3397,6 +3399,41 @@ fn is_side_effect_tool(tool_name: &str) -> bool {
     )
 }
 
+fn is_auto_retry_safe_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name.trim(),
+        "list_files"
+            | "read_file"
+            | "list_local_resources"
+            | "search_text"
+            | "http_get"
+            | "web_search"
+            | "web_extract"
+            | "list_mcp_tools"
+            | "read_mcp_resource"
+    )
+}
+
+fn should_automatically_retry_tool(
+    tool: &PlannedLocalTool,
+    result: &super::types::ToolExecutionResult,
+) -> bool {
+    if result.ok || !is_auto_retry_safe_tool(&tool.name) {
+        return false;
+    }
+    let record = build_tool_execution_record(result);
+    record.retryable && record.task_continues
+}
+
+fn automatic_tool_retry_delay_ms(retry_index: usize) -> u64 {
+    match retry_index {
+        0 => 0,
+        1 => 500,
+        2 => 1_000,
+        value => 2_000u64.saturating_mul(2u64.saturating_pow((value - 2) as u32)),
+    }
+}
+
 fn build_requirement_current_state(
     user_message: &str,
     run_status: &str,
@@ -5580,8 +5617,9 @@ fn run_agent_loop_with_answered_user_question(
                 workspace_path: active_workspace_root.borrow().to_string_lossy().to_string(),
                 permission_decision: effective_permission_decision.clone(),
             };
-            let result = if creation_mode_blocks_tool(&request, &tool.name, &tool.arguments) {
-                super::types::ToolExecutionResult::failed(
+            let execute_tool_once = || {
+                if creation_mode_blocks_tool(&request, &tool.name, &tool.arguments) {
+                    super::types::ToolExecutionResult::failed(
                     tool.tool_call_id.clone(),
                     tool.name.clone(),
                     ToolError::new(
@@ -5589,100 +5627,153 @@ fn run_agent_loop_with_answered_user_question(
                         "创建智能体定义阶段不会执行浏览器、DevTools、网页探测或相关 MCP 工具；该内容仅作为未来能力写入智能体定义。",
                     ),
                 )
-            } else if agent_tool_allowlist_denies(&request, &tool.name) {
-                agent_tool_allowlist_denied_result(&tool)
-            } else if let Some(disabled_result) = disabled_tool_result(&tool, &request) {
-                disabled_result
-            } else if let Some(reused_answer) =
-                replay_answered_user_question_if_match(&tool, answered_user_question)
-            {
-                reused_answer
-            } else if let Some(blocked_followup) =
-                block_followup_user_question_after_final_answer(&tool, answered_user_question)
-            {
-                blocked_followup
-            } else if block_mutating_batch && is_side_effect_tool(&tool.name) {
-                batch_schema_failures
-                    .iter()
-                    .find(|failure| failure.tool_call_id == tool.tool_call_id)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        tool_batch_preflight_blocked_result(&tool, &batch_schema_failures)
-                    })
-            } else if let Some(schema_result) = preflight_tool_schema_result(&tool) {
-                schema_result
-            } else if tool.name.trim() == "run_command" {
-                execute_tool_with_command_output_sink_and_cancel(
-                    tool_request,
-                    Some(&command_stream_sink),
-                    Some(&|| local_chat_pause_requested(run_key)),
-                )
-            } else if !builtin_tool_definitions()
-                .iter()
-                .any(|definition| definition.name == tool.name.trim())
-            {
-                let backend_api_base_url = request
-                    .backend_context
-                    .as_ref()
-                    .map(|context| normalize_local_backend_api_base_url(&context.api_base_url))
-                    .unwrap_or_default();
-                match request
-                    .selected_mcp_tools
-                    .iter()
-                    .find(|route| mcp_public_tool_name(route) == tool.name.trim())
-                    .cloned()
+                } else if agent_tool_allowlist_denies(&request, &tool.name) {
+                    agent_tool_allowlist_denied_result(&tool)
+                } else if let Some(disabled_result) = disabled_tool_result(&tool, &request) {
+                    disabled_result
+                } else if let Some(reused_answer) =
+                    replay_answered_user_question_if_match(&tool, answered_user_question)
                 {
-                    Some(route) => {
-                        let mut routed_arguments = json!({
-                            "server": route.server.clone(),
-                            "tool": route.name.clone(),
-                            "arguments": tool.arguments,
-                            "_mcp_config": request.mcp_config,
-                            "_backend_api_base_url": backend_api_base_url,
-                        });
-                        if let Some(context) = request.backend_context.as_ref() {
-                            routed_arguments["_backend_token"] = json!(context.token.trim());
+                    reused_answer
+                } else if let Some(blocked_followup) =
+                    block_followup_user_question_after_final_answer(&tool, answered_user_question)
+                {
+                    blocked_followup
+                } else if block_mutating_batch && is_side_effect_tool(&tool.name) {
+                    batch_schema_failures
+                        .iter()
+                        .find(|failure| failure.tool_call_id == tool.tool_call_id)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            tool_batch_preflight_blocked_result(&tool, &batch_schema_failures)
+                        })
+                } else if let Some(schema_result) = preflight_tool_schema_result(&tool) {
+                    schema_result
+                } else if tool.name.trim() == "run_command" {
+                    execute_tool_with_command_output_sink_and_cancel(
+                        tool_request.clone(),
+                        Some(&command_stream_sink),
+                        Some(&|| local_chat_pause_requested(run_key)),
+                    )
+                } else if !builtin_tool_definitions()
+                    .iter()
+                    .any(|definition| definition.name == tool.name.trim())
+                {
+                    let backend_api_base_url = request
+                        .backend_context
+                        .as_ref()
+                        .map(|context| normalize_local_backend_api_base_url(&context.api_base_url))
+                        .unwrap_or_default();
+                    match request
+                        .selected_mcp_tools
+                        .iter()
+                        .find(|route| mcp_public_tool_name(route) == tool.name.trim())
+                        .cloned()
+                    {
+                        Some(route) => {
+                            let mut routed_arguments = json!({
+                                "server": route.server.clone(),
+                                "tool": route.name.clone(),
+                                "arguments": tool.arguments.clone(),
+                                "_mcp_config": request.mcp_config,
+                                "_backend_api_base_url": backend_api_base_url,
+                            });
+                            if let Some(context) = request.backend_context.as_ref() {
+                                routed_arguments["_backend_token"] = json!(context.token.trim());
+                            }
+                            let active_workspace_path =
+                                active_workspace_root.borrow().to_string_lossy().to_string();
+                            call_routed_mcp_tool(
+                                &tool.tool_call_id,
+                                &active_workspace_path,
+                                &routed_arguments,
+                                &route,
+                                effective_permission_decision.as_ref(),
+                            )
+                            .map(|(content, summary)| {
+                                super::types::ToolExecutionResult::ok(
+                                    tool.tool_call_id.clone(),
+                                    tool.name.clone(),
+                                    content,
+                                    summary,
+                                )
+                            })
+                            .unwrap_or_else(|error| {
+                                super::types::ToolExecutionResult::failed(
+                                    tool.tool_call_id.clone(),
+                                    tool.name.clone(),
+                                    error,
+                                )
+                            })
                         }
-                        let active_workspace_path =
-                            active_workspace_root.borrow().to_string_lossy().to_string();
-                        call_routed_mcp_tool(
-                            &tool.tool_call_id,
-                            &active_workspace_path,
-                            &routed_arguments,
-                            &route,
-                            effective_permission_decision.as_ref(),
-                        )
-                        .map(|(content, summary)| {
-                            super::types::ToolExecutionResult::ok(
-                                tool.tool_call_id.clone(),
-                                tool.name.clone(),
-                                content,
-                                summary,
-                            )
-                        })
-                        .unwrap_or_else(|error| {
-                            super::types::ToolExecutionResult::failed(
-                                tool.tool_call_id.clone(),
-                                tool.name.clone(),
-                                error,
-                            )
-                        })
-                    }
-                    None => super::types::ToolExecutionResult::failed(
-                        tool.tool_call_id.clone(),
-                        tool.name.clone(),
-                        ToolError::new(
-                            "mcp.tool_not_found",
-                            format!(
-                                "MCP tool is not present in the current runtime catalog: {}",
-                                tool.name.trim()
+                        None => super::types::ToolExecutionResult::failed(
+                            tool.tool_call_id.clone(),
+                            tool.name.clone(),
+                            ToolError::new(
+                                "mcp.tool_not_found",
+                                format!(
+                                    "MCP tool is not present in the current runtime catalog: {}",
+                                    tool.name.trim()
+                                ),
                             ),
                         ),
-                    ),
+                    }
+                } else {
+                    tool_runner(tool_request.clone())
                 }
-            } else {
-                tool_runner(tool_request)
             };
+            let mut automatic_retry_count = 0usize;
+            let mut automatic_retry_history = Vec::new();
+            let result = loop {
+                let result = execute_tool_once();
+                if automatic_retry_count >= DEFAULT_MAX_AUTOMATIC_TOOL_RETRIES
+                    || !should_automatically_retry_tool(&tool, &result)
+                {
+                    break result;
+                }
+                automatic_retry_count += 1;
+                automatic_retry_history.push(build_tool_execution_record(&result));
+                if let Some(sink) = event_sink {
+                    sink(json!({
+                        "event_id": format!(
+                            "evt_{}_{}_retry_{}",
+                            runtime_session_id,
+                            sanitize_path_segment(&tool.tool_call_id),
+                            automatic_retry_count
+                        ),
+                        "runtime_session_id": runtime_session_id,
+                        "chat_session_id": run_key,
+                        "type": "tool_retry_scheduled",
+                        "payload": {
+                            "tool_call_id": tool.tool_call_id,
+                            "tool_name": tool.name,
+                            "retry_index": automatic_retry_count,
+                            "max_retries": DEFAULT_MAX_AUTOMATIC_TOOL_RETRIES,
+                            "delay_ms": automatic_tool_retry_delay_ms(automatic_retry_count),
+                            "execution_record": build_tool_execution_record(&result),
+                            "message": "检测到临时工具错误，正在自动重试；任务保持运行"
+                        },
+                        "created_at_epoch_ms": epoch_millis()
+                    }));
+                }
+                thread::sleep(Duration::from_millis(automatic_tool_retry_delay_ms(
+                    automatic_retry_count,
+                )));
+            };
+            let mut result = result;
+            if !automatic_retry_history.is_empty() {
+                if let Some(content) = result.content.as_object_mut() {
+                    content.insert(
+                        "automaticRetryCount".to_string(),
+                        json!(automatic_retry_count),
+                    );
+                    content.insert(
+                        "retryHistory".to_string(),
+                        serde_json::to_value(&automatic_retry_history)
+                            .unwrap_or_else(|_| json!([])),
+                    );
+                }
+            }
             emit_command_result_events(event_sink, runtime_session_id, run_key, &tool, &result);
             emit_tool_result_event(event_sink, runtime_session_id, run_key, &tool, &result);
             if local_chat_pause_requested(run_key) {

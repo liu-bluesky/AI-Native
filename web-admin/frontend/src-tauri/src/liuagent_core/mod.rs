@@ -7,6 +7,7 @@ mod adapters;
 mod args;
 mod audit;
 mod definitions;
+mod execution;
 mod file_change_review;
 mod ftp_credentials;
 mod gateway;

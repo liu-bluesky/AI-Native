@@ -106,9 +106,21 @@ fn execute_direct_image_tool(
     }
     let artifacts = extract_image_artifacts(&payload);
     if artifacts.is_empty() {
-        return Err(ToolError::new(
-            "tool.execution_failed",
-            format!("图片接口成功但未返回图片，地址={endpoint}"),
+        let detail = format!("图片接口请求已成功，但响应结果未提取到图片，地址={endpoint}");
+        return Ok((
+            json!({
+                "ok": true,
+                "content": "图片接口已成功响应，但结果解析失败；任务可以继续执行",
+                "postProcessError": {
+                    "code": "plugin.response_missing_artifacts",
+                    "phase": "parse",
+                    "message": detail.clone(),
+                    "rawResponse": payload
+                },
+                "artifacts": [],
+                "images": []
+            }),
+            detail,
         ));
     }
     let urls = artifacts

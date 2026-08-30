@@ -4,6 +4,7 @@
 
 use serde_json::{json, Value};
 
+use crate::liuagent_core::execution::build_tool_execution_record_value;
 use crate::liuagent_core::types::ToolExecutionResult;
 
 pub fn message_event(
@@ -115,6 +116,8 @@ pub fn tool_result_event(
             "content": result.content,
             "summary": result.summary,
             "error_code": result.error_code,
+            "error": result.error,
+            "execution_record": build_tool_execution_record_value(result),
             "created_at_epoch_ms": created_at_epoch_ms
         }),
         created_at_epoch_ms,
