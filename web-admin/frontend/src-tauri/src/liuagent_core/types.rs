@@ -679,11 +679,13 @@ pub struct LocalModelRuntimeConfig {
 #[serde(rename_all = "camelCase")]
 pub struct LocalChatResult {
     pub ok: bool,
+    pub requirement_blocked: bool,
     pub plan_status: String,
     pub session_id: String,
     pub chat_session_id: String,
     pub answer_id: String,
     pub requirement_record_path: String,
+    pub error_record_paths: Vec<String>,
     pub gateway_result: Option<AgentInvocationResult>,
     pub assistant_content: String,
     pub assistant_reasoning_content: String,
@@ -731,11 +733,13 @@ impl LocalChatResult {
         let error_message = error.message;
         Self {
             ok: false,
+            requirement_blocked: false,
             plan_status: String::new(),
             session_id: String::new(),
             chat_session_id,
             answer_id: String::new(),
             requirement_record_path: String::new(),
+            error_record_paths: Vec::new(),
             gateway_result: None,
             assistant_content: String::new(),
             assistant_reasoning_content: String::new(),

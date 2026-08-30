@@ -973,6 +973,13 @@ fn start_local_chat_inner(
             "network_interruption",
         )?;
     }
+    finalize_runtime_error_records(
+        &project_id,
+        &chat_session_id,
+        &session_id,
+        &user_message,
+        &agent_loop,
+    );
     let model_result = agent_loop.final_model_result();
     let planned_tools = agent_loop.planned_tools.clone();
     let tool_results = agent_loop.tool_results.clone();
@@ -993,7 +1000,17 @@ fn start_local_chat_inner(
         agent_loop.summary().as_str(),
         agent_loop.error().as_str(),
     );
-    let assistant_content = response_format.assistant_content.clone();
+    let error_record_paths = runtime_error_record_paths(&agent_loop);
+    let assistant_content =
+        if agent_loop.stopped_reason == "requirement_blocked" && !error_record_paths.is_empty() {
+            format!(
+                "{}\n\n错误记录文件：{}",
+                response_format.assistant_content.trim(),
+                error_record_paths.join("；")
+            )
+        } else {
+            response_format.assistant_content.clone()
+        };
     let operations = build_operations(&session_id, &agent_loop);
     let run_status = if is_runtime_pause_reason(&agent_loop.stopped_reason) {
         "paused"
@@ -1205,7 +1222,11 @@ fn start_local_chat_inner(
     let result_error_code = if agent_loop.stopped_reason == "manual_pause" {
         "runtime.paused".to_string()
     } else if agent_loop.stopped_reason == "runtime_interrupted" {
-        "runtime.interrupted".to_string()
+        if model_result.error_code == "model.connection_timeout" {
+            model_result.error_code.clone()
+        } else {
+            "runtime.interrupted".to_string()
+        }
     } else if awaiting_permission {
         "permission.required".to_string()
     } else if awaiting_user_question {
@@ -1266,11 +1287,13 @@ fn start_local_chat_inner(
 
     Ok(LocalChatResult {
         ok: run_ok,
+        requirement_blocked: agent_loop.stopped_reason == "requirement_blocked",
         plan_status: String::new(),
         session_id,
         chat_session_id,
         answer_id,
         requirement_record_path: requirement_path.to_string_lossy().to_string(),
+        error_record_paths,
         gateway_result: Some(gateway_result),
         assistant_content,
         assistant_reasoning_content: model_result.reasoning_content,
@@ -1482,6 +1505,10 @@ fn build_local_chat_requirement_record(
         }),
     );
     record.insert("runtime_state".to_string(), json!(runtime_artifacts));
+    record.insert(
+        "runtime_error_record_paths".to_string(),
+        json!(runtime_error_record_paths(agent_loop)),
+    );
     record.insert(
         "task_lifecycle".to_string(),
         json!({
@@ -3659,6 +3686,21 @@ fn format_local_chat_response(
     loop_summary: &str,
     loop_error: &str,
 ) -> ResponseFormattingResult {
+    if stopped_reason == "requirement_blocked"
+        && model_result.ok
+        && !model_result.content.trim().is_empty()
+    {
+        return ResponseFormattingResult {
+            assistant_content: model_result.content.trim().to_string(),
+            user_visible_error_summary: String::new(),
+            diagnostic: json!({
+                "version": "response-format/v1",
+                "visibility": "ai_error_judgement",
+                "diagnostic_separated": true,
+                "requirement_blocked": true,
+            }),
+        };
+    }
     if agent_loop_ok
         && model_result.ok
         && !model_result.compat_text_tool_call_detected
@@ -3740,7 +3782,10 @@ fn format_local_chat_response(
                 vec!["本地智能体未完成任务：相同失败重复出现，已暂停自动循环。".to_string()]
             }
             "tool_recovery_limit_reached" => {
-                vec!["本地智能体未完成任务：工具错误自动修复已达到配置上限。".to_string()]
+                vec!["本地智能体正在分析执行过程中的问题。".to_string()]
+            }
+            "requirement_blocked" => {
+                vec!["AI 已分析执行过程，但确认当前需求暂时无法完成。".to_string()]
             }
             _ => vec!["本地智能体执行失败，用户请求尚未完成。".to_string()],
         }
@@ -3835,7 +3880,9 @@ fn format_local_chat_response(
                     .join("，");
                 lines.push(format!("工具类型：{tool_summary}。"));
             }
-            if let Some(failed) = tool_results.iter().find(|item| !item.ok) {
+            if stopped_reason == "requirement_blocked" {
+                lines.push("执行错误已写入本地记录，并由 AI 完成了最终判断。".to_string());
+            } else if let Some(failed) = tool_results.iter().find(|item| !item.ok) {
                 lines.push(format!(
                     "最近失败工具：{} {}。完整诊断见运行详情。",
                     failed.error_code, failed.error
@@ -4963,6 +5010,8 @@ impl AgentLoopResult {
             | "waiting_user"
             | "repeated_failure"
             | "verification_failed"
+            | "requirement_blocked"
+            | "terminal_tool_failure"
             | "tool_no_signal" => return false,
             _ => {}
         }
@@ -4977,6 +5026,8 @@ impl AgentLoopResult {
             "repeated_failure" => "agent_loop.repeated_failure".to_string(),
             "verification_failed" => "agent_loop.verification_failed".to_string(),
             "tool_no_signal" => "agent_loop.no_signal".to_string(),
+            "requirement_blocked" => "requirement.blocked".to_string(),
+            "terminal_tool_failure" => "tool.terminal_failure".to_string(),
             _ => String::new(),
         }
     }
@@ -4996,6 +5047,10 @@ impl AgentLoopResult {
             "tool_no_signal" => {
                 "tool stopped without completion evidence; task state is no_signal".to_string()
             }
+            "requirement_blocked" => {
+                "AI 已读取错误上下文，但确认当前用户需求暂时无法完成".to_string()
+            }
+            "terminal_tool_failure" => "工具目录或配置不可用，当前工具调用无法继续".to_string(),
             _ => String::new(),
         }
     }
@@ -5013,6 +5068,10 @@ impl AgentLoopResult {
                         .to_string()
                 }
             }
+            "requirement_blocked" => {
+                "AI 已完成错误分析，但没有找到能够完成用户原始需求的安全路径。".to_string()
+            }
+            "terminal_tool_failure" => "当前工具目录或配置不可用，已保留执行记录。".to_string(),
             _ => String::new(),
         }
     }
@@ -5057,6 +5116,7 @@ struct AgentLoopAttempt {
     strategy_name: String,
     strategy_signature: String,
     failure_signature: String,
+    error_record_path: String,
     status: String,
     tool_call_id: String,
     tool_name: String,
@@ -5277,6 +5337,7 @@ fn run_agent_loop_with_answered_user_question(
     let mut verification_reprompts = 0usize;
     let mut acceptance_gate_reprompts = 0usize;
     let mut answered_user_question_text_reprompts = 0usize;
+    let mut failure_diagnosis_requested = false;
     let mut last_acceptance_gate: Option<AcceptanceGateResult> = None;
     let mut model_plan_tree: Option<planning::TaskTree> = None;
     let mut model_plan_event_index = 0_u64;
@@ -5529,7 +5590,7 @@ fn run_agent_loop_with_answered_user_question(
                     ));
                     continue;
                 }
-                stopped_reason = "verification_failed".to_string();
+                stopped_reason = "requirement_blocked".to_string();
                 break;
             }
             if !acceptance_gate.passed {
@@ -5541,7 +5602,7 @@ fn run_agent_loop_with_answered_user_question(
                     ));
                     continue;
                 }
-                stopped_reason = "verification_failed".to_string();
+                stopped_reason = "requirement_blocked".to_string();
                 break;
             }
             stopped_reason = "no_tool_calls".to_string();
@@ -5781,9 +5842,25 @@ fn run_agent_loop_with_answered_user_question(
             }
             emit_command_result_events(event_sink, runtime_session_id, run_key, &tool, &result);
             emit_tool_result_event(event_sink, runtime_session_id, run_key, &tool, &result);
+            let mut attempt = build_agent_loop_attempt(&tool, &result, attempts.len() + 1);
+            if !result.ok {
+                attempt.error_record_path = write_runtime_error_record(
+                    workspace_root,
+                    active_project_id.borrow().as_str(),
+                    run_key,
+                    runtime_session_id,
+                    base_request,
+                    &tool,
+                    &result,
+                    &attempt,
+                    &attempts,
+                )
+                .unwrap_or_default();
+            }
             if local_chat_pause_requested(run_key) {
                 candidate.status = "paused".to_string();
                 candidate_solutions.push(candidate);
+                attempts.push(attempt);
                 tool_results.push(result);
                 stopped_reason = "manual_pause".to_string();
                 break 'agent_loop;
@@ -5791,6 +5868,7 @@ fn run_agent_loop_with_answered_user_question(
             if is_network_tool_interruption(&tool, &result) {
                 candidate.status = "paused".to_string();
                 candidate_solutions.push(candidate);
+                attempts.push(attempt);
                 tool_results.push(result);
                 stopped_reason = "runtime_interrupted".to_string();
                 break 'agent_loop;
@@ -5802,6 +5880,7 @@ fn run_agent_loop_with_answered_user_question(
                 awaiting_permission = true;
                 candidate.status = "waiting_approval".to_string();
                 candidate_solutions.push(candidate);
+                attempts.push(attempt);
                 tool_results.push(result);
                 stopped_reason = "waiting_approval".to_string();
                 return finalize_agent_loop_result(
@@ -5821,6 +5900,7 @@ fn run_agent_loop_with_answered_user_question(
                 emit_user_question_required_event(event_sink, runtime_session_id, run_key, &result);
                 candidate.status = "waiting_user".to_string();
                 candidate_solutions.push(candidate);
+                attempts.push(attempt);
                 tool_results.push(result);
                 stopped_reason = "waiting_user".to_string();
                 return finalize_agent_loop_result(
@@ -5854,7 +5934,6 @@ fn run_agent_loop_with_answered_user_question(
                 );
             }
 
-            let attempt = build_agent_loop_attempt(&tool, &result, attempts.len() + 1);
             let loop_guidance = tool_loop_guidance(&result, &attempt, &attempts);
             let observation_content = tool_observation_content(
                 &result,
@@ -5878,15 +5957,68 @@ fn run_agent_loop_with_answered_user_question(
                 .count()
                 + usize::from(!result.ok);
             let result_ok = result.ok;
+            let tool_no_signal =
+                result.content.get("status").and_then(Value::as_str) == Some("no_signal");
+            let terminal_tool_failure = !result_ok && is_terminal_mcp_catalog_failure(&result);
+            let repeated_failure = !result_ok
+                && attempts.iter().any(|item| {
+                    item.status == "failed"
+                        && item.strategy_signature == attempt.strategy_signature
+                        && item.failure_signature == attempt.failure_signature
+                });
             attempts.push(attempt);
             candidate.status = if result_ok { "passed" } else { "abandoned" }.to_string();
             candidate_solutions.push(candidate);
             tool_results.push(result);
+            if tool_no_signal {
+                stopped_reason = "tool_no_signal".to_string();
+                return finalize_agent_loop_result(
+                    model_steps,
+                    model_input_snapshots,
+                    planned_tools,
+                    tool_results,
+                    candidate_solutions,
+                    attempts,
+                    last_acceptance_gate,
+                    model_plan_tree,
+                    stopped_reason,
+                    awaiting_permission,
+                );
+            }
+            if terminal_tool_failure {
+                stopped_reason = "terminal_tool_failure".to_string();
+                return finalize_agent_loop_result(
+                    model_steps,
+                    model_input_snapshots,
+                    planned_tools,
+                    tool_results,
+                    candidate_solutions,
+                    attempts,
+                    last_acceptance_gate,
+                    model_plan_tree,
+                    stopped_reason,
+                    awaiting_permission,
+                );
+            }
             if !result_ok
                 && !permission_denied
-                && failed_tool_attempts > max_tool_failure_attempts(&base_request.mcp_config)
+                && (repeated_failure
+                    || failed_tool_attempts > max_tool_failure_attempts(&base_request.mcp_config))
             {
-                stopped_reason = "tool_recovery_limit_reached".to_string();
+                if !failure_diagnosis_requested {
+                    failure_diagnosis_requested = true;
+                    messages.push(RuntimeModelMessage::simple(
+                        "user",
+                        failure_diagnosis_message(
+                            &base_request.messages,
+                            &attempts,
+                            &candidate_solutions,
+                            &tool_results,
+                        ),
+                    ));
+                    continue 'agent_loop;
+                }
+                stopped_reason = "requirement_blocked".to_string();
                 return finalize_agent_loop_result(
                     model_steps,
                     model_input_snapshots,
@@ -7275,6 +7407,19 @@ fn build_agent_loop_verification(
                 .map(|gate| gate.evidence.clone())
                 .unwrap_or_else(|| unresolved_failure_evidence(attempts)),
         },
+        "requirement_blocked" => AgentLoopVerification {
+            status: "blocked".to_string(),
+            summary: acceptance_gate
+                .filter(|gate| !gate.passed)
+                .map(|gate| gate.summary.clone())
+                .unwrap_or_else(|| {
+                    "AI 已完成错误分析，但没有找到能够完成用户原始需求的安全路径。".to_string()
+                }),
+            evidence: acceptance_gate
+                .filter(|gate| !gate.passed)
+                .map(|gate| gate.evidence.clone())
+                .unwrap_or_else(|| unresolved_failure_evidence(attempts)),
+        },
         "repeated_failure" => AgentLoopVerification {
             status: "paused".to_string(),
             summary: "相同方案和失败签名重复出现，暂停自动循环。".to_string(),
@@ -7304,6 +7449,169 @@ fn build_agent_loop_verification(
     }
 }
 
+fn runtime_error_record_paths(agent_loop: &AgentLoopResult) -> Vec<String> {
+    agent_loop
+        .attempts
+        .iter()
+        .filter_map(|attempt| {
+            let path = attempt.error_record_path.trim();
+            (!path.is_empty()).then(|| path.to_string())
+        })
+        .collect()
+}
+
+fn write_runtime_error_record(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    runtime_session_id: &str,
+    base_request: &ModelStepRequest,
+    tool: &PlannedLocalTool,
+    result: &super::types::ToolExecutionResult,
+    attempt: &AgentLoopAttempt,
+    previous_attempts: &[AgentLoopAttempt],
+) -> Result<String, ToolError> {
+    let error_id = format!(
+        "err_{}_{}_{}",
+        sanitize_path_segment(runtime_session_id),
+        sanitize_path_segment(&tool.tool_call_id),
+        sanitize_path_segment(&attempt.attempt_id)
+    );
+    let path = workspace_root
+        .join(".ai-employee")
+        .join("runtime-errors")
+        .join(sanitize_path_segment(project_id))
+        .join(sanitize_path_segment(chat_session_id))
+        .join(format!("{error_id}.json"));
+    let original_request = base_request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| message.content.trim())
+        .unwrap_or("");
+    let retryable = build_tool_execution_record(result).retryable;
+    let raw = json!({
+        "record_type": "desktop-local-agent-runtime-error",
+        "version": "runtime-error/v1",
+        "error_id": error_id,
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "runtime_session_id": runtime_session_id,
+        "created_at_epoch_ms": epoch_millis(),
+        "requirement": original_request,
+        "stage": "tool_execution",
+        "tool_call_id": tool.tool_call_id,
+        "tool_name": tool.name,
+        "tool_arguments": compact_json(&tool.arguments, 4_000),
+        "error_code": result.error_code,
+        "error_message": result.error,
+        "summary": result.summary,
+        "retryable": retryable,
+        "requires_user": result.error_code == "permission.required"
+            || result.error_code == "interaction.user_input_required",
+        "requirement_blocked": false,
+        "attempt": attempt.attempt_id,
+        "strategy_signature": attempt.strategy_signature,
+        "failure_signature": attempt.failure_signature,
+        "previous_attempt_count": previous_attempts.len(),
+        "stdout": result.content.get("stdout").cloned().unwrap_or(Value::Null),
+        "stderr": result.content.get("stderr").cloned().unwrap_or(Value::Null),
+        "stdout_log_path": result.content.get("stdout_log_path").cloned().unwrap_or(Value::Null),
+        "stderr_log_path": result.content.get("stderr_log_path").cloned().unwrap_or(Value::Null),
+        "ai_judgement": {
+            "status": "pending",
+            "decision": "",
+            "reason": ""
+        }
+    });
+    write_requirement_record(&path, raw)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+fn finalize_runtime_error_records(
+    project_id: &str,
+    chat_session_id: &str,
+    runtime_session_id: &str,
+    user_message: &str,
+    agent_loop: &AgentLoopResult,
+) {
+    let paths = runtime_error_record_paths(agent_loop);
+    for path in paths {
+        let path_buf = PathBuf::from(&path);
+        let Ok(raw) = fs::read_to_string(&path_buf) else {
+            continue;
+        };
+        let Ok(mut record) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        if let Some(object) = record.as_object_mut() {
+            object.insert("project_id".to_string(), json!(project_id));
+            object.insert("chat_session_id".to_string(), json!(chat_session_id));
+            object.insert("runtime_session_id".to_string(), json!(runtime_session_id));
+            object.insert("requirement".to_string(), json!(user_message));
+            object.insert(
+                "final_stopped_reason".to_string(),
+                json!(agent_loop.stopped_reason),
+            );
+            object.insert(
+                "final_requirement_blocked".to_string(),
+                json!(agent_loop.stopped_reason == "requirement_blocked"),
+            );
+            object.insert(
+                "ai_judgement".to_string(),
+                json!({
+                    "status": "completed",
+                    "decision": if agent_loop.stopped_reason == "requirement_blocked" {
+                        "blocked"
+                    } else {
+                        "continued_or_recovered"
+                    },
+                    "reason": agent_loop.summary(),
+                    "model_step_count": agent_loop.model_steps.len()
+                }),
+            );
+            let _ = write_requirement_record(&path_buf, record);
+        }
+    }
+}
+
+fn failure_diagnosis_message(
+    base_messages: &[RuntimeModelMessage],
+    attempts: &[AgentLoopAttempt],
+    candidates: &[AgentLoopCandidateSolution],
+    tool_results: &[super::types::ToolExecutionResult],
+) -> String {
+    let failed_attempts = attempts
+        .iter()
+        .filter(|attempt| attempt.status == "failed")
+        .map(|attempt| {
+            json!({
+                "attempt_id": attempt.attempt_id,
+                "tool_name": attempt.tool_name,
+                "error_code": attempt.error_code,
+                "failure_signature": attempt.failure_signature,
+                "error_record_path": attempt.error_record_path,
+                "summary": attempt.summary
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "agent_loop_control": "runtime_error_diagnosis_required",
+        "instruction": "工具错误已达到自动重试上限。现在只进行一次错误分析，不要把 Runtime 原始错误直接作为用户回答。请结合错误记录文件、stdout/stderr、当前需求和已完成工具结果判断：retry、alternative、continue、waiting_user 或 blocked。若还能完成，必须立即换参数、换工具或换方案继续；只有确认用户原始需求确实无法完成时，才停止并生成自然语言说明。错误记录路径必须保留在最终说明中。",
+        "error_prompt_scope": "only_on_error",
+        "recent_messages": base_messages.iter().rev().take(6).map(|message| json!({
+            "role": message.role,
+            "content": truncate_inline(&message.content, 600),
+            "tool_call_id": message.tool_call_id
+        })).collect::<Vec<_>>(),
+        "failed_attempts": failed_attempts,
+        "candidate_solutions": candidates,
+        "tool_result_count": tool_results.len()
+    })
+    .to_string()
+}
+
 fn build_agent_loop_attempt(
     tool: &PlannedLocalTool,
     result: &super::types::ToolExecutionResult,
@@ -7320,6 +7628,7 @@ fn build_agent_loop_attempt(
         strategy_name: format!("{} {}", tool.name, compact_json(&tool.arguments, 120)),
         strategy_signature,
         failure_signature,
+        error_record_path: String::new(),
         status: if result.ok { "passed" } else { "failed" }.to_string(),
         tool_call_id: tool.tool_call_id.clone(),
         tool_name: tool.name.clone(),
@@ -8691,6 +9000,7 @@ fn tool_observation_content(
                 "attempt_id": item.attempt_id,
                 "strategy_signature": item.strategy_signature,
                 "failure_signature": item.failure_signature,
+                "error_record_path": item.error_record_path,
                 "status": item.status,
             })
         })
@@ -8698,6 +9008,17 @@ fn tool_observation_content(
     let recovery_instruction = tool_recovery_instruction(result, permission_denied);
     let recoverable = is_recoverable_tool_failure(result, permission_denied);
     let loop_guidance = tool_loop_guidance.unwrap_or("").trim();
+    let error_handling = if result.ok || permission_denied {
+        Value::Null
+    } else {
+        json!({
+            "scope": "only_on_error",
+            "instruction": "这是内部错误上下文，只供 AI 分析。请读取 error_record_path 对应的本地记录，结合日志判断下一步；不要把 error_code、原始 error 或 Runtime 状态直接复制给用户。",
+            "error_record_path": attempt
+                .map(|item| item.error_record_path.as_str())
+                .unwrap_or("")
+        })
+    };
     json!({
         "tool_call_id": result.tool_call_id,
         "tool_name": result.name,
@@ -8710,6 +9031,7 @@ fn tool_observation_content(
         "content": compact_tool_observation_content(&result.name, &result.content),
         "content_compacted_for_model": true,
         "attempt": attempt_payload,
+        "error_handling": error_handling,
         "recovery_instruction": recovery_instruction,
         "tool_loop_guidance": loop_guidance,
         "retry_instruction": if result.ok || permission_denied {
@@ -13224,7 +13546,7 @@ mod tests {
                     .map(|message| message.content.as_str())
                     .unwrap_or("");
                 assert!(observation.contains("failure_signature"));
-                assert!(observation.contains("不同 strategy_signature"));
+                assert!(observation.contains("error_record_path"));
                 return test_model_result(
                     "",
                     vec![PlannedLocalTool {
@@ -13268,7 +13590,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_pauses_when_same_failed_strategy_repeats() {
+    fn agent_loop_diagnoses_when_same_failed_strategy_repeats() {
         let dir = std::env::temp_dir().join(format!("liuagent_loop_repeated_{}", epoch_millis()));
         fs::create_dir_all(&dir).unwrap();
         let request = test_model_request("重复读取缺失文件");
@@ -13277,15 +13599,15 @@ mod tests {
             let index = model_call_count.get();
             model_call_count.set(index + 1);
             if index == 2 {
-                let observation = request
+                let diagnosis = request
                     .messages
                     .iter()
                     .rev()
-                    .find(|message| message.role == "tool")
+                    .find(|message| message.role == "user")
                     .map(|message| message.content.as_str())
                     .unwrap_or("");
-                assert!(observation.contains("Tool loop warning"));
-                assert!(observation.contains("content is not a string"));
+                assert!(diagnosis.contains("runtime_error_diagnosis_required"));
+                assert!(diagnosis.contains("only_on_error"));
             }
             test_model_result(
                 "",
@@ -13312,10 +13634,10 @@ mod tests {
         );
 
         assert!(!result.ok());
-        assert_eq!(result.stopped_reason, "tool_recovery_limit_reached");
-        assert_eq!(model_call_count.get(), 2);
-        assert_eq!(result.tool_results.len(), 2);
-        assert_eq!(result.attempts.len(), 2);
+        assert_eq!(result.stopped_reason, "requirement_blocked");
+        assert_eq!(model_call_count.get(), 3);
+        assert_eq!(result.tool_results.len(), 3);
+        assert_eq!(result.attempts.len(), 3);
         assert_eq!(
             result.attempts[0].strategy_signature,
             result.attempts[1].strategy_signature
@@ -13324,7 +13646,14 @@ mod tests {
             result.attempts[0].failure_signature,
             result.attempts[1].failure_signature
         );
-        assert_eq!(result.error_code(), "agent_loop.recovery_limit_reached");
+        assert_eq!(result.error_code(), "requirement.blocked");
+        assert!(result
+            .attempts
+            .iter()
+            .all(|attempt| {
+                !attempt.error_record_path.is_empty()
+                    && PathBuf::from(&attempt.error_record_path).is_file()
+            }));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -13341,15 +13670,15 @@ mod tests {
             let index = model_call_count.get();
             model_call_count.set(index + 1);
             if index == 2 {
-                let observation = request
+                let diagnosis = request
                     .messages
                     .iter()
                     .rev()
-                    .find(|message| message.role == "tool")
+                    .find(|message| message.role == "user")
                     .map(|message| message.content.as_str())
                     .unwrap_or("");
-                assert!(observation.contains("Tool loop warning"));
-                assert!(observation.contains("content is not a string"));
+                assert!(diagnosis.contains("runtime_error_diagnosis_required"));
+                assert!(diagnosis.contains("only_on_error"));
             }
             test_model_result(
                 "",
@@ -13380,10 +13709,10 @@ mod tests {
         );
 
         assert!(!result.ok());
-        assert_eq!(result.stopped_reason, "tool_recovery_limit_reached");
-        assert_eq!(model_call_count.get(), 2);
+        assert_eq!(result.stopped_reason, "requirement_blocked");
+        assert_eq!(model_call_count.get(), 3);
         assert_eq!(actual_tool_calls.get(), 0);
-        assert_eq!(result.tool_results.len(), 2);
+        assert_eq!(result.tool_results.len(), 3);
         assert_eq!(result.tool_results[0].error_code, "tool.schema_invalid");
         assert!(result.tool_results[0]
             .error
@@ -13559,7 +13888,7 @@ mod tests {
         );
 
         assert!(!result.ok());
-        assert_eq!(result.stopped_reason, "tool_recovery_limit_reached");
+        assert_eq!(result.stopped_reason, "requirement_blocked");
         assert_eq!(actual_tool_calls.get(), 0);
         assert_eq!(result.tool_results.len(), 3);
         assert_eq!(result.tool_results[0].error_code, "tool.schema_invalid");
@@ -13630,7 +13959,7 @@ mod tests {
         );
 
         assert!(!result.ok());
-        assert_eq!(result.stopped_reason, "verification_failed");
+        assert_eq!(result.stopped_reason, "requirement_blocked");
         assert_eq!(actual_tool_calls.get(), 0);
         assert_eq!(result.tool_results.len(), 2);
         assert_eq!(result.tool_results[0].error_code, "tool.schema_invalid");
@@ -13714,7 +14043,7 @@ mod tests {
         );
 
         assert!(!result.ok());
-        assert_eq!(result.stopped_reason, "verification_failed");
+        assert_eq!(result.stopped_reason, "requirement_blocked");
         assert_eq!(model_call_count.get(), 3);
         assert_eq!(actual_tool_calls.get(), 1);
         let _ = fs::remove_dir_all(dir);
@@ -15090,9 +15419,9 @@ mod tests {
 
         assert!(!result.ok());
         assert_eq!(model_call_count.get(), 3);
-        assert_eq!(result.stopped_reason, "verification_failed");
-        assert_eq!(result.error_code(), "agent_loop.verification_failed");
-        assert_eq!(result.verification.status, "failed");
+        assert_eq!(result.stopped_reason, "requirement_blocked");
+        assert_eq!(result.error_code(), "requirement.blocked");
+        assert_eq!(result.verification.status, "blocked");
         let _ = fs::remove_dir_all(dir);
     }
 

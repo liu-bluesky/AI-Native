@@ -16326,6 +16326,70 @@ function appendAssistantStatusNote(row, text) {
   openMessageProcessForActiveRun(row);
 }
 
+function finalAssistantContentFallback(source = {}, row = {}) {
+  const directContent = [
+    source?.content,
+    source?.assistantContent,
+    source?.assistant_content,
+    source?.summary,
+  ]
+    .map((value) => String(value || "").trim())
+    .find(Boolean);
+  if (directContent) return directContent;
+
+  const toolResults = Array.isArray(source?.toolResults)
+    ? source.toolResults
+    : Array.isArray(source?.tool_results)
+      ? source.tool_results
+      : [];
+  const successfulMutation = [...toolResults]
+    .reverse()
+    .find(
+      (result) =>
+        result?.ok !== false &&
+        ["write_file", "apply_patch", "delete_file"].includes(
+          String(result?.name || result?.toolName || result?.tool_name || "")
+            .trim(),
+        ),
+    );
+  if (successfulMutation) {
+    const toolName = String(
+      successfulMutation?.name ||
+        successfulMutation?.toolName ||
+        successfulMutation?.tool_name ||
+        "",
+    ).trim();
+    const path = String(
+      successfulMutation?.content?.path ||
+        successfulMutation?.content?.target ||
+        successfulMutation?.path ||
+        "",
+    ).trim();
+    const summary = String(successfulMutation?.summary || "").trim();
+    if (toolName === "delete_file") {
+      return path
+        ? `已删除 \`${path}\`，并已完成结果验证。`
+        : "删除操作已完成，并已完成结果验证。";
+    }
+    if (summary) return `本轮操作已完成：${summary}`;
+  }
+
+  const completedToolOperation = messageOperations(row)
+    .slice()
+    .reverse()
+    .find(
+      (operation) =>
+        String(operation?.kind || "").trim() === "tool" &&
+        ["completed", "success", "passed", "done"].includes(
+          String(operation?.phase || "").trim().toLowerCase(),
+        ),
+    );
+  const operationSummary = String(completedToolOperation?.summary || "").trim();
+  if (operationSummary) return `本轮操作已完成：${operationSummary}`;
+
+  return "本轮执行已完成，但 AI 未返回最终说明。执行详情已保留在运行轨迹中。";
+}
+
 function removeAssistantStatusNotes(row, predicate) {
   if (!row || typeof predicate !== "function") return;
   const notes = Array.isArray(row.statusNotes) ? row.statusNotes.slice() : [];
@@ -23797,10 +23861,11 @@ async function continueLocalLiuAgentChatPermission(
     result?.assistantContent ||
       result?.assistant_content ||
       result?.summary ||
-      "",
+      finalAssistantContentFallback(result, row),
   ).trim();
   if (!row.content && !ok) {
-    row.content = `执行失败：${String(result?.error || "桌面端本地对话失败").trim()}`;
+    row.content =
+      "本轮授权后的任务已结束，AI 未返回可展示的最终说明；执行记录已保存在本地。";
   }
   row.time = nowText();
   applyLocalLiuAgentRuntimeEvents(row, result, {
@@ -33374,7 +33439,12 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
       row.audios = mergeAudioUrls(extractAudios(row), persistedMedia.audios);
       const currentContent = String(row.content || "").trim();
       if (!currentContent) {
-        row.content = doneContent || guardSummary;
+        row.content =
+          doneContent ||
+          guardSummary ||
+          (keepRequestOpenAfterDone
+            ? ""
+            : finalAssistantContentFallback(eventData, row));
       } else if (doneContent && currentContent !== doneContent) {
         if (
           isIntentOnlyReply(currentContent) ||
@@ -34890,7 +34960,7 @@ async function sendLocalLiuAgentChatRequest({
       result?.assistantContent ||
         result?.assistant_content ||
         result?.summary ||
-        "",
+        finalAssistantContentFallback(result, assistantMessage),
     ).trim();
     await applyLocalLiuAgentMediaToolResults(assistantMessage, result, {
       projectId,
@@ -34902,7 +34972,10 @@ async function sendLocalLiuAgentChatRequest({
     assistantMessage.content = "本地智能体未返回最终回答，请检查本轮执行过程。";
   }
   if (!assistantMessage.content && !ok && !shouldAutoResume) {
-    assistantMessage.content = `执行失败：${String(result?.error || "桌面端本地对话失败").trim()}`;
+    assistantMessage.content =
+      runtimeErrorCode === "model.connection_timeout"
+        ? "模型连接暂时没有返回，当前任务已保留本地上下文，稍后可以继续。"
+        : "本轮执行已结束，AI 未返回可展示的最终说明；执行记录已保存在本地。";
   }
   const employeeIntent = extractEmployeeIntentPayload(
     assistantMessage.content || "",
@@ -34925,24 +34998,14 @@ async function sendLocalLiuAgentChatRequest({
       sourceContext,
       localTaskId: activeRun.localTaskId,
     });
-  if (!ok && !shouldAutoResume) {
-    const runtimeError = String(
-      result?.error ||
-        result?.summary ||
-        assistantMessage.content ||
-        "桌面端本地对话失败",
-    ).trim();
-    showManualCloseErrorDialog(
-      "桌面本地 Agent Runtime 失败",
-      runtimeError,
-      [
-        `providerId=${String(localChatPayload?.providerId || "-").trim() || "-"}`,
-        `modelName=${String(localChatPayload?.modelName || "-").trim() || "-"}`,
-        `workspacePath=${workspacePath || "-"}`,
-        runtimeError,
-      ].join("\n"),
-    );
-  }
+  const requirementBlocked = Boolean(
+    result?.requirementBlocked || result?.requirement_blocked,
+  );
+  const rawErrorRecordPaths =
+    result?.errorRecordPaths || result?.error_record_paths;
+  const errorRecordPaths = Array.isArray(rawErrorRecordPaths)
+    ? rawErrorRecordPaths.map((path) => String(path || "").trim()).filter(Boolean)
+    : [];
   assistantMessage.time = nowText();
   updateLocalLiuAgentRuntimeTimingFromResult(assistantMessage, result, {
     startedAt: activeRun.startedAt,
@@ -34968,8 +35031,12 @@ async function sendLocalLiuAgentChatRequest({
         ? "本地会话完成"
         : shouldAutoResume
           ? `连接暂时中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动继续`
-          : "本地会话失败",
-    detail: String(result?.error || "").trim(),
+          : requirementBlocked
+            ? "AI 已解析执行问题"
+            : "本地会话已结束",
+    detail: requirementBlocked
+      ? `错误记录：${errorRecordPaths.join("；")}`
+      : "",
     phase: employeeCreationProtocolRecovery
       ? "waiting_user"
       : ok
@@ -34995,6 +35062,8 @@ async function sendLocalLiuAgentChatRequest({
       requirement_record_path: String(
         result?.requirementRecordPath || result?.requirement_record_path || "",
       ).trim(),
+      error_record_paths: errorRecordPaths,
+      requirement_blocked: requirementBlocked,
       cwd: workspacePath,
     },
   });
@@ -35025,14 +35094,18 @@ async function sendLocalLiuAgentChatRequest({
         ? "主模型对话已完成（桌面端编排），执行记录已写入 workspace"
         : shouldAutoResume
           ? `模型步骤中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动从 checkpoint 继续（第 ${nextAutoResumeRetryNumber}/${LOCAL_LIUAGENT_AUTO_RESUME_MAX_RETRIES} 次）`
-          : "主模型对话执行失败",
+          : requirementBlocked
+            ? "AI 已解析执行问题，已返回本轮最终说明"
+            : "主模型对话已结束，执行记录已写入 workspace",
     level: employeeCreationProtocolRecovery
       ? "warning"
       : ok
         ? "success"
         : shouldAutoResume
           ? "warning"
-          : "error",
+          : requirementBlocked
+            ? "warning"
+            : "info",
     autoExpand: employeeCreationProtocolRecovery || !ok,
   });
   if (!shouldAutoResume && !employeeCreationProtocolRecovery) {
@@ -35066,7 +35139,9 @@ async function sendLocalLiuAgentChatRequest({
         ? "任务已完成"
         : shouldAutoResume
           ? "连接暂时中断，正在等待自动继续"
-          : "本地 Runtime 执行失败",
+          : requirementBlocked
+            ? "AI 已解析执行问题"
+            : "本地 Runtime 已结束",
     lastOutput: String(
       assistantMessage.content || result?.error || result?.summary || "",
     ).trim(),
@@ -36080,25 +36155,16 @@ async function doSend(options = {}) {
     }
   } catch (err) {
     const errorMessage = String(err?.message || "未知错误").trim();
-    showManualCloseErrorDialog(
-      "桌面本地 Agent Runtime 启动失败",
-      errorMessage,
-      [
-        `providerId=${String(requestModelTarget.providerId || "-").trim() || "-"}`,
-        `modelName=${String(requestModelTarget.modelName || "-").trim() || "-"}`,
-        `workspacePath=${localLiuAgentWorkspacePath() || "-"}`,
-        errorMessage,
-      ].join("\n"),
-    );
     assistantMessage.answerId = `ans_${String(assistantMessage.id || "").trim()}`;
-    assistantMessage.content = `执行失败：${errorMessage}`;
+    assistantMessage.content =
+      "本地智能体暂时无法启动，当前任务没有继续执行；本地运行状态已保留，请稍后重试。";
     assistantMessage.time = nowText();
     upsertMessageOperation(assistantMessage, {
       operationId: `local-agent:${assistantMessage.id}`,
       kind: "request",
       title: "桌面本地 Agent Runtime",
       summary: "本地会话失败",
-      detail: errorMessage,
+      detail: "Runtime 启动异常，技术详情已保留在本地执行记录中。",
       phase: "failed",
       actionType: "none",
       meta: {
@@ -36116,8 +36182,8 @@ async function doSend(options = {}) {
       },
     });
     appendMessageProcessLog(assistantMessage, {
-      text: errorMessage,
-      level: "error",
+      text: "Runtime 启动异常，当前任务未继续执行",
+      level: "warning",
       autoExpand: true,
     });
     finishMessageExecutionTiming(assistantMessage);

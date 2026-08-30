@@ -448,14 +448,21 @@ ElMessageBox.alert(...)
 
 ## 8. 当前实现差距
 
-当前代码已经有错误码、工具失败观察、失败签名、Runtime 诊断、需求记录文件和后台 stdout/stderr 文件，但仍存在以下差距：
+截至 2026 年 8 月 30 日，以下主链路已经落地：
 
-1. 普通工具错误可以在最终 `ok=false` 路径中变成用户可见失败文本。
-2. 本地任务最终失败路径仍可能调用错误弹框。
-3. `repeated_failure` 和 `tool_recovery_limit_reached` 会停止 Agent Loop，但还没有统一触发“读取错误文件并交给 AI 判断”的流程。
-4. 错误记录主要分布在 Runtime 结果、需求记录和后台日志中，缺少统一的 `error_id` 和独立错误记录文件。
-5. `requirement_blocked` 还没有成为用户可见错误的唯一判定条件。
-6. 模型连接错误、工具错误、用户授权等待和 AI 诊断暂停的终态边界还需要在前端状态映射中统一。
+1. 普通工具失败会先生成独立 `runtime-error/v1` JSON 记录。
+2. 错误记录路径会进入 tool observation，只在错误场景注入 `runtime_error_diagnosis_required` 提示。
+3. 同一失败策略重复出现，或失败达到配置上限时，只追加一次 AI 诊断轮次，不再直接以 `tool_recovery_limit_reached` 结束。
+4. AI 仍可通过标准工具改变参数、切换工具或继续任务；只有最终确认无法完成时才进入 `requirement_blocked`。
+5. `requirement_blocked` 会使用 AI 最终内容，并附带错误记录文件路径。
+6. `ProjectChat.vue` 普通 Runtime 结果不再调用错误弹框，也不再拼接 `执行失败：原始错误`。
+7. 网络中断、超时、授权和用户补充信息仍保留各自的恢复或交互路径。
+
+仍需后续增强的部分：
+
+1. 模型接口错误目前仍主要使用现有连接中断和模型失败分支，模型错误记录可继续统一接入 `runtime-errors`。
+2. 错误 JSON 当前复用既有工作区写入函数；如需更强的抗崩溃能力，可再增加临时文件加原子替换。
+3. 前端其他独立上传流程仍有专用错误提示，它们不属于本地 Agent 对话 Runtime 主链路。
 
 ## 9. 非回归要求
 
@@ -478,7 +485,7 @@ ElMessageBox.alert(...)
 
 1. 工具第一次失败，第二次重试成功。
 2. 工具失败后改用替代工具成功。
-3. 同一错误重复出现，暂停并交给 AI 读取错误日志。
+3. 同一错误重复出现，只进入一次 AI 错误诊断轮次。
 4. AI 判断可以继续，用户不看到原始错误。
 5. AI 判断需求被根本阻断，返回自然语言说明和错误文件路径。
 6. `permission.required` 仍然等待用户授权。
@@ -486,3 +493,19 @@ ElMessageBox.alert(...)
 8. 模型连接超时，重试后仍失败，返回连接错误。
 9. 运行过程中切换会话，错误记录和最终回答仍回到原会话。
 10. 错误日志写入失败时，原始错误仍保留在 Runtime 和会话记录中。
+
+## 11. 本次实现的状态约定
+
+Runtime 内部状态与用户对话状态必须分开：
+
+| Runtime 状态 | 用户对话行为 |
+| --- | --- |
+| `retrying` / 自动重试 | 继续运行，不弹框 |
+| `diagnosing` / `waiting_ai_judgement` | 追加一次错误分析提示，继续同一 Agent Loop |
+| `waiting_approval` | 请求用户授权，保存 checkpoint |
+| `waiting_user` | 请求用户补充必要信息，保存 checkpoint |
+| `runtime_interrupted` | 按现有策略自动从 checkpoint 恢复 |
+| `requirement_blocked` | 展示 AI 解析后的自然语言结论和错误记录路径 |
+| 模型连接超时重试耗尽 | 返回连接不可用说明和已保留的本地上下文 |
+
+普通工具错误不应直接映射成用户消息中的 `failed`、`blocked` 或 Runtime 原始错误。运行详情可以保留这些字段，但最终 assistant 内容必须来自 AI 正常回答，或来自 `requirement_blocked` 场景下的 AI 解析结果。
