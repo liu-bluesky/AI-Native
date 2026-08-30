@@ -12,13 +12,6 @@
           </div>
         </div>
       </div>
-      <el-button
-        ref="settingsButtonRef"
-        class="chat-page-settings-button"
-        :icon="Setting"
-        circle
-        @click="emit('open-settings', 'chat')"
-      />
     </div>
 
     <div class="chat-conversation-sidebar__actions">
@@ -71,6 +64,16 @@
             @click="emit('create-project')"
           >
             <el-icon><FolderAdd /></el-icon>
+          </button>
+          <button
+            ref="settingsButtonRef"
+            type="button"
+            class="chat-page-settings-button"
+            aria-label="打开对话设置"
+            title="对话设置"
+            @click="emit('open-settings', 'chat')"
+          >
+            <el-icon><Setting /></el-icon>
           </button>
         </div>
       </div>

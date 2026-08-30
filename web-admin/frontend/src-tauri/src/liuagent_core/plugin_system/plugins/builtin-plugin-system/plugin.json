@@ -1,0 +1,17 @@
+{
+  "id": "builtin-plugin-system",
+  "pluginType": "tool",
+  "name": "plugin-system",
+  "displayName": "插件系统管理",
+  "description": "统一管理插件发现、安装、版本、启停、配置和 Skill 使用，不承载具体业务插件流程。",
+  "version": "1.0.0",
+  "source": "builtin",
+  "capabilities": [
+    {"id":"builtin.plugin.system.list","kind":"tool","name":"list_installed_plugins","description":"列出本机已安装插件和版本状态。","selection":{"whenToUse":["需要了解本机有哪些插件或插件状态"],"priority":90},"metadata":{"toolName":"list_installed_plugins"}},
+    {"id":"builtin.plugin.system.install","kind":"tool","name":"install_plugin_from_directory","description":"从本地目录安装插件。","selection":{"whenToUse":["用户明确要求安装本地插件"],"priority":80},"metadata":{"toolName":"install_plugin_from_directory"}},
+    {"id":"builtin.plugin.system.enable","kind":"tool","name":"enable_plugin","description":"启用已安装插件版本。","selection":{"whenToUse":["需要启用已安装插件"],"priority":70},"metadata":{"toolName":"enable_plugin"}},
+    {"id":"builtin.plugin.system.disable","kind":"tool","name":"disable_plugin","description":"禁用已安装插件版本。","selection":{"whenToUse":["需要禁用已安装插件"],"priority":70},"metadata":{"toolName":"disable_plugin"}},
+    {"id":"builtin.plugin.system.read-config","kind":"tool","name":"read_plugin_config","description":"读取插件脱敏配置。","selection":{"whenToUse":["需要判断插件配置是否完整"],"priority":80},"metadata":{"toolName":"read_plugin_config"}},
+    {"id":"builtin.plugin.system.configure","kind":"tool","name":"configure_plugin","description":"写入插件 JSON 配置。","selection":{"whenToUse":["用户明确要求配置插件"],"priority":70},"metadata":{"toolName":"configure_plugin"}}
+  ]
+}

@@ -14,6 +14,8 @@ mod builtin_media_image;
 mod builtin_media_transcription;
 #[path = "builtin-media-video/mod.rs"]
 mod builtin_media_video;
+#[path = "builtin-plugin-system/mod.rs"]
+mod builtin_plugin_system;
 
 pub(crate) use builtin_command::configure_process_group;
 pub use builtin_command::{
@@ -42,6 +44,11 @@ pub use builtin_media_video::{
     builtin_media_video_tool_definitions, execute_builtin_media_video_tool,
     register_builtin_media_video,
 };
+pub use builtin_plugin_system::{
+    builtin_plugin_system_tool_definitions, configure_plugin, disable_plugin, enable_plugin,
+    install_plugin_from_directory, list_installed_plugins, read_plugin_config,
+    register_builtin_plugin_system,
+};
 
 /// 创建并注册当前版本内置插件。
 ///
@@ -54,6 +61,7 @@ pub fn builtin_plugins_registry() -> Result<PluginRegistry, PluginRegistryError>
     register_builtin_media_transcription(&mut registry)?;
     register_builtin_filesystem(&mut registry)?;
     register_builtin_command(&mut registry)?;
+    register_builtin_plugin_system(&mut registry)?;
     Ok(registry)
 }
 
@@ -66,7 +74,7 @@ mod tests {
         let registry = builtin_plugins_registry().unwrap();
         let plugins: Vec<_> = registry.list_plugins().collect();
 
-        assert_eq!(plugins.len(), 6);
+        assert_eq!(plugins.len(), 7);
         assert!(plugins
             .iter()
             .any(|plugin| plugin.manifest.id == "builtin-media-image"));
@@ -85,5 +93,8 @@ mod tests {
         assert!(plugins
             .iter()
             .any(|plugin| plugin.manifest.id == "builtin-command"));
+        assert!(plugins
+            .iter()
+            .any(|plugin| plugin.manifest.id == "builtin-plugin-system"));
     }
 }

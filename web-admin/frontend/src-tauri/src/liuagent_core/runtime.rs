@@ -19617,6 +19617,9 @@ mod tests {
         assert!(message
             .content
             .contains("builtin.media.image.generation-skill"));
+        assert!(message
+            .content
+            .contains("builtin.plugin.system.management-skill"));
         assert!(message.content.contains("load_plugin_skill"));
     }
 

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::loader::{PluginLoader, PluginLoaderError};
 use super::manifest::PluginManifest;
@@ -14,6 +15,7 @@ use super::registry::{PluginRegistry, PluginRegistryError};
 const INSTALLED_DIR: &str = "installed";
 const STAGING_DIR: &str = "staging";
 const CACHE_DIR: &str = "cache";
+const CONFIG_DIR: &str = "config";
 const LOCK_FILE: &str = "plugin-lock.json";
 
 #[derive(Debug)]
@@ -74,6 +76,15 @@ pub struct InstalledPlugin {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledPluginRecord {
+    pub manifest: PluginManifest,
+    pub path: PathBuf,
+    pub enabled: bool,
+    pub configured: bool,
+}
+
 pub struct PluginInstaller;
 
 impl PluginInstaller {
@@ -97,6 +108,7 @@ impl PluginInstaller {
         }
         let manifest = PluginLoader::load_manifest(&manifest_path)
             .map_err(PluginInstallError::InvalidManifest)?;
+        validate_install_component(&manifest.version, "plugin version")?;
         let plugin_root = plugin_root.as_ref();
         let destination = plugin_root
             .join(INSTALLED_DIR)
@@ -161,18 +173,130 @@ impl PluginInstaller {
         }
         Ok(loaded)
     }
+
+    pub fn list_installed(
+        plugin_root: impl AsRef<Path>,
+    ) -> Result<Vec<InstalledPluginRecord>, PluginInstallError> {
+        let plugin_root = plugin_root.as_ref();
+        let mut records = all_installed_plugin_versions(plugin_root)?
+            .into_iter()
+            .map(|(path, manifest, enabled)| InstalledPluginRecord {
+                configured: config_path(plugin_root, &manifest.id, &manifest.version).is_file(),
+                manifest,
+                path,
+                enabled,
+            })
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            left.manifest
+                .id
+                .cmp(&right.manifest.id)
+                .then(compare_versions(
+                    &right.manifest.version,
+                    &left.manifest.version,
+                ))
+        });
+        Ok(records)
+    }
+
+    pub fn set_enabled(
+        plugin_root: impl AsRef<Path>,
+        plugin_id: &str,
+        plugin_version: &str,
+        enabled: bool,
+    ) -> Result<InstalledPluginRecord, PluginInstallError> {
+        let plugin_root = plugin_root.as_ref();
+        let (path, manifest, _) = find_installed_plugin(plugin_root, plugin_id, plugin_version)?;
+        let mut lock = Self::read_lock_file(plugin_root)?;
+        lock.plugins
+            .retain(|entry| !(entry.id == manifest.id && entry.version == manifest.version));
+        lock.plugins.push(PluginLockEntry {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            source: "managed".to_string(),
+            install_path: path.to_string_lossy().to_string(),
+            enabled,
+        });
+        write_lock_file(plugin_root, &lock)?;
+        Ok(InstalledPluginRecord {
+            configured: config_path(plugin_root, &manifest.id, &manifest.version).is_file(),
+            manifest,
+            path,
+            enabled,
+        })
+    }
+
+    pub fn read_config(
+        plugin_root: impl AsRef<Path>,
+        plugin_id: &str,
+        plugin_version: &str,
+    ) -> Result<Option<Value>, PluginInstallError> {
+        let plugin_root = plugin_root.as_ref();
+        let (_, manifest, _) = find_installed_plugin(plugin_root, plugin_id, plugin_version)?;
+        let path = config_path(plugin_root, &manifest.id, &manifest.version);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(path)?;
+        serde_json::from_str(&content)
+            .map(Some)
+            .map_err(|error| PluginInstallError::Io(error.to_string()))
+    }
+
+    pub fn write_config(
+        plugin_root: impl AsRef<Path>,
+        plugin_id: &str,
+        plugin_version: &str,
+        config: &Value,
+    ) -> Result<(), PluginInstallError> {
+        let plugin_root = plugin_root.as_ref();
+        let (_, manifest, _) = find_installed_plugin(plugin_root, plugin_id, plugin_version)?;
+        if !config.is_object() {
+            return Err(PluginInstallError::InvalidSource(
+                "plugin config must be a JSON object".to_string(),
+            ));
+        }
+        let path = config_path(plugin_root, &manifest.id, &manifest.version);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_string_pretty(config)
+            .map_err(|error| PluginInstallError::Io(error.to_string()))?;
+        let temporary = path.with_extension("json.tmp");
+        fs::write(&temporary, content)?;
+        fs::rename(temporary, path)?;
+        Ok(())
+    }
 }
 
 pub(crate) fn enabled_installed_plugin_versions(
     plugin_root: impl AsRef<Path>,
 ) -> Result<Vec<(PathBuf, PluginManifest)>, PluginInstallError> {
+    let mut selected = BTreeMap::<String, (PathBuf, PluginManifest)>::new();
+    for (path, manifest, enabled) in all_installed_plugin_versions(plugin_root)? {
+        if !enabled {
+            continue;
+        }
+        let should_replace = selected.get(&manifest.id).is_none_or(|(_, current)| {
+            compare_versions(&manifest.version, &current.version) == Ordering::Greater
+        });
+        if should_replace {
+            selected.insert(manifest.id.clone(), (path, manifest));
+        }
+    }
+    Ok(selected.into_values().collect())
+}
+
+fn all_installed_plugin_versions(
+    plugin_root: impl AsRef<Path>,
+) -> Result<Vec<(PathBuf, PluginManifest, bool)>, PluginInstallError> {
     let plugin_root = plugin_root.as_ref();
     let installed_root = plugin_root.join(INSTALLED_DIR);
     if !installed_root.is_dir() {
         return Ok(Vec::new());
     }
     let lock = PluginInstaller::read_lock_file(plugin_root)?;
-    let mut selected = BTreeMap::<String, (PathBuf, PluginManifest)>::new();
+    let mut records = Vec::new();
     for plugin_entry in fs::read_dir(&installed_root)? {
         let plugin_entry = plugin_entry?;
         if !plugin_entry.file_type()?.is_dir() {
@@ -190,18 +314,48 @@ pub(crate) fn enabled_installed_plugin_versions(
             }
             let manifest = PluginLoader::load_manifest(&manifest_path)
                 .map_err(PluginInstallError::InvalidManifest)?;
-            if !installed_version_enabled(&lock, &manifest, &version_directory) {
-                continue;
-            }
-            let should_replace = selected.get(&manifest.id).is_none_or(|(_, current)| {
-                compare_versions(&manifest.version, &current.version) == Ordering::Greater
-            });
-            if should_replace {
-                selected.insert(manifest.id.clone(), (version_directory, manifest));
-            }
+            let enabled = installed_version_enabled(&lock, &manifest, &version_directory);
+            records.push((version_directory, manifest, enabled));
         }
     }
-    Ok(selected.into_values().collect())
+    Ok(records)
+}
+
+fn find_installed_plugin(
+    plugin_root: &Path,
+    plugin_id: &str,
+    plugin_version: &str,
+) -> Result<(PathBuf, PluginManifest, bool), PluginInstallError> {
+    validate_install_component(plugin_id, "plugin id")?;
+    validate_install_component(plugin_version, "plugin version")?;
+    all_installed_plugin_versions(plugin_root)?
+        .into_iter()
+        .find(|(_, manifest, _)| manifest.id == plugin_id && manifest.version == plugin_version)
+        .ok_or_else(|| {
+            PluginInstallError::InvalidSource(format!(
+                "installed plugin was not found: {plugin_id}@{plugin_version}"
+            ))
+        })
+}
+
+fn config_path(plugin_root: &Path, plugin_id: &str, plugin_version: &str) -> PathBuf {
+    plugin_root
+        .join(CONFIG_DIR)
+        .join(plugin_id)
+        .join(format!("{plugin_version}.json"))
+}
+
+fn validate_install_component(value: &str, field: &str) -> Result<(), PluginInstallError> {
+    if value.trim().is_empty()
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains("..")
+    {
+        return Err(PluginInstallError::InvalidSource(format!(
+            "{field} must be a safe path component"
+        )));
+    }
+    Ok(())
 }
 
 fn installed_version_enabled(
@@ -238,7 +392,11 @@ fn update_lock_file(plugin_root: &Path, entry: PluginLockEntry) -> Result<(), Pl
             .cmp(&right.id)
             .then(left.version.cmp(&right.version))
     });
-    let content = serde_json::to_string_pretty(&lock)
+    write_lock_file(plugin_root, &lock)
+}
+
+fn write_lock_file(plugin_root: &Path, lock: &PluginLockFile) -> Result<(), PluginInstallError> {
+    let content = serde_json::to_string_pretty(lock)
         .map_err(|error| PluginInstallError::Io(error.to_string()))?;
     let temporary = plugin_root.join("plugin-lock.json.tmp");
     fs::write(&temporary, content)?;
@@ -384,6 +542,53 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].1.version, "1.0.0");
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manages_plugin_enabled_state_and_versioned_config() {
+        let source = temp_directory("managed-source");
+        let root = temp_directory("managed-root");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("plugin.json"),
+            r#"{"id":"vendor.demo","pluginType":"skill","name":"demo","displayName":"Demo","description":"Demo plugin","version":"1.0.0","source":"user","enabled":true}"#,
+        )
+        .unwrap();
+
+        let installed = PluginInstaller::install_directory(&source, &root, "local-test").unwrap();
+        let disabled =
+            PluginInstaller::set_enabled(&root, &installed.manifest.id, "1.0.0", false).unwrap();
+        assert!(!disabled.enabled);
+        assert!(!enabled_installed_plugin_versions(&root)
+            .unwrap()
+            .iter()
+            .any(|(_, manifest)| manifest.id == "vendor.demo"));
+
+        PluginInstaller::write_config(
+            &root,
+            "vendor.demo",
+            "1.0.0",
+            &serde_json::json!({"endpoint":"https://example.test","api_key":"secret"}),
+        )
+        .unwrap();
+        assert_eq!(
+            PluginInstaller::read_config(&root, "vendor.demo", "1.0.0")
+                .unwrap()
+                .unwrap()["endpoint"],
+            "https://example.test"
+        );
+        assert!(root.join("config/vendor.demo/1.0.0.json").is_file());
+
+        let enabled =
+            PluginInstaller::set_enabled(&root, &installed.manifest.id, "1.0.0", true).unwrap();
+        assert!(enabled.enabled);
+        assert!(enabled_installed_plugin_versions(&root)
+            .unwrap()
+            .iter()
+            .any(|(_, manifest)| manifest.id == "vendor.demo"));
+
+        let _ = fs::remove_dir_all(source);
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -314,6 +314,19 @@ fn builtin_plugin_skill_documents() -> Vec<PluginSkillDocument> {
             vec!["用户要求修改当前会话中的已有图片".to_string()],
             include_str!("plugins/builtin-media-image/skills/image-editing/SKILL.md").to_string(),
         ),
+        PluginSkillDocument::new(
+            "builtin-plugin-system",
+            "1.0.0",
+            "builtin.plugin.system.management-skill",
+            "plugin-management",
+            "指导 AI 动态组合插件发现、安装、配置、启停和 Skill 加载能力。",
+            vec![
+                "用户要求安装、配置、启用、禁用或查看本机插件".to_string(),
+                "需要判断插件 Skill 是否可用".to_string(),
+            ],
+            include_str!("plugins/builtin-plugin-system/skills/plugin-management/SKILL.md")
+                .to_string(),
+        ),
     ]
 }
 

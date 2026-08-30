@@ -8,6 +8,7 @@ use super::plugin_system::plugins::{
     builtin_command_tool_definitions, builtin_filesystem_tool_definitions,
     builtin_media_audio_tool_definitions, builtin_media_image_tool_definitions,
     builtin_media_transcription_tool_definitions, builtin_media_video_tool_definitions,
+    builtin_plugin_system_tool_definitions,
 };
 use super::types::ToolDefinition;
 
@@ -456,5 +457,6 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
     definitions.extend(builtin_media_transcription_tool_definitions());
     definitions.extend(builtin_filesystem_tool_definitions());
     definitions.extend(builtin_command_tool_definitions());
+    definitions.extend(builtin_plugin_system_tool_definitions());
     definitions
 }

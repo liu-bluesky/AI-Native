@@ -76,10 +76,12 @@ use plugin_system::load_plugin_skill;
 use plugin_system::plugins::check_command_risk;
 use plugin_system::plugins::execute_builtin_media_image_tool;
 use plugin_system::plugins::{
-    apply_patch, delete_file, execute_builtin_media_audio_tool,
-    execute_builtin_media_transcription_tool, execute_builtin_media_video_tool, list_files,
-    list_local_resources, process_tool, read_file, read_local_resource, run_command,
-    run_command_with_output_sink_and_cancel, search_text, write_file,
+    apply_patch, configure_plugin, delete_file, disable_plugin, enable_plugin,
+    execute_builtin_media_audio_tool, execute_builtin_media_transcription_tool,
+    execute_builtin_media_video_tool, install_plugin_from_directory, list_files,
+    list_installed_plugins, list_local_resources, process_tool, read_file, read_local_resource,
+    read_plugin_config, run_command, run_command_with_output_sink_and_cancel, search_text,
+    write_file,
 };
 use tools::deploy::{deploy_workspace_files_to_target, get_project_deploy_options};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
@@ -112,6 +114,28 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
     }
     let result = match name.as_str() {
         "load_plugin_skill" => load_plugin_skill_tool(&request.arguments),
+        "list_installed_plugins" => list_installed_plugins(&request.arguments),
+        "install_plugin_from_directory" => install_plugin_from_directory(
+            &tool_call_id,
+            &request.arguments,
+            request.permission_decision.as_ref(),
+        ),
+        "enable_plugin" => enable_plugin(
+            &tool_call_id,
+            &request.arguments,
+            request.permission_decision.as_ref(),
+        ),
+        "disable_plugin" => disable_plugin(
+            &tool_call_id,
+            &request.arguments,
+            request.permission_decision.as_ref(),
+        ),
+        "read_plugin_config" => read_plugin_config(&request.arguments),
+        "configure_plugin" => configure_plugin(
+            &tool_call_id,
+            &request.arguments,
+            request.permission_decision.as_ref(),
+        ),
         "ask_user_question" => ask_user_question(&tool_call_id, &request.arguments),
         "list_files" => list_files(&request.workspace_path, &request.arguments),
         "read_file" => read_file(&request.workspace_path, &request.arguments),
@@ -404,8 +428,11 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 36);
+        assert_eq!(tools.len(), 42);
         assert!(tools.iter().any(|item| item.name == "load_plugin_skill"));
+        assert!(tools
+            .iter()
+            .any(|item| item.name == "install_plugin_from_directory"));
         assert!(tools.iter().any(|item| item.name == "ask_user_question"));
         assert!(tools.iter().any(|item| item.name == "read_file"));
         assert!(tools.iter().any(|item| item.name == "delete_file"));

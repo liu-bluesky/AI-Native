@@ -15,7 +15,8 @@ mod skills;
 
 pub use context::{PluginContext, PluginContextBuilder};
 pub use installation::{
-    InstalledPlugin, PluginInstallError, PluginInstaller, PluginLockEntry, PluginLockFile,
+    InstalledPlugin, InstalledPluginRecord, PluginInstallError, PluginInstaller, PluginLockEntry,
+    PluginLockFile,
 };
 pub use lifecycle::{LifecycleEvent, LifecycleState, PluginLifecycle};
 pub use loader::{PluginLoader, PluginLoaderError};
