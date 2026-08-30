@@ -1,7 +1,10 @@
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use super::loader::{PluginLoader, PluginLoaderError};
@@ -147,36 +150,80 @@ impl PluginInstaller {
         plugin_root: impl AsRef<Path>,
         registry: &mut PluginRegistry,
     ) -> Result<usize, PluginInstallError> {
-        let installed_root = plugin_root.as_ref().join(INSTALLED_DIR);
-        if !installed_root.is_dir() {
-            return Ok(0);
-        }
         let mut loaded = 0;
-        for plugin_entry in fs::read_dir(&installed_root)? {
-            let plugin_entry = plugin_entry?;
-            if !plugin_entry.file_type()?.is_dir() {
-                continue;
-            }
-            for version_entry in fs::read_dir(plugin_entry.path())? {
-                let version_entry = version_entry?;
-                if !version_entry.file_type()?.is_dir() {
-                    continue;
-                }
-                let manifest_path = version_entry.path().join("plugin.json");
-                if !manifest_path.is_file() {
-                    continue;
-                }
-                let manifest = PluginLoader::load_manifest(&manifest_path)
-                    .map_err(PluginInstallError::InvalidManifest)?;
-                registry
-                    .register(manifest)
-                    .map_err(|error: PluginRegistryError| {
-                        PluginInstallError::Registry(error.to_string())
-                    })?;
-                loaded += 1;
-            }
+        for (_, manifest) in enabled_installed_plugin_versions(plugin_root)? {
+            registry
+                .register(manifest)
+                .map_err(|error: PluginRegistryError| {
+                    PluginInstallError::Registry(error.to_string())
+                })?;
+            loaded += 1;
         }
         Ok(loaded)
+    }
+}
+
+pub(crate) fn enabled_installed_plugin_versions(
+    plugin_root: impl AsRef<Path>,
+) -> Result<Vec<(PathBuf, PluginManifest)>, PluginInstallError> {
+    let plugin_root = plugin_root.as_ref();
+    let installed_root = plugin_root.join(INSTALLED_DIR);
+    if !installed_root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let lock = PluginInstaller::read_lock_file(plugin_root)?;
+    let mut selected = BTreeMap::<String, (PathBuf, PluginManifest)>::new();
+    for plugin_entry in fs::read_dir(&installed_root)? {
+        let plugin_entry = plugin_entry?;
+        if !plugin_entry.file_type()?.is_dir() {
+            continue;
+        }
+        for version_entry in fs::read_dir(plugin_entry.path())? {
+            let version_entry = version_entry?;
+            if !version_entry.file_type()?.is_dir() {
+                continue;
+            }
+            let version_directory = version_entry.path();
+            let manifest_path = version_directory.join("plugin.json");
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let manifest = PluginLoader::load_manifest(&manifest_path)
+                .map_err(PluginInstallError::InvalidManifest)?;
+            if !installed_version_enabled(&lock, &manifest, &version_directory) {
+                continue;
+            }
+            let should_replace = selected.get(&manifest.id).is_none_or(|(_, current)| {
+                compare_versions(&manifest.version, &current.version) == Ordering::Greater
+            });
+            if should_replace {
+                selected.insert(manifest.id.clone(), (version_directory, manifest));
+            }
+        }
+    }
+    Ok(selected.into_values().collect())
+}
+
+fn installed_version_enabled(
+    lock: &PluginLockFile,
+    manifest: &PluginManifest,
+    version_directory: &Path,
+) -> bool {
+    lock.plugins
+        .iter()
+        .find(|entry| {
+            entry.id == manifest.id
+                && entry.version == manifest.version
+                && Path::new(&entry.install_path) == version_directory
+        })
+        .map(|entry| entry.enabled)
+        .unwrap_or(manifest.enabled)
+}
+
+fn compare_versions(left: &str, right: &str) -> Ordering {
+    match (Version::parse(left), Version::parse(right)) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        _ => left.cmp(right),
     }
 }
 
@@ -293,6 +340,50 @@ mod tests {
         let result = PluginInstaller::install_directory(&source, &root, "local-test");
         assert!(matches!(result, Err(PluginInstallError::InvalidSource(_))));
         let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn selects_only_the_highest_enabled_plugin_version() {
+        let root = temp_directory("versions");
+        for version in ["1.0.0", "1.10.0", "1.2.0"] {
+            let plugin = root.join("installed/vendor-demo").join(version);
+            fs::create_dir_all(&plugin).unwrap();
+            fs::write(
+                plugin.join("plugin.json"),
+                format!(
+                    r#"{{"id":"vendor-demo","pluginType":"skill","name":"demo","displayName":"Demo","description":"Demo plugin","version":"{version}","source":"user","enabled":true}}"#
+                ),
+            )
+            .unwrap();
+        }
+
+        let selected = enabled_installed_plugin_versions(&root).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].1.version, "1.10.0");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prefers_a_stable_release_over_its_prerelease() {
+        let root = temp_directory("prerelease-versions");
+        for version in ["1.0.0-alpha.1", "1.0.0"] {
+            let plugin = root.join("installed/vendor-demo").join(version);
+            fs::create_dir_all(&plugin).unwrap();
+            fs::write(
+                plugin.join("plugin.json"),
+                format!(
+                    r#"{{"id":"vendor-demo","pluginType":"skill","name":"demo","displayName":"Demo","description":"Demo plugin","version":"{version}","source":"user","enabled":true}}"#
+                ),
+            )
+            .unwrap();
+        }
+
+        let selected = enabled_installed_plugin_versions(&root).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].1.version, "1.0.0");
+
         let _ = fs::remove_dir_all(root);
     }
 }

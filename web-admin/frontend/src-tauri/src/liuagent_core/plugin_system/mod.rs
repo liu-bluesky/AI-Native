@@ -11,6 +11,7 @@ mod manifest;
 pub mod plugins;
 mod registry;
 mod resolver;
+mod skills;
 
 pub use context::{PluginContext, PluginContextBuilder};
 pub use installation::{
@@ -28,5 +29,9 @@ pub use registry::{
     RegisteredCapabilitySnapshot,
 };
 pub use resolver::{CapabilityMatch, CapabilityQuery, CapabilityResolver};
+pub use skills::{
+    available_plugin_skills, discover_installed_skill_documents, load_plugin_skill,
+    PluginSkillDocument, PluginSkillSummary,
+};
 
 pub use plugins::builtin_plugins_registry;

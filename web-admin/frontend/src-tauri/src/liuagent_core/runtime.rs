@@ -41,7 +41,7 @@ use super::planning;
 use super::plugin_system::adapters::mcp::register_mcp_plugin;
 use super::plugin_system::plugins::classify_command_risk;
 use super::plugin_system::plugins::wait_for_background_process_notification;
-use super::plugin_system::{PluginManifest, PluginRegistry};
+use super::plugin_system::{available_plugin_skills, PluginManifest, PluginRegistry};
 use super::prompt::{
     tool_is_allowed, PromptRegistry, PromptScope, PromptScopeContext, PromptSection,
     ResolvedPromptSection,
@@ -5371,6 +5371,9 @@ fn run_agent_loop_with_answered_user_question(
     if let Some(plugin_context) = build_mcp_plugin_context_message(base_request) {
         messages.push(plugin_context);
     }
+    if let Some(plugin_skill_context) = build_plugin_skill_context_message() {
+        messages.push(plugin_skill_context);
+    }
     let mut model_steps = Vec::new();
     let mut model_input_snapshots = Vec::new();
     let mut planned_tools = Vec::new();
@@ -6980,7 +6983,10 @@ fn emit_tool_call_started_event(
                     .and_then(|item| {
                         item.selected_mcp_tools
                             .iter()
-                            .find(|route| mcp_public_tool_name(route) == tool.name.trim())
+                            .find(|route| {
+                                mcp_public_tool_name(route) == tool.name.trim()
+                                    || route.name == tool.name.trim()
+                            })
                             .map(|route| json!({
                                 "project_id": item.project_id,
                                 "physical_server": route.server,
@@ -7010,10 +7016,9 @@ fn resolved_tool_arguments_for_display(
     let Some(request) = request else {
         return resolved;
     };
-    let is_runtime_mcp_tool = request
-        .selected_mcp_tools
-        .iter()
-        .any(|route| mcp_public_tool_name(route) == tool.name.trim());
+    let is_runtime_mcp_tool = request.selected_mcp_tools.iter().any(|route| {
+        mcp_public_tool_name(route) == tool.name.trim() || route.name == tool.name.trim()
+    });
     if !is_runtime_mcp_tool || request.project_id.trim().is_empty() {
         return resolved;
     }
@@ -10432,6 +10437,13 @@ fn selected_context_sources_for_task(request: &LocalChatRequest) -> Result<Vec<S
     {
         sources.push("project.ai_entry_file".to_string());
     }
+    if super::desktop_plugin_root()
+        .ok()
+        .and_then(|plugin_root| available_plugin_skills(plugin_root).ok())
+        .is_some_and(|skills| !skills.is_empty())
+    {
+        sources.push("runtime.plugin_skills".to_string());
+    }
     sources.extend(
         resolve_task_system_prompt_parts(request)?
             .into_iter()
@@ -10665,6 +10677,40 @@ fn build_mcp_plugin_context_message(request: &ModelStepRequest) -> Option<Runtim
         "runtime.mcp_plugins",
         "runtime",
         -120,
+        lines.join("\n"),
+    ))
+}
+
+fn build_plugin_skill_context_message() -> Option<RuntimeModelMessage> {
+    let plugin_root = super::desktop_plugin_root().ok()?;
+    build_plugin_skill_context_message_for_root(plugin_root)
+}
+
+fn build_plugin_skill_context_message_for_root(
+    plugin_root: impl AsRef<Path>,
+) -> Option<RuntimeModelMessage> {
+    let skills = available_plugin_skills(plugin_root).ok()?;
+    if skills.is_empty() {
+        return None;
+    }
+    let mut lines = vec![
+        "当前可用的插件 Skill 摘要：".to_string(),
+        "Skill 只提供任务指导，不是执行接口。任务匹配时，先调用 load_plugin_skill 读取对应 Skill 正文，再按正文选择工具；不得猜测未列出的 Skill。".to_string(),
+    ];
+    for skill in skills {
+        lines.push(format!(
+            "- {}@{} / {}：{}",
+            skill.plugin_id, skill.plugin_version, skill.skill_id, skill.description
+        ));
+        if !skill.when_to_use.is_empty() {
+            lines.push(format!("  - 适用场景：{}", skill.when_to_use.join("；")));
+        }
+    }
+    Some(RuntimeModelMessage::system_section(
+        "runtime:plugin_skills",
+        "runtime.plugin_skills",
+        "runtime",
+        -125,
         lines.join("\n"),
     ))
 }
@@ -11578,10 +11624,15 @@ fn mcp_registry_configured(workspace_path: &str, mcp_config: &Value) -> bool {
 }
 
 fn tool_definitions_for_request(request: &ModelStepRequest) -> Vec<super::types::ToolDefinition> {
+    let plugin_skill_available = super::desktop_plugin_root()
+        .ok()
+        .and_then(|plugin_root| available_plugin_skills(plugin_root).ok())
+        .is_some_and(|skills| !skills.is_empty());
     builtin_tool_definitions()
         .into_iter()
         .filter(|definition| {
             tool_available_for_request(definition, request)
+                && (definition.name != "load_plugin_skill" || plugin_skill_available)
                 && !(definition.name == "ask_user_question"
                     && (is_non_task_conversation(&request.user_message)
                         || request_has_answered_user_question(request)))
@@ -19548,10 +19599,72 @@ mod tests {
         let model_request = build_model_request(&request, &request.message);
 
         assert!(model_request.expose_tools);
-        assert!(openai_compatible_tool_schemas(&model_request)
-            .unwrap()
+        let schemas = openai_compatible_tool_schemas(&model_request).unwrap();
+        assert!(schemas
             .iter()
             .any(|tool| tool["function"]["name"] == "download_file"));
+        assert!(schemas
+            .iter()
+            .any(|tool| tool["function"]["name"] == "load_plugin_skill"));
+    }
+
+    #[test]
+    fn plugin_skill_summary_is_published_to_model_context() {
+        let message =
+            build_plugin_skill_context_message().expect("builtin plugin skills should be present");
+
+        assert_eq!(message.prompt_source, "runtime.plugin_skills");
+        assert!(message
+            .content
+            .contains("builtin.media.image.generation-skill"));
+        assert!(message.content.contains("load_plugin_skill"));
+    }
+
+    #[test]
+    fn installed_plugin_skill_summary_is_published_to_model_context() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-employee-runtime-plugin-skills-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let plugin = root.join("installed/vendor-demo/1.0.0");
+        fs::create_dir_all(plugin.join("skills/demo")).unwrap();
+        fs::write(
+            plugin.join("plugin.json"),
+            r#"{
+                "id":"vendor-demo",
+                "pluginType":"skill",
+                "name":"demo",
+                "displayName":"Demo",
+                "description":"Demo plugin",
+                "version":"1.0.0",
+                "source":"user",
+                "capabilities":[{
+                    "id":"vendor.demo.skill",
+                    "kind":"skill",
+                    "name":"Demo Skill",
+                    "description":"Use the installed demo skill.",
+                    "selection":{"whenToUse":["demo task"]},
+                    "metadata":{"skillFile":"skills/demo/SKILL.md"}
+                }]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin.join("skills/demo/SKILL.md"),
+            "# Demo Skill\n\nRun the demo.",
+        )
+        .unwrap();
+
+        let message = build_plugin_skill_context_message_for_root(&root)
+            .expect("installed plugin skill should be present");
+        assert!(message.content.contains("vendor-demo@1.0.0"));
+        assert!(message.content.contains("vendor.demo.skill"));
+        assert!(message.content.contains("Use the installed demo skill."));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

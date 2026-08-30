@@ -72,6 +72,7 @@ pub use types::{
     ToolExecutionRequest, ToolExecutionResult,
 };
 
+use plugin_system::load_plugin_skill;
 use plugin_system::plugins::check_command_risk;
 use plugin_system::plugins::execute_builtin_media_image_tool;
 use plugin_system::plugins::{
@@ -110,6 +111,7 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
         );
     }
     let result = match name.as_str() {
+        "load_plugin_skill" => load_plugin_skill_tool(&request.arguments),
         "ask_user_question" => ask_user_question(&tool_call_id, &request.arguments),
         "list_files" => list_files(&request.workspace_path, &request.arguments),
         "read_file" => read_file(&request.workspace_path, &request.arguments),
@@ -207,6 +209,42 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
         Ok((content, summary)) => ToolExecutionResult::ok(tool_call_id, name, content, summary),
         Err(error) => ToolExecutionResult::failed(tool_call_id, name, error),
     }
+}
+
+fn load_plugin_skill_tool(
+    arguments: &serde_json::Value,
+) -> Result<(serde_json::Value, String), ToolError> {
+    let plugin_id = arguments
+        .get("plugin_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ToolError::new("tool.schema_invalid", "plugin_id is required"))?;
+    let plugin_version = arguments
+        .get("plugin_version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ToolError::new("tool.schema_invalid", "plugin_version is required"))?;
+    let skill_id = arguments
+        .get("skill_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ToolError::new("tool.schema_invalid", "skill_id is required"))?;
+    let plugin_root = desktop_plugin_root()
+        .map_err(|error| ToolError::new("plugin.skill_root_unavailable", error.to_string()))?;
+    let document = load_plugin_skill(&plugin_root, plugin_id, plugin_version, skill_id)
+        .map_err(|error| ToolError::new("plugin.skill_not_found", error.to_string()))?;
+    let summary = format!(
+        "已加载插件 Skill：{}@{}/{}",
+        document.summary.plugin_id, document.summary.plugin_version, document.summary.skill_id
+    );
+    Ok((
+        serde_json::json!({
+            "pluginId": document.summary.plugin_id,
+            "pluginVersion": document.summary.plugin_version,
+            "skillId": document.summary.skill_id,
+            "name": document.summary.name,
+            "description": document.summary.description,
+            "content": document.content
+        }),
+        summary,
+    ))
 }
 
 fn ask_user_question(
@@ -366,7 +404,8 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 35);
+        assert_eq!(tools.len(), 36);
+        assert!(tools.iter().any(|item| item.name == "load_plugin_skill"));
         assert!(tools.iter().any(|item| item.name == "ask_user_question"));
         assert!(tools.iter().any(|item| item.name == "read_file"));
         assert!(tools.iter().any(|item| item.name == "delete_file"));
@@ -403,6 +442,31 @@ mod tests {
         for name in ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"] {
             assert!(!tools.iter().any(|item| item.name == name));
         }
+    }
+
+    #[test]
+    fn load_plugin_skill_returns_builtin_skill_content() {
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_load_plugin_skill".to_string()),
+            name: "load_plugin_skill".to_string(),
+            arguments: json!({
+                "plugin_id": "builtin-media-image",
+                "plugin_version": "1.0.0",
+                "skill_id": "builtin.media.image.generation-skill"
+            }),
+            workspace_path: ".".to_string(),
+            permission_decision: None,
+        });
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(
+            result.content["skillId"],
+            "builtin.media.image.generation-skill"
+        );
+        assert!(result.content["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("generate_image"));
     }
 
     #[test]
