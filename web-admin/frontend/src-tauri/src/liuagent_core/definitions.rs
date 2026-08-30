@@ -4,10 +4,11 @@
 
 use serde_json::json;
 
+use super::plugin_system::plugins::builtin_media_image_tool_definitions;
 use super::types::ToolDefinition;
 
 pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
+    let mut definitions = vec![
         ToolDefinition {
             name: "ask_user_question",
             description: "仅当用户已经提出明确任务，且缺少会改变执行结果、只能由用户决定、无法从上下文读取或安全采用默认值的关键信息时使用。调用后 Runtime 会暂停当前工具循环并展示问题；收到答案后会从同一个工具调用继续。不要把问候、闲聊、能力咨询、泛泛的“想做什么”澄清、内部错误、可自行读取/推断的信息或非关键偏好交给用户；非关键缺失应采用合理默认值并继续。一次最多提出 3 个具体问题。每个问题必须明确设置 multi_select：互斥答案只能选一个时设为 false；多个答案可以同时成立、用户可能需要组合选择时设为 true。",
@@ -403,42 +404,6 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "generate_image",
-            description: "调用统一的图片生成工具协议，由当前配置的供应商适配器连接图片模型，从零创建新图片。只有用户要求生成、绘制不依赖现有图片的新图片时调用；只接受文字提示词。凡是基于现有图片生成或修改，都必须调用 edit_image，禁止改用 run_command、Python、Pillow 或 OpenCV。供应商不支持该能力时必须如实返回失败，不得伪造结果或静默切换成本地脚本。",
-            action: "media.image.generate",
-            risk: "low",
-            requires_approval: false,
-            scope: "project",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string", "description": "完整的图片生成提示词"}
-                },
-                "required": ["prompt"]
-            }),
-        },
-        ToolDefinition {
-            name: "edit_image",
-            description: "调用统一的图片编辑工具协议，由当前配置的供应商适配器连接图片模型，编辑一张或多张现有图片；该工具同时覆盖图改图和基于参考图生成。必须在 input_asset_ids 中明确选择附件上下文给出的图片资产 ID；只编辑被选择的图片。供应商不支持图片编辑时直接返回实际失败，禁止改用生成接口、run_command、Python、Pillow 或 OpenCV 静默替代。",
-            action: "media.image.edit",
-            risk: "low",
-            requires_approval: false,
-            scope: "project",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string", "description": "针对所选图片的完整编辑要求"},
-                    "input_asset_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "description": "必填；要编辑的图片资产 ID，只能使用附件上下文中明确列出的资产 ID"
-                    }
-                },
-                "required": ["prompt", "input_asset_ids"]
-            }),
-        },
-        ToolDefinition {
             name: "generate_video",
             description: "调用统一的视频生成工具协议，由当前配置的供应商适配器连接视频模型创建视频。只有用户明确要求生成视频或动画时调用；用户上传的图片会自动作为参考素材传给该工具。视频编辑、重混或延长能力只有在对应工具和供应商适配器明确提供时才能调用，不得把视频编辑请求伪装成重新生成。",
             action: "media.video.generate",
@@ -605,5 +570,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 ]
             }),
         },
-    ]
+    ];
+    definitions.extend(builtin_media_image_tool_definitions());
+    definitions
 }

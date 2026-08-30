@@ -4,7 +4,10 @@ use super::{PluginRegistry, PluginRegistryError};
 
 mod builtin_media_image;
 
-pub use builtin_media_image::{builtin_media_image_manifest, register_builtin_media_image};
+pub use builtin_media_image::{
+    builtin_media_image_manifest, builtin_media_image_tool_definitions,
+    execute_builtin_media_image_tool, register_builtin_media_image,
+};
 
 /// 创建并注册当前版本内置插件。
 ///

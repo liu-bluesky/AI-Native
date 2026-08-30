@@ -71,6 +71,7 @@ pub use types::{
     ToolExecutionRequest, ToolExecutionResult,
 };
 
+use plugin_system::plugins::execute_builtin_media_image_tool;
 use tools::command::{check_command_risk, run_command, run_command_with_output_sink_and_cancel};
 use tools::deploy::{deploy_workspace_files_to_target, get_project_deploy_options};
 use tools::file::{
@@ -170,8 +171,12 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
             &request.arguments,
             request.permission_decision.as_ref(),
         ),
-        "generate_image" | "edit_image" | "generate_video" | "generate_audio"
-        | "transcribe_audio" => execute_media_tool(&name, &request.arguments),
+        "generate_image" | "edit_image" => {
+            execute_builtin_media_image_tool(&name, &request.arguments)
+        }
+        "generate_video" | "generate_audio" | "transcribe_audio" => {
+            execute_media_tool(&name, &request.arguments)
+        }
         "list_projects" => list_projects(&request.arguments),
         "list_bot_projects" => list_bot_projects(&request.arguments),
         "get_project" => get_project(&request.arguments),

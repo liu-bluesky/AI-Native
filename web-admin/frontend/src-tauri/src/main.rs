@@ -3327,6 +3327,16 @@ fn main() {
             project_chat_store::agent_supervision_find_answer
         ])
         .setup(|app| {
+            let plugin_registry = liuagent_core::plugin_system::builtin_plugins_registry()
+                .map_err(|error| error.to_string())?;
+            let plugin_snapshot = plugin_registry.snapshot();
+            eprintln!(
+                "[plugin-registry] registered {} builtin plugin(s), {} capability(ies)",
+                plugin_snapshot.plugins.len(),
+                plugin_snapshot.capabilities.len()
+            );
+            app.manage(plugin_registry);
+
             if let (Some(window), Some(icon)) = (
                 app.get_webview_window("main"),
                 app.default_window_icon().cloned(),
