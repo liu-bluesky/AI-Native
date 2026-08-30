@@ -1,0 +1,17 @@
+{
+  "id": "builtin-media-video",
+  "pluginType": "tool",
+  "name": "media-video",
+  "displayName": "视频工具",
+  "description": "提供视频生成能力。",
+  "version": "1.0.0",
+  "source": "builtin",
+  "capabilities": [{
+    "id": "builtin.media.video.generate",
+    "kind": "tool",
+    "name": "generate_video",
+    "description": "根据用户明确的视频描述生成视频。",
+    "selection": {"whenToUse": ["用户明确要求生成视频或动画"], "avoidWhen": ["用户要求编辑已有视频但当前供应商未声明编辑能力"], "priority": 70},
+    "metadata": {"toolName": "generate_video", "executor": "builtin-media-video.runtime.execute_builtin_media_video_tool"}
+  }]
+}

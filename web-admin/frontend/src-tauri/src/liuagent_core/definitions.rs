@@ -4,7 +4,11 @@
 
 use serde_json::json;
 
-use super::plugin_system::plugins::builtin_media_image_tool_definitions;
+use super::plugin_system::plugins::{
+    builtin_filesystem_tool_definitions, builtin_media_audio_tool_definitions,
+    builtin_media_image_tool_definitions, builtin_media_transcription_tool_definitions,
+    builtin_media_video_tool_definitions,
+};
 use super::types::ToolDefinition;
 
 pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
@@ -404,53 +408,6 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "generate_video",
-            description: "调用统一的视频生成工具协议，由当前配置的供应商适配器连接视频模型创建视频。只有用户明确要求生成视频或动画时调用；用户上传的图片会自动作为参考素材传给该工具。视频编辑、重混或延长能力只有在对应工具和供应商适配器明确提供时才能调用，不得把视频编辑请求伪装成重新生成。",
-            action: "media.video.generate",
-            risk: "low",
-            requires_approval: false,
-            scope: "project",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string", "description": "完整的视频生成提示词"}
-                },
-                "required": ["prompt"]
-            }),
-        },
-        ToolDefinition {
-            name: "generate_audio",
-            description: "调用统一的文本转语音工具协议，由当前配置的供应商适配器连接语音模型把文本生成音频。只有用户明确要求朗读、配音或文字转语音时调用；该工具不代表所有音乐、音效或通用音频生成能力。",
-            action: "media.audio.generate",
-            risk: "low",
-            requires_approval: false,
-            scope: "project",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string", "description": "要朗读或配音的完整文本"},
-                    "voice": {"type": "string", "description": "可选音色 ID"},
-                    "response_format": {"type": "string", "default": "wav"},
-                    "speed": {"type": "number", "default": 1.0, "minimum": 0.25, "maximum": 4.0}
-                },
-                "required": ["prompt"]
-            }),
-        },
-        ToolDefinition {
-            name: "transcribe_audio",
-            description: "调用统一的音频转写工具协议，由当前配置的供应商适配器连接转写模型把本轮上传的音频转成文字。音频内容由运行时自动注入，不要要求用户提供文件路径或 Base64；语言、说话人识别和翻译等扩展能力以供应商支持情况为准。",
-            action: "media.audio.transcribe",
-            risk: "low",
-            requires_approval: false,
-            scope: "project",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string", "description": "可选的转写提示或语言说明"}
-                }
-            }),
-        },
-        ToolDefinition {
             name: "list_projects",
             description: "列出桌面本机全局项目目录中的项目，与项目页面同源，不依赖后端登录。用户询问“项目列表 / 有哪些项目 / 列出项目”时优先使用本工具；不要把 desktop-bot-global 当成真实项目。",
             action: "project.list",
@@ -572,5 +529,9 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
     ];
     definitions.extend(builtin_media_image_tool_definitions());
+    definitions.extend(builtin_media_video_tool_definitions());
+    definitions.extend(builtin_media_audio_tool_definitions());
+    definitions.extend(builtin_media_transcription_tool_definitions());
+    definitions.extend(builtin_filesystem_tool_definitions());
     definitions
 }

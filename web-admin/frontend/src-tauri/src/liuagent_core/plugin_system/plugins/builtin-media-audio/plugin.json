@@ -1,0 +1,17 @@
+{
+  "id": "builtin-media-audio",
+  "pluginType": "tool",
+  "name": "media-audio",
+  "displayName": "音频工具",
+  "description": "提供文本转语音能力。",
+  "version": "1.0.0",
+  "source": "builtin",
+  "capabilities": [{
+    "id": "builtin.media.audio.generate",
+    "kind": "tool",
+    "name": "generate_audio",
+    "description": "将用户提供的文本转换为音频。",
+    "selection": {"whenToUse": ["用户明确要求朗读、配音或文字转语音"], "avoidWhen": ["用户要求音乐或音效生成"], "priority": 70},
+    "metadata": {"toolName": "generate_audio", "executor": "builtin-media-audio.runtime.execute_builtin_media_audio_tool"}
+  }]
+}

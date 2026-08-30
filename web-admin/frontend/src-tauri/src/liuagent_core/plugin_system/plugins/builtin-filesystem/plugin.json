@@ -1,0 +1,17 @@
+{
+  "id": "builtin-filesystem",
+  "pluginType": "tool",
+  "name": "filesystem",
+  "displayName": "文件系统工具",
+  "description": "提供 workspace 范围内的文件读取、搜索、写入、补丁和删除能力。",
+  "version": "1.0.0",
+  "source": "builtin",
+  "capabilities": [
+    {"id":"builtin.filesystem.list","kind":"tool","name":"list_files","description":"列出 workspace 目录内容。","selection":{"whenToUse":["需要了解 workspace 文件结构"],"priority":80}},
+    {"id":"builtin.filesystem.read","kind":"tool","name":"read_file","description":"读取 workspace 文件内容。","selection":{"whenToUse":["需要读取代码或文本文件"],"priority":80}},
+    {"id":"builtin.filesystem.search","kind":"tool","name":"search_text","description":"在 workspace 中搜索文本。","selection":{"whenToUse":["需要定位代码、配置或文本引用"],"priority":80}},
+    {"id":"builtin.filesystem.patch","kind":"tool","name":"apply_patch","description":"在 workspace 中应用补丁。","selection":{"whenToUse":["需要精确修改已有文件"],"priority":70}},
+    {"id":"builtin.filesystem.write","kind":"tool","name":"write_file","description":"在 workspace 中写入文件。","selection":{"whenToUse":["需要创建或完整重写文件"],"priority":70}},
+    {"id":"builtin.filesystem.delete","kind":"tool","name":"delete_file","description":"删除 workspace 文件。","selection":{"whenToUse":["用户明确要求删除文件"],"priority":30}}
+  ]
+}

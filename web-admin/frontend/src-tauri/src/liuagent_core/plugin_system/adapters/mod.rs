@@ -1,3 +1,4 @@
 //! 将外部协议或宿主能力适配为插件能力。
 
 pub mod mcp;
+pub mod media;

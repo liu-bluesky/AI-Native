@@ -2,4 +2,4 @@
 
 mod manifest_adapter;
 
-pub use manifest_adapter::{mcp_plugin_manifest, register_mcp_plugin};
+pub use manifest_adapter::register_mcp_plugin;

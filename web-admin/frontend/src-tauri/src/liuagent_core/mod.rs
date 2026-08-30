@@ -73,14 +73,14 @@ pub use types::{
 };
 
 use plugin_system::plugins::execute_builtin_media_image_tool;
+use plugin_system::plugins::{
+    apply_patch, delete_file, execute_builtin_media_audio_tool,
+    execute_builtin_media_transcription_tool, execute_builtin_media_video_tool, list_files,
+    list_local_resources, read_file, read_local_resource, search_text, write_file,
+};
 use tools::command::{check_command_risk, run_command, run_command_with_output_sink_and_cancel};
 use tools::deploy::{deploy_workspace_files_to_target, get_project_deploy_options};
-use tools::file::{
-    apply_patch, delete_file, list_files, list_local_resources, read_file, read_local_resource,
-    search_text, write_file,
-};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
-use tools::media::execute_media_tool;
 use tools::network::{download_file, http_get, http_post, web_extract, web_search};
 use tools::process::process_tool;
 use tools::projects::{get_project, list_bot_projects, list_projects, switch_project_workspace};
@@ -175,9 +175,9 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
         "generate_image" | "edit_image" => {
             execute_builtin_media_image_tool(&name, &request.arguments)
         }
-        "generate_video" | "generate_audio" | "transcribe_audio" => {
-            execute_media_tool(&name, &request.arguments)
-        }
+        "generate_video" => execute_builtin_media_video_tool(&name, &request.arguments),
+        "generate_audio" => execute_builtin_media_audio_tool(&name, &request.arguments),
+        "transcribe_audio" => execute_builtin_media_transcription_tool(&name, &request.arguments),
         "list_projects" => list_projects(&request.arguments),
         "list_bot_projects" => list_bot_projects(&request.arguments),
         "get_project" => get_project(&request.arguments),

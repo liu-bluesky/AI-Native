@@ -1,4 +1,4 @@
-//! Structured media-model tools. Images use direct provider APIs; other media uses the backend.
+//! 非图片媒体插件共用的后端协议适配器。
 
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};

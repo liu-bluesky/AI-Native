@@ -1,0 +1,17 @@
+{
+  "id": "builtin-media-transcription",
+  "pluginType": "tool",
+  "name": "media-transcription",
+  "displayName": "音频转写工具",
+  "description": "提供音频转写能力。",
+  "version": "1.0.0",
+  "source": "builtin",
+  "capabilities": [{
+    "id": "builtin.media.audio.transcribe",
+    "kind": "tool",
+    "name": "transcribe_audio",
+    "description": "将本轮上传的音频转换为文字。",
+    "selection": {"whenToUse": ["用户要求转写音频内容"], "avoidWhen": ["没有可读取的音频附件"], "priority": 70},
+    "metadata": {"toolName": "transcribe_audio", "executor": "builtin-media-transcription.runtime.execute_builtin_media_transcription_tool"}
+  }]
+}
