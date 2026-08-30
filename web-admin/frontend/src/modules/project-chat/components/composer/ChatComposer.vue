@@ -1,6 +1,9 @@
 <template>
   <div class="chat-composer">
     <div class="chat-composer-panel">
+      <div v-if="$slots.accessory" class="chat-composer-accessory">
+        <slot name="accessory" />
+      </div>
       <div
         v-if="showAgentWorkflowStatusStrip"
         class="agent-workflow-status"

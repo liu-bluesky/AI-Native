@@ -242,12 +242,16 @@ defineExpose({
   gap: 8px;
 }
 
+.chat-conversation-sidebar__primary-actions {
+  flex-direction: column;
+}
+
 .chat-new-conversation-button {
   flex: 1;
   min-width: 0;
   height: 42px !important;
   border: 1px solid rgba(17, 24, 39, 0.06) !important;
-  border-radius: 18px !important;
+  border-radius: 10px !important;
   background: linear-gradient(180deg, #111827, #1f2937) !important;
   color: #f8fafc !important;
   font-weight: 600;
@@ -259,7 +263,7 @@ defineExpose({
   min-width: 0;
   height: 42px !important;
   border: 1px solid rgba(15, 23, 42, 0.08) !important;
-  border-radius: 18px !important;
+  border-radius: 10px !important;
   background: rgba(255, 255, 255, 0.78) !important;
   color: #334155 !important;
   font-weight: 600;

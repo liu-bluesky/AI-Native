@@ -11,31 +11,69 @@
     <div class="chat-layout__mesh" aria-hidden="true" />
 
     <div class="chat-main">
-      <div class="chat-shell">
-        <ProjectConversationSidebar
-          ref="conversationSidebarRef"
-          :surface-mark="chatSurfaceMark"
-          :surface-name="chatSurfaceName"
-          :surface-meta="chatSurfaceMeta"
-          :creating-session="creatingChatSession"
-          :project-creating="projectCreationInProgress"
-          :chat-loading="chatLoading"
-          :has-selected-project="hasSelectedProject"
-          :current-session-id="currentChatSessionId"
-          :sessions-loading="chatSessionsLoading"
-          :session-groups="groupedChatSessions"
-          :deleting-session-id="deletingChatSessionId"
-          :username-initial="currentUsernameInitial"
-          :username="currentUsername"
-          @open-settings="openSettingsCenter"
-          @create-conversation="handleCreateNewConversation"
-          @create-project="handleCreateProject"
-          @clear-current="clearMessages"
-          @select-session="selectChatSession"
-          @delete-session="deleteChatSession"
-          @rename-session="renameChatSession"
-          @logout="logoutFromChat"
-        />
+      <div
+        class="chat-shell"
+        :class="{ 'chat-shell--sidebar-collapsed': workspaceSidebarCollapsed }"
+      >
+        <div
+          class="chat-workspace-rail"
+          :class="{ 'is-collapsed': workspaceSidebarCollapsed }"
+        >
+          <div class="chat-workspace-sidebar" :class="{ 'is-hidden': workspaceSidebarCollapsed }">
+            <ProjectConversationSidebar
+              ref="conversationSidebarRef"
+              :surface-mark="chatSurfaceMark"
+              :surface-name="chatSurfaceName"
+              :surface-meta="chatSurfaceMeta"
+              :creating-session="creatingChatSession"
+              :project-creating="projectCreationInProgress"
+              :chat-loading="chatLoading"
+              :has-selected-project="hasSelectedProject"
+              :current-session-id="currentChatSessionId"
+              :sessions-loading="chatSessionsLoading"
+              :session-groups="groupedChatSessions"
+              :deleting-session-id="deletingChatSessionId"
+              :username-initial="currentUsernameInitial"
+              :username="currentUsername"
+              @open-settings="openSettingsCenter"
+              @create-conversation="handleCreateNewConversation"
+              @create-project="handleCreateProject"
+              @clear-current="clearMessages"
+              @select-session="selectChatSession"
+              @delete-session="deleteChatSession"
+              @rename-session="renameChatSession"
+              @logout="logoutFromChat"
+            />
+          </div>
+          <div v-if="workspaceSidebarCollapsed" class="chat-workspace-compact">
+            <button
+              type="button"
+              class="chat-workspace-compact__brand"
+              aria-label="展开工作区"
+              @click="workspaceSidebarCollapsed = false"
+            >
+              {{ chatSurfaceMark }}
+            </button>
+            <button
+              type="button"
+              class="chat-workspace-compact__new"
+              aria-label="新对话"
+              :disabled="!hasSelectedProject"
+              @click="handleCreateNewConversation"
+            >
+              +
+            </button>
+          </div>
+          <button
+            type="button"
+            class="chat-workspace-collapse"
+            :aria-label="workspaceSidebarCollapsed ? '展开工作区' : '收起工作区'"
+            :aria-expanded="!workspaceSidebarCollapsed"
+            @click="workspaceSidebarCollapsed = !workspaceSidebarCollapsed"
+          >
+            <span aria-hidden="true">{{ workspaceSidebarCollapsed ? '›' : '‹' }}</span>
+          </button>
+        </div>
 
         <div class="chat-stage">
           <ChatContextBar
@@ -1567,6 +1605,29 @@
             @stop-generation="stopGeneration"
             @send="doSend"
           >
+            <template #accessory>
+              <div class="chat-composer-workspace">
+                <span class="chat-composer-workspace__icon" aria-hidden="true">
+                  {{ hasSelectedProject ? '⌂' : '+' }}
+                </span>
+                <select
+                  v-model="selectedProjectId"
+                  class="chat-composer-workspace__select"
+                  aria-label="选择工作区"
+                  @change="handleProjectCommand(selectedProjectId)"
+                >
+                  <option value="">选择工作区</option>
+                  <option
+                    v-for="project in projects"
+                    :key="project.id"
+                    :value="project.id"
+                  >
+                    {{ project.name || project.id }}
+                  </option>
+                </select>
+                <span class="chat-composer-workspace__chevron" aria-hidden="true">⌄</span>
+              </div>
+            </template>
             <template #media-parameters>
               <ChatMediaParameterPopover
                 v-model="mediaParameterPopoverVisible"
@@ -3326,6 +3387,7 @@ function applyLocalConnectorRuntimeSettings(baseSettings) {
 // 页面级状态（加载、项目、提供方、连接器）
 // ============================================================
 const loading = ref(false);
+const workspaceSidebarCollapsed = ref(false);
 const chatLoading = ref(false);
 const workspaceTrustSaving = ref(false);
 const projectCreationInProgress = ref(false);
@@ -38313,6 +38375,464 @@ onUnmounted(() => {
 
   .settings-module-menu {
     grid-template-columns: 1fr;
+  }
+}
+</style>
+
+<style scoped>
+.chat-layout {
+  color: #17191c;
+  background: #f7f7f5;
+}
+
+.chat-layout__ambient,
+.chat-layout__mesh {
+  display: none;
+}
+
+.chat-main {
+  padding: 0;
+}
+
+.chat-shell,
+.chat-shell.chat-shell--local-runner {
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat-workspace-rail {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: visible;
+}
+
+.chat-workspace-sidebar {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.chat-workspace-sidebar.is-hidden {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-18px);
+}
+
+.chat-shell--sidebar-collapsed {
+  grid-template-columns: 56px minmax(0, 1fr);
+}
+
+.chat-workspace-compact {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  padding: 18px 10px;
+  box-sizing: border-box;
+  border-right: 1px solid #e7e7e4;
+  background: #f3f3f1;
+}
+
+.chat-workspace-compact__brand,
+.chat-workspace-compact__new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #202124;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.chat-workspace-compact__brand {
+  margin-bottom: 18px;
+  background: #202124;
+  color: #fff;
+  font-size: 12px;
+}
+
+.chat-workspace-compact__new {
+  font-size: 24px;
+  font-weight: 400;
+}
+
+.chat-workspace-compact__new:hover:not(:disabled),
+.chat-workspace-collapse:hover {
+  background: #e8e8e5;
+}
+
+.chat-workspace-compact__new:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.chat-workspace-collapse {
+  position: absolute;
+  top: 50%;
+  right: -12px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 48px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 1px solid #dfdfdc;
+  border-radius: 999px;
+  background: #fff;
+  color: #6d6f6b;
+  box-shadow: 0 3px 10px rgba(24, 25, 27, 0.08);
+  cursor: pointer;
+}
+
+.chat-workspace-collapse span {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.chat-layout .chat-stage {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+:deep(.chat-conversation-sidebar) {
+  border: 0;
+  border-right: 1px solid #e7e7e4;
+  border-radius: 0;
+  background: #f3f3f1;
+  box-shadow: none;
+}
+
+:deep(.chat-sidebar-brand-panel) {
+  padding: 6px 4px 18px;
+}
+
+:deep(.chat-sidebar-brand__mark) {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: #202124;
+}
+
+:deep(.chat-sidebar-brand__name) {
+  color: #202124;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+:deep(.chat-page-settings-button) {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:deep(.chat-page-settings-button:hover) {
+  background: #e8e8e5 !important;
+}
+
+:deep(.chat-new-conversation-button),
+:deep(.chat-new-project-button) {
+  height: 38px !important;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+}
+
+:deep(.chat-new-conversation-button) {
+  border-color: #202124 !important;
+  background: #202124 !important;
+}
+
+:deep(.chat-new-project-button) {
+  border-color: #dfdfdc !important;
+  background: #fff !important;
+  color: #3d3f43 !important;
+}
+
+:deep(.chat-session-panel) {
+  border-top: 1px solid #e4e4e1;
+  border-radius: 0;
+}
+
+:deep(.chat-session-panel__title) {
+  color: #767873;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+:deep(.chat-session-history__empty) {
+  border-color: #d9d9d5;
+  border-radius: 10px;
+  background: transparent;
+}
+
+:deep(.chat-sidebar-user) {
+  border: 0;
+  border-top: 1px solid #e4e4e1;
+  border-radius: 0;
+  background: transparent;
+}
+
+:deep(.chat-context-bar) {
+  padding: 0;
+  border-bottom: 1px solid #ececea;
+}
+
+:deep(.chat-context-bar__surface) {
+  min-height: 60px;
+  padding: 10px 24px;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  box-shadow: none;
+}
+
+:deep(.chat-context-bar__project-select) {
+  display: none;
+}
+
+:deep(.chat-context-bar__project-select .el-select__wrapper) {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+}
+
+:deep(.chat-context-bar__project-select .el-select__selected-item),
+:deep(.chat-context-bar__project-select .el-select__placeholder) {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+:deep(.chat-context-bar__eyebrow) {
+  color: #969792;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+:deep(.chat-context-bar__meta) {
+  margin-top: 4px;
+  color: #8a8c87;
+}
+
+:deep(.chat-context-bar__action-button) {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: #6e706c !important;
+}
+
+:deep(.chat-context-bar__action-button:hover) {
+  background: #f0f0ed !important;
+  color: #202124 !important;
+}
+
+.chat-layout .chat-messages {
+  padding-top: 32px;
+  padding-bottom: 180px;
+  background: #fff;
+}
+
+.chat-layout .message-list-inner {
+  max-width: 860px;
+}
+
+.chat-layout .message-row {
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.chat-layout .message-row.is-ai .message-content-wrapper {
+  max-width: 760px;
+}
+
+.chat-layout .message-row.is-ai .message-bubble {
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.chat-layout .message-row.is-user .message-content-wrapper {
+  max-width: 680px;
+}
+
+.chat-layout .message-row.is-user .message-bubble {
+  padding: 12px 16px;
+  border: 1px solid #e5e5e2;
+  border-radius: 18px;
+  background: #f5f5f2;
+}
+
+.chat-layout .message-row.is-ai .message-text,
+.chat-layout .message-row.is-user .message-text {
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.chat-layout .message-row.is-ai .message-text {
+  color: #282a2e;
+}
+
+.chat-layout .message-row.is-user .message-text {
+  color: #26282b;
+}
+
+.chat-layout .message-avatar {
+  width: 28px;
+}
+
+.chat-layout :deep(.chat-composer) {
+  padding: 0 24px 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0), #fff 22%);
+}
+
+.chat-layout :deep(.chat-composer-panel) {
+  width: min(100%, 860px);
+  margin: 0 auto;
+}
+
+.chat-layout :deep(.chat-composer-accessory) {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 8px 6px;
+}
+
+.chat-composer-workspace {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: min(100%, 360px);
+  min-height: 28px;
+  padding: 0 28px 0 8px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: #3d3f3b;
+}
+
+.chat-composer-workspace:hover {
+  background: #f0f0ed;
+}
+
+.chat-composer-workspace__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  margin-right: 5px;
+  color: #5b5d58;
+  font-size: 15px;
+}
+
+.chat-composer-workspace__select {
+  max-width: 280px;
+  border: 0;
+  outline: 0;
+  appearance: none;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chat-composer-workspace__chevron {
+  position: absolute;
+  right: 9px;
+  color: #969792;
+  pointer-events: none;
+}
+
+.chat-layout :deep(.chat-input-wrapper) {
+  border: 1px solid #dcdcd8;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(24, 25, 27, 0.08);
+  backdrop-filter: none;
+}
+
+.chat-layout :deep(.chat-input-wrapper.is-focused) {
+  border-color: #9b9d98;
+  box-shadow: 0 0 0 3px rgba(32, 33, 36, 0.06), 0 8px 24px rgba(24, 25, 27, 0.08);
+}
+
+.chat-layout :deep(.chat-textarea .el-textarea__inner) {
+  min-height: 80px !important;
+  padding: 16px 18px 8px;
+  color: #202124;
+}
+
+.chat-layout :deep(.input-footer) {
+  padding: 4px 10px 10px;
+}
+
+.chat-layout :deep(.footer-left .el-button) {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: #676963;
+}
+
+.chat-layout :deep(.chat-model-pill),
+.chat-layout :deep(.chat-model-select .el-select__wrapper) {
+  min-height: 30px;
+  border-radius: 9px;
+  background: #f5f5f2;
+}
+
+.chat-layout :deep(.send-message-button) {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #202124;
+}
+
+.chat-layout :deep(.send-message-button:hover) {
+  background: #3b3d40;
+}
+
+@media (max-width: 760px) {
+  .chat-shell,
+  .chat-shell.chat-shell--local-runner {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(112px, 20%);
+  }
+
+  .chat-shell--sidebar-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-workspace-collapse {
+    display: none;
+  }
+
+  :deep(.chat-conversation-sidebar) {
+    border-right: 0;
+    border-top: 1px solid #e7e7e4;
+  }
+
+  .chat-layout :deep(.chat-composer) {
+    padding-right: 12px;
+    padding-left: 12px;
   }
 }
 </style>
