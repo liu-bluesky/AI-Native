@@ -2,6 +2,8 @@
 
 use super::{PluginRegistry, PluginRegistryError};
 
+#[path = "builtin-command/mod.rs"]
+mod builtin_command;
 #[path = "builtin-filesystem/mod.rs"]
 mod builtin_filesystem;
 #[path = "builtin-media-audio/mod.rs"]
@@ -13,6 +15,12 @@ mod builtin_media_transcription;
 #[path = "builtin-media-video/mod.rs"]
 mod builtin_media_video;
 
+pub(crate) use builtin_command::configure_process_group;
+pub use builtin_command::{
+    builtin_command_tool_definitions, check_command_risk, classify_command_risk, process_tool,
+    register_builtin_command, run_command, run_command_with_output_sink_and_cancel,
+    wait_for_background_process_notification,
+};
 pub use builtin_filesystem::{
     apply_patch, builtin_filesystem_tool_definitions, delete_file, list_files,
     list_local_resources, read_file, read_local_resource, register_builtin_filesystem, search_text,
@@ -45,6 +53,7 @@ pub fn builtin_plugins_registry() -> Result<PluginRegistry, PluginRegistryError>
     register_builtin_media_audio(&mut registry)?;
     register_builtin_media_transcription(&mut registry)?;
     register_builtin_filesystem(&mut registry)?;
+    register_builtin_command(&mut registry)?;
     Ok(registry)
 }
 
@@ -57,7 +66,7 @@ mod tests {
         let registry = builtin_plugins_registry().unwrap();
         let plugins: Vec<_> = registry.list_plugins().collect();
 
-        assert_eq!(plugins.len(), 5);
+        assert_eq!(plugins.len(), 6);
         assert!(plugins
             .iter()
             .any(|plugin| plugin.manifest.id == "builtin-media-image"));
@@ -70,5 +79,11 @@ mod tests {
         assert!(plugins
             .iter()
             .any(|plugin| plugin.manifest.id == "builtin-media-transcription"));
+        assert!(plugins
+            .iter()
+            .any(|plugin| plugin.manifest.id == "builtin-filesystem"));
+        assert!(plugins
+            .iter()
+            .any(|plugin| plugin.manifest.id == "builtin-command"));
     }
 }

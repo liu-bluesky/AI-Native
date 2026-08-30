@@ -10,12 +10,12 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::liuagent_core::args::{bool_arg, number_arg, required_string_arg, string_arg};
-use crate::liuagent_core::permission::require_approval;
-use crate::liuagent_core::tools::process::{
+use super::process::{
     configure_process_group, force_kill_child_process_group, spawn_background_process,
     terminate_child_process_group,
 };
+use crate::liuagent_core::args::{bool_arg, number_arg, required_string_arg, string_arg};
+use crate::liuagent_core::permission::require_approval;
 use crate::liuagent_core::tools::toolchain::configure_command_environment;
 use crate::liuagent_core::types::{PermissionDecisionInput, ToolError};
 use crate::liuagent_core::workspace::{

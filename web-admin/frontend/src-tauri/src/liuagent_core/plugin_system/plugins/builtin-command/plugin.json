@@ -1,0 +1,15 @@
+{
+  "id": "builtin-command",
+  "pluginType": "tool",
+  "name": "command",
+  "displayName": "命令与进程工具",
+  "description": "提供 workspace 范围内的命令风险检查、命令执行和后台进程会话管理能力。",
+  "version": "1.0.0",
+  "source": "builtin",
+  "capabilities": [
+    {"id":"builtin.command.check","kind":"tool","name":"check_command_risk","description":"检查本地命令风险，不执行命令。","selection":{"whenToUse":["需要判断命令是否需要授权"],"priority":80}},
+    {"id":"builtin.command.run","kind":"tool","name":"run_command","description":"在 workspace 范围内执行 Shell 或终端命令。","selection":{"whenToUse":["需要运行 Git、npm、cargo、测试、构建或脚本"],"priority":80}},
+    {"id":"builtin.command.process","kind":"tool","name":"process","description":"管理 run_command 创建的后台进程会话。","selection":{"whenToUse":["需要查看、等待、读写或终止后台进程"],"priority":70}}
+  ],
+  "lifecycle": {"ownsProcesses": true}
+}

@@ -39,6 +39,8 @@ use super::permission::{
 };
 use super::planning;
 use super::plugin_system::adapters::mcp::register_mcp_plugin;
+use super::plugin_system::plugins::classify_command_risk;
+use super::plugin_system::plugins::wait_for_background_process_notification;
 use super::plugin_system::{PluginManifest, PluginRegistry};
 use super::prompt::{
     tool_is_allowed, PromptRegistry, PromptScope, PromptScopeContext, PromptSection,
@@ -52,10 +54,8 @@ use super::state::{
     save_offline_cache_record, write_runtime_artifacts, RuntimeArtifactPaths,
     RuntimePersistenceInput,
 };
-use super::tools::command::classify_command_risk;
 use super::tools::mcp::{call_routed_mcp_tool, discover_mcp_tools, DiscoveredMcpTool};
 use super::tools::network::{web_extract_configured, web_search_configured};
-use super::tools::process::wait_for_background_process_notification;
 use super::types::{
     AgentInvocationRequest, AgentInvocationResult, AgentRunAttachmentRoute,
     AgentRunAttachmentSummary, AgentRunContext, AgentRunHistoryContext,

@@ -10774,14 +10774,19 @@ function stopMessageExecutionTimer() {
 }
 
 function localLiuAgentActiveRunRows(run) {
-  if (Array.isArray(run?.rows)) return run.rows;
+  const fallbackRows = Array.isArray(run?.rows) ? run.rows : [];
   const projectId = String(run?.projectId || "").trim();
   const chatSessionId = String(run?.chatSessionId || "").trim();
-  if (!projectId || !chatSessionId) return [];
+  if (!projectId || !chatSessionId) return fallbackRows;
   if (isCurrentChatSession(projectId, chatSessionId)) {
     return messages.value;
   }
-  return getRememberedChatSessionMessages(projectId, chatSessionId) || [];
+  const rememberedRows = getRememberedChatSessionMessages(
+    projectId,
+    chatSessionId,
+  );
+  if (Array.isArray(rememberedRows)) return rememberedRows;
+  return fallbackRows;
 }
 
 function localLiuAgentActiveRunRow(run) {
@@ -10848,6 +10853,10 @@ async function revealWorkspaceFileChangesAfterMutation(workspacePath = "") {
 }
 
 function handleNativeLiuAgentRuntimeEvent(event = {}) {
+  return handleNativeLiuAgentRuntimeEventAsync(event);
+}
+
+async function handleNativeLiuAgentRuntimeEventAsync(event = {}) {
   const chatSessionId = String(
     event?.chat_session_id || event?.chatSessionId || "",
   ).trim();
@@ -10862,6 +10871,32 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
   const payload = localLiuAgentRuntimeEventPayload(event);
   const eventType = String(event?.type || "").trim();
   const toolName = String(payload?.tool_name || payload?.toolName || "").trim();
+  if (
+    eventType === "tool_result" &&
+    ["generate_image", "edit_image", "generate_video", "generate_audio"].includes(
+      toolName,
+    )
+  ) {
+    await applyLocalLiuAgentMediaToolResults(
+      row,
+      {
+        toolResults: [
+          {
+            name: toolName,
+            content:
+              payload?.content && typeof payload.content === "object"
+                ? payload.content
+                : {},
+          },
+        ],
+      },
+      {
+        projectId: run.projectId,
+        chatSessionId,
+        sourceTool: toolName,
+      },
+    );
+  }
   if (
     eventType === "tool_result" &&
     payload?.ok !== false &&
@@ -11016,6 +11051,11 @@ async function pollLocalLiuAgentRuntimeEventsOnce() {
         }
         const handled = handleNativeLiuAgentRuntimeEvent(event);
         if (!handled) break;
+        const resolvedHandled =
+          handled && typeof handled.then === "function"
+            ? await handled
+            : handled;
+        if (!resolvedHandled) break;
         if (eventId) run.lastRuntimeEventId = eventId;
       }
       await reconcileRestoredLocalLiuAgentRun(run);
@@ -20004,7 +20044,11 @@ function localLiuAgentToolResultAssetUrl(item) {
   ).trim();
 }
 
-async function applyLocalLiuAgentMediaToolResults(row, result = {}) {
+async function applyLocalLiuAgentMediaToolResults(
+  row,
+  result = {},
+  options = {},
+) {
   const toolResults = Array.isArray(result?.toolResults)
     ? result.toolResults
     : Array.isArray(result?.tool_results)
@@ -20032,7 +20076,8 @@ async function applyLocalLiuAgentMediaToolResults(row, result = {}) {
     }
   }
   const persisted = await persistLocalLiuAgentMediaUrls(row, collected, {
-    sourceTool: "media_tool_result",
+    ...options,
+    sourceTool: String(options.sourceTool || "media_tool_result").trim(),
   });
   for (const key of ["images", "videos", "audios"]) {
     if (!persisted[key].length) continue;
@@ -23646,10 +23691,16 @@ async function continueLocalLiuAgentChatPermission(
   const activeChatSessionId = String(
     pending.activeChatSessionId || localChatPayload?.chatSessionId || "",
   ).trim();
+  const projectId = String(
+    pending.projectId || localChatPayload?.projectId || selectedProjectId.value,
+  ).trim();
   const workspacePath = String(localChatPayload?.workspacePath || "").trim();
   const activeRun = {
     chatSessionId: activeChatSessionId,
-    projectId: selectedProjectId.value,
+    projectId,
+    rows:
+      getRememberedChatSessionMessages(projectId, activeChatSessionId) ||
+      messages.value,
     assistantMessageId: row.id,
     userMessageId: pending.userMessageId,
     rootGoal:
@@ -32999,7 +33050,12 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
         audios: collectArtifactAudioUrls(eventData),
         files: collectArtifactFileUrls(eventData),
       },
-      { sourceTool: String(eventData?.tool_name || "artifact").trim() },
+      {
+        projectId: pending?.projectId,
+        chatSessionId:
+          eventData?.chat_session_id || pending?.chatSessionId || "",
+        sourceTool: String(eventData?.tool_name || "artifact").trim(),
+      },
     );
     row.images = mergeImageUrls(extractImages(row), persistedMedia.images);
     row.videos = mergeVideoUrls(extractVideos(row), persistedMedia.videos);
@@ -33276,7 +33332,12 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
           audios: collectArtifactAudioUrls(eventData),
           files: collectArtifactFileUrls(eventData),
         },
-        { sourceTool: String(eventData?.tool_name || "done").trim() },
+        {
+          projectId: pending?.projectId,
+          chatSessionId:
+            eventData?.chat_session_id || pending?.chatSessionId || "",
+          sourceTool: String(eventData?.tool_name || "done").trim(),
+        },
       );
       row.images = mergeImageUrls(extractImages(row), persistedMedia.images);
       row.videos = mergeVideoUrls(extractVideos(row), persistedMedia.videos);
@@ -34801,7 +34862,11 @@ async function sendLocalLiuAgentChatRequest({
         result?.summary ||
         "",
     ).trim();
-    await applyLocalLiuAgentMediaToolResults(assistantMessage, result);
+    await applyLocalLiuAgentMediaToolResults(assistantMessage, result, {
+      projectId,
+      chatSessionId: activeChatSessionId,
+      sourceTool: "media_tool_result",
+    });
   }
   if (!assistantMessage.content && ok) {
     assistantMessage.content = "本地智能体未返回最终回答，请检查本轮执行过程。";

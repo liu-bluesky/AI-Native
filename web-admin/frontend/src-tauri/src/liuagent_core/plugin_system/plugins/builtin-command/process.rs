@@ -275,11 +275,22 @@ pub fn spawn_background_process(
     notify_on_complete: bool,
     watch_patterns: Vec<String>,
 ) -> Result<(Value, String), ToolError> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut command = Command::new(shell);
+    #[cfg(windows)]
+    let mut command = {
+        let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+        let mut command = Command::new(shell);
+        command.args(["/d", "/s", "/c"]);
+        command
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let mut command = Command::new(shell);
+        command.arg("-lc");
+        command
+    };
     configure_command_environment(&mut command);
     command
-        .arg("-lc")
         .arg(command_text)
         .current_dir(cwd)
         .stdin(Stdio::piped())

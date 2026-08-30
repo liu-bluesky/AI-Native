@@ -41,6 +41,7 @@ pub use paths::{
     desktop_plugin_root, desktop_runtime_root, ensure_desktop_runtime_migrated,
     global_user_home_dir, normalize_local_backend_api_base_url,
 };
+pub(crate) use plugin_system::plugins::configure_process_group;
 pub use project_catalog::{
     find_global_project_catalog_entry, global_project_catalog_path, parse_project_catalog_content,
     read_global_project_catalog, write_global_project_catalog, DesktopProjectCatalog,
@@ -59,7 +60,6 @@ pub use runtime::{
 pub use tools::network::{
     global_web_tool_config_path, project_web_tool_config_path, WEB_TOOL_CONFIG_TEMPLATE,
 };
-pub(crate) use tools::process::configure_process_group;
 pub use types::{
     AgentInvocationRequest, AgentInvocationResult, LocalBackendContext, LocalChatAttachment,
     LocalChatMessage, LocalChatPauseRequest, LocalChatRequest, LocalChatResult,
@@ -72,17 +72,17 @@ pub use types::{
     ToolExecutionRequest, ToolExecutionResult,
 };
 
+use plugin_system::plugins::check_command_risk;
 use plugin_system::plugins::execute_builtin_media_image_tool;
 use plugin_system::plugins::{
     apply_patch, delete_file, execute_builtin_media_audio_tool,
     execute_builtin_media_transcription_tool, execute_builtin_media_video_tool, list_files,
-    list_local_resources, read_file, read_local_resource, search_text, write_file,
+    list_local_resources, process_tool, read_file, read_local_resource, run_command,
+    run_command_with_output_sink_and_cancel, search_text, write_file,
 };
-use tools::command::{check_command_risk, run_command, run_command_with_output_sink_and_cancel};
 use tools::deploy::{deploy_workspace_files_to_target, get_project_deploy_options};
 use tools::mcp::{call_mcp_tool, list_mcp_tools, read_mcp_resource};
 use tools::network::{download_file, http_get, http_post, web_extract, web_search};
-use tools::process::process_tool;
 use tools::projects::{get_project, list_bot_projects, list_projects, switch_project_workspace};
 pub fn execute_tool(request: ToolExecutionRequest) -> ToolExecutionResult {
     execute_tool_with_command_output_sink(request, None)
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 27);
+        assert_eq!(tools.len(), 35);
         assert!(tools.iter().any(|item| item.name == "ask_user_question"));
         assert!(tools.iter().any(|item| item.name == "read_file"));
         assert!(tools.iter().any(|item| item.name == "delete_file"));

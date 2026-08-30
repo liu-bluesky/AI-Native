@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::liuagent_core::args::{required_string_arg, string_arg};
 use crate::liuagent_core::permission::require_approval;
-use crate::liuagent_core::tools::process::configure_process_group;
+use crate::liuagent_core::plugin_system::plugins::configure_process_group;
 use crate::liuagent_core::tools::toolchain::{merged_path, resolve_command};
 use crate::liuagent_core::types::{PermissionDecisionInput, ToolError};
 use crate::liuagent_core::workspace::{resolve_workspace_child, resolve_workspace_root};
