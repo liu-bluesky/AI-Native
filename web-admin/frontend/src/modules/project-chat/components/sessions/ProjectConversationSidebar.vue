@@ -293,18 +293,25 @@ defineExpose({
 
 .chat-page-settings-button {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  border: 1px solid rgba(255, 255, 255, 0.72) !important;
-  background: rgba(255, 255, 255, 0.66) !important;
-  color: #475569 !important;
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.05) !important;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #6e706c;
+  font-size: 17px;
+  cursor: pointer;
 }
 
 .chat-page-settings-button:hover {
-  border-color: rgba(56, 189, 248, 0.28) !important;
-  background: rgba(255, 255, 255, 0.86) !important;
-  color: #0f172a !important;
+  background: #f0f0ed;
+  color: #202124;
+}
+
+.chat-page-settings-button:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.55);
+  outline-offset: 1px;
 }
 
 .chat-conversation-sidebar__actions {
