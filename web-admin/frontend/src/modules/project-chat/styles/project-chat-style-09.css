@@ -113,9 +113,11 @@
   display: grid;
   grid-template-columns: var(--settings-center-sidebar-width) minmax(0, 1fr);
   gap: var(--settings-center-shell-gap);
+  min-height: 0;
   height: 100%;
   padding: 18px var(--settings-center-shell-padding-inline) 22px;
   background: transparent;
+  overflow: hidden;
 }
 
 .settings-center-shell--single {
@@ -321,6 +323,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  overflow: hidden;
   padding: 4px 0 8px;
   border-radius: 34px;
   background: transparent;
@@ -373,10 +376,17 @@
 }
 
 .settings-center-stage__body--chat {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   padding-top: 18px;
+  overflow-x: hidden;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .settings-tabs {

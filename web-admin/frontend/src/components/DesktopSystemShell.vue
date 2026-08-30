@@ -68,23 +68,30 @@
                 <button
                   type="button"
                   class="desktop-system__traffic desktop-system__traffic--close"
+                  aria-label="关闭窗口"
+                  title="关闭窗口"
                   @pointerdown.stop
                   @click.stop="$emit('close-window', window.id)"
                 />
                 <button
                   type="button"
                   class="desktop-system__traffic desktop-system__traffic--min"
+                  aria-label="最小化窗口"
+                  title="最小化窗口"
                   @pointerdown.stop
                   @click.stop="$emit('minimize-window', window.id)"
                 />
                 <button
                   type="button"
                   class="desktop-system__traffic desktop-system__traffic--max"
+                  :aria-label="window.maximized ? '还原窗口' : '最大化窗口'"
+                  :title="window.maximized ? '还原窗口' : '最大化窗口'"
                   @pointerdown.stop
                   @click.stop="$emit('maximize-window', window.id)"
                 />
               </div>
               <div class="desktop-system__window-title-group">
+                <span class="desktop-system__window-app-mark" aria-hidden="true">AI</span>
                 <div class="desktop-system__window-title">
                   {{ window.title }}
                 </div>
@@ -93,12 +100,12 @@
                 <button
                   type="button"
                   class="desktop-system__window-action"
-                  aria-label="刷新当前窗口"
-                  title="刷新当前窗口"
+                  aria-label="刷新窗口"
+                  title="刷新窗口"
                   @pointerdown.stop
                   @click.stop="$emit('refresh-window', window.id)"
                 >
-                  ↻
+                  <span aria-hidden="true">↻</span>
                 </button>
                 <slot name="toolbar" :window="window" />
               </div>
@@ -1295,15 +1302,15 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .desktop-system {
-  --desktop-canvas: #e8f0f5;
-  --desktop-window-surface: #f7fafc;
-  --desktop-window-content: #ffffff;
-  --desktop-window-border: #cbd8e3;
-  --desktop-window-border-active: #93b6cf;
-  --desktop-window-shadow: 0 20px 48px rgba(15, 23, 42, 0.14);
+  --desktop-canvas: var(--page-bg, #f7f7f5);
+  --desktop-window-surface: var(--page-surface, #ffffff);
+  --desktop-window-content: var(--page-surface, #ffffff);
+  --desktop-window-border: var(--page-border, #e4e4e1);
+  --desktop-window-border-active: var(--el-color-primary, #202124);
+  --desktop-window-shadow: 0 20px 48px rgba(32, 33, 36, 0.14);
   --desktop-window-shadow-active:
-    0 28px 64px rgba(15, 23, 42, 0.18),
-    0 8px 20px rgba(15, 23, 42, 0.1);
+    0 28px 64px rgba(32, 33, 36, 0.18),
+    0 8px 20px rgba(32, 33, 36, 0.1);
   position: relative;
   min-height: 100vh;
   height: 100vh;
@@ -1910,11 +1917,11 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 8px;
-  min-height: 42px;
-  padding: 6px 12px;
+  min-height: 48px;
+  padding: 8px 14px;
   box-sizing: border-box;
-  border-bottom: 1px solid #d4e0e9;
-  background: #f3f7fa;
+  border-bottom: 1px solid var(--desktop-window-border);
+  background: color-mix(in srgb, var(--desktop-window-surface) 94%, var(--page-bg, #f7f7f5));
   cursor: grab;
   user-select: none;
 }
@@ -1938,6 +1945,19 @@ onBeforeUnmount(() => {
   border: 0;
   border-radius: 999px;
   cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(32, 33, 36, 0.1);
+  transition: transform 150ms ease, filter 150ms ease;
+}
+
+.desktop-system__traffic:hover {
+  transform: scale(1.12);
+  filter: saturate(1.15) brightness(0.98);
+}
+
+.desktop-system__traffic:focus-visible,
+.desktop-system__window-action:focus-visible {
+  outline: 2px solid var(--el-color-primary, #202124);
+  outline-offset: 2px;
 }
 
 .desktop-system__traffic--close {
@@ -1953,6 +1973,10 @@ onBeforeUnmount(() => {
 }
 
 .desktop-system__window-title-group {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   min-width: 0;
   pointer-events: none;
   text-align: center;
@@ -1961,10 +1985,24 @@ onBeforeUnmount(() => {
 .desktop-system__window-title {
   font-size: 13px;
   font-weight: 650;
-  color: #0f172a;
+  color: var(--page-text, #202124);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.desktop-system__window-app-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--el-color-primary, #202124);
+  color: var(--el-color-white, #fff);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
 }
 
 .desktop-system__window-actions {
@@ -1978,10 +2016,10 @@ onBeforeUnmount(() => {
 .desktop-system__window-action {
   width: 28px;
   height: 28px;
-  border: 1px solid rgba(226, 232, 240, 0.88);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  color: #475569;
+  border: 1px solid var(--desktop-window-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--page-text-soft, #6e706c);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
@@ -1995,10 +2033,10 @@ onBeforeUnmount(() => {
 
 .desktop-system__window-action:hover {
   transform: translateY(-1px);
-  color: #0f172a;
-  border-color: rgba(56, 189, 248, 0.26);
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.08);
+  color: var(--page-text, #202124);
+  border-color: var(--desktop-window-border-active);
+  background: color-mix(in srgb, var(--desktop-window-surface) 70%, var(--page-bg, #f7f7f5));
+  box-shadow: 0 8px 18px rgba(32, 33, 36, 0.08);
 }
 
 .desktop-system__window-handle {

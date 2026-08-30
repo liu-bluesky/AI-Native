@@ -11,72 +11,34 @@
     <div class="chat-layout__mesh" aria-hidden="true" />
 
     <div class="chat-main">
-      <div
-        class="chat-shell"
-        :class="{ 'chat-shell--sidebar-collapsed': workspaceSidebarCollapsed }"
-      >
-        <div
-          class="chat-workspace-rail"
-          :class="{ 'is-collapsed': workspaceSidebarCollapsed }"
-        >
-          <div class="chat-workspace-sidebar" :class="{ 'is-hidden': workspaceSidebarCollapsed }">
-            <ProjectConversationSidebar
-              ref="conversationSidebarRef"
-              :surface-mark="chatSurfaceMark"
-              :surface-name="chatSurfaceName"
-              :surface-meta="chatSurfaceMeta"
-              :creating-session="creatingChatSession"
-              :project-creating="projectCreationInProgress"
-              :chat-loading="chatLoading"
-              :has-selected-project="hasSelectedProject"
-              :current-session-id="currentChatSessionId"
-              :sessions-loading="chatSessionsLoading"
-              :session-groups="groupedChatSessions"
-              :deleting-session-id="deletingChatSessionId"
-              :username-initial="currentUsernameInitial"
-              :username="currentUsername"
-              @open-settings="openSettingsCenter"
-              @create-conversation="handleCreateNewConversation"
-              @create-project="handleCreateProject"
-              @clear-current="clearMessages"
-              @select-session="selectChatSession"
-              @delete-session="deleteChatSession"
-              @rename-session="renameChatSession"
-              @logout="logoutFromChat"
-            />
-          </div>
-          <div v-if="workspaceSidebarCollapsed" class="chat-workspace-compact">
-            <button
-              type="button"
-              class="chat-workspace-compact__brand"
-              aria-label="展开工作区"
-              @click="workspaceSidebarCollapsed = false"
-            >
-              {{ chatSurfaceMark }}
-            </button>
-            <button
-              type="button"
-              class="chat-workspace-compact__new"
-              aria-label="新对话"
-              :disabled="!hasSelectedProject"
-              @click="handleCreateNewConversation"
-            >
-              +
-            </button>
-          </div>
-          <button
-            type="button"
-            class="chat-workspace-collapse"
-            :aria-label="workspaceSidebarCollapsed ? '展开工作区' : '收起工作区'"
-            :aria-expanded="!workspaceSidebarCollapsed"
-            @click="workspaceSidebarCollapsed = !workspaceSidebarCollapsed"
-          >
-            <span aria-hidden="true">{{ workspaceSidebarCollapsed ? '›' : '‹' }}</span>
-          </button>
-        </div>
+      <div class="chat-shell">
+        <ProjectConversationSidebar
+          ref="conversationSidebarRef"
+          :surface-mark="chatSurfaceMark"
+          :surface-name="chatSurfaceName"
+          :surface-meta="chatSurfaceMeta"
+          :creating-session="creatingChatSession"
+          :project-creating="projectCreationInProgress"
+          :chat-loading="chatLoading"
+          :has-selected-project="hasSelectedProject"
+          :current-session-id="currentChatSessionId"
+          :sessions-loading="chatSessionsLoading"
+          :session-groups="groupedChatSessions"
+          :deleting-session-id="deletingChatSessionId"
+          :username-initial="currentUsernameInitial"
+          :username="currentUsername"
+          @open-settings="openSettingsCenter"
+          @create-conversation="handleCreateNewConversation"
+          @create-project="handleCreateProject"
+          @clear-current="clearMessages"
+          @select-session="selectChatSession"
+          @delete-session="deleteChatSession"
+          @rename-session="renameChatSession"
+          @logout="logoutFromChat"
+        />
 
         <div class="chat-stage">
-          <ChatContextBar
+          <!-- <ChatContextBar
             ref="chatContextBarHostRef"
             :has-selected-project="hasSelectedProject"
             :projects="projects"
@@ -91,7 +53,7 @@
             @trust-workspace="trustAgentRuntimeWorkspace"
             @open-skill-resource="openSkillResourceCenter"
             @project-change="handleProjectCommand"
-          />
+          /> -->
           <div
             v-if="nativeExternalAgentApprovalBannerVisible"
             class="chat-approval-banner"
@@ -385,12 +347,20 @@
                               type="button"
                               class="message-trajectory__summary"
                               :class="{
-                                'is-expanded': isMessageTrajectoryExpanded(item, idx),
+                                'is-expanded': isMessageTrajectoryExpanded(
+                                  item,
+                                  idx,
+                                ),
                                 'is-running':
-                                  messageProcessLifecyclePhase(item, idx) === 'running',
+                                  messageProcessLifecyclePhase(item, idx) ===
+                                  'running',
                               }"
-                              :aria-expanded="isMessageTrajectoryExpanded(item, idx)"
-                              @click="toggleMessageTrajectoryExpanded(item, idx)"
+                              :aria-expanded="
+                                isMessageTrajectoryExpanded(item, idx)
+                              "
+                              @click="
+                                toggleMessageTrajectoryExpanded(item, idx)
+                              "
                             >
                               <span
                                 class="message-trajectory__summary-icon"
@@ -426,224 +396,317 @@
                                 class="message-thinking-quote"
                               >
                                 <div class="message-thinking-quote__content">
-                                <div
-                                  v-for="block in messageReasoningBlocks(item)"
-                                  :key="block.id"
-                                  class="message-thinking-quote__block"
-                                  v-html="trajectoryReasoningBlockHtml(block.text)"
-                                ></div>
+                                  <div
+                                    v-for="block in messageReasoningBlocks(
+                                      item,
+                                    )"
+                                    :key="block.id"
+                                    class="message-thinking-quote__block"
+                                    v-html="
+                                      trajectoryReasoningBlockHtml(block.text)
+                                    "
+                                  ></div>
                                 </div>
                               </div>
-                            <div
-                              v-if="messageTrajectoryRuntimeSummary(item, idx)"
-                              class="message-trajectory__current-step"
-                            >
-                              <span class="message-trajectory__current-dot"></span>
-                              <span class="message-trajectory__current-label">
-                                本地 Runtime
-                              </span>
-                              <span class="message-trajectory__current-state">
-                                {{ messageTrajectoryRuntimeSummary(item, idx) }}
-                              </span>
-                            </div>
-                            <div
-                              v-if="messageTrajectoryExecutionSteps(item).length"
-                              class="message-trajectory__execution-steps"
-                            >
                               <div
-                                v-for="operation in messageTrajectoryExecutionSteps(item)"
-                                :key="operation.id"
-                                class="message-trajectory__execution-step"
-                                :class="`is-${operation.phase}`"
+                                v-if="
+                                  messageTrajectoryRuntimeSummary(item, idx)
+                                "
+                                class="message-trajectory__current-step"
                               >
-                                <span class="message-trajectory__step-icon">
-                                  {{ operation.phase === "completed" ? "✓" : "•" }}
-                                </span>
-                                <span class="message-trajectory__step-title">
-                                  {{ operation.title }}
-                                </span>
                                 <span
-                                  v-if="operation.summary"
-                                  class="message-trajectory__step-state"
-                                >
-                                  {{ operation.summary }}
+                                  class="message-trajectory__current-dot"
+                                ></span>
+                                <span class="message-trajectory__current-label">
+                                  本地 Runtime
+                                </span>
+                                <span class="message-trajectory__current-state">
+                                  {{
+                                    messageTrajectoryRuntimeSummary(item, idx)
+                                  }}
                                 </span>
                               </div>
-                            </div>
-                            <ul
-                              v-if="messageTrajectoryToolCalls(item).length"
-                              class="message-trajectory__tool-calls"
-                            >
-                              <li
-                                v-for="operation in messageTrajectoryToolCalls(item)"
-                                :key="operation.id"
-                              >
-                                <button
-                                  type="button"
-                                  class="message-trajectory__tool-call"
-                                  :aria-expanded="isMessageTrajectoryToolExpanded(item, operation)"
-                                  :title="operation.title"
-                                  @click="toggleMessageTrajectoryToolDetail(item, operation)"
-                                >
-                                  <svg
-                                    class="message-trajectory__tool-icon"
-                                    width="12"
-                                    height="12"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    aria-hidden="true"
-                                  >
-                                    <path
-                                      d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"
-                                      stroke="currentColor"
-                                      stroke-width="1.8"
-                                      stroke-linecap="round"
-                                      stroke-linejoin="round"
-                                    />
-                                  </svg>
-                                  <span class="message-trajectory__tool-text">
-                                    <span class="message-trajectory__tool-name">
-                                      {{ operation.title }}
-                                    </span>
-                                    <span
-                                      v-if="messageTrajectoryToolPreview(operation)"
-                                      class="message-trajectory__tool-preview"
-                                    >
-                                      {{ messageTrajectoryToolPreview(operation) }}
-                                    </span>
-                                  </span>
-                                </button>
-                                <div
-                                  v-if="isMessageTrajectoryToolExpanded(item, operation)"
-                                  class="message-trajectory__tool-detail"
-                                >
-                                  <p v-if="operation.detail">
-                                    {{ operation.detail }}
-                                  </p>
-                                  <pre v-if="operationCommand(operation)">命令：{{ operationCommand(operation) }}</pre>
-                                  <pre v-if="operationCwd(operation)">工作目录：{{ operationCwd(operation) }}</pre>
-                                  <pre v-if="operationArguments(operation)">参数：{{ operationArguments(operation) }}</pre>
-                                  <pre v-if="operationOutput(operation)">输出：{{ operationOutput(operation) }}</pre>
-                                  <div
-                                    v-if="operationActionButtons(operation).length"
-                                    class="message-trajectory__tool-actions"
-                                  >
-                                    <el-button
-                                      v-for="action in operationActionButtons(operation)"
-                                      :key="`${operation.id}-${action.key}`"
-                                      size="small"
-                                      :type="action.type === 'danger' ? 'danger' : 'primary'"
-                                      :plain="action.type !== 'danger'"
-                                      @click.stop="handleOperationAction(operation, action.key)"
-                                    >
-                                      {{ action.label }}
-                                    </el-button>
-                                  </div>
-                                </div>
-                              </li>
-                            </ul>
-                            <div
-                              v-if="messageProcessDisplayEntries(item).length"
-                              class="message-process-stream message-trajectory__execution-panel"
-                            >
                               <div
-                                v-for="entry in messageProcessDisplayEntries(
-                                  item,
-                                )"
-                                :key="entry.id"
-                                class="message-process-stream__item"
-                                :class="[
-                                  `is-${entry.level}`,
-                                  `is-kind-${messageProcessEntryKind(entry)}`,
-                                ]"
+                                v-if="
+                                  messageTrajectoryExecutionSteps(item).length
+                                "
+                                class="message-trajectory__execution-steps"
                               >
-                                <span class="message-process-stream__dot"></span>
                                 <div
-                                  class="message-process-entry"
-                                  :class="{
-                                    'is-latest':
-                                      entry.id === messageProcessLatestEntryId(item),
-                                  }"
+                                  v-for="operation in messageTrajectoryExecutionSteps(
+                                    item,
+                                  )"
+                                  :key="operation.id"
+                                  class="message-trajectory__execution-step"
+                                  :class="`is-${operation.phase}`"
                                 >
-                                  <div class="message-process-entry__head">
-                                    <span class="message-process-entry__title">
-                                      {{ messageProcessEntryTitle(entry) }}
-                                    </span>
-                                    <span
-                                      v-if="messageProcessEntryStatus(entry)"
-                                      class="message-process-entry__status"
-                                    >
-                                      {{ messageProcessEntryStatus(entry) }}
-                                    </span>
-                                  </div>
-                                  <div
-                                    v-if="messageProcessEntryMeta(entry).length"
-                                    class="message-process-entry__meta"
+                                  <span class="message-trajectory__step-icon">
+                                    {{
+                                      operation.phase === "completed"
+                                        ? "✓"
+                                        : "•"
+                                    }}
+                                  </span>
+                                  <span class="message-trajectory__step-title">
+                                    {{ operation.title }}
+                                  </span>
+                                  <span
+                                    v-if="operation.summary"
+                                    class="message-trajectory__step-state"
                                   >
-                                    <span
-                                      v-for="meta in messageProcessEntryMeta(entry)"
-                                      :key="meta"
-                                      class="message-process-entry__meta-item"
-                                    >
-                                      {{ meta }}
-                                    </span>
-                                  </div>
-                                  <ul
-                                    v-if="messageProcessEntrySummary(entry).length"
-                                    class="message-process-entry__summary"
+                                    {{ operation.summary }}
+                                  </span>
+                                </div>
+                              </div>
+                              <ul
+                                v-if="messageTrajectoryToolCalls(item).length"
+                                class="message-trajectory__tool-calls"
+                              >
+                                <li
+                                  v-for="operation in messageTrajectoryToolCalls(
+                                    item,
+                                  )"
+                                  :key="operation.id"
+                                >
+                                  <button
+                                    type="button"
+                                    class="message-trajectory__tool-call"
+                                    :aria-expanded="
+                                      isMessageTrajectoryToolExpanded(
+                                        item,
+                                        operation,
+                                      )
+                                    "
+                                    :title="operation.title"
+                                    @click="
+                                      toggleMessageTrajectoryToolDetail(
+                                        item,
+                                        operation,
+                                      )
+                                    "
                                   >
-                                    <li
-                                      v-for="summary in messageProcessEntrySummary(entry)"
-                                      :key="summary"
+                                    <svg
+                                      class="message-trajectory__tool-icon"
+                                      width="12"
+                                      height="12"
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      aria-hidden="true"
                                     >
-                                      {{ summary }}
-                                    </li>
-                                  </ul>
-                                  <div
-                                    v-if="messageProcessEntryChildRows(entry).length"
-                                    class="message-process-entry__children"
-                                  >
-                                    <div
-                                      v-for="child in messageProcessEntryChildRows(entry)"
-                                      :key="child.id"
-                                      class="message-process-entry__child"
-                                      :class="`is-${child.level}`"
-                                    >
-                                      <span class="message-process-entry__child-title">
-                                        {{ child.title }}
+                                      <path
+                                        d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"
+                                        stroke="currentColor"
+                                        stroke-width="1.8"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                      />
+                                    </svg>
+                                    <span class="message-trajectory__tool-text">
+                                      <span
+                                        class="message-trajectory__tool-name"
+                                      >
+                                        {{ operation.title }}
                                       </span>
                                       <span
-                                        v-if="child.summary"
-                                        class="message-process-entry__child-summary"
+                                        v-if="
+                                          messageTrajectoryToolPreview(
+                                            operation,
+                                          )
+                                        "
+                                        class="message-trajectory__tool-preview"
                                       >
-                                        {{ child.summary }}
+                                        {{
+                                          messageTrajectoryToolPreview(
+                                            operation,
+                                          )
+                                        }}
+                                      </span>
+                                    </span>
+                                  </button>
+                                  <div
+                                    v-if="
+                                      isMessageTrajectoryToolExpanded(
+                                        item,
+                                        operation,
+                                      )
+                                    "
+                                    class="message-trajectory__tool-detail"
+                                  >
+                                    <p v-if="operation.detail">
+                                      {{ operation.detail }}
+                                    </p>
+                                    <pre v-if="operationCommand(operation)">
+命令：{{ operationCommand(operation) }}</pre
+                                    >
+                                    <pre v-if="operationCwd(operation)">
+工作目录：{{ operationCwd(operation) }}</pre
+                                    >
+                                    <pre v-if="operationArguments(operation)">
+参数：{{ operationArguments(operation) }}</pre
+                                    >
+                                    <pre v-if="operationOutput(operation)">
+输出：{{ operationOutput(operation) }}</pre
+                                    >
+                                    <div
+                                      v-if="
+                                        operationActionButtons(operation).length
+                                      "
+                                      class="message-trajectory__tool-actions"
+                                    >
+                                      <el-button
+                                        v-for="action in operationActionButtons(
+                                          operation,
+                                        )"
+                                        :key="`${operation.id}-${action.key}`"
+                                        size="small"
+                                        :type="
+                                          action.type === 'danger'
+                                            ? 'danger'
+                                            : 'primary'
+                                        "
+                                        :plain="action.type !== 'danger'"
+                                        @click.stop="
+                                          handleOperationAction(
+                                            operation,
+                                            action.key,
+                                          )
+                                        "
+                                      >
+                                        {{ action.label }}
+                                      </el-button>
+                                    </div>
+                                  </div>
+                                </li>
+                              </ul>
+                              <div
+                                v-if="messageProcessDisplayEntries(item).length"
+                                class="message-process-stream message-trajectory__execution-panel"
+                              >
+                                <div
+                                  v-for="entry in messageProcessDisplayEntries(
+                                    item,
+                                  )"
+                                  :key="entry.id"
+                                  class="message-process-stream__item"
+                                  :class="[
+                                    `is-${entry.level}`,
+                                    `is-kind-${messageProcessEntryKind(entry)}`,
+                                  ]"
+                                >
+                                  <span
+                                    class="message-process-stream__dot"
+                                  ></span>
+                                  <div
+                                    class="message-process-entry"
+                                    :class="{
+                                      'is-latest':
+                                        entry.id ===
+                                        messageProcessLatestEntryId(item),
+                                    }"
+                                  >
+                                    <div class="message-process-entry__head">
+                                      <span
+                                        class="message-process-entry__title"
+                                      >
+                                        {{ messageProcessEntryTitle(entry) }}
+                                      </span>
+                                      <span
+                                        v-if="messageProcessEntryStatus(entry)"
+                                        class="message-process-entry__status"
+                                      >
+                                        {{ messageProcessEntryStatus(entry) }}
                                       </span>
                                     </div>
-                                  </div>
-                                  <div
-                                    v-if="messageProcessEntryDiffLines(entry).length"
-                                    class="message-process-entry__diff"
-                                  >
                                     <div
-                                      v-for="line in messageProcessEntryDiffLines(entry)"
-                                      :key="line.id"
-                                      class="message-process-entry__diff-line"
-                                      :class="`is-${line.tone}`"
+                                      v-if="
+                                        messageProcessEntryMeta(entry).length
+                                      "
+                                      class="message-process-entry__meta"
                                     >
-                                      {{ line.text }}
+                                      <span
+                                        v-for="meta in messageProcessEntryMeta(
+                                          entry,
+                                        )"
+                                        :key="meta"
+                                        class="message-process-entry__meta-item"
+                                      >
+                                        {{ meta }}
+                                      </span>
                                     </div>
+                                    <ul
+                                      v-if="
+                                        messageProcessEntrySummary(entry).length
+                                      "
+                                      class="message-process-entry__summary"
+                                    >
+                                      <li
+                                        v-for="summary in messageProcessEntrySummary(
+                                          entry,
+                                        )"
+                                        :key="summary"
+                                      >
+                                        {{ summary }}
+                                      </li>
+                                    </ul>
+                                    <div
+                                      v-if="
+                                        messageProcessEntryChildRows(entry)
+                                          .length
+                                      "
+                                      class="message-process-entry__children"
+                                    >
+                                      <div
+                                        v-for="child in messageProcessEntryChildRows(
+                                          entry,
+                                        )"
+                                        :key="child.id"
+                                        class="message-process-entry__child"
+                                        :class="`is-${child.level}`"
+                                      >
+                                        <span
+                                          class="message-process-entry__child-title"
+                                        >
+                                          {{ child.title }}
+                                        </span>
+                                        <span
+                                          v-if="child.summary"
+                                          class="message-process-entry__child-summary"
+                                        >
+                                          {{ child.summary }}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div
+                                      v-if="
+                                        messageProcessEntryDiffLines(entry)
+                                          .length
+                                      "
+                                      class="message-process-entry__diff"
+                                    >
+                                      <div
+                                        v-for="line in messageProcessEntryDiffLines(
+                                          entry,
+                                        )"
+                                        :key="line.id"
+                                        class="message-process-entry__diff-line"
+                                        :class="`is-${line.tone}`"
+                                      >
+                                        {{ line.text }}
+                                      </div>
+                                    </div>
+                                    <pre
+                                      v-if="messageProcessEntryCode(entry)"
+                                      class="message-process-entry__code"
+                                      >{{ messageProcessEntryCode(entry) }}</pre
+                                    >
+                                    <pre
+                                      v-if="messageProcessEntryJson(entry)"
+                                      class="message-process-entry__code"
+                                      >{{ messageProcessEntryJson(entry) }}</pre
+                                    >
                                   </div>
-                                  <pre
-                                    v-if="messageProcessEntryCode(entry)"
-                                    class="message-process-entry__code"
-                                  >{{ messageProcessEntryCode(entry) }}</pre>
-                                  <pre
-                                    v-if="messageProcessEntryJson(entry)"
-                                    class="message-process-entry__code"
-                                  >{{ messageProcessEntryJson(entry) }}</pre>
                                 </div>
                               </div>
-                            </div>
                             </div>
                           </div>
                           <div
@@ -1197,13 +1260,12 @@
                             class="message-employee-draft__actions"
                           >
                             <span class="message-employee-draft__success">
-                              已同步至本地目录：{{ item.employeeDraftCreatedName }}
+                              已同步至本地目录：{{
+                                item.employeeDraftCreatedName
+                              }}
                             </span>
                           </div>
-                          <div
-                            v-else
-                            class="message-employee-draft__actions"
-                          >
+                          <div v-else class="message-employee-draft__actions">
                             <el-button
                               size="small"
                               @click="continueEmployeeDraftRefinement(item)"
@@ -1216,10 +1278,10 @@
                               @click="openEmployeeDraftConfirmation(item)"
                             >
                               确认{{
-                                extractEmployeeIntentPayload(item.content || '')
-                                  ?.intent === 'update'
-                                  ? '更新'
-                                  : '创建'
+                                extractEmployeeIntentPayload(item.content || "")
+                                  ?.intent === "update"
+                                  ? "更新"
+                                  : "创建"
                               }}
                             </el-button>
                             <el-button
@@ -1422,7 +1484,9 @@
                 <strong>需要你补充信息</strong>
                 <div class="chat-approval-banner__meta">
                   <span>继续当前任务</span>
-                  <span v-if="currentLocalLiuAgentUserQuestionPrompt.queueLabel">
+                  <span
+                    v-if="currentLocalLiuAgentUserQuestionPrompt.queueLabel"
+                  >
                     {{ currentLocalLiuAgentUserQuestionPrompt.queueLabel }}
                   </span>
                 </div>
@@ -1441,8 +1505,12 @@
                 <p>{{ question.question }}</p>
                 <el-checkbox-group
                   v-if="question.options.length && question.multiSelect"
-                  v-model="ensureLocalLiuAgentUserQuestionAnswer(question.id).selected"
-                  @change="handleLocalLiuAgentUserQuestionOptionChange(question.id)"
+                  v-model="
+                    ensureLocalLiuAgentUserQuestionAnswer(question.id).selected
+                  "
+                  @change="
+                    handleLocalLiuAgentUserQuestionOptionChange(question.id)
+                  "
                 >
                   <el-checkbox
                     v-for="option in question.options"
@@ -1450,13 +1518,19 @@
                     :label="option.label"
                   >
                     {{ option.label }}
-                    <small v-if="option.description">{{ option.description }}</small>
+                    <small v-if="option.description">{{
+                      option.description
+                    }}</small>
                   </el-checkbox>
                 </el-checkbox-group>
                 <el-radio-group
                   v-else-if="question.options.length"
-                  v-model="ensureLocalLiuAgentUserQuestionAnswer(question.id).choice"
-                  @change="handleLocalLiuAgentUserQuestionOptionChange(question.id)"
+                  v-model="
+                    ensureLocalLiuAgentUserQuestionAnswer(question.id).choice
+                  "
+                  @change="
+                    handleLocalLiuAgentUserQuestionOptionChange(question.id)
+                  "
                 >
                   <el-radio
                     v-for="option in question.options"
@@ -1464,15 +1538,28 @@
                     :label="option.label"
                   >
                     {{ option.label }}
-                    <small v-if="option.description">{{ option.description }}</small>
+                    <small v-if="option.description">{{
+                      option.description
+                    }}</small>
                   </el-radio>
                 </el-radio-group>
                 <el-input
-                  v-model="ensureLocalLiuAgentUserQuestionAnswer(question.id).custom"
+                  v-model="
+                    ensureLocalLiuAgentUserQuestionAnswer(question.id).custom
+                  "
                   :type="question.options.length ? 'text' : 'textarea'"
                   :rows="question.options.length ? undefined : 2"
-                  :placeholder="question.options.length ? '也可以直接输入；输入内容将替代上方选项' : '请输入你的回答'"
-                  @input="handleLocalLiuAgentUserQuestionCustomInput(question.id, $event)"
+                  :placeholder="
+                    question.options.length
+                      ? '也可以直接输入；输入内容将替代上方选项'
+                      : '请输入你的回答'
+                  "
+                  @input="
+                    handleLocalLiuAgentUserQuestionCustomInput(
+                      question.id,
+                      $event,
+                    )
+                  "
                 />
               </div>
             </div>
@@ -1608,7 +1695,7 @@
             <template #accessory>
               <div class="chat-composer-workspace">
                 <span class="chat-composer-workspace__icon" aria-hidden="true">
-                  {{ hasSelectedProject ? '⌂' : '+' }}
+                  {{ hasSelectedProject ? "⌂" : "+" }}
                 </span>
                 <select
                   v-model="selectedProjectId"
@@ -1625,7 +1712,11 @@
                     {{ project.name || project.id }}
                   </option>
                 </select>
-                <span class="chat-composer-workspace__chevron" aria-hidden="true">⌄</span>
+                <span
+                  class="chat-composer-workspace__chevron"
+                  aria-hidden="true"
+                  >⌄</span
+                >
               </div>
             </template>
             <template #media-parameters>
@@ -1893,958 +1984,10 @@
     @copy-directory="copySkillResourceDirectory"
   />
 
-  <div
+  <ProjectChatSettingsContent
     v-if="isSettingsCenterRoute"
-    class="settings-center-page"
-    v-loading="loading"
-  >
-    <div
-      class="settings-center-shell"
-      :class="{
-        'settings-center-shell--single': settingsInternalItems.length <= 1,
-      }"
-    >
-      <aside
-        v-if="settingsInternalItems.length > 1"
-        class="settings-center-sidebar"
-        ref="settingsSidebarRef"
-      >
-        <div class="settings-center-sidebar-card">
-          <div class="settings-center-brand-panel">
-            <div class="settings-center-brand">
-              <div class="settings-center-brand__mark">AI</div>
-              <div>
-                <div class="settings-center-brand__name">对话设置</div>
-                <div class="settings-center-brand__meta">
-                  仅作用于当前对话上下文
-                </div>
-              </div>
-            </div>
-            <el-button
-              text
-              class="settings-center-close-button"
-              @click="closeSettingsCenter"
-              >关闭</el-button
-            >
-          </div>
-
-          <div class="settings-center-nav-group">
-            <div class="settings-center-nav-group__title">当前对话</div>
-            <div class="settings-center-sidebar__nav">
-              <button
-                v-for="item in settingsInternalItems"
-                :key="item.id"
-                type="button"
-                class="settings-center-nav-item"
-                :class="{ 'is-active': activeSettingsPanel === item.id }"
-                @click="openSettingsCenter(item.id)"
-              >
-                <span class="settings-center-nav-item__row">
-                  <span class="settings-center-nav-item__label">{{
-                    item.label
-                  }}</span>
-                </span>
-                <span v-if="item.desc" class="settings-center-nav-item__desc">
-                  {{ item.desc }}
-                </span>
-              </button>
-            </div>
-          </div>
-
-          <div class="settings-center-account">
-            <div class="settings-center-account__avatar">
-              {{ currentUsernameInitial }}
-            </div>
-            <div class="settings-center-account__meta">
-              <div class="settings-center-account__name">
-                {{ currentUsername }}
-              </div>
-              <div class="settings-center-account__role">当前账号</div>
-            </div>
-            <el-button
-              text
-              class="settings-center-account__logout"
-              @click="logoutFromChat"
-              >退出</el-button
-            >
-          </div>
-        </div>
-      </aside>
-
-      <section
-        class="settings-center-stage"
-        :class="{
-          'settings-center-stage--single': settingsInternalItems.length <= 1,
-        }"
-      >
-        <div class="settings-center-context-bar" ref="settingsContextBarRef">
-          <div class="settings-center-context-bar__copy">
-            <div class="settings-center-context-bar__title">
-              {{ activeSettingsPanelMeta?.label || "设置" }}
-            </div>
-          </div>
-          <div class="settings-center-context-bar__actions">
-            <el-button
-              v-if="settingsInternalItems.length > 1"
-              type="primary"
-              plain
-              @click="startSettingsTour(true)"
-              ref="settingsGuideButtonRef"
-            >
-              菜单导览
-            </el-button>
-            <el-button
-              plain
-              :loading="settingsSaving"
-              @click="saveProjectChatSettings(false)"
-            >
-              立即同步
-            </el-button>
-            <el-button text @click="closeSettingsCenter">关闭</el-button>
-          </div>
-        </div>
-
-        <div
-          v-if="activeSettingsPanel === 'chat'"
-          class="settings-center-stage__body settings-center-stage__body--chat"
-        >
-          <div class="settings-chat-layout settings-chat-layout--single">
-            <div class="settings-chat-main settings-chat-main--wide">
-              <div class="settings-chat-main-card" ref="settingsMainCardRef">
-                <section class="settings-chat-quick-overview">
-                  <article class="settings-chat-quick-overview__card">
-                    <span class="settings-chat-quick-overview__label">
-                      项目上下文
-                    </span>
-                    <strong class="settings-chat-quick-overview__value">{{
-                      hasSelectedProject ? currentProjectLabel : "未选择项目"
-                    }}</strong>
-                    <span class="settings-chat-quick-overview__meta">
-                      {{
-                        hasSelectedProject
-                          ? "当前改动只影响这个项目下的对话"
-                          : "当前仅维护通用对话行为"
-                      }}
-                    </span>
-                  </article>
-                  <article class="settings-chat-quick-overview__card">
-                    <span class="settings-chat-quick-overview__label">
-                      执行对象
-                    </span>
-                    <strong class="settings-chat-quick-overview__value">{{
-                      selectedEmployeeSummary
-                    }}</strong>
-                    <span class="settings-chat-quick-overview__meta"
-                      >当前项目工具默认自动使用。</span
-                    >
-                  </article>
-                  <article class="settings-chat-quick-overview__card">
-                    <span class="settings-chat-quick-overview__label">
-                      当前模型
-                    </span>
-                    <strong class="settings-chat-quick-overview__value">{{
-                      currentModelTypeLabel
-                    }}</strong>
-                    <span class="settings-chat-quick-overview__meta">
-                      {{ currentModelSummary }}
-                    </span>
-                  </article>
-                  <article class="settings-chat-quick-overview__card">
-                    <span class="settings-chat-quick-overview__label">
-                      工具与 MCP
-                    </span>
-                    <strong class="settings-chat-quick-overview__value">{{
-                      singleRoundAnswerOnly
-                        ? "本轮仅回答"
-                        : projectChatSettings.auto_use_tools
-                          ? "允许工具调用"
-                          : "关闭工具调用"
-                    }}</strong>
-                    <span class="settings-chat-quick-overview__meta">
-                      {{
-                        projectToolModules.length
-                          ? `项目工具 ${selectedProjectToolNames.length}/${projectToolModules.length}`
-                          : "当前没有项目级工具"
-                      }}
-                    </span>
-                  </article>
-                </section>
-
-                <section class="settings-module-toolbar">
-                  <el-input
-                    v-model="settingsModuleSearchQuery"
-                    clearable
-                    placeholder="搜索设置、工具、MCP、模型参数"
-                    class="settings-module-toolbar__search"
-                  />
-                  <el-segmented
-                    v-model="settingsModuleScope"
-                    :options="settingsModuleScopeOptions"
-                    class="settings-module-toolbar__scope"
-                  />
-                </section>
-
-                <div class="settings-module-workspace">
-                  <aside class="settings-module-menu" aria-label="对话设置模块">
-                    <button
-                      v-for="item in visibleSettingsModuleNavItems"
-                      :key="item.id"
-                      type="button"
-                      class="settings-module-menu__item"
-                      :class="{ 'is-active': activeSettingsModule === item.id }"
-                      @click="activeSettingsModule = item.id"
-                    >
-                      <span class="settings-module-menu__title">
-                        {{ item.label }}
-                      </span>
-                      <span class="settings-module-menu__desc">
-                        {{ item.desc }}
-                      </span>
-                      <span class="settings-module-menu__meta">
-                        {{ item.meta }}
-                      </span>
-                    </button>
-                    <el-empty
-                      v-if="!visibleSettingsModuleNavItems.length"
-                      description="没有匹配的设置模块"
-                      :image-size="42"
-                    />
-                  </aside>
-
-                  <div class="settings-module-list">
-                    <section
-                      v-show="
-                        activeSettingsModule === 'context' &&
-                        settingsModuleMatches(
-                          '项目 上下文 工作区 AIENTRY 入口 文件 workspace ai entry',
-                          'project',
-                        )
-                      "
-                      class="settings-module-section"
-                    >
-                      <div class="settings-module-section__head">
-                        <div>
-                          <strong>项目上下文</strong>
-                          <span
-                            >工作区和入口文件决定桌面智能体在本机如何理解项目。</span
-                          >
-                        </div>
-                      </div>
-                      <article
-                        v-if="hasSelectedProject"
-                        class="settings-module-row settings-module-row--stacked"
-                      >
-                        <div class="settings-module-row__icon">
-                          <el-icon><Files /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>项目工作区</strong>
-                          <span
-                            >本机真实目录；命令执行和相对路径解析会以这里为基准。</span
-                          >
-                          <el-input
-                            v-model="projectWorkspaceDraft"
-                            class="settings-module-row__input"
-                            placeholder="/Volumes/work/project"
-                          />
-                          <div class="settings-module-row__hint">
-                            <template v-if="projectWorkspaceResolved">
-                              已保存：{{ projectWorkspaceResolved }}
-                            </template>
-                            <template v-else>
-                              当前项目还没有配置工作区路径。
-                            </template>
-                            <template v-if="projectWorkspaceDirty">
-                              当前输入尚未保存。
-                            </template>
-                          </div>
-                        </div>
-                        <div class="settings-module-row__actions">
-                          <el-button
-                            @click="promptProjectWorkspaceDirectory"
-                            :loading="projectWorkspacePicking"
-                          >
-                            选择目录
-                          </el-button>
-                          <el-button
-                            type="primary"
-                            :loading="projectWorkspaceSaving"
-                            @click="saveProjectWorkspaceDirectory()"
-                          >
-                            保存
-                          </el-button>
-                        </div>
-                      </article>
-                      <article
-                        v-if="hasSelectedProject"
-                        class="settings-module-row settings-module-row--stacked"
-                      >
-                        <div class="settings-module-row__icon">
-                          <el-icon><DocumentCopy /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>AI 入口文件</strong>
-                          <span
-                            >项目级规则入口；未设置时继续使用内置统一入口。</span
-                          >
-                          <el-input
-                            v-model="aiEntryFileDraft"
-                            class="settings-module-row__input"
-                            placeholder="AIENTRY.md"
-                          />
-                          <div class="settings-module-row__hint">
-                            <template v-if="aiEntryFileResolved">
-                              已保存：{{ aiEntryFileResolved }}
-                            </template>
-                            <template v-if="aiEntryFileDirty">
-                              当前输入尚未保存。
-                            </template>
-                          </div>
-                        </div>
-                        <div class="settings-module-row__actions">
-                          <el-button
-                            @click="promptProjectAiEntryFile"
-                            :loading="aiEntryFilePicking"
-                          >
-                            选择文件
-                          </el-button>
-                          <el-button
-                            :loading="aiEntryFileCreating"
-                            @click="createDefaultAiEntryFile"
-                          >
-                            创建
-                          </el-button>
-                          <el-button
-                            type="primary"
-                            :loading="aiEntryFileSaving"
-                            @click="saveProjectAiEntryFile()"
-                          >
-                            保存
-                          </el-button>
-                        </div>
-                      </article>
-                      <article v-else class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><InfoFilled /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>尚未选择项目</strong>
-                          <span>选择项目后才能配置项目工作区和入口文件。</span>
-                        </div>
-                      </article>
-                    </section>
-
-                    <section
-                      v-show="
-                        activeSettingsModule === 'execution' &&
-                        settingsModuleMatches(
-                          '执行 智能体 协作 模式 历史 消息 本轮 仅回答',
-                          'project',
-                        )
-                      "
-                      class="settings-module-section"
-                    >
-                      <div class="settings-module-section__head">
-                        <div>
-                          <strong>执行策略</strong>
-                          <span
-                            >控制本轮对话如何分配智能体、使用历史和选择工具边界。</span
-                          >
-                        </div>
-                      </div>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><CollectionTag /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>智能体目录</strong>
-                          <span
-                            >桌面运行会从该目录读取项目智能体定义、提示词和脚本。</span
-                          >
-                        </div>
-                        <div class="settings-module-row__control">
-                          <el-input
-                            v-model="projectChatSettings.agent_directory"
-                            clearable
-                            placeholder="例如 /workspace/.ai-employee/agents"
-                            :disabled="!selectedProjectId"
-                          >
-                            <template #append>
-                              <el-button
-                                :loading="agentDirectoryPicking"
-                                :disabled="
-                                  !selectedProjectId ||
-                                  skillDirectoryPicking ||
-                                  ruleDirectoryPicking
-                                "
-                                @click="pickChatRuntimeDirectory('agent')"
-                              >
-                                选择目录
-                              </el-button>
-                            </template>
-                          </el-input>
-                        </div>
-                      </article>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><FolderOpened /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>技能目录</strong>
-                          <span
-                            >桌面智能体会优先从该目录读取
-                            SKILL.md、模板和脚本。</span
-                          >
-                        </div>
-                        <div class="settings-module-row__control">
-                          <el-input
-                            v-model="projectChatSettings.skill_directory"
-                            clearable
-                            placeholder="例如 /workspace/.ai-employee/skills"
-                            :disabled="!selectedProjectId"
-                          >
-                            <template #append>
-                              <el-button
-                                :loading="skillDirectoryPicking"
-                                :disabled="
-                                  !selectedProjectId || ruleDirectoryPicking
-                                "
-                                @click="pickChatRuntimeDirectory('skill')"
-                              >
-                                选择目录
-                              </el-button>
-                            </template>
-                          </el-input>
-                        </div>
-                      </article>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><Document /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>规则目录</strong>
-                          <span
-                            >桌面智能体会按当前任务从该目录加载相关规则正文。</span
-                          >
-                        </div>
-                        <div class="settings-module-row__control">
-                          <el-input
-                            v-model="projectChatSettings.rule_directory"
-                            clearable
-                            placeholder="例如 /workspace/.ai-employee/rules"
-                            :disabled="!selectedProjectId"
-                          >
-                            <template #append>
-                              <el-button
-                                :loading="ruleDirectoryPicking"
-                                :disabled="
-                                  !selectedProjectId || skillDirectoryPicking
-                                "
-                                @click="pickChatRuntimeDirectory('rule')"
-                              >
-                                选择目录
-                              </el-button>
-                            </template>
-                          </el-input>
-                        </div>
-                      </article>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><EditPen /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>历史消息条数</strong>
-                          <span>控制发送给模型的上下文消息数量。</span>
-                        </div>
-                        <div class="settings-module-row__control">
-                          <el-input-number
-                            v-model="projectChatSettings.history_limit"
-                            :min="1"
-                            :max="50"
-                          />
-                        </div>
-                      </article>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><RefreshRight /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>可恢复问题最大修复轮数</strong>
-                          <span
-                            >技能内容缺失、参数不完整等可恢复问题会交给 AI 继续处理；不可恢复错误仍会停止。</span
-                          >
-                        </div>
-                        <div class="settings-module-row__control">
-                          <el-input-number
-                            v-model="projectChatSettings.recoverable_issue_max_attempts"
-                            :min="1"
-                            :max="50"
-                            :step="1"
-                            controls-position="right"
-                          />
-                        </div>
-                      </article>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><InfoFilled /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>单轮仅回答</strong>
-                          <span>只对下一次对话生效，不主动调用工具。</span>
-                        </div>
-                        <el-switch v-model="singleRoundAnswerOnly" />
-                      </article>
-                    </section>
-
-                    <section
-                      v-show="
-                        activeSettingsModule === 'generation' &&
-                        settingsModuleMatches(
-                          '生成 回答 模型 温度 风格 图片 视频 参数 结论',
-                          'all',
-                        )
-                      "
-                      class="settings-module-section"
-                    >
-                      <div class="settings-module-section__head">
-                        <div>
-                          <strong>生成回答</strong>
-                          <span
-                            >当前模型类型：{{ currentModelTypeLabel }}。{{
-                              currentModelTypeDescription ||
-                              "参数面板会跟随当前模型类型切换。"
-                            }}</span
-                          >
-                        </div>
-                      </div>
-                      <template v-if="currentModelParameterMode === 'text'">
-                        <article class="settings-module-row">
-                          <div class="settings-module-row__icon">
-                            <el-icon><EditPen /></el-icon>
-                          </div>
-                          <div class="settings-module-row__main">
-                            <strong>回答风格</strong>
-                            <span>偏好 AI 返回内容的详细程度。</span>
-                          </div>
-                          <div class="settings-module-row__control">
-                            <el-select
-                              v-model="projectChatSettings.answer_style"
-                              class="settings-module-row__select"
-                            >
-                              <el-option label="简洁" value="concise" />
-                              <el-option label="平衡" value="balanced" />
-                              <el-option label="详细" value="detailed" />
-                            </el-select>
-                          </div>
-                        </article>
-                        <article
-                          class="settings-module-row settings-module-row--stacked"
-                        >
-                          <div class="settings-module-row__icon">
-                            <el-icon><RefreshRight /></el-icon>
-                          </div>
-                          <div class="settings-module-row__main">
-                            <strong>温度</strong>
-                            <span>值越小越稳，值越大越发散。</span>
-                            <el-slider
-                              v-model="temperature"
-                              :min="0"
-                              :max="2"
-                              :step="0.1"
-                              show-input
-                              :show-input-controls="false"
-                            />
-                          </div>
-                        </article>
-                        <article class="settings-module-row">
-                          <div class="settings-module-row__icon">
-                            <el-icon><Cpu /></el-icon>
-                          </div>
-                          <div class="settings-module-row__main">
-                            <strong>思考模式</strong>
-                            <span>兼容模型会返回独立的思考过程；关闭时不发送思考参数。</span>
-                          </div>
-                          <div class="settings-module-row__control">
-                            <el-switch
-                              v-model="projectChatSettings.thinking_mode"
-                              active-value="enabled"
-                              inactive-value="disabled"
-                            />
-                          </div>
-                        </article>
-                        <article
-                          v-if="projectChatSettings.thinking_mode === 'enabled'"
-                          class="settings-module-row"
-                        >
-                          <div class="settings-module-row__icon">
-                            <el-icon><Operation /></el-icon>
-                          </div>
-                          <div class="settings-module-row__main">
-                            <strong>思考强度</strong>
-                            <span>通过 reasoning_effort 传给 DeepSeek 等兼容模型。</span>
-                          </div>
-                          <div class="settings-module-row__control">
-                            <el-select
-                              v-model="projectChatSettings.reasoning_effort"
-                              class="settings-module-row__select"
-                            >
-                              <el-option label="低" value="low" />
-                              <el-option label="中" value="medium" />
-                              <el-option label="高" value="high" />
-                            </el-select>
-                          </div>
-                        </article>
-                        <article class="settings-module-row">
-                          <div class="settings-module-row__icon">
-                            <el-icon><CircleCheck /></el-icon>
-                          </div>
-                          <div class="settings-module-row__main">
-                            <strong>先结论后步骤</strong>
-                            <span>长回答优先给出核心结论。</span>
-                          </div>
-                          <el-switch
-                            v-model="
-                              projectChatSettings.prefer_conclusion_first
-                            "
-                          />
-                        </article>
-                      </template>
-                      <template
-                        v-else-if="
-                          currentModelParameterMode === 'image' ||
-                          currentModelParameterMode === 'video'
-                        "
-                      >
-                        <article
-                          v-for="section in currentModelParameterSections"
-                          :key="`settings-module-${section.key}`"
-                          class="settings-module-row"
-                        >
-                          <div class="settings-module-row__icon">
-                            <el-icon><EditPen /></el-icon>
-                          </div>
-                          <div class="settings-module-row__main">
-                            <strong>{{ section.label }}</strong>
-                            <span>{{ section.helper || "模型参数" }}</span>
-                          </div>
-                          <div class="settings-module-row__control">
-                            <el-segmented
-                              v-if="section.useSegmented"
-                              :model-value="section.modelValue"
-                              :options="
-                                section.options.map((item) => ({
-                                  label: item.label,
-                                  value: item.value,
-                                }))
-                              "
-                              @change="
-                                (value) =>
-                                  setCurrentModelParameterValue(
-                                    section.key,
-                                    value,
-                                  )
-                              "
-                            />
-                            <el-select
-                              v-else
-                              :model-value="section.modelValue"
-                              class="settings-module-row__select"
-                              @change="
-                                (value) =>
-                                  setCurrentModelParameterValue(
-                                    section.key,
-                                    value,
-                                  )
-                              "
-                            >
-                              <el-option
-                                v-for="option in section.options"
-                                :key="`${section.key}-${option.id}`"
-                                :label="option.label"
-                                :value="option.value"
-                              />
-                            </el-select>
-                          </div>
-                        </article>
-                      </template>
-                    </section>
-
-                    <section
-                      v-show="
-                        activeSettingsModule === 'tools' &&
-                        settingsModuleMatches(
-                          '工具 MCP 护栏 web search extract provider firecrawl tavily exa parallel managed',
-                          'all',
-                        )
-                      "
-                      class="settings-module-section"
-                    >
-                      <div class="settings-module-section__head">
-                        <div>
-                          <strong>工具与 MCP</strong>
-                          <span
-                            >管理当前对话可用的工具、MCP registry 和 Web 搜索
-                            provider。</span
-                          >
-                        </div>
-                      </div>
-                      <article class="settings-module-row">
-                        <div class="settings-module-row__icon">
-                          <el-icon><CollectionTag /></el-icon>
-                        </div>
-                        <div class="settings-module-row__main">
-                          <strong>按需启用工具</strong>
-                          <span>{{
-                            projectChatSettings.auto_use_tools
-                              ? "允许系统在必要时选择工具"
-                              : "系统不会主动调工具"
-                          }}</span>
-                        </div>
-                        <el-switch
-                          v-model="projectChatSettings.auto_use_tools"
-                          @change="
-                            projectChatSettings.auto_use_tools_explicit = true
-                          "
-                        />
-                      </article>
-                      <div class="settings-module-subsection">
-                        <div class="settings-module-subsection__head">
-                          <strong>MCP 模块</strong>
-                          <div class="settings-module-row__actions">
-                            <el-button
-                              size="small"
-                              @click="openMcpServerDialog('project')"
-                            >
-                              添加项目 Server
-                            </el-button>
-                            <el-button
-                              size="small"
-                              @click="openMcpServerDialog('global')"
-                            >
-                              添加全局 Server
-                            </el-button>
-                            <el-button
-                              size="small"
-                              type="primary"
-                              :loading="projectMcpConfigSaving"
-                              @click="saveProjectMcpConfig"
-                            >
-                              保存项目文件
-                            </el-button>
-                          </div>
-                        </div>
-                        <div class="mcp-server-table">
-                          <article
-                            v-for="server in effectiveMcpServerRows"
-                            :key="`${server.scope}:${server.name}`"
-                            class="mcp-server-row"
-                          >
-                            <div class="mcp-server-row__main">
-                              <strong>{{ server.name }}</strong>
-                              <span
-                                >{{ server.type }} ·
-                                {{ server.endpoint || "未配置入口" }}</span
-                              >
-                            </div>
-                            <el-tag
-                              size="small"
-                              :type="
-                                server.scope === 'project' ? 'warning' : 'info'
-                              "
-                            >
-                              {{ server.scope === "project" ? "项目" : "全局" }}
-                            </el-tag>
-                            <el-tag
-                              size="small"
-                              :type="server.enabled ? 'success' : 'info'"
-                            >
-                              {{ server.enabled ? "启用" : "停用" }}
-                            </el-tag>
-                            <div class="mcp-server-row__actions">
-                              <el-button
-                                size="small"
-                                @click="testMcpServer(server)"
-                              >
-                                测试
-                              </el-button>
-                              <el-button
-                                size="small"
-                                @click="editMcpServer(server)"
-                              >
-                                编辑
-                              </el-button>
-                              <el-button
-                                size="small"
-                                type="danger"
-                                plain
-                                @click="removeMcpServer(server)"
-                              >
-                                删除
-                              </el-button>
-                            </div>
-                          </article>
-                          <el-empty
-                            v-if="!effectiveMcpServerRows.length"
-                            description="暂无 MCP server"
-                            :image-size="48"
-                          />
-                        </div>
-                        <details class="mcp-json-details">
-                          <summary>查看 MCP JSON</summary>
-                          <el-input
-                            v-model="projectMcpConfigText"
-                            type="textarea"
-                            :rows="8"
-                            resize="vertical"
-                            spellcheck="false"
-                          />
-                          <div class="mcp-local-editor__actions">
-                            <el-button
-                              size="small"
-                              @click="formatProjectMcpConfigText"
-                            >
-                              格式化 JSON
-                            </el-button>
-                            <el-button
-                              size="small"
-                              @click="resetProjectMcpConfigText"
-                            >
-                              清空项目配置
-                            </el-button>
-                          </div>
-                        </details>
-                      </div>
-                      <div class="settings-module-subsection">
-                        <div class="settings-module-subsection__head">
-                          <strong>Web 搜索 Provider</strong>
-                          <el-segmented
-                            v-model="webToolsConfigScope"
-                            :options="webToolsScopeOptions"
-                          />
-                        </div>
-                        <div
-                          v-if="
-                            hasSelectedProject ||
-                            webToolsConfigScope === 'global'
-                          "
-                          class="web-tools-provider-table"
-                        >
-                          <article
-                            v-for="provider in webToolsProviderRows"
-                            :key="`${webToolsConfigScope}:${provider.id}`"
-                            class="web-tools-provider-row"
-                          >
-                            <div class="web-tools-provider-row__icon">
-                              <el-icon><CollectionTag /></el-icon>
-                            </div>
-                            <div class="web-tools-provider-row__main">
-                              <strong>{{ provider.label }}</strong>
-                              <span>{{ provider.description }}</span>
-                            </div>
-                            <el-tag
-                              v-if="provider.selected"
-                              size="small"
-                              type="success"
-                            >
-                              当前
-                            </el-tag>
-                            <el-tag
-                              v-else-if="provider.inherited"
-                              size="small"
-                              type="info"
-                            >
-                              继承
-                            </el-tag>
-                            <el-tag
-                              v-else-if="provider.configured"
-                              size="small"
-                              type="warning"
-                            >
-                              已配置
-                            </el-tag>
-                            <el-switch
-                              :model-value="provider.selected"
-                              :disabled="
-                                webToolsConfigScope === 'project' &&
-                                !hasSelectedProject
-                              "
-                              @change="
-                                (value) =>
-                                  setWebToolProviderEnabled(provider.id, value)
-                              "
-                            />
-                            <el-button
-                              size="small"
-                              :icon="EditPen"
-                              circle
-                              @click="openWebToolsProviderDialog(provider.id)"
-                            />
-                          </article>
-                        </div>
-                        <div v-else class="mcp-section-tip">
-                          先选择项目，才能管理当前项目 web-tools 配置。
-                        </div>
-                        <details class="mcp-json-details">
-                          <summary>高级 web-tools JSON</summary>
-                          <el-input
-                            v-if="webToolsConfigScope === 'global'"
-                            v-model="globalWebToolsConfigText"
-                            type="textarea"
-                            :rows="8"
-                            resize="vertical"
-                            spellcheck="false"
-                          />
-                          <el-input
-                            v-else
-                            v-model="projectWebToolsConfigText"
-                            type="textarea"
-                            :rows="8"
-                            resize="vertical"
-                            spellcheck="false"
-                          />
-                          <div class="mcp-local-editor__actions">
-                            <el-button
-                              size="small"
-                              @click="formatActiveWebToolsConfigText"
-                            >
-                              格式化 JSON
-                            </el-button>
-                            <el-button
-                              v-if="webToolsConfigScope === 'project'"
-                              size="small"
-                              @click="resetProjectWebToolsConfigText"
-                            >
-                              清空项目配置
-                            </el-button>
-                            <el-button
-                              size="small"
-                              type="primary"
-                              :loading="activeWebToolsConfigSaving"
-                              @click="saveActiveWebToolsConfig"
-                            >
-                              保存文件
-                            </el-button>
-                          </div>
-                        </details>
-                      </div>
-                    </section>
-                    <el-empty
-                      v-if="!visibleSettingsModuleNavItems.length"
-                      description="调整搜索词或范围后继续配置"
-                      :image-size="56"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div v-else class="settings-center-stage__body">
-          <router-view />
-        </div>
-      </section>
-    </div>
-  </div>
+    :context="projectChatSettingsContext"
+  />
 
   <ResourceContextMenu
     :visible="messageContextMenu.visible"
@@ -2937,6 +2080,7 @@ import CodePreviewDialog from "@/modules/project-chat/components/code-preview/Co
 import FileChangesDrawer from "@/modules/project-chat/components/file-changes/FileChangesDrawer.vue";
 import SkillResourceDialog from "@/modules/project-chat/components/skill-resource/SkillResourceDialog.vue";
 import ResourceContextMenu from "@/modules/project-chat/components/resource-context-menu/ResourceContextMenu.vue";
+import ProjectChatSettingsContent from "@/modules/project-chat/components/settings/ProjectChatSettingsContent.vue";
 import { useProjectChatComposer } from "@/modules/project-chat/composables/useProjectChatComposer.js";
 import { useProjectChatPendingRequests } from "@/modules/project-chat/composables/useProjectChatPendingRequests.js";
 import { useProjectChatNativeAgent } from "@/modules/project-chat/composables/useProjectChatNativeAgent.js";
@@ -3387,7 +2531,6 @@ function applyLocalConnectorRuntimeSettings(baseSettings) {
 // 页面级状态（加载、项目、提供方、连接器）
 // ============================================================
 const loading = ref(false);
-const workspaceSidebarCollapsed = ref(false);
 const chatLoading = ref(false);
 const workspaceTrustSaving = ref(false);
 const projectCreationInProgress = ref(false);
@@ -3573,7 +2716,8 @@ const settingsModuleNavItems = [
     desc: "风格、温度、模型参数",
     meta: "通用",
     scope: "all",
-    keywords: "生成 回答 模型 温度 风格 思考 推理 reasoning DeepSeek 图片 视频 参数 结论",
+    keywords:
+      "生成 回答 模型 温度 风格 思考 推理 reasoning DeepSeek 图片 视频 参数 结论",
   },
   {
     id: "tools",
@@ -4867,6 +4011,8 @@ function buildDesktopLocalAgentEntryPolicyPrompt() {
     "- 只有用户明确要求读取某个 CLI 入口文件，或项目设置把该文件配置为 AI 入口文件时，才读取它。",
     "- 桌面端 MCP 使用统一 registry；工具列表、资源读取和调用分别使用 list_mcp_tools、read_mcp_resource、call_mcp_tool。",
     "- MCP 服务来源于本机全局配置和项目配置；stdio、http、sse 都是同一 registry 下的 transport 类型。",
+    "- 内置工具使用说明随应用源码交付，位于 web-admin/frontend/src-tauri/src/liuagent_core/tool_skills/builtin-tools/；复杂任务开始前，先按需读取 builtin-tools/SKILL.md 和对应工具目录中的 SKILL.md，再选择工具。",
+    "- 内置工具技能只负责选择和使用指导，不能替代 Runtime 的 schema 校验、权限确认和执行结果。",
     "- 当需要项目事实且当前请求可由页面已加载的项目配置、系统 MCP 面板数据或斜杠命令直接回答时，直接基于这些宿主数据回答。",
   ].join("\n");
 }
@@ -4895,7 +4041,9 @@ async function readSelectedEmployeeDefinitionForEdit(text = "") {
   const employee = (projectEmployees.value || []).find(
     (item) => String(item?.id || "").trim() === employeeId,
   );
-  const directory = String(projectChatSettings.value.agent_directory || "").trim();
+  const directory = String(
+    projectChatSettings.value.agent_directory || "",
+  ).trim();
   if (!directory) {
     return "当前智能体目录未配置，无法读取现有定义；不得凭空生成 update 草稿。";
   }
@@ -4921,9 +4069,13 @@ async function readSelectedEmployeeDefinitionForEdit(text = "") {
       `实际文件：${relativePath}`,
       "当前定义原文（只能基于此内容提出修改意见）：",
       content.slice(0, 24000),
-      content.length > 24000 ? "（原文超过 24000 字符，以上为前缀；不得臆造未读取部分。）" : "",
+      content.length > 24000
+        ? "（原文超过 24000 字符，以上为前缀；不得臆造未读取部分。）"
+        : "",
       "编辑规则：先指出当前内容与用户要求的差异，再生成只包含本次变更的 update 草稿；未在原文或用户要求中出现的字段保持不变。",
-    ].filter(Boolean).join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
   } catch (error) {
     if (isWorkspaceFileMissing(error)) {
       return `无法读取当前智能体定义文件 ${relativePath}；不得凭空生成 update 草稿，请先提示用户检查本地目录。`;
@@ -4934,7 +4086,8 @@ async function readSelectedEmployeeDefinitionForEdit(text = "") {
 
 function buildLocalLiuAgentSystemPromptParts(interactionMode = "") {
   const normalizedInteractionMode = String(interactionMode || "").trim();
-  const isEmployeeCreationMode = normalizedInteractionMode === "employee_create";
+  const isEmployeeCreationMode =
+    normalizedInteractionMode === "employee_create";
   const employeeCreationPart = isEmployeeCreationMode
     ? {
         id: "desktop_local_agent:employee_creation_boundary",
@@ -9725,7 +8878,7 @@ const composerPlaceholder = computed(() =>
       ? "请先处理输入框上方的本机操作授权；处理后系统会自动继续执行。"
       : currentChatSessionLocalLiuAgentWaitingUserQuestion.value
         ? "请先回答输入框上方的问题；提交后系统会继续当前任务。"
-      : "输入需求，本地 liuAgent 会在桌面端调用模型并按模型结构化工具调用执行。",
+        : "输入需求，本地 liuAgent 会在桌面端调用模型并按模型结构化工具调用执行。",
 );
 const composerHintText = computed(() => {
   if (isTerminalInteractionMode.value) {
@@ -10735,7 +9888,9 @@ function upsertMessageTrajectoryBlock(row, { index = 0, kind, text } = {}) {
     existing.text = mergeTrajectoryBlockText(existing.text, text);
   } else {
     blocks.push({ id, index: blockIndex, kind, text: String(text) });
-    blocks.sort((left, right) => Number(left.index || 0) - Number(right.index || 0));
+    blocks.sort(
+      (left, right) => Number(left.index || 0) - Number(right.index || 0),
+    );
   }
   row.trajectoryBlocks = blocks;
   return blocks.find((block) => block?.id === id) || null;
@@ -10773,7 +9928,8 @@ function applyLocalLiuAgentReasoningContent(row, event = {}) {
       row.reasoningDurationMs = Math.max(
         0,
         Number(row.reasoningCompletedDurationMs || 0) +
-          eventAt - Number(row.reasoningActiveStartedAtEpochMs || eventAt),
+          eventAt -
+          Number(row.reasoningActiveStartedAtEpochMs || eventAt),
       );
     }
     return true;
@@ -11211,12 +10367,19 @@ function applyLocalLiuAgentRuntimeEvents(row, result = {}, context = {}) {
       );
       continue;
     }
-  applyLocalLiuAgentReasoningContent(row, event);
-  if (["reasoning_delta", "reasoning-delta", "text_delta", "text-delta"].includes(eventType)) {
-    markLocalLiuAgentRuntimeEventSeen(event);
-    return true;
-  }
-  applyLocalLiuAgentModelStepFailure(row, event, context);
+    applyLocalLiuAgentReasoningContent(row, event);
+    if (
+      [
+        "reasoning_delta",
+        "reasoning-delta",
+        "text_delta",
+        "text-delta",
+      ].includes(eventType)
+    ) {
+      markLocalLiuAgentRuntimeEventSeen(event);
+      return true;
+    }
+    applyLocalLiuAgentModelStepFailure(row, event, context);
     const operation = localLiuAgentRuntimeEventOperation(event, {
       ...context,
       assistantMessageId: row.id,
@@ -11547,7 +10710,7 @@ function isMessageExecutionActive(row = {}) {
   const lastMessage = messages.value[messages.value.length - 1];
   return Boolean(
     chatLoading.value === true &&
-      String(lastMessage?.id || "").trim() === messageId,
+    String(lastMessage?.id || "").trim() === messageId,
   );
 }
 
@@ -11708,7 +10871,11 @@ function handleNativeLiuAgentRuntimeEvent(event = {}) {
     return true;
   }
   applyLocalLiuAgentReasoningContent(row, event);
-  if (["reasoning_delta", "reasoning-delta", "text_delta", "text-delta"].includes(eventType)) {
+  if (
+    ["reasoning_delta", "reasoning-delta", "text_delta", "text-delta"].includes(
+      eventType,
+    )
+  ) {
     markLocalLiuAgentRuntimeEventSeen(event);
     return true;
   }
@@ -11763,10 +10930,15 @@ async function reconcileRestoredLocalLiuAgentRun(run) {
     workspacePath,
   }).catch(() => null);
   if (!result?.ok) return;
-  const state = result.state && typeof result.state === "object" ? result.state : {};
+  const state =
+    result.state && typeof result.state === "object" ? result.state : {};
   const runState =
-    state.run_state && typeof state.run_state === "object" ? state.run_state : {};
-  const status = String(runState.status || "").trim().toLowerCase();
+    state.run_state && typeof state.run_state === "object"
+      ? state.run_state
+      : {};
+  const status = String(runState.status || "")
+    .trim()
+    .toLowerCase();
   if (!status || status === "running") return;
   deleteLocalLiuAgentActiveRun(chatSessionId, run);
   await restoreLocalLiuAgentRuntimeState(
@@ -12209,9 +11381,12 @@ async function restoreLocalLiuAgentRuntimeState(
         ? "已恢复刷新前正在执行的本地 Runtime"
         : "已恢复本地 Runtime 状态",
     workspacePath,
-    recoverable: ["waiting_approval", "waiting_user", "failed", "paused"].includes(
-      status,
-    ),
+    recoverable: [
+      "waiting_approval",
+      "waiting_user",
+      "failed",
+      "paused",
+    ].includes(status),
   });
   if (status === "running") {
     const activeRun = {
@@ -12317,9 +11492,8 @@ async function restoreLocalLiuAgentRuntimeState(
       level: "warning",
     });
   } else if (status === "waiting_user") {
-    const userQuestionRequest = localLiuAgentUserQuestionRequestFromChatResult(
-      result,
-    );
+    const userQuestionRequest =
+      localLiuAgentUserQuestionRequestFromChatResult(result);
     const requestId = String(
       userQuestionRequest?.requestId || userQuestionRequest?.request_id || "",
     ).trim();
@@ -12830,10 +12004,10 @@ function focusAgentWorkflowOperation() {
 
 const showPauseGenerationButton = computed(
   () =>
-    (chatLoading.value ||
-      Boolean(getActiveRequestId()) ||
-      currentChatSessionLocalLiuAgentRunning.value ||
-      currentChatSessionNativeExternalAgentRunning.value),
+    chatLoading.value ||
+    Boolean(getActiveRequestId()) ||
+    currentChatSessionLocalLiuAgentRunning.value ||
+    currentChatSessionNativeExternalAgentRunning.value,
 );
 
 const backgroundTerminalCount = computed(() => {
@@ -13777,8 +12951,7 @@ const composerSlashCommands = computed(() => {
 
 const composerVisibleToolCommands = computed(() =>
   composerSlashCommands.value.filter(
-    (item) =>
-      String(item?.id || "").trim() !== "package_deploy",
+    (item) => String(item?.id || "").trim() !== "package_deploy",
   ),
 );
 
@@ -14414,10 +13587,8 @@ function normalizeRuntimeMessageSnapshot(row) {
     messageExecutionDurationLabel: String(
       row.messageExecutionDurationLabel || "",
     ),
-    reasoningStartedAtEpochMs:
-      Number(row.reasoningStartedAtEpochMs || 0) || 0,
-    reasoningEndedAtEpochMs:
-      Number(row.reasoningEndedAtEpochMs || 0) || 0,
+    reasoningStartedAtEpochMs: Number(row.reasoningStartedAtEpochMs || 0) || 0,
+    reasoningEndedAtEpochMs: Number(row.reasoningEndedAtEpochMs || 0) || 0,
     reasoningDurationMs: Number(row.reasoningDurationMs || 0) || 0,
     agentRuntimeStartedAtEpochMs:
       Number(row.agentRuntimeStartedAtEpochMs || 0) || 0,
@@ -14643,9 +13814,7 @@ function assistantAnswerIdentity(row) {
 }
 
 function chatMessageIdentity(row) {
-  return String(
-    row?.messageId || row?.message_id || row?.id || "",
-  ).trim();
+  return String(row?.messageId || row?.message_id || row?.id || "").trim();
 }
 
 function mergeDuplicateAssistantAnswerRows(rows) {
@@ -14671,7 +13840,8 @@ function mergeDuplicateAssistantAnswerRows(rows) {
     if (existingIndex === undefined) {
       mergedRows.push(row);
       if (messageId) messageIndexById.set(messageId, mergedRows.length - 1);
-      if (answerId) assistantIndexByAnswerId.set(answerId, mergedRows.length - 1);
+      if (answerId)
+        assistantIndexByAnswerId.set(answerId, mergedRows.length - 1);
       continue;
     }
     mergedRows[existingIndex] = mergeHistoryRowWithRuntimeSnapshot(
@@ -14690,9 +13860,9 @@ function applyPersistedChatRuntimeRows(historyRows, runtimePayload) {
   const runtimeRows = mergeDuplicateAssistantAnswerRows(
     Array.isArray(runtimePayload?.messages)
       ? runtimePayload.messages
-        .map(normalizeRuntimeMessageSnapshot)
-        .filter(Boolean)
-        .filter((row) => !deletedMessageIds.has(row.id))
+          .map(normalizeRuntimeMessageSnapshot)
+          .filter(Boolean)
+          .filter((row) => !deletedMessageIds.has(row.id))
       : [],
   );
   if (!runtimeRows.length) return rows;
@@ -14738,7 +13908,10 @@ function applyPersistedChatRuntimeRows(historyRows, runtimePayload) {
     );
   });
   if (mergedRows.length) {
-    return mergeDuplicateAssistantAnswerRows([...mergedRows, ...runtimeOnlyRows]);
+    return mergeDuplicateAssistantAnswerRows([
+      ...mergedRows,
+      ...runtimeOnlyRows,
+    ]);
   }
   return mergeDuplicateAssistantAnswerRows(runtimeRows);
 }
@@ -15133,11 +14306,15 @@ function extractEmployeeIntentPayload(text) {
     extractJsonObjectsFromText(text)
       .map((item) => item.value)
       .find((item) => {
-        const intent = String(item?.intent || "").trim().toLowerCase();
+        const intent = String(item?.intent || "")
+          .trim()
+          .toLowerCase();
         return ["question", "draft", "create", "update"].includes(intent);
       });
   if (!parsed) return null;
-  const intent = String(parsed.intent || "").trim().toLowerCase();
+  const intent = String(parsed.intent || "")
+    .trim()
+    .toLowerCase();
   return ["question", "draft", "create", "update"].includes(intent)
     ? { intent }
     : null;
@@ -15168,8 +14345,8 @@ function isEmployeeDraftPayloadLike(value) {
   if (!String(value.name || value.employee_id || "").trim()) return false;
   return Boolean(
     String(value.description || value.goal || value.role || "").trim() ||
-      (Array.isArray(value.instructions) && value.instructions.length) ||
-      (Array.isArray(value.skills) && value.skills.length),
+    (Array.isArray(value.instructions) && value.instructions.length) ||
+    (Array.isArray(value.skills) && value.skills.length),
   );
 }
 
@@ -15187,7 +14364,8 @@ function extractEmployeeProtocolPayload(text, label, fencedPattern) {
     const jsonStart = content.indexOf("{", start);
     if (jsonStart >= 0) {
       const jsonEnd = findBalancedJsonObjectEnd(content, jsonStart);
-      if (jsonEnd > jsonStart) candidates.push(content.slice(jsonStart, jsonEnd));
+      if (jsonEnd > jsonStart)
+        candidates.push(content.slice(jsonStart, jsonEnd));
     }
   }
   for (const candidate of candidates) {
@@ -15279,7 +14457,9 @@ function stripEmployeeIntentBlock(text) {
     EMPLOYEE_INTENT_BLOCK_RE,
   );
   const intentObject = extractJsonObjectsFromText(output).find((item) => {
-    const intent = String(item.value?.intent || "").trim().toLowerCase();
+    const intent = String(item.value?.intent || "")
+      .trim()
+      .toLowerCase();
     return ["question", "draft", "create", "update"].includes(intent);
   });
   if (intentObject) {
@@ -15307,7 +14487,9 @@ function readableEmployeeDraftValue(value) {
 function normalizeEmployeeDraftPayload(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
   const instructions = normalizeStringList(item.instructions || [], 20);
-  const skillDrafts = (Array.isArray(item.skill_drafts) ? item.skill_drafts : [])
+  const skillDrafts = (
+    Array.isArray(item.skill_drafts) ? item.skill_drafts : []
+  )
     .map((draft) => ({
       id: String(draft?.id || draft?.skill_id || "").trim(),
       name: String(draft?.name || draft?.title || "").trim(),
@@ -15374,14 +14556,17 @@ function normalizeEmployeeDraftPayload(raw) {
       .map((draft) => ({
         title: String(draft?.title || "").trim(),
         domain: String(draft?.domain || "").trim(),
-      content: readableEmployeeDraftValue(draft?.content),
+        content: readableEmployeeDraftValue(draft?.content),
         source_label: String(draft?.source_label || "").trim(),
         source_url: String(draft?.source_url || "").trim(),
       }))
       .filter((draft) => draft.title || draft.domain || draft.content),
     auto_create_missing_rules: item.auto_create_missing_rules !== false,
     style_hints: normalizeStringList(
-      [...(Array.isArray(item.style_hints) ? item.style_hints : []), ...instructions],
+      [
+        ...(Array.isArray(item.style_hints) ? item.style_hints : []),
+        ...instructions,
+      ],
       20,
     ),
     default_workflow: normalizeEmployeeDraftWorkflow(
@@ -15398,10 +14583,7 @@ function mergeEmployeeSkillDefinitions(skillCatalog, skillIds, skillDrafts) {
   const contentOwners = new Map();
   const draftMap = new Map(
     (Array.isArray(skillDrafts) ? skillDrafts : [])
-      .map((draft) => [
-        normalizeMatchKey(draft?.id || draft?.name),
-        draft,
-      ])
+      .map((draft) => [normalizeMatchKey(draft?.id || draft?.name), draft])
       .filter(([key]) => key),
   );
   for (const rawSkill of Array.isArray(skillIds) ? skillIds : []) {
@@ -15444,7 +14626,9 @@ function mergeEmployeeSkillDefinitions(skillCatalog, skillIds, skillDrafts) {
       ...existing,
       id: String(existing.id || draft.id || skillId).trim(),
       name,
-      description: String(draft.description || existing.description || "").trim(),
+      description: String(
+        draft.description || existing.description || "",
+      ).trim(),
       content,
       source: existing.source || "local_project_chat",
     };
@@ -15455,7 +14639,9 @@ function mergeEmployeeSkillDefinitions(skillCatalog, skillIds, skillDrafts) {
 }
 
 function normalizeEmployeeDraftRole(value) {
-  const role = String(value || "").trim().toLowerCase();
+  const role = String(value || "")
+    .trim()
+    .toLowerCase();
   const aliases = {
     frontend_enginer: "frontend_engineer",
     backend_enginer: "backend_engineer",
@@ -16248,7 +15434,10 @@ function stripInternalProtocolContentForDisplay(text) {
   let output = String(text || "");
   if (!output) return "";
   output = output
-    .replace(/(^|\n)[ \t]*(?:智能体意图协议|employee-intent|employee-draft)[^\n]*/gi, "$1")
+    .replace(
+      /(^|\n)[ \t]*(?:智能体意图协议|employee-intent|employee-draft)[^\n]*/gi,
+      "$1",
+    )
     .replace(
       /```(?:structured-interaction|structured_interaction|interaction-json)\s*\n[\s\S]*?```/gi,
       "",
@@ -17187,7 +16376,8 @@ function messageTrajectoryToolId(row, operation) {
 function isMessageTrajectoryToolExpanded(row, operation) {
   const targetId = messageTrajectoryToolId(row, operation);
   return Boolean(
-    targetId && expandedMessageTrajectoryToolId.value !== `collapsed:${targetId}`,
+    targetId &&
+    expandedMessageTrajectoryToolId.value !== `collapsed:${targetId}`,
   );
 }
 
@@ -18224,10 +17414,14 @@ function messageReasoningBlocks(row) {
   const blocks = Array.isArray(row?.trajectoryBlocks)
     ? row.trajectoryBlocks
         .filter((block) => block?.kind === "reasoning" && block?.text)
-        .sort((left, right) => Number(left?.index || 0) - Number(right?.index || 0))
+        .sort(
+          (left, right) => Number(left?.index || 0) - Number(right?.index || 0),
+        )
     : [];
   if (blocks.length) return blocks;
-  const fallback = String(row?.reasoningContent || row?.reasoning_content || "").trim();
+  const fallback = String(
+    row?.reasoningContent || row?.reasoning_content || "",
+  ).trim();
   return fallback
     ? [{ id: "reasoning:legacy", index: 0, kind: "reasoning", text: fallback }]
     : [];
@@ -18272,9 +17466,9 @@ function isMessageThinkingPlaceholder(row, idx) {
 function shouldShowMessageTrajectory(row, idx) {
   return Boolean(
     messageReasoningBlocks(row).length ||
-      messageTrajectoryToolCalls(row).length ||
-      messageTrajectoryExecutionSteps(row).length ||
-      messageProcessDisplayEntries(row).length,
+    messageTrajectoryToolCalls(row).length ||
+    messageTrajectoryExecutionSteps(row).length ||
+    messageProcessDisplayEntries(row).length,
   );
 }
 
@@ -19910,7 +19104,10 @@ function ensureLocalLiuAgentUserQuestionAnswer(questionId = "") {
     return { choice: "", selected: [], custom: "" };
   }
   const answers = localLiuAgentUserQuestionAnswers.value;
-  if (!answers[normalizedQuestionId] || typeof answers[normalizedQuestionId] !== "object") {
+  if (
+    !answers[normalizedQuestionId] ||
+    typeof answers[normalizedQuestionId] !== "object"
+  ) {
     answers[normalizedQuestionId] = { choice: "", selected: [], custom: "" };
   }
   const answer = answers[normalizedQuestionId];
@@ -19926,7 +19123,10 @@ function handleLocalLiuAgentUserQuestionOptionChange(questionId = "") {
   draft.custom = "";
 }
 
-function handleLocalLiuAgentUserQuestionCustomInput(questionId = "", value = "") {
+function handleLocalLiuAgentUserQuestionCustomInput(
+  questionId = "",
+  value = "",
+) {
   if (!String(value || "").trim()) return;
   const normalizedQuestionId = String(questionId || "").trim();
   const draft = ensureLocalLiuAgentUserQuestionAnswer(normalizedQuestionId);
@@ -19943,7 +19143,8 @@ function setLocalLiuAgentPendingUserQuestion(requestId, pending = {}) {
     ...pending,
     requestId: normalizedRequestId,
     createdAt:
-      Number(existing?.createdAt || pending.createdAt || Date.now()) || Date.now(),
+      Number(existing?.createdAt || pending.createdAt || Date.now()) ||
+      Date.now(),
     updatedAt: Date.now(),
   });
   resetLocalLiuAgentUserQuestionAnswers(pending.userQuestionRequest || {});
@@ -19966,11 +19167,19 @@ function deleteLocalLiuAgentPendingUserQuestion(requestId) {
 function clearLocalLiuAgentUserQuestionsForChatSession(chatSessionId = "") {
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   let deleted = false;
-  for (const [requestId, pending] of localLiuAgentPendingUserQuestions.entries()) {
+  for (const [
+    requestId,
+    pending,
+  ] of localLiuAgentPendingUserQuestions.entries()) {
     const pendingChatSessionId = String(
-      pending?.activeChatSessionId || pending?.localChatPayload?.chatSessionId || "",
+      pending?.activeChatSessionId ||
+        pending?.localChatPayload?.chatSessionId ||
+        "",
     ).trim();
-    if (normalizedChatSessionId && pendingChatSessionId !== normalizedChatSessionId) {
+    if (
+      normalizedChatSessionId &&
+      pendingChatSessionId !== normalizedChatSessionId
+    ) {
       continue;
     }
     localLiuAgentPendingUserQuestions.delete(requestId);
@@ -19991,7 +19200,9 @@ function localLiuAgentPendingUserQuestionsForChatSession(chatSessionId = "") {
   return Array.from(localLiuAgentPendingUserQuestions.values())
     .filter((pending) => {
       const pendingChatSessionId = String(
-        pending?.activeChatSessionId || pending?.localChatPayload?.chatSessionId || "",
+        pending?.activeChatSessionId ||
+          pending?.localChatPayload?.chatSessionId ||
+          "",
       ).trim();
       return pendingChatSessionId === normalizedChatSessionId;
     })
@@ -20595,7 +19806,9 @@ function localLiuAgentUserQuestionRequestFromChatResult(result = {}) {
         "",
     ).trim();
     if (errorCode && errorCode !== "interaction.user_input_required") continue;
-    const requestId = String(request?.requestId || request?.request_id || "").trim();
+    const requestId = String(
+      request?.requestId || request?.request_id || "",
+    ).trim();
     const questions = normalizeLocalLiuAgentUserQuestions(request);
     if (!requestId || !questions.length) continue;
     return {
@@ -21411,9 +20624,7 @@ function messageTrajectorySummary(row, idx) {
   }
   if (phase === "running") {
     if (hasThinking) {
-      return thinkingDuration
-        ? `正在思考（${thinkingDuration}）`
-        : "正在思考";
+      return thinkingDuration ? `正在思考（${thinkingDuration}）` : "正在思考";
     }
     return "正在处理";
   }
@@ -22428,10 +21639,7 @@ function applyRealtimeChatMessagePayload(eventData) {
   const incomingAnswerId = assistantAnswerIdentity(row);
   const incomingMessageId = chatMessageIdentity(row);
   const existingIndex = messages.value.findIndex((item) => {
-    if (
-      incomingMessageId &&
-      chatMessageIdentity(item) === incomingMessageId
-    ) {
+    if (incomingMessageId && chatMessageIdentity(item) === incomingMessageId) {
       return true;
     }
     return Boolean(
@@ -23467,7 +22675,9 @@ async function submitCurrentLocalLiuAgentPermissionAction(actionKey) {
 function formatLocalLiuAgentUserQuestionAnswerMessage(answerRecords = []) {
   const details = answerRecords
     .map((record) => {
-      const question = String(record?.question || record?.header || "补充信息").trim();
+      const question = String(
+        record?.question || record?.header || "补充信息",
+      ).trim();
       return `问题：${question}\n回答：${String(record?.value || "").trim()}`;
     })
     .filter(Boolean)
@@ -23480,10 +22690,7 @@ function formatLocalLiuAgentUserQuestionResumePrompt(
   answerRecords = [],
 ) {
   const answerContext = answerRecords
-    .map(
-      (record) =>
-        `问题：${record.question}\n用户最终回答：${record.value}`,
-    )
+    .map((record) => `问题：${record.question}\n用户最终回答：${record.value}`)
     .join("\n\n");
   return [
     String(originalPrompt || "").trim(),
@@ -23499,7 +22706,9 @@ function formatLocalLiuAgentUserQuestionResumePrompt(
 async function submitCurrentLocalLiuAgentUserQuestion() {
   const pending = currentLocalLiuAgentPendingUserQuestion.value;
   const prompt = currentLocalLiuAgentUserQuestionPrompt.value;
-  const requestId = String(pending?.requestId || prompt?.requestId || "").trim();
+  const requestId = String(
+    pending?.requestId || prompt?.requestId || "",
+  ).trim();
   if (!pending || !prompt || !requestId) {
     ElMessage.warning("当前没有等待回答的问题");
     return;
@@ -23563,9 +22772,13 @@ async function submitCurrentLocalLiuAgentUserQuestion() {
   deleteLocalLiuAgentPendingUserQuestion(requestId);
   try {
     await sendLocalLiuAgentChatRequest({
-      projectId: String(localChatPayload.projectId || selectedProjectId.value || "").trim(),
+      projectId: String(
+        localChatPayload.projectId || selectedProjectId.value || "",
+      ).trim(),
       activeChatSessionId: String(
-        pending.activeChatSessionId || localChatPayload.chatSessionId || currentChatSessionId.value,
+        pending.activeChatSessionId ||
+          localChatPayload.chatSessionId ||
+          currentChatSessionId.value,
       ).trim(),
       userMessage,
       assistantMessage: row,
@@ -27572,7 +26785,7 @@ function buildEmployeeDraftAssistContext() {
     "- 用户提到 HTML/CSS/JavaScript 等内容时，将其作为智能体的技术栈、技能和职责范围；不要输出 type=frontend-html、implementation.files 或 requested_features 页面 schema。",
     "- 先用 3 到 6 行说明你推荐这个智能体的定位。",
     "- 最后必须追加一个 ```employee-draft``` 代码块，内容是严格 JSON，不要写注释。",
-    "- 创建模式还必须追加一个 ```employee-intent``` 代码块，内容固定为 {\"intent\":\"create\"}。",
+    '- 创建模式还必须追加一个 ```employee-intent``` 代码块，内容固定为 {"intent":"create"}。',
     "- JSON 必须包含：name、description、goal、skills、skill_drafts、rule_ids、rule_drafts、style_hints、default_workflow、tool_usage_policy、memory_scope、memory_retention_days。",
     "- 创建草稿至少提供 1 个技能候选和 1 个规则候选，供用户在确认弹窗中多选；不得只给名称或领域而不提供可写入内容。",
     "- 每个新技能必须同时出现在 skills 和 skill_drafts 中；skill_drafts 的每项必须有 id、name、content，content 是独立、可执行的 Markdown。已有本地技能可只使用其 ID。",
@@ -27689,11 +26902,16 @@ function buildMissingEmployeeRuleDrafts(employee, rules = []) {
   );
   const domains = normalizeStringList(employee?.rule_domains || [], 20);
   const fallbackDomain = domains[0] || "通用";
-  const employeeName = String(employee?.name || "该智能体").trim() || "该智能体";
+  const employeeName =
+    String(employee?.name || "该智能体").trim() || "该智能体";
   const addDraft = ({ title, domain }) => {
     const normalizedTitle = normalizeMatchKey(title);
     const normalizedDomain = normalizeMatchKey(domain);
-    if (!normalizedTitle || existingTitles.has(normalizedTitle) || draftTitles.has(normalizedTitle)) {
+    if (
+      !normalizedTitle ||
+      existingTitles.has(normalizedTitle) ||
+      draftTitles.has(normalizedTitle)
+    ) {
       return;
     }
     drafts.push({
@@ -27711,12 +26929,19 @@ function buildMissingEmployeeRuleDrafts(employee, rules = []) {
     if (normalizedDomain) draftDomains.add(normalizedDomain);
   };
 
-  for (const [index, title] of normalizeStringList(employee?.rule_titles || [], 30).entries()) {
+  for (const [index, title] of normalizeStringList(
+    employee?.rule_titles || [],
+    30,
+  ).entries()) {
     addDraft({ title, domain: domains[index] || fallbackDomain });
   }
   for (const domain of domains) {
     const normalizedDomain = normalizeMatchKey(domain);
-    if (!normalizedDomain || existingDomains.has(normalizedDomain) || draftDomains.has(normalizedDomain)) {
+    if (
+      !normalizedDomain ||
+      existingDomains.has(normalizedDomain) ||
+      draftDomains.has(normalizedDomain)
+    ) {
       continue;
     }
     addDraft({ title: `${employeeName} ${domain}工作规则`, domain });
@@ -27814,7 +27039,13 @@ const employeeDraftDialogSkillOptions = computed(() => {
   const relations = getLocalProjectRelations(selectedProjectId.value);
   const catalog = Array.isArray(relations?.skills) ? relations.skills : [];
   const options = new Map();
-  const addOption = ({ value, name, description = "", ready = false, source = "" }) => {
+  const addOption = ({
+    value,
+    name,
+    description = "",
+    ready = false,
+    source = "",
+  }) => {
     const key = String(value || "").trim();
     if (!key || options.has(key)) return;
     options.set(key, {
@@ -27825,7 +27056,9 @@ const employeeDraftDialogSkillOptions = computed(() => {
       source: String(source || "").trim(),
     });
   };
-  const drafts = Array.isArray(payload.skill_drafts) ? payload.skill_drafts : [];
+  const drafts = Array.isArray(payload.skill_drafts)
+    ? payload.skill_drafts
+    : [];
   for (const draft of drafts) {
     const value = String(draft?.id || draft?.name || "").trim();
     if (!value) continue;
@@ -27871,7 +27104,13 @@ const employeeDraftDialogRuleOptions = computed(() => {
   const relations = getLocalProjectRelations(selectedProjectId.value);
   const catalog = Array.isArray(relations?.rules) ? relations.rules : [];
   const options = new Map();
-  const addOption = ({ value, title, domain = "", ready = false, source = "" }) => {
+  const addOption = ({
+    value,
+    title,
+    domain = "",
+    ready = false,
+    source = "",
+  }) => {
     const key = String(value || "").trim();
     if (!key || options.has(key)) return;
     options.set(key, {
@@ -27891,12 +27130,16 @@ const employeeDraftDialogRuleOptions = computed(() => {
       title: rule.title || rule.id,
       domain: rule.domain,
       ready: Boolean(
-        String(existing?.content || existing?.body || existing?.description || "").trim(),
+        String(
+          existing?.content || existing?.body || existing?.description || "",
+        ).trim(),
       ),
       source: "已有本地规则",
     });
   }
-  for (const draft of Array.isArray(payload.rule_drafts) ? payload.rule_drafts : []) {
+  for (const draft of Array.isArray(payload.rule_drafts)
+    ? payload.rule_drafts
+    : []) {
     const title = String(draft?.title || "").trim();
     if (!title) continue;
     addOption({
@@ -28176,11 +27419,14 @@ function supersedeOtherPendingEmployeeDrafts(activeItem = null) {
 
 function applyEmployeeDraftConfirmationCandidate(candidate = null) {
   if (!candidate?.item || !candidate?.payload) return false;
-  employeeDraftDialogMode.value = candidate.mode === "update" ? "update" : "create";
+  employeeDraftDialogMode.value =
+    candidate.mode === "update" ? "update" : "create";
   employeeDraftDialogPayload.value = candidate.payload;
   employeeDraftDialogItem.value = candidate.item;
-  employeeDraftAutoCreateSkills.value = employeeDraftDialogMode.value === "update";
-  employeeDraftAutoCreateRules.value = employeeDraftDialogMode.value === "update";
+  employeeDraftAutoCreateSkills.value =
+    employeeDraftDialogMode.value === "update";
+  employeeDraftAutoCreateRules.value =
+    employeeDraftDialogMode.value === "update";
   employeeDraftAddToProject.value =
     employeeDraftDialogMode.value === "update" ||
     Boolean(String(selectedProjectId.value || "").trim());
@@ -28335,7 +27581,8 @@ function resolveEmployeeUpdateTarget(rawDraft = {}) {
     rawDraft?.employee_id || rawDraft?.employeeId || "",
   ).trim();
   const selectedIds = normalizeStringList(selectedEmployeeIds.value || [], 20);
-  const targetId = requestedId || (selectedIds.length === 1 ? selectedIds[0] : "");
+  const targetId =
+    requestedId || (selectedIds.length === 1 ? selectedIds[0] : "");
   if (!targetId) return null;
   return (
     (projectEmployees.value || []).find(
@@ -28441,7 +27688,9 @@ async function handleEmployeeIntentAfterAssistantResponse(
   item,
   { assistActionId = "" } = {},
 ) {
-  const parsedIntent = extractEmployeeIntentPayload(item?.content || "")?.intent;
+  const parsedIntent = extractEmployeeIntentPayload(
+    item?.content || "",
+  )?.intent;
   const intent =
     parsedIntent ||
     (assistActionId === "employee_create" &&
@@ -28454,14 +27703,18 @@ async function handleEmployeeIntentAfterAssistantResponse(
         resetAssist: assistActionId === "employee_create",
       });
       if (!opened) {
-        console.warn("employee create intent did not produce a confirmable draft");
+        console.warn(
+          "employee create intent did not produce a confirmable draft",
+        );
       }
       return;
     }
     case "update": {
       const opened = await autoUpdateEmployeeFromDraftMessage(item);
       if (!opened) {
-        console.warn("employee update intent did not produce a confirmable draft");
+        console.warn(
+          "employee update intent did not produce a confirmable draft",
+        );
       }
       return;
     }
@@ -28470,7 +27723,9 @@ async function handleEmployeeIntentAfterAssistantResponse(
         resetAssist: assistActionId === "employee_create",
       });
       if (!opened) {
-        console.warn("employee draft intent did not produce a confirmable draft");
+        console.warn(
+          "employee draft intent did not produce a confirmable draft",
+        );
       }
       return;
     }
@@ -28516,21 +27771,20 @@ async function confirmEmployeeDraftCreation(options = {}) {
     const selectedSkillKeys = new Set(
       selectedSkillIds.map((value) => normalizeMatchKey(value)),
     );
-    const skillDrafts = (Array.isArray(payload.skill_drafts)
-      ? payload.skill_drafts
-      : []
+    const skillDrafts = (
+      Array.isArray(payload.skill_drafts) ? payload.skill_drafts : []
     ).filter((draft) =>
       selectedSkillKeys.has(normalizeMatchKey(draft?.id || draft?.name)),
     );
-    const ruleDrafts = (Array.isArray(payload.rule_drafts)
-      ? payload.rule_drafts
-      : []
+    const ruleDrafts = (
+      Array.isArray(payload.rule_drafts) ? payload.rule_drafts : []
     ).filter((draft) =>
       selectedRuleDraftKeys.has(normalizeMatchKey(draft?.title)),
     );
     if (
       employeeDraftDialogMode.value === "create" &&
-      (!selectedSkillIds.length || (!selectedRuleIds.length && !ruleDrafts.length))
+      (!selectedSkillIds.length ||
+        (!selectedRuleIds.length && !ruleDrafts.length))
     ) {
       throw new Error("请至少勾选一项技能和一项规则后再创建智能体");
     }
@@ -28555,7 +27809,8 @@ async function confirmEmployeeDraftCreation(options = {}) {
     const visibleContent = stripInternalProtocolContentForDisplay(
       stripEmployeeIntentBlock(stripEmployeeDraftBlock(item.content)),
     );
-    item.content = `${visibleContent}\n\n${updated ? "已更新智能体" : "已创建智能体"}：${item.employeeDraftCreatedName}`.trim();
+    item.content =
+      `${visibleContent}\n\n${updated ? "已更新智能体" : "已创建智能体"}：${item.employeeDraftCreatedName}`.trim();
     if (!updated) {
       clearLocalLiuAgentUserQuestionsForChatSession(currentChatSessionId.value);
       clearEmployeeCreationComposerAssist();
@@ -30748,14 +30003,16 @@ async function fetchProvidersByProject(projectId) {
       runtimeExternalTools.value = [];
       externalMcpTotal.value = 0;
       updateLocalProjectRelations(normalizedProjectId, {
-        agent_index: localEmployees.map((item) => ({
-          id: String(item?.id || "").trim(),
-          name: String(item?.name || "").trim(),
-          project_id: normalizedProjectId,
-          directory_path: String(item?.directory_path || "").trim(),
-          file_path: String(item?.file_path || "").trim(),
-          updated_at: String(item?.updated_at || "").trim(),
-        })).filter((item) => item.id),
+        agent_index: localEmployees
+          .map((item) => ({
+            id: String(item?.id || "").trim(),
+            name: String(item?.name || "").trim(),
+            project_id: normalizedProjectId,
+            directory_path: String(item?.directory_path || "").trim(),
+            file_path: String(item?.file_path || "").trim(),
+            updated_at: String(item?.updated_at || "").trim(),
+          }))
+          .filter((item) => item.id),
         employees: [],
         skills: localSkills,
         rules: localRules,
@@ -30894,19 +30151,25 @@ async function handleQuickCreateEmployee(payload) {
       upsertLocalEntity("rules", rule);
     }
 
-    const selectedSkills = employee.skills.map((skillId) => {
-      const id = String(skillId?.id || skillId || "").trim();
-      return skills.find(
-        (item) => String(item?.id || item?.name || "").trim() === id,
-      );
-    }).filter((item) => String(item?.id || "").trim());
-    employee.skills = selectedSkills.map((skill) => String(skill.id || "").trim());
+    const selectedSkills = employee.skills
+      .map((skillId) => {
+        const id = String(skillId?.id || skillId || "").trim();
+        return skills.find(
+          (item) => String(item?.id || item?.name || "").trim() === id,
+        );
+      })
+      .filter((item) => String(item?.id || "").trim());
+    employee.skills = selectedSkills.map((skill) =>
+      String(skill.id || "").trim(),
+    );
     const selectedRules = rules.filter((rule) => {
       const ruleId = String(rule?.id || "").trim();
       return (
         employee.rule_ids.includes(ruleId) ||
         employee.rule_drafts.some(
-          (draft) => String(draft?.title || "").trim() === String(rule?.title || "").trim(),
+          (draft) =>
+            String(draft?.title || "").trim() ===
+            String(rule?.title || "").trim(),
         )
       );
     });
@@ -30916,14 +30179,25 @@ async function handleQuickCreateEmployee(payload) {
     if (!selectedRules.length) {
       throw new Error("选中的规则缺少可写入定义，请重新选择规则候选");
     }
-    employee.rule_ids = [...new Set(selectedRules.map((rule) => String(rule.id || "").trim()).filter(Boolean))];
+    employee.rule_ids = [
+      ...new Set(
+        selectedRules
+          .map((rule) => String(rule.id || "").trim())
+          .filter(Boolean),
+      ),
+    ];
     employee.rule_bindings = selectedRules.map((rule) => ({
       id: String(rule.id || "").trim(),
       title: String(rule.title || rule.id || "").trim(),
       domain: String(rule.domain || "").trim(),
     }));
 
-    const { employee: directoryEmployee, directories, writtenSkills, writtenRules } = await saveLocalAgentDirectoryResources({
+    const {
+      employee: directoryEmployee,
+      directories,
+      writtenSkills,
+      writtenRules,
+    } = await saveLocalAgentDirectoryResources({
       employee,
       skills: selectedSkills,
       rules: selectedRules,
@@ -30956,7 +30230,9 @@ async function handleQuickCreateEmployee(payload) {
       },
     });
     projectEmployees.value = await listLocalProjectAgents({ projectId });
-    selectedEmployeeIds.value = projectEmployees.value.map((item) => String(item.id));
+    selectedEmployeeIds.value = projectEmployees.value.map((item) =>
+      String(item.id),
+    );
     employeeDraftCatalog.value = {
       ...employeeDraftCatalog.value,
       skills: skills.map((skill) => ({
@@ -30972,10 +30248,14 @@ async function handleQuickCreateEmployee(payload) {
       })),
       loaded_at: Date.now(),
     };
-    ElMessage.success(`智能体「${directoryEmployee.name}」已加入当前项目并同步本地目录`);
+    ElMessage.success(
+      `智能体「${directoryEmployee.name}」已加入当前项目并同步本地目录`,
+    );
     return directoryEmployee;
   } catch (err) {
-    if (!(err?.recoverable && err?.code === "employee.skill_markdown_missing")) {
+    if (
+      !(err?.recoverable && err?.code === "employee.skill_markdown_missing")
+    ) {
       ElMessage.error(err?.detail || err?.message || "创建智能体失败");
     }
     throw err;
@@ -31084,7 +30364,7 @@ async function handleQuickUpdateEmployee(payload) {
           id: `local-rule-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           title,
           domain: String(draft?.domain || "").trim(),
-        content: readableEmployeeDraftValue(draft?.content),
+          content: readableEmployeeDraftValue(draft?.content),
           source: "local_project_chat",
         };
         rules.push(rule);
@@ -31097,8 +30377,7 @@ async function handleQuickUpdateEmployee(payload) {
         const skillId = String(rawSkill?.id || rawSkill || "").trim();
         return (
           skills.find(
-            (item) =>
-              String(item?.id || item?.name || "").trim() === skillId,
+            (item) => String(item?.id || item?.name || "").trim() === skillId,
           ) || { id: skillId, name: skillId }
         );
       })
@@ -31213,11 +30492,12 @@ async function syncPendingLocalAgentDirectories(
           boundRuleIds.has(String(rule?.id || "").trim()) ||
           draftRuleTitles.has(String(rule?.title || "").trim()),
       );
-      const { employee: savedEmployee } = await saveLocalAgentDirectoryResources({
-        employee: { ...employee, project_id: projectId },
-        skills: selectedSkills,
-        rules: selectedRules,
-      });
+      const { employee: savedEmployee } =
+        await saveLocalAgentDirectoryResources({
+          employee: { ...employee, project_id: projectId },
+          skills: selectedSkills,
+          rules: selectedRules,
+        });
     } catch (error) {
       console.warn("同步本地智能体目录失败", error);
     } finally {
@@ -31966,11 +31246,14 @@ async function fetchChatHistory(
           .map(normalizeRuntimeMessageSnapshot)
           .filter(Boolean),
       );
-      const nextRows = hasImmediateRows && immediateRows.length
-        ? immediateRows
-        : snapshotRows;
+      const nextRows =
+        hasImmediateRows && immediateRows.length ? immediateRows : snapshotRows;
       await applyChatMessagesWithoutPersisting(nextRows);
-      rememberChatSessionMessages(projectId, normalizedSessionId, messages.value);
+      rememberChatSessionMessages(
+        projectId,
+        normalizedSessionId,
+        messages.value,
+      );
       chatHistoryLoadedCount.value = messages.value.length;
       chatHistoryReachedEnd.value = true;
       rememberChatSession(projectId, normalizedSessionId);
@@ -31992,38 +31275,44 @@ async function fetchChatHistory(
         });
         void fetchPersistedChatRuntime(projectId, normalizedSessionId)
           .then(async (runtimePayload) => {
-          chatLoadDebug("runtime:read-complete", runtimeStartedAt, {
-            projectId: normalizedProjectId,
-            sessionId: normalizedSessionId,
-            rowCount: Array.isArray(runtimePayload?.messages)
-              ? runtimePayload.messages.length
-              : 0,
-          });
-          if (!isCurrentChatSession(projectId, normalizedSessionId)) return;
-          const mergedRows = applyPersistedChatRuntimeRows(
-            messages.value,
-            runtimePayload,
-          );
-          await applyChatMessagesWithoutPersisting(mergedRows);
-          rememberChatSessionMessages(projectId, normalizedSessionId, messages.value);
-          chatHistoryLoadedCount.value = messages.value.length;
-          restoreComposerPlanStateFromRuntimePayload(
-            projectId,
-            normalizedSessionId,
-            runtimePayload,
-          );
-          void fetchChatTaskTree(projectId, normalizedSessionId, { silent: true });
-          await restoreInteractiveChatRuntime(
-            projectId,
-            normalizedSessionId,
-            messages.value,
-            runtimePayload,
-          );
-          chatLoadDebug("runtime:restore-complete", runtimeStartedAt, {
-            projectId: normalizedProjectId,
-            sessionId: normalizedSessionId,
-            rowCount: messages.value.length,
-          });
+            chatLoadDebug("runtime:read-complete", runtimeStartedAt, {
+              projectId: normalizedProjectId,
+              sessionId: normalizedSessionId,
+              rowCount: Array.isArray(runtimePayload?.messages)
+                ? runtimePayload.messages.length
+                : 0,
+            });
+            if (!isCurrentChatSession(projectId, normalizedSessionId)) return;
+            const mergedRows = applyPersistedChatRuntimeRows(
+              messages.value,
+              runtimePayload,
+            );
+            await applyChatMessagesWithoutPersisting(mergedRows);
+            rememberChatSessionMessages(
+              projectId,
+              normalizedSessionId,
+              messages.value,
+            );
+            chatHistoryLoadedCount.value = messages.value.length;
+            restoreComposerPlanStateFromRuntimePayload(
+              projectId,
+              normalizedSessionId,
+              runtimePayload,
+            );
+            void fetchChatTaskTree(projectId, normalizedSessionId, {
+              silent: true,
+            });
+            await restoreInteractiveChatRuntime(
+              projectId,
+              normalizedSessionId,
+              messages.value,
+              runtimePayload,
+            );
+            chatLoadDebug("runtime:restore-complete", runtimeStartedAt, {
+              projectId: normalizedProjectId,
+              sessionId: normalizedSessionId,
+              rowCount: messages.value.length,
+            });
           })
           .catch((error) => {
             chatLoadDebug("runtime:error", runtimeStartedAt, {
@@ -35463,10 +34752,10 @@ async function sendLocalLiuAgentChatRequest({
     summary: employeeCreationProtocolRecovery
       ? "等待补充智能体主要职责"
       : ok
-      ? "本地会话完成"
-      : shouldAutoResume
-        ? `连接暂时中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动继续`
-        : "本地会话失败",
+        ? "本地会话完成"
+        : shouldAutoResume
+          ? `连接暂时中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动继续`
+          : "本地会话失败",
     detail: String(result?.error || "").trim(),
     phase: employeeCreationProtocolRecovery
       ? "waiting_user"
@@ -35520,10 +34809,10 @@ async function sendLocalLiuAgentChatRequest({
     text: employeeCreationProtocolRecovery
       ? "创建智能体未返回可确认草稿，正在等待补充主要职责后重新生成"
       : ok
-      ? "主模型对话已完成（桌面端编排），执行记录已写入 workspace"
-      : shouldAutoResume
-        ? `模型步骤中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动从 checkpoint 继续（第 ${nextAutoResumeRetryNumber}/${LOCAL_LIUAGENT_AUTO_RESUME_MAX_RETRIES} 次）`
-        : "主模型对话执行失败",
+        ? "主模型对话已完成（桌面端编排），执行记录已写入 workspace"
+        : shouldAutoResume
+          ? `模型步骤中断，${Math.ceil(autoResumeDelayMs / 1000)} 秒后自动从 checkpoint 继续（第 ${nextAutoResumeRetryNumber}/${LOCAL_LIUAGENT_AUTO_RESUME_MAX_RETRIES} 次）`
+          : "主模型对话执行失败",
     level: employeeCreationProtocolRecovery
       ? "warning"
       : ok
@@ -35562,9 +34851,9 @@ async function sendLocalLiuAgentChatRequest({
       ? "等待补充智能体主要职责"
       : ok
         ? "任务已完成"
-      : shouldAutoResume
-        ? "连接暂时中断，正在等待自动继续"
-        : "本地 Runtime 执行失败",
+        : shouldAutoResume
+          ? "连接暂时中断，正在等待自动继续"
+          : "本地 Runtime 执行失败",
     lastOutput: String(
       assistantMessage.content || result?.error || result?.summary || "",
     ).trim(),
@@ -35601,10 +34890,10 @@ async function sendLocalLiuAgentChatRequest({
         verificationResult: employeeCreationProtocolRecovery
           ? "模型未返回创建协议，宿主已要求补充智能体主要职责后重新生成草稿。"
           : ok
-          ? "桌面端 Tauri 本地 runtime 已返回 assistant 内容，并写入 workspace requirement 记录。"
-          : shouldAutoResume
-            ? `模型或网络连接暂时中断，计划进行第 ${nextAutoResumeRetryNumber} 次 checkpoint 自动续跑。`
-            : String(result?.error || "桌面端本地 runtime 执行失败。"),
+            ? "桌面端 Tauri 本地 runtime 已返回 assistant 内容，并写入 workspace requirement 记录。"
+            : shouldAutoResume
+              ? `模型或网络连接暂时中断，计划进行第 ${nextAutoResumeRetryNumber} 次 checkpoint 自动续跑。`
+              : String(result?.error || "桌面端本地 runtime 执行失败。"),
         source: "desktop_local_agent",
         sourceContext: {
           ...sourceContext,
@@ -35649,10 +34938,16 @@ async function buildLocalLiuAgentModelRuntime(
   modelNameOverride = "",
 ) {
   const providerId = String(
-    providerIdOverride || selectedProviderId.value || defaultProviderId.value || "",
+    providerIdOverride ||
+      selectedProviderId.value ||
+      defaultProviderId.value ||
+      "",
   ).trim();
   const modelName = String(
-    modelNameOverride || selectedModelName.value || defaultModelName.value || "",
+    modelNameOverride ||
+      selectedModelName.value ||
+      defaultModelName.value ||
+      "",
   ).trim();
   if (!providerId || !modelName) {
     throw new Error("请先在主对话模型中选择可用的模型供应商和模型");
@@ -35695,7 +34990,9 @@ async function buildLocalLiuAgentModelRuntime(
     runtime.thinking = "enabled";
     runtime.reasoningEffort = String(
       projectChatSettings.value.reasoning_effort || "high",
-    ).trim().toLowerCase();
+    )
+      .trim()
+      .toLowerCase();
   }
   return runtime;
 }
@@ -36350,7 +35647,8 @@ async function doSend(options = {}) {
       console.warn("employee draft catalog load failed", err);
     }
   }
-  const employeeEditContext = await readSelectedEmployeeDefinitionForEdit(userPrompt);
+  const employeeEditContext =
+    await readSelectedEmployeeDefinitionForEdit(userPrompt);
   const slashCommandRequiresTools = ["host_run", "lark_cli"].includes(
     String(slashCommand?.entry?.kind || "").trim(),
   );
@@ -36438,7 +35736,8 @@ async function doSend(options = {}) {
       return;
     }
     activeComposerAssist.value = composerAssistBeforeSessionCreation;
-    activeComposerToolCommandId.value = composerToolCommandBeforeSessionCreation;
+    activeComposerToolCommandId.value =
+      composerToolCommandBeforeSessionCreation;
     selectedEmployeeIds.value = selectedEmployeeIdsBeforeSessionCreation;
     rememberChatSessionComposerState(
       selectedProjectId.value,
@@ -36534,7 +35833,9 @@ async function doSend(options = {}) {
       attachments: localLiuAgentAttachments,
       mediaTools: localLiuAgentMediaTools.value,
       interactionMode:
-        effectiveAssistAction?.id === "employee_create" ? "employee_create" : "",
+        effectiveAssistAction?.id === "employee_create"
+          ? "employee_create"
+          : "",
       providerId: requestModelTarget.providerId,
       modelName: requestModelTarget.modelName,
       sourceContext: {
@@ -36902,13 +36203,15 @@ async function loadSelectedProjectConversation(projectId) {
   selectedProjectConversationLoadingKey = loadingKey;
   agentStatusExpanded.value = false;
   const hintedChatHistoryPromise = routeChatSessionId
-    ? fetchChatHistory(normalizedProjectId, routeChatSessionId).then((result) => {
-        chatLoadDebug("history:route-hint-complete", startedAt, {
-          projectId: normalizedProjectId,
-          sessionId: String(routeChatSessionId || "").trim(),
-        });
-        return result;
-      })
+    ? fetchChatHistory(normalizedProjectId, routeChatSessionId).then(
+        (result) => {
+          chatLoadDebug("history:route-hint-complete", startedAt, {
+            projectId: normalizedProjectId,
+            sessionId: String(routeChatSessionId || "").trim(),
+          });
+          return result;
+        },
+      )
     : null;
   try {
     const providerStartedAt = performance.now();
@@ -37228,6 +36531,83 @@ watch(
     await applyProjectDeployDraftFromRoute();
   },
 );
+
+const projectChatSettingsContext = {
+  activeSettingsModule,
+  activeSettingsPanel,
+  activeSettingsPanelMeta,
+  activeWebToolsConfigSaving,
+  agentDirectoryPicking,
+  aiEntryFileCreating,
+  aiEntryFileDraft,
+  aiEntryFileDirty,
+  aiEntryFilePicking,
+  aiEntryFileResolved,
+  aiEntryFileSaving,
+  closeSettingsCenter,
+  createDefaultAiEntryFile,
+  currentModelParameterMode,
+  currentModelParameterSections,
+  currentModelTypeDescription,
+  currentModelTypeLabel,
+  currentUsername,
+  currentUsernameInitial,
+  effectiveMcpServerRows,
+  editMcpServer,
+  formatActiveWebToolsConfigText,
+  formatProjectMcpConfigText,
+  globalWebToolsConfigText,
+  hasSelectedProject,
+  loading,
+  logoutFromChat,
+  openMcpServerDialog,
+  openSettingsCenter,
+  openWebToolsProviderDialog,
+  pickChatRuntimeDirectory,
+  projectChatSettings,
+  projectMcpConfigText,
+  projectMcpConfigSaving,
+  projectWebToolsConfigText,
+  projectWorkspaceDraft,
+  projectWorkspaceDirty,
+  projectWorkspacePicking,
+  projectWorkspaceResolved,
+  projectWorkspaceSaving,
+  promptProjectAiEntryFile,
+  promptProjectWorkspaceDirectory,
+  removeMcpServer,
+  resetProjectMcpConfigText,
+  resetProjectWebToolsConfigText,
+  ruleDirectoryPicking,
+  saveActiveWebToolsConfig,
+  saveProjectAiEntryFile,
+  saveProjectChatSettings,
+  saveProjectMcpConfig,
+  saveProjectWorkspaceDirectory,
+  selectedProjectId,
+  setCurrentModelParameterValue,
+  setWebToolProviderEnabled,
+  settingsContextBarRef,
+  settingsGuideButtonRef,
+  settingsInternalItems,
+  settingsMainCardRef,
+  settingsModuleMatches,
+  settingsModuleNavItems,
+  settingsModuleScope,
+  settingsModuleScopeOptions,
+  settingsModuleSearchQuery,
+  settingsSaving,
+  settingsSidebarRef,
+  skillDirectoryPicking,
+  startSettingsTour,
+  singleRoundAnswerOnly,
+  temperature,
+  testMcpServer,
+  visibleSettingsModuleNavItems,
+  webToolsConfigScope,
+  webToolsProviderRows,
+  webToolsScopeOptions,
+};
 
 onMounted(async () => {
   loading.value = true;
@@ -38396,113 +37776,14 @@ onUnmounted(() => {
 
 .chat-shell,
 .chat-shell.chat-shell--local-runner {
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr) !important;
+  min-width: 0;
   gap: 0;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-}
-
-.chat-workspace-rail {
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  overflow: visible;
-}
-
-.chat-workspace-sidebar {
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  opacity: 1;
-  transform: translateX(0);
-  transition: opacity 150ms ease, transform 150ms ease;
-}
-
-.chat-workspace-sidebar.is-hidden {
-  pointer-events: none;
-  opacity: 0;
-  transform: translateX(-18px);
-}
-
-.chat-shell--sidebar-collapsed {
-  grid-template-columns: 56px minmax(0, 1fr);
-}
-
-.chat-workspace-compact {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  height: 100%;
-  padding: 18px 10px;
-  box-sizing: border-box;
-  border-right: 1px solid #e7e7e4;
-  background: #f3f3f1;
-}
-
-.chat-workspace-compact__brand,
-.chat-workspace-compact__new {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: #202124;
-  cursor: pointer;
-  font-weight: 700;
-}
-
-.chat-workspace-compact__brand {
-  margin-bottom: 18px;
-  background: #202124;
-  color: #fff;
-  font-size: 12px;
-}
-
-.chat-workspace-compact__new {
-  font-size: 24px;
-  font-weight: 400;
-}
-
-.chat-workspace-compact__new:hover:not(:disabled),
-.chat-workspace-collapse:hover {
-  background: #e8e8e5;
-}
-
-.chat-workspace-compact__new:disabled {
-  opacity: 0.42;
-  cursor: default;
-}
-
-.chat-workspace-collapse {
-  position: absolute;
-  top: 50%;
-  right: -12px;
-  z-index: 5;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 48px;
-  padding: 0;
-  transform: translateY(-50%);
-  border: 1px solid #dfdfdc;
-  border-radius: 999px;
-  background: #fff;
-  color: #6d6f6b;
-  box-shadow: 0 3px 10px rgba(24, 25, 27, 0.08);
-  cursor: pointer;
-}
-
-.chat-workspace-collapse span {
-  font-size: 20px;
-  line-height: 1;
 }
 
 .chat-layout .chat-stage {
@@ -38588,56 +37869,51 @@ onUnmounted(() => {
   background: transparent;
 }
 
-:deep(.chat-context-bar) {
-  padding: 0;
+:deep(.chat-context) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 60px;
+  padding: 10px 24px;
   border-bottom: 1px solid #ececea;
 }
 
-:deep(.chat-context-bar__surface) {
-  min-height: 60px;
-  padding: 10px 24px;
-  border: 0;
-  border-radius: 0;
-  background: #fff;
-  box-shadow: none;
-}
-
-:deep(.chat-context-bar__project-select) {
+:deep(.chat-context__project-select) {
   display: none;
 }
 
-:deep(.chat-context-bar__project-select .el-select__wrapper) {
+:deep(.chat-context__project-select .el-select__wrapper) {
   min-height: 32px;
   padding: 0 8px;
   border: 0;
   background: transparent;
 }
 
-:deep(.chat-context-bar__project-select .el-select__selected-item),
-:deep(.chat-context-bar__project-select .el-select__placeholder) {
+:deep(.chat-context__project-select .el-select__selected-item),
+:deep(.chat-context__project-select .el-select__placeholder) {
   font-size: 14px;
   font-weight: 600;
 }
 
-:deep(.chat-context-bar__eyebrow) {
+:deep(.chat-context__eyebrow) {
   color: #969792;
   font-size: 11px;
   letter-spacing: 0.08em;
 }
 
-:deep(.chat-context-bar__meta) {
+:deep(.chat-context__meta) {
   margin-top: 4px;
   color: #8a8c87;
 }
 
-:deep(.chat-context-bar__action-button) {
+:deep(.chat-context__action-button) {
   border: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
   color: #6e706c !important;
 }
 
-:deep(.chat-context-bar__action-button:hover) {
+:deep(.chat-context__action-button:hover) {
   background: #f0f0ed !important;
   color: #202124 !important;
 }
@@ -38772,7 +38048,9 @@ onUnmounted(() => {
 
 .chat-layout :deep(.chat-input-wrapper.is-focused) {
   border-color: #9b9d98;
-  box-shadow: 0 0 0 3px rgba(32, 33, 36, 0.06), 0 8px 24px rgba(24, 25, 27, 0.08);
+  box-shadow:
+    0 0 0 3px rgba(32, 33, 36, 0.06),
+    0 8px 24px rgba(24, 25, 27, 0.08);
 }
 
 .chat-layout :deep(.chat-textarea .el-textarea__inner) {
@@ -38815,14 +38093,6 @@ onUnmounted(() => {
   .chat-shell.chat-shell--local-runner {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) minmax(112px, 20%);
-  }
-
-  .chat-shell--sidebar-collapsed {
-    grid-template-columns: 1fr;
-  }
-
-  .chat-workspace-collapse {
-    display: none;
   }
 
   :deep(.chat-conversation-sidebar) {

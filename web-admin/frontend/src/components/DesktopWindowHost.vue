@@ -3,7 +3,10 @@
     <div
       ref="mountPoint"
       class="desktop-window-host__mount"
-      :class="{ 'desktop-window-host__mount--chat': isChatRoute }"
+      :class="{
+        'desktop-window-host__mount--chat': isChatRoute,
+        'desktop-window-host__mount--settings': isSettingsRoute,
+      }"
     />
     <div v-if="error" class="desktop-window-host__error">{{ error }}</div>
   </div>
@@ -41,10 +44,15 @@ const emit = defineEmits(["route-change"]);
 const mountPoint = ref(null);
 const error = ref("");
 const activeRoutePath = ref("");
-const isChatRoute = computed(() =>
-  String(activeRoutePath.value || props.sourcePath || "").startsWith(
+const isChatRoute = computed(
+  () =>
+    String(activeRoutePath.value || props.sourcePath || "").trim() ===
     "/ai/chat",
-  ),
+);
+const isSettingsRoute = computed(() =>
+  String(activeRoutePath.value || props.sourcePath || "")
+    .trim()
+    .startsWith("/ai/chat/settings"),
 );
 let childApp = null;
 let childRouter = null;
@@ -140,8 +148,22 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-.desktop-window-host__mount--chat :deep(> .chat-layout),
-.desktop-window-host__mount--chat :deep(> .settings-center-page) {
+.desktop-window-host__mount--settings {
+  display: flex;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: hidden;
+}
+
+.desktop-window-host__mount--settings :deep(> .settings-center-page) {
+  width: 100%;
+  height: 100% !important;
+  min-height: 0;
+  max-height: 100% !important;
+  overflow: hidden;
+}
+
+.desktop-window-host__mount--chat :deep(> .chat-layout) {
   flex: 1 1 auto;
   width: 100%;
   min-height: 0;
