@@ -13,7 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{hash_map::DefaultHasher, BTreeMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -205,9 +205,9 @@ fn is_network_tool_interruption(
 pub fn start_local_chat(request: LocalChatRequest) -> LocalChatResult {
     let chat_session_id = request.chat_session_id.trim().to_string();
     clear_local_chat_pause(&chat_session_id);
-    let result = match start_local_chat_inner(request, None) {
+    let result = match start_local_chat_inner(request.clone(), None) {
         Ok(result) => result,
-        Err(error) => LocalChatResult::failed(chat_session_id.clone(), error),
+        Err(error) => failed_local_chat_result(&request, error),
     };
     clear_local_chat_pause(&chat_session_id);
     result
@@ -221,11 +221,31 @@ where
     F: Fn(Value),
 {
     let chat_session_id = request.chat_session_id.trim().to_string();
-    let result = match start_local_chat_inner(request, Some(&event_sink)) {
+    let result = match start_local_chat_inner(request.clone(), Some(&event_sink)) {
         Ok(result) => result,
-        Err(error) => LocalChatResult::failed(chat_session_id.clone(), error),
+        Err(error) => failed_local_chat_result(&request, error),
     };
     clear_local_chat_pause(&chat_session_id);
+    result
+}
+
+fn failed_local_chat_result(request: &LocalChatRequest, error: ToolError) -> LocalChatResult {
+    let chat_session_id = request.chat_session_id.trim().to_string();
+    let error_code = error.code.clone();
+    let error_message = error.message.clone();
+    let mut result = LocalChatResult::failed(chat_session_id.clone(), error);
+    if let Ok(workspace_root) = resolve_runtime_workspace_root(&request.workspace_path) {
+        if let Ok(path) = write_runtime_entry_error_record(
+            &workspace_root,
+            request.project_id.trim(),
+            &chat_session_id,
+            &request.message,
+            &error_code,
+            &error_message,
+        ) {
+            result.error_record_paths.push(path);
+        }
+    }
     result
 }
 
@@ -981,6 +1001,23 @@ fn start_local_chat_inner(
         &agent_loop,
     );
     let model_result = agent_loop.final_model_result();
+    let model_error_record_path = if !model_result.ok
+        && model_result.status == "failed"
+        && model_result.error_code != "runtime.paused"
+    {
+        write_model_error_record(
+            &workspace_root,
+            &project_id,
+            &chat_session_id,
+            &session_id,
+            &user_message,
+            &model_request,
+            &model_result,
+        )
+        .ok()
+    } else {
+        None
+    };
     let planned_tools = agent_loop.planned_tools.clone();
     let tool_results = agent_loop.tool_results.clone();
     let awaiting_permission = agent_loop.awaiting_permission;
@@ -1000,7 +1037,8 @@ fn start_local_chat_inner(
         agent_loop.summary().as_str(),
         agent_loop.error().as_str(),
     );
-    let error_record_paths = runtime_error_record_paths(&agent_loop);
+    let error_record_paths =
+        all_runtime_error_record_paths(&agent_loop, model_error_record_path.as_deref());
     let assistant_content =
         if agent_loop.stopped_reason == "requirement_blocked" && !error_record_paths.is_empty() {
             format!(
@@ -1198,6 +1236,7 @@ fn start_local_chat_inner(
         &model_request,
         &model_result,
         &agent_loop,
+        model_error_record_path.as_deref(),
         &planned_tools,
         &tool_results,
         &agent_run_context,
@@ -1351,6 +1390,7 @@ fn build_local_chat_requirement_record(
     model_request: &ModelStepRequest,
     model_result: &ModelStepResult,
     agent_loop: &AgentLoopResult,
+    model_error_record_path: Option<&str>,
     planned_tools: &[PlannedLocalTool],
     tool_results: &[super::types::ToolExecutionResult],
     agent_run_context: &AgentRunContext,
@@ -1507,7 +1547,10 @@ fn build_local_chat_requirement_record(
     record.insert("runtime_state".to_string(), json!(runtime_artifacts));
     record.insert(
         "runtime_error_record_paths".to_string(),
-        json!(runtime_error_record_paths(agent_loop)),
+        json!(all_runtime_error_record_paths(
+            agent_loop,
+            model_error_record_path
+        )),
     );
     record.insert(
         "task_lifecycle".to_string(),
@@ -7460,6 +7503,125 @@ fn runtime_error_record_paths(agent_loop: &AgentLoopResult) -> Vec<String> {
         .collect()
 }
 
+fn all_runtime_error_record_paths(
+    agent_loop: &AgentLoopResult,
+    model_error_record_path: Option<&str>,
+) -> Vec<String> {
+    let mut paths = runtime_error_record_paths(agent_loop);
+    if let Some(path) = model_error_record_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        paths.push(path.to_string());
+    }
+    paths
+}
+
+fn write_runtime_entry_error_record(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    requirement: &str,
+    error_code: &str,
+    error_message: &str,
+) -> Result<String, ToolError> {
+    let error_id = format!("err_entry_{}", epoch_millis());
+    let path = workspace_root
+        .join(".ai-employee")
+        .join("runtime-errors")
+        .join(sanitize_path_segment(project_id))
+        .join(sanitize_path_segment(chat_session_id))
+        .join(format!("{error_id}.json"));
+    let raw = json!({
+        "record_type": "desktop-local-agent-runtime-error",
+        "version": "runtime-error/v1",
+        "error_id": error_id,
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "created_at_epoch_ms": epoch_millis(),
+        "requirement": requirement,
+        "stage": "runtime_entry",
+        "error_code": error_code,
+        "error_message": error_message,
+        "retryable": false,
+        "requires_user": false,
+        "requirement_blocked": false,
+        "ai_judgement": {
+            "status": "not_requested",
+            "decision": "entry_failed",
+            "reason": "Runtime 在进入模型与工具调度前失败，已保存原始错误供后续恢复使用。"
+        }
+    });
+    write_requirement_record(&path, raw)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+fn write_model_error_record(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    runtime_session_id: &str,
+    user_message: &str,
+    request: &ModelStepRequest,
+    result: &ModelStepResult,
+) -> Result<String, ToolError> {
+    let error_id = format!(
+        "err_{}_model_{}",
+        sanitize_path_segment(runtime_session_id),
+        epoch_millis()
+    );
+    let path = workspace_root
+        .join(".ai-employee")
+        .join("runtime-errors")
+        .join(sanitize_path_segment(project_id))
+        .join(sanitize_path_segment(chat_session_id))
+        .join(format!("{error_id}.json"));
+    let endpoint = Url::parse(request.base_url.trim())
+        .ok()
+        .map(|url| {
+            format!(
+                "{}://{}{}",
+                url.scheme(),
+                url.host_str().unwrap_or(""),
+                url.path()
+            )
+        })
+        .unwrap_or_default();
+    let retryable = matches!(
+        result.error_code.as_str(),
+        "model.connection_timeout" | "model.request_failed"
+    );
+    let raw = json!({
+        "record_type": "desktop-local-agent-runtime-error",
+        "version": "runtime-error/v1",
+        "error_id": error_id,
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "runtime_session_id": runtime_session_id,
+        "created_at_epoch_ms": epoch_millis(),
+        "requirement": user_message,
+        "stage": "model_request",
+        "mode": request.mode,
+        "provider_id": request.provider_id,
+        "model_name": request.model_name,
+        "endpoint": endpoint,
+        "error_code": result.error_code,
+        "error_message": result.error,
+        "summary": result.summary,
+        "retryable": retryable,
+        "requires_user": false,
+        "requirement_blocked": false,
+        "attempts": 1,
+        "ai_judgement": {
+            "status": "not_requested",
+            "decision": if retryable { "retry_or_resume" } else { "blocked_pending_model" },
+            "reason": "模型接口本身失败，无法再调用同一模型进行错误理解。"
+        }
+    });
+    write_requirement_record(&path, raw)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 fn write_runtime_error_record(
     workspace_root: &Path,
     project_id: &str,
@@ -12374,7 +12536,33 @@ fn write_requirement_record(path: &PathBuf, content: Value) -> Result<(), ToolEr
             format!("serialize requirement record failed: {err}"),
         )
     })?;
-    fs::write(path, raw).map_err(|err| {
+    let temporary_path = path.with_extension(format!(
+        "json.tmp.{}.{}",
+        std::process::id(),
+        epoch_millis()
+    ));
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        file.write_all(raw.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        match fs::rename(&temporary_path, path) {
+            Ok(()) => Ok(()),
+            Err(rename_error) if path.exists() => {
+                // Windows cannot replace an existing file with rename.
+                fs::remove_file(path)?;
+                fs::rename(&temporary_path, path).map_err(|_| rename_error)
+            }
+            Err(error) => Err(error),
+        }
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    write_result.map_err(|err| {
         ToolError::new(
             "tool.execution_failed",
             format!("write requirement record failed: {err}"),
@@ -13647,13 +13835,45 @@ mod tests {
             result.attempts[1].failure_signature
         );
         assert_eq!(result.error_code(), "requirement.blocked");
-        assert!(result
-            .attempts
-            .iter()
-            .all(|attempt| {
-                !attempt.error_record_path.is_empty()
-                    && PathBuf::from(&attempt.error_record_path).is_file()
-            }));
+        assert!(result.attempts.iter().all(|attempt| {
+            !attempt.error_record_path.is_empty()
+                && PathBuf::from(&attempt.error_record_path).is_file()
+        }));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn model_failure_is_written_to_project_session_error_record() {
+        let dir = std::env::temp_dir().join(format!("liuagent_model_error_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut request = test_model_request("生成一张产品图片");
+        request.base_url = "https://provider.example/v1?api_key=should-not-log".to_string();
+        let result = ModelStepResult::failed(
+            &request,
+            "model.request_failed",
+            "模型请求失败：upstream returned HTTP 503",
+        );
+
+        let path = write_model_error_record(
+            &dir,
+            "project-test",
+            "chat-test",
+            "runtime-test",
+            "生成一张产品图片",
+            &request,
+            &result,
+        )
+        .expect("model error record should be written");
+        let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(record["stage"], json!("model_request"));
+        assert_eq!(record["project_id"], json!("project-test"));
+        assert_eq!(record["chat_session_id"], json!("chat-test"));
+        assert_eq!(record["error_code"], json!("model.request_failed"));
+        assert_eq!(record["endpoint"], json!("https://provider.example/v1"));
+        assert_eq!(record["retryable"], json!(true));
+        assert_eq!(record["ai_judgement"]["status"], json!("not_requested"));
+        assert!(!record.to_string().contains("should-not-log"));
         let _ = fs::remove_dir_all(dir);
     }
 

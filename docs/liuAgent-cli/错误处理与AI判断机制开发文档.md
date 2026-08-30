@@ -348,15 +348,15 @@ AI 不负责：
 
 这些能力可以支撑错误分析的基础，但当前记录仍然分散，且需求记录文件更偏向“会话最终状态”，不是完整的逐错误记录。
 
-### 6.2 目标错误记录
+### 6.2 错误记录实现
 
-建议为每个错误事件生成独立记录：
+每个需要追踪的错误事件生成独立记录：
 
 ```text
 <workspace>/.ai-employee/runtime-errors/<project_id>/<chat_session_id>/<error_id>.json
 ```
 
-文件内容建议包括：
+文件内容包括：
 
 ```json
 {
@@ -367,7 +367,7 @@ AI 不负责：
   "chat_session_id": "session_xxx",
   "runtime_session_id": "runtime_xxx",
   "requirement": "用户原始需求",
-  "stage": "tool_execution",
+  "stage": "tool_execution|model_request|runtime_entry",
   "tool": {
     "name": "read_file",
     "tool_call_id": "call_xxx",
@@ -394,7 +394,11 @@ AI 不负责：
       "event_xxx"
     ]
   },
-  "ai_judgement": null,
+  "ai_judgement": {
+    "status": "pending|completed|not_requested",
+    "decision": "",
+    "reason": ""
+  },
   "resolution": null
 }
 ```
@@ -408,6 +412,13 @@ AI 不负责：
 - 前端只消费 Runtime 返回的路径；
 - 记录文件写入失败不能覆盖原始工具错误；
 - 错误记录失败时，至少保留 Runtime 内存事件和会话需求记录。
+
+当前已覆盖：
+
+- 工具执行错误：记录工具参数摘要、失败签名、重试信息、stdout/stderr 和关联日志路径；
+- 模型请求错误：记录安全的 endpoint、供应商、模型和错误码，不记录 API Key 或 URL 查询凭据；
+- Runtime 入口错误：工作区、网关或初始化阶段失败时也会落盘；
+- 错误记录路径会回写到 `LocalChatResult`，最终不可恢复时由对话反馈给用户。
 
 ## 7. 前端展示规则
 
@@ -457,12 +468,13 @@ ElMessageBox.alert(...)
 5. `requirement_blocked` 会使用 AI 最终内容，并附带错误记录文件路径。
 6. `ProjectChat.vue` 普通 Runtime 结果不再调用错误弹框，也不再拼接 `执行失败：原始错误`。
 7. 网络中断、超时、授权和用户补充信息仍保留各自的恢复或交互路径。
+8. 模型请求失败和 Runtime 入口失败也会写入 `runtime-errors`，并将记录路径返回给前端。
+9. 会话切换会等待活动任务的最新消息和媒体资产快照写入完成后再读取。
 
 仍需后续增强的部分：
 
-1. 模型接口错误目前仍主要使用现有连接中断和模型失败分支，模型错误记录可继续统一接入 `runtime-errors`。
-2. 错误 JSON 当前复用既有工作区写入函数；如需更强的抗崩溃能力，可再增加临时文件加原子替换。
-3. 前端其他独立上传流程仍有专用错误提示，它们不属于本地 Agent 对话 Runtime 主链路。
+1. 前端其他独立上传流程仍有专用错误提示，它们不属于本地 Agent 对话 Runtime 主链路。
+2. 图片生成成功后的真实供应商回归仍需在桌面端执行；代码层面已覆盖会话切换时的持久化等待和媒体合并恢复。
 
 ## 9. 非回归要求
 
@@ -493,6 +505,7 @@ ElMessageBox.alert(...)
 8. 模型连接超时，重试后仍失败，返回连接错误。
 9. 运行过程中切换会话，错误记录和最终回答仍回到原会话。
 10. 错误日志写入失败时，原始错误仍保留在 Runtime 和会话记录中。
+11. 图片生成或其他媒体工具完成后切换到新会话，再切回原会话，媒体 URL 和 `mediaAssets` 仍可恢复。
 
 ## 11. 本次实现的状态约定
 
@@ -506,6 +519,6 @@ Runtime 内部状态与用户对话状态必须分开：
 | `waiting_user` | 请求用户补充必要信息，保存 checkpoint |
 | `runtime_interrupted` | 按现有策略自动从 checkpoint 恢复 |
 | `requirement_blocked` | 展示 AI 解析后的自然语言结论和错误记录路径 |
-| 模型连接超时重试耗尽 | 返回连接不可用说明和已保留的本地上下文 |
+| 模型连接超时重试耗尽 | 返回连接不可用说明、错误记录路径和已保留的本地上下文 |
 
 普通工具错误不应直接映射成用户消息中的 `failed`、`blocked` 或 Runtime 原始错误。运行详情可以保留这些字段，但最终 assistant 内容必须来自 AI 正常回答，或来自 `requirement_blocked` 场景下的 AI 解析结果。

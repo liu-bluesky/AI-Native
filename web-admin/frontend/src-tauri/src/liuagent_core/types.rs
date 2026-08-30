@@ -33,7 +33,7 @@ pub struct ToolExecutionRequest {
     pub permission_decision: Option<PermissionDecisionInput>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalChatRequest {
     pub project_id: String,

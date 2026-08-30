@@ -4417,6 +4417,11 @@ const {
   appendTerminalPanelLineState,
   resetTerminalPanelState,
 } = useProjectChatTerminal();
+const activeTerminalMirrorTarget = ref({
+  projectId: "",
+  chatSessionId: "",
+  messageId: "",
+});
 const {
   wsConnected,
   wsClient,
@@ -10803,10 +10808,11 @@ function persistLocalLiuAgentActiveRunMessages(run) {
   const projectId = String(run?.projectId || "").trim();
   const chatSessionId = String(run?.chatSessionId || "").trim();
   const rows = localLiuAgentActiveRunRows(run);
-  if (!projectId || !chatSessionId || !rows.length) return false;
+  if (!projectId || !chatSessionId || !rows.length) {
+    return Promise.resolve(false);
+  }
   rememberChatSessionMessages(projectId, chatSessionId, rows);
-  persistRememberedChatSessionMessages(projectId, chatSessionId);
-  return true;
+  return persistRememberedChatSessionMessages(projectId, chatSessionId);
 }
 
 function localLiuAgentRuntimeEventKey(event = {}) {
@@ -10911,7 +10917,7 @@ async function handleNativeLiuAgentRuntimeEventAsync(event = {}) {
       "permission.required"
   ) {
     markLocalLiuAgentRuntimeEventSeen(event);
-    persistLocalLiuAgentActiveRunMessages(run);
+    await persistLocalLiuAgentActiveRunMessages(run);
     return true;
   }
   if (["plan_created", "plan_updated", "plan_completed"].includes(eventType)) {
@@ -10933,7 +10939,7 @@ async function handleNativeLiuAgentRuntimeEventAsync(event = {}) {
       String(run.assistantMessageId || row.id || "").trim(),
     );
     markLocalLiuAgentRuntimeEventSeen(event);
-    persistLocalLiuAgentActiveRunMessages(run);
+    await persistLocalLiuAgentActiveRunMessages(run);
     if (isCurrentChatSession(run.projectId, chatSessionId)) {
       scrollToBottom({ force: false });
     }
@@ -10946,6 +10952,7 @@ async function handleNativeLiuAgentRuntimeEventAsync(event = {}) {
     )
   ) {
     markLocalLiuAgentRuntimeEventSeen(event);
+    await persistLocalLiuAgentActiveRunMessages(run);
     return true;
   }
   const operation = localLiuAgentRuntimeEventOperation(event, {
@@ -10961,7 +10968,7 @@ async function handleNativeLiuAgentRuntimeEventAsync(event = {}) {
     autoExpand: true,
   });
   markLocalLiuAgentRuntimeEventSeen(event);
-  persistLocalLiuAgentActiveRunMessages(run);
+  await persistLocalLiuAgentActiveRunMessages(run);
   if (isCurrentChatSession(run.projectId, chatSessionId)) {
     scrollToBottom({ force: false });
   }
@@ -11014,6 +11021,9 @@ async function reconcileRestoredLocalLiuAgentRun(run) {
     projectId,
     chatSessionId,
     localLiuAgentActiveRunRows(run),
+    isCurrentChatSession(projectId, chatSessionId)
+      ? chatSessionNavigationEpoch
+      : null,
   );
 }
 
@@ -11353,10 +11363,16 @@ async function restoreLocalLiuAgentRuntimeState(
   projectId,
   chatSessionId,
   rows = [],
+  navigationEpoch = null,
 ) {
   const activeProjectId = String(selectedProjectId.value || "").trim();
   const activeChatSessionId = String(currentChatSessionId.value || "").trim();
   if (
+    !isCurrentChatSessionNavigation(
+      projectId,
+      chatSessionId,
+      navigationEpoch,
+    ) ||
     String(projectId || "").trim() !== activeProjectId ||
     String(chatSessionId || "").trim() !== activeChatSessionId
   ) {
@@ -11373,6 +11389,15 @@ async function restoreLocalLiuAgentRuntimeState(
     });
   } catch (err) {
     console.warn("recover local liuAgent runtime failed", err);
+    return;
+  }
+  if (
+    !isCurrentChatSessionNavigation(
+      projectId,
+      chatSessionId,
+      navigationEpoch,
+    )
+  ) {
     return;
   }
   if (!result?.ok) {
@@ -11466,7 +11491,7 @@ async function restoreLocalLiuAgentRuntimeState(
     const activeRun = {
       chatSessionId: activeChatSessionId,
       projectId: activeProjectId,
-      rows: messages.value,
+      rows: Array.isArray(rows) ? rows : messages.value,
       assistantMessageId,
       userMessageId: String(userMessage?.messageId || "").trim(),
       rootGoal: String(userMessage?.content || row.content || "").trim(),
@@ -11671,6 +11696,15 @@ async function restoreLocalLiuAgentRuntimeState(
       });
     }
   }
+  if (
+    !isCurrentChatSessionNavigation(
+      projectId,
+      chatSessionId,
+      navigationEpoch,
+    )
+  ) {
+    return;
+  }
   rememberChatSessionMessages(
     activeProjectId,
     activeChatSessionId,
@@ -11721,8 +11755,26 @@ function markTerminalOperationsWaitingForInput(
 function shouldPreserveTerminalInteractionAfterDone(row, pending) {
   const assistantIndex = Number(pending?.assistantIndex ?? -1);
   if (!row || assistantIndex < 0) return false;
+  const target = activeTerminalMirrorTarget.value;
+  if (
+    target.chatSessionId &&
+    target.chatSessionId !== String(pending?.chatSessionId || "").trim()
+  ) {
+    return false;
+  }
+  if (
+    target.messageId &&
+    target.messageId !== String(row?.id || "").trim()
+  ) {
+    return false;
+  }
   const activeIndex = Number(activeTerminalMirrorAssistantIndex.value ?? -1);
-  if (activeIndex !== assistantIndex) return false;
+  if (
+    isCurrentChatSession(pending?.projectId, pending?.chatSessionId) &&
+    activeIndex !== assistantIndex
+  ) {
+    return false;
+  }
   const hasLiveSession = hasActiveTerminalTransport();
   if (!hasLiveSession) return false;
   const interaction = terminalStructuredInteraction.value;
@@ -11739,6 +11791,111 @@ function shouldPreserveTerminalInteractionAfterDone(row, pending) {
     hasLiveTerminalOperation(row) ||
     String(row.displayMode || "").trim() === "terminal",
   );
+}
+
+function setActiveTerminalMirrorTarget(
+  row,
+  chatSessionId = currentChatSessionId.value,
+  projectIdOverride = "",
+) {
+  const projectId = String(
+    projectIdOverride || selectedProjectId.value || "",
+  ).trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  const messageId = String(row?.id || "").trim();
+  if (!projectId || !normalizedChatSessionId || !messageId) return false;
+  activeTerminalMirrorTarget.value = {
+    projectId,
+    chatSessionId: normalizedChatSessionId,
+    messageId,
+  };
+  return true;
+}
+
+function clearActiveTerminalMirrorTarget() {
+  activeTerminalMirrorTarget.value = {
+    projectId: "",
+    chatSessionId: "",
+    messageId: "",
+  };
+}
+
+function terminalMirrorEventChatSessionId(eventData = {}) {
+  return String(
+    eventData?.chat_session_id ||
+      eventData?.chatSessionId ||
+      activeTerminalMirrorTarget.value.chatSessionId ||
+      currentChatSessionId.value ||
+      "",
+  ).trim();
+}
+
+function terminalMirrorRowsForSession(chatSessionId = "") {
+  const projectId = String(
+    activeTerminalMirrorTarget.value.projectId ||
+      selectedProjectId.value ||
+      "",
+  ).trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!projectId || !normalizedChatSessionId) return [];
+  if (isCurrentChatSession(projectId, normalizedChatSessionId)) {
+    return messages.value;
+  }
+  return getRememberedChatSessionMessages(projectId, normalizedChatSessionId) || [];
+}
+
+function findTerminalMirrorTargetRow(chatSessionId = "") {
+  const normalizedChatSessionId = String(
+    chatSessionId || terminalMirrorEventChatSessionId(),
+  ).trim();
+  const rows = terminalMirrorRowsForSession(normalizedChatSessionId);
+  if (!rows.length) return null;
+  const target = activeTerminalMirrorTarget.value;
+  if (
+    target.chatSessionId === normalizedChatSessionId &&
+    target.messageId
+  ) {
+    const matched = rows.find(
+      (row) => String(row?.id || "").trim() === target.messageId,
+    );
+    if (matched) return matched;
+  }
+  if (isCurrentChatSession(target.projectId, normalizedChatSessionId)) {
+    const activeIndex = Number(activeTerminalMirrorAssistantIndex.value ?? -1);
+    if (activeIndex >= 0 && activeIndex < rows.length) {
+      const activeRow = rows[activeIndex];
+      if (isTerminalInputCandidateRow(activeRow)) return activeRow;
+    }
+  }
+  return (
+    [...rows]
+      .reverse()
+      .find((row) => isTerminalInputCandidateRow(row)) || null
+  );
+}
+
+function isCurrentTerminalMirrorEvent(eventData = {}) {
+  const eventProjectId = String(
+    eventData?.project_id ||
+      eventData?.projectId ||
+      selectedProjectId.value ||
+      "",
+  ).trim();
+  const chatSessionId = terminalMirrorEventChatSessionId(eventData);
+  return isCurrentChatSession(eventProjectId, chatSessionId);
+}
+
+function persistTerminalMirrorEventRows(eventData = {}) {
+  const projectId = String(
+    eventData?.project_id ||
+      eventData?.projectId ||
+      activeTerminalMirrorTarget.value.projectId ||
+      selectedProjectId.value ||
+      "",
+  ).trim();
+  const chatSessionId = terminalMirrorEventChatSessionId(eventData);
+  if (!projectId || !chatSessionId) return Promise.resolve(false);
+  return persistRememberedChatSessionMessages(projectId, chatSessionId);
 }
 
 function findLatestTerminalInputAssistantIndex(rows) {
@@ -12427,9 +12584,14 @@ const localRunnerProcessStatusTagType = computed(() => {
   return "info";
 });
 const activeTerminalMirrorRow = computed(() => {
-  const index = Number(activeTerminalMirrorAssistantIndex.value);
-  if (!Number.isInteger(index) || index < 0) return null;
-  return messages.value[index] || null;
+  const target = activeTerminalMirrorTarget.value;
+  if (
+    target.chatSessionId &&
+    !isCurrentChatSession(target.projectId, target.chatSessionId)
+  ) {
+    return null;
+  }
+  return findTerminalMirrorTargetRow(target.chatSessionId);
 });
 const localRunnerProcessItems = computed(() => {
   const row = activeTerminalMirrorRow.value;
@@ -13111,6 +13273,20 @@ const chatHistoryLoading = ref(false);
 const chatHistoryLoadingMore = ref(false);
 const chatHistoryReachedEnd = ref(false);
 let activeChatHistoryLoadingKey = "";
+let chatSessionNavigationEpoch = 0;
+
+function isCurrentChatSessionNavigation(
+  projectId,
+  chatSessionId,
+  navigationEpoch = null,
+) {
+  if (!isCurrentChatSession(projectId, chatSessionId)) return false;
+  return (
+    navigationEpoch === null ||
+    Number(navigationEpoch) === Number(chatSessionNavigationEpoch)
+  );
+}
+
 function chatSessionMessageCacheKey(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
@@ -13282,22 +13458,28 @@ function restoreComposerPlanStateFromRuntimePayload(
   }
 }
 
-function persistCurrentChatRuntimeBeforeSessionSwitch(
+async function persistCurrentChatRuntimeBeforeSessionSwitch(
   nextProjectId,
   nextChatSessionId,
 ) {
   const activeProjectId = String(selectedProjectId.value || "").trim();
   const activeChatSessionId = String(currentChatSessionId.value || "").trim();
-  if (!activeProjectId || !activeChatSessionId) return;
+  if (!activeProjectId || !activeChatSessionId) return false;
   if (
     activeProjectId === String(nextProjectId || "").trim() &&
     activeChatSessionId === String(nextChatSessionId || "").trim()
   ) {
-    return;
+    return false;
   }
-  persistCurrentChatRuntimeNow(activeProjectId, activeChatSessionId, {
-    onlyIfDirty: true,
-  });
+  const activeRun = localLiuAgentActiveRunForChatSession(activeChatSessionId);
+  if (activeRun) {
+    return await persistLocalLiuAgentActiveRunMessages(activeRun);
+  }
+  return await persistCurrentChatRuntimeNow(
+    activeProjectId,
+    activeChatSessionId,
+    { onlyIfDirty: true },
+  );
 }
 
 function isCurrentChatSession(projectId, chatSessionId) {
@@ -13843,18 +14025,31 @@ function mergeHistoryRowWithRuntimeSnapshot(historyRow, runtimeRow) {
     content: historyContent.trim() ? historyContent : runtimeContent,
     time: historyTime || runtimeTime,
     role: String(historyRow?.role || runtimeRow?.role || "assistant"),
-    images:
-      Array.isArray(historyRow?.images) && historyRow.images.length
-        ? historyRow.images
-        : runtimeRow.images,
-    videos:
-      Array.isArray(historyRow?.videos) && historyRow.videos.length
-        ? historyRow.videos
-        : runtimeRow.videos,
-    attachments:
-      Array.isArray(historyRow?.attachments) && historyRow.attachments.length
-        ? historyRow.attachments
-        : runtimeRow.attachments,
+    images: mergeImageUrls(historyRow?.images, runtimeRow?.images),
+    videos: mergeVideoUrls(historyRow?.videos, runtimeRow?.videos),
+    audios: mergeAudioUrls(historyRow?.audios, runtimeRow?.audios),
+    mediaAssets: normalizePersistedMediaAssets([
+      ...(Array.isArray(historyRow?.mediaAssets)
+        ? historyRow.mediaAssets
+        : Array.isArray(historyRow?.media_assets)
+          ? historyRow.media_assets
+          : []),
+      ...(Array.isArray(runtimeRow?.mediaAssets)
+        ? runtimeRow.mediaAssets
+        : Array.isArray(runtimeRow?.media_assets)
+          ? runtimeRow.media_assets
+          : []),
+    ]),
+    attachments: [
+      ...new Set([
+        ...(Array.isArray(historyRow?.attachments)
+          ? historyRow.attachments
+          : []),
+        ...(Array.isArray(runtimeRow?.attachments)
+          ? runtimeRow.attachments
+          : []),
+      ]),
+    ],
   };
 }
 
@@ -14025,10 +14220,16 @@ async function restoreNativeExternalAgentRuntime(
   projectId,
   chatSessionId,
   runtimePayload,
+  navigationEpoch = null,
 ) {
   const activeProjectId = String(selectedProjectId.value || "").trim();
   const activeChatSessionId = String(currentChatSessionId.value || "").trim();
   if (
+    !isCurrentChatSessionNavigation(
+      projectId,
+      chatSessionId,
+      navigationEpoch,
+    ) ||
     String(projectId || "").trim() !== activeProjectId ||
     String(chatSessionId || "").trim() !== activeChatSessionId
   ) {
@@ -14061,6 +14262,15 @@ async function restoreNativeExternalAgentRuntime(
       );
     });
   for (const runtimeSnapshot of runtimeSnapshots) {
+    if (
+      !isCurrentChatSessionNavigation(
+        projectId,
+        chatSessionId,
+        navigationEpoch,
+      )
+    ) {
+      return;
+    }
     rememberNativeExternalAgentSessionBinding({
       sessionId: runtimeSnapshot.session_id,
       chatSessionId: activeChatSessionId,
@@ -14099,6 +14309,15 @@ async function restoreNativeExternalAgentRuntime(
       });
     } catch (err) {
       console.warn("restore native external agent session failed", err);
+    }
+    if (
+      !isCurrentChatSessionNavigation(
+        projectId,
+        chatSessionId,
+        navigationEpoch,
+      )
+    ) {
+      return;
     }
     if (snapshot?.sessionId) {
       applyNativeExternalAgentSessionSnapshot(snapshot, {
@@ -14177,16 +14396,32 @@ async function restoreInteractiveChatRuntime(
   chatSessionId,
   rows,
   runtimePayload,
+  navigationEpoch = null,
 ) {
-  const activeProjectId = String(selectedProjectId.value || "").trim();
-  const activeChatSessionId = String(currentChatSessionId.value || "").trim();
   if (
-    String(projectId || "").trim() !== activeProjectId ||
-    String(chatSessionId || "").trim() !== activeChatSessionId
+    !isCurrentChatSessionNavigation(
+      projectId,
+      chatSessionId,
+      navigationEpoch,
+    )
   ) {
     return;
   }
-  await restoreLocalLiuAgentRuntimeState(projectId, chatSessionId, rows);
+  await restoreLocalLiuAgentRuntimeState(
+    projectId,
+    chatSessionId,
+    rows,
+    navigationEpoch,
+  );
+  if (
+    !isCurrentChatSessionNavigation(
+      projectId,
+      chatSessionId,
+      navigationEpoch,
+    )
+  ) {
+    return;
+  }
   const terminal =
     runtimePayload?.terminal && typeof runtimePayload.terminal === "object"
       ? runtimePayload.terminal
@@ -14204,12 +14439,44 @@ async function restoreInteractiveChatRuntime(
   hostTerminalWorkspacePath.value = String(
     terminal.host_terminal_workspace_path || "",
   ).trim();
-  activeTerminalMirrorAssistantIndex.value = -1;
+  const restoredTerminalMessageId = String(
+    terminal.active_assistant_message_id ||
+      terminal.activeAssistantMessageId ||
+      "",
+  ).trim();
+  const restoredTerminalRow = restoredTerminalMessageId
+    ? messages.value.find(
+        (row) => String(row?.id || "").trim() === restoredTerminalMessageId,
+      )
+    : null;
+  if (restoredTerminalRow) {
+    setActiveTerminalMirrorTarget(
+      restoredTerminalRow,
+      chatSessionId,
+      projectId,
+    );
+    activeTerminalMirrorAssistantIndex.value = messages.value.indexOf(
+      restoredTerminalRow,
+    );
+  } else {
+    activeTerminalMirrorAssistantIndex.value = -1;
+    clearActiveTerminalMirrorTarget();
+  }
   await restoreNativeExternalAgentRuntime(
     projectId,
     chatSessionId,
     runtimePayload,
+    navigationEpoch,
   );
+  if (
+    !isCurrentChatSessionNavigation(
+      projectId,
+      chatSessionId,
+      navigationEpoch,
+    )
+  ) {
+    return;
+  }
   await nextTick();
   scrollTerminalPanelBottom();
 }
@@ -16143,6 +16410,13 @@ async function startTerminalMirror(options = {}) {
   if (typeof options?.assistantIndex === "number") {
     activeTerminalMirrorAssistantIndex.value = options.assistantIndex;
   }
+  const targetRow =
+    typeof options?.assistantIndex === "number"
+      ? messages.value[options.assistantIndex]
+      : findTerminalMirrorTargetRow(chatSessionId);
+  if (targetRow) {
+    setActiveTerminalMirrorTarget(targetRow, chatSessionId);
+  }
   terminalPanelStatus.value = "running";
   terminalPanelExpanded.value = true;
   const client = await ensureWsClient(projectId);
@@ -16514,15 +16788,9 @@ function toggleMessageTrajectoryExpanded(row, idx = -1) {
 }
 
 function isMessageTrajectoryCollapsible(row, idx = -1) {
-  if (row?.answerFinished === true) return true;
   if (String(row?.role || "").trim() !== "assistant") return false;
-  if (!String(row?.content || "").trim()) return false;
   if (hasNonTerminalUserWaitingOperation(row)) return false;
-  return Boolean(
-    row?.messageExecutionEndedAtEpochMs ||
-      row?.agentRuntimeEndedAtEpochMs ||
-      messageAnswerId(row),
-  );
+  return row?.answerFinished === true;
 }
 
 function messageTrajectoryToolId(row, operation) {
@@ -18164,7 +18432,7 @@ function applyInteractionSubmitAckToSourceOperation(eventData = {}) {
   const chatSessionId = String(
     ack.chat_session_id || eventData?.chat_session_id || "",
   ).trim();
-  let matched = findMessageOperationById(operationId);
+  let matched = findMessageOperationById(operationId, chatSessionId);
   if (!matched && taskId) {
     matched = findAssistantRowByOperationTaskId(taskId, chatSessionId);
   }
@@ -21131,10 +21399,23 @@ function isMessageFooterActionOperation(row, operation) {
 
 function findAssistantRowByOperationTaskId(taskId, chatSessionId = "") {
   const normalizedTaskId = String(taskId || "").trim();
-  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  const normalizedChatSessionId =
+    String(chatSessionId || currentChatSessionId.value || "").trim();
   if (!normalizedTaskId && !normalizedChatSessionId) return null;
-  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-    const row = messages.value[index];
+  const projectId = String(selectedProjectId.value || "").trim();
+  const activeRun = localLiuAgentActiveRunForChatSession(
+    normalizedChatSessionId,
+  );
+  const rows =
+    (isCurrentChatSession(projectId, normalizedChatSessionId)
+      ? messages.value
+      : getRememberedChatSessionMessages(
+          projectId,
+          normalizedChatSessionId,
+        )) ||
+    (Array.isArray(activeRun?.rows) ? activeRun.rows : []);
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
     if (String(row?.role || "").trim() !== "assistant") continue;
     const operations = messageOperations(row);
     const matched = operations.find((item) => {
@@ -21168,10 +21449,7 @@ function completePendingExternalOperationRequest(matched, message) {
   }
   const entries = Array.from(pendingRequests.entries());
   for (const [requestId, pending] of entries) {
-    if (Number(pending?.assistantIndex ?? -1) !== Number(matched.index)) {
-      continue;
-    }
-    const row = messages.value[pending.assistantIndex];
+    const row = resolvePendingRequestRow(pending);
     if (row !== matched.row) continue;
     completeTerminalInputOperations(row, normalizedMessage);
     resolvePendingRequest(requestId, pending, row.content || normalizedMessage);
@@ -21210,7 +21488,7 @@ function completePendingExternalOperationRequestByRow(
   let changed = false;
   const entries = Array.from(pendingRequests.entries());
   for (const [requestId, pending] of entries) {
-    const pendingRow = messages.value[Number(pending?.assistantIndex ?? -1)];
+    const pendingRow = resolvePendingRequestRow(pending);
     if (pendingRow !== row) continue;
     changed = true;
     if (reject) {
@@ -21339,23 +21617,63 @@ function operationInteractionId(operation) {
   return String(operation?.id || operation?.operationId || "").trim();
 }
 
-function findMessageRowByOperationId(operationId) {
-  return findMessageOperationById(operationId)?.row || null;
+function findMessageRowByOperationId(operationId, chatSessionId = "") {
+  return findMessageOperationById(operationId, chatSessionId)?.row || null;
 }
 
-function findMessageOperationById(operationId) {
+function findMessageOperationById(operationId, chatSessionId = "") {
   const normalizedId = String(operationId || "").trim();
   if (!normalizedId) return null;
-  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-    const row = messages.value[index];
-    if (!Array.isArray(row?.operations)) continue;
-    const operation = row.operations.find(
-      (entry) =>
-        String(entry?.id || "").trim() === normalizedId ||
-        String(entry?.operationId || "").trim() === normalizedId,
+  const projectId = String(selectedProjectId.value || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  const sessionRows = [];
+  const addRows = (rows, session = "") => {
+    if (!Array.isArray(rows)) return;
+    sessionRows.push({
+      rows,
+      session: String(session || "").trim(),
+    });
+  };
+  if (normalizedChatSessionId) {
+    addRows(
+      isCurrentChatSession(projectId, normalizedChatSessionId)
+        ? messages.value
+        : getRememberedChatSessionMessages(
+            projectId,
+            normalizedChatSessionId,
+          ),
+      normalizedChatSessionId,
     );
-    if (operation) {
-      return { row, index, operation };
+  } else {
+    addRows(messages.value, currentChatSessionId.value);
+    for (const [key, rows] of chatSessionMessageCache.entries()) {
+      if (projectId && !key.startsWith(`${projectId}:`)) continue;
+      const separatorIndex = key.indexOf(":");
+      addRows(
+        rows,
+        separatorIndex >= 0 ? key.slice(separatorIndex + 1) : "",
+      );
+    }
+  }
+  for (const { rows, session } of sessionRows) {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index];
+      if (!Array.isArray(row?.operations)) continue;
+      const operation = row.operations.find((entry) => {
+        const meta =
+          entry?.meta && typeof entry.meta === "object" ? entry.meta : {};
+        const operationSession = String(meta.chat_session_id || "").trim();
+        return (
+          (String(entry?.id || "").trim() === normalizedId ||
+            String(entry?.operationId || "").trim() === normalizedId) &&
+          (!normalizedChatSessionId ||
+            !operationSession ||
+            operationSession === normalizedChatSessionId)
+        );
+      });
+      if (operation) {
+        return { row, index, operation, chatSessionId: session };
+      }
     }
   }
   return null;
@@ -21561,7 +21879,7 @@ function completePendingRequestForAssistantRow(row) {
   if (!row) return;
   const entries = Array.from(pendingRequests.entries());
   for (const [requestId, pending] of entries) {
-    const pendingRow = messages.value[Number(pending?.assistantIndex ?? -1)];
+    const pendingRow = resolvePendingRequestRow(pending);
     if (pendingRow !== row) continue;
     resolvePendingRequest(requestId, pending, row.content || "");
   }
@@ -21667,31 +21985,59 @@ function findMessageRowByAgentRuntimePermission(
   runId,
   callId,
   commandSignature = "",
+  chatSessionId = "",
 ) {
   const normalizedRunId = String(runId || "").trim();
   const normalizedCallId = String(callId || "").trim();
   const normalizedSignature = String(commandSignature || "").trim();
   if (!normalizedRunId || (!normalizedCallId && !normalizedSignature))
     return null;
+  const projectId = String(selectedProjectId.value || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  const rows = [];
+  if (normalizedChatSessionId) {
+    rows.push(
+      isCurrentChatSession(projectId, normalizedChatSessionId)
+        ? messages.value
+        : getRememberedChatSessionMessages(
+            projectId,
+            normalizedChatSessionId,
+          ),
+    );
+  } else {
+    rows.push(messages.value);
+    for (const [key, sessionRows] of chatSessionMessageCache.entries()) {
+      if (projectId && !key.startsWith(`${projectId}:`)) continue;
+      rows.push(sessionRows);
+    }
+  }
   return (
-    messages.value.find((item) =>
-      Array.isArray(item?.operations)
-        ? item.operations.some((operation) => {
-            const meta =
-              operation?.meta && typeof operation.meta === "object"
-                ? operation.meta
-                : {};
-            return (
-              String(meta.agent_runtime_permission || "").trim() === "true" &&
-              String(meta.run_id || "").trim() === normalizedRunId &&
-              (String(meta.call_id || "").trim() === normalizedCallId ||
-                (normalizedSignature &&
-                  String(meta.command_signature || "").trim() ===
-                    normalizedSignature))
-            );
-          })
-        : false,
-    ) || null
+    rows
+      .filter(Array.isArray)
+      .flat()
+      .find((item) =>
+        Array.isArray(item?.operations)
+          ? item.operations.some((operation) => {
+              const meta =
+                operation?.meta && typeof operation.meta === "object"
+                  ? operation.meta
+                  : {};
+              return (
+                String(meta.agent_runtime_permission || "").trim() ===
+                  "true" &&
+                String(meta.run_id || "").trim() === normalizedRunId &&
+                (String(meta.call_id || "").trim() === normalizedCallId ||
+                  (normalizedSignature &&
+                    String(meta.command_signature || "").trim() ===
+                      normalizedSignature)) &&
+                (!normalizedChatSessionId ||
+                  !String(meta.chat_session_id || "").trim() ||
+                  String(meta.chat_session_id || "").trim() ===
+                    normalizedChatSessionId)
+              );
+            })
+          : false,
+      ) || null
   );
 }
 
@@ -21731,7 +22077,9 @@ function latestAgentRuntimePermissionOperation(operation) {
       meta.run_id,
       meta.call_id,
       meta.command_signature,
-    ) || findMessageRowByOperationId(operation?.id);
+      meta.chat_session_id,
+    ) ||
+    findMessageOperationById(operation?.id, meta.chat_session_id)?.row;
   return (
     findAgentRuntimePermissionOperation(
       row,
@@ -21784,7 +22132,7 @@ function applyAgentRuntimeResumeToAssistantMessage(row, resume, options = {}) {
   row.content = finalContent;
   removeAssistantStatusNotes(row, isTransientExecutionStatusNote);
   completeAgentRuntimeOperationsForRun(row, options.runId);
-  row.processExpanded = false;
+  collapseMessageProcessAfterFinalAnswer(row);
   completePendingRequestForAssistantRow(row);
   return true;
 }
@@ -24023,7 +24371,12 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
       meta.run_id,
       meta.call_id,
       meta.command_signature,
-    ) || findMessageRowByOperationId(currentOperation.id);
+      meta.chat_session_id,
+    ) ||
+    findMessageOperationById(
+      currentOperation.id,
+      meta.chat_session_id,
+    )?.row;
   const summary =
     action === "deny" ? "已拒绝旧服务端工具调用" : "旧服务端运行时授权已移除";
   const detail =
@@ -24054,8 +24407,13 @@ function applyAgentRuntimePermissionActionResult(eventData = {}) {
   const operationId = `agent-runtime-permission:${runId}:${callId}`;
   const commandSignature = String(eventData?.command_signature || "").trim();
   const row =
-    findMessageRowByAgentRuntimePermission(runId, callId, commandSignature) ||
-    findMessageRowByOperationId(operationId);
+    findMessageRowByAgentRuntimePermission(
+      runId,
+      callId,
+      commandSignature,
+      eventData?.chat_session_id,
+    ) ||
+    findMessageOperationById(operationId, eventData?.chat_session_id)?.row;
   if (!row) return false;
   const resume =
     eventData?.resume && typeof eventData.resume === "object"
@@ -24475,6 +24833,7 @@ async function handoffProjectHostCommandToTerminal(row, pending, eventData) {
   activeTerminalMirrorAssistantIndex.value = Number(
     pending.assistantIndex ?? -1,
   );
+  setActiveTerminalMirrorTarget(row, pending.chatSessionId);
   row.terminalLog = [];
   row.processExpanded = true;
   appendTerminalLog(row, `# 正在连接项目终端并接管交互\n$ ${command}`, {
@@ -24519,6 +24878,7 @@ async function handoffExternalAgentRequestToTerminal(row, requestMeta) {
   activeTerminalMirrorAssistantIndex.value = Number(
     requestMeta.assistantIndex ?? -1,
   );
+  setActiveTerminalMirrorTarget(row, requestMeta.chatSessionId);
   appendTerminalLog(
     row,
     "# 检测到 MCP 写操作需要交互审批，已切换到真实终端继续执行",
@@ -26713,11 +27073,53 @@ async function persistLocalLiuAgentChatMessage({
     projectId || selectedProjectId.value || "",
   ).trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
-  if (!normalizedProjectId || !normalizedChatSessionId || !message?.content) {
+  if (
+    !normalizedProjectId ||
+    !normalizedChatSessionId ||
+    !message ||
+    typeof message !== "object"
+  ) {
     return null;
   }
   void workspacePath;
   void sourceContext;
+  const targetRows = isCurrentChatSession(
+    normalizedProjectId,
+    normalizedChatSessionId,
+  )
+    ? messages.value
+    : getRememberedChatSessionMessages(
+        normalizedProjectId,
+        normalizedChatSessionId,
+      ) || [];
+  const messageId = String(message?.id || "").trim();
+  const answerId = String(
+    message?.answerId || message?.answer_id || "",
+  ).trim();
+  const existingIndex = targetRows.findIndex((item) => {
+    const existingId = String(item?.id || "").trim();
+    const existingAnswerId = String(
+      item?.answerId || item?.answer_id || "",
+    ).trim();
+    return (
+      (messageId && existingId === messageId) ||
+      (answerId && existingAnswerId === answerId)
+    );
+  });
+  if (existingIndex >= 0) {
+    targetRows[existingIndex] = {
+      ...targetRows[existingIndex],
+      ...message,
+      role,
+    };
+  } else {
+    targetRows.push({ ...message, role });
+  }
+  rememberChatSessionMessages(
+    normalizedProjectId,
+    normalizedChatSessionId,
+    targetRows,
+  );
   await persistRememberedChatSessionMessages(
     normalizedProjectId,
     normalizedChatSessionId,
@@ -31275,7 +31677,7 @@ async function fetchChatSessions(
           !excludedSessionIds.has(candidate) &&
           chatSessions.value.some((item) => item.id === candidate),
       ) || "";
-    persistCurrentChatRuntimeBeforeSessionSwitch(projectId, resolved);
+    await persistCurrentChatRuntimeBeforeSessionSwitch(projectId, resolved);
     rememberCurrentChatSessionMessages();
     rememberCurrentChatSessionComposerState();
     currentChatSessionId.value = resolved;
@@ -31393,6 +31795,9 @@ async function fetchChatHistory(
     return;
   }
   const normalizedSessionId = String(chatSessionId || "").trim();
+  const navigationEpoch = append
+    ? chatSessionNavigationEpoch
+    : ++chatSessionNavigationEpoch;
   if (isChatSessionDeleted(projectId, normalizedSessionId)) {
     if (
       !append &&
@@ -31406,7 +31811,7 @@ async function fetchChatHistory(
     return;
   }
   if (!append) {
-    persistCurrentChatRuntimeBeforeSessionSwitch(
+    await persistCurrentChatRuntimeBeforeSessionSwitch(
       projectId,
       normalizedSessionId,
     );
@@ -31458,6 +31863,15 @@ async function fetchChatHistory(
     chatHistoryLoading.value = true;
     if (hasImmediateRows) {
       await applyChatMessagesWithoutPersisting(immediateRows);
+      if (
+        !isCurrentChatSessionNavigation(
+          projectId,
+          normalizedSessionId,
+          navigationEpoch,
+        )
+      ) {
+        return;
+      }
       chatHistoryLoadedCount.value = immediateRows.length;
       chatHistoryReachedEnd.value =
         !cachedRuntimeRows || cachedRuntimeRows.length <= immediateRows.length;
@@ -31497,7 +31911,9 @@ async function fetchChatHistory(
     });
     if (
       !isCurrentChatSession(projectId, normalizedSessionId) ||
-      (!append && activeChatHistoryLoadingKey !== loadingKey)
+      (!append &&
+        (activeChatHistoryLoadingKey !== loadingKey ||
+          navigationEpoch !== chatSessionNavigationEpoch))
     ) {
       return;
     }
@@ -31546,12 +31962,29 @@ async function fetchChatHistory(
                 ? runtimePayload.messages.length
                 : 0,
             });
-            if (!isCurrentChatSession(projectId, normalizedSessionId)) return;
+            if (
+              !isCurrentChatSessionNavigation(
+                projectId,
+                normalizedSessionId,
+                navigationEpoch,
+              )
+            ) {
+              return;
+            }
             const mergedRows = applyPersistedChatRuntimeRows(
               messages.value,
               runtimePayload,
             );
             await applyChatMessagesWithoutPersisting(mergedRows);
+            if (
+              !isCurrentChatSessionNavigation(
+                projectId,
+                normalizedSessionId,
+                navigationEpoch,
+              )
+            ) {
+              return;
+            }
             rememberChatSessionMessages(
               projectId,
               normalizedSessionId,
@@ -31571,6 +32004,7 @@ async function fetchChatHistory(
               normalizedSessionId,
               messages.value,
               runtimePayload,
+              navigationEpoch,
             );
             chatLoadDebug("runtime:restore-complete", runtimeStartedAt, {
               projectId: normalizedProjectId,
@@ -31648,6 +32082,7 @@ async function fetchChatHistory(
         normalizedSessionId,
         messages.value,
         runtimePayload,
+        navigationEpoch,
       ).catch((error) =>
         console.warn("restore interactive chat runtime failed", error),
       );
@@ -31674,7 +32109,9 @@ async function fetchChatHistory(
     });
     if (
       !isCurrentChatSession(projectId, normalizedSessionId) ||
-      (!append && activeChatHistoryLoadingKey !== loadingKey)
+      (!append &&
+        (activeChatHistoryLoadingKey !== loadingKey ||
+          navigationEpoch !== chatSessionNavigationEpoch))
     ) {
       return;
     }
@@ -32141,7 +32578,12 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
     );
     if (matched?.row) {
       const taskId = String(eventData?.task_id || "").trim();
-      const chatSessionId = String(eventData?.chat_session_id || "").trim();
+      const chatSessionId = String(
+        eventData?.chat_session_id ||
+          eventData?.chatSessionId ||
+          currentChatSessionId.value ||
+          "",
+      ).trim();
       const resumeCommand = String(eventData?.resume_command || "").trim();
       if (isTaskStateEvent(eventType)) {
         const { context, taskStatus, operation } =
@@ -32353,6 +32795,32 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
           }
         }
       }
+      const backgroundProjectId = String(
+        eventData?.project_id ||
+          eventData?.projectId ||
+          sourceProjectId ||
+          selectedProjectId.value ||
+          "",
+      ).trim();
+      const backgroundChatSessionId = String(
+        eventData?.chat_session_id ||
+          eventData?.chatSessionId ||
+          currentChatSessionId.value ||
+          "",
+      ).trim();
+      const backgroundRun = localLiuAgentActiveRunForChatSession(
+        backgroundChatSessionId,
+      );
+      if (backgroundProjectId && backgroundChatSessionId) {
+        if (backgroundRun) {
+          await persistLocalLiuAgentActiveRunMessages(backgroundRun);
+        } else {
+          await persistRememberedChatSessionMessages(
+            backgroundProjectId,
+            backgroundChatSessionId,
+          );
+        }
+      }
       scrollToBottom();
     }
     if (!requestId) {
@@ -32361,8 +32829,13 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
   }
   if (eventType === "error" && isTerminalMirrorControlRequest(requestId)) {
     const message = String(eventData?.message || "项目终端请求失败").trim();
-    appendTerminalPanelLine(`! ${message}`);
-    const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+    const isCurrent = isCurrentTerminalMirrorEvent(eventData);
+    if (isCurrent) {
+      appendTerminalPanelLine(`! ${message}`);
+    }
+    const mirrorRow = findTerminalMirrorTargetRow(
+      terminalMirrorEventChatSessionId(eventData),
+    );
     if (mirrorRow) {
       mirrorRow.displayMode = "terminal";
       mirrorRow.processExpanded = true;
@@ -32377,59 +32850,78 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
         actionType: "enter_text",
       });
     }
-    if (/not running|not found|closed|不可用|未运行/i.test(message)) {
+    if (isCurrent && /not running|not found|closed|不可用|未运行/i.test(message)) {
       terminalMirrorConnected.value = false;
       hostTerminalSessionId.value = "";
       terminalPanelStatus.value = "idle";
       activeTerminalMirrorAssistantIndex.value = -1;
-    } else {
+      clearActiveTerminalMirrorTarget();
+    } else if (isCurrent) {
       terminalPanelStatus.value = "error";
     }
-    ElMessage.error(message);
-    scrollToBottom();
+    await persistTerminalMirrorEventRows(eventData);
+    if (isCurrent) {
+      ElMessage.error(message);
+      scrollToBottom();
+    }
     return;
   }
   if (eventType === "agent_ready") {
-    externalAgentWarmupLoading.value = false;
-    terminalPanelStatus.value = "ready";
-    appendTerminalPanelLine(
-      `# 会话已预热 · thread=${String(eventData?.thread_id || "-").trim() || "-"}`,
-    );
-    externalAgentInfo.value = normalizeExternalAgentInfo({
-      ...externalAgentInfo.value,
-      ...eventData,
-      available: true,
-      ready: true,
-      session_id: String(
-        eventData?.agent_session_id || eventData?.session_id || "",
-      ).trim(),
-    });
+    const isCurrent = isCurrentTerminalMirrorEvent(eventData);
+    if (isCurrent) {
+      externalAgentWarmupLoading.value = false;
+      terminalPanelStatus.value = "ready";
+      appendTerminalPanelLine(
+        `# 会话已预热 · thread=${String(eventData?.thread_id || "-").trim() || "-"}`,
+      );
+      externalAgentInfo.value = normalizeExternalAgentInfo({
+        ...externalAgentInfo.value,
+        ...eventData,
+        available: true,
+        ready: true,
+        session_id: String(
+          eventData?.agent_session_id || eventData?.session_id || "",
+        ).trim(),
+      });
+    }
     const pendingPrepare = pendingAgentPrepares.get(requestId);
     if (pendingPrepare) {
       pendingAgentPrepares.delete(requestId);
       pendingPrepare.resolve(eventData);
     }
-    void startTerminalMirror().catch(() => {});
+    if (isCurrent) {
+      void startTerminalMirror().catch(() => {});
+    }
     return;
   }
   if (eventType === "terminal_mirror_started") {
-    terminalMirrorConnected.value = true;
-    terminalPanelStatus.value = "running";
-    hostTerminalSessionId.value = String(eventData?.session_id || "").trim();
-    hostTerminalWorkspacePath.value = String(
-      eventData?.workspace_path ||
-        hostTerminalWorkspacePath.value ||
-        projectWorkspaceResolved.value ||
-        "",
-    ).trim();
-    terminalPanelExpanded.value = true;
-    terminalActiveCommand.value = String(
-      eventData?.command || terminalActiveCommand.value || "",
-    ).trim();
+    const isCurrent = isCurrentTerminalMirrorEvent(eventData);
+    if (isCurrent) {
+      terminalMirrorConnected.value = true;
+      terminalPanelStatus.value = "running";
+      hostTerminalSessionId.value = String(eventData?.session_id || "").trim();
+      hostTerminalWorkspacePath.value = String(
+        eventData?.workspace_path ||
+          hostTerminalWorkspacePath.value ||
+          projectWorkspaceResolved.value ||
+          "",
+      ).trim();
+      terminalPanelExpanded.value = true;
+      terminalActiveCommand.value = String(
+        eventData?.command || terminalActiveCommand.value || "",
+      ).trim();
+    }
     const connectedSummary = "# 项目终端已连接，完整交互会显示在这里";
     appendTerminalPanelLine(connectedSummary);
-    const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+    const mirrorRow = findTerminalMirrorTargetRow(
+      terminalMirrorEventChatSessionId(eventData),
+    );
     if (mirrorRow) {
+      setActiveTerminalMirrorTarget(
+        mirrorRow,
+        terminalMirrorEventChatSessionId(eventData),
+        eventData?.project_id || eventData?.projectId || "",
+      );
       mirrorRow.displayMode = "terminal";
       mirrorRow.processExpanded = true;
       appendTerminalLog(mirrorRow, connectedSummary, { mirrorToPanel: false });
@@ -32444,7 +32936,10 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
         actionType: "enter_text",
       });
     }
-    focusTerminalPanelInput();
+    await persistTerminalMirrorEventRows(eventData);
+    if (isCurrent) {
+      focusTerminalPanelInput();
+    }
     return;
   }
   if (eventType === "workflow_state") {
@@ -32457,8 +32952,9 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
           eventData?.chat_session_id ||
           "active",
       ).trim();
-      const mirrorRow =
-        messages.value[activeTerminalMirrorAssistantIndex.value];
+      const mirrorRow = findTerminalMirrorTargetRow(
+        terminalMirrorEventChatSessionId(eventData),
+      );
       if (mirrorRow) {
         upsertMessageOperation(mirrorRow, {
           operationId: `terminal:${sessionKey}`,
@@ -32487,23 +32983,31 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
             chat_session_id: String(eventData?.chat_session_id || "").trim(),
           },
         });
-        scrollToBottom();
+        await persistTerminalMirrorEventRows(eventData);
+        if (isCurrentTerminalMirrorEvent(eventData)) {
+          scrollToBottom();
+        }
       }
     }
   }
   if (eventType === "terminal_mirror_stopped") {
-    terminalMirrorConnected.value = false;
-    terminalPanelStatus.value = "idle";
-    hostTerminalSessionId.value = "";
-    terminalActiveCommand.value = "";
-    terminalStructuredInteraction.value = null;
+    const isCurrent = isCurrentTerminalMirrorEvent(eventData);
+    if (isCurrent) {
+      terminalMirrorConnected.value = false;
+      terminalPanelStatus.value = "idle";
+      hostTerminalSessionId.value = "";
+      terminalActiveCommand.value = "";
+      terminalStructuredInteraction.value = null;
+    }
     const exitCode = eventData?.exit_code;
     appendTerminalPanelLine(
       exitCode === null || exitCode === undefined
         ? "# 项目终端已停止"
         : `# 项目终端已停止 · exit=${exitCode}`,
     );
-    const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+    const mirrorRow = findTerminalMirrorTargetRow(
+      terminalMirrorEventChatSessionId(eventData),
+    );
     if (mirrorRow) {
       upsertMessageOperation(mirrorRow, {
         operationId: `terminal:${String(eventData?.session_id || eventData?.chat_session_id || "active").trim()}`,
@@ -32520,27 +33024,42 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
             : "failed",
       });
     }
-    activeTerminalMirrorAssistantIndex.value = -1;
+    await persistTerminalMirrorEventRows(eventData);
+    if (isCurrent) {
+      activeTerminalMirrorAssistantIndex.value = -1;
+      clearActiveTerminalMirrorTarget();
+    }
     return;
   }
   if (eventType === "terminal_mirror_chunk") {
-    terminalMirrorConnected.value = true;
+    const isCurrent = isCurrentTerminalMirrorEvent(eventData);
+    if (isCurrent) {
+      terminalMirrorConnected.value = true;
+    }
     const chunk = String(eventData?.content || "");
-    appendTerminalPanelLine(chunk);
-    const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+    if (isCurrent) {
+      appendTerminalPanelLine(chunk);
+    }
+    const mirrorRow = findTerminalMirrorTargetRow(
+      terminalMirrorEventChatSessionId(eventData),
+    );
     if (mirrorRow) {
       mirrorRow.displayMode = "terminal";
       mirrorRow.processExpanded = true;
       appendTerminalLog(mirrorRow, chunk, { mirrorToPanel: false });
       refreshTerminalStructuredInteraction(
         mirrorRow,
-        activeTerminalMirrorAssistantIndex.value,
+        messages.value.findIndex((item) => item === mirrorRow),
       );
     }
+    await persistTerminalMirrorEventRows(eventData);
     return;
   }
   if (eventType === "terminal_approval_required") {
-    const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+    const isCurrent = isCurrentTerminalMirrorEvent(eventData);
+    const mirrorRow = findTerminalMirrorTargetRow(
+      terminalMirrorEventChatSessionId(eventData),
+    );
     if (mirrorRow) {
       upsertMessageOperation(mirrorRow, {
         operationId: `approval:${String(eventData?.key || eventData?.chat_session_id || "terminal").trim()}`,
@@ -32566,28 +33085,31 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
         "> ⏳ 终端请求审批，请在弹框中继续。",
       );
     }
-    setTerminalApprovalPrompt({
-      key: String(eventData?.key || "").trim(),
-      title: String(eventData?.title || "检测到终端审批").trim(),
-      description: String(
-        eventData?.description || "当前操作需要用户确认后才会继续执行。",
-      ).trim(),
-      message: String(eventData?.message || "").trim(),
-      requestId: String(
-        eventData?.requestId || eventData?.request_id || "",
-      ).trim(),
-      options: Array.isArray(eventData?.options) ? eventData.options : [],
-      commandPreview: String(
-        eventData?.commandPreview ||
-          eventData?.command_preview ||
-          eventData?.tool_call_preview ||
-          "",
-      ).trim(),
-      toolName: String(
-        eventData?.toolName || eventData?.tool_name || "",
-      ).trim(),
-    });
-    scrollToBottom();
+    await persistTerminalMirrorEventRows(eventData);
+    if (isCurrent) {
+      setTerminalApprovalPrompt({
+        key: String(eventData?.key || "").trim(),
+        title: String(eventData?.title || "检测到终端审批").trim(),
+        description: String(
+          eventData?.description || "当前操作需要用户确认后才会继续执行。",
+        ).trim(),
+        message: String(eventData?.message || "").trim(),
+        requestId: String(
+          eventData?.requestId || eventData?.request_id || "",
+        ).trim(),
+        options: Array.isArray(eventData?.options) ? eventData.options : [],
+        commandPreview: String(
+          eventData?.commandPreview ||
+            eventData?.command_preview ||
+            eventData?.tool_call_preview ||
+            "",
+        ).trim(),
+        toolName: String(
+          eventData?.toolName || eventData?.tool_name || "",
+        ).trim(),
+      });
+      scrollToBottom();
+    }
     return;
   }
   if (
@@ -32611,9 +33133,11 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
           eventData?.run_id,
           eventData?.call_id,
           eventData?.command_signature,
+          eventData?.chat_session_id,
         ) ||
         findMessageRowByOperationId(
           `agent-runtime-permission:${String(eventData?.run_id || "").trim()}:${String(eventData?.call_id || "").trim()}`,
+          eventData?.chat_session_id,
         );
       if (row) {
         maybeExecuteDesktopClientToolTasksFromResume(row, eventData, requestId);
@@ -33498,10 +34022,17 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
       if (keepRequestOpenAfterDone) {
         row.processExpanded = true;
       } else if (preserveTerminalInteraction) {
-        terminalPanelStatus.value = "running";
-        activeTerminalMirrorAssistantIndex.value = Number(
-          pending?.assistantIndex ?? activeTerminalMirrorAssistantIndex.value,
-        );
+        if (isPendingCurrentSession) {
+          terminalPanelStatus.value = "running";
+          activeTerminalMirrorAssistantIndex.value = Number(
+            pending?.assistantIndex ?? activeTerminalMirrorAssistantIndex.value,
+          );
+          setActiveTerminalMirrorTarget(
+            row,
+            pending?.chatSessionId,
+            pending?.projectId,
+          );
+        }
         markTerminalOperationsWaitingForInput(row);
         row.displayMode = "terminal";
         row.processExpanded = true;
@@ -33511,14 +34042,18 @@ async function handleSocketMessage(eventData, sourceProjectId = "") {
         closeOpenAgentRuntimeOperationsForCompletedTurn(row, doneState.summary);
         collapseMessageProcessAfterFinalAnswer(row);
         if (
+          isPendingCurrentSession &&
           Number(activeTerminalMirrorAssistantIndex.value) ===
-          Number(pending?.assistantIndex ?? -1)
+            Number(pending?.assistantIndex ?? -1)
         ) {
           activeTerminalMirrorAssistantIndex.value = -1;
+          clearActiveTerminalMirrorTarget();
         }
-        terminalMirrorConnected.value = false;
-        hostTerminalSessionId.value = "";
-        terminalStructuredInteraction.value = null;
+        if (isPendingCurrentSession) {
+          terminalMirrorConnected.value = false;
+          hostTerminalSessionId.value = "";
+          terminalStructuredInteraction.value = null;
+        }
       }
     } finally {
       if (!keepRequestOpenAfterDone) {
@@ -34663,7 +35198,7 @@ async function sendLocalLiuAgentChatRequest({
         ...localLiuAgentRuntimeTimingSourceContext(assistantMessage),
       },
     });
-    persistLocalLiuAgentActiveRunMessages(activeRun);
+    await persistLocalLiuAgentActiveRunMessages(activeRun);
     return { cancelled: true };
   }
   applyLocalLiuAgentRuntimeEvents(assistantMessage, result, {
@@ -34764,7 +35299,7 @@ async function sendLocalLiuAgentChatRequest({
     });
     deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
     syncChatLoadingWithCurrentSession();
-    persistLocalLiuAgentActiveRunMessages(activeRun);
+    await persistLocalLiuAgentActiveRunMessages(activeRun);
     return result;
   }
   const localUserQuestionRequest =
@@ -34843,7 +35378,7 @@ async function sendLocalLiuAgentChatRequest({
       modelRuntime,
       result,
     });
-    persistLocalLiuAgentActiveRunMessages(activeRun);
+    await persistLocalLiuAgentActiveRunMessages(activeRun);
     deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
     syncChatLoadingWithCurrentSession();
     return result;
@@ -34919,7 +35454,7 @@ async function sendLocalLiuAgentChatRequest({
       modelRuntime,
       result,
     });
-    persistLocalLiuAgentActiveRunMessages(activeRun);
+    await persistLocalLiuAgentActiveRunMessages(activeRun);
     deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
     syncChatLoadingWithCurrentSession();
     return result;
@@ -34948,6 +35483,13 @@ async function sendLocalLiuAgentChatRequest({
   if (assistantReasoningContent) {
     assistantMessage.reasoningContent = assistantReasoningContent;
   }
+  const rawErrorRecordPaths =
+    result?.errorRecordPaths || result?.error_record_paths;
+  const errorRecordPaths = Array.isArray(rawErrorRecordPaths)
+    ? rawErrorRecordPaths
+        .map((path) => String(path || "").trim())
+        .filter(Boolean)
+    : [];
   if (shouldAutoResume) {
     clearLocalLiuAgentRecoveryPlaceholderContent(assistantMessage);
   } else {
@@ -34977,6 +35519,19 @@ async function sendLocalLiuAgentChatRequest({
         ? "模型连接暂时没有返回，当前任务已保留本地上下文，稍后可以继续。"
         : "本轮执行已结束，AI 未返回可展示的最终说明；执行记录已保存在本地。";
   }
+  if (
+    !shouldAutoResume &&
+    !ok &&
+    errorRecordPaths.length &&
+    !String(assistantMessage.content || "").includes("错误记录文件")
+  ) {
+    assistantMessage.content = [
+      String(assistantMessage.content || "").trim(),
+      `错误记录文件：${errorRecordPaths.join("；")}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
   const employeeIntent = extractEmployeeIntentPayload(
     assistantMessage.content || "",
   )?.intent;
@@ -35001,11 +35556,6 @@ async function sendLocalLiuAgentChatRequest({
   const requirementBlocked = Boolean(
     result?.requirementBlocked || result?.requirement_blocked,
   );
-  const rawErrorRecordPaths =
-    result?.errorRecordPaths || result?.error_record_paths;
-  const errorRecordPaths = Array.isArray(rawErrorRecordPaths)
-    ? rawErrorRecordPaths.map((path) => String(path || "").trim()).filter(Boolean)
-    : [];
   assistantMessage.time = nowText();
   updateLocalLiuAgentRuntimeTimingFromResult(assistantMessage, result, {
     startedAt: activeRun.startedAt,
@@ -35147,7 +35697,7 @@ async function sendLocalLiuAgentChatRequest({
     ).trim(),
     recoverable: employeeCreationProtocolRecovery || !ok,
   });
-  persistLocalLiuAgentActiveRunMessages(activeRun);
+  await persistLocalLiuAgentActiveRunMessages(activeRun);
   deleteLocalLiuAgentActiveRun(activeChatSessionId, activeRun);
   syncChatLoadingWithCurrentSession();
   scrollToBottom();
