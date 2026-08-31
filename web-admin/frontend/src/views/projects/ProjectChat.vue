@@ -1660,6 +1660,7 @@
             :active-tool-command-id="activeComposerToolCommandId"
             :is-external-agent-mode="isExternalAgentMode"
             :provider-model-groups="providerModelGroups"
+            :conversation-model-groups="conversationModelGroups"
             :model-provider-offline="modelProviderOffline"
             :upload-accept="uploadAccept"
             :attachment-supported="currentModelAttachmentSupported"
@@ -2102,11 +2103,9 @@ import {
   Delete,
   DocumentCopy,
   CollectionTag,
-  EditPen,
   Files,
   FolderOpened,
   Document,
-  RefreshRight,
   Cpu,
   Operation,
   InfoFilled,
@@ -4140,8 +4139,8 @@ function buildLocalLiuAgentSystemPromptParts(interactionMode = "") {
         "- generate_image、edit_image、generate_video、generate_audio、transcribe_audio 是统一媒体工具协议，不是主对话模型；系统会通过当前供应商适配器连接已选择的媒体模型。只有用户明确要求对应的生成、编辑、转换或转写时才调用。",
         "- 不同供应商的原生接口、参数和能力可能不同；工具协议负责统一调用语义，适配器负责转换请求和响应。不要假设所有供应商都支持相同的图片编辑、视频编辑、语音或转写能力。",
         "- 附件上下文或会话引用中已经列出的图片、视频、音频和文件，均视为用户已经提供；不得声称当前对话中没有这些内容，也不得要求用户重复上传。",
-        "- 用户要求从零生成图片时调用 generate_image；仅当用户明确要求参考某张现有图片生成时，才把附件上下文中的资产 ID 填入 reference_asset_ids。",
-        "- 用户要求修改现有图片时必须调用 edit_image，并把要修改图片的资产 ID 填入 input_asset_ids；不得改用 run_command、Python、Pillow、OpenCV 或其他本地脚本静默处理。",
+        "- 用户要求从零生成图片时调用 generate_image；generate_image 只填写 prompt，不接受参考图、任何资产 ID、文件路径、URL 或供应商 file_id。",
+        "- 用户要求基于已有图片生成、重绘或修改时一律调用 edit_image，并把一张图片附件的系统资产 ID 填入 input_asset_ids；不得改用 generate_image、run_command、Python、Pillow、OpenCV 或其他本地脚本静默处理。",
         "- 媒体工具失败时应如实返回失败原因，不得切换成本地脚本伪造成功结果。不要把图片地址或 Base64 填进 prompt。",
         "- 用户只要求分析、解释或评价媒体内容时，直接回答，不要误调用生成工具。",
       ].join("\n"),
@@ -12753,6 +12752,18 @@ const providerModelGroups = computed(() =>
     })
     .filter((group) => group.providerId && group.options.length),
 );
+const conversationModelGroups = computed(() =>
+  providerModelGroups.value
+    .map((group) => ({
+      ...group,
+      options: group.options.filter((option) =>
+        ["text_generation", "multimodal_chat"].includes(
+          String(option.modelType || "").trim().toLowerCase(),
+        ),
+      ),
+    }))
+    .filter((group) => group.options.length),
+);
 function filterProviderModelGroups(modelTypes = []) {
   const allowedTypes = new Set(
     (Array.isArray(modelTypes) ? modelTypes : [])
@@ -20419,6 +20430,7 @@ async function applyLocalLiuAgentMediaToolResults(
     "transcribe_audio",
   ]);
   const collected = { images: [], videos: [], audios: [], files: [] };
+  const mediaTasks = [];
   for (const toolResult of toolResults) {
     if (!mediaToolNames.has(String(toolResult?.name || "").trim())) continue;
     const content =
@@ -20430,6 +20442,36 @@ async function applyLocalLiuAgentMediaToolResults(
       collected[key].push(
         ...values.map(localLiuAgentToolResultAssetUrl).filter(Boolean),
       );
+    }
+    const rawInputAssetIds =
+      content?.input_asset_ids || content?.inputAssetIds;
+    const inputAssetIds = Array.isArray(rawInputAssetIds)
+      ? rawInputAssetIds
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
+      : [];
+    const operation = String(
+      content?.operation ||
+        toolResult?.operation ||
+        (toolResult?.name === "generate_video" ? "text_to_video" : ""),
+    ).trim();
+    if (operation || inputAssetIds.length) {
+      mediaTasks.push({
+        taskId: String(
+          content?.task_id || content?.taskId || toolResult?.task_id || "",
+        ).trim(),
+        toolName: String(toolResult?.name || "").trim(),
+        operation,
+        providerId: String(
+          content?.provider_id || content?.providerId || "",
+        ).trim(),
+        modelName: String(
+          content?.model_name || content?.modelName || "",
+        ).trim(),
+        status: String(content?.status || "succeeded").trim(),
+        inputAssetIds,
+        createdAt: new Date().toISOString(),
+      });
     }
   }
   const persisted = await persistLocalLiuAgentMediaUrls(row, collected, {
@@ -20445,6 +20487,39 @@ async function applyLocalLiuAgentMediaToolResults(
       ]),
     ];
   }
+  if (mediaTasks.length) {
+    row.mediaTasks = mergeLocalLiuAgentMediaTasks([
+      ...(Array.isArray(row?.mediaTasks) ? row.mediaTasks : []),
+      ...mediaTasks,
+    ]);
+  }
+}
+
+function mergeLocalLiuAgentMediaTasks(values = []) {
+  const result = [];
+  const seen = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    if (!value || typeof value !== "object") continue;
+    const inputAssetIds = Array.isArray(value.inputAssetIds)
+      ? value.inputAssetIds.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    const key = [value.taskId, value.toolName, value.operation, ...inputAssetIds]
+      .map((item) => String(item || "").trim())
+      .join("|");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      taskId: String(value.taskId || "").trim(),
+      toolName: String(value.toolName || "").trim(),
+      operation: String(value.operation || "").trim(),
+      providerId: String(value.providerId || "").trim(),
+      modelName: String(value.modelName || "").trim(),
+      status: String(value.status || "succeeded").trim() || "succeeded",
+      inputAssetIds,
+      createdAt: String(value.createdAt || "").trim() || new Date().toISOString(),
+    });
+  }
+  return result;
 }
 
 function localLiuAgentPermissionContinuationMessage(
@@ -25864,30 +25939,6 @@ function handleInlineMessageEditKeydown(event) {
 function getMessageActions(item, messageIndex) {
   const actions = [];
   const role = String(item?.role || "").trim();
-  if (role === "user" && canReplayMessageSource(messageIndex)) {
-    actions.push({
-      key: "edit_message",
-      tooltip: "编辑",
-      icon: EditPen,
-    });
-    actions.push({
-      key: "edit_and_regenerate",
-      tooltip: "编辑后重新生成",
-      icon: RefreshRight,
-    });
-  }
-  if (role !== "user" && canReplayMessageSource(messageIndex)) {
-    actions.push({
-      key: "regenerate",
-      tooltip: "重新生成",
-      icon: RefreshRight,
-    });
-    actions.push({
-      key: "edit_and_regenerate",
-      tooltip: "编辑后重新生成",
-      icon: EditPen,
-    });
-  }
   if (hasMessageCopyableContent(item)) {
     actions.push({
       key: "copy_markdown",
@@ -28449,20 +28500,14 @@ function handleFileChange(file) {
       : `${(raw.size / 1024).toFixed(0)}KB`;
   file.processingLabel = resolveUploadProcessingLabel(file.kind);
   file.providerFileId = "";
-  file.uploadStatus = shouldAttemptProviderFileUpload() ? "uploading" : "ready";
+  file.uploadStatus = "ready";
   file.uploadError = "";
   file.rawFile = raw;
   file.source =
     String(file.source || file.sourceType || "").trim() || "user_upload";
   uploadFiles.value.push(file);
   rememberCurrentChatSessionComposerState();
-  if (file.uploadStatus === "uploading") {
-    void uploadFileToProvider(file, raw);
-  } else {
-    ElMessage.success(
-      `已添加附件：${file.name || raw.name}（${file.sizeLabel}）`,
-    );
-  }
+  ElMessage.success(`已添加附件：${file.name || raw.name}（发送时上传）`);
   return true;
 }
 
@@ -29549,6 +29594,36 @@ async function materializePersistentContextReferences(references = []) {
   );
 }
 
+async function prepareContextReferenceAttachments(references = []) {
+  const normalizedReferences = await materializePersistentContextReferences(
+    references,
+  );
+  const preparedReferences = await Promise.all(
+    normalizedReferences.map(async (reference) => {
+      if (
+        !reference?.url ||
+        !["image", "video", "audio", "file"].includes(reference.type)
+      ) {
+        return reference;
+      }
+      const response = await fetch(reference.url);
+      if (!response.ok) {
+        throw new Error(`历史${reference.type}读取失败（HTTP ${response.status}）`);
+      }
+      const blob = await response.blob();
+      const dataUrl = await readBlobAsDataUrl(blob);
+      if (!dataUrl) throw new Error(`历史${reference.type}内容读取为空`);
+      return {
+        ...reference,
+        providerFileId: "",
+        dataUrl,
+        remoteUrl: reference.url,
+      };
+    }),
+  );
+  return buildContextReferenceAttachments(preparedReferences);
+}
+
 async function buildPersistentUploadMediaUrls(
   uploadItems = [],
   localAttachments = [],
@@ -29596,6 +29671,30 @@ async function readFileAsByteArray(file) {
   return Array.from(new Uint8Array(await file.arrayBuffer()));
 }
 
+async function uploadAttachmentForCurrentProvider(rawFile, item, kind) {
+  if (!rawFile) throw new Error("附件内容不可读取");
+  const providerId = String(
+    selectedProviderId.value || defaultProviderId.value || "",
+  ).trim();
+  if (!providerId) throw new Error("当前供应商未配置");
+  const result = await uploadFileToProviderWithNativeRuntime(
+    item,
+    rawFile,
+    providerId,
+    resolveProviderFilePurpose(kind),
+  );
+  const providerFileId = String(
+    result?.providerFileId ||
+      result?.provider_file_id ||
+      result?.fileId ||
+      result?.file_id ||
+      result?.id ||
+      "",
+  ).trim();
+  if (!providerFileId) throw new Error("供应商上传成功但未返回文件 ID");
+  return providerFileId;
+}
+
 async function buildLocalLiuAgentAttachments(uploadItems = []) {
   const normalizedItems = Array.isArray(uploadItems)
     ? uploadItems.filter(Boolean)
@@ -29610,7 +29709,6 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
     const rawFile = item?.raw || item;
     const isImage = isImageFile(rawFile);
     const isAudio = isAudioFile(rawFile);
-    const providerFileId = String(item?.providerFileId || "").trim();
     const routingMode = resolveLocalRunnerAttachmentRoutingMode(
       modelMode,
       isImage,
@@ -29634,16 +29732,21 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
       providerFileId: "",
       error: "",
     };
-    if (providerFileId && String(item?.uploadStatus || "").trim() === "ready") {
-      attachments.push({
-        ...base,
-        routingMode: "provider_file",
-        extractionStatus: "provider_file_ready",
-        providerFileId,
-      });
-      continue;
-    }
     try {
+      if (modelMode === "provider_file") {
+        const providerFileId = await uploadAttachmentForCurrentProvider(
+          rawFile,
+          item,
+          base.kind,
+        );
+        attachments.push({
+          ...base,
+          routingMode: "provider_file",
+          extractionStatus: "provider_file_ready",
+          providerFileId,
+        });
+        continue;
+      }
       if (
         (isImage &&
           (routingMode === "inline_image" || mediaImageToolConfigured)) ||
@@ -36349,8 +36452,26 @@ async function doSend(options = {}) {
 
   const localLiuAgentAttachments = [
     ...(await buildLocalLiuAgentAttachments(uploadFiles.value)),
-    ...buildContextReferenceAttachments(activeContextRefs),
+    ...(await prepareContextReferenceAttachments(activeContextRefs)),
   ];
+  const attachmentErrors = localLiuAgentAttachments
+    .filter((attachment) => attachment?.extractionStatus === "error")
+    .map((attachment) => `${attachment.name || "附件"}：${attachment.error || "处理失败"}`);
+  if (attachmentErrors.length) {
+    ElMessage.error(`附件处理失败，未发送：${attachmentErrors.join("；")}`);
+    return;
+  }
+  if (
+    currentModelAttachmentMode.value === "provider_file" &&
+    localLiuAgentAttachments.some(
+      (attachment) =>
+        attachment?.routingMode === "provider_file" &&
+        !String(attachment?.providerFileId || "").trim(),
+    )
+  ) {
+    ElMessage.error("附件尚未完成当前供应商上传，未发送");
+    return;
+  }
   let persistentUploadImageUrls = [];
   let persistentUploadAudioUrls = [];
   try {
@@ -36548,11 +36669,15 @@ async function doSend(options = {}) {
         ...operationToolNames,
       ])
     : [];
+  const referencedOriginalContent = activeContextRefs
+    .filter((item) => ["message", "text"].includes(item?.type))
+    .map((item) => String(item?.content || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
   const displayUserMessageContent =
     text ||
-    (activeContextRefs.length
-      ? `（引用了 ${activeContextRefs.length} 项历史内容）`
-      : "（发送了附件）");
+    referencedOriginalContent ||
+    (activeContextRefs.length ? "引用内容" : "（发送了附件）");
   if (!String(displayUserMessageContent || "").trim()) {
     ElMessage.warning("请输入内容或添加附件");
     return;

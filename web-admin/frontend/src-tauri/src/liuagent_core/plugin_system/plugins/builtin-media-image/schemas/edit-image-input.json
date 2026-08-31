@@ -1,13 +1,20 @@
 {
   "type": "object",
+  "description": "图生图/图片编辑输入。通过 input_asset_ids 选择当前会话中的图片资产，由运行时解析为真实图片内容。",
   "properties": {
-    "prompt": {"type": "string", "minLength": 1},
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "description": "对已选图片的修改要求。不要把资产 ID 或文件路径写入提示词。"
+    },
     "input_asset_ids": {
       "type": "array",
+      "description": "当前会话中要编辑的图片附件 ID，不是供应商 file_id，也不是文件路径。",
       "items": {"type": "string", "minLength": 1},
-      "minItems": 1
+      "minItems": 1,
+      "maxItems": 1
     }
   },
   "required": ["prompt", "input_asset_ids"],
-  "additionalProperties": true
+  "additionalProperties": false
 }

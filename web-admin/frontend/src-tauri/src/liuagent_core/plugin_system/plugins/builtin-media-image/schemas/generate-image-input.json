@@ -1,8 +1,13 @@
 {
   "type": "object",
+  "description": "文生图输入。只接受文字提示词；已有图片的参考、重绘或修改必须调用 edit_image。",
   "properties": {
-    "prompt": {"type": "string", "minLength": 1}
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "description": "要生成的新图片的文字描述。不要放入图片地址、Base64 或资产 ID。"
+    }
   },
   "required": ["prompt"],
-  "additionalProperties": true
+  "additionalProperties": false
 }

@@ -23,6 +23,13 @@ pub fn execute_media_tool(
     }
     let provider_id = required_string_arg(arguments, "_media_provider_id")?;
     let model_name = required_string_arg(arguments, "_media_model_name")?;
+    let operation = string_arg(arguments, "operation", "text_to_video");
+    if tool_name == "generate_video"
+        && is_openai_provider(&provider_id)
+        && matches!(operation.as_str(), "video_modify" | "video_remix")
+    {
+        return execute_openai_video_edit(arguments, &provider_id, &model_name, &operation);
+    }
     let timeout_ms = number_arg(arguments, "timeout_ms", 300_000, 1_000, 900_000) as u64;
     let api_base_url = required_string_arg(arguments, "_backend_api_base_url")?;
     let backend_token = required_string_arg(arguments, "_backend_token")?;
@@ -33,6 +40,9 @@ pub fn execute_media_tool(
         "provider_id": provider_id,
         "model_name": model_name,
         "prompt": string_arg(arguments, "prompt", ""),
+        "operation": operation,
+        "input_asset_ids": arguments.get("input_asset_ids").cloned().unwrap_or_else(|| json!([])),
+        "media_inputs": arguments.get("_media_inputs").cloned().unwrap_or_else(|| json!([])),
         "reference_images": arguments.get("_reference_images").cloned().unwrap_or_else(|| json!([])),
         "audio_data_url": string_arg(arguments, "_audio_data_url", ""),
         "audio_filename": string_arg(arguments, "_audio_filename", ""),
@@ -58,6 +68,138 @@ pub fn execute_media_tool(
         .unwrap_or("媒体工具执行完成")
         .to_string();
     Ok((response, summary))
+}
+
+fn is_openai_provider(provider_id: &str) -> bool {
+    matches!(
+        provider_id.trim().to_ascii_lowercase().as_str(),
+        "openai" | "openai_sora" | "sora"
+    )
+}
+
+fn execute_openai_video_edit(
+    arguments: &Value,
+    provider_id: &str,
+    model_name: &str,
+    operation: &str,
+) -> Result<(Value, String), ToolError> {
+    let api_key = required_string_arg(arguments, "_media_api_key")?;
+    let base_url = required_string_arg(arguments, "_media_base_url")?;
+    let prompt = required_string_arg(arguments, "prompt")?;
+    let input = arguments
+        .get("_media_inputs")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .ok_or_else(|| ToolError::new("tool.schema_invalid", "video input is required"))?;
+    if input.get("resource_type").and_then(Value::as_str) != Some("provider_video_id") {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "OpenAI video editing requires provider_video_id",
+        ));
+    }
+    let video_id = input
+        .get("resource_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ToolError::new("tool.schema_invalid", "OpenAI video ID is required"))?;
+    let endpoint = provider_video_edits_url(&base_url)?;
+    let payload = provider_post_json(
+        endpoint,
+        &api_key,
+        &json!({"video": {"id": video_id}, "prompt": prompt}),
+    )?;
+    let task_id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Ok((
+        json!({
+            "content": "OpenAI 视频编辑任务已提交",
+            "operation": operation,
+            "provider_id": provider_id,
+            "model_name": model_name,
+            "task_id": task_id,
+            "provider_video_id": task_id,
+            "input_asset_ids": arguments.get("input_asset_ids").cloned().unwrap_or_else(|| json!([])),
+            "provider_response": payload
+        }),
+        "OpenAI 视频编辑任务已提交".to_string(),
+    ))
+}
+
+fn provider_video_edits_url(base_url: &str) -> Result<Url, ToolError> {
+    let base = Url::parse(base_url.trim()).map_err(|err| {
+        ToolError::new(
+            "tool.schema_invalid",
+            format!("invalid media base url: {err}"),
+        )
+    })?;
+    if !matches!(base.scheme(), "http" | "https") {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "media base url must use http or https",
+        ));
+    }
+    Url::parse(&format!(
+        "{}/videos/edits",
+        base.as_str().trim_end_matches('/')
+    ))
+    .map_err(|err| {
+        ToolError::new(
+            "tool.schema_invalid",
+            format!("invalid video edit url: {err}"),
+        )
+    })
+}
+
+fn provider_post_json(endpoint: Url, api_key: &str, body: &Value) -> Result<Value, ToolError> {
+    let response = Client::builder()
+        .timeout(Duration::from_millis(300_000))
+        .user_agent("liuAgent-desktop-local-runtime/0.1")
+        .build()
+        .map_err(|err| {
+            ToolError::new(
+                "tool.execution_failed",
+                format!("create provider client failed: {err}"),
+            )
+        })?
+        .post(endpoint)
+        .bearer_auth(api_key.trim())
+        .json(body)
+        .send()
+        .map_err(|err| {
+            ToolError::new(
+                "tool.execution_failed",
+                format!("provider video edit failed: {err}"),
+            )
+        })?;
+    let status = response.status();
+    let text = response.text().map_err(|err| {
+        ToolError::new(
+            "tool.execution_failed",
+            format!("read provider response failed: {err}"),
+        )
+    })?;
+    let payload = serde_json::from_str::<Value>(&text).unwrap_or_else(|_| json!({"raw": text}));
+    if !status.is_success() {
+        let detail = payload
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .or_else(|| payload.get("message").and_then(Value::as_str))
+            .unwrap_or("unknown provider error");
+        return Err(ToolError::new(
+            "tool.execution_failed",
+            format!(
+                "provider video edit failed (HTTP {}): {detail}",
+                status.as_u16()
+            ),
+        ));
+    }
+    Ok(payload)
 }
 
 fn media_tool_url(api_base_url: &str, project_id: &str) -> Result<Url, ToolError> {

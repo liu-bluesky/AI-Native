@@ -27,6 +27,7 @@ use super::adapters::protocol::{
     progress_update_event, tool_call_started_event, tool_result_event,
     user_question_required_event,
 };
+use super::args::string_arg;
 use super::audit::build_tool_audit_logs;
 use super::definitions::builtin_tool_definitions;
 use super::execution::build_tool_execution_record;
@@ -6626,13 +6627,98 @@ fn attachment_is_image(attachment: &LocalChatAttachment) -> bool {
             .is_some_and(|kind| kind.eq_ignore_ascii_case("image"))
 }
 
-fn attachment_image_reference(attachment: &LocalChatAttachment) -> Option<String> {
+fn attachment_image_reference(attachment: &LocalChatAttachment) -> Option<Value> {
+    if let Some(provider_file_id) = attachment
+        .provider_file_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(json!({"file_id": provider_file_id}));
+    }
     attachment
         .data_url
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty() && is_supported_image_reference(value))
-        .map(str::to_string)
+        .map(|value| json!({"image_url": value}))
+}
+
+fn attachment_kind(attachment: &LocalChatAttachment) -> String {
+    attachment
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if attachment_is_image(attachment) {
+                "image"
+            } else {
+                "file"
+            }
+        })
+        .to_lowercase()
+}
+
+fn attachment_media_input(attachment: &LocalChatAttachment) -> Option<Value> {
+    let asset_id = attachment
+        .attachment_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let provider_resource_id = attachment
+        .provider_file_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let remote_url = attachment
+        .data_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| is_supported_image_reference(value) || value.starts_with("data:"));
+    if provider_resource_id.is_none() && remote_url.is_none() {
+        return None;
+    }
+    Some(json!({
+        "asset_id": asset_id,
+        "kind": attachment_kind(attachment),
+        "source": attachment.source.as_deref().unwrap_or("user_upload"),
+        "resource_type": if attachment.provider_file_id.is_some() { "provider_file_id" } else { "remote_url" },
+        "resource_id": provider_resource_id,
+        "remote_url": remote_url,
+        "input_intent": "context"
+    }))
+}
+
+fn selected_video_inputs(
+    arguments: &Value,
+    attachments: &[LocalChatAttachment],
+) -> Result<Vec<Value>, String> {
+    let operation = string_arg(arguments, "operation", "text_to_video");
+    if operation == "text_to_video" || operation == "image_to_video" {
+        return Ok(Vec::new());
+    }
+    let Some(ids) = arguments.get("input_asset_ids").and_then(Value::as_array) else {
+        return Err(format!("{operation} requires input_asset_ids"));
+    };
+    if ids.len() != 1 {
+        return Err(format!("{operation} requires exactly one video asset"));
+    }
+    let asset_id = ids[0]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "input_asset_ids must contain a non-empty asset ID".to_string())?;
+    let attachment = attachments
+        .iter()
+        .find(|item| item.attachment_id.as_deref() == Some(asset_id))
+        .ok_or_else(|| format!("unknown video asset ID: {asset_id}"))?;
+    if attachment_kind(attachment) != "video" {
+        return Err(format!("asset ID is not a video: {asset_id}"));
+    }
+    attachment_media_input(attachment)
+        .map(|input| vec![input])
+        .ok_or_else(|| format!("video asset has no usable provider resource: {asset_id}"))
 }
 
 fn selected_image_references(
@@ -6640,7 +6726,7 @@ fn selected_image_references(
     argument_name: &str,
     attachments: &[LocalChatAttachment],
     required: bool,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<Value>, String> {
     let Some(raw_asset_ids) = arguments.get(argument_name) else {
         return if required {
             Err(format!("{argument_name} is required"))
@@ -6742,6 +6828,11 @@ fn tool_arguments_with_backend_context(
         } else {
             None
         };
+        let selected_video_resolution = if tool_name == "generate_video" {
+            Some(selected_video_inputs(&arguments, attachments))
+        } else {
+            None
+        };
         let Some(object) = arguments.as_object_mut() else {
             return arguments;
         };
@@ -6789,6 +6880,15 @@ fn tool_arguments_with_backend_context(
                 .filter_map(attachment_image_reference)
                 .collect::<Vec<_>>();
             object.insert("_reference_images".to_string(), json!(reference_images));
+            match selected_video_resolution {
+                Some(Ok(inputs)) => object.insert("_media_inputs".to_string(), json!(inputs)),
+                Some(Err(error)) => {
+                    object.insert("_media_inputs".to_string(), json!([]));
+                    object.insert("_media_validation_error".to_string(), json!(error));
+                    None
+                }
+                None => None,
+            };
         }
         if tool_name == "transcribe_audio" {
             if let Some(attachment) = attachments.iter().find(|attachment| {
@@ -17595,6 +17695,7 @@ mod tests {
                     mime_type: Some("text/markdown".to_string()),
                     size: Some(12),
                     kind: Some("document".to_string()),
+                    source: None,
                     routing_mode: Some("local_extract".to_string()),
                     extraction_status: Some("text_extracted".to_string()),
                     data_url: None,
@@ -17608,6 +17709,7 @@ mod tests {
                     mime_type: Some("image/png".to_string()),
                     size: Some(32),
                     kind: Some("image".to_string()),
+                    source: None,
                     routing_mode: Some("inline_image".to_string()),
                     extraction_status: Some("image_data_url".to_string()),
                     data_url: Some("data:image/png;base64,AAAA".to_string()),
@@ -17648,6 +17750,7 @@ mod tests {
             mime_type: Some("image/*".to_string()),
             size: Some(0),
             kind: Some("image".to_string()),
+            source: None,
             routing_mode: Some("inline_image".to_string()),
             extraction_status: Some("conversation_reference".to_string()),
             data_url: Some("https://example.test/history-image.png".to_string()),
@@ -17748,6 +17851,7 @@ mod tests {
                 mime_type: Some("image/png".to_string()),
                 size: Some(32),
                 kind: Some("image".to_string()),
+                source: None,
                 routing_mode: Some("local_extract".to_string()),
                 extraction_status: Some("metadata_only".to_string()),
                 data_url: Some("data:image/png;base64,AAAA".to_string()),
@@ -18210,6 +18314,7 @@ mod tests {
             mime_type: Some("image/png".to_string()),
             size: Some(12),
             kind: Some("image".to_string()),
+            source: None,
             routing_mode: Some("inline_image".to_string()),
             extraction_status: Some("image_data_url".to_string()),
             data_url: Some("data:image/png;base64,AAAA".to_string()),
@@ -18270,6 +18375,7 @@ mod tests {
                 mime_type: Some("image/png".to_string()),
                 size: Some(12),
                 kind: Some("image".to_string()),
+                source: None,
                 routing_mode: Some("inline_image".to_string()),
                 extraction_status: Some("image_data_url".to_string()),
                 data_url: Some("data:image/png;base64,FIRST".to_string()),
@@ -18283,6 +18389,7 @@ mod tests {
                 mime_type: Some("image/png".to_string()),
                 size: Some(12),
                 kind: Some("image".to_string()),
+                source: None,
                 routing_mode: Some("inline_image".to_string()),
                 extraction_status: Some("image_data_url".to_string()),
                 data_url: Some("data:image/png;base64,SECOND".to_string()),
@@ -18312,6 +18419,114 @@ mod tests {
     }
 
     #[test]
+    fn video_remix_resolves_one_video_provider_resource() {
+        let mut request = test_model_request("把这个视频改成夜景");
+        request.backend_context = Some(LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "login-token".to_string(),
+        });
+        request.media_tools = vec![LocalMediaToolConfig {
+            name: "generate_video".to_string(),
+            provider_id: "provider-video".to_string(),
+            model_name: "video-model".to_string(),
+            ..Default::default()
+        }];
+        request.attachments = vec![LocalChatAttachment {
+            attachment_id: Some("source-video".to_string()),
+            name: "source.mp4".to_string(),
+            mime_type: Some("video/mp4".to_string()),
+            size: Some(12),
+            kind: Some("video".to_string()),
+            source: Some("conversation_reference".to_string()),
+            routing_mode: Some("provider_file".to_string()),
+            extraction_status: Some("provider_file_ready".to_string()),
+            data_url: None,
+            extracted_text: None,
+            provider_file_id: Some("video-resource-1".to_string()),
+            error: None,
+        }];
+        let tool = PlannedLocalTool {
+            tool_call_id: "call-video".to_string(),
+            name: "generate_video".to_string(),
+            arguments: json!({
+                "prompt": "改成夜景",
+                "operation": "video_remix",
+                "input_asset_ids": ["source-video"]
+            }),
+            summary: "remix video".to_string(),
+        };
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            &request.project_id,
+            request.backend_context.as_ref(),
+            &request.mcp_config,
+            &request.media_tools,
+            &request.attachments,
+            tool.arguments.clone(),
+        );
+        assert_eq!(execution_args["operation"], "video_remix");
+        assert_eq!(execution_args["input_asset_ids"], json!(["source-video"]));
+        assert_eq!(execution_args["_media_inputs"][0]["kind"], "video");
+        assert_eq!(
+            execution_args["_media_inputs"][0]["resource_id"],
+            "video-resource-1"
+        );
+        assert!(execution_args.get("_media_validation_error").is_none());
+    }
+
+    #[test]
+    fn video_remix_rejects_non_video_asset() {
+        let mut request = test_model_request("修改附件");
+        request.backend_context = Some(LocalBackendContext {
+            api_base_url: "http://127.0.0.1:8000/api".to_string(),
+            token: "login-token".to_string(),
+        });
+        request.media_tools = vec![LocalMediaToolConfig {
+            name: "generate_video".to_string(),
+            provider_id: "provider-video".to_string(),
+            model_name: "video-model".to_string(),
+            ..Default::default()
+        }];
+        request.attachments = vec![LocalChatAttachment {
+            attachment_id: Some("source-image".to_string()),
+            name: "source.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            size: Some(12),
+            kind: Some("image".to_string()),
+            source: Some("user_upload".to_string()),
+            routing_mode: Some("inline_image".to_string()),
+            extraction_status: Some("image_data_url".to_string()),
+            data_url: Some("data:image/png;base64,AAAA".to_string()),
+            extracted_text: None,
+            provider_file_id: None,
+            error: None,
+        }];
+        let tool = PlannedLocalTool {
+            tool_call_id: "call-video".to_string(),
+            name: "generate_video".to_string(),
+            arguments: json!({
+                "prompt": "修改",
+                "operation": "video_modify",
+                "input_asset_ids": ["source-image"]
+            }),
+            summary: "modify video".to_string(),
+        };
+        let execution_args = tool_arguments_with_backend_context(
+            &tool,
+            &request.project_id,
+            request.backend_context.as_ref(),
+            &json!({}),
+            &request.media_tools,
+            &request.attachments,
+            tool.arguments.clone(),
+        );
+        assert_eq!(
+            execution_args["_media_validation_error"],
+            "asset ID is not a video: source-image"
+        );
+    }
+
+    #[test]
     fn edit_image_receives_selected_historical_image_url() {
         let mut request = test_model_request("把上面的图片改成绿色");
         request.backend_context = Some(LocalBackendContext {
@@ -18330,6 +18545,7 @@ mod tests {
             mime_type: Some("image/*".to_string()),
             size: Some(0),
             kind: Some("image".to_string()),
+            source: None,
             routing_mode: Some("inline_image".to_string()),
             extraction_status: Some("conversation_reference".to_string()),
             data_url: Some("https://example.test/history-image.png".to_string()),
@@ -18397,6 +18613,7 @@ mod tests {
             mime_type: Some("text/plain".to_string()),
             size: Some(12),
             kind: Some("document".to_string()),
+            source: None,
             routing_mode: Some("local_extract".to_string()),
             extraction_status: Some("text_extracted".to_string()),
             data_url: None,
@@ -19687,6 +19904,7 @@ mod tests {
             mime_type: Some("image/jpeg".to_string()),
             size: None,
             kind: Some("image".to_string()),
+            source: None,
             routing_mode: Some("inline_image".to_string()),
             extraction_status: Some("image_data_url".to_string()),
             data_url: Some("data:image/jpeg;base64,AAAA".to_string()),

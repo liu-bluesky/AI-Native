@@ -10,6 +10,16 @@ pub fn execute_builtin_media_image_tool(
     tool_name: &str,
     arguments: &Value,
 ) -> Result<(Value, String), ToolError> {
+    if tool_name == "generate_image"
+        && ["input_asset_ids", "reference_asset_ids"]
+            .iter()
+            .any(|name| arguments.get(*name).is_some())
+    {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "generate_image 只支持纯文生图；基于已有图片生成或修改必须调用 edit_image，并在 input_asset_ids 中传入图片资产 ID",
+        ));
+    }
     if let Some(validation_error) = arguments
         .get("_media_validation_error")
         .and_then(Value::as_str)
@@ -245,5 +255,23 @@ mod tests {
                 {"file_id": "file-123"}
             ])
         );
+    }
+
+    #[test]
+    fn generate_image_rejects_reference_asset_arguments() {
+        let error = execute_builtin_media_image_tool(
+            "generate_image",
+            &json!({
+                "prompt": "生成海报",
+                "reference_asset_ids": ["asset-1"],
+                "_media_model_name": "image-model",
+                "_media_base_url": "https://images.example.com/v1",
+                "_media_api_key": "key"
+            }),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "tool.schema_invalid");
+        assert!(error.message.contains("必须调用 edit_image"));
     }
 }

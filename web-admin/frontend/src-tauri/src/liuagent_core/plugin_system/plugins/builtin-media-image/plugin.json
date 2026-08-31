@@ -11,14 +11,16 @@
       "id": "builtin.media.image.generate",
       "kind": "tool",
       "name": "generate_image",
-      "description": "根据用户明确的描述生成图片。",
+      "description": "仅根据文字描述生成新图片；不接受参考图。基于已有图片的生成、重绘或修改必须使用 edit_image。",
       "selection": {
         "whenToUse": [
           "用户明确要求生成图片、插画、海报、图标或视觉素材",
-          "用户提供了新的文字描述，需要创建图片"
+          "用户提供了新的文字描述，需要创建图片",
+          "没有需要读取或修改的已有图片"
         ],
         "avoidWhen": [
           "用户要求修改已有图片",
+          "用户要求基于参考图生成或重绘",
           "当前请求只是读取或分析图片信息"
         ],
         "recommends": ["builtin.media.image.generation-skill"],
@@ -41,10 +43,10 @@
       "id": "builtin.media.image.edit",
       "kind": "tool",
       "name": "edit_image",
-      "description": "编辑当前会话中用户明确选择的图片附件。",
+      "description": "基于当前会话中明确选择的一张图片附件进行图生图/图片编辑。",
       "selection": {
         "whenToUse": [
-          "用户要求修改、重绘、抠图、换背景或变换已有图片",
+          "用户要求基于已有图片生成、修改、重绘、抠图、换背景或变换",
           "当前会话存在明确可用的图片资产 ID"
         ],
         "avoidWhen": [

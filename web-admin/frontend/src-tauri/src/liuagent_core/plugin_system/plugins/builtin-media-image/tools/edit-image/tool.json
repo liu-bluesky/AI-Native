@@ -2,7 +2,7 @@
   "id": "builtin.media.image.edit",
   "name": "edit_image",
   "version": "1.0.0",
-  "description": "编辑当前会话中用户明确选择的图片附件。",
+  "description": "基于当前会话中明确选择的一张图片附件进行图生图/图片编辑。",
   "executor": "tools.media.execute_media_tool",
   "operation": "edit_image",
   "inputSchema": {"$ref": "../../schemas/edit-image-input.json"},

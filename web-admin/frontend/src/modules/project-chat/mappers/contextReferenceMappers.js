@@ -141,7 +141,7 @@ export function buildContextReferencesPrompt(references = []) {
   return [
     "本轮引用了当前会话中的历史内容。请把这些内容视为用户已明确提供的上下文，不要再次要求上传：",
     ...blocks,
-    "若用户要求基于上述图片继续生成，请调用 generate_image 并通过 reference_asset_ids 选择资产；若要求修改现有图片，请调用 edit_image 并通过 input_asset_ids 选择资产。不要声称看不到引用内容，也不要改用本地脚本处理图片。",
+    "若用户要求基于上述图片继续生成、重绘或修改，请调用 edit_image，并通过 input_asset_ids 选择一张图片资产；generate_image 仅用于没有参考图的纯文生图。不要声称看不到引用内容，也不要改用本地脚本处理图片。",
   ].join("\n");
 }
 
@@ -163,11 +163,13 @@ export function buildContextReferenceAttachments(references = []) {
       size: 0,
       kind: item.type,
       source: item.source || "conversation_reference",
-      routingMode: item.type === "image" ? "inline_image" : "local_extract",
-      extractionStatus: item.url ? "conversation_reference" : "metadata_only",
-      dataUrl: item.url,
-      extractedText: item.content,
+      inputIntent: item.inputIntent || "context",
+      remoteUrl: item.remoteUrl || item.url || "",
       providerFileId: "",
+      routingMode: "inline_content",
+      extractionStatus: item.url ? "conversation_reference" : "metadata_only",
+      dataUrl: item.dataUrl || item.url,
+      extractedText: item.content,
       error: "",
     }));
 }

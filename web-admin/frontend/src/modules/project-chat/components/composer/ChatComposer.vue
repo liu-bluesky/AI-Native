@@ -285,13 +285,13 @@
               <el-select
                 v-model="selectedModelOptionValueModel"
                 class="chat-model-select"
-                :disabled="chatLoading || !providerModelGroups.length"
+                :disabled="chatLoading || !conversationModelGroups.length"
                 :placeholder="activeModelSummary || '选择模型'"
                 :teleported="true"
                 aria-label="选择模型"
               >
                 <el-option-group
-                  v-for="group in providerModelGroups"
+                  v-for="group in conversationModelGroups"
                   :key="group.providerId"
                   :label="group.label"
                 >
@@ -470,6 +470,7 @@ const props = defineProps([
   "manualModelOptionValue",
   "activeModelSummary",
   "providerModelGroups",
+  "conversationModelGroups",
   "selectedModelOptionValue",
   "selectedProjectId",
   "showAgentWorkflowStatusStrip",

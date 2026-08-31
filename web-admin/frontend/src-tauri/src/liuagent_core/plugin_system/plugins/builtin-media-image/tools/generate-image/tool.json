@@ -2,7 +2,7 @@
   "id": "builtin.media.image.generate",
   "name": "generate_image",
   "version": "1.0.0",
-  "description": "根据用户明确的描述生成图片。",
+  "description": "仅根据文字描述生成新图片；已有图片的参考、重绘或修改必须调用 edit_image。",
   "executor": "tools.media.execute_media_tool",
   "operation": "generate_image",
   "inputSchema": {"$ref": "../../schemas/generate-image-input.json"},
