@@ -834,8 +834,8 @@
 }
 
 .chat-thinking-mode__control {
-  flex: 0 0 72px;
-  width: 72px;
+  flex: 0 0 96px;
+  width: 96px;
 }
 
 .chat-thinking-mode__control :deep(.el-select__wrapper) {

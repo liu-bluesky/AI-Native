@@ -252,6 +252,18 @@
             </div>
           </div>
           <div class="footer-right">
+            <el-tooltip content="配置模型" placement="top">
+              <el-button
+                v-if="isChatSettingsDisplayReady"
+                class="chat-model-routing-trigger"
+                circle
+                :disabled="chatLoading"
+                aria-label="配置模型"
+                @click="modelRoutingDialogVisible = true"
+              >
+                <el-icon><Setting /></el-icon>
+              </el-button>
+            </el-tooltip>
             <span v-if="modelProviderOffline" class="chat-model-offline-badge">
               离线
             </span>

@@ -39002,8 +39002,8 @@ onUnmounted(() => {
 
 .chat-layout :deep(.chat-model-select) {
   width: auto;
-  min-width: 156px;
-  max-width: 260px;
+  min-width: 190px;
+  max-width: 280px;
 }
 
 .chat-layout :deep(.chat-model-select .el-select__wrapper),
@@ -39035,18 +39035,17 @@ onUnmounted(() => {
 }
 
 .chat-layout :deep(.footer-right .chat-model-routing-trigger) {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   padding: 0;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 11px;
+  border: 0;
+  border-radius: 999px;
   background: var(--el-fill-color-light);
   color: var(--el-text-color-secondary);
 }
 
 .chat-layout :deep(.footer-right .chat-model-routing-trigger:hover) {
-  border-color: var(--el-color-primary-light-5);
-  background: var(--el-color-primary-light-9);
+  background: var(--el-fill-color-dark);
   color: var(--el-color-primary);
 }
 
@@ -39078,6 +39077,11 @@ onUnmounted(() => {
 .chat-layout :deep(.local-agent-auth-level__control .el-select__wrapper),
 .chat-layout :deep(.chat-thinking-mode__control .el-select__wrapper) {
   width: auto;
+}
+
+.chat-layout :deep(.chat-thinking-mode__control) {
+  flex: 0 0 96px;
+  width: 96px;
 }
 
 .chat-layout :deep(.send-message-button) {
