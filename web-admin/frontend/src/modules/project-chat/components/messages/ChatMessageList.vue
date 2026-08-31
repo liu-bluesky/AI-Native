@@ -1,6 +1,6 @@
 <template>
   <div class="message-list-inner">
-    <div v-if="historyLoading" class="chat-history-loading-state">
+    <div v-if="historyLoading && !messages.length" class="chat-history-loading-state">
       <div class="chat-history-loading-state__title">
         正在加载对话记录
       </div>
@@ -11,7 +11,7 @@
     <div v-else-if="!messages.length" class="chat-empty-state">
       <div class="chat-empty-title">{{ emptyStateTitle }}</div>
     </div>
-    <template v-else>
+    <template v-if="messages.length">
       <div
         v-if="historyHasMore || historyLoadingMore"
         class="chat-history-loader"
@@ -31,6 +31,15 @@
       </div>
       <slot />
     </template>
+    <div
+      v-if="historyLoading && messages.length"
+      class="chat-history-loading-overlay"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="chat-history-loading-overlay__spinner" aria-hidden="true"></span>
+      <span>正在切换对话</span>
+    </div>
   </div>
 </template>
 

@@ -65,7 +65,7 @@ pub fn builtin_filesystem_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "write_file",
-            description: "写入或创建本地 workspace 内文件，必须同时提供 path 和 content。",
+            description: "写入或创建本地 workspace 内文本文件，必须同时提供 path 和 content；二进制或媒体内容使用 download_file。",
             action: "file.write",
             risk: "medium",
             requires_approval: true,

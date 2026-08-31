@@ -2,6 +2,7 @@
 //!
 //! 网络请求由桌面端本机发起；禁止自动携带 Cookie、Authorization 等本地凭据。
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Url;
@@ -268,7 +269,7 @@ pub fn download_file(
     permission_decision: Option<&PermissionDecisionInput>,
 ) -> Result<(Value, String), ToolError> {
     let root = resolve_workspace_root(workspace_path)?;
-    let url = parse_http_url(&required_string_arg(arguments, "url")?)?;
+    let source = required_string_arg(arguments, "url")?;
     let dest_path = required_string_arg(arguments, "dest_path")?;
     let overwrite = bool_arg(arguments, "overwrite", false);
     let timeout_ms = number_arg(arguments, "timeout_ms", 30_000, 1_000, 120_000) as u64;
@@ -294,7 +295,7 @@ pub fn download_file(
         "workspace",
         &format!("下载文件到 {relative_path}"),
         json!({
-            "url": url.as_str(),
+            "url": source,
             "dest_path": relative_path,
             "overwrite": overwrite,
             "exists": exists,
@@ -303,31 +304,7 @@ pub fn download_file(
         permission_decision,
     )?;
 
-    let response = request_client(timeout_ms)?
-        .get(url.clone())
-        .send()
-        .map_err(|err| {
-            ToolError::new("tool.execution_failed", format!("download failed: {err}"))
-        })?;
-    let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    if !response.status().is_success() {
-        return Err(ToolError::new(
-            "tool.execution_failed",
-            format!("download failed with http status {status}"),
-        ));
-    }
-    let bytes = response.bytes().map_err(|err| {
-        ToolError::new(
-            "tool.execution_failed",
-            format!("read download failed: {err}"),
-        )
-    })?;
+    let (bytes, content_type, status) = read_download_source(&source, timeout_ms)?;
     if bytes.len() > MAX_DOWNLOAD_BYTES {
         return Err(ToolError::new(
             "tool.output_too_large",
@@ -355,6 +332,234 @@ pub fn download_file(
         }),
         summary,
     ))
+}
+
+fn read_download_source(
+    source: &str,
+    timeout_ms: u64,
+) -> Result<(Vec<u8>, String, u16), ToolError> {
+    if source.starts_with("asset://") {
+        return read_local_asset_source(source);
+    }
+    if let Some(metadata) = source.strip_prefix("data:") {
+        let (header, encoded) = metadata
+            .split_once(',')
+            .ok_or_else(|| ToolError::new("tool.schema_invalid", "invalid data url"))?;
+        let is_base64 = header
+            .split(';')
+            .any(|part| part.eq_ignore_ascii_case("base64"));
+        if !is_base64 {
+            return Err(ToolError::new(
+                "tool.schema_invalid",
+                "only base64 data urls are supported",
+            ));
+        }
+        let bytes = STANDARD.decode(encoded.trim()).map_err(|err| {
+            ToolError::new(
+                "tool.schema_invalid",
+                format!("invalid base64 data url: {err}"),
+            )
+        })?;
+        if bytes.len() > MAX_DOWNLOAD_BYTES {
+            return Err(ToolError::new(
+                "tool.output_too_large",
+                format!("download is larger than {} bytes", MAX_DOWNLOAD_BYTES),
+            ));
+        }
+        let content_type = header
+            .split(';')
+            .next()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        return Ok((bytes, content_type, 200));
+    }
+
+    let url = parse_http_url(source)?;
+    let response = request_client(timeout_ms)?.get(url).send().map_err(|err| {
+        ToolError::new("tool.execution_failed", format!("download failed: {err}"))
+    })?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if !response.status().is_success() {
+        return Err(ToolError::new(
+            "tool.execution_failed",
+            format!("download failed with http status {status}"),
+        ));
+    }
+    let bytes = response.bytes().map_err(|err| {
+        ToolError::new(
+            "tool.execution_failed",
+            format!("read download failed: {err}"),
+        )
+    })?;
+    Ok((bytes.to_vec(), content_type, status))
+}
+
+fn read_local_asset_source(source: &str) -> Result<(Vec<u8>, String, u16), ToolError> {
+    let url = Url::parse(source).map_err(|err| {
+        ToolError::new("tool.schema_invalid", format!("invalid asset url: {err}"))
+    })?;
+    if url.host_str().unwrap_or_default() != "localhost" {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "asset urls must use the localhost host",
+        ));
+    }
+    let decoded_path = percent_decode_path(url.path())?;
+    let path = local_asset_path(&decoded_path)?;
+    let canonical_path = fs::canonicalize(&path).map_err(|err| {
+        ToolError::new(
+            "tool.execution_failed",
+            format!("resolve local asset failed: {err}"),
+        )
+    })?;
+    if !is_trusted_project_chat_asset_path(&canonical_path) {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "asset source is outside the application asset store",
+        ));
+    }
+    let metadata = fs::metadata(&path).map_err(|err| {
+        ToolError::new(
+            "tool.execution_failed",
+            format!("read local asset metadata failed: {err}"),
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "asset source is not a file",
+        ));
+    }
+    if metadata.len() > MAX_DOWNLOAD_BYTES as u64 {
+        return Err(ToolError::new(
+            "tool.output_too_large",
+            format!("download is larger than {} bytes", MAX_DOWNLOAD_BYTES),
+        ));
+    }
+    let bytes = fs::read(&canonical_path).map_err(|err| {
+        ToolError::new(
+            "tool.execution_failed",
+            format!("read local asset failed: {err}"),
+        )
+    })?;
+    let content_type = content_type_for_path(&canonical_path);
+    Ok((bytes, content_type, 200))
+}
+
+fn is_trusted_project_chat_asset_path(path: &Path) -> bool {
+    let Some(home) = global_user_home_dir() else {
+        return false;
+    };
+    let mut roots = vec![
+        home.join("Library")
+            .join("Application Support")
+            .join("com.ai-employee.factory")
+            .join("project-chat-data"),
+        home.join(".local")
+            .join("share")
+            .join("com.ai-employee.factory")
+            .join("project-chat-data"),
+    ];
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+        roots.push(
+            PathBuf::from(local_app_data)
+                .join("com.ai-employee.factory")
+                .join("project-chat-data"),
+        );
+    }
+    if let Some(app_data) = env::var_os("APPDATA") {
+        roots.push(
+            PathBuf::from(app_data)
+                .join("com.ai-employee.factory")
+                .join("project-chat-data"),
+        );
+    }
+    roots.into_iter().any(|root| {
+        fs::canonicalize(root)
+            .ok()
+            .is_some_and(|root| path.starts_with(root))
+    })
+}
+
+fn local_asset_path(decoded_path: &str) -> Result<PathBuf, ToolError> {
+    let mut normalized = decoded_path.replace('\\', "/");
+    if cfg!(windows) && normalized.starts_with('/') && normalized.get(2..3) == Some(":") {
+        normalized.remove(0);
+    }
+    let path = PathBuf::from(normalized);
+    if !path.is_absolute() {
+        return Err(ToolError::new(
+            "tool.schema_invalid",
+            "asset source path must be absolute",
+        ));
+    }
+    Ok(path)
+}
+
+fn percent_decode_path(value: &str) -> Result<String, ToolError> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(ToolError::new(
+                    "tool.schema_invalid",
+                    "invalid percent-encoded asset path",
+                ));
+            }
+            let high = hex_digit(bytes[index + 1]).ok_or_else(|| {
+                ToolError::new("tool.schema_invalid", "invalid percent-encoded asset path")
+            })?;
+            let low = hex_digit(bytes[index + 2]).ok_or_else(|| {
+                ToolError::new("tool.schema_invalid", "invalid percent-encoded asset path")
+            })?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded)
+        .map_err(|_| ToolError::new("tool.schema_invalid", "asset path is not valid UTF-8"))
+}
+
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn content_type_for_path(path: &Path) -> String {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "json" => "application/json",
+        "txt" | "md" | "csv" => "text/plain",
+        _ => "application/octet-stream",
+    }
+    .to_string()
 }
 
 #[derive(Debug)]
@@ -2342,5 +2547,48 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, "tool.schema_invalid");
+    }
+
+    #[test]
+    fn reads_base64_data_url_as_binary_content() {
+        let (bytes, content_type, status) =
+            read_download_source("data:image/png;base64,QUJDRA==", 30_000).unwrap();
+
+        assert_eq!(bytes, b"ABCD");
+        assert_eq!(content_type, "image/png");
+        assert_eq!(status, 200);
+    }
+
+    #[test]
+    fn reads_asset_localhost_url_from_local_filesystem() {
+        let dir = global_user_home_dir()
+            .unwrap()
+            .join(".local")
+            .join("share")
+            .join("com.ai-employee.factory")
+            .join("project-chat-data")
+            .join("test-assets");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("图片 1.png");
+        fs::write(&source, b"PNG DATA").unwrap();
+        let encoded_path = source
+            .to_string_lossy()
+            .replace('%', "%25")
+            .replace(' ', "%20");
+        let asset_url = format!("asset://localhost/{encoded_path}");
+
+        let (bytes, content_type, status) = read_download_source(&asset_url, 30_000).unwrap();
+
+        assert_eq!(bytes, b"PNG DATA");
+        assert_eq!(content_type, "image/png");
+        assert_eq!(status, 200);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rejects_non_local_asset_hosts() {
+        let error = read_download_source("asset://example.com/tmp/file.png", 30_000).unwrap_err();
+
+        assert_eq!(error.code, "tool.schema_invalid");
     }
 }

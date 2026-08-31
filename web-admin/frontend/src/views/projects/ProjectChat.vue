@@ -13273,10 +13273,11 @@ let highlightedMessageTimer = null;
 let messageListResizeObserver = null;
 let pendingScrollToBottomFrame = null;
 const shouldStickMessagesToBottom = ref(true);
-const CHAT_HISTORY_PAGE_SIZE = 120;
+const CHAT_HISTORY_PAGE_SIZE = 50;
 const chatHistoryLoadedCount = ref(0);
 const chatHistoryLoading = ref(false);
 const chatHistoryLoadingMore = ref(false);
+const messageBodyHtmlCache = new WeakMap();
 const chatHistoryReachedEnd = ref(false);
 let activeChatHistoryLoadingKey = "";
 let chatSessionNavigationEpoch = 0;
@@ -13348,6 +13349,21 @@ async function applyChatMessagesWithoutPersisting(rows) {
       chatRuntimePersistenceSuppressionDepth - 1,
     );
   }
+}
+
+function chatMessageRowsEquivalent(leftRows, rightRows) {
+  if (!Array.isArray(leftRows) || !Array.isArray(rightRows)) return false;
+  if (leftRows.length !== rightRows.length) return false;
+  return leftRows.every((row, index) => {
+    const other = rightRows[index];
+    return (
+      String(row?.id || "") === String(other?.id || "") &&
+      String(row?.role || "") === String(other?.role || "") &&
+      String(row?.content || "") === String(other?.content || "") &&
+      String(row?.answerId || row?.answer_id || "") ===
+        String(other?.answerId || other?.answer_id || "")
+    );
+  });
 }
 
 function composerPlanStateKey(projectId, chatSessionId) {
@@ -13464,28 +13480,36 @@ function restoreComposerPlanStateFromRuntimePayload(
   }
 }
 
-async function persistCurrentChatRuntimeBeforeSessionSwitch(
+function queueChatSessionPersistenceBeforeSwitch(
   nextProjectId,
   nextChatSessionId,
 ) {
   const activeProjectId = String(selectedProjectId.value || "").trim();
   const activeChatSessionId = String(currentChatSessionId.value || "").trim();
-  if (!activeProjectId || !activeChatSessionId) return false;
+  if (!activeProjectId || !activeChatSessionId) return;
   if (
     activeProjectId === String(nextProjectId || "").trim() &&
     activeChatSessionId === String(nextChatSessionId || "").trim()
   ) {
-    return false;
+    return;
   }
-  const activeRun = localLiuAgentActiveRunForChatSession(activeChatSessionId);
-  if (activeRun) {
-    return await persistLocalLiuAgentActiveRunMessages(activeRun);
-  }
-  return await persistCurrentChatRuntimeNow(
+  const snapshotRows = Array.isArray(messages.value)
+    ? messages.value.slice()
+    : [];
+  if (!snapshotRows.length) return;
+  rememberChatSessionMessages(
     activeProjectId,
     activeChatSessionId,
-    { onlyIfDirty: true },
+    snapshotRows,
   );
+  window.setTimeout(() => {
+    void persistRememberedChatSessionMessages(
+      activeProjectId,
+      activeChatSessionId,
+    ).catch((error) => {
+      console.warn("persist previous chat session in background failed", error);
+    });
+  }, 0);
 }
 
 function isCurrentChatSession(projectId, chatSessionId) {
@@ -17916,36 +17940,44 @@ function shouldShowMessageTrajectory(row, idx) {
 }
 
 function messageBodyHtml(row, idx) {
+  const content = String(row?.content || "");
   const persistedAssets = normalizePersistedMediaAssets(
     row?.mediaAssets || row?.media_assets,
   );
-  const content = formatContent(
-    row?.content,
+  const persistedMediaUrls = (kind) =>
+    persistedAssets
+      .filter((asset) => asset.kind === kind)
+      .map(
+        (asset) =>
+          asset.displayUrl || asset.localPath || asset.sourceUrl,
+      )
+      .filter(Boolean);
+  const structuredMedia =
     row?.role === "assistant"
       ? {
           images: mergeImageUrls(
-            extractImages(row),
-            persistedAssets
-              .filter((asset) => asset.kind === "image")
-              .map((asset) => asset.sourceUrl),
+            persistedMediaUrls("image").length
+              ? persistedMediaUrls("image")
+              : extractImages(row),
           ),
           videos: mergeVideoUrls(
-            extractVideos(row),
-            persistedAssets
-              .filter((asset) => asset.kind === "video")
-              .map((asset) => asset.sourceUrl),
+            persistedMediaUrls("video").length
+              ? persistedMediaUrls("video")
+              : extractVideos(row),
           ),
           audios: mergeAudioUrls(
-            extractAudios(row),
-            persistedAssets
-              .filter((asset) => asset.kind === "audio")
-              .map((asset) => asset.sourceUrl),
+            persistedMediaUrls("audio").length
+              ? persistedMediaUrls("audio")
+              : extractAudios(row),
           ),
         }
-      : {},
-  );
-  if (content) return content;
-  return "";
+      : {};
+  const cacheKey = JSON.stringify({ content, structuredMedia });
+  const cached = messageBodyHtmlCache.get(row);
+  if (cached?.key === cacheKey) return cached.html;
+  const html = formatContent(content, structuredMedia);
+  messageBodyHtmlCache.set(row, { key: cacheKey, html });
+  return html;
 }
 
 function messageProcessStepCount(row, idx) {
@@ -31782,7 +31814,7 @@ async function fetchChatSessions(
           !excludedSessionIds.has(candidate) &&
           chatSessions.value.some((item) => item.id === candidate),
       ) || "";
-    await persistCurrentChatRuntimeBeforeSessionSwitch(projectId, resolved);
+    queueChatSessionPersistenceBeforeSwitch(projectId, resolved);
     rememberCurrentChatSessionMessages();
     rememberCurrentChatSessionComposerState();
     currentChatSessionId.value = resolved;
@@ -31916,10 +31948,7 @@ async function fetchChatHistory(
     return;
   }
   if (!append) {
-    await persistCurrentChatRuntimeBeforeSessionSwitch(
-      projectId,
-      normalizedSessionId,
-    );
+    queueChatSessionPersistenceBeforeSwitch(projectId, normalizedSessionId);
     rememberCurrentChatSessionMessages();
     rememberCurrentChatSessionComposerState();
   }
@@ -31961,7 +31990,8 @@ async function fetchChatHistory(
           cachedRuntimePayload,
         )
       : null;
-  const hasImmediateRows = Array.isArray(immediateRows);
+  const hasImmediateRows =
+    Array.isArray(immediateRows) && immediateRows.length > 0;
   if (!append) {
     activeChatHistoryLoadingKey = loadingKey;
     // 本地缓存只作为首屏占位，最终仍要完成本地持久化历史校准。
@@ -32005,7 +32035,7 @@ async function fetchChatHistory(
     });
     const [remoteHistoryResult, messageSnapshot] = await Promise.all([
       Promise.resolve({ ok: false, data: null }),
-      append
+      append || hasImmediateRows
         ? Promise.resolve([])
         : readPersistedChatMessageSnapshot(projectId, normalizedSessionId),
     ]);
@@ -32031,9 +32061,10 @@ async function fetchChatHistory(
           .map(normalizeRuntimeMessageSnapshot)
           .filter(Boolean),
       );
-      const nextRows =
-        hasImmediateRows && immediateRows.length ? immediateRows : snapshotRows;
-      await applyChatMessagesWithoutPersisting(nextRows);
+      const nextRows = hasImmediateRows ? immediateRows : snapshotRows;
+      if (!chatMessageRowsEquivalent(messages.value, nextRows)) {
+        await applyChatMessagesWithoutPersisting(nextRows);
+      }
       rememberChatSessionMessages(
         projectId,
         normalizedSessionId,
@@ -32080,15 +32111,20 @@ async function fetchChatHistory(
               messages.value,
               runtimePayload,
             );
-            await applyChatMessagesWithoutPersisting(mergedRows);
             if (
-              !isCurrentChatSessionNavigation(
-                projectId,
-                normalizedSessionId,
-                navigationEpoch,
-              )
+              !chatMessageRowsEquivalent(messages.value, mergedRows) &&
+              !hasImmediateRows
             ) {
-              return;
+              await applyChatMessagesWithoutPersisting(mergedRows);
+              if (
+                !isCurrentChatSessionNavigation(
+                  projectId,
+                  normalizedSessionId,
+                  navigationEpoch,
+                )
+              ) {
+                return;
+              }
             }
             rememberChatSessionMessages(
               projectId,

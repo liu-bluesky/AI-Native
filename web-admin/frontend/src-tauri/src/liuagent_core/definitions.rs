@@ -314,7 +314,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "download_file",
-            description: "下载文件到本地 workspace",
+            description: "将可访问的文件内容保存到本地 workspace。url 支持 asset://localhost 本地资产、http/https 远程地址和 data:*;base64 内联数据；根据来源选择本工具，文本内容使用 write_file。",
             action: "network.read",
             risk: "medium",
             requires_approval: true,
