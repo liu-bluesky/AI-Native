@@ -38,7 +38,7 @@ pub fn builtin_plugin_system_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "install_plugin_from_directory",
-            description: "从用户本机已有的插件目录安装一个版本化插件。只接受包含 plugin.json 的本地目录；安装前必须经过用户授权。",
+            description: "从用户本机已有的插件目录安装插件。相同插件 ID 的新安装会替换旧安装，并自动成为唯一活动路径；安装前必须经过用户授权。",
             action: "plugin.install",
             risk: "high",
             requires_approval: true,
@@ -51,41 +51,41 @@ pub fn builtin_plugin_system_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "enable_plugin",
-            description: "启用已安装插件的指定版本。启用状态写入 plugin-lock.json，并在后续 Runtime 请求中生效。",
+            description: "启用当前已安装插件。启用状态写入 plugin-lock.json，并在后续 Runtime 请求中生效。",
             action: "plugin.lifecycle.enable",
             risk: "medium",
             requires_approval: true,
             scope: "user",
             input_schema: json!({
                 "type":"object",
-                "properties":{"plugin_id":{"type":"string"},"plugin_version":{"type":"string"}},
-                "required":["plugin_id","plugin_version"]
+                "properties":{"plugin_id":{"type":"string"}},
+                "required":["plugin_id"]
             }),
         },
         ToolDefinition {
             name: "disable_plugin",
-            description: "禁用已安装插件的指定版本。禁用状态写入 plugin-lock.json，并阻止后续 Skill 被 Runtime 发现。",
+            description: "禁用当前已安装插件。禁用状态写入 plugin-lock.json，并阻止后续 Skill 被 Runtime 发现。",
             action: "plugin.lifecycle.disable",
             risk: "medium",
             requires_approval: true,
             scope: "user",
             input_schema: json!({
                 "type":"object",
-                "properties":{"plugin_id":{"type":"string"},"plugin_version":{"type":"string"}},
-                "required":["plugin_id","plugin_version"]
+                "properties":{"plugin_id":{"type":"string"}},
+                "required":["plugin_id"]
             }),
         },
         ToolDefinition {
             name: "read_plugin_config",
-            description: "读取已安装插件的配置状态和脱敏配置，用于判断还缺少哪些配置；不会返回密钥原文。",
+            description: "读取当前已安装插件的配置状态和脱敏配置，用于判断还缺少哪些配置；不会返回密钥原文。",
             action: "plugin.configuration.read",
             risk: "low",
             requires_approval: false,
             scope: "user",
             input_schema: json!({
                 "type":"object",
-                "properties":{"plugin_id":{"type":"string"},"plugin_version":{"type":"string"}},
-                "required":["plugin_id","plugin_version"]
+                "properties":{"plugin_id":{"type":"string"}},
+                "required":["plugin_id"]
             }),
         },
         ToolDefinition {
@@ -99,11 +99,10 @@ pub fn builtin_plugin_system_tool_definitions() -> Vec<ToolDefinition> {
                 "type":"object",
                 "properties":{
                     "plugin_id":{"type":"string"},
-                    "plugin_version":{"type":"string"},
                     "config":{"type":"object"},
                     "replace":{"type":"boolean","default":false,"description":"为 true 时完整替换配置；否则按对象字段合并"}
                 },
-                "required":["plugin_id","plugin_version","config"]
+                "required":["plugin_id","config"]
             }),
         },
     ]

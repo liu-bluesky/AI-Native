@@ -11,7 +11,7 @@ use super::adapters::protocol::{message_event, state_changed_event};
 use super::execution::build_tool_execution_record_value;
 use super::gateway::{epoch_millis, sanitize_path_segment};
 use super::paths::desktop_runtime_root;
-use super::types::{ToolError, ToolExecutionResult};
+use super::types::{LocalChatMessage, ToolError, ToolExecutionResult};
 
 static RUNTIME_STATE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -28,6 +28,7 @@ pub struct RuntimeArtifactPaths {
     pub checkpoint_path: String,
     pub active_session_path: String,
     pub session_history_path: String,
+    pub conversation_path: String,
     pub outbox_path: String,
     pub runtime_events: Vec<Value>,
 }
@@ -75,6 +76,7 @@ pub fn write_runtime_artifacts(
     ensure_parent(&paths.checkpoint_path)?;
     ensure_parent(&paths.active_session_path)?;
     ensure_parent(&paths.session_history_path)?;
+    ensure_parent(&paths.conversation_path)?;
     ensure_parent(&paths.outbox_path)?;
 
     let now = epoch_millis();
@@ -311,6 +313,7 @@ pub fn write_runtime_artifacts(
         checkpoint_path: paths.checkpoint_path.to_string_lossy().to_string(),
         active_session_path: paths.active_session_path.to_string_lossy().to_string(),
         session_history_path: paths.session_history_path.to_string_lossy().to_string(),
+        conversation_path: paths.conversation_path.to_string_lossy().to_string(),
         outbox_path: paths.outbox_path.to_string_lossy().to_string(),
         runtime_events: transcript_events,
     })
@@ -356,6 +359,67 @@ pub fn append_runtime_event(
     ensure_parent(&paths.transcript_path)?;
     append_jsonl(&paths.transcript_path, &[event.clone()])?;
     persist_runtime_event_checkpoint(&paths, project_id, chat_session_id, event, None)
+}
+
+pub fn load_or_import_conversation_history(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    legacy_history: &[LocalChatMessage],
+) -> Result<Vec<LocalChatMessage>, ToolError> {
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    ensure_parent(&paths.conversation_path)?;
+    let messages = read_conversation_messages(&paths.conversation_path, project_id, chat_session_id)?;
+    if !messages.is_empty() || legacy_history.is_empty() {
+        return Ok(messages);
+    }
+    let imported = legacy_history
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| is_conversation_message(message))
+        .map(|(index, message)| conversation_event(
+            project_id,
+            chat_session_id,
+            message,
+            "legacy_history_import",
+            index,
+        ))
+        .collect::<Vec<_>>();
+    append_jsonl(&paths.conversation_path, &imported)?;
+    read_conversation_messages(&paths.conversation_path, project_id, chat_session_id)
+}
+
+pub fn append_conversation_message(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    message: &LocalChatMessage,
+    source: &str,
+) -> Result<(), ToolError> {
+    if !is_conversation_message(message) {
+        return Ok(());
+    }
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    ensure_parent(&paths.conversation_path)?;
+    let existing = read_conversation_messages(&paths.conversation_path, project_id, chat_session_id)?;
+    let message_id = message.message_id.as_deref().map(str::trim).unwrap_or("");
+    if !message_id.is_empty() && existing.iter().any(|entry| {
+        entry.message_id.as_deref().map(str::trim) == Some(message_id)
+            && entry.role == message.role
+    }) {
+        return Ok(());
+    }
+    let index = existing.len();
+    append_jsonl(
+        &paths.conversation_path,
+        &[conversation_event(project_id, chat_session_id, message, source, index)],
+    )
 }
 
 pub fn pause_runtime_checkpoint(
@@ -883,6 +947,34 @@ pub fn save_offline_cache_record(
                 "record": record
             }))
         }
+        "conversation" => {
+            let project_id = required_cache_id(project_id, "projectId")?;
+            let chat_session_id = required_cache_id(chat_session_id, "chatSessionId")?;
+            let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+            let messages = read_conversation_messages(
+                &paths.conversation_path,
+                project_id,
+                chat_session_id,
+            )?;
+            let projection = messages.into_iter().map(|message| json!({
+                "id": message.message_id,
+                "role": message.role,
+                "content": message.content,
+                "images": message.images,
+                "videos": message.videos,
+                "audios": message.audios,
+                "reasoningContent": message.reasoning_content,
+                "sourceKind": message.source_kind,
+                "diagnostic": message.diagnostic,
+                "visibility": message.visibility,
+            })).collect::<Vec<_>>();
+            Ok(json!({
+                "ok": true,
+                "cache_kind": "conversation",
+                "path": paths.conversation_path.to_string_lossy(),
+                "record": { "messages": projection }
+            }))
+        }
         "runtime_config" => {
             let provider_id = required_cache_id(provider_id, "providerId")?;
             let path = offline_runtime_config_path(workspace_root, provider_id);
@@ -1018,6 +1110,7 @@ struct RuntimeArtifactPathBufs {
     checkpoint_path: PathBuf,
     active_session_path: PathBuf,
     session_history_path: PathBuf,
+    conversation_path: PathBuf,
     outbox_path: PathBuf,
 }
 
@@ -1087,12 +1180,77 @@ fn runtime_artifact_paths(
             .join("query-mcp")
             .join("session-history")
             .join(format!("{safe_project_id}__{safe_chat_session_id}.json")),
+        conversation_path: session_dir.join("conversation.jsonl"),
         outbox_path: workspace_root
             .join(".ai-employee")
             .join("query-mcp")
             .join("outbox")
             .join(format!("{safe_project_id}__{safe_chat_session_id}.jsonl")),
     }
+}
+
+fn is_conversation_message(message: &LocalChatMessage) -> bool {
+    matches!(message.role.trim(), "user" | "assistant" | "system")
+        && (!message.content.trim().is_empty()
+            || !message.images.is_empty()
+            || !message.videos.is_empty()
+            || !message.audios.is_empty())
+}
+
+fn conversation_event(
+    project_id: &str,
+    chat_session_id: &str,
+    message: &LocalChatMessage,
+    source: &str,
+    index: usize,
+) -> Value {
+    let now = epoch_millis();
+    let message_id = message
+        .message_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("legacy-{index}-{now}"));
+    json!({
+        "record_type": "liuagent-conversation-message",
+        "version": 1,
+        "event_id": format!("conversation-{}-{}-{}", sanitize_path_segment(chat_session_id), sanitize_path_segment(&message_id), now),
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "message_id": message_id,
+        "role": message.role.trim(),
+        "content": message.content,
+        "images": message.images,
+        "videos": message.videos,
+        "audios": message.audios,
+        "reasoning_content": message.reasoning_content,
+        "source_kind": message.source_kind,
+        "diagnostic": message.diagnostic,
+        "visibility": message.visibility,
+        "source": source,
+        "created_at_epoch_ms": now
+    })
+}
+
+fn read_conversation_messages(
+    path: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Result<Vec<LocalChatMessage>, ToolError> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let messages = read_jsonl(path)?.into_iter().filter_map(|event| {
+        if event.get("record_type").and_then(Value::as_str) != Some("liuagent-conversation-message")
+            || event.get("project_id").and_then(Value::as_str) != Some(project_id)
+            || event.get("chat_session_id").and_then(Value::as_str) != Some(chat_session_id)
+        {
+            return None;
+        }
+        serde_json::from_value::<LocalChatMessage>(event).ok()
+    }).filter(is_conversation_message).collect::<Vec<_>>();
+    Ok(messages)
 }
 
 fn build_transcript_events(input: &RuntimePersistenceInput<'_>, now: u128) -> Vec<Value> {
@@ -1328,7 +1486,87 @@ fn read_jsonl(path: &Path) -> Result<Vec<Value>, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::liuagent_core::types::ToolExecutionResult;
+    use crate::liuagent_core::types::{LocalChatMessage, ToolExecutionResult};
+
+    #[test]
+    fn conversation_log_rehydrates_assistant_options_without_frontend_history() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_conversation_history_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let legacy_history = vec![
+            LocalChatMessage {
+                message_id: Some("user-1".to_string()),
+                role: "user".to_string(),
+                content: "给我三条处理路径".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+            LocalChatMessage {
+                message_id: Some("assistant-1".to_string()),
+                role: "assistant".to_string(),
+                content: "1. 直接编辑\n2. 重新生成\n3. 先确认强度".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+        ];
+
+        let imported = load_or_import_conversation_history(
+            &dir,
+            "proj-test",
+            "chat-options",
+            &legacy_history,
+        )
+        .unwrap();
+        assert_eq!(imported.len(), 2);
+
+        append_conversation_message(
+            &dir,
+            "proj-test",
+            "chat-options",
+            &LocalChatMessage {
+                message_id: Some("user-2".to_string()),
+                role: "user".to_string(),
+                content: "1".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+            "runtime_user_message",
+        )
+        .unwrap();
+
+        let restored = load_or_import_conversation_history(
+            &dir,
+            "proj-test",
+            "chat-options",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(restored.len(), 3);
+        assert_eq!(restored[1].role, "assistant");
+        assert!(restored[1].content.contains("1. 直接编辑"));
+        assert_eq!(restored[2].content, "1");
+        assert!(runtime_artifact_paths(&dir, "proj-test", "chat-options")
+            .conversation_path
+            .exists());
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn runtime_events_roll_checkpoint_and_pause_freezes_latest_node() {

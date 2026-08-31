@@ -50,7 +50,9 @@ use super::prompt::{
 };
 use super::state::recover_runtime_session;
 use super::state::{
-    append_runtime_event, cleanup_synced_offline_cache, delete_runtime_outbox_entries,
+    append_conversation_message, append_runtime_event, cleanup_synced_offline_cache,
+    delete_runtime_outbox_entries,
+    load_or_import_conversation_history,
     list_runtime_events as read_runtime_events, list_runtime_outbox as read_runtime_outbox,
     load_offline_cache_record, pause_runtime_checkpoint, recover_runtime_state,
     save_offline_cache_record, write_runtime_artifacts, RuntimeArtifactPaths,
@@ -773,6 +775,30 @@ fn start_local_chat_inner(
     let user_message_id = normalized_id(request.message_id.as_deref(), "local_user");
     let assistant_message_id =
         normalized_id(request.assistant_message_id.as_deref(), "local_assistant");
+    let conversation_history = load_or_import_conversation_history(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        &request.history,
+    )?;
+    append_conversation_message(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        &LocalChatMessage {
+            message_id: Some(user_message_id.clone()),
+            role: "user".to_string(),
+            content: user_message.clone(),
+            images: Vec::new(),
+            videos: Vec::new(),
+            audios: Vec::new(),
+            reasoning_content: None,
+            source_kind: Some("desktop_local_agent_runtime".to_string()),
+            diagnostic: None,
+            visibility: Some("model_context".to_string()),
+        },
+        "runtime_user_message",
+    )?;
     let answer_id = format!("ans_{assistant_message_id}");
     let started_at = epoch_millis();
     let collected_runtime_events = RefCell::new(Vec::<Value>::new());
@@ -824,10 +850,11 @@ fn start_local_chat_inner(
     let base_model_request = build_model_request_with_history(&request, &user_message, &[])?;
     let context_model_runner =
         |request: &ModelStepRequest| run_model_step_interruptible(&chat_session_id, request);
-    let has_context_history = request.history.iter().any(|message| {
+    let has_context_history = conversation_history.iter().any(|message| {
         !should_exclude_history_message_from_model_context(message)
             && history_message_has_model_context(message)
     });
+    let inject_history_directly = should_inject_history_directly(&conversation_history);
     let context_preparation_started_at = Instant::now();
     let relevant_context = if request.resume_from_checkpoint {
         collecting_event_sink(progress_update_event(
@@ -843,7 +870,7 @@ fn start_local_chat_inner(
             epoch_millis(),
         ));
         String::new()
-    } else if has_context_history {
+    } else if has_context_history && !inject_history_directly {
         collecting_event_sink(progress_update_event(
             format!("evt_{session_id}_context_preparation_started"),
             &session_id,
@@ -858,7 +885,7 @@ fn start_local_chat_inner(
         ));
         let context = extract_relevant_conversation_context(
             &base_model_request,
-            &request.history,
+            &conversation_history,
             &user_message,
             &context_model_runner,
         );
@@ -884,7 +911,11 @@ fn start_local_chat_inner(
     let mut model_request = build_model_request_with_history_and_task_profile(
         &request,
         &user_message,
-        &[],
+        if inject_history_directly {
+            &conversation_history
+        } else {
+            &[]
+        },
         Some(task_profile),
     )?;
     if !relevant_context.trim().is_empty() {
@@ -913,6 +944,7 @@ fn start_local_chat_inner(
         &session_id,
         &workspace_root,
         &request,
+        &conversation_history,
         &user_message,
         &model_request,
         &prompt_stack,
@@ -1029,7 +1061,7 @@ fn start_local_chat_inner(
         &project_id,
         &workspace_root,
         &user_message,
-        &request.history,
+        &conversation_history,
         &model_result,
         &tool_results,
         &planned_tools,
@@ -1051,6 +1083,25 @@ fn start_local_chat_inner(
         } else {
             response_format.assistant_content.clone()
         };
+    append_conversation_message(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        &LocalChatMessage {
+            message_id: Some(assistant_message_id.clone()),
+            role: "assistant".to_string(),
+            content: assistant_content.clone(),
+            images: Vec::new(),
+            videos: Vec::new(),
+            audios: Vec::new(),
+            reasoning_content: (!model_result.reasoning_content.trim().is_empty())
+                .then(|| model_result.reasoning_content.clone()),
+            source_kind: Some("desktop_local_agent_runtime".to_string()),
+            diagnostic: None,
+            visibility: Some("model_context".to_string()),
+        },
+        "runtime_assistant_message",
+    )?;
     let operations = build_operations(&session_id, &agent_loop);
     let run_status = if is_runtime_pause_reason(&agent_loop.stopped_reason) {
         "paused"
@@ -2152,6 +2203,7 @@ fn build_agent_run_context(
     run_id: &str,
     workspace_root: &PathBuf,
     request: &LocalChatRequest,
+    history: &[LocalChatMessage],
     user_message: &str,
     model_request: &ModelStepRequest,
     prompt_stack: &PromptStack,
@@ -2171,7 +2223,7 @@ fn build_agent_run_context(
                 .map(build_agent_run_attachment_summary)
                 .collect(),
         },
-        history_context: build_agent_run_history_context(&request.history),
+        history_context: build_agent_run_history_context(history),
         project_context: AgentRunProjectContext {
             project_id: project_id.to_string(),
             chat_session_id: chat_session_id.to_string(),
@@ -2182,7 +2234,7 @@ fn build_agent_run_context(
                     .iter()
                     .any(|part| !part.content.trim().is_empty()),
                 "temperature": request.temperature,
-                "history_count": request.history.len()
+                "history_count": history.len()
             }),
             workspace_snapshot: json!({
                 "root": workspace_root.to_string_lossy(),
@@ -10974,8 +11026,8 @@ fn build_plugin_skill_context_message_for_root(
     ];
     for skill in skills {
         lines.push(format!(
-            "- {}@{} / {}：{}",
-            skill.plugin_id, skill.plugin_version, skill.skill_id, skill.description
+            "- {} / {}：{}",
+            skill.plugin_id, skill.skill_id, skill.description
         ));
         if !skill.when_to_use.is_empty() {
             lines.push(format!("  - 适用场景：{}", skill.when_to_use.join("；")));
@@ -11121,6 +11173,15 @@ fn history_message_has_model_context(message: &LocalChatMessage) -> bool {
             .any(|value| is_supported_image_reference(value))
         || message.videos.iter().any(|value| !value.trim().is_empty())
         || message.audios.iter().any(|value| !value.trim().is_empty())
+}
+
+fn should_inject_history_directly(history: &[LocalChatMessage]) -> bool {
+    let eligible_count = history
+        .iter()
+        .filter(|message| !should_exclude_history_message_from_model_context(message))
+        .filter(|message| history_message_has_model_context(message))
+        .count();
+    eligible_count > 0 && eligible_count <= DIRECT_HISTORY_CONTEXT_MAX_MESSAGES
 }
 
 fn build_history_media_context(message: &LocalChatMessage) -> String {
@@ -20103,7 +20164,7 @@ mod tests {
 
         let message = build_plugin_skill_context_message_for_root(&root, &HashSet::new())
             .expect("installed plugin skill should be present");
-        assert!(message.content.contains("vendor-demo@1.0.0"));
+        assert!(message.content.contains("vendor-demo / vendor.demo.skill"));
         assert!(message.content.contains("vendor.demo.skill"));
         assert!(message.content.contains("Use the installed demo skill."));
 
@@ -20610,6 +20671,56 @@ mod tests {
         assert!(saw_history.get());
         assert!(context.contains("[0] user\n改造登录和注册页面"));
         assert!(context.contains("[1] assistant\n我会读取页面源码并开始改造"));
+    }
+
+    #[test]
+    fn short_history_preserves_assistant_options_for_the_next_turn() {
+        let history = vec![
+            LocalChatMessage {
+                message_id: Some("user-1".to_string()),
+                role: "user".to_string(),
+                content: "请提供三条初步解决路径".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+            LocalChatMessage {
+                message_id: Some("assistant-1".to_string()),
+                role: "assistant".to_string(),
+                content: "1. 直接编辑原图\n2. 重新生成\n3. 先确认调整强度".to_string(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                audios: Vec::new(),
+                reasoning_content: None,
+                source_kind: None,
+                diagnostic: None,
+                visibility: None,
+            },
+        ];
+
+        assert!(should_inject_history_directly(&history));
+
+        let mut request = LocalChatRequest::default();
+        request.history = history;
+        let model_request = build_model_request_with_history(&request, "1", &request.history)
+            .expect("short history should build a model request");
+
+        assert!(model_request.messages.iter().any(|message| {
+            message.role == "assistant"
+                && message.content.contains("1. 直接编辑原图")
+                && message.content.contains("3. 先确认调整强度")
+        }));
+        assert_eq!(
+            model_request
+                .messages
+                .last()
+                .map(|message| message.content.as_str()),
+            Some("1")
+        );
     }
 
     #[test]
@@ -21171,6 +21282,7 @@ mod tests {
             "local-context",
             &workspace_root,
             &request,
+            &request.history,
             "继续",
             &model_request,
             &prompt_stack,
@@ -21232,6 +21344,7 @@ mod tests {
             "local-attachments",
             &PathBuf::from("."),
             &request,
+            &request.history,
             "请分析附件",
             &model_request,
             &prompt_stack,

@@ -704,6 +704,14 @@
                                       class="message-process-entry__code"
                                       >{{ messageProcessEntryJson(entry) }}</pre
                                     >
+                                    <button
+                                      v-if="messageProcessEntryErrorLogPath(entry)"
+                                      type="button"
+                                      class="message-process-entry__error-log-link"
+                                      @click="openMessageProcessEntryErrorLog(entry)"
+                                    >
+                                      打开错误日志
+                                    </button>
                                   </div>
                                 </div>
                               </div>
@@ -9253,6 +9261,36 @@ function localLiuAgentRuntimeEventPhase(event = {}) {
   return "running";
 }
 
+function sanitizeLocalLiuAgentPathSegment(value = "") {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+function localLiuAgentRuntimeErrorLogPath(event = {}, context = {}) {
+  const payload = localLiuAgentRuntimeEventPayload(event);
+  if (
+    String(event?.type || "").trim() !== "tool_result" ||
+    payload?.ok !== false
+  ) {
+    return "";
+  }
+  const workspacePath = String(context?.workspacePath || "").trim();
+  const chatSessionId = String(
+    event?.chat_session_id || event?.chatSessionId || context?.chatSessionId || "",
+  ).trim();
+  if (!workspacePath || !chatSessionId) return "";
+  const separator = workspacePath.includes("\\") ? "\\" : "/";
+  return [
+    workspacePath.replace(/[\\/]+$/, ""),
+    ".ai-employee",
+    "desktop-agent-runtime",
+    "sessions",
+    sanitizeLocalLiuAgentPathSegment(chatSessionId),
+    "transcript.jsonl",
+  ].join(separator);
+}
+
 function compactLocalLiuAgentInline(value, limit = 180) {
   const normalized = String(value || "")
     .replace(/\s+/g, " ")
@@ -9682,9 +9720,16 @@ function localLiuAgentRuntimeEventSummary(event = {}) {
     ).trim();
     const summary = String(payload?.summary || "").trim();
     const postProcessError = localLiuAgentPostProcessError(payload);
+    const failed = payload?.ok === false;
     return [
-      `完成：${localLiuAgentToolResultLabel(toolName)}`,
+      `${failed ? "失败" : "完成"}：${localLiuAgentToolResultLabel(toolName)}`,
       summary,
+      failed
+        ? compactLocalLiuAgentInline(
+            payload?.error || payload?.error_code || "工具调用失败",
+            360,
+          )
+        : "",
       postProcessError
         ? `工具已成功执行，但结果处理失败：${postProcessError.message}；任务继续执行`
         : "",
@@ -9779,7 +9824,7 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
                       : type === "model_call_started"
                         ? `本地模型步骤 ${modelStepIndex || ""} 请求中`.trim()
                         : type === "tool_result"
-                          ? `完成：${localLiuAgentToolResultLabel(toolName)}`
+                          ? `${payload?.ok === false ? "失败" : "完成"}：${localLiuAgentToolResultLabel(toolName)}`
                           : type === "tool_call_started"
                             ? localLiuAgentToolTraceSubject(payload)
                             : "桌面本地 Agent Runtime",
@@ -9825,6 +9870,7 @@ function localLiuAgentRuntimeEventOperation(event = {}, context = {}) {
         payload?.tool_result_id || payload?.toolResultId || "",
       ).trim(),
       cwd: String(context.workspacePath || "").trim(),
+      error_log_path: localLiuAgentRuntimeErrorLogPath(event, context),
     },
   };
 }
@@ -9890,6 +9936,11 @@ function localLiuAgentRuntimeEventProcessLogEntry(
     payload: {
       ...payload,
       event_type: type,
+      error_log_path: localLiuAgentRuntimeErrorLogPath(event, {
+        workspacePath: operation?.meta?.cwd,
+        chatSessionId: operation?.meta?.chat_session_id,
+      }),
+      workspace_path: String(operation?.meta?.cwd || "").trim(),
       runtime_session_id: String(
         event?.runtime_session_id ||
           event?.runtimeSessionId ||
@@ -13808,6 +13859,26 @@ async function readPersistedChatRuntime(projectId, chatSessionId) {
 
 async function readPersistedChatMessageSnapshot(projectId, chatSessionId) {
   return readLocalPersistedChatMessageSnapshot(projectId, chatSessionId);
+}
+
+async function readLocalLiuAgentConversationProjection(projectId, chatSessionId) {
+  const workspacePath = String(localLiuAgentWorkspacePath()).trim();
+  if (!workspacePath || !hasNativeDesktopBridge()) return [];
+  try {
+    const result = await loadNativeLiuAgentOfflineCache({
+      workspacePath,
+      cacheKind: "conversation",
+      projectId,
+      chatSessionId,
+    });
+    const messages = result?.record?.messages;
+    return Array.isArray(messages)
+      ? messages.map(normalizeRuntimeMessageSnapshot).filter(Boolean)
+      : [];
+  } catch (error) {
+    console.warn("load local liuAgent conversation projection failed", error);
+    return [];
+  }
 }
 
 function writePersistedChatRuntime(projectId, chatSessionId, payload) {
@@ -17767,6 +17838,30 @@ function messageProcessEntryCodeLabel(entry = {}) {
   if (kind === "file_search") return "查看命中列表";
   if (kind === "command_output") return "查看输出内容";
   return "查看详情";
+}
+
+function messageProcessEntryErrorLogPath(entry = {}) {
+  const payload = messageProcessEntryPayload(entry);
+  const path = String(
+    payload?.error_log_path || payload?.errorLogPath || "",
+  ).trim();
+  return path && payload?.ok === false ? path : "";
+}
+
+async function openMessageProcessEntryErrorLog(entry = {}) {
+  const path = messageProcessEntryErrorLogPath(entry);
+  const payload = messageProcessEntryPayload(entry);
+  const workspacePath = String(
+    payload?.workspace_path || payload?.workspacePath || "",
+  ).trim();
+  try {
+    await openNativeRuntimeLogFile({
+      workspacePath: workspacePath || localLiuAgentWorkspacePath(),
+      path,
+    });
+  } catch (error) {
+    ElMessage.error(error?.message || "打开错误日志失败");
+  }
 }
 
 function messageProcessEntryContextText(entry = {}) {
@@ -32159,6 +32254,12 @@ async function fetchChatHistory(
     append ? "append" : "replace",
     Date.now(),
   ].join("|");
+  const conversationRows = append
+    ? []
+    : await readLocalLiuAgentConversationProjection(
+        projectId,
+        normalizedSessionId,
+      );
   const cachedRuntimePayload = append
     ? null
     : getCachedChatRuntime(projectId, normalizedSessionId);
@@ -32168,7 +32269,9 @@ async function fetchChatHistory(
   const cachedRuntimeRows = Array.isArray(cachedRuntimePayload?.messages)
     ? cachedRuntimePayload.messages
     : null;
-  const immediateRows = Array.isArray(rememberedRows)
+  const immediateRows = conversationRows.length
+    ? conversationRows
+    : Array.isArray(rememberedRows)
     ? rememberedRows
     : Array.isArray(cachedRuntimeRows)
       ? applyPersistedChatRuntimeRows(
@@ -32202,7 +32305,11 @@ async function fetchChatHistory(
         projectId: normalizedProjectId,
         sessionId: normalizedSessionId,
         rowCount: immediateRows.length,
-        source: Array.isArray(rememberedRows) ? "remembered" : "runtime-cache",
+        source: conversationRows.length
+          ? "conversation-log"
+          : Array.isArray(rememberedRows)
+            ? "remembered"
+            : "runtime-cache",
       });
     }
   }

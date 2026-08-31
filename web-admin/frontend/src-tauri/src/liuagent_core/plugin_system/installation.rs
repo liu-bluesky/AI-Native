@@ -110,13 +110,8 @@ impl PluginInstaller {
             .map_err(PluginInstallError::InvalidManifest)?;
         validate_install_component(&manifest.version, "plugin version")?;
         let plugin_root = plugin_root.as_ref();
-        let destination = plugin_root
-            .join(INSTALLED_DIR)
-            .join(&manifest.id)
-            .join(&manifest.version);
-        if destination.exists() {
-            return Err(PluginInstallError::DestinationExists(destination));
-        }
+        let plugin_directory = plugin_root.join(INSTALLED_DIR).join(&manifest.id);
+        let destination = plugin_directory.join(&manifest.version);
 
         let staging = plugin_root.join(STAGING_DIR).join(format!(
             "{}-{}-{}",
@@ -128,9 +123,10 @@ impl PluginInstaller {
             fs::remove_dir_all(&staging)?;
         }
         copy_directory_without_symlinks(source_directory, &staging)?;
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
+        if plugin_directory.exists() {
+            fs::remove_dir_all(&plugin_directory)?;
         }
+        fs::create_dir_all(&plugin_directory)?;
         fs::rename(&staging, &destination)?;
 
         let entry = PluginLockEntry {
@@ -178,10 +174,10 @@ impl PluginInstaller {
         plugin_root: impl AsRef<Path>,
     ) -> Result<Vec<InstalledPluginRecord>, PluginInstallError> {
         let plugin_root = plugin_root.as_ref();
-        let mut records = all_installed_plugin_versions(plugin_root)?
+        let mut records = active_installed_plugins(plugin_root)?
             .into_iter()
             .map(|(path, manifest, enabled)| InstalledPluginRecord {
-                configured: config_path(plugin_root, &manifest.id, &manifest.version).is_file(),
+                configured: config_path(plugin_root, &manifest.id).is_file(),
                 manifest,
                 path,
                 enabled,
@@ -202,14 +198,13 @@ impl PluginInstaller {
     pub fn set_enabled(
         plugin_root: impl AsRef<Path>,
         plugin_id: &str,
-        plugin_version: &str,
         enabled: bool,
     ) -> Result<InstalledPluginRecord, PluginInstallError> {
         let plugin_root = plugin_root.as_ref();
-        let (path, manifest, _) = find_installed_plugin(plugin_root, plugin_id, plugin_version)?;
+        let (path, manifest, _) = find_active_installed_plugin(plugin_root, plugin_id)?;
         let mut lock = Self::read_lock_file(plugin_root)?;
         lock.plugins
-            .retain(|entry| !(entry.id == manifest.id && entry.version == manifest.version));
+            .retain(|entry| entry.id != manifest.id);
         lock.plugins.push(PluginLockEntry {
             id: manifest.id.clone(),
             version: manifest.version.clone(),
@@ -219,7 +214,7 @@ impl PluginInstaller {
         });
         write_lock_file(plugin_root, &lock)?;
         Ok(InstalledPluginRecord {
-            configured: config_path(plugin_root, &manifest.id, &manifest.version).is_file(),
+            configured: config_path(plugin_root, &manifest.id).is_file(),
             manifest,
             path,
             enabled,
@@ -229,13 +224,19 @@ impl PluginInstaller {
     pub fn read_config(
         plugin_root: impl AsRef<Path>,
         plugin_id: &str,
-        plugin_version: &str,
     ) -> Result<Option<Value>, PluginInstallError> {
         let plugin_root = plugin_root.as_ref();
-        let (_, manifest, _) = find_installed_plugin(plugin_root, plugin_id, plugin_version)?;
-        let path = config_path(plugin_root, &manifest.id, &manifest.version);
+        let (_, manifest, _) = find_active_installed_plugin(plugin_root, plugin_id)?;
+        let path = config_path(plugin_root, &manifest.id);
         if !path.is_file() {
-            return Ok(None);
+            let legacy_path = legacy_config_path(plugin_root, &manifest.id, &manifest.version);
+            if !legacy_path.is_file() {
+                return Ok(None);
+            }
+            let content = fs::read_to_string(legacy_path)?;
+            return serde_json::from_str(&content)
+                .map(Some)
+                .map_err(|error| PluginInstallError::Io(error.to_string()));
         }
         let content = fs::read_to_string(path)?;
         serde_json::from_str(&content)
@@ -246,17 +247,16 @@ impl PluginInstaller {
     pub fn write_config(
         plugin_root: impl AsRef<Path>,
         plugin_id: &str,
-        plugin_version: &str,
         config: &Value,
     ) -> Result<(), PluginInstallError> {
         let plugin_root = plugin_root.as_ref();
-        let (_, manifest, _) = find_installed_plugin(plugin_root, plugin_id, plugin_version)?;
+        let (_, manifest, _) = find_active_installed_plugin(plugin_root, plugin_id)?;
         if !config.is_object() {
             return Err(PluginInstallError::InvalidSource(
                 "plugin config must be a JSON object".to_string(),
             ));
         }
-        let path = config_path(plugin_root, &manifest.id, &manifest.version);
+        let path = config_path(plugin_root, &manifest.id);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -272,11 +272,18 @@ impl PluginInstaller {
 pub(crate) fn enabled_installed_plugin_versions(
     plugin_root: impl AsRef<Path>,
 ) -> Result<Vec<(PathBuf, PluginManifest)>, PluginInstallError> {
+    Ok(active_installed_plugins(plugin_root)?
+        .into_iter()
+        .filter(|(_, _, enabled)| *enabled)
+        .map(|(path, manifest, _)| (path, manifest))
+        .collect())
+}
+
+fn active_installed_plugins(
+    plugin_root: impl AsRef<Path>,
+) -> Result<Vec<(PathBuf, PluginManifest, bool)>, PluginInstallError> {
     let mut selected = BTreeMap::<String, (PathBuf, PluginManifest)>::new();
     for (path, manifest, enabled) in all_installed_plugin_versions(plugin_root)? {
-        if !enabled {
-            continue;
-        }
         let should_replace = selected.get(&manifest.id).is_none_or(|(_, current)| {
             compare_versions(&manifest.version, &current.version) == Ordering::Greater
         });
@@ -284,7 +291,17 @@ pub(crate) fn enabled_installed_plugin_versions(
             selected.insert(manifest.id.clone(), (path, manifest));
         }
     }
-    Ok(selected.into_values().collect())
+    let records = all_installed_plugin_versions(plugin_root)?;
+    Ok(selected
+        .into_values()
+        .filter_map(|(path, manifest)| {
+            let enabled = records.iter().find_map(|(candidate_path, candidate_manifest, enabled)| {
+                (candidate_path == &path && candidate_manifest.id == manifest.id)
+                    .then_some(*enabled)
+            })?;
+            Some((path, manifest, enabled))
+        })
+        .collect())
 }
 
 fn all_installed_plugin_versions(
@@ -321,24 +338,26 @@ fn all_installed_plugin_versions(
     Ok(records)
 }
 
-fn find_installed_plugin(
+fn find_active_installed_plugin(
     plugin_root: &Path,
     plugin_id: &str,
-    plugin_version: &str,
 ) -> Result<(PathBuf, PluginManifest, bool), PluginInstallError> {
     validate_install_component(plugin_id, "plugin id")?;
-    validate_install_component(plugin_version, "plugin version")?;
-    all_installed_plugin_versions(plugin_root)?
+    active_installed_plugins(plugin_root)?
         .into_iter()
-        .find(|(_, manifest, _)| manifest.id == plugin_id && manifest.version == plugin_version)
+        .find(|(_, manifest, _)| manifest.id == plugin_id)
         .ok_or_else(|| {
             PluginInstallError::InvalidSource(format!(
-                "installed plugin was not found: {plugin_id}@{plugin_version}"
+                "active installed plugin was not found: {plugin_id}"
             ))
         })
 }
 
-fn config_path(plugin_root: &Path, plugin_id: &str, plugin_version: &str) -> PathBuf {
+fn config_path(plugin_root: &Path, plugin_id: &str) -> PathBuf {
+    plugin_root.join(CONFIG_DIR).join(format!("{plugin_id}.json"))
+}
+
+fn legacy_config_path(plugin_root: &Path, plugin_id: &str, plugin_version: &str) -> PathBuf {
     plugin_root
         .join(CONFIG_DIR)
         .join(plugin_id)
@@ -385,7 +404,7 @@ fn update_lock_file(plugin_root: &Path, entry: PluginLockEntry) -> Result<(), Pl
     fs::create_dir_all(plugin_root.join(CACHE_DIR))?;
     let mut lock = PluginInstaller::read_lock_file(plugin_root)?;
     lock.plugins
-        .retain(|item| !(item.id == entry.id && item.version == entry.version));
+        .retain(|item| item.id != entry.id);
     lock.plugins.push(entry);
     lock.plugins.sort_by(|left, right| {
         left.id

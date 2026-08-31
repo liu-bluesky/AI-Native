@@ -243,17 +243,13 @@ fn load_plugin_skill_tool(
         .get("plugin_id")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| ToolError::new("tool.schema_invalid", "plugin_id is required"))?;
-    let plugin_version = arguments
-        .get("plugin_version")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| ToolError::new("tool.schema_invalid", "plugin_version is required"))?;
     let skill_id = arguments
         .get("skill_id")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| ToolError::new("tool.schema_invalid", "skill_id is required"))?;
     let plugin_root = desktop_plugin_root()
         .map_err(|error| ToolError::new("plugin.skill_root_unavailable", error.to_string()))?;
-    let document = load_plugin_skill(&plugin_root, plugin_id, plugin_version, skill_id)
+    let document = load_plugin_skill(&plugin_root, plugin_id, skill_id)
         .map_err(|error| ToolError::new("plugin.skill_not_found", error.to_string()))?;
     let unavailable_tools = if let Some(available_tool_names) = arguments
         .get("_available_tool_names")
@@ -279,8 +275,8 @@ fn load_plugin_skill_tool(
         Vec::new()
     };
     let summary = format!(
-        "已加载插件 Skill：{}@{}/{}",
-        document.summary.plugin_id, document.summary.plugin_version, document.summary.skill_id
+        "已加载插件 Skill：{}/{}",
+        document.summary.plugin_id, document.summary.skill_id
     );
     Ok((
         serde_json::json!({

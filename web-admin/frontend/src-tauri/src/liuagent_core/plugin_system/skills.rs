@@ -81,18 +81,15 @@ pub fn available_plugin_skills(
 pub fn load_plugin_skill(
     plugin_root: impl AsRef<Path>,
     plugin_id: &str,
-    plugin_version: &str,
     skill_id: &str,
 ) -> Result<PluginSkillDocument, PluginInstallError> {
     let plugin_id = normalized_identifier(plugin_id, "plugin_id")?;
-    let plugin_version = normalized_identifier(plugin_version, "plugin_version")?;
     let skill_id = normalized_identifier(skill_id, "skill_id")?;
 
     if let Some(document) = builtin_plugin_skill_documents()
         .into_iter()
         .find(|document| {
             document.summary.plugin_id == plugin_id
-                && document.summary.plugin_version == plugin_version
                 && document.summary.skill_id == skill_id
         })
     {
@@ -104,12 +101,11 @@ pub fn load_plugin_skill(
         .into_iter()
         .find(|document| {
             document.summary.plugin_id == plugin_id
-                && document.summary.plugin_version == plugin_version
                 && document.summary.skill_id == skill_id
         })
         .ok_or_else(|| {
             PluginInstallError::InvalidSource(format!(
-                "plugin skill was not found: {plugin_id}@{plugin_version}/{skill_id}"
+                "plugin skill was not found in active plugin: {plugin_id}/{skill_id}"
             ))
         })
 }
@@ -446,8 +442,20 @@ mod tests {
     #[test]
     fn rejects_skill_identifier_path_traversal() {
         let error =
-            load_plugin_skill("/tmp/unused", "vendor-demo", "1.0.0", "../secret").unwrap_err();
+            load_plugin_skill("/tmp/unused", "vendor-demo", "../secret").unwrap_err();
         assert!(error.to_string().contains("skill_id"));
+    }
+
+    #[test]
+    fn resolves_builtin_skill_without_a_version_argument() {
+        let document = load_plugin_skill(
+            "/tmp/unused",
+            "builtin-media-image",
+            "builtin.media.image.editing-skill",
+        )
+        .unwrap();
+
+        assert_eq!(document.summary.skill_id, "builtin.media.image.editing-skill");
     }
 
     #[test]

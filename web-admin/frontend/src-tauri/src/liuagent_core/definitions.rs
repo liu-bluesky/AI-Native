@@ -16,7 +16,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
     let mut definitions = vec![
         ToolDefinition {
             name: "load_plugin_skill",
-            description: "按 plugin_id、plugin_version 和 skill_id 读取已安装插件 Skill 的完整正文。先根据 Runtime 提供的插件 Skill 摘要判断是否需要加载；不要猜测不存在的 Skill ID。",
+            description: "按 plugin_id 和 skill_id 读取当前已安装且启用插件的 Skill 完整正文。Runtime 会将 plugin_id 解析到唯一活动安装路径；不要传版本号、路径或猜测不存在的 Skill ID。",
             action: "plugin.skill.read",
             risk: "low",
             requires_approval: false,
@@ -25,10 +25,9 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "plugin_id": {"type": "string"},
-                    "plugin_version": {"type": "string"},
                     "skill_id": {"type": "string"}
                 },
-                "required": ["plugin_id", "plugin_version", "skill_id"]
+                "required": ["plugin_id", "skill_id"]
             }),
         },
         ToolDefinition {

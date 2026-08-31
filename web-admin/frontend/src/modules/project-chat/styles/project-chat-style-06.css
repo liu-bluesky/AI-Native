@@ -262,6 +262,26 @@
   overflow-wrap: anywhere;
 }
 
+.message-process-entry__error-log-link {
+  width: fit-content;
+  margin-top: 8px;
+  padding: 3px 8px;
+  border: 1px solid rgba(239, 68, 68, 0.38);
+  border-radius: 999px;
+  background: rgba(254, 242, 242, 0.86);
+  color: #b91c1c;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.message-process-entry__error-log-link:hover {
+  border-color: rgba(220, 38, 38, 0.68);
+  background: rgba(254, 226, 226, 0.95);
+}
+
 .message-process-entry__children {
   display: grid;
   gap: 5px;

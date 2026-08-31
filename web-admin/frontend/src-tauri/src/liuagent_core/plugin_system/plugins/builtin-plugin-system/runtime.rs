@@ -25,7 +25,7 @@ pub fn list_installed_plugins(_arguments: &Value) -> Result<(Value, String), Too
         .collect::<Vec<_>>();
     Ok((
         json!({"pluginRoot": root, "plugins": plugins}),
-        format!("已发现 {} 个已安装插件版本", plugins.len()),
+        format!("已发现 {} 个已安装插件", plugins.len()),
     ))
 }
 
@@ -57,8 +57,8 @@ pub fn install_plugin_from_directory(
             "nextStep": "插件 Skill 将在下一轮 Runtime 请求中自动发现"
         }),
         format!(
-            "已安装插件 {}@{}",
-            installed.manifest.id, installed.manifest.version
+            "已安装插件 {}（已成为当前活动安装）",
+            installed.manifest.id
         ),
     ))
 }
@@ -86,7 +86,6 @@ fn set_plugin_enabled(
     enabled: bool,
 ) -> Result<(Value, String), ToolError> {
     let plugin_id = required_string_arg(arguments, "plugin_id")?;
-    let plugin_version = required_string_arg(arguments, "plugin_version")?;
     require_approval(
         tool_call_id,
         if enabled {
@@ -96,17 +95,12 @@ fn set_plugin_enabled(
         },
         "medium",
         "user",
-        &format!(
-            "{}插件 {}@{}",
-            if enabled { "启用" } else { "禁用" },
-            plugin_id,
-            plugin_version
-        ),
-        json!({"plugin_id": plugin_id, "plugin_version": plugin_version, "enabled": enabled}),
+        &format!("{}插件 {}", if enabled { "启用" } else { "禁用" }, plugin_id),
+        json!({"plugin_id": plugin_id, "enabled": enabled}),
         permission_decision,
     )?;
     let root = plugin_root()?;
-    let record = PluginInstaller::set_enabled(&root, &plugin_id, &plugin_version, enabled)
+    let record = PluginInstaller::set_enabled(&root, &plugin_id, enabled)
         .map_err(install_error)?;
     Ok((
         json!({
@@ -116,32 +110,27 @@ fn set_plugin_enabled(
             "configured": record.configured
         }),
         format!(
-            "{}插件 {}@{}",
+            "{}插件 {}",
             if enabled { "已启用" } else { "已禁用" },
-            record.manifest.id,
-            record.manifest.version
+            record.manifest.id
         ),
     ))
 }
 
 pub fn read_plugin_config(arguments: &Value) -> Result<(Value, String), ToolError> {
     let plugin_id = required_string_arg(arguments, "plugin_id")?;
-    let plugin_version = required_string_arg(arguments, "plugin_version")?;
     let root = plugin_root()?;
-    let config =
-        PluginInstaller::read_config(&root, &plugin_id, &plugin_version).map_err(install_error)?;
+    let config = PluginInstaller::read_config(&root, &plugin_id).map_err(install_error)?;
     let configured = config.is_some();
     Ok((
         json!({
             "pluginId": plugin_id,
-            "pluginVersion": plugin_version,
             "configured": configured,
             "config": config.map(redact_sensitive_values).unwrap_or(Value::Null)
         }),
         format!(
-            "{}@{} 配置{}",
+            "{} 配置{}",
             plugin_id,
-            plugin_version,
             if configured {
                 "已存在（敏感值已脱敏）"
             } else {
@@ -157,14 +146,13 @@ pub fn configure_plugin(
     permission_decision: Option<&PermissionDecisionInput>,
 ) -> Result<(Value, String), ToolError> {
     let plugin_id = required_string_arg(arguments, "plugin_id")?;
-    let plugin_version = required_string_arg(arguments, "plugin_version")?;
     let patch = arguments
         .get("config")
         .filter(|value| value.is_object())
         .ok_or_else(|| ToolError::new("tool.schema_invalid", "config must be a JSON object"))?;
     let replace = bool_arg(arguments, "replace", false);
     let root = plugin_root()?;
-    let current = PluginInstaller::read_config(&root, &plugin_id, &plugin_version)
+    let current = PluginInstaller::read_config(&root, &plugin_id)
         .map_err(install_error)?
         .unwrap_or_else(|| json!({}));
     let next = if replace {
@@ -181,21 +169,20 @@ pub fn configure_plugin(
         "plugin.configuration.write",
         "high",
         "user",
-        &format!("写入插件配置：{plugin_id}@{plugin_version}"),
-        json!({"plugin_id": plugin_id, "plugin_version": plugin_version, "replace": replace, "keys": keys}),
+        &format!("写入插件配置：{plugin_id}"),
+        json!({"plugin_id": plugin_id, "replace": replace, "keys": keys}),
         permission_decision,
     )?;
-    PluginInstaller::write_config(&root, &plugin_id, &plugin_version, &next)
+    PluginInstaller::write_config(&root, &plugin_id, &next)
         .map_err(install_error)?;
     Ok((
         json!({
             "configured": true,
             "pluginId": plugin_id,
-            "pluginVersion": plugin_version,
             "replace": replace,
             "keys": keys
         }),
-        format!("已写入插件 {}@{} 配置", plugin_id, plugin_version),
+        format!("已写入插件 {} 配置", plugin_id),
     ))
 }
 

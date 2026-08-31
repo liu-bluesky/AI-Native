@@ -1711,6 +1711,49 @@ fn open_external_url(url: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn open_runtime_log_file(workspace_path: String, path: String) -> Result<bool, String> {
+    let workspace_root = PathBuf::from(workspace_path.trim());
+    let requested = PathBuf::from(path.trim());
+    if workspace_root.as_os_str().is_empty() || requested.as_os_str().is_empty() {
+        return Err("缺少运行日志路径".to_string());
+    }
+    let runtime_root = workspace_root
+        .join(".ai-employee")
+        .join("desktop-agent-runtime")
+        .canonicalize()
+        .map_err(|err| format!("无法定位本地运行日志目录：{err}"))?;
+    let requested = requested
+        .canonicalize()
+        .map_err(|err| format!("错误日志不存在或无法打开：{err}"))?;
+    if !requested.starts_with(&runtime_root) || !requested.is_file() {
+        return Err("只允许打开当前工作区的运行日志文件".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open")
+        .arg(&requested)
+        .status()
+        .map_err(|err| format!("打开错误日志失败：{err}"))?;
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("cmd")
+        .arg("/C")
+        .arg("start")
+        .arg("")
+        .arg(&requested)
+        .status()
+        .map_err(|err| format!("打开错误日志失败：{err}"))?;
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = Command::new("xdg-open")
+        .arg(&requested)
+        .status()
+        .map_err(|err| format!("打开错误日志失败：{err}"))?;
+
+    Ok(status.success())
+}
+
+#[tauri::command]
 fn copy_resource_file_to_clipboard(
     url: String,
     file_name: Option<String>,
@@ -3279,6 +3322,7 @@ fn main() {
             read_global_ftp_credentials_file,
             write_global_ftp_credentials_file,
             open_external_url,
+            open_runtime_log_file,
             copy_resource_file_to_clipboard,
             save_resource_file,
             persist_project_chat_asset,
