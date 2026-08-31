@@ -20,6 +20,7 @@ pub struct PluginSkillSummary {
     pub name: String,
     pub description: String,
     pub when_to_use: Vec<String>,
+    pub required_tool_names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +37,7 @@ impl PluginSkillDocument {
         name: impl Into<String>,
         description: impl Into<String>,
         when_to_use: Vec<String>,
+        required_tool_names: Vec<String>,
         content: String,
     ) -> Self {
         Self {
@@ -46,6 +48,7 @@ impl PluginSkillDocument {
                 name: name.into(),
                 description: description.into(),
                 when_to_use,
+                required_tool_names,
             },
             content,
         }
@@ -191,6 +194,9 @@ fn discover_plugin_skill_documents(
                 .and_then(|capability| capability.selection.as_ref())
                 .map(|selection| selection.when_to_use.clone())
                 .unwrap_or_default();
+            let required_tool_names = capability
+                .map(|capability| required_tool_names(manifest, capability))
+                .unwrap_or_default();
 
             Ok(PluginSkillDocument::new(
                 manifest.id.clone(),
@@ -199,10 +205,37 @@ fn discover_plugin_skill_documents(
                 name,
                 description,
                 when_to_use,
+                required_tool_names,
                 content,
             ))
         })
         .collect()
+}
+
+fn required_tool_names(
+    manifest: &PluginManifest,
+    skill_capability: &CapabilityManifest,
+) -> Vec<String> {
+    let Some(selection) = skill_capability.selection.as_ref() else {
+        return Vec::new();
+    };
+    let mut tool_names = selection
+        .recommends
+        .iter()
+        .filter_map(|capability_id| {
+            manifest
+                .capabilities
+                .iter()
+                .find(|capability| {
+                    capability.id == *capability_id && capability.kind == CapabilityKind::Tool
+                })
+                .map(|capability| capability.name.trim().to_string())
+        })
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    tool_names.sort();
+    tool_names.dedup();
+    tool_names
 }
 
 fn capability_skill_path(capability: &CapabilityManifest) -> Option<&Path> {
@@ -302,6 +335,7 @@ fn builtin_plugin_skill_documents() -> Vec<PluginSkillDocument> {
             "builtin-image-generation",
             "指导 AI 判断图片生成请求、整理提示词并调用 generate_image。",
             vec!["用户要求生成新的图片或视觉素材".to_string()],
+            vec!["generate_image".to_string()],
             include_str!("plugins/builtin-media-image/skills/image-generation/SKILL.md")
                 .to_string(),
         ),
@@ -312,6 +346,7 @@ fn builtin_plugin_skill_documents() -> Vec<PluginSkillDocument> {
             "builtin-image-editing",
             "指导 AI 判断图片编辑请求、校验资产 ID 并调用 edit_image。",
             vec!["用户要求修改当前会话中的已有图片".to_string()],
+            vec!["edit_image".to_string()],
             include_str!("plugins/builtin-media-image/skills/image-editing/SKILL.md").to_string(),
         ),
         PluginSkillDocument::new(
@@ -324,6 +359,7 @@ fn builtin_plugin_skill_documents() -> Vec<PluginSkillDocument> {
                 "用户要求安装、配置、启用、禁用或查看本机插件".to_string(),
                 "需要判断插件 Skill 是否可用".to_string(),
             ],
+            Vec::new(),
             include_str!("plugins/builtin-plugin-system/skills/plugin-management/SKILL.md")
                 .to_string(),
         ),
@@ -371,8 +407,39 @@ mod tests {
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].summary.skill_id, "vendor.demo.skill");
         assert_eq!(documents[0].summary.when_to_use, vec!["demo task"]);
+        assert!(documents[0].summary.required_tool_names.is_empty());
         assert!(documents[0].content.contains("Do the demo task."));
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolves_recommended_tool_names_for_installed_skill() {
+        let root = temp_root("skill-required-tools");
+        let plugin = root.join("installed/vendor-demo/1.0.0");
+        fs::create_dir_all(plugin.join("skills/demo")).unwrap();
+        fs::write(
+            plugin.join("plugin.json"),
+            r#"{
+                "id":"vendor-demo",
+                "pluginType":"tool",
+                "name":"demo",
+                "displayName":"Demo",
+                "description":"Demo plugin",
+                "version":"1.0.0",
+                "source":"user",
+                "capabilities":[
+                    {"id":"vendor.demo.run","kind":"tool","name":"run_demo","description":"Run demo."},
+                    {"id":"vendor.demo.skill","kind":"skill","name":"Demo Skill","description":"Use the demo skill.","selection":{"recommends":["vendor.demo.run"]},"metadata":{"skillFile":"skills/demo/SKILL.md"}}
+                ]
+            }"#,
+        )
+        .unwrap();
+        fs::write(plugin.join("skills/demo/SKILL.md"), "# Demo Skill").unwrap();
+
+        let documents = discover_installed_skill_documents(&root).unwrap();
+
+        assert_eq!(documents[0].summary.required_tool_names, vec!["run_demo"]);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -741,10 +741,12 @@ export async function persistNativeProjectChatAsset(options = {}) {
     sourceTool: String(options?.sourceTool || "").trim(),
   });
   const localPath = String(result?.localPath || "").trim();
+  const assetUri = localPath ? convertFileSrc(localPath) : url;
   return {
     ...(result && typeof result === "object" ? result : {}),
     localPath,
-    displayUrl: localPath ? convertFileSrc(localPath) : url,
+    assetUri,
+    displayUrl: assetUri,
   };
 }
 

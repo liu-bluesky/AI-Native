@@ -4,6 +4,7 @@
 //! 记录需求、执行本地工具并返回事件摘要。后续模型循环会在这里继续扩展，而不是回到
 //! 服务端 Docker 执行用户本地工具。
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Url;
@@ -5372,7 +5373,7 @@ fn run_agent_loop_with_answered_user_question(
     if let Some(plugin_context) = build_mcp_plugin_context_message(base_request) {
         messages.push(plugin_context);
     }
-    if let Some(plugin_skill_context) = build_plugin_skill_context_message() {
+    if let Some(plugin_skill_context) = build_plugin_skill_context_message(base_request) {
         messages.push(plugin_skill_context);
     }
     let mut model_steps = Vec::new();
@@ -5392,6 +5393,7 @@ fn run_agent_loop_with_answered_user_question(
     let mut permission_cache = load_session_permission_cache(workspace_root, run_key);
     let active_workspace_root = RefCell::new(workspace_root.clone());
     let active_project_id = RefCell::new(base_request.project_id.clone());
+    let mut activated_tool_names = base_request.activated_tool_names.clone();
     let allow_project_workspace_switch = is_tauri_bot_local_chat_request(base_request);
     let stopped_reason: String;
     let mut awaiting_permission = false;
@@ -5404,6 +5406,7 @@ fn run_agent_loop_with_answered_user_question(
         let mut request = base_request.with_messages(messages.clone());
         request.project_id = active_project_id.borrow().clone();
         request.workspace_path = active_workspace_root.borrow().to_string_lossy().to_string();
+        request.activated_tool_names = activated_tool_names.clone();
         let model_step_index = model_steps.len() + 1;
         model_input_snapshots.push(build_task_processing_snapshot(
             runtime_session_id,
@@ -5718,14 +5721,17 @@ fn run_agent_loop_with_answered_user_question(
             let tool_request = ToolExecutionRequest {
                 tool_call_id: Some(tool.tool_call_id.clone()),
                 name: tool.name.clone(),
-                arguments: tool_arguments_with_backend_context(
-                    &tool,
-                    &request.project_id,
-                    request.backend_context.as_ref(),
-                    &request.mcp_config,
-                    &request.media_tools,
-                    &request.attachments,
-                    tool_arguments_with_file_access_policy(&tool, &request),
+                arguments: tool_arguments_with_plugin_skill_availability(
+                    tool_arguments_with_backend_context(
+                        &tool,
+                        &request.project_id,
+                        request.backend_context.as_ref(),
+                        &request.mcp_config,
+                        &request.media_tools,
+                        &request.attachments,
+                        tool_arguments_with_file_access_policy(&tool, &request),
+                    ),
+                    &request,
                 ),
                 workspace_path: active_workspace_root.borrow().to_string_lossy().to_string(),
                 permission_decision: effective_permission_decision.clone(),
@@ -5885,6 +5891,24 @@ fn run_agent_loop_with_answered_user_question(
                         serde_json::to_value(&automatic_retry_history)
                             .unwrap_or_else(|_| json!([])),
                     );
+                }
+            }
+            if tool.name.trim() == "resolve_plugin_capability"
+                && result.ok
+                && result
+                    .content
+                    .get("status")
+                    .and_then(Value::as_str)
+                    == Some("ready")
+            {
+                if let Some(tool_name) = result
+                    .content
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    activated_tool_names.insert(tool_name.to_string());
                 }
             }
             emit_command_result_events(event_sink, runtime_session_id, run_key, &tool, &result);
@@ -6636,12 +6660,36 @@ fn attachment_image_reference(attachment: &LocalChatAttachment) -> Option<Value>
     {
         return Some(json!({"file_id": provider_file_id}));
     }
-    attachment
+    attachment_image_data_url(attachment).map(|value| json!({"image_url": value}))
+}
+
+fn attachment_image_data_url(attachment: &LocalChatAttachment) -> Option<String> {
+    if let Some(data_url) = attachment
         .data_url
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty() && is_supported_image_reference(value))
-        .map(|value| json!({"image_url": value}))
+    {
+        return Some(data_url.to_string());
+    }
+    let local_path = attachment
+        .local_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let mime_type = attachment
+        .mime_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| value.starts_with("image/"))?;
+    let bytes = fs::read(local_path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "data:{mime_type};base64,{}",
+        STANDARD.encode(bytes)
+    ))
 }
 
 fn attachment_kind(attachment: &LocalChatAttachment) -> String {
@@ -6676,16 +6724,30 @@ fn attachment_media_input(attachment: &LocalChatAttachment) -> Option<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|value| is_supported_image_reference(value) || value.starts_with("data:"));
-    if provider_resource_id.is_none() && remote_url.is_none() {
+    let local_path = attachment
+        .local_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if provider_resource_id.is_none() && remote_url.is_none() && local_path.is_none() {
         return None;
     }
+    let resource_type = if provider_resource_id.is_some() {
+        "provider_file_id"
+    } else if local_path.is_some() {
+        "local_path"
+    } else {
+        "remote_url"
+    };
     Some(json!({
         "asset_id": asset_id,
         "kind": attachment_kind(attachment),
         "source": attachment.source.as_deref().unwrap_or("user_upload"),
-        "resource_type": if attachment.provider_file_id.is_some() { "provider_file_id" } else { "remote_url" },
+        "resource_type": resource_type,
         "resource_id": provider_resource_id,
         "remote_url": remote_url,
+        "asset_uri": attachment.asset_uri.as_deref().unwrap_or(""),
+        "local_path": local_path,
         "input_intent": "context"
     }))
 }
@@ -6790,6 +6852,90 @@ fn tool_arguments_with_backend_context(
     mut arguments: Value,
 ) -> Value {
     let tool_name = tool.name.trim();
+    if tool_name == "resolve_plugin_capability" {
+        let plugin_id = arguments
+            .get("plugin_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        let capability = arguments
+            .get("capability")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        let has_input = selected_image_references(
+            &arguments,
+            "input_asset_ids",
+            attachments,
+            true,
+        )
+        .is_ok();
+        let mut missing_requirements = Vec::<&str>::new();
+        let (status, capability_tool_name, message) = if plugin_id == "builtin-media-image"
+            && capability == "edit_image"
+        {
+            if !has_input {
+                missing_requirements.push("image_attachment");
+            }
+            let configured = media_tools
+                .iter()
+                .find(|item| item.name.trim() == "edit_image")
+                .is_some_and(|item| {
+                    !item.provider_id.trim().is_empty()
+                        && !item.model_name.trim().is_empty()
+                        && !item.base_url.trim().is_empty()
+                        && !item.api_key.trim().is_empty()
+                });
+            if !configured {
+                missing_requirements.push("image_model_configuration");
+            }
+            if missing_requirements.is_empty() {
+                (
+                    "ready",
+                    "edit_image".to_string(),
+                    "图片编辑能力已就绪；Runtime 已为后续模型步骤注入 edit_image。",
+                )
+            } else if !configured {
+                (
+                    "needs_config",
+                    "edit_image".to_string(),
+                    "图片编辑需要配置可用的图片模型（provider、model、baseUrl、API key）。",
+                )
+            } else {
+                (
+                    "needs_input",
+                    "edit_image".to_string(),
+                    "图片编辑需要在 input_asset_ids 中传入当前会话的有效图片资产 ID。",
+                )
+            }
+        } else {
+            (
+                "unavailable",
+                capability,
+                "当前 Runtime 未注册该插件能力，无法激活对应工具。",
+            )
+        };
+        let Some(object) = arguments.as_object_mut() else {
+            return arguments;
+        };
+        object.remove("_capability_status");
+        object.remove("_capability_tool_name");
+        object.remove("_capability_missing_requirements");
+        object.remove("_capability_message");
+        object.insert("_capability_status".to_string(), json!(status));
+        object.insert(
+            "_capability_tool_name".to_string(),
+            json!(capability_tool_name),
+        );
+        object.insert(
+            "_capability_missing_requirements".to_string(),
+            json!(missing_requirements),
+        );
+        object.insert("_capability_message".to_string(), json!(message));
+        return arguments;
+    }
     if matches!(
         tool_name,
         "list_mcp_tools" | "read_mcp_resource" | "call_mcp_tool"
@@ -6955,6 +7101,27 @@ fn tool_arguments_with_backend_context(
         json!(normalize_local_backend_api_base_url(&context.api_base_url)),
     );
     object.insert("_backend_token".to_string(), json!(context.token.trim()));
+    arguments
+}
+
+fn tool_arguments_with_plugin_skill_availability(
+    mut arguments: Value,
+    request: &ModelStepRequest,
+) -> Value {
+    let Some(object) = arguments.as_object_mut() else {
+        return arguments;
+    };
+    if !object.contains_key("skill_id") {
+        return arguments;
+    }
+    let available_tool_names = tool_definitions_for_request(request)
+        .into_iter()
+        .map(|definition| definition.name.to_string())
+        .collect::<Vec<_>>();
+    object.insert(
+        "_available_tool_names".to_string(),
+        json!(available_tool_names),
+    );
     arguments
 }
 
@@ -9731,6 +9898,7 @@ struct ModelStepRequest {
     mcp_discovery_error: String,
     backend_context: Option<LocalBackendContext>,
     media_tools: Vec<LocalMediaToolConfig>,
+    activated_tool_names: HashSet<String>,
     attachments: Vec<LocalChatAttachment>,
     messages: Vec<RuntimeModelMessage>,
     expose_tools: bool,
@@ -9765,6 +9933,7 @@ impl ModelStepRequest {
             mcp_discovery_error: self.mcp_discovery_error.clone(),
             backend_context: self.backend_context.clone(),
             media_tools: self.media_tools.clone(),
+            activated_tool_names: self.activated_tool_names.clone(),
             attachments: self.attachments.clone(),
             messages,
             expose_tools: self.expose_tools,
@@ -10675,6 +10844,7 @@ fn build_model_request_with_history_and_task_profile(
         mcp_discovery_error: String::new(),
         backend_context: request.backend_context.clone(),
         media_tools: request.media_tools.clone(),
+        activated_tool_names: HashSet::new(),
         attachments: request.attachments.clone(),
         messages,
         expose_tools: true,
@@ -10781,13 +10951,18 @@ fn build_mcp_plugin_context_message(request: &ModelStepRequest) -> Option<Runtim
     ))
 }
 
-fn build_plugin_skill_context_message() -> Option<RuntimeModelMessage> {
+fn build_plugin_skill_context_message(request: &ModelStepRequest) -> Option<RuntimeModelMessage> {
     let plugin_root = super::desktop_plugin_root().ok()?;
-    build_plugin_skill_context_message_for_root(plugin_root)
+    let available_tool_names = tool_definitions_for_request(request)
+        .into_iter()
+        .map(|definition| definition.name.to_string())
+        .collect::<HashSet<_>>();
+    build_plugin_skill_context_message_for_root(plugin_root, &available_tool_names)
 }
 
 fn build_plugin_skill_context_message_for_root(
     plugin_root: impl AsRef<Path>,
+    available_tool_names: &HashSet<String>,
 ) -> Option<RuntimeModelMessage> {
     let skills = available_plugin_skills(plugin_root).ok()?;
     if skills.is_empty() {
@@ -10795,7 +10970,7 @@ fn build_plugin_skill_context_message_for_root(
     }
     let mut lines = vec![
         "当前可用的插件 Skill 摘要：".to_string(),
-        "Skill 只提供任务指导，不是执行接口。任务匹配时，先调用 load_plugin_skill 读取对应 Skill 正文，再按正文选择工具；不得猜测未列出的 Skill。".to_string(),
+        "Skill 只提供任务指导，不是执行接口。可先调用 load_plugin_skill 读取正文；若 requiredTools 尚未注入，调用 resolve_plugin_capability 解析并激活能力。不得猜测未列出的 Skill 或工具。".to_string(),
     ];
     for skill in skills {
         lines.push(format!(
@@ -10804,6 +10979,26 @@ fn build_plugin_skill_context_message_for_root(
         ));
         if !skill.when_to_use.is_empty() {
             lines.push(format!("  - 适用场景：{}", skill.when_to_use.join("；")));
+        }
+        if !skill.required_tool_names.is_empty() {
+            let unavailable_tools = skill
+                .required_tool_names
+                .iter()
+                .filter(|name| !available_tool_names.contains(*name))
+                .cloned()
+                .collect::<Vec<_>>();
+            lines.push(format!(
+                "  - 所需工具：{}",
+                skill.required_tool_names.join("、")
+            ));
+            if unavailable_tools.is_empty() {
+                lines.push("  - 状态：本轮可加载并执行".to_string());
+            } else {
+                lines.push(format!(
+                    "  - 状态：需激活能力；尚未注入工具：{}。先加载 Skill，再对相应能力调用 resolve_plugin_capability；若返回 needs_config 或 needs_input，按结果补齐配置或附件。",
+                    unavailable_tools.join("、")
+                ));
+            }
         }
     }
     Some(RuntimeModelMessage::system_section(
@@ -11146,15 +11341,9 @@ fn build_user_message_with_attachments(
             if routing_mode != "inline_image" && routing_mode != "provider_file" {
                 return None;
             }
-            let data_url = attachment
-                .data_url
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| is_supported_image_reference(value))?;
+            let data_url = attachment_image_data_url(attachment)?;
             Some(RuntimeModelContentPart::ImageUrl {
-                image_url: RuntimeModelImageUrl {
-                    url: data_url.to_string(),
-                },
+                image_url: RuntimeModelImageUrl { url: data_url },
             })
         })
         .collect::<Vec<_>>();
@@ -11238,6 +11427,14 @@ fn build_attachment_prompt_context(attachments: &[LocalChatAttachment]) -> Strin
             {
                 lines.push(format!("- provider_file_id：{provider_file_id}"));
             }
+            if let Some(local_path) = attachment
+                .local_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                lines.push(format!("- 本地资源路径：{local_path}"));
+            }
             if let Some(error) = attachment
                 .error
                 .as_deref()
@@ -11255,11 +11452,7 @@ fn build_attachment_prompt_context(attachments: &[LocalChatAttachment]) -> Strin
                 lines.push("- 可读内容：".to_string());
                 lines.push(text.to_string());
             } else if (routing_mode == "inline_image" || routing_mode == "provider_file")
-                && attachment
-                    .data_url
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(is_supported_image_reference)
+                && attachment_image_data_url(attachment).is_some()
             {
                 lines.push("- 图片内容已作为多模态 image_url 一并发送。".to_string());
             } else {
@@ -11605,6 +11798,11 @@ fn tool_disabled_reason(
         }
         "generate_image" | "edit_image" | "generate_video" | "generate_audio"
         | "transcribe_audio" => {
+            if !request.activated_tool_names.contains(tool_name) {
+                return Some(format!(
+                    "{tool_name} must be activated with resolve_plugin_capability before it is exposed to the model"
+                ));
+            }
             let config = request
                 .media_tools
                 .iter()
@@ -17699,6 +17897,8 @@ mod tests {
                     routing_mode: Some("local_extract".to_string()),
                     extraction_status: Some("text_extracted".to_string()),
                     data_url: None,
+                    asset_uri: None,
+                    local_path: None,
                     extracted_text: Some("这是文档内容".to_string()),
                     provider_file_id: None,
                     error: None,
@@ -17713,6 +17913,8 @@ mod tests {
                     routing_mode: Some("inline_image".to_string()),
                     extraction_status: Some("image_data_url".to_string()),
                     data_url: Some("data:image/png;base64,AAAA".to_string()),
+                    asset_uri: None,
+                    local_path: None,
                     extracted_text: None,
                     provider_file_id: None,
                     error: None,
@@ -17754,6 +17956,8 @@ mod tests {
             routing_mode: Some("inline_image".to_string()),
             extraction_status: Some("conversation_reference".to_string()),
             data_url: Some("https://example.test/history-image.png".to_string()),
+            asset_uri: None,
+            local_path: None,
             extracted_text: None,
             provider_file_id: None,
             error: None,
@@ -17855,6 +18059,8 @@ mod tests {
                 routing_mode: Some("local_extract".to_string()),
                 extraction_status: Some("metadata_only".to_string()),
                 data_url: Some("data:image/png;base64,AAAA".to_string()),
+                asset_uri: None,
+                local_path: None,
                 extracted_text: None,
                 provider_file_id: None,
                 error: None,
@@ -18318,6 +18524,8 @@ mod tests {
             routing_mode: Some("inline_image".to_string()),
             extraction_status: Some("image_data_url".to_string()),
             data_url: Some("data:image/png;base64,AAAA".to_string()),
+            asset_uri: None,
+            local_path: None,
             extracted_text: None,
             provider_file_id: None,
             error: None,
@@ -18379,6 +18587,8 @@ mod tests {
                 routing_mode: Some("inline_image".to_string()),
                 extraction_status: Some("image_data_url".to_string()),
                 data_url: Some("data:image/png;base64,FIRST".to_string()),
+                asset_uri: None,
+                local_path: None,
                 extracted_text: None,
                 provider_file_id: None,
                 error: None,
@@ -18393,6 +18603,8 @@ mod tests {
                 routing_mode: Some("inline_image".to_string()),
                 extraction_status: Some("image_data_url".to_string()),
                 data_url: Some("data:image/png;base64,SECOND".to_string()),
+                asset_uri: None,
+                local_path: None,
                 extracted_text: None,
                 provider_file_id: None,
                 error: None,
@@ -18441,6 +18653,8 @@ mod tests {
             routing_mode: Some("provider_file".to_string()),
             extraction_status: Some("provider_file_ready".to_string()),
             data_url: None,
+            asset_uri: None,
+            local_path: None,
             extracted_text: None,
             provider_file_id: Some("video-resource-1".to_string()),
             error: None,
@@ -18497,6 +18711,8 @@ mod tests {
             routing_mode: Some("inline_image".to_string()),
             extraction_status: Some("image_data_url".to_string()),
             data_url: Some("data:image/png;base64,AAAA".to_string()),
+            asset_uri: None,
+            local_path: None,
             extracted_text: None,
             provider_file_id: None,
             error: None,
@@ -18549,6 +18765,8 @@ mod tests {
             routing_mode: Some("inline_image".to_string()),
             extraction_status: Some("conversation_reference".to_string()),
             data_url: Some("https://example.test/history-image.png".to_string()),
+            asset_uri: None,
+            local_path: None,
             extracted_text: None,
             provider_file_id: None,
             error: None,
@@ -18617,6 +18835,8 @@ mod tests {
             routing_mode: Some("local_extract".to_string()),
             extraction_status: Some("text_extracted".to_string()),
             data_url: None,
+            asset_uri: None,
+            local_path: None,
             extracted_text: Some("notes".to_string()),
             provider_file_id: None,
             error: None,
@@ -19685,6 +19905,7 @@ mod tests {
             mcp_discovery_error: String::new(),
             backend_context: None,
             media_tools: Vec::new(),
+            activated_tool_names: HashSet::new(),
             attachments: Vec::new(),
             messages: vec![RuntimeModelMessage::simple(
                 "user",
@@ -19827,8 +20048,9 @@ mod tests {
 
     #[test]
     fn plugin_skill_summary_is_published_to_model_context() {
-        let message =
-            build_plugin_skill_context_message().expect("builtin plugin skills should be present");
+        let request = test_model_request("帮我编辑附件图片");
+        let message = build_plugin_skill_context_message(&request)
+            .expect("builtin plugin skills should be present");
 
         assert_eq!(message.prompt_source, "runtime.plugin_skills");
         assert!(message
@@ -19838,6 +20060,7 @@ mod tests {
             .content
             .contains("builtin.plugin.system.management-skill"));
         assert!(message.content.contains("load_plugin_skill"));
+        assert!(message.content.contains("未注入工具：edit_image"));
     }
 
     #[test]
@@ -19878,7 +20101,7 @@ mod tests {
         )
         .unwrap();
 
-        let message = build_plugin_skill_context_message_for_root(&root)
+        let message = build_plugin_skill_context_message_for_root(&root, &HashSet::new())
             .expect("installed plugin skill should be present");
         assert!(message.content.contains("vendor-demo@1.0.0"));
         assert!(message.content.contains("vendor.demo.skill"));
@@ -19908,6 +20131,8 @@ mod tests {
             routing_mode: Some("inline_image".to_string()),
             extraction_status: Some("image_data_url".to_string()),
             data_url: Some("data:image/jpeg;base64,AAAA".to_string()),
+            asset_uri: None,
+            local_path: None,
             extracted_text: None,
             provider_file_id: None,
             error: None,
@@ -19918,6 +20143,26 @@ mod tests {
             let index = model_call_count.get();
             model_call_count.set(index + 1);
             if index == 0 {
+                return test_model_result(
+                    "",
+                    vec![PlannedLocalTool {
+                        tool_call_id: "call_resolve_image_editing".to_string(),
+                        name: "resolve_plugin_capability".to_string(),
+                        arguments: json!({
+                            "plugin_id": "builtin-media-image",
+                            "capability": "edit_image",
+                            "input_asset_ids": ["blurry-photo"]
+                        }),
+                        summary: "解析图片编辑能力".to_string(),
+                    }],
+                );
+            }
+            if index == 1 {
+                assert!(openai_compatible_tool_schemas(_request)
+                    .unwrap()
+                    .iter()
+                    .filter_map(|schema| schema["function"]["name"].as_str())
+                    .any(|name| name == "edit_image"));
                 return test_model_result(
                     "",
                     vec![PlannedLocalTool {
@@ -19934,7 +20179,19 @@ mod tests {
             test_model_result("照片已经增强清晰度。", Vec::new())
         };
         let tool_runner = |tool_request: ToolExecutionRequest| {
+            if tool_request.name == "resolve_plugin_capability" {
+                assert_eq!(tool_request.arguments["_capability_status"], "ready");
+                assert_eq!(tool_request.arguments["_capability_tool_name"], "edit_image");
+                assert!(tool_request.arguments.get("_media_api_key").is_none());
+                return super::super::types::ToolExecutionResult::ok(
+                    tool_request.tool_call_id.unwrap_or_default(),
+                    tool_request.name,
+                    json!({"status": "ready", "toolName": "edit_image"}),
+                    "图片编辑能力已激活".to_string(),
+                );
+            }
             assert_eq!(tool_request.name, "edit_image");
+            assert_eq!(tool_request.arguments["_media_api_key"], "image-key");
             super::super::types::ToolExecutionResult::ok(
                 tool_request.tool_call_id.unwrap_or_default(),
                 tool_request.name,
@@ -19960,14 +20217,15 @@ mod tests {
             &tool_runner,
         );
 
-        assert_eq!(model_call_count.get(), 2);
-        assert_eq!(result.tool_results.len(), 1);
+        assert_eq!(model_call_count.get(), 3);
+        assert_eq!(result.tool_results.len(), 2);
         assert!(
             result.tool_results[0].ok,
             "unexpected enhancement loop tool failure: {:?}",
             result.tool_results[0]
         );
-        assert_eq!(result.tool_results[0].name, "edit_image");
+        assert_eq!(result.tool_results[0].name, "resolve_plugin_capability");
+        assert_eq!(result.tool_results[1].name, "edit_image");
         assert_eq!(result.stopped_reason, "no_tool_calls");
         assert!(result.ok());
         assert_eq!(result.verification.status, "passed");
@@ -19989,7 +20247,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_media_tools_are_available_without_text_routing() {
+    fn configured_media_tools_require_capability_activation() {
         let mut request = test_model_request("你好");
         request.media_tools = vec![LocalMediaToolConfig {
             name: "generate_image".to_string(),
@@ -20006,8 +20264,17 @@ mod tests {
             .filter_map(|tool| tool["function"]["name"].as_str())
             .collect::<Vec<_>>();
 
-        assert!(tool_names.contains(&"generate_image"));
+        assert!(!tool_names.contains(&"generate_image"));
         assert!(tool_names.contains(&"download_file"));
+
+        request
+            .activated_tool_names
+            .insert("generate_image".to_string());
+        let activated_schemas = openai_compatible_tool_schemas(&request).unwrap();
+        assert!(activated_schemas
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .any(|name| name == "generate_image"));
     }
 
     #[test]

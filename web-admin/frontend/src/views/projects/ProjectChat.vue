@@ -13271,6 +13271,10 @@ const fileTypeOptions = computed(() =>
   ),
 );
 const CHAT_BOTTOM_STICKY_THRESHOLD = 72;
+const MAX_PERSISTED_PROCESS_LOG_ENTRIES = 80;
+const MAX_PERSISTED_PROCESS_LOG_TEXT_CHARS = 8_000;
+const MAX_PERSISTED_PROCESS_LOG_PAYLOAD_CHARS = 16_000;
+const MAX_PERSISTED_ATTACHMENT_TEXT_CHARS = 32_000;
 
 let autoSaveTimer = null;
 let lastAutoSavedFingerprint = "";
@@ -13517,6 +13521,33 @@ function queueChatSessionPersistenceBeforeSwitch(
       console.warn("persist previous chat session in background failed", error);
     });
   }, 0);
+}
+
+async function activateChatSessionForHistory(projectId, chatSessionId) {
+  const nextProjectId = String(projectId || "").trim();
+  const nextChatSessionId = String(chatSessionId || "").trim();
+  const activeProjectId = String(selectedProjectId.value || "").trim();
+  const activeChatSessionId = String(currentChatSessionId.value || "").trim();
+  const isChangingSession =
+    activeProjectId !== nextProjectId ||
+    activeChatSessionId !== nextChatSessionId;
+
+  if (!isChangingSession) return false;
+
+  queueChatSessionPersistenceBeforeSwitch(nextProjectId, nextChatSessionId);
+  rememberCurrentChatSessionMessages();
+  rememberCurrentChatSessionComposerState();
+  if (chatRuntimePersistTimer) {
+    clearTimeout(chatRuntimePersistTimer);
+    chatRuntimePersistTimer = null;
+  }
+
+  await applyChatMessagesWithoutPersisting([]);
+  chatHistoryLoadedCount.value = 0;
+  chatHistoryReachedEnd.value = false;
+  resetTerminalPanel();
+  currentChatSessionId.value = nextChatSessionId;
+  return true;
 }
 
 function isCurrentChatSession(projectId, chatSessionId) {
@@ -13849,7 +13880,7 @@ function normalizeRuntimeMessageSnapshot(row) {
     mediaAssets: normalizePersistedMediaAssets(
       row.mediaAssets || row.media_assets,
     ),
-    attachments: Array.isArray(row.attachments) ? row.attachments.slice() : [],
+    attachments: normalizePersistedRuntimeAttachments(row.attachments),
     time: String(row.time || ""),
     displayMode: String(row.displayMode || ""),
     effectiveTools: Array.isArray(row.effectiveTools)
@@ -13864,7 +13895,7 @@ function normalizeRuntimeMessageSnapshot(row) {
       row.taskTreeAudit && typeof row.taskTreeAudit === "object"
         ? row.taskTreeAudit
         : null,
-    processLog: Array.isArray(row.processLog) ? row.processLog.slice() : [],
+    processLog: normalizePersistedRuntimeProcessLogs(row.processLog),
     statusNotes: Array.isArray(row.statusNotes) ? row.statusNotes.slice() : [],
     operations: Array.isArray(row.operations) ? row.operations.slice() : [],
     agentExecutionCycles: Array.isArray(row.agentExecutionCycles)
@@ -13909,12 +13940,88 @@ function normalizeRuntimeMessageSnapshot(row) {
   };
 }
 
+function truncatePersistedRuntimeText(value, maxLength) {
+  const text = String(value || "");
+  return text.length > maxLength ? text.slice(0, maxLength) : text;
+}
+
+function isPersistableRuntimeUrl(value) {
+  const url = String(value || "").trim();
+  return Boolean(url) && !/^(?:blob:|data:)/i.test(url);
+}
+
+function compactPersistedProcessPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return {};
+  }
+  try {
+    const serialized = JSON.stringify(payload);
+    if (serialized.length <= MAX_PERSISTED_PROCESS_LOG_PAYLOAD_CHARS) {
+      return payload;
+    }
+  } catch {}
+  return { truncated: true };
+}
+
+function normalizePersistedRuntimeProcessLogs(values) {
+  return (Array.isArray(values) ? values : [])
+    .slice(-MAX_PERSISTED_PROCESS_LOG_ENTRIES)
+    .map((value) => {
+      if (!value || typeof value !== "object") return null;
+      return {
+        id: String(value.id || "").trim(),
+        text: truncatePersistedRuntimeText(
+          value.text || value.content,
+          MAX_PERSISTED_PROCESS_LOG_TEXT_CHARS,
+        ),
+        level: String(value.level || "").trim(),
+        kind: String(value.kind || "").trim(),
+        eventType: String(value.eventType || value.event_type || "").trim(),
+        toolCallId: String(value.toolCallId || value.tool_call_id || "").trim(),
+        createdAt: String(value.createdAt || value.created_at || "").trim(),
+        payload: compactPersistedProcessPayload(value.payload),
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizePersistedRuntimeAttachments(values) {
+  return (Array.isArray(values) ? values : [])
+    .map((value) => {
+      if (!value || typeof value !== "object") return null;
+      return {
+        attachmentId: String(value.attachmentId || value.attachment_id || "").trim(),
+        assetId: String(value.assetId || value.asset_id || "").trim(),
+        name: String(value.name || "").trim(),
+        mimeType: String(value.mimeType || value.mime_type || "").trim(),
+        size: Number(value.size || 0) || 0,
+        kind: String(value.kind || "").trim(),
+        source: String(value.source || "").trim(),
+        routingMode: String(value.routingMode || value.routing_mode || "").trim(),
+        extractionStatus: String(
+          value.extractionStatus || value.extraction_status || "",
+        ).trim(),
+        assetUri: isPersistableRuntimeUrl(value.assetUri || value.asset_uri)
+          ? String(value.assetUri || value.asset_uri).trim()
+          : "",
+        localPath: String(value.localPath || value.local_path || "").trim(),
+        extractedText: truncatePersistedRuntimeText(
+          value.extractedText || value.extracted_text,
+          MAX_PERSISTED_ATTACHMENT_TEXT_CHARS,
+        ),
+        providerFileId: String(
+          value.providerFileId || value.provider_file_id || "",
+        ).trim(),
+        error: String(value.error || "").trim(),
+      };
+    })
+    .filter(Boolean);
+}
+
 function normalizePersistedMessageMediaUrls(values) {
   return mergeMediaUrls(values).filter(
     (url) =>
-      !String(url || "")
-        .trim()
-        .startsWith("blob:"),
+      isPersistableRuntimeUrl(url),
   );
 }
 
@@ -14519,6 +14626,7 @@ async function restoreInteractiveChatRuntime(
 }
 
 function schedulePersistChatRuntime() {
+  if (chatHistoryLoading.value) return;
   const projectId = String(selectedProjectId.value || "").trim();
   const chatSessionId = String(currentChatSessionId.value || "").trim();
   if (!projectId || !chatSessionId) return;
@@ -29621,6 +29729,7 @@ async function materializePersistentMediaUrl(url, options = {}) {
   ) {
     return normalizedUrl;
   }
+  if (isNativeAsset) return normalizedUrl;
   const response = await fetch(normalizedUrl);
   if (!response.ok) {
     throw new Error(`本地媒体读取失败（HTTP ${response.status}）`);
@@ -29628,6 +29737,65 @@ async function materializePersistentMediaUrl(url, options = {}) {
   const dataUrl = await readBlobAsDataUrl(await response.blob());
   if (!dataUrl) throw new Error("本地媒体转换失败");
   return dataUrl;
+}
+
+async function persistUserUploadAssetsForChatMessage({
+  projectId,
+  chatSessionId,
+  messageId,
+  uploadItems = [],
+  attachments = [],
+}) {
+  if (!hasNativeDesktopBridge()) {
+    return { assets: [], attachments };
+  }
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedSessionId = String(chatSessionId || "").trim();
+  const normalizedMessageId = String(messageId || "").trim();
+  if (!normalizedProjectId || !normalizedSessionId || !normalizedMessageId) {
+    throw new Error("上传附件缺少项目或会话信息");
+  }
+  const attachmentById = new Map(
+    (Array.isArray(attachments) ? attachments : []).map((attachment) => [
+      String(attachment?.attachmentId || "").trim(),
+      attachment,
+    ]),
+  );
+  const persistedAssets = [];
+  const nextAttachments = [];
+  for (const [index, item] of (Array.isArray(uploadItems) ? uploadItems : []).entries()) {
+    const rawFile = item?.raw || item?.rawFile || item;
+    const attachmentId =
+      String(item?.attachmentId || "").trim() || createLocalAttachmentId(index);
+    const attachment = attachmentById.get(attachmentId) || {};
+    const sourceUrl = String(attachment?.dataUrl || "").trim() ||
+      (rawFile ? await readFileAsDataUrl(rawFile) : "");
+    if (!sourceUrl) throw new Error(`${item?.name || "附件"} 内容读取失败`);
+    const persisted = await persistNativeProjectChatAsset({
+      username: currentUsername.value,
+      projectId: normalizedProjectId,
+      chatSessionId: normalizedSessionId,
+      messageId: normalizedMessageId,
+      url: sourceUrl,
+      fileName: String(rawFile?.name || item?.name || attachment?.name || "").trim(),
+      mimeType: String(rawFile?.type || attachment?.mimeType || "").trim(),
+      assetType: String(attachment?.kind || item?.kind || "file").trim(),
+      sourceTool: "project_chat_user_upload",
+    });
+    const asset = normalizePersistedMediaAssets([persisted])[0];
+    if (!asset) throw new Error(`${item?.name || "附件"} 持久化失败`);
+    persistedAssets.push(asset);
+    nextAttachments.push({
+      ...attachment,
+      attachmentId: asset.assetId || attachmentId,
+      assetUri: asset.assetUri || asset.displayUrl,
+      localPath: asset.localPath,
+      dataUrl: "",
+      extractionStatus:
+        String(attachment?.extractionStatus || "").trim() || "asset_ready",
+    });
+  }
+  return { assets: persistedAssets, attachments: nextAttachments };
 }
 
 async function materializePersistentContextReferences(references = []) {
@@ -31837,10 +32005,7 @@ async function fetchChatSessions(
           !excludedSessionIds.has(candidate) &&
           chatSessions.value.some((item) => item.id === candidate),
       ) || "";
-    queueChatSessionPersistenceBeforeSwitch(projectId, resolved);
-    rememberCurrentChatSessionMessages();
-    rememberCurrentChatSessionComposerState();
-    currentChatSessionId.value = resolved;
+    await activateChatSessionForHistory(projectId, resolved);
     if (!options.preserveComposerState) {
       applyChatSessionComposerState(projectId, resolved);
     }
@@ -31971,11 +32136,9 @@ async function fetchChatHistory(
     return;
   }
   if (!append) {
-    queueChatSessionPersistenceBeforeSwitch(projectId, normalizedSessionId);
-    rememberCurrentChatSessionMessages();
-    rememberCurrentChatSessionComposerState();
+    chatHistoryLoading.value = true;
+    await activateChatSessionForHistory(projectId, normalizedSessionId);
   }
-  currentChatSessionId.value = normalizedSessionId;
   if (!append) {
     applyChatSessionComposerState(projectId, normalizedSessionId);
   }
@@ -34624,11 +34787,15 @@ function normalizePersistedMediaAssets(values) {
     if (!value || typeof value !== "object") continue;
     const assetId = String(value.assetId || value.asset_id || "").trim();
     const localPath = String(value.localPath || value.local_path || "").trim();
-    const displayUrl = String(
+    const assetUri = String(value.assetUri || value.asset_uri || "").trim();
+    const rawDisplayUrl = String(
       value.displayUrl || value.display_url || "",
     ).trim();
-    if (!assetId && !localPath && !displayUrl) continue;
-    const key = assetId || localPath || displayUrl;
+    const displayUrl = isPersistableRuntimeUrl(rawDisplayUrl)
+      ? rawDisplayUrl
+      : "";
+    if (!assetId && !localPath && !assetUri && !displayUrl) continue;
+    const key = assetId || localPath || assetUri || displayUrl;
     if (seen.has(key)) continue;
     seen.add(key);
     result.push({
@@ -34638,8 +34805,13 @@ function normalizePersistedMediaAssets(values) {
       bytes: Number(value.bytes || 0) || 0,
       name: String(value.name || "").trim(),
       localPath,
+      assetUri,
       displayUrl,
-      sourceUrl: String(value.sourceUrl || value.source_url || "").trim(),
+      sourceUrl: isPersistableRuntimeUrl(
+        value.sourceUrl || value.source_url,
+      )
+        ? String(value.sourceUrl || value.source_url).trim()
+        : "",
       sourceTool: String(value.sourceTool || value.source_tool || "").trim(),
       messageId: String(value.messageId || value.message_id || "").trim(),
       createdAt: String(value.createdAt || value.created_at || "").trim(),
@@ -36516,7 +36688,7 @@ async function doSend(options = {}) {
       .filter(Boolean),
   ]);
 
-  const localLiuAgentAttachments = files.length || activeContextRefs.length
+  let localLiuAgentAttachments = files.length || activeContextRefs.length
     ? [
         ...(await buildLocalLiuAgentAttachments(uploadFiles.value)),
         ...(await prepareContextReferenceAttachments(activeContextRefs)),
@@ -36805,7 +36977,16 @@ async function doSend(options = {}) {
     id: createLocalMessageId(),
     role: "user",
     content: displayUserMessageContent,
-    images: imageUrls,
+    images: mergeImageUrls(
+      uploadFiles.value
+        .filter((item) => String(item?.kind || "").trim() === "image")
+        .map((item) => item?.url)
+        .filter(Boolean),
+      visibleContextRefs
+        .filter((item) => item.type === "image")
+        .map((item) => item.url)
+        .filter(Boolean),
+    ),
     videos: visibleContextRefs
       .filter((item) => item.type === "video")
       .map((item) => item.url)
@@ -36818,6 +36999,7 @@ async function doSend(options = {}) {
         .filter(Boolean),
     ),
     attachments: attachmentNames,
+    mediaAssets: [],
     contextRefs: visibleContextRefs,
     time: nowText(),
   };
@@ -36840,6 +37022,52 @@ async function doSend(options = {}) {
     operations: [],
     time: nowText(),
   };
+  if (uploadFiles.value.length) {
+    let persistedUpload;
+    try {
+      persistedUpload = await persistUserUploadAssetsForChatMessage({
+        projectId: selectedProjectId.value,
+        chatSessionId: activeChatSessionId,
+        messageId: userMessage.id,
+        uploadItems: uploadFiles.value,
+        attachments: localLiuAgentAttachments,
+      });
+    } catch (error) {
+      ElMessage.error(error?.message || "附件保存到本地资源目录失败");
+      return;
+    }
+    localLiuAgentAttachments = [
+      ...persistedUpload.attachments,
+      ...localLiuAgentAttachments.filter((attachment) =>
+        !uploadFiles.value.some(
+          (item) =>
+            String(item?.attachmentId || "").trim() ===
+            String(attachment?.attachmentId || "").trim(),
+        ),
+      ),
+    ];
+    userMessage.mediaAssets = persistedUpload.assets;
+    userMessage.images = mergeImageUrls(
+      persistedUpload.assets
+        .filter((asset) => asset.kind === "image")
+        .map((asset) => asset.assetUri || asset.displayUrl)
+        .filter(Boolean),
+      visibleContextRefs
+        .filter((item) => item.type === "image")
+        .map((item) => item.url)
+        .filter(Boolean),
+    );
+    userMessage.audios = mergeAudioUrls(
+      persistedUpload.assets
+        .filter((asset) => asset.kind === "audio")
+        .map((asset) => asset.assetUri || asset.displayUrl)
+        .filter(Boolean),
+      visibleContextRefs
+        .filter((item) => item.type === "audio")
+        .map((item) => item.url)
+        .filter(Boolean),
+    );
+  }
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
   beginComposerPlanForChatSession(

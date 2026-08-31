@@ -268,6 +268,10 @@ pub struct LocalChatAttachment {
     pub source: Option<String>,
     pub routing_mode: Option<String>,
     pub extraction_status: Option<String>,
+    #[serde(default)]
+    pub asset_uri: Option<String>,
+    #[serde(default)]
+    pub local_path: Option<String>,
     pub data_url: Option<String>,
     pub extracted_text: Option<String>,
     pub provider_file_id: Option<String>,

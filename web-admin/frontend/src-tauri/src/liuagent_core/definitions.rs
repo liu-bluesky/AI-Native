@@ -32,6 +32,27 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "resolve_plugin_capability",
+            description: "解析插件 Skill 所需能力在当前会话是否可用。应先加载相关 Skill，再传入 plugin_id、capability 和必要的输入资产 ID；当返回 status=ready 后，Runtime 会在后续模型步骤注入对应工具。此工具不会暴露供应商密钥或本地文件路径。",
+            action: "plugin.capability.resolve",
+            risk: "low",
+            requires_approval: false,
+            scope: "session",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "plugin_id": {"type": "string"},
+                    "capability": {"type": "string"},
+                    "input_asset_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "能力需要输入附件时，传入本轮附件资产 ID"
+                    }
+                },
+                "required": ["plugin_id", "capability"]
+            }),
+        },
+        ToolDefinition {
             name: "ask_user_question",
             description: "仅当用户已经提出明确任务，且缺少会改变执行结果、只能由用户决定、无法从上下文读取或安全采用默认值的关键信息时使用。调用后 Runtime 会暂停当前工具循环并展示问题；收到答案后会从同一个工具调用继续。不要把问候、闲聊、能力咨询、泛泛的“想做什么”澄清、内部错误、可自行读取/推断的信息或非关键偏好交给用户；非关键缺失应采用合理默认值并继续。一次最多提出 3 个具体问题。每个问题必须明确设置 multi_select：互斥答案只能选一个时设为 false；多个答案可以同时成立、用户可能需要组合选择时设为 true。",
             action: "interaction.ask_user",

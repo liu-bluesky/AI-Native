@@ -40,6 +40,8 @@ export function normalizeContextReference(input = {}, index = 0) {
     : "message";
   const messageId = String(input?.messageId || input?.message_id || "").trim();
   const url = String(input?.url || "").trim();
+  const assetUri = String(input?.assetUri || input?.asset_uri || "").trim();
+  const localPath = String(input?.localPath || input?.local_path || "").trim();
   const content = compactText(input?.content);
   const label = normalizeContextReferenceLabel(
     input?.label ||
@@ -58,6 +60,8 @@ export function normalizeContextReference(input = {}, index = 0) {
     type,
     messageId,
     url,
+    assetUri,
+    localPath,
     label,
     content,
     mimeType: String(input?.mimeType || input?.mime_type || "").trim(),
@@ -165,10 +169,12 @@ export function buildContextReferenceAttachments(references = []) {
       source: item.source || "conversation_reference",
       inputIntent: item.inputIntent || "context",
       remoteUrl: item.remoteUrl || item.url || "",
+      assetUri: item.assetUri || item.url || "",
+      localPath: item.localPath || "",
       providerFileId: "",
       routingMode: "inline_content",
       extractionStatus: item.url ? "conversation_reference" : "metadata_only",
-      dataUrl: item.dataUrl || item.url,
+      dataUrl: item.dataUrl || "",
       extractedText: item.content,
       error: "",
     }));

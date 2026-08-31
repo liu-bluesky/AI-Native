@@ -114,6 +114,7 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
     }
     let result = match name.as_str() {
         "load_plugin_skill" => load_plugin_skill_tool(&request.arguments),
+        "resolve_plugin_capability" => resolve_plugin_capability_tool(&request.arguments),
         "list_installed_plugins" => list_installed_plugins(&request.arguments),
         "install_plugin_from_directory" => install_plugin_from_directory(
             &tool_call_id,
@@ -254,6 +255,29 @@ fn load_plugin_skill_tool(
         .map_err(|error| ToolError::new("plugin.skill_root_unavailable", error.to_string()))?;
     let document = load_plugin_skill(&plugin_root, plugin_id, plugin_version, skill_id)
         .map_err(|error| ToolError::new("plugin.skill_not_found", error.to_string()))?;
+    let unavailable_tools = if let Some(available_tool_names) = arguments
+        .get("_available_tool_names")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .collect::<std::collections::HashSet<_>>()
+        })
+    {
+        let unavailable_tools = document
+            .summary
+            .required_tool_names
+            .iter()
+            .filter(|name| !available_tool_names.contains(name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        unavailable_tools
+    } else {
+        Vec::new()
+    };
     let summary = format!(
         "已加载插件 Skill：{}@{}/{}",
         document.summary.plugin_id, document.summary.plugin_version, document.summary.skill_id
@@ -265,9 +289,58 @@ fn load_plugin_skill_tool(
             "skillId": document.summary.skill_id,
             "name": document.summary.name,
             "description": document.summary.description,
+            "requiredTools": document.summary.required_tool_names,
+            "unavailableTools": unavailable_tools,
+            "nextAction": "对尚未注入的 requiredTools 调用 resolve_plugin_capability；status=ready 后 Runtime 会在后续模型步骤提供对应工具。",
             "content": document.content
         }),
         summary,
+    ))
+}
+
+fn resolve_plugin_capability_tool(
+    arguments: &serde_json::Value,
+) -> Result<(serde_json::Value, String), ToolError> {
+    let plugin_id = arguments
+        .get("plugin_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ToolError::new("tool.schema_invalid", "plugin_id is required"))?;
+    let capability = arguments
+        .get("capability")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ToolError::new("tool.schema_invalid", "capability is required"))?;
+    let status = arguments
+        .get("_capability_status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unavailable");
+    let tool_name = arguments
+        .get("_capability_tool_name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(capability);
+    let missing_requirements = arguments
+        .get("_capability_missing_requirements")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let message = arguments
+        .get("_capability_message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("当前运行时无法解析此插件能力");
+    let ready = status == "ready";
+    Ok((
+        serde_json::json!({
+            "status": status,
+            "pluginId": plugin_id,
+            "capability": capability,
+            "toolName": tool_name,
+            "activated": ready,
+            "missingRequirements": missing_requirements,
+            "message": message
+        }),
+        message.to_string(),
     ))
 }
 
@@ -454,6 +527,9 @@ mod tests {
         );
         assert!(tools.iter().any(|item| item.name == "web_search"));
         assert!(tools.iter().any(|item| item.name == "web_extract"));
+        assert!(tools
+            .iter()
+            .any(|item| item.name == "resolve_plugin_capability"));
         assert!(tools.iter().any(|item| item.name == "list_projects"));
         assert!(tools.iter().any(|item| item.name == "get_project"));
         assert!(tools.iter().any(|item| item.name == "list_bot_projects"));
@@ -494,6 +570,54 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .contains("generate_image"));
+    }
+
+    #[test]
+    fn load_plugin_skill_reports_unavailable_required_tool_without_rejecting() {
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_load_image_editing_skill".to_string()),
+            name: "load_plugin_skill".to_string(),
+            arguments: json!({
+                "plugin_id": "builtin-media-image",
+                "plugin_version": "1.0.0",
+                "skill_id": "builtin.media.image.editing-skill",
+                "_available_tool_names": []
+            }),
+            workspace_path: ".".to_string(),
+            permission_decision: None,
+        });
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.content["unavailableTools"], json!(["edit_image"]));
+        assert!(result.content["nextAction"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("resolve_plugin_capability"));
+    }
+
+    #[test]
+    fn resolve_plugin_capability_returns_runtime_readiness_without_secrets() {
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_resolve_image_editing".to_string()),
+            name: "resolve_plugin_capability".to_string(),
+            arguments: json!({
+                "plugin_id": "builtin-media-image",
+                "capability": "edit_image",
+                "input_asset_ids": ["photo-1"],
+                "_capability_status": "ready",
+                "_capability_tool_name": "edit_image",
+                "_capability_missing_requirements": [],
+                "_capability_message": "图片编辑能力已就绪"
+            }),
+            workspace_path: ".".to_string(),
+            permission_decision: None,
+        });
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.content["status"], "ready");
+        assert_eq!(result.content["toolName"], "edit_image");
+        assert_eq!(result.content["activated"], true);
+        assert!(result.content.get("_media_api_key").is_none());
     }
 
     #[test]

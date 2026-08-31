@@ -412,7 +412,10 @@ fn read_local_asset_source(source: &str) -> Result<(Vec<u8>, String, u16), ToolE
         ));
     }
     let decoded_path = percent_decode_path(url.path())?;
-    let path = local_asset_path(&decoded_path)?;
+    let path = match project_chat_asset_digest_from_uri(&decoded_path) {
+        Some(digest) => resolve_project_chat_asset_by_digest(digest)?,
+        None => local_asset_path(&decoded_path)?,
+    };
     let canonical_path = fs::canonicalize(&path).map_err(|err| {
         ToolError::new(
             "tool.execution_failed",
@@ -454,8 +457,16 @@ fn read_local_asset_source(source: &str) -> Result<(Vec<u8>, String, u16), ToolE
 }
 
 fn is_trusted_project_chat_asset_path(path: &Path) -> bool {
+    project_chat_asset_roots().into_iter().any(|root| {
+        fs::canonicalize(root)
+            .ok()
+            .is_some_and(|root| path.starts_with(root))
+    })
+}
+
+fn project_chat_asset_roots() -> Vec<PathBuf> {
     let Some(home) = global_user_home_dir() else {
-        return false;
+        return Vec::new();
     };
     let mut roots = vec![
         home.join("Library")
@@ -481,11 +492,98 @@ fn is_trusted_project_chat_asset_path(path: &Path) -> bool {
                 .join("project-chat-data"),
         );
     }
-    roots.into_iter().any(|root| {
-        fs::canonicalize(root)
-            .ok()
-            .is_some_and(|root| path.starts_with(root))
-    })
+    roots
+}
+
+fn project_chat_asset_digest_from_uri(decoded_path: &str) -> Option<&str> {
+    let asset_id = decoded_path.trim_matches('/');
+    let digest = asset_id.strip_prefix("sha256:")?;
+    (digest.len() == 64 && digest.chars().all(|value| value.is_ascii_hexdigit())).then_some(digest)
+}
+
+fn resolve_project_chat_asset_by_digest(digest: &str) -> Result<PathBuf, ToolError> {
+    let metadata_name = format!("{digest}.json");
+    for root in project_chat_asset_roots() {
+        let Some(metadata_path) = find_project_chat_asset_metadata(&root, &metadata_name)? else {
+            continue;
+        };
+        let content = fs::read_to_string(&metadata_path).map_err(|err| {
+            ToolError::new(
+                "tool.execution_failed",
+                format!("read local asset metadata failed: {err}"),
+            )
+        })?;
+        let metadata: Value = serde_json::from_str(&content).map_err(|err| {
+            ToolError::new(
+                "tool.execution_failed",
+                format!("parse local asset metadata failed: {err}"),
+            )
+        })?;
+        let expected_asset_id = format!("sha256:{digest}");
+        let metadata_asset_id = ["assetId", "asset_id"]
+            .iter()
+            .find_map(|key| metadata.get(*key).and_then(Value::as_str));
+        if metadata_asset_id != Some(expected_asset_id.as_str()) {
+            return Err(ToolError::new(
+                "tool.execution_failed",
+                "local asset metadata does not match the requested asset id",
+            ));
+        }
+        let local_path = ["localPath", "local_path"]
+            .iter()
+            .find_map(|key| metadata.get(*key).and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ToolError::new(
+                    "tool.execution_failed",
+                    "local asset metadata is missing local_path",
+                )
+            })?;
+        return Ok(PathBuf::from(local_path));
+    }
+    Err(ToolError::new(
+        "tool.execution_failed",
+        "asset id was not found in the application asset store",
+    ))
+}
+
+fn find_project_chat_asset_metadata(
+    root: &Path,
+    metadata_name: &str,
+) -> Result<Option<PathBuf>, ToolError> {
+    if !root.is_dir() {
+        return Ok(None);
+    }
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let entries = fs::read_dir(&directory).map_err(|err| {
+            ToolError::new(
+                "tool.execution_failed",
+                format!("read application asset store failed: {err}"),
+            )
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|err| {
+                ToolError::new(
+                    "tool.execution_failed",
+                    format!("read application asset store entry failed: {err}"),
+                )
+            })?;
+            let file_type = entry.file_type().map_err(|err| {
+                ToolError::new(
+                    "tool.execution_failed",
+                    format!("read application asset store entry type failed: {err}"),
+                )
+            })?;
+            if file_type.is_dir() {
+                directories.push(entry.path());
+            } else if file_type.is_file() && entry.file_name() == metadata_name {
+                return Ok(Some(entry.path()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn local_asset_path(decoded_path: &str) -> Result<PathBuf, ToolError> {
@@ -2583,6 +2681,61 @@ mod tests {
         assert_eq!(content_type, "image/png");
         assert_eq!(status, 200);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reads_asset_id_url_from_project_chat_asset_store() {
+        let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let dir = global_user_home_dir()
+            .unwrap()
+            .join(".local")
+            .join("share")
+            .join("com.ai-employee.factory")
+            .join("project-chat-data")
+            .join("test-assets-by-id")
+            .join("assets")
+            .join("session")
+            .join("message");
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join(format!("{digest}.png"));
+        fs::write(&source, b"PNG DATA BY ID").unwrap();
+        fs::write(
+            dir.join(format!("{digest}.json")),
+            json!({
+                "assetId": format!("sha256:{digest}"),
+                "localPath": source,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let asset_url = format!("asset://localhost/sha256:{digest}");
+        let (bytes, content_type, status) = read_download_source(&asset_url, 30_000).unwrap();
+
+        assert_eq!(bytes, b"PNG DATA BY ID");
+        assert_eq!(content_type, "image/png");
+        assert_eq!(status, 200);
+        let _ = fs::remove_dir_all(
+            global_user_home_dir()
+                .unwrap()
+                .join(".local")
+                .join("share")
+                .join("com.ai-employee.factory")
+                .join("project-chat-data")
+                .join("test-assets-by-id"),
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_asset_id_url() {
+        let error = read_download_source(
+            "asset://localhost/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            30_000,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "tool.execution_failed");
+        assert!(error.message.contains("asset id was not found"));
     }
 
     #[test]
