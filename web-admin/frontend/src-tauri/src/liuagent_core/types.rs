@@ -265,6 +265,7 @@ pub struct LocalChatAttachment {
     pub mime_type: Option<String>,
     pub size: Option<u64>,
     pub kind: Option<String>,
+    pub source: Option<String>,
     pub routing_mode: Option<String>,
     pub extraction_status: Option<String>,
     pub data_url: Option<String>,

@@ -85,9 +85,14 @@
                 <el-icon v-else><Document /></el-icon>
               </div>
               <div class="composer-context-card__body">
-                <span class="composer-context-card__type">{{
-                  contextRefTypeLabel(item.type)
-                }}</span>
+                <div class="composer-context-card__labels">
+                  <span class="composer-context-card__type">{{
+                    contextRefTypeLabel(item.type)
+                  }}</span>
+                  <span class="composer-context-card__source">
+                    {{ contextRefSourceLabel(item.source) }}
+                  </span>
+                </div>
                 <strong>{{ item.label }}</strong>
                 <span v-if="item.content">{{ item.content }}</span>
               </div>
@@ -115,6 +120,9 @@
             <div class="preview-item__body">
               <span class="preview-item__name">{{ file.name }}</span>
               <div class="preview-item__meta">
+                <span class="preview-item__source">
+                  {{ uploadSourceLabel(file.source) }}
+                </span>
                 <span
                   v-if="file.uploadStatus === 'uploading'"
                   class="preview-item__status preview-item__status--uploading"
@@ -252,18 +260,6 @@
             </div>
           </div>
           <div class="footer-right">
-            <el-tooltip content="配置模型" placement="top">
-              <el-button
-                v-if="isChatSettingsDisplayReady"
-                class="chat-model-routing-trigger"
-                circle
-                :disabled="chatLoading"
-                aria-label="配置模型"
-                @click="modelRoutingDialogVisible = true"
-              >
-                <el-icon><Setting /></el-icon>
-              </el-button>
-            </el-tooltip>
             <span v-if="modelProviderOffline" class="chat-model-offline-badge">
               离线
             </span>
@@ -274,30 +270,42 @@
               项目配置加载中
             </div>
             <slot name="media-parameters" />
-            <el-select
-              v-if="isChatSettingsDisplayReady"
-              v-model="selectedModelOptionValueModel"
-              class="chat-model-select"
-              :disabled="chatLoading || !providerModelGroups.length"
-              :placeholder="activeModelSummary || '选择模型'"
-              :teleported="true"
-              aria-label="选择模型"
-            >
-              <el-option-group
-                v-for="group in providerModelGroups"
-                :key="group.providerId"
-                :label="group.label"
+            <div v-if="isChatSettingsDisplayReady" class="chat-model-control">
+              <el-tooltip content="配置模型" placement="top">
+                <el-button
+                  class="chat-model-routing-trigger"
+                  circle
+                  :disabled="chatLoading"
+                  aria-label="配置模型"
+                  @click="modelRoutingDialogVisible = true"
+                >
+                  <el-icon><Setting /></el-icon>
+                </el-button>
+              </el-tooltip>
+              <el-select
+                v-model="selectedModelOptionValueModel"
+                class="chat-model-select"
+                :disabled="chatLoading || !providerModelGroups.length"
+                :placeholder="activeModelSummary || '选择模型'"
+                :teleported="true"
+                aria-label="选择模型"
               >
-                <el-option
-                  v-for="option in group.options"
-                  :key="option.value"
-                  :label="option.modelName"
-                  :value="option.value"
-                />
-              </el-option-group>
-            </el-select>
+                <el-option-group
+                  v-for="group in providerModelGroups"
+                  :key="group.providerId"
+                  :label="group.label"
+                >
+                  <el-option
+                    v-for="option in group.options"
+                    :key="option.value"
+                    :label="option.modelName"
+                    :value="option.value"
+                  />
+                </el-option-group>
+              </el-select>
+            </div>
             <div class="chat-thinking-mode">
-              <span class="chat-thinking-mode__label">思考</span>
+              <span class="chat-thinking-mode__value">{{ thinkingModeLabel }}</span>
               <el-select
                 v-model="thinkingModeModel"
                 class="chat-thinking-mode__control"
@@ -553,6 +561,13 @@ const thinkingModeModel = computed({
   },
 });
 
+const thinkingModeLabel = computed(() => ({
+  disabled: "关闭",
+  low: "低",
+  medium: "中",
+  high: "高",
+}[thinkingModeModel.value] || "选择思考模式"));
+
 function emitFileChange(uploadFile, uploadFiles) {
   emit("file-change", uploadFile, uploadFiles);
 }
@@ -568,6 +583,18 @@ function contextRefTypeLabel(type) {
       message: "历史消息",
     }[String(type || "").trim()] || "会话内容"
   );
+}
+
+function contextRefSourceLabel(source) {
+  return String(source || "").trim() === "conversation_reference"
+    ? "历史引用"
+    : "会话内容";
+}
+
+function uploadSourceLabel(source) {
+  return String(source || "").trim() === "conversation_reference"
+    ? "历史引用图片"
+    : "本地上传";
 }
 
 defineExpose({

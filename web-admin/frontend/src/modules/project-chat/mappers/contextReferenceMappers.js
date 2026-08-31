@@ -63,7 +63,9 @@ export function normalizeContextReference(input = {}, index = 0) {
     mimeType: String(input?.mimeType || input?.mime_type || "").trim(),
     implicit: input?.implicit === true,
     visibility: String(input?.visibility || "").trim() || "user_visible",
-    source: "conversation_history",
+    source:
+      String(input?.source || input?.sourceType || "").trim() ||
+      "conversation_reference",
     usage: type === "image" ? "reference_image" : "context",
   };
 }
@@ -160,6 +162,7 @@ export function buildContextReferenceAttachments(references = []) {
               : "application/octet-stream"),
       size: 0,
       kind: item.type,
+      source: item.source || "conversation_reference",
       routingMode: item.type === "image" ? "inline_image" : "local_extract",
       extractionStatus: item.url ? "conversation_reference" : "metadata_only",
       dataUrl: item.url,

@@ -28452,6 +28452,8 @@ function handleFileChange(file) {
   file.uploadStatus = shouldAttemptProviderFileUpload() ? "uploading" : "ready";
   file.uploadError = "";
   file.rawFile = raw;
+  file.source =
+    String(file.source || file.sourceType || "").trim() || "user_upload";
   uploadFiles.value.push(file);
   rememberCurrentChatSessionComposerState();
   if (file.uploadStatus === "uploading") {
@@ -28507,6 +28509,7 @@ async function buildImageUploadFromContextReference(reference) {
     name,
     contextReferenceId: String(reference?.id || "").trim(),
     sourceReferenceUrl: sourceUrl,
+    source: "conversation_reference",
   };
 }
 
@@ -28851,6 +28854,7 @@ function buildMessageContextReferences(message = {}) {
   const messageId = String(message?.id || "").trim();
   const references = [];
   const content = String(message?.content || "").trim();
+  const imageUrls = extractImages(message);
   if (content) {
     references.push({
       type: "message",
@@ -28859,7 +28863,7 @@ function buildMessageContextReferences(message = {}) {
       content,
     });
   }
-  for (const [index, url] of extractImages(message).entries()) {
+  for (const [index, url] of imageUrls.entries()) {
     references.push({
       type: "image",
       messageId,
@@ -28887,6 +28891,7 @@ function buildMessageContextReferences(message = {}) {
     });
   }
   for (const [index, attachment] of extractAttachments(message).entries()) {
+    if (attachment?.kind === "image" && imageUrls.length) continue;
     references.push(
       buildAttachmentContextReference(message, attachment, index),
     );
@@ -29620,6 +29625,8 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
       mimeType: String(rawFile?.type || "").trim(),
       size: Number(rawFile?.size || 0),
       kind: isImage ? "image" : isAudio ? "audio" : "file",
+      source:
+        String(item?.source || item?.sourceType || "").trim() || "user_upload",
       routingMode,
       extractionStatus: "metadata_only",
       dataUrl: "",
@@ -39001,9 +39008,34 @@ onUnmounted(() => {
 }
 
 .chat-layout :deep(.chat-model-select) {
-  width: auto;
-  min-width: 190px;
-  max-width: 280px;
+  width: 198px;
+  min-width: 198px;
+  max-width: 198px;
+}
+
+.chat-layout :deep(.chat-model-control) {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 4px 0 2px;
+  border-radius: 10px;
+  background: var(--el-fill-color-light);
+}
+
+.chat-layout :deep(.chat-model-control .chat-model-routing-trigger) {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--el-text-color-secondary);
+}
+
+.chat-layout :deep(.chat-model-control .chat-model-routing-trigger:hover) {
+  background: var(--el-fill-color-dark);
+  color: var(--el-color-primary);
 }
 
 .chat-layout :deep(.chat-model-select .el-select__wrapper),
@@ -39080,8 +39112,22 @@ onUnmounted(() => {
 }
 
 .chat-layout :deep(.chat-thinking-mode__control) {
-  flex: 0 0 96px;
-  width: 96px;
+  flex: 0 0 42px;
+  width: 42px;
+}
+
+.chat-layout :deep(.chat-thinking-mode__value) {
+  min-width: 28px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.chat-layout :deep(.chat-thinking-mode__control .el-select__selected-item) {
+  color: transparent;
+  font-size: 0;
 }
 
 .chat-layout :deep(.send-message-button) {
@@ -39103,6 +39149,29 @@ onUnmounted(() => {
 
 .chat-layout :deep(.send-message-button.is-stop:hover) {
   background: var(--el-color-warning-dark-2) !important;
+}
+
+.chat-layout .chat-messages:has(.chat-empty-state) {
+  overflow: hidden;
+}
+
+.chat-layout .chat-messages:has(.chat-empty-state) .message-list-inner {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.chat-layout .chat-empty-state {
+  min-height: 0;
+  height: 100%;
+  padding: 0;
+}
+
+.chat-layout .chat-empty-title {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 42px);
 }
 
 @media (max-width: 760px) {

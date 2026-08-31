@@ -302,6 +302,16 @@
   gap: 6px;
 }
 
+.preview-item__source,
+.composer-context-card__source {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .preview-item__id {
   max-width: 140px;
   padding: 1px 6px;
@@ -946,6 +956,12 @@
   min-width: 0;
   flex-direction: column;
   gap: 2px;
+}
+
+.composer-context-card__labels {
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .composer-context-card__body strong,
