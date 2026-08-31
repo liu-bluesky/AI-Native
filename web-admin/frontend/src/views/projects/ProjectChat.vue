@@ -38983,9 +38983,9 @@ onUnmounted(() => {
 }
 
 .chat-layout :deep(.input-footer) {
-  gap: 16px;
-  padding: 6px 12px 12px;
-  border-top: 1px solid var(--el-border-color-lighter);
+  gap: 12px;
+  padding: 2px 10px 8px;
+  border-top: 0;
 }
 
 .chat-layout :deep(.footer-left),
@@ -38994,20 +38994,44 @@ onUnmounted(() => {
 }
 
 .chat-layout :deep(.footer-left .el-button) {
-  width: 34px;
-  height: 34px;
-  border-radius: 11px;
-  color: #676963;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  color: var(--el-text-color-secondary);
 }
 
-.chat-layout :deep(.footer-left .chat-model-routing-trigger) {
+.chat-layout :deep(.chat-model-select) {
   width: auto;
-  min-width: 0;
-  padding: 0 10px;
-  border-radius: 10px;
+  min-width: 156px;
+  max-width: 260px;
+}
+
+.chat-layout :deep(.chat-model-select .el-select__wrapper),
+.chat-layout :deep(.local-agent-auth-level__control .el-select__wrapper),
+.chat-layout :deep(.chat-thinking-mode__control .el-select__wrapper) {
+  min-height: 28px;
+  padding: 0 20px 0 8px;
+  border: 0;
+  border-radius: 8px;
   background: transparent;
-  color: #5f625d;
-  font-size: 12px;
+  box-shadow: none;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.chat-layout :deep(.chat-model-select .el-select__wrapper:hover),
+.chat-layout :deep(.local-agent-auth-level__control .el-select__wrapper:hover),
+.chat-layout :deep(.chat-thinking-mode__control .el-select__wrapper:hover) {
+  background: var(--el-fill-color-light);
+}
+
+.chat-layout :deep(.chat-model-select .el-select__selected-item),
+.chat-layout :deep(.local-agent-auth-level__control .el-select__selected-item),
+.chat-layout :deep(.chat-thinking-mode__control .el-select__selected-item) {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .chat-layout :deep(.footer-right .chat-model-routing-trigger) {
@@ -39030,16 +39054,19 @@ onUnmounted(() => {
   display: none;
 }
 
-.chat-layout :deep(.chat-model-pill),
-.chat-layout :deep(.chat-model-select .el-select__wrapper) {
+.chat-layout :deep(.chat-model-pill) {
   min-height: 28px;
   border-radius: 10px;
-  background: rgba(248, 250, 252, 0.9);
+  background: transparent;
 }
 
 .chat-layout :deep(.local-agent-auth-level),
 .chat-layout :deep(.chat-thinking-mode) {
   gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
 }
 
 .chat-layout :deep(.local-agent-auth-level__label),
@@ -39050,21 +39077,28 @@ onUnmounted(() => {
 
 .chat-layout :deep(.local-agent-auth-level__control .el-select__wrapper),
 .chat-layout :deep(.chat-thinking-mode__control .el-select__wrapper) {
-  min-height: 28px;
-  padding: 0 8px;
-  border-radius: 8px;
+  width: auto;
 }
 
 .chat-layout :deep(.send-message-button) {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   background: var(--el-color-primary) !important;
-  box-shadow: 0 8px 16px color-mix(in srgb, var(--el-color-primary) 28%, transparent) !important;
+  box-shadow: none !important;
 }
 
 .chat-layout :deep(.send-message-button:hover) {
   background: var(--el-color-primary-dark-2) !important;
+}
+
+.chat-layout :deep(.send-message-button.is-stop) {
+  background: var(--el-color-warning) !important;
+  box-shadow: none !important;
+}
+
+.chat-layout :deep(.send-message-button.is-stop:hover) {
+  background: var(--el-color-warning-dark-2) !important;
 }
 
 @media (max-width: 760px) {

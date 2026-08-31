@@ -252,16 +252,6 @@
             </div>
           </div>
           <div class="footer-right">
-            <el-button
-              v-if="isChatSettingsDisplayReady"
-              class="chat-model-routing-trigger"
-              circle
-              :disabled="chatLoading"
-              aria-label="配置模型"
-              @click="modelRoutingDialogVisible = true"
-            >
-              <el-icon><Setting /></el-icon>
-            </el-button>
             <span v-if="modelProviderOffline" class="chat-model-offline-badge">
               离线
             </span>
@@ -309,32 +299,29 @@
                 <el-option label="高" value="high" />
               </el-select>
             </div>
-            <span class="hint-text">{{ composerHintText }}</span>
             <el-tooltip
-              v-if="showPauseGenerationButton"
-              content="暂停当前回答"
+              :content="showPauseGenerationButton ? '暂停当前回答' : '发送消息'"
               placement="top"
             >
               <el-button
-                class="pause-generation-button"
-                type="danger"
-                plain
-                @click="$emit('stop-generation')"
+                class="send-message-button"
+                :class="{
+                  'is-blocked': !canSend && !showPauseGenerationButton,
+                  'is-stop': showPauseGenerationButton,
+                }"
+                type="primary"
+                :aria-label="showPauseGenerationButton ? '暂停当前回答' : '发送消息'"
+                :aria-disabled="!canSend && !showPauseGenerationButton"
+                :disabled="!canSend && !showPauseGenerationButton"
+                circle
+                @click="showPauseGenerationButton ? $emit('stop-generation') : $emit('send')"
               >
-                <el-icon><VideoPause /></el-icon>
-                <span>暂停</span>
+                <el-icon>
+                  <VideoPause v-if="showPauseGenerationButton" />
+                  <Promotion v-else />
+                </el-icon>
               </el-button>
             </el-tooltip>
-            <el-button
-              class="send-message-button"
-              :class="{ 'is-blocked': !canSend }"
-              type="primary"
-              :aria-disabled="!canSend"
-              circle
-              @click="$emit('send')"
-            >
-              <el-icon><Promotion /></el-icon>
-            </el-button>
           </div>
         </div>
       </div>
