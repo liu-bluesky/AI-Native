@@ -7,17 +7,12 @@ import {
   deleteLocalChatSession,
   isChatSessionDeleted,
   resolveCurrentUsername,
-  enqueueChatSessionStorageOperation,
 } from "@/modules/project-chat/services/projectChatStorage.js";
 
 export async function readPersistedChatRuntime(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId || !normalizedChatSessionId) return null;
-  await enqueueChatSessionStorageOperation(
-    normalizedProjectId,
-    async () => undefined,
-  );
   if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
     return null;
   }
@@ -32,10 +27,6 @@ export async function readPersistedChatMessageSnapshot(projectId, chatSessionId)
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId || !normalizedChatSessionId) return [];
-  await enqueueChatSessionStorageOperation(
-    normalizedProjectId,
-    async () => undefined,
-  );
   if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
     return [];
   }

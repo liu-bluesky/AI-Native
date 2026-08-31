@@ -1866,15 +1866,6 @@ pub fn project_chat_read_message_snapshot(
         .and_then(|value| serde_json::from_str::<Value>(&value).ok())
         .and_then(|value| value.get("messages").and_then(Value::as_array).cloned())
         .unwrap_or_default();
-    let payload = serde_json::to_string(&messages).map_err(|err| err.to_string())?;
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO desktop_project_chat_message_snapshots
-                 (username, project_id, chat_session_id, messages_json, updated_at)
-             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
-            params![username, project_id, chat_session_id, payload],
-        )
-        .map_err(|err| err.to_string())?;
     Ok(messages)
 }
 

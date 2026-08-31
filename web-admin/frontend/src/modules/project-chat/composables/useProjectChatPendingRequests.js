@@ -1,8 +1,11 @@
 import { reactive, ref } from "vue";
 
+const sharedPendingRequests = reactive(new Map());
+const sharedActiveGenerationRequestId = ref("");
+
 export function useProjectChatPendingRequests({ currentChatSessionId }) {
-  const pendingRequests = reactive(new Map());
-  const activeGenerationRequestId = ref("");
+  const pendingRequests = sharedPendingRequests;
+  const activeGenerationRequestId = sharedActiveGenerationRequestId;
   const DEFAULT_PENDING_TIMEOUT_MS = 120000;
 
   function clearPendingTimer(pending) {

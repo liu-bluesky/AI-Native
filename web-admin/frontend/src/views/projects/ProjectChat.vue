@@ -2434,6 +2434,11 @@ import {
 import { useProjectChatTaskTreeState } from "@/modules/project-chat/composables/useProjectChatTaskTreeState.js";
 import { useProjectChatTaskTreeActions } from "@/modules/project-chat/composables/useProjectChatTaskTreeActions.js";
 import {
+  getProjectChatSessionDirtyKeys,
+  getProjectChatSessionMessageCache,
+  getProjectChatSessionRuntimeCache,
+} from "@/modules/project-chat/services/projectChatSessionRuntimeStore.js";
+import {
   getLocalProject,
   getLocalProjectRelations,
   getWorkspaceFolderName,
@@ -4438,9 +4443,9 @@ const {
     ElMessage.warning(`项目聊天实时连接断开：${reason}`);
   },
 });
-const chatSessionMessageCache = new Map();
-const chatSessionRuntimeCache = new Map();
-const dirtyChatRuntimeSessionKeys = new Set();
+const chatSessionMessageCache = getProjectChatSessionMessageCache();
+const chatSessionRuntimeCache = getProjectChatSessionRuntimeCache();
+const dirtyChatRuntimeSessionKeys = getProjectChatSessionDirtyKeys();
 let chatRuntimePersistenceSuppressionDepth = 0;
 const queuedFollowupMessages = ref([]);
 let followupQueueDraining = false;
@@ -13269,6 +13274,7 @@ const CHAT_BOTTOM_STICKY_THRESHOLD = 72;
 
 let autoSaveTimer = null;
 let lastAutoSavedFingerprint = "";
+let messageMutationEpoch = 0;
 let highlightedMessageTimer = null;
 let messageListResizeObserver = null;
 let pendingScrollToBottomFrame = null;
@@ -13281,6 +13287,7 @@ const messageBodyHtmlCache = new WeakMap();
 const chatHistoryReachedEnd = ref(false);
 let activeChatHistoryLoadingKey = "";
 let chatSessionNavigationEpoch = 0;
+let chatSessionSelectionEpoch = 0;
 
 function isCurrentChatSessionNavigation(
   projectId,
@@ -14591,6 +14598,9 @@ function persistCurrentChatRuntimeNow(
       const deletedMessageIds = Array.isArray(options.deletedMessageIds)
         ? options.deletedMessageIds
         : [];
+      if (options.skipReadback === true) {
+        return true;
+      }
       if (options.replaceMessages === true || deletedMessageIds.length > 0) {
         return readPersistedChatRuntime(
           normalizedProjectId,
@@ -25831,8 +25841,9 @@ async function deleteMessageAt(messageIndex) {
   }
   const projectId = String(selectedProjectId.value || "").trim();
   const chatSessionId = String(currentChatSessionId.value || "").trim();
-  const previousMessages = messages.value;
+  const previousMessages = messages.value.slice();
   const previousLoadedCount = chatHistoryLoadedCount.value;
+  const deleteEpoch = ++messageMutationEpoch;
   try {
     applyDeleteTargetLocally(target);
     const remainingMessageIds = new Set(
@@ -25844,20 +25855,32 @@ async function deleteMessageAt(messageIndex) {
       .map((item) => String(item?.id || "").trim())
       .filter((id) => id && !remainingMessageIds.has(id));
     rememberCurrentChatSessionMessages();
-    const saved = await persistCurrentChatRuntimeNow(projectId, chatSessionId, {
+    ElMessage.success(buildDeleteSuccessText(item));
+    void persistCurrentChatRuntimeNow(projectId, chatSessionId, {
       // 普通删除只记录被删消息的 ID，不能把当前分页结果当成全量快照，
       // 否则未加载的历史消息也会被 native merge 当成“已删除”。
       replaceMessages: false,
       deletedMessageIds,
       rows: messages.value,
-    });
-    if (saved !== true) {
+      skipReadback: true,
+    }).then((saved) => {
+      if (saved === true) {
+        scheduleChatSessionListMetadataRefresh(projectId);
+        return;
+      }
+      if (
+        deleteEpoch !== messageMutationEpoch ||
+        !isCurrentChatSession(projectId, chatSessionId)
+      ) {
+        return;
+      }
       messages.value = previousMessages;
       chatHistoryLoadedCount.value = previousLoadedCount;
       rememberCurrentChatSessionMessages();
-      throw new Error("删除消息未能保存，请稍后重试");
-    }
-    ElMessage.success(buildDeleteSuccessText(item));
+      ElMessage.error("删除消息未能保存，已恢复原内容");
+    }).catch((error) => {
+      console.error("delete chat message failed", error);
+    });
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || buildDeleteErrorText(item));
   }
@@ -32529,6 +32552,7 @@ async function selectChatSession(payload) {
     String(selectedProjectId.value || "").trim();
   const normalizedSessionId = String(rawSessionId || "").trim();
   if (!projectId || !normalizedSessionId) return;
+  const selectionEpoch = ++chatSessionSelectionEpoch;
   if (projectId !== String(selectedProjectId.value || "").trim()) {
     handleProjectCommand(projectId, { preserveChatSessionId: true });
     await fetchChatSessions(projectId, normalizedSessionId, {
@@ -32536,6 +32560,7 @@ async function selectChatSession(payload) {
       useRemembered: false,
     });
   }
+  if (selectionEpoch !== chatSessionSelectionEpoch) return;
   await fetchChatHistory(projectId, normalizedSessionId);
 }
 
@@ -36444,15 +36469,20 @@ async function doSend(options = {}) {
       [],
       composerContextRefs.value,
     );
-    const hasExplicitImageReference = explicitContextRefs.some(
-      (item) => item.type === "image" && String(item.url || "").trim(),
+    const hasRecentImages = messages.value.some(
+      (item) => Array.isArray(item?.images) && item.images.length > 0,
     );
-    const implicitContextRefs = hasExplicitImageReference
-      ? []
-      : buildImplicitRecentImageReferences(messages.value, text);
-    activeContextRefs = await materializePersistentContextReferences(
-      mergeContextReferences(explicitContextRefs, implicitContextRefs),
-    );
+    if (explicitContextRefs.length || hasRecentImages) {
+      const hasExplicitImageReference = explicitContextRefs.some(
+        (item) => item.type === "image" && String(item.url || "").trim(),
+      );
+      const implicitContextRefs = hasExplicitImageReference
+        ? []
+        : buildImplicitRecentImageReferences(messages.value, text);
+      activeContextRefs = await materializePersistentContextReferences(
+        mergeContextReferences(explicitContextRefs, implicitContextRefs),
+      );
+    }
     visibleContextRefs = activeContextRefs.filter(
       (item) => item?.implicit !== true && item?.visibility !== "model_context",
     );
@@ -36486,10 +36516,12 @@ async function doSend(options = {}) {
       .filter(Boolean),
   ]);
 
-  const localLiuAgentAttachments = [
-    ...(await buildLocalLiuAgentAttachments(uploadFiles.value)),
-    ...(await prepareContextReferenceAttachments(activeContextRefs)),
-  ];
+  const localLiuAgentAttachments = files.length || activeContextRefs.length
+    ? [
+        ...(await buildLocalLiuAgentAttachments(uploadFiles.value)),
+        ...(await prepareContextReferenceAttachments(activeContextRefs)),
+      ]
+    : [];
   const attachmentErrors = localLiuAgentAttachments
     .filter((attachment) => attachment?.extractionStatus === "error")
     .map((attachment) => `${attachment.name || "附件"}：${attachment.error || "处理失败"}`);
@@ -36510,22 +36542,24 @@ async function doSend(options = {}) {
   }
   let persistentUploadImageUrls = [];
   let persistentUploadAudioUrls = [];
-  try {
-    [persistentUploadImageUrls, persistentUploadAudioUrls] = await Promise.all([
-      buildPersistentUploadMediaUrls(
-        uploadFiles.value,
-        localLiuAgentAttachments,
-        "image",
-      ),
-      buildPersistentUploadMediaUrls(
-        uploadFiles.value,
-        localLiuAgentAttachments,
-        "audio",
-      ),
-    ]);
-  } catch (error) {
-    ElMessage.error(error?.message || "附件持久化失败，请重新选择文件");
-    return;
+  if (files.length || activeContextRefs.length) {
+    try {
+      [persistentUploadImageUrls, persistentUploadAudioUrls] = await Promise.all([
+        buildPersistentUploadMediaUrls(
+          uploadFiles.value,
+          localLiuAgentAttachments,
+          "image",
+        ),
+        buildPersistentUploadMediaUrls(
+          uploadFiles.value,
+          localLiuAgentAttachments,
+          "audio",
+        ),
+      ]);
+    } catch (error) {
+      ElMessage.error(error?.message || "附件持久化失败，请重新选择文件");
+      return;
+    }
   }
   const imageUrls = mergeImageUrls(
     persistentUploadImageUrls,
