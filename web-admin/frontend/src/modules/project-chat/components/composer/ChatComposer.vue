@@ -174,7 +174,7 @@
           @compositionend="$emit('editor-composition-end', $event)"
         />
 
-        <div v-if="safeToolCommandItems.length" class="chat-tool-bar">
+        <!-- <div v-if="safeToolCommandItems.length" class="chat-tool-bar">
           <span class="chat-tool-bar__label">工具</span>
           <div class="chat-tool-bar__buttons">
             <button
@@ -191,7 +191,7 @@
               {{ item.label }}
             </button>
           </div>
-        </div>
+        </div> -->
 
         <div class="input-footer">
           <div class="footer-left">
@@ -232,18 +232,35 @@
                 <el-icon><Plus /></el-icon>
               </el-button>
             </el-tooltip>
-
+            <div v-if="showLocalAgentAuthLevel" class="local-agent-auth-level">
+              <span class="local-agent-auth-level__label">授权</span>
+              <el-select
+                v-model="localAgentAuthLevelModel"
+                class="local-agent-auth-level__control"
+                size="small"
+                :disabled="chatLoading"
+                :teleported="true"
+                aria-label="选择授权级别"
+              >
+                <el-option
+                  v-for="option in localAgentAuthLevelOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+            </div>
+          </div>
+          <div class="footer-right">
             <el-button
               v-if="isChatSettingsDisplayReady"
               class="chat-model-routing-trigger"
+              circle
               :disabled="chatLoading"
+              aria-label="配置模型"
               @click="modelRoutingDialogVisible = true"
             >
               <el-icon><Setting /></el-icon>
-              <span class="chat-model-routing-trigger__mode"> 主模型编排 </span>
-              <span class="chat-model-routing-trigger__summary">
-                {{ activeModelSummary || "选择模型" }}
-              </span>
             </el-button>
             <span v-if="modelProviderOffline" class="chat-model-offline-badge">
               离线
@@ -255,25 +272,30 @@
               项目配置加载中
             </div>
             <slot name="media-parameters" />
-            <div v-if="showLocalAgentAuthLevel" class="local-agent-auth-level">
-              <span class="local-agent-auth-level__label">授权级别</span>
-              <el-select
-                v-model="localAgentAuthLevelModel"
-                class="local-agent-auth-level__control"
-                size="small"
-                :disabled="chatLoading"
-                :teleported="true"
+            <el-select
+              v-if="isChatSettingsDisplayReady"
+              v-model="selectedModelOptionValueModel"
+              class="chat-model-select"
+              :disabled="chatLoading || !providerModelGroups.length"
+              :placeholder="activeModelSummary || '选择模型'"
+              :teleported="true"
+              aria-label="选择模型"
+            >
+              <el-option-group
+                v-for="group in providerModelGroups"
+                :key="group.providerId"
+                :label="group.label"
               >
                 <el-option
-                  v-for="option in localAgentAuthLevelOptions"
+                  v-for="option in group.options"
                   :key="option.value"
-                  :label="option.label"
+                  :label="option.modelName"
                   :value="option.value"
                 />
-              </el-select>
-            </div>
+              </el-option-group>
+            </el-select>
             <div class="chat-thinking-mode">
-              <span class="chat-thinking-mode__label">思考模式</span>
+              <span class="chat-thinking-mode__label">思考</span>
               <el-select
                 v-model="thinkingModeModel"
                 class="chat-thinking-mode__control"
@@ -287,8 +309,6 @@
                 <el-option label="高" value="high" />
               </el-select>
             </div>
-          </div>
-          <div class="footer-right">
             <span class="hint-text">{{ composerHintText }}</span>
             <el-tooltip
               v-if="showPauseGenerationButton"

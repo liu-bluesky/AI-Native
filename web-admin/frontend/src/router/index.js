@@ -27,7 +27,7 @@ const createDesktopAppRoutes = () => [
       { path: 'ai/supervision', component: () => import('../views/desktop/AgentSupervision.vue') },
       {
         path: 'ai/chat/settings',
-        component: () => import('../views/projects/ProjectChat.vue'),
+        component: () => import('../views/projects/ProjectChatSettings.vue'),
         children: [
           { path: '', redirect: '/ai/chat/settings/chat' },
           { path: 'chat', component: { render: () => null } },

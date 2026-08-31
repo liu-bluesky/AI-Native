@@ -1546,38 +1546,4 @@ export default {
   }
 }
 
-:global(.project-chat-settings-dialog .el-dialog) {
-  display: flex;
-  flex-direction: column;
-  height: min(88vh, 820px);
-  max-height: 88vh;
-  margin-bottom: 0;
-}
-
-:global(.project-chat-settings-dialog .el-dialog__body) {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: 0;
-  height: auto;
-  max-height: none;
-  padding: 0;
-  overflow: hidden;
-}
-
-:global(
-  .project-chat-settings-dialog .el-dialog__body > .settings-center-page
-) {
-  flex: 1 1 auto;
-  min-height: 0;
-  height: 100%;
-  max-height: 100%;
-  overflow: hidden;
-}
-
-@media (max-width: 640px) {
-  :global(.project-chat-settings-dialog .el-dialog) {
-    width: calc(100vw - 20px) !important;
-    max-height: calc(100vh - 20px);
-  }
-}
 </style>
