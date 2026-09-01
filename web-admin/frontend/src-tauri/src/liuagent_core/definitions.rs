@@ -32,7 +32,7 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "resolve_plugin_capability",
-            description: "解析插件 Skill 所需能力在当前会话是否可用。应先加载相关 Skill，再传入 plugin_id、capability 和必要的输入资产 ID；当返回 status=ready 后，Runtime 会在后续模型步骤注入对应工具。此工具不会暴露供应商密钥或本地文件路径。",
+            description: "查询已安装插件能力在当前会话是否可用。可传入 plugin_id、capability 和必要的输入资产 ID；工具已默认注册，查询结果用于选择工具并检查配置、输入和供应商状态，不是工具激活门槛。此工具不会暴露供应商密钥或本地文件路径。",
             action: "plugin.capability.resolve",
             risk: "low",
             requires_approval: false,

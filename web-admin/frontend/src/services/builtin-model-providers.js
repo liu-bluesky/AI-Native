@@ -27,6 +27,67 @@ export function mergeBuiltinModelProviders(localProviders = [], builtinProviders
   return [...builtinProviders, ...localOnly];
 }
 
+function providerIdentity(provider = {}) {
+  return normalizeText(provider?.id || provider?.provider_id);
+}
+
+function hasProviderValue(provider, ...keys) {
+  return keys.some((key) => normalizeText(provider?.[key]));
+}
+
+export function mergeProjectModelProviders(
+  projectProviders = [],
+  localProviders = [],
+) {
+  const localById = new Map(
+    (Array.isArray(localProviders) ? localProviders : [])
+      .map((provider) => [providerIdentity(provider), provider])
+      .filter(([id]) => id),
+  );
+  const usedIds = new Set();
+  const mergedProjectProviders = (Array.isArray(projectProviders)
+    ? projectProviders
+    : []
+  )
+    .map((projectProvider) => {
+      const providerId = providerIdentity(projectProvider);
+      if (!providerId) return null;
+      const localProvider = localById.get(providerId) || {};
+      usedIds.add(providerId);
+      const merged = { ...localProvider, ...projectProvider, id: providerId };
+      if (!hasProviderValue(projectProvider, "base_url", "baseUrl")) {
+        merged.base_url = normalizeText(
+          localProvider.base_url || localProvider.baseUrl,
+        );
+      }
+      if (!hasProviderValue(projectProvider, "api_key", "apiKey")) {
+        merged.api_key = normalizeText(
+          localProvider.api_key || localProvider.apiKey,
+        );
+      }
+      if (!hasProviderValue(projectProvider, "provider_type", "providerType")) {
+        merged.provider_type = normalizeText(
+          localProvider.provider_type || localProvider.providerType,
+        );
+      }
+      if (
+        !Array.isArray(projectProvider.model_configs) &&
+        !Array.isArray(projectProvider.models)
+      ) {
+        merged.model_configs = Array.isArray(localProvider.model_configs)
+          ? localProvider.model_configs
+          : localProvider.models;
+      }
+      return merged;
+    })
+    .filter(Boolean);
+  const remainingLocalProviders = (Array.isArray(localProviders)
+    ? localProviders
+    : []
+  ).filter((provider) => !usedIds.has(providerIdentity(provider)));
+  return [...mergedProjectProviders, ...remainingLocalProviders];
+}
+
 function normalizeProvider(provider = {}) {
   const models = Array.isArray(provider.models) ? provider.models : [];
   const modelConfigs = models
@@ -43,16 +104,28 @@ function normalizeProvider(provider = {}) {
   const providerId = normalizeText(provider?.id);
   if (!providerId || !modelConfigs.length) return null;
   return {
+    ...provider,
     id: `server-builtin-${providerId}`,
     source_provider_id: providerId,
     source: "server-builtin",
     is_builtin_provider: true,
     name: normalizeText(provider?.name) || "内置模型供应商",
     provider_type: normalizeText(provider?.provider_type) || "openai-compatible",
+    base_url: normalizeText(provider?.base_url || provider?.baseUrl),
+    api_key: normalizeText(provider?.api_key || provider?.apiKey),
+    api_key_env: normalizeText(provider?.api_key_env || provider?.apiKeyEnv),
+    extra_headers:
+      provider?.extra_headers && typeof provider.extra_headers === "object"
+        ? provider.extra_headers
+        : provider?.extraHeaders && typeof provider.extraHeaders === "object"
+          ? provider.extraHeaders
+          : {},
     model_configs: modelConfigs,
     default_model:
       normalizeText(provider?.default_model) || modelConfigs[0]?.name || "",
     enabled: provider?.enabled !== false && Number(provider?.enabled) !== 0,
+    temperature: provider?.temperature,
+    timeout_ms: provider?.timeout_ms || provider?.timeoutMs,
     updated_at: provider?.updated_at || "",
   };
 }

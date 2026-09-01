@@ -281,13 +281,12 @@ fn load_plugin_skill_tool(
     Ok((
         serde_json::json!({
             "pluginId": document.summary.plugin_id,
-            "pluginVersion": document.summary.plugin_version,
             "skillId": document.summary.skill_id,
             "name": document.summary.name,
             "description": document.summary.description,
             "requiredTools": document.summary.required_tool_names,
             "unavailableTools": unavailable_tools,
-            "nextAction": "对尚未注入的 requiredTools 调用 resolve_plugin_capability；status=ready 后 Runtime 会在后续模型步骤提供对应工具。",
+            "nextAction": "根据查询结果选择已注册工具；若 status 不是 ready，按 missingRequirements 补齐配置或输入。",
             "content": document.content
         }),
         summary,
@@ -497,7 +496,7 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 42);
+        assert_eq!(tools.len(), 43);
         assert!(tools.iter().any(|item| item.name == "load_plugin_skill"));
         assert!(tools
             .iter()
@@ -550,7 +549,6 @@ mod tests {
             name: "load_plugin_skill".to_string(),
             arguments: json!({
                 "plugin_id": "builtin-media-image",
-                "plugin_version": "1.0.0",
                 "skill_id": "builtin.media.image.generation-skill"
             }),
             workspace_path: ".".to_string(),
@@ -575,7 +573,6 @@ mod tests {
             name: "load_plugin_skill".to_string(),
             arguments: json!({
                 "plugin_id": "builtin-media-image",
-                "plugin_version": "1.0.0",
                 "skill_id": "builtin.media.image.editing-skill",
                 "_available_tool_names": []
             }),
@@ -588,7 +585,7 @@ mod tests {
         assert!(result.content["nextAction"]
             .as_str()
             .unwrap_or_default()
-            .contains("resolve_plugin_capability"));
+            .contains("已注册工具"));
     }
 
     #[test]

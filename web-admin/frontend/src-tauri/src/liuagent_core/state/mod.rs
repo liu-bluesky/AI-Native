@@ -380,13 +380,15 @@ pub fn load_or_import_conversation_history(
         .iter()
         .enumerate()
         .filter(|(_, message)| is_conversation_message(message))
-        .map(|(index, message)| conversation_event(
-            project_id,
-            chat_session_id,
-            message,
-            "legacy_history_import",
-            index,
-        ))
+        .map(|(index, message)| {
+            conversation_event(
+                project_id,
+                chat_session_id,
+                message,
+                "legacy_history_import",
+                (index + 1) as u64,
+            )
+        })
         .collect::<Vec<_>>();
     append_jsonl(&paths.conversation_path, &imported)?;
     read_conversation_messages(&paths.conversation_path, project_id, chat_session_id)
@@ -407,7 +409,12 @@ pub fn append_conversation_message(
         .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
     let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
     ensure_parent(&paths.conversation_path)?;
-    let existing = read_conversation_messages(&paths.conversation_path, project_id, chat_session_id)?;
+    let existing_events = read_conversation_events(&paths.conversation_path, project_id, chat_session_id)?;
+    let existing = existing_events
+        .iter()
+        .filter(|event| event.get("record_type").and_then(Value::as_str) == Some("liuagent-conversation-message"))
+        .filter_map(|event| serde_json::from_value::<LocalChatMessage>(event.clone()).ok())
+        .collect::<Vec<_>>();
     let message_id = message.message_id.as_deref().map(str::trim).unwrap_or("");
     if !message_id.is_empty() && existing.iter().any(|entry| {
         entry.message_id.as_deref().map(str::trim) == Some(message_id)
@@ -415,11 +422,267 @@ pub fn append_conversation_message(
     }) {
         return Ok(());
     }
-    let index = existing.len();
+    let seq = next_conversation_seq(&existing_events);
     append_jsonl(
         &paths.conversation_path,
-        &[conversation_event(project_id, chat_session_id, message, source, index)],
+        &[conversation_event(project_id, chat_session_id, message, source, seq)],
     )
+}
+
+pub fn load_conversation_events(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Result<Vec<Value>, ToolError> {
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    read_conversation_events(&paths.conversation_path, project_id, chat_session_id)
+}
+
+pub fn append_conversation_runtime_event(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    runtime_event: &Value,
+) -> Result<(), ToolError> {
+    let runtime_event_type = runtime_event.get("type").and_then(Value::as_str).unwrap_or("");
+    let record_type = match runtime_event_type {
+        "model_step" => "liuagent-conversation-model-step",
+        "turn_started" => "liuagent-conversation-turn-start",
+        "turn_ended" => "liuagent-conversation-turn-end",
+        "step_started" => "liuagent-conversation-step-start",
+        "step_ended" => "liuagent-conversation-step-end",
+        "tool_call_started" => "liuagent-conversation-tool-call",
+        "tool_result" => "liuagent-conversation-tool-result",
+        "state_changed" => "liuagent-conversation-run-state",
+        _ => return Ok(()),
+    };
+    let source_event_id = runtime_event
+        .get("event_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ToolError::new("state.invalid", "runtime event is missing event_id"))?;
+    let payload = runtime_event.get("payload").cloned().unwrap_or_else(|| json!({}));
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    ensure_parent(&paths.conversation_path)?;
+    let events = read_conversation_events(&paths.conversation_path, project_id, chat_session_id)?;
+    if events.iter().any(|event| {
+        event.get("source_runtime_event_id").and_then(Value::as_str) == Some(source_event_id)
+    }) {
+        return Ok(());
+    }
+    let now = epoch_millis();
+    append_jsonl(&paths.conversation_path, &[json!({
+        "record_type": record_type,
+        "version": 2,
+        "event_id": format!("conversation-runtime-{}", sanitize_path_segment(source_event_id)),
+        "source_runtime_event_id": source_event_id,
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "runtime_session_id": runtime_event.get("runtime_session_id").cloned().unwrap_or(Value::Null),
+        "seq": next_conversation_seq(&events),
+        "payload": payload,
+        "created_at_epoch_ms": now
+    })])
+}
+
+pub fn append_conversation_model_message(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    message_id: &str,
+    message: Value,
+) -> Result<(), ToolError> {
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    ensure_parent(&paths.conversation_path)?;
+    let events = read_conversation_events(&paths.conversation_path, project_id, chat_session_id)?;
+    if events.iter().any(|event| {
+        event.get("record_type").and_then(Value::as_str) == Some("liuagent-conversation-model-message")
+            && event.get("message_id").and_then(Value::as_str) == Some(message_id)
+    }) {
+        return Ok(());
+    }
+    let now = epoch_millis();
+    append_jsonl(&paths.conversation_path, &[json!({
+        "record_type": "liuagent-conversation-model-message",
+        "version": 2,
+        "event_id": format!("conversation-model-message-{}-{}", sanitize_path_segment(message_id), now),
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "message_id": message_id,
+        "message": message,
+        "seq": next_conversation_seq(&events),
+        "created_at_epoch_ms": now
+    })])
+}
+
+pub fn append_conversation_run_state(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+    runtime_session_id: &str,
+    status: &str,
+    reason: &str,
+) -> Result<(), ToolError> {
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    ensure_parent(&paths.conversation_path)?;
+    let events = read_conversation_events(&paths.conversation_path, project_id, chat_session_id)?;
+    let now = epoch_millis();
+    append_jsonl(&paths.conversation_path, &[json!({
+        "record_type": "liuagent-conversation-run-state",
+        "version": 2,
+        "event_id": format!("conversation-run-{}-{}", sanitize_path_segment(runtime_session_id), now),
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "runtime_session_id": runtime_session_id,
+        "status": status,
+        "reason": reason,
+        "seq": next_conversation_seq(&events),
+        "created_at_epoch_ms": now
+    })])
+}
+
+pub fn append_conversation_checkpoint_if_needed(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Result<(), ToolError> {
+    const RETAIN_EVENT_COUNT: usize = 24;
+    const MIN_EVENT_COUNT: usize = 48;
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    ensure_parent(&paths.conversation_path)?;
+    let events = read_conversation_events(&paths.conversation_path, project_id, chat_session_id)?;
+    if events.len() <= MIN_EVENT_COUNT {
+        return Ok(());
+    }
+    let covered = &events[..events.len().saturating_sub(RETAIN_EVENT_COUNT)];
+    let Some(covers_through_seq) = covered.last().and_then(|event| event.get("seq")).and_then(Value::as_u64) else {
+        return Ok(());
+    };
+    if events.iter().any(|event| {
+        event.get("record_type").and_then(Value::as_str) == Some("liuagent-conversation-checkpoint")
+            && event.get("covers_through_seq").and_then(Value::as_u64) == Some(covers_through_seq)
+    }) {
+        return Ok(());
+    }
+    let summary = covered
+        .iter()
+        .filter_map(|event| {
+            if event.get("record_type").and_then(Value::as_str)
+                != Some("liuagent-conversation-message") {
+                return None;
+            }
+            let role = event.get("role").and_then(Value::as_str).unwrap_or("message");
+            let content = event.get("content").and_then(Value::as_str).unwrap_or("").trim();
+            (!content.is_empty()).then(|| format!("{role}: {}", truncate_conversation_text(content, 500)))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if summary.is_empty() {
+        return Ok(());
+    }
+    let now = epoch_millis();
+    append_jsonl(&paths.conversation_path, &[json!({
+        "record_type": "liuagent-conversation-checkpoint",
+        "version": 2,
+        "event_id": format!("conversation-checkpoint-{}-{}", sanitize_path_segment(chat_session_id), now),
+        "project_id": project_id,
+        "chat_session_id": chat_session_id,
+        "seq": next_conversation_seq(&events),
+        "covers_through_seq": covers_through_seq,
+        "summary": summary,
+        "source": "deterministic_local_compaction",
+        "created_at_epoch_ms": now
+    })])
+}
+
+pub fn append_interrupted_conversation_closers(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Result<Vec<Value>, ToolError> {
+    let _write_guard = runtime_state_write_lock()
+        .lock()
+        .map_err(|_| ToolError::new("state.lock_failed", "runtime state lock is poisoned"))?;
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    ensure_parent(&paths.conversation_path)?;
+    let events = read_conversation_events(&paths.conversation_path, project_id, chat_session_id)?;
+    let latest_status = events.iter().rev().find_map(|event| {
+        (event.get("record_type").and_then(Value::as_str) == Some("liuagent-conversation-run-state"))
+            .then(|| event.get("status").and_then(Value::as_str))
+            .flatten()
+    });
+    if matches!(latest_status, Some("completed" | "failed")) {
+        return Ok(Vec::new());
+    }
+    let completed = events.iter().filter_map(|event| {
+        (event.get("record_type").and_then(Value::as_str) == Some("liuagent-conversation-tool-result"))
+            .then(|| event.get("payload"))
+            .flatten()
+            .and_then(|payload| payload.get("tool_call_id").or_else(|| payload.get("toolCallId")))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }).collect::<std::collections::HashSet<_>>();
+    let pending = events.iter().filter_map(|event| {
+        if event.get("record_type").and_then(Value::as_str) != Some("liuagent-conversation-tool-call") {
+            return None;
+        }
+        let payload = event.get("payload")?;
+        let tool_call_id = payload.get("tool_call_id")?.as_str()?.trim();
+        (!tool_call_id.is_empty() && !completed.contains(tool_call_id)).then(|| (event, payload, tool_call_id.to_string()))
+    }).collect::<Vec<_>>();
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+    let now = epoch_millis();
+    let mut next_seq = next_conversation_seq(&events);
+    let closers = pending.into_iter().map(|(call_event, payload, tool_call_id)| {
+        let tool_name = payload.get("tool_name").and_then(Value::as_str).unwrap_or("tool");
+        let started = call_event.get("source_runtime_event_id").is_some();
+        let error_code = if started { "conversation.tool_outcome_unknown" } else { "conversation.tool_not_started" };
+        let message = if started {
+            "工具调用已记录但应用中断前未持久化结果；结果未知。只能在确认外部状态后重试，禁止盲目重复可能有副作用的操作。"
+        } else {
+            "工具调用在 Runtime 记录开始前中断；可由新的模型决策重新执行。"
+        };
+        let closer = json!({
+            "record_type": "liuagent-conversation-tool-result",
+            "version": 2,
+            "event_id": format!("conversation-interrupted-result-{}-{}", sanitize_path_segment(&tool_call_id), next_seq),
+            "project_id": project_id,
+            "chat_session_id": chat_session_id,
+            "seq": next_seq,
+            "synthetic": true,
+            "source_event_seq": call_event.get("seq").cloned().unwrap_or(Value::Null),
+            "payload": {
+                "tool_result_id": format!("interrupted_{tool_call_id}"),
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "ok": false,
+                "content": {"status": "interrupted", "replay_policy": "verify_or_request_new_model_decision"},
+                "summary": message,
+                "error_code": error_code,
+                "error": message
+            },
+            "created_at_epoch_ms": now
+        });
+        next_seq = next_seq.saturating_add(1);
+        closer
+    }).collect::<Vec<_>>();
+    append_jsonl(&paths.conversation_path, &closers)?;
+    Ok(closers)
 }
 
 pub fn pause_runtime_checkpoint(
@@ -967,6 +1230,7 @@ pub fn save_offline_cache_record(
                 "sourceKind": message.source_kind,
                 "diagnostic": message.diagnostic,
                 "visibility": message.visibility,
+                "mediaAssets": conversation_message_media_assets(&message),
             })).collect::<Vec<_>>();
             Ok(json!({
                 "ok": true,
@@ -998,6 +1262,25 @@ pub fn save_offline_cache_record(
             format!("unsupported offline cache kind: {other}"),
         )),
     }
+}
+
+fn conversation_message_media_assets(message: &LocalChatMessage) -> Vec<Value> {
+    let message_id = message.message_id.as_deref().unwrap_or("message");
+    [("image", &message.images), ("video", &message.videos), ("audio", &message.audios)]
+        .into_iter()
+        .flat_map(|(kind, references)| {
+            references.iter().enumerate().map(move |(index, reference)| {
+                json!({
+                    "assetId": format!("conversation-{}-{}-{}", sanitize_path_segment(message_id), kind, index + 1),
+                    "kind": kind,
+                    "mimeType": if kind == "image" { "image/*" } else if kind == "video" { "video/*" } else { "audio/*" },
+                    "reference": reference,
+                    "sourceMessageId": message_id,
+                    "status": "available"
+                })
+            })
+        })
+        .collect()
 }
 
 pub fn load_offline_cache_record(
@@ -1202,7 +1485,7 @@ fn conversation_event(
     chat_session_id: &str,
     message: &LocalChatMessage,
     source: &str,
-    index: usize,
+    seq: u64,
 ) -> Value {
     let now = epoch_millis();
     let message_id = message
@@ -1211,10 +1494,10 @@ fn conversation_event(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("legacy-{index}-{now}"));
+        .unwrap_or_else(|| format!("legacy-{seq}-{now}"));
     json!({
         "record_type": "liuagent-conversation-message",
-        "version": 1,
+        "version": 2,
         "event_id": format!("conversation-{}-{}-{}", sanitize_path_segment(chat_session_id), sanitize_path_segment(&message_id), now),
         "project_id": project_id,
         "chat_session_id": chat_session_id,
@@ -1229,8 +1512,26 @@ fn conversation_event(
         "diagnostic": message.diagnostic,
         "visibility": message.visibility,
         "source": source,
+        "seq": seq,
         "created_at_epoch_ms": now
     })
+}
+
+fn next_conversation_seq(events: &[Value]) -> u64 {
+    events
+        .iter()
+        .filter_map(|event| event.get("seq").and_then(Value::as_u64))
+        .max()
+        .unwrap_or(events.len() as u64)
+        .saturating_add(1)
+}
+
+fn truncate_conversation_text(value: &str, max_chars: usize) -> String {
+    let mut output = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        output.push('…');
+    }
+    output
 }
 
 fn read_conversation_messages(
@@ -1238,19 +1539,86 @@ fn read_conversation_messages(
     project_id: &str,
     chat_session_id: &str,
 ) -> Result<Vec<LocalChatMessage>, ToolError> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let messages = read_jsonl(path)?.into_iter().filter_map(|event| {
-        if event.get("record_type").and_then(Value::as_str) != Some("liuagent-conversation-message")
-            || event.get("project_id").and_then(Value::as_str) != Some(project_id)
-            || event.get("chat_session_id").and_then(Value::as_str) != Some(chat_session_id)
-        {
+    let messages = read_conversation_events(path, project_id, chat_session_id)?
+        .into_iter()
+        .filter_map(|event| {
+        if event.get("record_type").and_then(Value::as_str)
+            != Some("liuagent-conversation-message") {
             return None;
         }
         serde_json::from_value::<LocalChatMessage>(event).ok()
     }).filter(is_conversation_message).collect::<Vec<_>>();
     Ok(messages)
+}
+
+fn read_conversation_events(
+    path: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Result<Vec<Value>, ToolError> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw_events = read_jsonl(path)?;
+    for event in &raw_events {
+        if event.get("project_id").and_then(Value::as_str) != Some(project_id)
+            || event.get("chat_session_id").and_then(Value::as_str) != Some(chat_session_id)
+        {
+            continue;
+        }
+    }
+    let mut indexed_events = raw_events
+        .into_iter()
+        .enumerate()
+        .filter(|(_, event)| {
+        event.get("project_id").and_then(Value::as_str) == Some(project_id)
+            && event.get("chat_session_id").and_then(Value::as_str) == Some(chat_session_id)
+            && matches!(
+                event.get("record_type").and_then(Value::as_str),
+                Some(
+                    "liuagent-conversation-message"
+                        | "liuagent-conversation-tool-call"
+                        | "liuagent-conversation-tool-result"
+                        | "liuagent-conversation-model-step"
+                        | "liuagent-conversation-model-message"
+                        | "liuagent-conversation-turn-start"
+                        | "liuagent-conversation-turn-end"
+                        | "liuagent-conversation-step-start"
+                        | "liuagent-conversation-step-end"
+                        | "liuagent-conversation-run-state"
+                        | "liuagent-conversation-checkpoint"
+                )
+            )
+        })
+        .collect::<Vec<_>>();
+    indexed_events.sort_by_key(|(index, event)| {
+        event
+            .get("seq")
+            .and_then(Value::as_u64)
+            .unwrap_or((*index as u64).saturating_add(1))
+    });
+    let mut expected_seq = None::<u64>;
+    for (_, event) in &indexed_events {
+        if event.get("version").and_then(Value::as_u64).unwrap_or(1) < 2 {
+            continue;
+        }
+        let seq = event.get("seq").and_then(Value::as_u64).ok_or_else(|| {
+            ToolError::new("state.conversation_sequence_invalid", "version 2 conversation event is missing seq")
+        })?;
+        if let Some(expected) = expected_seq {
+            if seq != expected {
+                return Err(ToolError::new(
+                    "state.conversation_sequence_invalid",
+                    format!("conversation event seq is not contiguous: expected {expected}, got {seq}"),
+                ));
+            }
+        }
+        expected_seq = Some(seq.saturating_add(1));
+    }
+    Ok(indexed_events
+        .into_iter()
+        .map(|(_, event)| event)
+        .collect())
 }
 
 fn build_transcript_events(input: &RuntimePersistenceInput<'_>, now: u128) -> Vec<Value> {
@@ -1565,6 +1933,202 @@ mod tests {
         assert!(runtime_artifact_paths(&dir, "proj-test", "chat-options")
             .conversation_path
             .exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn conversation_runtime_events_are_ordered_and_idempotent() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_conversation_runtime_events_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let tool_call_event = json!({
+            "event_id": "evt_runtime_tool_call",
+            "runtime_session_id": "runtime-1",
+            "chat_session_id": "chat-runtime",
+            "type": "tool_call_started",
+            "payload": {
+                "tool_call_id": "call-readme",
+                "tool_name": "read_file",
+                "summary": "读取 README",
+                "arguments": {"path": "README.md"}
+            }
+        });
+        let tool_result_event = json!({
+            "event_id": "evt_runtime_tool_result",
+            "runtime_session_id": "runtime-1",
+            "chat_session_id": "chat-runtime",
+            "type": "tool_result",
+            "payload": {
+                "toolResultId": "result_call-readme",
+                "toolCallId": "call-readme",
+                "name": "read_file",
+                "ok": true,
+                "content": {"content": "项目说明"},
+                "summary": "读取完成",
+                "errorCode": "",
+                "error": ""
+            }
+        });
+
+        append_conversation_runtime_event(
+            &dir,
+            "proj-runtime",
+            "chat-runtime",
+            &tool_call_event,
+        )
+        .unwrap();
+        append_conversation_runtime_event(
+            &dir,
+            "proj-runtime",
+            "chat-runtime",
+            &tool_result_event,
+        )
+        .unwrap();
+        append_conversation_runtime_event(
+            &dir,
+            "proj-runtime",
+            "chat-runtime",
+            &tool_result_event,
+        )
+        .unwrap();
+
+        let events = load_conversation_events(&dir, "proj-runtime", "chat-runtime").unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["record_type"], "liuagent-conversation-tool-call");
+        assert_eq!(events[0]["seq"], 1);
+        assert_eq!(events[1]["record_type"], "liuagent-conversation-tool-result");
+        assert_eq!(events[1]["seq"], 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn conversation_checkpoint_preserves_messages_and_records_coverage() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_conversation_checkpoint_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        for index in 0..49 {
+            append_conversation_message(
+                &dir,
+                "proj-checkpoint",
+                "chat-checkpoint",
+                &LocalChatMessage {
+                    message_id: Some(format!("message-{index}")),
+                    role: if index % 2 == 0 { "user" } else { "assistant" }.to_string(),
+                    content: format!("历史消息 {index}"),
+                    images: Vec::new(),
+                    videos: Vec::new(),
+                    audios: Vec::new(),
+                    reasoning_content: None,
+                    source_kind: None,
+                    diagnostic: None,
+                    visibility: None,
+                },
+                "test",
+            )
+            .unwrap();
+        }
+        append_conversation_checkpoint_if_needed(&dir, "proj-checkpoint", "chat-checkpoint")
+            .unwrap();
+        let events = load_conversation_events(&dir, "proj-checkpoint", "chat-checkpoint").unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["record_type"] == "liuagent-conversation-message")
+                .count(),
+            49
+        );
+        let checkpoint = events
+            .iter()
+            .find(|event| event["record_type"] == "liuagent-conversation-checkpoint")
+            .expect("checkpoint should be appended");
+        assert!(checkpoint["covers_through_seq"].as_u64().unwrap() > 0);
+        assert!(checkpoint["summary"].as_str().unwrap().contains("历史消息"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn interrupted_tool_calls_receive_one_durable_unknown_outcome_closer() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_conversation_interrupted_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        append_conversation_run_state(
+            &dir,
+            "proj-interrupted",
+            "chat-interrupted",
+            "runtime-interrupted",
+            "running",
+            "model_tool_loop_started",
+        )
+        .unwrap();
+        append_conversation_runtime_event(
+            &dir,
+            "proj-interrupted",
+            "chat-interrupted",
+            &json!({
+                "event_id": "evt-interrupted-tool",
+                "runtime_session_id": "runtime-interrupted",
+                "type": "tool_call_started",
+                "payload": {
+                    "tool_call_id": "call-write",
+                    "tool_name": "write_file",
+                    "arguments": {"path": "notes.md"}
+                }
+            }),
+        )
+        .unwrap();
+        let closers = append_interrupted_conversation_closers(
+            &dir,
+            "proj-interrupted",
+            "chat-interrupted",
+        )
+        .unwrap();
+        assert_eq!(closers.len(), 1);
+        assert_eq!(closers[0]["payload"]["tool_call_id"], "call-write");
+        assert_eq!(
+            closers[0]["payload"]["error_code"],
+            "conversation.tool_outcome_unknown"
+        );
+        assert_eq!(
+            append_interrupted_conversation_closers(
+                &dir,
+                "proj-interrupted",
+                "chat-interrupted",
+            )
+            .unwrap()
+            .len(),
+            0
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn conversation_log_ignores_retired_tool_round_events_without_deleting_them() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_conversation_retired_event_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = runtime_artifact_paths(&dir, "proj-retired", "chat-retired").conversation_path;
+        ensure_parent(&path).unwrap();
+        append_jsonl(&path, &[json!({
+            "record_type": "liuagent-conversation-tool-round",
+            "version": 1,
+            "project_id": "proj-retired",
+            "chat_session_id": "chat-retired"
+        })])
+        .unwrap();
+        let events = load_conversation_events(&dir, "proj-retired", "chat-retired").unwrap();
+        assert!(events.is_empty());
+        assert!(path.is_file());
+        assert!(read_jsonl(&path).unwrap().iter().any(|event| {
+            event["record_type"] == "liuagent-conversation-tool-round"
+        }));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -2037,6 +2601,35 @@ mod tests {
                 .count(),
             1
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn conversation_model_message_events_are_reloaded_for_replay() {
+        let dir = std::env::temp_dir().join(format!("liuagent_conversation_model_snapshot_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        append_conversation_model_message(&dir, "proj-snapshot", "chat-snapshot", "message-1", json!({
+            "role": "user", "content": "上一轮选项：1、轻度 2、明显"
+        })).unwrap();
+        let events = load_conversation_events(&dir, "proj-snapshot", "chat-snapshot").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["record_type"], "liuagent-conversation-model-message");
+        assert_eq!(events[0]["message"]["content"], "上一轮选项：1、轻度 2、明显");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn canonical_turn_and_step_events_are_durable() {
+        let dir = std::env::temp_dir().join(format!("liuagent_conversation_boundaries_{}", epoch_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        for (event_id, event_type) in [("turn-start", "turn_started"), ("step-start", "step_started"), ("step-end", "step_ended"), ("turn-end", "turn_ended")] {
+            append_conversation_runtime_event(&dir, "proj-boundary", "chat-boundary", &json!({
+                "event_id": event_id, "runtime_session_id": "runtime-boundary", "type": event_type, "payload": {}
+            })).unwrap();
+        }
+        let events = load_conversation_events(&dir, "proj-boundary", "chat-boundary").unwrap();
+        let record_types = events.iter().filter_map(|event| event["record_type"].as_str()).collect::<Vec<_>>();
+        assert_eq!(record_types, vec!["liuagent-conversation-turn-start", "liuagent-conversation-step-start", "liuagent-conversation-step-end", "liuagent-conversation-turn-end"]);
         let _ = fs::remove_dir_all(dir);
     }
 }

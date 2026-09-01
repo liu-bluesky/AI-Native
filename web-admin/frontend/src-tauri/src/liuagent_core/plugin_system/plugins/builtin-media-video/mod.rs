@@ -50,3 +50,30 @@ pub fn builtin_media_video_tool_definitions() -> Vec<ToolDefinition> {
         }),
     }]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exposes_video_generation_without_activation_state() {
+        let definitions = builtin_media_video_tool_definitions();
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].name, "generate_video");
+        assert_eq!(definitions[0].input_schema["required"], json!(["prompt"]));
+        assert_eq!(
+            definitions[0].input_schema["properties"]["operation"]["enum"],
+            json!(["text_to_video", "image_to_video", "video_remix", "video_modify", "video_extend"])
+        );
+    }
+
+    #[test]
+    fn video_runtime_returns_structured_validation_errors() {
+        let error = execute_builtin_media_video_tool(
+            "generate_video",
+            &json!({"_media_validation_error": "缺少视频输入"}),
+        )
+        .expect_err("validation errors must stop before provider execution");
+        assert_eq!(error.code, "tool.schema_invalid");
+    }
+}

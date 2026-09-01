@@ -2464,6 +2464,7 @@ import {
   fetchBuiltinModelProviders,
   isServerBuiltinModelProvider,
   mergeBuiltinModelProviders,
+  mergeProjectModelProviders,
 } from "@/services/builtin-model-providers.js";
 import {
   readLocalSystemConfig,
@@ -19263,6 +19264,18 @@ function normalizeProviderModelSnapshotItem(provider = {}) {
   return {
     id,
     name: String(provider?.name || provider?.label || id).trim(),
+    provider_type: String(
+      provider?.provider_type || provider?.providerType || "openai-compatible",
+    ).trim(),
+    base_url: String(provider?.base_url || provider?.baseUrl || "").trim(),
+    api_key: String(provider?.api_key || provider?.apiKey || "").trim(),
+    api_key_env: String(provider?.api_key_env || provider?.apiKeyEnv || "").trim(),
+    extra_headers:
+      provider?.extra_headers && typeof provider.extra_headers === "object"
+        ? provider.extra_headers
+        : provider?.extraHeaders && typeof provider.extraHeaders === "object"
+          ? provider.extraHeaders
+          : {},
     default_model: String(provider?.default_model || "").trim(),
     models: Array.isArray(provider?.models)
       ? provider.models.map((item) => String(item || "").trim()).filter(Boolean)
@@ -30863,11 +30876,9 @@ async function refreshModelProviders() {
       const projectProviders = Array.isArray(relations.providers)
         ? relations.providers
         : [];
-      const localProviders = projectProviders.length
-        ? projectProviders
-        : readLocalEntities("llm_providers").filter(
-            (item) => item?.enabled !== false,
-          );
+      const localProviders = readLocalEntities("llm_providers").filter(
+        (item) => item?.enabled !== false,
+      );
       let builtinProviders = [];
       try {
         builtinProviders = await fetchBuiltinModelProviders();
@@ -30886,7 +30897,7 @@ async function refreshModelProviders() {
         }
       });
       const availableProviders = mergeBuiltinModelProviders(
-        localProviders,
+        mergeProjectModelProviders(projectProviders, localProviders),
         builtinProviders,
       );
       if (availableProviders.length) {
@@ -31049,11 +31060,9 @@ async function fetchProvidersByProject(projectId) {
       const projectProviders = Array.isArray(relations.providers)
         ? relations.providers
         : [];
-      const localProviders = projectProviders.length
-        ? projectProviders
-        : readLocalEntities("llm_providers").filter(
-            (item) => item?.enabled !== false,
-          );
+      const localProviders = readLocalEntities("llm_providers").filter(
+        (item) => item?.enabled !== false,
+      );
       let builtinProviders = [];
       try {
         builtinProviders = await fetchBuiltinModelProviders();
@@ -31071,7 +31080,7 @@ async function fetchProvidersByProject(projectId) {
           upsertLocalEntity("llm_providers", { ...provider, id: providerId });
       });
       const availableProviders = mergeBuiltinModelProviders(
-        localProviders,
+        mergeProjectModelProviders(projectProviders, localProviders),
         builtinProviders,
       );
       if (availableProviders.length) {
@@ -32317,7 +32326,6 @@ async function fetchChatHistory(
         projectId,
         normalizedSessionId,
       );
-  const useConversationProjection = hasNativeDesktopBridge();
   const cachedRuntimePayload = append
     ? null
     : getCachedChatRuntime(projectId, normalizedSessionId);
@@ -32327,18 +32335,16 @@ async function fetchChatHistory(
   const cachedRuntimeRows = Array.isArray(cachedRuntimePayload?.messages)
     ? cachedRuntimePayload.messages
     : null;
-  const immediateRows = useConversationProjection
+  const immediateRows = conversationRows.length
     ? conversationRows
-    : conversationRows.length
-      ? conversationRows
-      : Array.isArray(rememberedRows)
-        ? rememberedRows
-        : Array.isArray(cachedRuntimeRows)
-          ? applyPersistedChatRuntimeRows(
-              cachedRuntimeRows.slice(-CHAT_HISTORY_PAGE_SIZE),
-              cachedRuntimePayload,
-            )
-          : null;
+    : Array.isArray(rememberedRows)
+      ? rememberedRows
+      : Array.isArray(cachedRuntimeRows)
+        ? applyPersistedChatRuntimeRows(
+            cachedRuntimeRows.slice(-CHAT_HISTORY_PAGE_SIZE),
+            cachedRuntimePayload,
+          )
+        : null;
   const hasImmediateRows =
     Array.isArray(immediateRows) && immediateRows.length > 0;
   if (!append) {
@@ -32388,7 +32394,7 @@ async function fetchChatHistory(
     });
     const [remoteHistoryResult, messageSnapshot] = await Promise.all([
       Promise.resolve({ ok: false, data: null }),
-      append || hasImmediateRows || useConversationProjection
+      append || hasImmediateRows
         ? Promise.resolve([])
         : readPersistedChatMessageSnapshot(projectId, normalizedSessionId),
     ]);
@@ -32414,11 +32420,7 @@ async function fetchChatHistory(
           .map(normalizeRuntimeMessageSnapshot)
           .filter(Boolean),
       );
-      const nextRows = useConversationProjection
-        ? conversationRows
-        : hasImmediateRows
-          ? immediateRows
-          : snapshotRows;
+      const nextRows = hasImmediateRows ? immediateRows : snapshotRows;
       if (!chatMessageRowsEquivalent(messages.value, nextRows)) {
         await applyChatMessagesWithoutPersisting(nextRows);
       }
@@ -32467,15 +32469,13 @@ async function fetchChatHistory(
             const deletedMessageIds = persistedRuntimeDeletedMessageIds(
               runtimePayload,
             );
-            const mergedRows = useConversationProjection
-              ? filterDeletedPersistedRows(conversationRows, deletedMessageIds)
-              : applyPersistedChatRuntimeRows(
-                  messages.value,
-                  runtimePayload,
-                );
+            const mergedRows = applyPersistedChatRuntimeRows(
+              messages.value,
+              runtimePayload,
+            );
             if (
               !chatMessageRowsEquivalent(messages.value, mergedRows) &&
-              (!useConversationProjection || !hasImmediateRows)
+              true
             ) {
               await applyChatMessagesWithoutPersisting(mergedRows);
               if (
@@ -32531,9 +32531,7 @@ async function fetchChatHistory(
       normalizedSessionId,
     );
     // 本地持久化历史已按 offset/limit 截取，不能再次重复截切。
-    const localRows = useConversationProjection
-      ? conversationRows
-      : applyPersistedChatRuntimeRows([], runtimePayload);
+    const localRows = applyPersistedChatRuntimeRows([], runtimePayload);
     const historyRows = remoteHistoryResult.ok
       ? remoteRows
       : localRows.slice(
@@ -32554,10 +32552,7 @@ async function fetchChatHistory(
         Boolean(localLiuAgentActiveRunForChatSession(normalizedSessionId))
           ? getRememberedChatSessionMessages(projectId, normalizedSessionId)
           : null;
-      const nextRows = useConversationProjection
-        ? conversationRows
-        :
-        Array.isArray(liveRows) && liveRows.length
+      const nextRows = Array.isArray(liveRows) && liveRows.length
           ? liveRows
           : hasImmediateRows && immediateRows.length && !historyRows.length
             ? immediateRows
@@ -32565,7 +32560,7 @@ async function fetchChatHistory(
               ? applyPersistedChatRuntimeRows(historyRows, runtimePayload)
               : localRows.length
                 ? localRows
-                : [];
+              : [];
       if (messages.value !== nextRows) {
         await applyChatMessagesWithoutPersisting(nextRows);
       }

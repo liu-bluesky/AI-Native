@@ -199,6 +199,12 @@ export function deleteLocalChatSession(projectId, chatSessionId) {
         }
         return true;
       } catch (error) {
+        console.error("delete local chat session failed", {
+          projectId: normalizedProjectId,
+          chatSessionId: normalizedChatSessionId,
+          username: resolveCurrentUsername(),
+          error,
+        });
         clearChatSessionDeleted(
           normalizedProjectId,
           normalizedChatSessionId,

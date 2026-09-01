@@ -42,3 +42,27 @@ pub fn builtin_media_audio_tool_definitions() -> Vec<ToolDefinition> {
         }),
     }]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exposes_audio_generation_without_activation_state() {
+        let definitions = builtin_media_audio_tool_definitions();
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].name, "generate_audio");
+        assert_eq!(definitions[0].input_schema["required"], json!(["prompt"]));
+        assert_eq!(definitions[0].input_schema["properties"]["response_format"]["default"], "wav");
+    }
+
+    #[test]
+    fn audio_runtime_returns_structured_validation_errors() {
+        let error = execute_builtin_media_audio_tool(
+            "generate_audio",
+            &json!({"_media_validation_error": "缺少文本"}),
+        )
+        .expect_err("validation errors must stop before provider execution");
+        assert_eq!(error.code, "tool.schema_invalid");
+    }
+}

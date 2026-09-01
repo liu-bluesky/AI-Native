@@ -282,26 +282,16 @@ pub(crate) fn enabled_installed_plugin_versions(
 fn active_installed_plugins(
     plugin_root: impl AsRef<Path>,
 ) -> Result<Vec<(PathBuf, PluginManifest, bool)>, PluginInstallError> {
-    let mut selected = BTreeMap::<String, (PathBuf, PluginManifest)>::new();
-    for (path, manifest, enabled) in all_installed_plugin_versions(plugin_root)? {
-        let should_replace = selected.get(&manifest.id).is_none_or(|(_, current)| {
+    let mut selected = BTreeMap::<String, (PathBuf, PluginManifest, bool)>::new();
+    for (path, manifest, enabled) in all_installed_plugin_versions(&plugin_root)? {
+        let should_replace = selected.get(&manifest.id).is_none_or(|(_, current, _)| {
             compare_versions(&manifest.version, &current.version) == Ordering::Greater
         });
         if should_replace {
-            selected.insert(manifest.id.clone(), (path, manifest));
+            selected.insert(manifest.id.clone(), (path, manifest, enabled));
         }
     }
-    let records = all_installed_plugin_versions(plugin_root)?;
-    Ok(selected
-        .into_values()
-        .filter_map(|(path, manifest)| {
-            let enabled = records.iter().find_map(|(candidate_path, candidate_manifest, enabled)| {
-                (candidate_path == &path && candidate_manifest.id == manifest.id)
-                    .then_some(*enabled)
-            })?;
-            Some((path, manifest, enabled))
-        })
-        .collect())
+    Ok(selected.into_values().collect())
 }
 
 fn all_installed_plugin_versions(
@@ -476,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn installs_plugin_directory_and_records_versioned_path() {
+    fn installs_plugin_directory_and_records_active_path() {
         let source = temp_directory("source");
         let root = temp_directory("root");
         fs::create_dir_all(source.join("skills/demo")).unwrap();
@@ -565,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn manages_plugin_enabled_state_and_versioned_config() {
+    fn manages_plugin_enabled_state_and_active_config() {
         let source = temp_directory("managed-source");
         let root = temp_directory("managed-root");
         fs::create_dir_all(&source).unwrap();
@@ -577,7 +567,7 @@ mod tests {
 
         let installed = PluginInstaller::install_directory(&source, &root, "local-test").unwrap();
         let disabled =
-            PluginInstaller::set_enabled(&root, &installed.manifest.id, "1.0.0", false).unwrap();
+            PluginInstaller::set_enabled(&root, &installed.manifest.id, false).unwrap();
         assert!(!disabled.enabled);
         assert!(!enabled_installed_plugin_versions(&root)
             .unwrap()
@@ -587,20 +577,19 @@ mod tests {
         PluginInstaller::write_config(
             &root,
             "vendor.demo",
-            "1.0.0",
             &serde_json::json!({"endpoint":"https://example.test","api_key":"secret"}),
         )
         .unwrap();
         assert_eq!(
-            PluginInstaller::read_config(&root, "vendor.demo", "1.0.0")
+            PluginInstaller::read_config(&root, "vendor.demo")
                 .unwrap()
                 .unwrap()["endpoint"],
             "https://example.test"
         );
-        assert!(root.join("config/vendor.demo/1.0.0.json").is_file());
+        assert!(root.join("config/vendor.demo.json").is_file());
 
         let enabled =
-            PluginInstaller::set_enabled(&root, &installed.manifest.id, "1.0.0", true).unwrap();
+            PluginInstaller::set_enabled(&root, &installed.manifest.id, true).unwrap();
         assert!(enabled.enabled);
         assert!(enabled_installed_plugin_versions(&root)
             .unwrap()

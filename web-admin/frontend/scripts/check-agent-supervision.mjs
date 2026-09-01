@@ -205,8 +205,8 @@ const supervisionSearchSource = jsonStoreSource.match(
   /pub fn agent_supervision_search_answers\([\s\S]*?\n\}/,
 )?.[0] || "";
 assert.ok(
-  supervisionSearchSource.includes("load_json_envelopes"),
-  "supervision search must read the canonical JSON envelopes",
+  supervisionSearchSource.includes("canonical_runtime_rows"),
+  "supervision search must read canonical SQLite runtimes",
 );
 const chatSessionListSource = jsonStoreSource.match(
   /pub fn project_chat_list_sessions\([\s\S]*?\n\}/,
@@ -214,8 +214,9 @@ const chatSessionListSource = jsonStoreSource.match(
 assert.ok(chatSessionListSource, "JSON store must define project chat session listing");
 assert.ok(
   jsonStoreSource.includes("fn list_canonical_sessions(") &&
-    jsonStoreSource.includes("merge_session_with_runtime(&chat_session_id"),
-  "chat session listing must derive metadata from the same runtime JSON",
+    jsonStoreSource.includes("FROM desktop_project_chat_sessions") &&
+    jsonStoreSource.includes("FROM desktop_project_chat_runtimes"),
+  "chat and supervision listings must use canonical SQLite tables",
 );
 assert.doesNotMatch(
   jsonStoreSource,

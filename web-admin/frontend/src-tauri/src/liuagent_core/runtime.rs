@@ -50,9 +50,13 @@ use super::prompt::{
 };
 use super::state::recover_runtime_session;
 use super::state::{
-    append_conversation_message, append_runtime_event, cleanup_synced_offline_cache,
+    append_conversation_checkpoint_if_needed, append_conversation_message,
+    append_conversation_model_message,
+    append_conversation_run_state, append_conversation_runtime_event, append_runtime_event,
+    append_interrupted_conversation_closers,
+    cleanup_synced_offline_cache,
     delete_runtime_outbox_entries,
-    load_or_import_conversation_history,
+    load_conversation_events, load_or_import_conversation_history,
     list_runtime_events as read_runtime_events, list_runtime_outbox as read_runtime_outbox,
     load_offline_cache_record, pause_runtime_checkpoint, recover_runtime_state,
     save_offline_cache_record, write_runtime_artifacts, RuntimeArtifactPaths,
@@ -95,7 +99,6 @@ const TOOL_OBSERVATION_MATCH_PREVIEW_CHARS: usize = 500;
 const TOOL_OBSERVATION_MAX_ARRAY_ITEMS: usize = 80;
 const TOOL_OBSERVATION_MAX_DEPTH: usize = 6;
 const DESKTOP_BOT_GLOBAL_PROJECT_ID: &str = "desktop-bot-global";
-const DIRECT_HISTORY_CONTEXT_MAX_MESSAGES: usize = 4;
 const DEFAULT_MAX_AUTOMATIC_TOOL_RETRIES: usize = 2;
 
 #[derive(Debug, Clone)]
@@ -355,10 +358,19 @@ fn recover_local_runtime_state_inner(
     let (mut state, runtime_events) =
         recover_runtime_session(&workspace_root, &project_id, &chat_session_id)?;
     let background_jobs = collect_runtime_background_jobs(&state);
-    let resume_judgement = build_resume_judgement(&state, &background_jobs);
+    let interrupted_closers =
+        append_interrupted_conversation_closers(&workspace_root, &project_id, &chat_session_id)?;
+    let conversation_events =
+        load_conversation_events(&workspace_root, &project_id, &chat_session_id)?;
+    let mut resume_judgement = build_resume_judgement(&state, &background_jobs);
+    let event_resume = derive_conversation_event_resume(&conversation_events);
+    if let Some(object) = resume_judgement.as_object_mut() {
+        object.insert("conversation_event_resume".to_string(), event_resume);
+    }
     if let Some(object) = state.as_object_mut() {
         object.insert("background_jobs".to_string(), background_jobs.clone());
         object.insert("resume_judgement".to_string(), resume_judgement);
+        object.insert("interrupted_conversation_closers".to_string(), json!(interrupted_closers));
     }
     let status = state["run_state"]["status"]
         .as_str()
@@ -374,6 +386,64 @@ fn recover_local_runtime_state_inner(
         summary: format!("recovered local runtime state: {status}"),
         error_code: String::new(),
         error: String::new(),
+    })
+}
+
+fn derive_conversation_event_resume(events: &[Value]) -> Value {
+    let mut completed_tool_calls = HashSet::new();
+    let mut pending_tool_calls = Vec::new();
+    let mut latest_status = "unknown".to_string();
+    for event in events {
+        match event.get("record_type").and_then(Value::as_str) {
+            Some("liuagent-conversation-tool-result") => {
+                if let Some(tool_call_id) = event
+                    .get("payload")
+                    .and_then(|payload| payload.get("tool_call_id").or_else(|| payload.get("toolCallId")))
+                    .and_then(Value::as_str)
+                {
+                    completed_tool_calls.insert(tool_call_id.to_string());
+                }
+            }
+            Some("liuagent-conversation-run-state") => {
+                if let Some(status) = event.get("status").and_then(Value::as_str) {
+                    latest_status = status.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    for event in events {
+        if event.get("record_type").and_then(Value::as_str)
+            != Some("liuagent-conversation-tool-call") {
+            continue;
+        }
+        let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
+        let tool_call_id = payload
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if !tool_call_id.is_empty() && !completed_tool_calls.contains(tool_call_id) {
+            pending_tool_calls.push(json!({
+                "tool_call_id": tool_call_id,
+                "tool_name": payload.get("tool_name").cloned().unwrap_or(Value::Null),
+                "arguments": payload.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                "seq": event.get("seq").cloned().unwrap_or(Value::Null),
+                "replay_policy": "do_not_repeat_without_new_model_decision"
+            }));
+        }
+    }
+    json!({
+        "latest_status": latest_status,
+        "completed_tool_call_ids": completed_tool_calls.into_iter().collect::<Vec<_>>(),
+        "pending_tool_calls": pending_tool_calls,
+        "resume_action": if latest_status == "waiting_approval" || latest_status == "waiting_user" {
+            "resume_waiting_interaction"
+        } else if pending_tool_calls.is_empty() {
+            "rebuild_model_context"
+        } else {
+            "rebuild_model_context_without_repeating_pending_tool"
+        }
     })
 }
 
@@ -789,9 +859,9 @@ fn start_local_chat_inner(
             message_id: Some(user_message_id.clone()),
             role: "user".to_string(),
             content: user_message.clone(),
-            images: Vec::new(),
-            videos: Vec::new(),
-            audios: Vec::new(),
+            images: conversation_attachment_references(&request.attachments, "image"),
+            videos: conversation_attachment_references(&request.attachments, "video"),
+            audios: conversation_attachment_references(&request.attachments, "audio"),
             reasoning_content: None,
             source_kind: Some("desktop_local_agent_runtime".to_string()),
             diagnostic: None,
@@ -799,17 +869,52 @@ fn start_local_chat_inner(
         },
         "runtime_user_message",
     )?;
+    let user_model_message = build_user_message_with_attachments(&user_message, &request.attachments);
+    append_conversation_model_message(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        &user_message_id,
+        serde_json::to_value(&user_model_message).unwrap_or_else(|_| json!({})),
+    )?;
+    let conversation_events = load_conversation_events(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+    )?;
+    append_conversation_run_state(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        &session_id,
+        "running",
+        "model_tool_loop_started",
+    )?;
     let answer_id = format!("ans_{assistant_message_id}");
     let started_at = epoch_millis();
     let collected_runtime_events = RefCell::new(Vec::<Value>::new());
     let collecting_event_sink = |event: Value| {
         collected_runtime_events.borrow_mut().push(event.clone());
         let _ = append_runtime_event(&workspace_root, &project_id, &chat_session_id, &event);
+        let _ = append_conversation_runtime_event(
+            &workspace_root,
+            &project_id,
+            &chat_session_id,
+            &event,
+        );
         if let Some(sink) = event_sink {
             sink(event);
         }
     };
     let runtime_event_sink: Option<&dyn Fn(Value)> = Some(&collecting_event_sink);
+    collecting_event_sink(json!({
+        "event_id": format!("evt_{session_id}_turn_1_started"),
+        "runtime_session_id": session_id.as_str(),
+        "chat_session_id": chat_session_id.as_str(),
+        "type": "turn_started",
+        "payload": { "turn": 1, "status": "running" },
+        "created_at_epoch_ms": started_at
+    }));
     if request.permission_decision.is_none()
         && request.user_question_answer.is_none()
         && !local_chat_pause_requested(&chat_session_id)
@@ -847,16 +952,9 @@ fn start_local_chat_inner(
             sink(runtime_started_event);
         }
     }
-    let base_model_request = build_model_request_with_history(&request, &user_message, &[])?;
-    let context_model_runner =
-        |request: &ModelStepRequest| run_model_step_interruptible(&chat_session_id, request);
-    let has_context_history = conversation_history.iter().any(|message| {
-        !should_exclude_history_message_from_model_context(message)
-            && history_message_has_model_context(message)
-    });
-    let inject_history_directly = should_inject_history_directly(&conversation_history);
+    let has_context_history = !conversation_events.is_empty();
     let context_preparation_started_at = Instant::now();
-    let relevant_context = if request.resume_from_checkpoint {
+    if request.resume_from_checkpoint {
         collecting_event_sink(progress_update_event(
             format!("evt_{session_id}_checkpoint_resume_started"),
             &session_id,
@@ -869,68 +967,22 @@ fn start_local_chat_inner(
             }),
             epoch_millis(),
         ));
-        String::new()
-    } else if has_context_history && !inject_history_directly {
-        collecting_event_sink(progress_update_event(
-            format!("evt_{session_id}_context_preparation_started"),
-            &session_id,
-            &chat_session_id,
-            json!({
-                "summary": "正在整理与当前任务相关的对话上下文",
-                "current_focus": "提炼本轮执行需要的历史信息",
-                "next_action": "完成后进入正式模型与工具调度",
-                "created_at_epoch_ms": epoch_millis(),
-            }),
-            epoch_millis(),
-        ));
-        let context = extract_relevant_conversation_context(
-            &base_model_request,
-            &conversation_history,
-            &user_message,
-            &context_model_runner,
-        );
-        collecting_event_sink(progress_update_event(
-            format!("evt_{session_id}_context_preparation_completed"),
-            &session_id,
-            &chat_session_id,
-            json!({
-                "summary": "相关对话上下文已整理，正在启动任务执行",
-                "current_focus": "准备正式模型请求",
-                "next_action": "进入模型推理与工具执行",
-                "created_at_epoch_ms": epoch_millis(),
-            }),
-            epoch_millis(),
-        ));
-        context
-    } else {
-        String::new()
-    };
+    }
     let context_preparation_duration_ms = context_preparation_started_at.elapsed().as_millis();
     let task_profile = build_task_profile(&user_message);
     let task_routing_duration_ms = 0;
     let mut model_request = build_model_request_with_history_and_task_profile(
         &request,
         &user_message,
-        if inject_history_directly {
-            &conversation_history
-        } else {
-            &[]
-        },
+        &[],
         Some(task_profile),
     )?;
-    if !relevant_context.trim().is_empty() {
-        model_request.messages.insert(
-            0,
-            RuntimeModelMessage::system(
-                "desktop_runtime.relevant_history",
-                160,
-                format!("相关历史对话：\n\n{}", relevant_context.trim()),
-            ),
-        );
-        model_request
-            .selected_context_sources
-            .insert(0, "desktop_runtime.relevant_history".to_string());
-    }
+    insert_conversation_event_messages(
+        &mut model_request,
+        &conversation_events,
+        true,
+        &user_message_id,
+    );
     let task_goal = build_task_goal(&session_id, &user_message, &model_request);
     let initial_task_tree = planning::TaskTree::without_plan(&session_id, &task_goal);
     model_request.task_goal = Some(task_goal.clone());
@@ -1091,9 +1143,9 @@ fn start_local_chat_inner(
             message_id: Some(assistant_message_id.clone()),
             role: "assistant".to_string(),
             content: assistant_content.clone(),
-            images: Vec::new(),
-            videos: Vec::new(),
-            audios: Vec::new(),
+            images: conversation_tool_output_references(&tool_results, "images", "image"),
+            videos: conversation_tool_output_references(&tool_results, "videos", "video"),
+            audios: conversation_tool_output_references(&tool_results, "audios", "audio"),
             reasoning_content: (!model_result.reasoning_content.trim().is_empty())
                 .then(|| model_result.reasoning_content.clone()),
             source_kind: Some("desktop_local_agent_runtime".to_string()),
@@ -1101,6 +1153,26 @@ fn start_local_chat_inner(
             visibility: Some("model_context".to_string()),
         },
         "runtime_assistant_message",
+    )?;
+    append_conversation_model_message(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        &assistant_message_id,
+        serde_json::to_value(RuntimeModelMessage::simple(
+            "assistant",
+            model_result.content.clone(),
+        ))
+        .map(|mut message| {
+            if let Some(object) = message.as_object_mut() {
+                object.insert(
+                    "reasoning_content".to_string(),
+                    json!(model_result.reasoning_content),
+                );
+            }
+            message
+        })
+        .unwrap_or_else(|_| json!({})),
     )?;
     let operations = build_operations(&session_id, &agent_loop);
     let run_status = if is_runtime_pause_reason(&agent_loop.stopped_reason) {
@@ -1121,6 +1193,23 @@ fn start_local_chat_inner(
     } else {
         None
     };
+    collecting_event_sink(json!({
+        "event_id": format!("evt_{session_id}_turn_1_ended"),
+        "runtime_session_id": session_id.as_str(),
+        "chat_session_id": chat_session_id.as_str(),
+        "type": "turn_ended",
+        "payload": { "turn": 1, "reason": agent_loop.stopped_reason.as_str(), "status": run_status },
+        "created_at_epoch_ms": epoch_millis()
+    }));
+    append_conversation_run_state(
+        &workspace_root,
+        &project_id,
+        &chat_session_id,
+        &session_id,
+        run_status,
+        agent_loop.stopped_reason.as_str(),
+    )?;
+    append_conversation_checkpoint_if_needed(&workspace_root, &project_id, &chat_session_id)?;
     let mut audit_logs = build_tool_audit_logs(
         &session_id,
         &tool_results,
@@ -2786,23 +2875,12 @@ fn build_runtime_diagnostic(
     request: &LocalChatRequest,
     prompt_stack: &PromptStack,
     agent_loop: &AgentLoopResult,
-    has_context_history: bool,
+    _has_context_history: bool,
     context_preparation_duration_ms: u128,
     task_routing_duration_ms: u128,
     total_duration_ms: u128,
 ) -> Value {
-    let eligible_history_message_count = request
-        .history
-        .iter()
-        .filter(|message| !should_exclude_history_message_from_model_context(message))
-        .filter(|message| history_message_has_model_context(message))
-        .count();
-    let context_selection_model_call_count = usize::from(
-        has_context_history
-            && eligible_history_message_count > DIRECT_HISTORY_CONTEXT_MAX_MESSAGES
-            && !request.resume_from_checkpoint
-            && !cfg!(test),
-    );
+    let context_selection_model_call_count = 0usize;
     let task_router_model_call_count = usize::from(!cfg!(test));
     let preflight_model_call_count =
         context_selection_model_call_count + task_router_model_call_count;
@@ -4442,7 +4520,7 @@ fn parse_permission_reply_classification(content: &str) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeModelMessage {
     role: String,
     content: String,
@@ -4456,14 +4534,14 @@ struct RuntimeModelMessage {
     prompt_priority: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RuntimeModelContentPart {
     Text { text: String },
     ImageUrl { image_url: RuntimeModelImageUrl },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeModelImageUrl {
     url: String,
 }
@@ -4663,6 +4741,102 @@ fn recover_pending_permission_tool(
     if request_id.is_empty() {
         return None;
     }
+    recover_pending_permission_tool_from_conversation_events(
+        workspace_root,
+        project_id,
+        chat_session_id,
+        request_id,
+    )
+    .or_else(|| {
+        recover_pending_permission_tool_from_runtime_state(
+            workspace_root,
+            project_id,
+            chat_session_id,
+            request_id,
+        )
+    })
+}
+
+fn recover_pending_permission_tool_from_conversation_events(
+    workspace_root: &PathBuf,
+    project_id: &str,
+    chat_session_id: &str,
+    request_id: &str,
+) -> Option<(PlannedLocalTool, String)> {
+    let events = load_conversation_events(workspace_root, project_id, chat_session_id).ok()?;
+    let permission_result = events.iter().rev().find_map(|event| {
+        (event.get("record_type").and_then(Value::as_str)
+            == Some("liuagent-conversation-tool-result"))
+        .then(|| event.get("payload"))
+        .flatten()
+        .filter(|payload| {
+            value_str_any(payload, &["error_code", "errorCode"]) == "permission.required"
+                && value_str_any(
+                    &payload["content"]["permissionRequest"],
+                    &["request_id", "requestId"],
+                ) == request_id
+        })
+    })?;
+    let tool_call_id = value_str_any(permission_result, &["tool_call_id", "toolCallId"]);
+    if tool_call_id.is_empty() {
+        return None;
+    }
+    let tool_call = events.iter().rev().find_map(|event| {
+        (event.get("record_type").and_then(Value::as_str)
+            == Some("liuagent-conversation-tool-call"))
+        .then(|| event.get("payload"))
+        .flatten()
+        .filter(|payload| value_str_any(payload, &["tool_call_id", "toolCallId"]) == tool_call_id)
+    })?;
+    let tool_name = value_str_any(tool_call, &["tool_name", "toolName", "name"]);
+    if tool_name.is_empty() {
+        return None;
+    }
+    let tool = PlannedLocalTool {
+        tool_call_id,
+        name: tool_name,
+        arguments: tool_call
+            .get("model_arguments")
+            .or_else(|| tool_call.get("arguments"))
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        summary: tool_call
+            .get("summary")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    };
+    let permission_result_seq = events.iter().rev().find_map(|event| {
+        (event.get("payload") == Some(permission_result))
+            .then(|| event.get("seq").and_then(Value::as_u64))
+            .flatten()
+    });
+    let reasoning_content = events
+        .iter()
+        .rev()
+        .find_map(|event| {
+            if permission_result_seq.is_some_and(|seq| {
+                event.get("seq").and_then(Value::as_u64).unwrap_or(0) >= seq
+            }) {
+                return None;
+            }
+            (event.get("record_type").and_then(Value::as_str)
+                == Some("liuagent-conversation-model-step"))
+            .then(|| event.get("payload"))
+            .flatten()
+            .and_then(|payload| payload.get("reasoning_content").and_then(Value::as_str))
+            .map(str::to_string)
+        })
+        .unwrap_or_default();
+    Some((tool, reasoning_content))
+}
+
+fn recover_pending_permission_tool_from_runtime_state(
+    workspace_root: &PathBuf,
+    project_id: &str,
+    chat_session_id: &str,
+    request_id: &str,
+) -> Option<(PlannedLocalTool, String)> {
     let pending = recover_pending_permission_context(workspace_root, project_id, chat_session_id)?;
     if pending.request_id != request_id {
         return None;
@@ -5460,6 +5634,16 @@ fn run_agent_loop_with_answered_user_question(
         request.workspace_path = active_workspace_root.borrow().to_string_lossy().to_string();
         request.activated_tool_names = activated_tool_names.clone();
         let model_step_index = model_steps.len() + 1;
+        if let Some(sink) = event_sink {
+            sink(json!({
+                "event_id": format!("evt_{runtime_session_id}_step_{model_step_index}_started"),
+                "runtime_session_id": runtime_session_id,
+                "chat_session_id": run_key,
+                "type": "step_started",
+                "payload": { "turn": 1, "step": model_step_index, "status": "running" },
+                "created_at_epoch_ms": epoch_millis()
+            }));
+        }
         model_input_snapshots.push(build_task_processing_snapshot(
             runtime_session_id,
             model_step_index,
@@ -5474,6 +5658,20 @@ fn run_agent_loop_with_answered_user_question(
             &request,
         );
         let model_result = model_runner(&request);
+        if let Some(sink) = event_sink {
+            sink(json!({
+                "event_id": format!("evt_{runtime_session_id}_step_{model_step_index}_ended"),
+                "runtime_session_id": runtime_session_id,
+                "chat_session_id": run_key,
+                "type": "step_ended",
+                "payload": {
+                    "turn": 1,
+                    "step": model_step_index,
+                    "status": if model_result.ok { "completed" } else { "failed" }
+                },
+                "created_at_epoch_ms": epoch_millis()
+            }));
+        }
         if let Some(snapshot) = model_input_snapshots.last_mut() {
             snapshot["token_usage"] = model_result
                 .token_usage
@@ -6332,6 +6530,7 @@ fn emit_model_step_event(
                 "provider_id": result.provider_id,
                 "model_name": result.model_name,
                 "summary": result.summary,
+                "content": result.content,
                 "content_preview": truncate_inline(&result.content, 700),
                 "reasoning_content": result.reasoning_content,
                 "error_code": result.error_code,
@@ -6742,6 +6941,54 @@ fn attachment_image_data_url(attachment: &LocalChatAttachment) -> Option<String>
         "data:{mime_type};base64,{}",
         STANDARD.encode(bytes)
     ))
+}
+
+fn conversation_attachment_references(
+    attachments: &[LocalChatAttachment],
+    expected_kind: &str,
+) -> Vec<String> {
+    attachments
+        .iter()
+        .filter(|attachment| attachment_kind(attachment) == expected_kind)
+        .filter_map(|attachment| {
+            if expected_kind == "image" {
+                return attachment_image_data_url(attachment);
+            }
+            attachment
+                .data_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| is_supported_media_reference(value, expected_kind))
+                .map(str::to_string)
+        })
+        .fold(Vec::new(), |mut references, reference| {
+            if !references.iter().any(|existing| existing == &reference) {
+                references.push(reference);
+            }
+            references
+        })
+}
+
+fn conversation_tool_output_references(
+    tool_results: &[super::types::ToolExecutionResult],
+    output_field: &str,
+    kind: &str,
+) -> Vec<String> {
+    tool_results
+        .iter()
+        .filter(|result| result.ok)
+        .filter_map(|result| result.content.get(output_field).and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| is_supported_media_reference(value, kind))
+        .map(str::to_string)
+        .fold(Vec::new(), |mut references, reference| {
+            if !references.iter().any(|existing| existing == &reference) {
+                references.push(reference);
+            }
+            references
+        })
 }
 
 fn attachment_kind(attachment: &LocalChatAttachment) -> String {
@@ -11022,7 +11269,7 @@ fn build_plugin_skill_context_message_for_root(
     }
     let mut lines = vec![
         "当前可用的插件 Skill 摘要：".to_string(),
-        "Skill 只提供任务指导，不是执行接口。可先调用 load_plugin_skill 读取正文；若 requiredTools 尚未注入，调用 resolve_plugin_capability 解析并激活能力。不得猜测未列出的 Skill 或工具。".to_string(),
+        "Skill 只提供任务指导，不是执行接口。可按需调用 load_plugin_skill 读取正文；已安装插件的工具默认注册，模型可根据任务直接选择已返回的工具。工具是否可执行由配置、输入和运行时状态决定，不要把 Skill 加载当成工具激活门槛。".to_string(),
     ];
     for skill in skills {
         lines.push(format!(
@@ -11047,7 +11294,7 @@ fn build_plugin_skill_context_message_for_root(
                 lines.push("  - 状态：本轮可加载并执行".to_string());
             } else {
                 lines.push(format!(
-                    "  - 状态：需激活能力；尚未注入工具：{}。先加载 Skill，再对相应能力调用 resolve_plugin_capability；若返回 needs_config 或 needs_input，按结果补齐配置或附件。",
+                    "  - 状态：工具尚未满足当前请求条件：{}。根据返回原因补齐配置或附件；不要因为 Skill 尚未加载就判定工具未注册。",
                     unavailable_tools.join("、")
                 ));
             }
@@ -11165,25 +11412,6 @@ fn should_exclude_history_message_from_model_context(message: &LocalChatMessage)
     visibility != "model_context"
 }
 
-fn history_message_has_model_context(message: &LocalChatMessage) -> bool {
-    !message.content.trim().is_empty()
-        || message
-            .images
-            .iter()
-            .any(|value| is_supported_image_reference(value))
-        || message.videos.iter().any(|value| !value.trim().is_empty())
-        || message.audios.iter().any(|value| !value.trim().is_empty())
-}
-
-fn should_inject_history_directly(history: &[LocalChatMessage]) -> bool {
-    let eligible_count = history
-        .iter()
-        .filter(|message| !should_exclude_history_message_from_model_context(message))
-        .filter(|message| history_message_has_model_context(message))
-        .count();
-    eligible_count > 0 && eligible_count <= DIRECT_HISTORY_CONTEXT_MAX_MESSAGES
-}
-
 fn build_history_media_context(message: &LocalChatMessage) -> String {
     let mut lines = Vec::new();
     let message_id = message
@@ -11277,105 +11505,160 @@ fn build_history_model_message(message: &LocalChatMessage) -> Option<RuntimeMode
     Some(runtime_message)
 }
 
-fn format_history_message_for_context(index: usize, message: &LocalChatMessage) -> String {
-    let media_context = build_history_media_context(message);
-    let content = [message.content.trim(), media_context.trim()]
-        .into_iter()
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    format!(
-        "[{}] {}\n{}",
-        index,
-        normalize_model_message_role(&message.role),
-        truncate_inline(&content, 1200)
-    )
-}
-
-fn extract_relevant_conversation_context(
-    base_request: &ModelStepRequest,
-    history: &[LocalChatMessage],
-    user_message: &str,
-    model_runner: &dyn Fn(&ModelStepRequest) -> ModelStepResult,
-) -> String {
-    if local_chat_pause_requested(&base_request.run_key) {
-        return String::new();
-    }
-    let conversation_history = history
+fn derive_model_messages_from_conversation_events(
+    events: &[Value],
+    include_messages: bool,
+) -> Vec<RuntimeModelMessage> {
+    let mut messages = Vec::new();
+    let latest_checkpoint = events
         .iter()
-        .enumerate()
-        .filter(|(_, message)| !should_exclude_history_message_from_model_context(message))
-        .filter(|(_, message)| history_message_has_model_context(message))
-        .map(|(index, message)| format_history_message_for_context(index, message))
-        .collect::<Vec<_>>();
-    if conversation_history.is_empty() {
-        return String::new();
-    }
-    if !cfg!(test) && conversation_history.len() <= DIRECT_HISTORY_CONTEXT_MAX_MESSAGES {
-        return conversation_history.join("\n\n");
-    }
-    let context_messages = vec![
-        RuntimeModelMessage::simple(
-            "system",
-            "选择理解当前问题所必需的历史消息。只输出消息索引，使用英文逗号分隔；没有相关消息时输出空内容。",
-        ),
-        RuntimeModelMessage::simple(
-            "user",
-            format!(
-                "当前用户问题：\n{}\n\n本地完整对话记录（独立数据）：\n{}",
-                user_message.trim(),
-                conversation_history.join("\n\n")
-            ),
-        ),
-    ];
-    let mut context_request = base_request.with_messages(context_messages);
-    context_request.expose_tools = false;
-    if local_chat_pause_requested(&context_request.run_key) {
-        return String::new();
-    }
-    let result = model_runner(&context_request);
-    if !result.ok || !result.tool_calls.is_empty() {
-        return String::new();
-    }
-    let selected_indices = match parse_relevant_context_indices(&result.content, history.len()) {
-        Some(indices) => indices,
-        None => return String::new(),
-    };
-    selected_indices
-        .into_iter()
-        .filter_map(|index| {
-            let message = history.get(index)?;
-            if should_exclude_history_message_from_model_context(message)
-                || !history_message_has_model_context(message)
-            {
-                return None;
-            }
-            Some(format_history_message_for_context(index, message))
+        .filter(|event| {
+            event.get("record_type").and_then(Value::as_str)
+                == Some("liuagent-conversation-checkpoint")
         })
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn parse_relevant_context_indices(value: &str, history_len: usize) -> Option<Vec<usize>> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Some(Vec::new());
+        .max_by_key(|event| event.get("seq").and_then(Value::as_u64).unwrap_or(0));
+    let covered_through_seq = latest_checkpoint
+        .and_then(|event| event.get("covers_through_seq"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if let Some(summary) = latest_checkpoint
+        .and_then(|event| event.get("summary"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+    {
+        messages.push(RuntimeModelMessage::system(
+            "desktop_runtime.conversation_checkpoint",
+            150,
+            format!("已压缩的早期会话摘要：\n{summary}"),
+        ));
     }
-    let mut indices = Vec::new();
-    for token in value.split(|character: char| character == ',' || character.is_whitespace()) {
-        let token = token.trim();
-        if token.is_empty() {
+    let mut latest_model_step = (String::new(), String::new());
+    for event in events {
+        if event
+            .get("seq")
+            .and_then(Value::as_u64)
+            .is_some_and(|seq| seq <= covered_through_seq)
+        {
             continue;
         }
-        let index = token.parse::<usize>().ok()?;
-        if index >= history_len {
-            return None;
-        }
-        if !indices.contains(&index) {
-            indices.push(index);
+        match event.get("record_type").and_then(Value::as_str) {
+            Some("liuagent-conversation-model-step") => {
+                let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
+                latest_model_step = (
+                    payload
+                        .get("content")
+                        .or_else(|| payload.get("content_preview"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    payload
+                        .get("reasoning_content")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                );
+            }
+            Some("liuagent-conversation-model-message") => {
+                if let Ok(message) = serde_json::from_value::<RuntimeModelMessage>(
+                    event.get("message").cloned().unwrap_or_else(|| json!({})),
+                ) {
+                    messages.push(message);
+                }
+            }
+            Some("liuagent-conversation-message") if include_messages => {
+                if let Ok(message) = serde_json::from_value::<LocalChatMessage>(event.clone()) {
+                    let has_model_snapshot = message
+                        .message_id
+                        .as_deref()
+                        .is_some_and(|message_id| events.iter().any(|candidate| {
+                            candidate.get("record_type").and_then(Value::as_str)
+                                == Some("liuagent-conversation-model-message")
+                                && candidate.get("message_id").and_then(Value::as_str)
+                                    == Some(message_id)
+                        }));
+                    if has_model_snapshot {
+                        continue;
+                    }
+                    if let Some(model_message) = build_history_model_message(&message) {
+                        messages.push(model_message);
+                    }
+                }
+            }
+            Some("liuagent-conversation-tool-call") => {
+                let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
+                let tool_call_id = payload
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let tool_name = payload
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                if let (Some(tool_call_id), Some(tool_name)) = (tool_call_id, tool_name) {
+                    let summary = payload
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    messages.push(RuntimeModelMessage::assistant_tool_call(
+                        if latest_model_step.0.is_empty() { summary } else { latest_model_step.0.as_str() },
+                        latest_model_step.1.as_str(),
+                        vec![PlannedLocalTool {
+                            tool_call_id: tool_call_id.to_string(),
+                            name: tool_name.to_string(),
+                            arguments: payload
+                                .get("model_arguments")
+                                .or_else(|| payload.get("arguments"))
+                                .cloned()
+                                .unwrap_or_else(|| json!({})),
+                            summary: summary.to_string(),
+                        }],
+                    ));
+                }
+            }
+            Some("liuagent-conversation-tool-result") => {
+                let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
+                if let Ok(result) =
+                    serde_json::from_value::<super::types::ToolExecutionResult>(payload)
+                {
+                    messages.push(RuntimeModelMessage::tool_observation(
+                        result.tool_call_id.clone(),
+                        tool_observation_content(&result, false, None, None),
+                    ));
+                }
+            }
+            Some("liuagent-conversation-run-state") => {}
+            _ => {}
         }
     }
-    Some(indices)
+    messages
+}
+
+fn insert_conversation_event_messages(
+    model_request: &mut ModelStepRequest,
+    events: &[Value],
+    include_messages: bool,
+    current_message_id: &str,
+) {
+    let Some(current_user_message) = model_request.messages.pop() else {
+        return;
+    };
+    let current_user_is_snapshotted = events.iter().any(|event| {
+        event.get("record_type").and_then(Value::as_str)
+            == Some("liuagent-conversation-model-message")
+            && event
+                .get("message_id")
+                .and_then(Value::as_str)
+                .is_some_and(|message_id| message_id == current_message_id)
+    });
+    model_request
+        .messages
+        .extend(derive_model_messages_from_conversation_events(events, include_messages));
+    if !current_user_is_snapshotted {
+        model_request.messages.push(current_user_message);
+    }
 }
 
 fn build_user_message_with_attachments(
@@ -11422,6 +11705,13 @@ fn build_user_message_with_attachments(
 fn is_supported_image_reference(value: &str) -> bool {
     let normalized = value.trim().to_lowercase();
     normalized.starts_with("data:image/")
+        || normalized.starts_with("http://")
+        || normalized.starts_with("https://")
+}
+
+fn is_supported_media_reference(value: &str, kind: &str) -> bool {
+    let normalized = value.trim().to_lowercase();
+    normalized.starts_with(&format!("data:{kind}/"))
         || normalized.starts_with("http://")
         || normalized.starts_with("https://")
 }
@@ -11859,11 +12149,6 @@ fn tool_disabled_reason(
         }
         "generate_image" | "edit_image" | "generate_video" | "generate_audio"
         | "transcribe_audio" => {
-            if !request.activated_tool_names.contains(tool_name) {
-                return Some(format!(
-                    "{tool_name} must be activated with resolve_plugin_capability before it is exposed to the model"
-                ));
-            }
             let config = request
                 .media_tools
                 .iter()
@@ -18092,6 +18377,101 @@ mod tests {
     }
 
     #[test]
+    fn conversation_log_persists_uploaded_image_for_later_model_replay() {
+        let dir = std::env::temp_dir().join(format!(
+            "liuagent_conversation_media_{}",
+            epoch_millis()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let attachments = vec![LocalChatAttachment {
+            attachment_id: Some("att-reference-image".to_string()),
+            name: "原图.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            size: Some(4),
+            kind: Some("image".to_string()),
+            source: Some("user_upload".to_string()),
+            routing_mode: Some("inline_image".to_string()),
+            extraction_status: Some("ready".to_string()),
+            asset_uri: None,
+            local_path: None,
+            data_url: Some("data:image/png;base64,AAAA".to_string()),
+            extracted_text: None,
+            provider_file_id: None,
+            error: None,
+        }];
+        let images = conversation_attachment_references(&attachments, "image");
+        assert_eq!(images, ["data:image/png;base64,AAAA"]);
+
+        append_conversation_message(
+            &dir,
+            "proj-media",
+            "chat-media",
+            &LocalChatMessage {
+                message_id: Some("user-image-1".to_string()),
+                role: "user".to_string(),
+                content: "把这张照片的腹部优化成自然马甲线".to_string(),
+                images,
+                videos: Vec::new(),
+                audios: Vec::new(),
+                reasoning_content: None,
+                source_kind: Some("desktop_local_agent_runtime".to_string()),
+                diagnostic: None,
+                visibility: Some("model_context".to_string()),
+            },
+            "runtime_user_message",
+        )
+        .unwrap();
+        let events = load_conversation_events(&dir, "proj-media", "chat-media").unwrap();
+        assert_eq!(
+            events[0]["images"][0],
+            "data:image/png;base64,AAAA"
+        );
+
+        let mut request = LocalChatRequest::default();
+        request.message = "就按自然明显的强度处理".to_string();
+        let mut model_request =
+            build_model_request_with_history(&request, &request.message, &[]).unwrap();
+        insert_conversation_event_messages(&mut model_request, &events, true, "");
+        let historical_user = model_request
+            .messages
+            .iter()
+            .find(|message| message.content.contains("腹部优化"))
+            .expect("persisted user image should be replayed");
+        let payload = openai_compatible_message_payload(historical_user);
+        assert_eq!(payload["content"][1]["type"], "image_url");
+        assert_eq!(
+            payload["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn conversation_tool_output_references_preserve_edited_images() {
+        let results = vec![super::super::types::ToolExecutionResult::ok(
+            "call-edit".to_string(),
+            "edit_image".to_string(),
+            json!({
+                "images": [
+                    "https://example.test/edited-photo.png",
+                    "https://example.test/edited-photo.png"
+                ],
+                "videos": ["https://example.test/preview.mp4"]
+            }),
+            "图片编辑成功".to_string(),
+        )];
+
+        assert_eq!(
+            conversation_tool_output_references(&results, "images", "image"),
+            ["https://example.test/edited-photo.png"]
+        );
+        assert_eq!(
+            conversation_tool_output_references(&results, "videos", "video"),
+            ["https://example.test/preview.mp4"]
+        );
+    }
+
+    #[test]
     fn local_chat_local_extract_mode_skips_image_url_parts() {
         let request = LocalChatRequest {
             project_id: "proj-test".to_string(),
@@ -20308,7 +20688,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_media_tools_require_capability_activation() {
+    fn configured_media_tools_are_exposed_without_capability_activation() {
         let mut request = test_model_request("你好");
         request.media_tools = vec![LocalMediaToolConfig {
             name: "generate_image".to_string(),
@@ -20325,17 +20705,42 @@ mod tests {
             .filter_map(|tool| tool["function"]["name"].as_str())
             .collect::<Vec<_>>();
 
-        assert!(!tool_names.contains(&"generate_image"));
+        assert!(tool_names.contains(&"generate_image"));
         assert!(tool_names.contains(&"download_file"));
+    }
 
-        request
-            .activated_tool_names
-            .insert("generate_image".to_string());
-        let activated_schemas = openai_compatible_tool_schemas(&request).unwrap();
-        assert!(activated_schemas
-            .iter()
-            .filter_map(|tool| tool["function"]["name"].as_str())
-            .any(|name| name == "generate_image"));
+    #[test]
+    fn configured_image_edit_tool_is_exposed_without_skill_loading() {
+        let mut request = test_model_request("修改这张图片的腹部");
+        request.attachments = vec![LocalChatAttachment {
+            attachment_id: Some("photo-1".to_string()),
+            name: "photo.jpg".to_string(),
+            mime_type: Some("image/jpeg".to_string()),
+            size: None,
+            kind: Some("image".to_string()),
+            source: None,
+            routing_mode: Some("inline_image".to_string()),
+            extraction_status: Some("image_data_url".to_string()),
+            asset_uri: None,
+            local_path: None,
+            data_url: Some("data:image/jpeg;base64,AAAA".to_string()),
+            extracted_text: None,
+            provider_file_id: None,
+            error: None,
+        }];
+        request.media_tools = vec![LocalMediaToolConfig {
+            name: "edit_image".to_string(),
+            provider_id: "image-provider".to_string(),
+            model_name: "image-model".to_string(),
+            base_url: "https://images.example.test/v1".to_string(),
+            api_key: "image-key".to_string(),
+            ..Default::default()
+        }];
+
+        let schemas = openai_compatible_tool_schemas(&request).unwrap();
+        assert!(schemas.iter().any(|schema| {
+            schema["function"]["name"].as_str() == Some("edit_image")
+        }));
     }
 
     #[test]
@@ -20617,227 +21022,198 @@ mod tests {
     }
 
     #[test]
-    fn relevant_context_extractor_receives_complete_history_as_separate_data() {
-        let history = vec![
-            LocalChatMessage {
-                message_id: None,
-                role: "user".to_string(),
-                content: "改造登录和注册页面".to_string(),
-                images: Vec::new(),
-                videos: Vec::new(),
-                audios: Vec::new(),
-                reasoning_content: None,
-                source_kind: None,
-                diagnostic: None,
-                visibility: None,
-            },
-            LocalChatMessage {
-                message_id: None,
-                role: "assistant".to_string(),
-                content: "我会读取页面源码并开始改造".to_string(),
-                images: Vec::new(),
-                videos: Vec::new(),
-                audios: Vec::new(),
-                reasoning_content: None,
-                source_kind: None,
-                diagnostic: None,
-                visibility: None,
-            },
-        ];
-        let base_request = test_model_request("目录结构展示一级就可以");
-        let saw_history = Cell::new(false);
-        let runner = |request: &ModelStepRequest| {
-            let input = request
-                .messages
-                .iter()
-                .map(|message| message.content.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-            saw_history.set(
-                input.contains("改造登录和注册页面")
-                    && input.contains("我会读取页面源码并开始改造")
-                    && input.contains("目录结构展示一级就可以"),
-            );
-            test_model_result("0,1", Vec::new())
-        };
-
-        let context = extract_relevant_conversation_context(
-            &base_request,
-            &history,
-            "目录结构展示一级就可以",
-            &runner,
-        );
-
-        assert!(saw_history.get());
-        assert!(context.contains("[0] user\n改造登录和注册页面"));
-        assert!(context.contains("[1] assistant\n我会读取页面源码并开始改造"));
-    }
-
-    #[test]
-    fn short_history_preserves_assistant_options_for_the_next_turn() {
-        let history = vec![
-            LocalChatMessage {
-                message_id: Some("user-1".to_string()),
-                role: "user".to_string(),
-                content: "请提供三条初步解决路径".to_string(),
-                images: Vec::new(),
-                videos: Vec::new(),
-                audios: Vec::new(),
-                reasoning_content: None,
-                source_kind: None,
-                diagnostic: None,
-                visibility: None,
-            },
-            LocalChatMessage {
-                message_id: Some("assistant-1".to_string()),
-                role: "assistant".to_string(),
-                content: "1. 直接编辑原图\n2. 重新生成\n3. 先确认调整强度".to_string(),
-                images: Vec::new(),
-                videos: Vec::new(),
-                audios: Vec::new(),
-                reasoning_content: None,
-                source_kind: None,
-                diagnostic: None,
-                visibility: None,
-            },
-        ];
-
-        assert!(should_inject_history_directly(&history));
-
+    fn granular_conversation_tool_events_rehydrate_in_execution_order() {
         let mut request = LocalChatRequest::default();
-        request.history = history;
-        let model_request = build_model_request_with_history(&request, "1", &request.history)
-            .expect("short history should build a model request");
-
-        assert!(model_request.messages.iter().any(|message| {
-            message.role == "assistant"
-                && message.content.contains("1. 直接编辑原图")
-                && message.content.contains("3. 先确认调整强度")
-        }));
-        assert_eq!(
-            model_request
-                .messages
-                .last()
-                .map(|message| message.content.as_str()),
-            Some("1")
-        );
-    }
-
-    #[test]
-    fn relevant_context_extractor_can_recover_early_conversation_content() {
-        let history = vec![
-            LocalChatMessage {
-                message_id: None,
-                role: "user".to_string(),
-                content: "改造登录页面".to_string(),
-                images: Vec::new(),
-                videos: Vec::new(),
-                audios: Vec::new(),
-                reasoning_content: None,
-                source_kind: None,
-                diagnostic: None,
-                visibility: None,
-            },
-            LocalChatMessage {
-                message_id: None,
-                role: "assistant".to_string(),
-                content: "登录页改造进行中".to_string(),
-                images: Vec::new(),
-                videos: Vec::new(),
-                audios: Vec::new(),
-                reasoning_content: None,
-                source_kind: None,
-                diagnostic: None,
-                visibility: None,
-            },
-            LocalChatMessage {
-                message_id: None,
-                role: "user".to_string(),
-                content: "查询一级目录".to_string(),
-                images: Vec::new(),
-                videos: Vec::new(),
-                audios: Vec::new(),
-                reasoning_content: None,
-                source_kind: None,
-                diagnostic: None,
-                visibility: None,
-            },
-            LocalChatMessage {
-                message_id: None,
-                role: "assistant".to_string(),
-                content: "一级目录已展示".to_string(),
-                images: Vec::new(),
-                videos: Vec::new(),
-                audios: Vec::new(),
-                reasoning_content: None,
-                source_kind: None,
-                diagnostic: None,
-                visibility: None,
-            },
+        request.message = "继续".to_string();
+        let mut model_request =
+            build_model_request_with_history(&request, &request.message, &[]).unwrap();
+        let events = vec![
+            json!({
+                "record_type": "liuagent-conversation-model-step",
+                "payload": {
+                    "content_preview": "我先读取 README 再继续。",
+                    "reasoning_content": "先确认项目说明，避免猜测。"
+                }
+            }),
+            json!({
+                "record_type": "liuagent-conversation-tool-call",
+                "payload": {
+                    "tool_call_id": "call-readme",
+                    "tool_name": "read_file",
+                    "summary": "读取 README",
+                    "arguments": {"path": "README.md"}
+                }
+            }),
+            json!({
+                "record_type": "liuagent-conversation-tool-result",
+                "payload": {
+                    "toolResultId": "result_call-readme",
+                    "toolCallId": "call-readme",
+                    "name": "read_file",
+                    "ok": true,
+                    "content": {"content": "项目说明"},
+                    "summary": "读取完成",
+                    "errorCode": "",
+                    "error": ""
+                }
+            }),
         ];
-        let base_request = test_model_request("找找我们一开始的任务");
-        let runner = |_request: &ModelStepRequest| test_model_result("0,1", Vec::new());
 
-        let context = extract_relevant_conversation_context(
-            &base_request,
-            &history,
-            "找找我们一开始的任务",
-            &runner,
+        insert_conversation_event_messages(&mut model_request, &events, true, "");
+
+        let tool_call_index = model_request
+            .messages
+            .iter()
+            .position(|message| message.role == "assistant" && !message.tool_calls.is_empty())
+            .expect("granular tool call should be restored");
+        assert_eq!(model_request.messages[tool_call_index].tool_calls[0].name, "read_file");
+        assert_eq!(
+            model_request.messages[tool_call_index].content,
+            "我先读取 README 再继续。"
         );
-
-        assert!(context.contains("[0] user\n改造登录页面"));
-        assert!(context.contains("[1] assistant\n登录页改造进行中"));
-        assert!(!context.contains("查询一级目录"));
+        assert_eq!(
+            model_request.messages[tool_call_index].reasoning_content,
+            "先确认项目说明，避免猜测。"
+        );
+        assert_eq!(model_request.messages[tool_call_index + 1].role, "tool");
+        assert!(model_request.messages[tool_call_index + 1]
+            .content
+            .contains("项目说明"));
+        assert_eq!(model_request.messages.last().unwrap().content, "继续");
     }
 
     #[test]
-    fn relevant_context_extractor_failure_returns_no_history() {
-        let history = vec![LocalChatMessage {
-            message_id: None,
-            role: "user".to_string(),
-            content: "旧任务".to_string(),
-            images: Vec::new(),
-            videos: Vec::new(),
-            audios: Vec::new(),
-            reasoning_content: None,
-            source_kind: None,
-            diagnostic: None,
-            visibility: None,
-        }];
-        let base_request = test_model_request("新任务");
-        let runner = |request: &ModelStepRequest| {
-            ModelStepResult::failed(request, "model.failed", "context extraction unavailable")
-        };
-
-        let context =
-            extract_relevant_conversation_context(&base_request, &history, "新任务", &runner);
-
-        assert!(context.is_empty());
+    fn model_message_snapshot_replaces_matching_conversation_message() {
+        let mut request = LocalChatRequest::default();
+        request.message = "继续".to_string();
+        let mut model_request =
+            build_model_request_with_history(&request, &request.message, &[]).unwrap();
+        let events = vec![
+            json!({
+                "record_type": "liuagent-conversation-message",
+                "message_id": "user-snapshot",
+                "role": "user",
+                "content": "原始 UI 文本",
+                "images": [], "videos": [], "audios": []
+            }),
+            json!({
+                "record_type": "liuagent-conversation-model-message",
+                "message_id": "user-snapshot",
+                "message": {
+                    "role": "user",
+                    "content": "完整模型消息（包含附件上下文）",
+                    "reasoning_content": "",
+                    "content_parts": [],
+                    "tool_call_id": null,
+                    "tool_calls": [],
+                    "prompt_section_id": "",
+                    "prompt_source": "",
+                    "prompt_scope": "",
+                    "prompt_priority": 0
+                }
+            }),
+        ];
+        insert_conversation_event_messages(&mut model_request, &events, true, "user-snapshot");
+        assert!(model_request.messages.iter().any(|message| {
+            message.content == "完整模型消息（包含附件上下文）"
+        }));
+        assert!(!model_request.messages.iter().any(|message| {
+            message.content == "原始 UI 文本"
+        }));
+        assert_eq!(model_request.messages.last().unwrap().content, "完整模型消息（包含附件上下文）");
     }
 
     #[test]
-    fn relevant_context_extractor_rejects_generated_text() {
-        let history = vec![LocalChatMessage {
-            message_id: None,
-            role: "assistant".to_string(),
-            content: "我是 Claude，由 Anthropic 开发。".to_string(),
-            images: Vec::new(),
-            videos: Vec::new(),
-            audios: Vec::new(),
-            reasoning_content: None,
-            source_kind: None,
-            diagnostic: None,
-            visibility: None,
-        }];
-        let base_request = test_model_request("你是什么模型");
-        let runner = |_request: &ModelStepRequest| {
-            test_model_result("我是 Claude，由 Anthropic 开发。", Vec::new())
-        };
+    fn assistant_model_snapshot_preserves_reasoning_for_replay() {
+        let mut request = LocalChatRequest::default();
+        request.message = "继续".to_string();
+        let mut model_request =
+            build_model_request_with_history(&request, &request.message, &[]).unwrap();
+        let events = vec![json!({
+            "record_type": "liuagent-conversation-model-message",
+            "message_id": "assistant-snapshot",
+            "message": {
+                "role": "assistant",
+                "content": "原始模型最终回答",
+                "reasoning_content": "保留给支持推理回放的模型。",
+                "content_parts": [],
+                "tool_call_id": null,
+                "tool_calls": [],
+                "prompt_section_id": "",
+                "prompt_source": "",
+                "prompt_scope": "",
+                "prompt_priority": 0
+            }
+        })];
+        insert_conversation_event_messages(&mut model_request, &events, true, "");
+        let assistant = model_request
+            .messages
+            .iter()
+            .find(|message| message.content == "原始模型最终回答")
+            .unwrap();
+        assert_eq!(assistant.reasoning_content, "保留给支持推理回放的模型。");
+    }
 
-        let context =
-            extract_relevant_conversation_context(&base_request, &history, "你是什么模型", &runner);
+    #[test]
+    fn conversation_resume_never_repeats_unpaired_tool_calls() {
+        let resume = derive_conversation_event_resume(&[json!({
+            "record_type": "liuagent-conversation-tool-call",
+            "seq": 8,
+            "payload": {
+                "tool_call_id": "call-write",
+                "tool_name": "write_file",
+                "arguments": {"path": "notes.md"}
+            }
+        })]);
+        assert_eq!(
+            resume["resume_action"],
+            "rebuild_model_context_without_repeating_pending_tool"
+        );
+        assert_eq!(resume["pending_tool_calls"][0]["tool_call_id"], "call-write");
+        assert_eq!(
+            resume["pending_tool_calls"][0]["replay_policy"],
+            "do_not_repeat_without_new_model_decision"
+        );
+    }
 
-        assert!(context.is_empty());
+    #[test]
+    fn conversation_checkpoint_replaces_covered_model_context_only() {
+        let mut request = LocalChatRequest::default();
+        request.message = "继续".to_string();
+        let mut model_request =
+            build_model_request_with_history(&request, &request.message, &[]).unwrap();
+        let events = vec![
+            json!({
+                "record_type": "liuagent-conversation-message",
+                "seq": 1,
+                "role": "user",
+                "content": "已覆盖的旧消息",
+                "images": [], "videos": [], "audios": []
+            }),
+            json!({
+                "record_type": "liuagent-conversation-checkpoint",
+                "seq": 2,
+                "covers_through_seq": 1,
+                "summary": "旧消息摘要"
+            }),
+            json!({
+                "record_type": "liuagent-conversation-message",
+                "seq": 3,
+                "role": "assistant",
+                "content": "未覆盖的新消息",
+                "images": [], "videos": [], "audios": []
+            }),
+        ];
+        insert_conversation_event_messages(&mut model_request, &events, true, "");
+        assert!(model_request.messages.iter().any(|message| {
+            message.content.contains("旧消息摘要") && message.role == "system"
+        }));
+        assert!(!model_request.messages.iter().any(|message| {
+            message.content.contains("已覆盖的旧消息")
+        }));
+        assert!(model_request.messages.iter().any(|message| {
+            message.content.contains("未覆盖的新消息")
+        }));
     }
 
     #[test]

@@ -1090,7 +1090,7 @@ impl AgentRuntimeSessionSummary {
     }
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolExecutionResult {
     pub tool_result_id: String,

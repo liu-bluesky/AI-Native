@@ -107,3 +107,37 @@ pub fn builtin_plugin_system_tool_definitions() -> Vec<ToolDefinition> {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn exposes_all_plugin_management_tools_with_expected_permissions() {
+        let definitions = builtin_plugin_system_tool_definitions();
+        let names = definitions
+            .iter()
+            .map(|definition| definition.name)
+            .collect::<HashSet<_>>();
+        assert_eq!(names.len(), 6);
+        for name in [
+            "list_installed_plugins",
+            "install_plugin_from_directory",
+            "enable_plugin",
+            "disable_plugin",
+            "read_plugin_config",
+            "configure_plugin",
+        ] {
+            assert!(names.contains(name));
+        }
+        assert!(definitions
+            .iter()
+            .find(|definition| definition.name == "list_installed_plugins")
+            .is_some_and(|definition| !definition.requires_approval));
+        assert!(definitions
+            .iter()
+            .find(|definition| definition.name == "configure_plugin")
+            .is_some_and(|definition| definition.requires_approval));
+    }
+}

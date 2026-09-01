@@ -83,3 +83,37 @@ pub fn builtin_filesystem_tool_definitions() -> Vec<ToolDefinition> {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn exposes_all_workspace_file_tools_with_expected_permissions() {
+        let definitions = builtin_filesystem_tool_definitions();
+        let names = definitions
+            .iter()
+            .map(|definition| definition.name)
+            .collect::<HashSet<_>>();
+        assert_eq!(names.len(), 6);
+        for name in [
+            "list_files",
+            "read_file",
+            "search_text",
+            "apply_patch",
+            "write_file",
+            "delete_file",
+        ] {
+            assert!(names.contains(name));
+        }
+        assert!(definitions
+            .iter()
+            .find(|definition| definition.name == "write_file")
+            .is_some_and(|definition| definition.requires_approval));
+        assert!(definitions
+            .iter()
+            .find(|definition| definition.name == "delete_file")
+            .is_some_and(|definition| definition.requires_approval));
+    }
+}

@@ -379,34 +379,41 @@ export async function findNativeAgentSupervisionAnswer(
 export async function invokeNativeDesktopBridge(method, payload = {}) {
   const normalizedMethod = String(method || "").trim();
   if (!normalizedMethod) return null;
-  const bridge = resolveBridge();
-  if (bridge) {
-    const handler = bridge[normalizedMethod];
-    if (typeof handler === "function") {
-      return handler(payload && typeof payload === "object" ? payload : {});
+  const normalizedPayload =
+    payload && typeof payload === "object" ? payload : {};
+  try {
+    const bridge = resolveBridge();
+    if (bridge) {
+      const handler = bridge[normalizedMethod];
+      if (typeof handler === "function") {
+        return await handler(normalizedPayload);
+      }
+      if (typeof bridge.invoke === "function") {
+        return await bridge.invoke(normalizedMethod, normalizedPayload);
+      }
     }
-    if (typeof bridge.invoke === "function") {
-      return bridge.invoke(
-        normalizedMethod,
-        payload && typeof payload === "object" ? payload : {},
-      );
+    const tauriInvoke = resolveTauriInvoke();
+    const tauriCommand = TAURI_COMMAND_NAMES[normalizedMethod] || normalizedMethod;
+    if (tauriInvoke && tauriCommand) {
+      return await tauriInvoke(tauriCommand, normalizedPayload);
     }
+    if (canUseTauriApi() && tauriCommand) {
+      return await invokeTauriCommand(tauriCommand, normalizedPayload);
+    }
+    console.error("native desktop bridge unavailable", {
+      method: normalizedMethod,
+      payloadKeys: Object.keys(normalizedPayload),
+    });
+    return null;
+  } catch (error) {
+    console.error("native desktop bridge command failed", {
+      method: normalizedMethod,
+      command: TAURI_COMMAND_NAMES[normalizedMethod] || normalizedMethod,
+      payloadKeys: Object.keys(normalizedPayload),
+      error,
+    });
+    throw error;
   }
-  const tauriInvoke = resolveTauriInvoke();
-  const tauriCommand = TAURI_COMMAND_NAMES[normalizedMethod] || normalizedMethod;
-  if (tauriInvoke && tauriCommand) {
-    return tauriInvoke(
-      tauriCommand,
-      payload && typeof payload === "object" ? payload : {},
-    );
-  }
-  if (canUseTauriApi() && tauriCommand) {
-    return invokeTauriCommand(
-      tauriCommand,
-      payload && typeof payload === "object" ? payload : {},
-    );
-  }
-  return null;
 }
 
 export async function pickNativeWorkspaceDirectory(options = {}) {

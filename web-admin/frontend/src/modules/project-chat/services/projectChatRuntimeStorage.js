@@ -46,8 +46,13 @@ export async function writePersistedChatRuntime(
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId || !normalizedChatSessionId) return false;
   if (!payload || typeof payload !== "object") {
-    await clearPersistedChatRuntime(normalizedProjectId, normalizedChatSessionId);
-    return true;
+    console.error("writePersistedChatRuntime: invalid payload, refusing to save", {
+      projectId: normalizedProjectId,
+      chatSessionId: normalizedChatSessionId,
+      payloadType: typeof payload,
+      payload,
+    });
+    return false;
   }
   if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
     return false;
@@ -58,12 +63,26 @@ export async function writePersistedChatRuntime(
       if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
         return false;
       }
-      return writeNativeProjectChatRuntime(
+      const saved = await writeNativeProjectChatRuntime(
         normalizedProjectId,
         normalizedChatSessionId,
         resolveCurrentUsername(),
         payload,
       );
+      if (saved !== true) {
+        console.error("project chat runtime write returned non-success", {
+          projectId: normalizedProjectId,
+          chatSessionId: normalizedChatSessionId,
+          username: resolveCurrentUsername(),
+          payloadKeys: Object.keys(payload),
+          deletedMessageIds: Array.isArray(payload.deleted_message_ids)
+            ? payload.deleted_message_ids
+            : [],
+          hasMessages: Array.isArray(payload.messages),
+          result: saved,
+        });
+      }
+      return saved;
     },
   );
 }

@@ -594,6 +594,25 @@ fn merge_runtime_payload(existing: Option<&Value>, incoming: &Value) -> Value {
             merged.insert("messages".to_string(), Value::Array(messages));
         }
     }
+    if incoming_object.get("messages").is_none() && !deleted_message_ids.is_empty() {
+        let messages = merged
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        merged.insert(
+            "messages".to_string(),
+            Value::Array(
+                messages
+                    .into_iter()
+                    .filter(|message| {
+                        let id = value_text(message, &["id"]);
+                        id.is_empty() || !deleted_message_ids.contains(&id)
+                    })
+                    .collect(),
+            ),
+        );
+    }
     if deleted_message_ids.is_empty() {
         merged.remove("deleted_message_ids");
     } else {
@@ -1613,18 +1632,17 @@ fn build_supervision_details(
     Ok(details)
 }
 
-fn list_canonical_sessions(
+fn canonical_runtime_rows(
     app: &tauri::AppHandle,
     username: &str,
-    project_id: Option<&str>,
-) -> Result<Vec<Value>, String> {
-    let connection = open_canonical_database(&app)?;
+    project_id: &str,
+) -> Result<Vec<(String, Value, String)>, String> {
+    let connection = open_canonical_database(app)?;
     let mut statement = connection
         .prepare(
-            "SELECT project_id, chat_session_id, session_json, updated_at
-             FROM desktop_project_chat_sessions
-             WHERE username = ?1 AND (?2 IS NULL OR project_id = ?2)
-             ORDER BY updated_at DESC, chat_session_id ASC",
+            "SELECT chat_session_id, runtime_json, updated_at
+             FROM desktop_project_chat_runtimes
+             WHERE username = ?1 AND project_id = ?2",
         )
         .map_err(|err| err.to_string())?;
     let rows = statement
@@ -1633,14 +1651,73 @@ fn list_canonical_sessions(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
             ))
         })
         .map_err(|err| err.to_string())?;
+    rows.map(|row| {
+        let (chat_session_id, runtime_json, updated_at) = row.map_err(|err| err.to_string())?;
+        let runtime = serde_json::from_str::<Value>(&runtime_json).map_err(|err| err.to_string())?;
+        Ok((chat_session_id, runtime, updated_at))
+    })
+    .collect()
+}
+
+fn list_canonical_sessions(
+    app: &tauri::AppHandle,
+    username: &str,
+    project_id: Option<&str>,
+) -> Result<Vec<Value>, String> {
+    let connection = open_canonical_database(&app)?;
+    let mut statement = if project_id.is_some() {
+        connection
+            .prepare(
+                "SELECT project_id, chat_session_id, session_json, updated_at
+                 FROM desktop_project_chat_sessions
+                 WHERE username = ?1 AND project_id = ?2
+                 ORDER BY updated_at DESC, chat_session_id ASC",
+            )
+            .map_err(|err| err.to_string())?
+    } else {
+        connection
+            .prepare(
+                "SELECT project_id, chat_session_id, session_json, updated_at
+                 FROM desktop_project_chat_sessions
+                 WHERE username = ?1
+                 ORDER BY updated_at DESC, chat_session_id ASC",
+            )
+            .map_err(|err| err.to_string())?
+    };
+    let rows: Vec<(String, String, String, String)> = if let Some(project_id) = project_id {
+        statement
+            .query_map(params![username, project_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?
+            .map(|row| row.map_err(|err| err.to_string()))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        statement
+            .query_map(params![username], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?
+            .map(|row| row.map_err(|err| err.to_string()))
+            .collect::<Result<Vec<_>, _>>()?
+    };
     let mut sessions = Vec::new();
     for row in rows {
         let (stored_project_id, chat_session_id, session_json, updated_at) =
-            row.map_err(|err| err.to_string())?;
+            row;
         let session =
             serde_json::from_str::<Value>(&session_json).map_err(|err| err.to_string())?;
         let mut merged = session;
@@ -1968,13 +2045,9 @@ pub fn agent_supervision_search_answers(
     let query = query.trim().to_lowercase();
     let limit = limit.unwrap_or(50).clamp(1, 200);
     let mut answers = Vec::new();
-    for envelope in load_json_envelopes(&app, &username, &project_id)? {
-        let chat_session_id = value_text(&envelope, &["chat_session_id"]);
-        let updated_at = value_text(&envelope, &["updated_at"]);
-        let runtime = envelope
-            .get("runtime")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+    for (chat_session_id, runtime, updated_at) in
+        canonical_runtime_rows(&app, &username, &project_id)?
+    {
         for detail in build_supervision_details(&chat_session_id, &runtime, &updated_at)? {
             let answer = detail.get("answer").cloned().unwrap_or_else(|| json!({}));
             let haystack = [
@@ -2017,13 +2090,9 @@ pub fn agent_supervision_get_answer(
     } else {
         format!("ans_{answer_id}")
     };
-    for envelope in load_json_envelopes(&app, &username, &project_id)? {
-        let chat_session_id = value_text(&envelope, &["chat_session_id"]);
-        let updated_at = value_text(&envelope, &["updated_at"]);
-        let runtime = envelope
-            .get("runtime")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+    for (chat_session_id, runtime, updated_at) in
+        canonical_runtime_rows(&app, &username, &project_id)?
+    {
         for detail in build_supervision_details(&chat_session_id, &runtime, &updated_at)? {
             let answer = detail.get("answer").cloned().unwrap_or_else(|| json!({}));
             let stored_answer_id = value_text(&answer, &["answer_id"]);
@@ -2507,6 +2576,25 @@ mod tests {
         assert_eq!(after_stale["messages"].as_array().map(Vec::len), Some(2));
         assert_eq!(after_stale["messages"][0]["id"], "user-2");
         assert_eq!(after_stale["messages"][1]["id"], "assistant-2");
+    }
+
+    #[test]
+    fn id_only_message_delete_removes_ids_without_replacing_snapshot() {
+        let existing = json!({
+            "messages": [
+                {"id": "user-1", "role": "user"},
+                {"id": "assistant-1", "role": "assistant"},
+                {"id": "user-2", "role": "user"}
+            ]
+        });
+        let delete = json!({
+            "deleted_message_ids": ["user-1", "assistant-1"]
+        });
+
+        let merged = merge_runtime_payload(Some(&existing), &delete);
+        assert_eq!(merged["messages"].as_array().map(Vec::len), Some(1));
+        assert_eq!(merged["messages"][0]["id"], "user-2");
+        assert_eq!(merged["deleted_message_ids"].as_array().map(Vec::len), Some(2));
     }
 
     #[test]

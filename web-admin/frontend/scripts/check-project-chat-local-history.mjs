@@ -244,7 +244,7 @@ assert.match(
 );
 assert.match(
   projectChatSource,
-  /const dirtyChatRuntimeSessionKeys = new Set\(\)[\s\S]*?function markChatRuntimeDirty/,
+  /const dirtyChatRuntimeSessionKeys = getProjectChatSessionDirtyKeys\(\)[\s\S]*?function markChatRuntimeDirty/,
   "chat runtime persistence must track dirty sessions explicitly",
 );
 assert.match(

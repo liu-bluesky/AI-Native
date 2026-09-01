@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>检查模型供应商数据</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        h1 { color: #4ec9b0; }
+        pre {
+            background: #252526;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            border: 1px solid #3e3e42;
+        }
+        .provider {
+            margin: 20px 0;
+            padding: 15px;
+            background: #2d2d30;
+            border-radius: 5px;
+            border-left: 4px solid #007acc;
+        }
+        .error { color: #f48771; }
+        .success { color: #4ec9b0; }
+        .warning { color: #dcdcaa; }
+        button {
+            padding: 10px 20px;
+            margin: 10px 5px 0 0;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            background: #0e639c;
+            color: white;
+        }
+        button:hover { background: #1177bb; }
+    </style>
+</head>
+<body>
+    <h1>模型供应商数据检查工具</h1>
+    <button onclick="checkData()">检查 localStorage 数据</button>
+    <button onclick="fixBaseUrl()">修复 base_url 字段</button>
+    <button onclick="clearCache()">清除缓存</button>
+
+    <div id="output"></div>
+
+    <script>
+        function checkData() {
+            const output = document.getElementById('output');
+            output.innerHTML = '<h2>正在检查...</h2>';
+
+            try {
+                const key = 'local_entities_llm_providers';
+                const raw = localStorage.getItem(key);
+
+                if (!raw) {
+                    output.innerHTML = '<p class="error">❌ 未找到模型供应商数据</p>';
+                    return;
+                }
+
+                const providers = JSON.parse(raw);
+
+                output.innerHTML = `
+                    <h2 class="success">✓ 找到 ${providers.length} 个模型供应商</h2>
+                `;
+
+                providers.forEach((provider, index) => {
+                    const hasBaseUrl = Boolean(provider.base_url && provider.base_url.trim());
+                    const hasApiKey = Boolean(provider.api_key);
+                    const modelCount = Array.isArray(provider.model_configs) ? provider.model_configs.length : 0;
+
+                    output.innerHTML += `
+                        <div class="provider">
+                            <h3>${index + 1}. ${provider.name || '未命名'}</h3>
+                            <p><strong>ID:</strong> ${provider.id}</p>
+                            <p><strong>Base URL:</strong>
+                                <span class="${hasBaseUrl ? 'success' : 'error'}">
+                                    ${hasBaseUrl ? provider.base_url : '❌ 缺失'}
+                                </span>
+                            </p>
+                            <p><strong>API Key:</strong>
+                                <span class="${hasApiKey ? 'success' : 'warning'}">
+                                    ${hasApiKey ? '已设置' : '未设置'}
+                                </span>
+                            </p>
+                            <p><strong>模型数量:</strong> ${modelCount}</p>
+                            <p><strong>启用状态:</strong> ${provider.enabled !== false ? '✓ 启用' : '✗ 禁用'}</p>
+                            <details>
+                                <summary>查看完整数据</summary>
+                                <pre>${JSON.stringify(provider, null, 2)}</pre>
+                            </details>
+                        </div>
+                    `;
+                });
+
+            } catch (error) {
+                output.innerHTML = `<p class="error">❌ 解析数据失败: ${error.message}</p>`;
+            }
+        }
+
+        function fixBaseUrl() {
+            try {
+                const key = 'local_entities_llm_providers';
+                const raw = localStorage.getItem(key);
+                if (!raw) {
+                    alert('未找到数据');
+                    return;
+                }
+
+                const providers = JSON.parse(raw);
+                let fixed = 0;
+
+                providers.forEach(provider => {
+                    // 如果有 baseUrl 但没有 base_url，复制过去
+                    if (provider.baseUrl && !provider.base_url) {
+                        provider.base_url = provider.baseUrl;
+                        fixed++;
+                    }
+                    // 如果有 apiKey 但没有 api_key，复制过去
+                    if (provider.apiKey && !provider.api_key) {
+                        provider.api_key = provider.apiKey;
+                        fixed++;
+                    }
+                });
+
+                if (fixed > 0) {
+                    localStorage.setItem(key, JSON.stringify(providers));
+                    alert(`✓ 已修复 ${fixed} 个字段问题`);
+                    checkData();
+                } else {
+                    alert('没有需要修复的问题');
+                }
+
+            } catch (error) {
+                alert(`修复失败: ${error.message}`);
+            }
+        }
+
+        function clearCache() {
+            if (confirm('确定要清除模型供应商缓存吗？\n注意：这不会删除数据，只是刷新缓存')) {
+                // 触发 storage 事件，通知其他页面刷新
+                window.dispatchEvent(new StorageEvent('storage', {
+                    key: 'local_entities_llm_providers'
+                }));
+                alert('✓ 已触发缓存刷新事件');
+            }
+        }
+
+        // 页面加载时自动检查
+        window.addEventListener('load', checkData);
+    </script>
+</body>
+</html>

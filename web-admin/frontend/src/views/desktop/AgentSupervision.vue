@@ -615,11 +615,21 @@ async function runSearch() {
     if (exact) {
       await selectAnswer(exact.answer_id);
     } else {
+      console.error("agent supervision answer not found", {
+        projectId: normalizedProjectId,
+        answerId: normalizedAnswerId,
+        resultCount: results.length,
+      });
       detail.value = null;
       resetExecutionFlow();
       errorMessage.value = "本机监管库中没有找到该回答 ID";
     }
   } catch (error) {
+    console.error("agent supervision query failed", {
+      projectId: normalizedProjectId,
+      answerId: normalizedAnswerId,
+      error,
+    });
     detail.value = null;
     resetExecutionFlow();
     errorMessage.value = normalizeError(error, "读取桌面监管库失败");
