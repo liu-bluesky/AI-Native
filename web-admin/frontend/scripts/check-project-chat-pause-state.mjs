@@ -738,4 +738,30 @@ assert.deepEqual(
   "completed sends should keep the normal success finalization path",
 );
 
+assert.match(
+  source,
+  /import \* as nativeDesktopBridge from ["']@\/utils\/native-desktop-bridge\.js["']/,
+  "ProjectChat must namespace-import the native desktop bridge so error-log clicks do not throw in Safari",
+);
+assert.doesNotMatch(
+  source,
+  /openNativeRuntimeLogFile,/,
+  "error-log opener must not be a top-level named import visible to the Vue template",
+);
+assert.match(
+  source,
+  /await nativeDesktopBridge\.openNativeRuntimeLogFile\(\{[\s\S]*workspacePath[\s\S]*path/,
+  "opening a process error log must call the native runtime log opener",
+);
+assert.match(
+  source,
+  /error_record_path[\s\S]*error_log_path/,
+  "process error-log links must prefer persisted runtime-errors records",
+);
+assert.match(
+  tauriSource,
+  /fn allowed_runtime_log_roots[\s\S]*runtime-errors[\s\S]*fn open_runtime_log_file/,
+  "native log opener must allow workspace runtime-errors files",
+);
+
 console.log("project chat pause state checks ok");

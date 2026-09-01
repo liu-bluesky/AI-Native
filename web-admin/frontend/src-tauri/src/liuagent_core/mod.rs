@@ -25,7 +25,7 @@ mod tools;
 mod types;
 mod workspace;
 
-pub use definitions::builtin_tool_definitions;
+pub use definitions::{builtin_tool_definitions, get_builtin_tool_definition};
 pub use file_change_review::{
     accept_change, capture_baseline, list_changes, revert_change, review_diff_inputs,
     FileChangeReviewItem,
@@ -53,11 +53,11 @@ pub use runtime::{
     list_local_runtime_events, list_local_runtime_outbox, load_local_offline_cache,
     recover_local_runtime_state, refresh_local_runtime_job, save_local_offline_cache,
 };
-pub use state::delete_local_chat_session_artifacts;
 pub use runtime::{
     finish_local_chat_run, prepare_local_chat_run, request_local_chat_pause,
     start_local_chat_with_event_sink, try_begin_local_chat_run, upload_provider_file,
 };
+pub use state::delete_local_chat_session_artifacts;
 pub use tools::network::{
     global_web_tool_config_path, project_web_tool_config_path, WEB_TOOL_CONFIG_TEMPLATE,
 };
@@ -114,6 +114,8 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
         );
     }
     let result = match name.as_str() {
+        "list_tools" => list_tools(),
+        "get_tool" => get_tool(&request.arguments),
         "load_plugin_skill" => load_plugin_skill_tool(&request.arguments),
         "resolve_plugin_capability" => resolve_plugin_capability_tool(&request.arguments),
         "list_installed_plugins" => list_installed_plugins(&request.arguments),
@@ -237,6 +239,36 @@ pub(crate) fn execute_tool_with_command_output_sink_and_cancel(
     }
 }
 
+fn list_tools() -> Result<(serde_json::Value, String), ToolError> {
+    let tools = builtin_tool_definitions();
+    Ok((
+        serde_json::json!({
+            "tools": tools,
+            "count": tools.len(),
+            "catalogScope": "registered_builtin_tools",
+            "availability": "Tool definitions are always listed. Configuration, permissions, session mode, and required input are checked only when the tool is called."
+        }),
+        "已返回全部已注册工具目录".to_string(),
+    ))
+}
+
+fn get_tool(arguments: &serde_json::Value) -> Result<(serde_json::Value, String), ToolError> {
+    let name = args::required_string_arg(arguments, "name")?;
+    let definition = get_builtin_tool_definition(&name).ok_or_else(|| {
+        ToolError::new(
+            "tool.not_found",
+            format!("未找到已注册工具：{}", name.trim()),
+        )
+    })?;
+    Ok((
+        serde_json::json!({
+            "tool": definition,
+            "availability": "This definition being registered does not mean configuration, permissions, session mode, or required input are currently satisfied. Those checks run when the tool is called."
+        }),
+        format!("已返回工具 {} 的完整定义", definition.name),
+    ))
+}
+
 fn load_plugin_skill_tool(
     arguments: &serde_json::Value,
 ) -> Result<(serde_json::Value, String), ToolError> {
@@ -262,8 +294,7 @@ fn load_plugin_skill_tool(
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
                 .collect::<std::collections::HashSet<_>>()
-        })
-    {
+        }) {
         let unavailable_tools = document
             .summary
             .required_tool_names
@@ -497,7 +528,9 @@ mod tests {
     #[test]
     fn registers_first_batch_builtin_tools() {
         let tools = builtin_tool_definitions();
-        assert_eq!(tools.len(), 43);
+        assert_eq!(tools.len(), 45);
+        assert!(tools.iter().any(|item| item.name == "list_tools"));
+        assert!(tools.iter().any(|item| item.name == "get_tool"));
         assert!(tools.iter().any(|item| item.name == "load_plugin_skill"));
         assert!(tools
             .iter()
@@ -541,6 +574,53 @@ mod tests {
         for name in ["list_mcp_tools", "read_mcp_resource", "call_mcp_tool"] {
             assert!(!tools.iter().any(|item| item.name == name));
         }
+    }
+
+    #[test]
+    fn tool_catalog_lists_image_tools_without_runtime_configuration() {
+        let result = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_list_tools".to_string()),
+            name: "list_tools".to_string(),
+            arguments: json!({}),
+            workspace_path: ".".to_string(),
+            permission_decision: None,
+        });
+
+        assert!(result.ok, "{}", result.error);
+        assert_eq!(result.content["catalogScope"], "registered_builtin_tools");
+        assert!(result.content["tools"]
+            .as_array()
+            .expect("tool catalog array")
+            .iter()
+            .any(|tool| tool["name"] == "generate_image"));
+        assert!(result.content["tools"]
+            .as_array()
+            .expect("tool catalog array")
+            .iter()
+            .any(|tool| tool["name"] == "edit_image"));
+    }
+
+    #[test]
+    fn get_tool_returns_registered_definition_or_not_found() {
+        let found = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_get_edit_image".to_string()),
+            name: "get_tool".to_string(),
+            arguments: json!({ "name": "edit_image" }),
+            workspace_path: ".".to_string(),
+            permission_decision: None,
+        });
+        assert!(found.ok, "{}", found.error);
+        assert_eq!(found.content["tool"]["name"], "edit_image");
+
+        let missing = execute_tool(ToolExecutionRequest {
+            tool_call_id: Some("call_get_missing_tool".to_string()),
+            name: "get_tool".to_string(),
+            arguments: json!({ "name": "not_a_registered_tool" }),
+            workspace_path: ".".to_string(),
+            permission_decision: None,
+        });
+        assert!(!missing.ok);
+        assert_eq!(missing.error_code, "tool.not_found");
     }
 
     #[test]

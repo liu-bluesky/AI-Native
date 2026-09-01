@@ -96,10 +96,15 @@ assert.match(
   /const mediaToolNames = new Set\(\[[\s\S]*?"generate_image",[\s\S]*?"edit_image"/,
   "edit_image artifacts must be collected by the structured media renderer",
 );
+assert.doesNotMatch(
+  projectChatSource,
+  /persistentUploadImageUrls/,
+  "uploaded images must not be converted to data URLs on the conversation send path",
+);
 assert.match(
   projectChatSource,
-  /buildPersistentUploadMediaUrls\([\s\S]*?persistentUploadImageUrls/,
-  "uploaded image previews must be materialized before message persistence",
+  /buildPersistentUploadMediaUrls\([\s\S]*?"audio"/,
+  "uploaded audio previews may still be materialized before message persistence",
 );
 assert.match(
   projectChatSource,

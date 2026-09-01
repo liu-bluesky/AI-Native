@@ -1710,6 +1710,19 @@ fn open_external_url(url: String) -> Result<bool, String> {
     open_external_url_with_system(parsed.as_str())
 }
 
+fn allowed_runtime_log_roots(workspace_root: &Path) -> Vec<PathBuf> {
+    ["desktop-agent-runtime", "runtime-errors"]
+        .into_iter()
+        .filter_map(|segment| {
+            workspace_root
+                .join(".ai-employee")
+                .join(segment)
+                .canonicalize()
+                .ok()
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn open_runtime_log_file(workspace_path: String, path: String) -> Result<bool, String> {
     let workspace_root = PathBuf::from(workspace_path.trim());
@@ -1717,15 +1730,14 @@ fn open_runtime_log_file(workspace_path: String, path: String) -> Result<bool, S
     if workspace_root.as_os_str().is_empty() || requested.as_os_str().is_empty() {
         return Err("缺少运行日志路径".to_string());
     }
-    let runtime_root = workspace_root
-        .join(".ai-employee")
-        .join("desktop-agent-runtime")
-        .canonicalize()
-        .map_err(|err| format!("无法定位本地运行日志目录：{err}"))?;
     let requested = requested
         .canonicalize()
         .map_err(|err| format!("错误日志不存在或无法打开：{err}"))?;
-    if !requested.starts_with(&runtime_root) || !requested.is_file() {
+    let allowed_roots = allowed_runtime_log_roots(&workspace_root);
+    if allowed_roots.is_empty() {
+        return Err("无法定位本地运行日志目录".to_string());
+    }
+    if !requested.is_file() || !allowed_roots.iter().any(|root| requested.starts_with(root)) {
         return Err("只允许打开当前工作区的运行日志文件".to_string());
     }
 
@@ -3464,6 +3476,28 @@ mod tests {
             "e794a8e688b72d31"
         );
         assert_eq!(normalize_project_chat_asset_kind("", "video/mp4"), "video");
+    }
+
+    #[test]
+    fn runtime_log_opener_allows_runtime_errors_and_desktop_runtime() {
+        let root = std::env::temp_dir().join(format!(
+            "ai-employee-runtime-log-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let runtime_dir = root.join(".ai-employee").join("desktop-agent-runtime");
+        let error_dir = root.join(".ai-employee").join("runtime-errors");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        fs::create_dir_all(&error_dir).unwrap();
+        let roots = allowed_runtime_log_roots(&root);
+        let canonical_runtime = runtime_dir.canonicalize().unwrap();
+        let canonical_errors = error_dir.canonicalize().unwrap();
+        assert!(roots.iter().any(|item| item == &canonical_runtime));
+        assert!(roots.iter().any(|item| item == &canonical_errors));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

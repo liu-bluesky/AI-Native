@@ -1274,12 +1274,131 @@ fn collect_execution_cycle_steps(
     steps
 }
 
+fn is_inline_media_data_url(value: &str) -> bool {
+    value.trim().to_ascii_lowercase().starts_with("data:")
+}
+
+fn compact_supervision_locator(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || is_inline_media_data_url(trimmed) {
+        return String::new();
+    }
+    clipped(trimmed, 320)
+}
+
+fn compact_supervision_attachment_item(item: &Value) -> Option<Value> {
+    let asset_id = compact_supervision_locator(&value_text(
+        item,
+        &["assetId", "asset_id", "attachmentId", "attachment_id", "id"],
+    ));
+    let path = compact_supervision_locator(&value_text(
+        item,
+        &["localPath", "local_path", "path", "assetUri", "asset_uri"],
+    ));
+    let routing_mode =
+        compact_supervision_locator(&value_text(item, &["routingMode", "routing_mode"]));
+    let mut sha256 = compact_supervision_locator(&value_text(item, &["sha256", "digest"]));
+    if sha256.is_empty() {
+        if asset_id.starts_with("sha256:") {
+            sha256 = asset_id.clone();
+        } else if path.starts_with("sha256:") {
+            sha256 = path.clone();
+        }
+    }
+    if sha256.is_empty() && asset_id.is_empty() && path.is_empty() {
+        return None;
+    }
+    let mut summary = serde_json::Map::new();
+    if !sha256.is_empty() {
+        summary.insert("sha256".to_string(), Value::String(sha256));
+    }
+    if !asset_id.is_empty() {
+        summary.insert("assetId".to_string(), Value::String(asset_id));
+    }
+    if !path.is_empty() {
+        summary.insert("path".to_string(), Value::String(path));
+    }
+    if !routing_mode.is_empty() {
+        summary.insert("routingMode".to_string(), Value::String(routing_mode));
+    }
+    Some(Value::Object(summary))
+}
+
+fn compact_supervision_media_locator(value: &str) -> Option<Value> {
+    let locator = compact_supervision_locator(value);
+    if locator.is_empty() {
+        return None;
+    }
+    if locator.starts_with("sha256:") {
+        return compact_supervision_attachment_item(&json!({
+            "sha256": locator,
+            "assetId": locator
+        }));
+    }
+    compact_supervision_attachment_item(&json!({ "path": locator }))
+}
+
+fn compact_supervision_request_attachments(message: &Value) -> Vec<Value> {
+    let mut items = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push_item = |item: Value, items: &mut Vec<Value>| {
+        let key = [
+            value_text(&item, &["sha256"]),
+            value_text(&item, &["assetId"]),
+            value_text(&item, &["path"]),
+        ]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .unwrap_or_else(|| item.to_string());
+        if seen.insert(key) {
+            items.push(item);
+        }
+    };
+    for key in ["attachments", "mediaAssets", "media_assets"] {
+        if let Some(array) = message.get(key).and_then(Value::as_array) {
+            for item in array {
+                if let Some(summary) = compact_supervision_attachment_item(item) {
+                    push_item(summary, &mut items);
+                }
+            }
+        }
+    }
+    for key in ["images", "videos", "audios"] {
+        if let Some(array) = message.get(key).and_then(Value::as_array) {
+            for item in array {
+                let summary = if let Some(text) = item.as_str() {
+                    compact_supervision_media_locator(text)
+                } else {
+                    compact_supervision_attachment_item(item)
+                };
+                if let Some(summary) = summary {
+                    push_item(summary, &mut items);
+                }
+            }
+        }
+    }
+    items
+}
+
+fn compact_supervision_request_snapshot(previous_user_message: &Value) -> String {
+    if !previous_user_message.is_object() {
+        return "{}".to_string();
+    }
+    let snapshot = json!({
+        "content": clipped(&value_text(previous_user_message, &["content"]), 240),
+        "attachments": compact_supervision_request_attachments(previous_user_message)
+    });
+    serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".to_string())
+}
+
 fn collect_supervision_steps(
     message: &Value,
     assistant_message_id: &str,
-    question_preview: &str,
+    previous_user_message: &Value,
     answer_status: &str,
 ) -> Vec<SupervisionStep> {
+    let question_preview = value_text(previous_user_message, &["content"]);
+    let request_snapshot = compact_supervision_request_snapshot(previous_user_message);
     let started_at = value_i64(
         message,
         &[
@@ -1303,16 +1422,20 @@ fn collect_supervision_steps(
         step_type: "request".to_string(),
         status: "completed".to_string(),
         title: "用户问题".to_string(),
-        summary: clipped(question_preview, 240),
-        detail_preview: clipped(question_preview, 1200),
+        summary: clipped(&question_preview, 240),
+        detail_preview: clipped(&question_preview, 1200),
         tool_name: String::new(),
         call_id: String::new(),
         model_name: String::new(),
         provider_id: String::new(),
         provider_name: String::new(),
         model_step_index: 0,
-        context_snapshot_json: "{}".to_string(),
-        context_message_count: 0,
+        context_snapshot_json: request_snapshot,
+        context_message_count: if previous_user_message.is_object() {
+            1
+        } else {
+            0
+        },
         context_input_tokens: 0,
         context_token_source: String::new(),
         model_input_tokens: 0,
@@ -1524,14 +1647,14 @@ fn build_supervision_details(
         .cloned()
         .unwrap_or_default();
     let mut previous_user_id = String::new();
-    let mut previous_user_content = String::new();
+    let mut previous_user_message = json!({});
     let mut details = Vec::new();
     for message in messages {
         let role = value_text(&message, &["role"]).to_lowercase();
         let message_id = value_text(&message, &["id"]);
         if role == "user" {
             previous_user_id = message_id;
-            previous_user_content = value_text(&message, &["content"]);
+            previous_user_message = message;
             continue;
         }
         if message_id.is_empty() {
@@ -1585,8 +1708,9 @@ fn build_supervision_details(
             nested_run_id
         };
         let request_id = find_nested_text(&message, &["request_id", "requestId"]);
+        let previous_user_content = value_text(&previous_user_message, &["content"]);
         let collected_steps =
-            collect_supervision_steps(&message, &message_id, &previous_user_content, &status);
+            collect_supervision_steps(&message, &message_id, &previous_user_message, &status);
         let model_round_count = collected_steps
             .iter()
             .filter(|step| step.step_type == "model_call")
@@ -1669,8 +1793,7 @@ fn upsert_supervision_answer_snapshots(
                 Value::String(project_id.to_string()),
             );
         }
-        let detail_json =
-            serde_json::to_string(&archived_detail).map_err(|err| err.to_string())?;
+        let detail_json = serde_json::to_string(&archived_detail).map_err(|err| err.to_string())?;
         connection
             .execute(
                 "INSERT INTO desktop_agent_supervision_answers
@@ -1716,7 +1839,12 @@ fn archived_supervision_answer(
                     OR answer_id = ?4 OR assistant_message_id = ?4)
              ORDER BY updated_at DESC
              LIMIT 1",
-            params![username, project_id.unwrap_or_default(), answer_id, alternate_answer_id],
+            params![
+                username,
+                project_id.unwrap_or_default(),
+                answer_id,
+                alternate_answer_id
+            ],
             |row| row.get::<_, String>(0),
         )
         .optional()
@@ -1750,7 +1878,8 @@ fn canonical_runtime_rows(
         .map_err(|err| err.to_string())?;
     rows.map(|row| {
         let (chat_session_id, runtime_json, updated_at) = row.map_err(|err| err.to_string())?;
-        let runtime = serde_json::from_str::<Value>(&runtime_json).map_err(|err| err.to_string())?;
+        let runtime =
+            serde_json::from_str::<Value>(&runtime_json).map_err(|err| err.to_string())?;
         Ok((chat_session_id, runtime, updated_at))
     })
     .collect()
@@ -1810,8 +1939,7 @@ fn list_canonical_sessions(
     };
     let mut sessions = Vec::new();
     for row in rows {
-        let (stored_project_id, chat_session_id, session_json, updated_at) =
-            row;
+        let (stored_project_id, chat_session_id, session_json, updated_at) = row;
         let session =
             serde_json::from_str::<Value>(&session_json).map_err(|err| err.to_string())?;
         let mut merged = session;
@@ -2219,12 +2347,9 @@ pub fn agent_supervision_get_answer(
     let project_id = normalized(&project_id, "项目 ID")?;
     let answer_id = normalized(&answer_id, "回答 ID")?;
     let connection = open_canonical_database(&app)?;
-    if let Some(detail) = archived_supervision_answer(
-        &connection,
-        &username,
-        Some(&project_id),
-        &answer_id,
-    )? {
+    if let Some(detail) =
+        archived_supervision_answer(&connection, &username, Some(&project_id), &answer_id)?
+    {
         return Ok(Some(detail));
     }
     let alternate_answer_id = if answer_id.starts_with("ans_") {
@@ -2270,7 +2395,11 @@ pub fn agent_supervision_find_answer(
     if let Some(detail) = archived_supervision_answer(
         &connection,
         &username,
-        if project_id.is_empty() { None } else { Some(&project_id) },
+        if project_id.is_empty() {
+            None
+        } else {
+            Some(&project_id)
+        },
         &answer_id,
     )? {
         return Ok(Some(json!({
@@ -2773,7 +2902,10 @@ mod tests {
         let merged = merge_runtime_payload(Some(&existing), &delete);
         assert_eq!(merged["messages"].as_array().map(Vec::len), Some(1));
         assert_eq!(merged["messages"][0]["id"], "user-2");
-        assert_eq!(merged["deleted_message_ids"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            merged["deleted_message_ids"].as_array().map(Vec::len),
+            Some(2)
+        );
     }
 
     #[test]
@@ -2834,6 +2966,68 @@ mod tests {
         assert_eq!(model_step["provider_name"], "OpenAI");
         assert_eq!(model_step["model_step_index"], 1);
         assert_eq!(model_step["model_total_tokens"], 150);
+    }
+
+    #[test]
+    fn supervision_request_step_keeps_compact_attachment_snapshot() {
+        let runtime = json!({
+            "messages": [
+                {
+                    "id": "user-1",
+                    "role": "user",
+                    "content": "腹部调整平坦",
+                    "images": [
+                        "sha256:b5d2af68bcd6a658f03be709132d21a196de43b6923d8ff009642e7ff503faa8",
+                        "data:image/png;base64,AAAA"
+                    ],
+                    "attachments": [{
+                        "attachmentId": "sha256:b5d2af68bcd6a658f03be709132d21a196de43b6923d8ff009642e7ff503faa8",
+                        "assetId": "sha256:b5d2af68bcd6a658f03be709132d21a196de43b6923d8ff009642e7ff503faa8",
+                        "localPath": "/Volumes/work_mac_1_5T/work/xunke/.ai-employee/assets/photo.png",
+                        "routingMode": "inline_content",
+                        "dataUrl": "data:image/png;base64,AAAA"
+                    }]
+                },
+                {
+                    "id": "chat-local-1788249832073-w7r2ut",
+                    "answerId": "ans_chat-local-1788249832073-w7r2ut",
+                    "role": "assistant",
+                    "content": "已处理"
+                }
+            ]
+        });
+        let details =
+            build_supervision_details("local-session-img", &runtime, "2026-09-01T00:00:00Z")
+                .expect("build supervision details");
+        assert_eq!(details.len(), 1);
+        let request_step = details[0]["steps"]
+            .as_array()
+            .and_then(|steps| steps.iter().find(|step| step["step_type"] == "request"))
+            .expect("request step");
+        assert_eq!(
+            request_step["step_id"],
+            "step:chat-local-1788249832073-w7r2ut:request"
+        );
+        let snapshot = &request_step["context_snapshot"];
+        assert_eq!(snapshot["content"], "腹部调整平坦");
+        assert_eq!(snapshot["attachments"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            snapshot["attachments"][0]["sha256"],
+            "sha256:b5d2af68bcd6a658f03be709132d21a196de43b6923d8ff009642e7ff503faa8"
+        );
+        assert_eq!(
+            snapshot["attachments"][0]["assetId"],
+            "sha256:b5d2af68bcd6a658f03be709132d21a196de43b6923d8ff009642e7ff503faa8"
+        );
+        assert_eq!(
+            snapshot["attachments"][0]["path"],
+            "/Volumes/work_mac_1_5T/work/xunke/.ai-employee/assets/photo.png"
+        );
+        assert_eq!(snapshot["attachments"][0]["routingMode"], "inline_content");
+        assert!(snapshot["attachments"][0].get("dataUrl").is_none());
+        let serialized = snapshot.to_string();
+        assert!(!serialized.contains("data:image"));
+        assert!(!serialized.contains("AAAA"));
     }
 
     #[test]

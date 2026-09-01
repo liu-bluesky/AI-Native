@@ -2170,6 +2170,7 @@ import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
 } from "@/utils/workspace-picker.js";
+import * as nativeDesktopBridge from "@/utils/native-desktop-bridge.js";
 import {
   ackNativeLiuAgentRuntimeOutbox,
   acceptNativeWorkspaceFileChange,
@@ -2312,9 +2313,11 @@ import {
   buildImplicitRecentImageReferences,
   buildContextReferenceAttachments,
   buildContextReferencesPrompt,
+  compactHistoryMediaReferences,
   contextReferenceTypeLabel,
+  enrichContextReferenceWithMediaAsset,
   mergeContextReferences,
-  normalizeContextReference,
+  stripInlineMediaDataUrls,
 } from "@/modules/project-chat/mappers/contextReferenceMappers.js";
 import {
   buildExternalAgentWarmupKey,
@@ -9276,6 +9279,10 @@ function sanitizeLocalLiuAgentPathSegment(value = "") {
 
 function localLiuAgentRuntimeErrorLogPath(event = {}, context = {}) {
   const payload = localLiuAgentRuntimeEventPayload(event);
+  const recordedPath = String(
+    payload?.error_record_path || payload?.errorRecordPath || "",
+  ).trim();
+  if (recordedPath) return recordedPath;
   if (
     String(event?.type || "").trim() !== "tool_result" ||
     payload?.ok !== false
@@ -17932,9 +17939,21 @@ function messageProcessEntryCodeLabel(entry = {}) {
 
 function messageProcessEntryErrorLogPath(entry = {}) {
   const payload = messageProcessEntryPayload(entry);
-  const path = String(
-    payload?.error_log_path || payload?.errorLogPath || "",
-  ).trim();
+  const recordedPaths = [
+    payload?.error_record_path,
+    payload?.errorRecordPath,
+    payload?.error_log_path,
+    payload?.errorLogPath,
+    ...(Array.isArray(payload?.error_record_paths)
+      ? payload.error_record_paths
+      : []),
+    ...(Array.isArray(payload?.errorRecordPaths)
+      ? payload.errorRecordPaths
+      : []),
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  const path = recordedPaths[0] || "";
   return path && payload?.ok === false ? path : "";
 }
 
@@ -17945,7 +17964,7 @@ async function openMessageProcessEntryErrorLog(entry = {}) {
     payload?.workspace_path || payload?.workspacePath || "",
   ).trim();
   try {
-    await openNativeRuntimeLogFile({
+    await nativeDesktopBridge.openNativeRuntimeLogFile({
       workspacePath: workspacePath || localLiuAgentWorkspacePath(),
       path,
     });
@@ -29083,53 +29102,6 @@ function handleFileChange(file) {
   return true;
 }
 
-function imageReferenceFileName(reference, mimeType = "image/png") {
-  const label = String(reference?.label || "历史图片").trim();
-  const safeLabel = label.replace(/[\\/:*?"<>|\n\r]+/g, "_").trim();
-  const extension = String(mimeType || "")
-    .split("/")
-    .pop()
-    .split(";")[0]
-    .trim()
-    .toLowerCase();
-  return `${safeLabel || "历史图片"}.${extension || "png"}`;
-}
-
-async function buildImageUploadFromContextReference(reference) {
-  const sourceUrl = await materializePersistentMediaUrl(reference?.url, {
-    kind: "image",
-  });
-  if (!sourceUrl || sourceUrl.startsWith("blob:")) {
-    throw new Error("历史图片没有可持久化的地址");
-  }
-  const response = await fetch(sourceUrl);
-  if (!response.ok) {
-    throw new Error(`历史图片读取失败（HTTP ${response.status}）`);
-  }
-  const blob = await response.blob();
-  const mimeType = String(blob.type || reference?.mimeType || "image/png")
-    .trim()
-    .toLowerCase();
-  if (!mimeType.startsWith("image/")) {
-    throw new Error("历史引用不是可编辑的图片文件");
-  }
-  const name = imageReferenceFileName(reference, mimeType);
-  let raw;
-  try {
-    raw = new File([blob], name, { type: mimeType });
-  } catch (_error) {
-    raw = blob;
-    Object.defineProperty(raw, "name", { value: name });
-  }
-  return {
-    raw,
-    name,
-    contextReferenceId: String(reference?.id || "").trim(),
-    sourceReferenceUrl: sourceUrl,
-    source: "conversation_reference",
-  };
-}
-
 function resolveUploadProcessingLabel(kind) {
   if (shouldAttemptProviderFileUpload()) return "将上传给模型供应商";
   const mode = currentModelAttachmentMode.value;
@@ -29442,29 +29414,86 @@ function messageContextRefLabel(type, index = 0) {
   return `${contextReferenceTypeLabel(type)}${suffix}`;
 }
 
+function messageMediaAssetsForContext(message, kind) {
+  return (
+    Array.isArray(message?.mediaAssets)
+      ? message.mediaAssets
+      : Array.isArray(message?.media_assets)
+        ? message.media_assets
+        : []
+  ).filter((asset) => String(asset?.kind || "").trim() === kind);
+}
+
+function buildMediaContextReference(message, type, source = {}, index = 0) {
+  return enrichContextReferenceWithMediaAsset(
+    {
+      type,
+      messageId: String(message?.id || "").trim(),
+      id: source.assetId || source.asset_id || source.id,
+      url:
+        source.assetUri ||
+        source.displayUrl ||
+        source.url ||
+        source.localPath ||
+        source.local_path,
+      assetUri: source.assetUri || source.asset_uri || source.displayUrl,
+      localPath: source.localPath || source.local_path,
+      label: source.label || messageContextRefLabel(type, index),
+      mimeType: source.mimeType || source.mime_type || `${type}/*`,
+    },
+    message,
+    index,
+  );
+}
+
+function buildTypedMediaContextReferences(message, type, urls = []) {
+  const assets = messageMediaAssetsForContext(message, type);
+  const sources = assets.length
+    ? assets
+    : (Array.isArray(urls) ? urls : []).map((url) => ({ url }));
+  return sources
+    .map((source, index) =>
+      buildMediaContextReference(message, type, source, index),
+    )
+    .filter(Boolean);
+}
+
 function buildAttachmentContextReference(message, attachment = {}, index = 0) {
   const name = String(attachment?.name || "").trim();
-  return normalizeContextReference({
-    type: "file",
-    messageId: String(message?.id || "").trim(),
-    url: String(
-      attachment?.url ||
+  return enrichContextReferenceWithMediaAsset(
+    {
+      type: "file",
+      messageId: String(message?.id || "").trim(),
+      id:
+        attachment?.attachmentId ||
+        attachment?.attachment_id ||
+        attachment?.assetId ||
+        attachment?.asset_id,
+      url:
+        attachment?.url ||
         attachment?.download_url ||
         attachment?.downloadUrl ||
         attachment?.file_url ||
+        attachment?.assetUri ||
+        attachment?.asset_uri ||
         "",
-    ).trim(),
-    label: name || messageContextRefLabel("file", index),
-    content: String(
-      attachment?.content ||
-        attachment?.extracted_text ||
-        attachment?.summary ||
-        "",
-    ).trim(),
-    mimeType: String(
-      attachment?.mime_type || attachment?.mimeType || "",
-    ).trim(),
-  });
+      assetUri: attachment?.assetUri || attachment?.asset_uri,
+      localPath: attachment?.localPath || attachment?.local_path,
+      label: name || messageContextRefLabel("file", index),
+      content: String(
+        attachment?.content ||
+          attachment?.extractedText ||
+          attachment?.extracted_text ||
+          attachment?.summary ||
+          "",
+      ).trim(),
+      mimeType: String(
+        attachment?.mime_type || attachment?.mimeType || "",
+      ).trim(),
+    },
+    message,
+    index,
+  );
 }
 
 function buildMessageContextReferences(message = {}) {
@@ -29480,34 +29509,28 @@ function buildMessageContextReferences(message = {}) {
       content,
     });
   }
-  for (const [index, url] of imageUrls.entries()) {
-    references.push({
-      type: "image",
-      messageId,
-      url,
-      label: messageContextRefLabel("image", index),
-      mimeType: "image/*",
-    });
-  }
-  for (const [index, url] of extractVideos(message).entries()) {
-    references.push({
-      type: "video",
-      messageId,
-      url,
-      label: messageContextRefLabel("video", index),
-      mimeType: "video/*",
-    });
-  }
-  for (const [index, url] of extractAudios(message).entries()) {
-    references.push({
-      type: "audio",
-      messageId,
-      url,
-      label: messageContextRefLabel("audio", index),
-      mimeType: "audio/*",
-    });
-  }
-  for (const [index, attachment] of extractAttachments(message).entries()) {
+  references.push(
+    ...buildTypedMediaContextReferences(message, "image", imageUrls),
+  );
+  references.push(
+    ...buildTypedMediaContextReferences(message, "video", extractVideos(message)),
+  );
+  references.push(
+    ...buildTypedMediaContextReferences(message, "audio", extractAudios(message)),
+  );
+  const attachments = (
+    Array.isArray(message?.attachments) ? message.attachments : []
+  )
+    .map((attachment) =>
+      attachment && typeof attachment === "object"
+        ? attachment
+        : { name: String(attachment || "").trim() },
+    )
+    .filter((attachment) => String(attachment?.name || "").trim());
+  const sourceAttachments = attachments.length
+    ? attachments
+    : extractAttachments(message);
+  for (const [index, attachment] of sourceAttachments.entries()) {
     if (attachment?.kind === "image" && imageUrls.length) continue;
     references.push(
       buildAttachmentContextReference(message, attachment, index),
@@ -29565,14 +29588,13 @@ function openMessageContextMenu(event, message) {
 
 function openMediaContextMenu(event, message, type, url, index = 0) {
   showMessageContextMenu(event, [
-    {
+    buildMediaContextReference(
+      message,
       type,
-      messageId: String(message?.id || "").trim(),
-      url,
-      label: messageContextRefLabel(type, index),
-      mimeType: `${type}/*`,
-    },
-  ]);
+      { url, label: messageContextRefLabel(type, index) },
+      index,
+    ),
+  ].filter(Boolean));
 }
 
 function openAttachmentContextMenu(event, message, attachment, index = 0) {
@@ -29588,47 +29610,40 @@ async function appendContextMenuSelection() {
   closeMessageContextMenu();
   if (!references.length) return;
 
-  let addedCount = 0;
-  let failedImageCount = 0;
-  const nonImageReferences = references.filter(
-    (reference) => reference?.type !== "image",
-  );
-  if (nonImageReferences.length) {
-    const previousCount = composerContextRefs.value.length;
-    composerContextRefs.value = mergeContextReferences(
-      composerContextRefs.value,
-      nonImageReferences,
+  const rows = Array.isArray(messages.value) ? messages.value : [];
+  const enriched = [];
+  let failedMediaCount = 0;
+  for (const [index, reference] of references.entries()) {
+    const message = rows.find(
+      (row) =>
+        String(row?.id || "").trim() ===
+        String(reference?.messageId || "").trim(),
     );
-    addedCount += composerContextRefs.value.length - previousCount;
-  }
-
-  for (const reference of references.filter(
-    (item) => item?.type === "image",
-  )) {
-    const referenceId = String(reference?.id || "").trim();
-    const sourceUrl = String(reference?.url || "").trim();
-    const alreadyAdded = uploadFiles.value.some(
-      (item) =>
-        String(item?.contextReferenceId || "").trim() === referenceId ||
-        String(item?.sourceReferenceUrl || "").trim() === sourceUrl,
+    const item = enrichContextReferenceWithMediaAsset(
+      reference,
+      message,
+      index,
     );
-    if (alreadyAdded) continue;
-    try {
-      const uploadItem = await buildImageUploadFromContextReference(reference);
-      if (handleFileChange(uploadItem)) {
-        addedCount += 1;
-      }
-    } catch (error) {
-      failedImageCount += 1;
-      ElMessage.error(
-        error?.message || "历史图片无法读取，请重新拖拽原图后再编辑",
-      );
+    if (item) {
+      enriched.push(item);
+      continue;
+    }
+    if (["image", "video", "audio", "file"].includes(reference?.type)) {
+      failedMediaCount += 1;
     }
   }
 
+  const previousCount = composerContextRefs.value.length;
+  composerContextRefs.value = mergeContextReferences(
+    composerContextRefs.value,
+    enriched,
+  );
+  const addedCount = composerContextRefs.value.length - previousCount;
   if (addedCount > 0) {
     ElMessage.success(`已添加 ${addedCount} 项到 liuAgent 对话`);
-  } else if (!failedImageCount) {
+  } else if (failedMediaCount) {
+    ElMessage.error("历史媒体无法解析为本地资产，请重新拖拽原文件后再编辑");
+  } else {
     ElMessage.info("该内容已在当前会话上下文中");
   }
   void focusChatComposerTextarea();
@@ -30207,53 +30222,33 @@ async function persistUserUploadAssetsForChatMessage({
   return { assets: persistedAssets, attachments: nextAttachments };
 }
 
-async function materializePersistentContextReferences(references = []) {
-  return Promise.all(
-    (Array.isArray(references) ? references : []).map(async (reference) => {
-      if (
-        !reference ||
-        !["image", "video", "audio", "file"].includes(reference.type)
-      ) {
-        return reference;
-      }
-      return {
-        ...reference,
-        url: await materializePersistentMediaUrl(reference.url, {
-          kind: reference.type,
-        }),
-      };
-    }),
+function findMessageForContextReference(reference = {}) {
+  const messageId = String(reference?.messageId || "").trim();
+  if (!messageId) return null;
+  return (
+    (Array.isArray(messages.value) ? messages.value : []).find(
+      (row) => String(row?.id || "").trim() === messageId,
+    ) || null
   );
+}
+
+async function materializePersistentContextReferences(references = []) {
+  return (Array.isArray(references) ? references : [])
+    .map((reference, index) =>
+      enrichContextReferenceWithMediaAsset(
+        reference,
+        findMessageForContextReference(reference),
+        index,
+      ),
+    )
+    .filter(Boolean);
 }
 
 async function prepareContextReferenceAttachments(references = []) {
   const normalizedReferences = await materializePersistentContextReferences(
     references,
   );
-  const preparedReferences = await Promise.all(
-    normalizedReferences.map(async (reference) => {
-      if (
-        !reference?.url ||
-        !["image", "video", "audio", "file"].includes(reference.type)
-      ) {
-        return reference;
-      }
-      const response = await fetch(reference.url);
-      if (!response.ok) {
-        throw new Error(`历史${reference.type}读取失败（HTTP ${response.status}）`);
-      }
-      const blob = await response.blob();
-      const dataUrl = await readBlobAsDataUrl(blob);
-      if (!dataUrl) throw new Error(`历史${reference.type}内容读取为空`);
-      return {
-        ...reference,
-        providerFileId: "",
-        dataUrl,
-        remoteUrl: reference.url,
-      };
-    }),
-  );
-  return buildContextReferenceAttachments(preparedReferences);
+  return buildContextReferenceAttachments(normalizedReferences);
 }
 
 async function buildPersistentUploadMediaUrls(
@@ -30379,17 +30374,21 @@ async function buildLocalLiuAgentAttachments(uploadItems = []) {
         });
         continue;
       }
-      if (
-        (isImage &&
-          (routingMode === "inline_image" || mediaImageToolConfigured)) ||
-        isAudio
-      ) {
+      if (isAudio) {
         base.dataUrl = await readFileAsDataUrl(rawFile);
         base.extractionStatus = base.dataUrl
-          ? isAudio
-            ? "audio_data_url"
-            : "image_data_url"
+          ? "audio_data_url"
           : "metadata_only";
+      } else if (isImage) {
+        if (
+          (routingMode === "inline_image" || mediaImageToolConfigured) &&
+          !hasNativeDesktopBridge()
+        ) {
+          base.dataUrl = await readFileAsDataUrl(rawFile);
+          base.extractionStatus = base.dataUrl
+            ? "image_data_url"
+            : "metadata_only";
+        }
       } else if (remainingTextBudget > 0) {
         const extracted = String(
           (await extractTextFromFile(rawFile)) || "",
@@ -30557,23 +30556,25 @@ function toHistoryRows(sourceMessages, limit = 20) {
       const role = String(item.role || "")
         .trim()
         .toLowerCase();
-      const content = [
-        String(item.content || "").trim(),
-        buildContextReferencesPrompt(
-          item.contextRefs || item.context_refs || [],
-        ),
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      const content = stripInlineMediaDataUrls(
+        [
+          String(item.content || "").trim(),
+          buildContextReferencesPrompt(
+            item.contextRefs || item.context_refs || [],
+          ),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      );
       const sourceKind = localLiuAgentHistorySourceKind(item);
       const diagnostic = shouldMarkLocalLiuAgentHistoryDiagnostic(item);
       return {
         messageId: String(item.id || "").trim(),
         role,
         content,
-        images: extractImages(item),
-        videos: extractVideos(item),
-        audios: extractAudios(item),
+        images: compactHistoryMediaReferences(item, "image"),
+        videos: compactHistoryMediaReferences(item, "video"),
+        audios: compactHistoryMediaReferences(item, "audio"),
         reasoningContent: String(
           item.reasoningContent || item.reasoning_content || "",
         ).trim(),
@@ -36441,6 +36442,16 @@ async function sendLocalLiuAgentChatRequest({
             ? "warning"
             : "info",
     autoExpand: employeeCreationProtocolRecovery || !ok,
+    payload:
+      !ok && !shouldAutoResume && errorRecordPaths.length
+        ? {
+            ok: false,
+            error_log_path: errorRecordPaths[0],
+            error_record_path: errorRecordPaths[0],
+            error_record_paths: errorRecordPaths,
+            workspace_path: workspacePath,
+          }
+        : undefined,
   });
   if (!shouldAutoResume && !employeeCreationProtocolRecovery) {
     collapseMessageProcessAfterFinalAnswer(assistantMessage);
@@ -37138,12 +37149,10 @@ async function doSend(options = {}) {
       .filter(Boolean),
   ]);
 
-  let localLiuAgentAttachments = files.length || activeContextRefs.length
-    ? [
-        ...(await buildLocalLiuAgentAttachments(uploadFiles.value)),
-        ...(await prepareContextReferenceAttachments(activeContextRefs)),
-      ]
-    : [];
+  const localLiuAgentAttachments = [
+    ...(await buildLocalLiuAgentAttachments(uploadFiles.value)),
+    ...buildContextReferenceAttachments(activeContextRefs),
+  ];
   const attachmentErrors = localLiuAgentAttachments
     .filter((attachment) => attachment?.extractionStatus === "error")
     .map((attachment) => `${attachment.name || "附件"}：${attachment.error || "处理失败"}`);
@@ -37162,34 +37171,19 @@ async function doSend(options = {}) {
     ElMessage.error("附件尚未完成当前供应商上传，未发送");
     return;
   }
-  let persistentUploadImageUrls = [];
   let persistentUploadAudioUrls = [];
   if (files.length || activeContextRefs.length) {
     try {
-      [persistentUploadImageUrls, persistentUploadAudioUrls] = await Promise.all([
-        buildPersistentUploadMediaUrls(
-          uploadFiles.value,
-          localLiuAgentAttachments,
-          "image",
-        ),
-        buildPersistentUploadMediaUrls(
-          uploadFiles.value,
-          localLiuAgentAttachments,
-          "audio",
-        ),
-      ]);
+      persistentUploadAudioUrls = await buildPersistentUploadMediaUrls(
+        uploadFiles.value,
+        localLiuAgentAttachments,
+        "audio",
+      );
     } catch (error) {
       ElMessage.error(error?.message || "附件持久化失败，请重新选择文件");
       return;
     }
   }
-  const imageUrls = mergeImageUrls(
-    persistentUploadImageUrls,
-    visibleContextRefs
-      .filter((item) => item.type === "image")
-      .map((item) => item.url)
-      .filter(Boolean),
-  );
 
   let docsText = "";
 
@@ -37493,16 +37487,20 @@ async function doSend(options = {}) {
       ElMessage.error(error?.message || "附件保存到本地资源目录失败");
       return;
     }
-    localLiuAgentAttachments = [
-      ...persistedUpload.attachments,
-      ...localLiuAgentAttachments.filter((attachment) =>
+    const remainingContextAttachments = localLiuAgentAttachments.filter(
+      (attachment) =>
         !uploadFiles.value.some(
           (item) =>
             String(item?.attachmentId || "").trim() ===
             String(attachment?.attachmentId || "").trim(),
         ),
-      ),
-    ];
+    );
+    localLiuAgentAttachments.splice(
+      0,
+      localLiuAgentAttachments.length,
+      ...persistedUpload.attachments,
+      ...remainingContextAttachments,
+    );
     userMessage.mediaAssets = persistedUpload.assets;
     userMessage.images = mergeImageUrls(
       persistedUpload.assets

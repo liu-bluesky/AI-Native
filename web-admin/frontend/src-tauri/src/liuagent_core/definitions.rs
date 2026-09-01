@@ -15,6 +15,33 @@ use super::types::ToolDefinition;
 pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
     let mut definitions = vec![
         ToolDefinition {
+            name: "list_tools",
+            description: "查询当前运行时已注册的全部工具目录。返回工具名称、描述、输入 Schema、风险和作用范围；工具是否满足当前执行条件由实际调用阶段判断。",
+            action: "tool.catalog.list",
+            risk: "low",
+            requires_approval: false,
+            scope: "session",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "get_tool",
+            description: "按工具名称查询单个已注册工具的完整定义。查询结果不代表当前配置、附件或权限已经满足，实际执行时会再次校验。",
+            action: "tool.catalog.get",
+            risk: "low",
+            requires_approval: false,
+            scope: "session",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"}
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
             name: "load_plugin_skill",
             description: "按 plugin_id 和 skill_id 读取当前已安装且启用插件的 Skill 完整正文。Runtime 会将 plugin_id 解析到唯一活动安装路径；不要传版本号、路径或猜测不存在的 Skill ID。",
             action: "plugin.skill.read",
@@ -479,4 +506,10 @@ pub fn builtin_tool_definitions() -> Vec<ToolDefinition> {
     definitions.extend(builtin_command_tool_definitions());
     definitions.extend(builtin_plugin_system_tool_definitions());
     definitions
+}
+
+pub fn get_builtin_tool_definition(name: &str) -> Option<ToolDefinition> {
+    builtin_tool_definitions()
+        .into_iter()
+        .find(|definition| definition.name == name.trim())
 }

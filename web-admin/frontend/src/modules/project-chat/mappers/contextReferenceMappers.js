@@ -1,4 +1,4 @@
-import { extractImages } from "./mediaMappers.js";
+import { extractAudios, extractImages, extractVideos } from "./mediaMappers.js";
 
 const CONTEXT_REFERENCE_TYPES = new Set([
   "image",
@@ -16,6 +16,217 @@ function compactText(value, maxLength = 4000) {
   const text = String(value || "").trim();
   if (!text || text.length <= maxLength) return text;
   return `${text.slice(0, maxLength)}…`;
+}
+
+function isInlineMediaUrl(value) {
+  return /^(?:data:|blob:)/i.test(String(value || "").trim());
+}
+
+function isLocalAssetUrl(value) {
+  return /^(?:asset:|file:|https?:\/\/asset\.localhost(?:[:/?#]|$))/i.test(
+    String(value || "").trim(),
+  );
+}
+
+export function stripInlineMediaDataUrls(value) {
+  return String(value || "").replace(
+    /data:(?:image|video|audio|application)\/[^\s"'<>)]+/gi,
+    "[local-asset]",
+  );
+}
+
+export function compactContextReferenceMediaUrl(value) {
+  const url = String(value || "").trim();
+  if (!url || isInlineMediaUrl(url)) return "";
+  return url;
+}
+
+export function compactContextReferenceDataUrl(value, type = "") {
+  const url = String(value || "").trim();
+  if (!url) return "";
+  if (isLocalAssetUrl(url) || /^blob:/i.test(url)) return "";
+  if (/^https?:\/\//i.test(url)) return url;
+  if (String(type || "").toLowerCase() === "audio" && /^data:audio\//i.test(url)) {
+    return url;
+  }
+  return "";
+}
+
+function compactContextReferenceId(value) {
+  const id = String(value || "").trim();
+  if (!id) return "";
+  if (isInlineMediaUrl(id) || /data:(?:image|video|audio|application)\//i.test(id)) {
+    return "";
+  }
+  return id;
+}
+
+function isGeneratedContextReferenceId(value) {
+  return /^context-ref-\d+-/.test(String(value || "").trim());
+}
+
+function compactPersistentAssetId(...values) {
+  for (const value of values) {
+    const id = compactContextReferenceId(value);
+    if (id && !isGeneratedContextReferenceId(id)) {
+      return id;
+    }
+  }
+  return "";
+}
+
+function contextReferencePersistentId(item = {}) {
+  return compactPersistentAssetId(
+    item.id,
+    item.assetId,
+    item.asset_id,
+    item.localPath,
+    item.local_path,
+    item.assetUri,
+    item.asset_uri,
+    item.url,
+  );
+}
+
+function messageMediaAssetsByKind(message, kind) {
+  return (
+    Array.isArray(message?.mediaAssets)
+      ? message.mediaAssets
+      : Array.isArray(message?.media_assets)
+        ? message.media_assets
+        : []
+  ).filter((asset) => String(asset?.kind || "").trim() === kind);
+}
+
+function mediaAssetLocatorCandidates(asset = {}) {
+  return [
+    asset.assetId,
+    asset.asset_id,
+    asset.assetUri,
+    asset.asset_uri,
+    asset.displayUrl,
+    asset.display_url,
+    asset.localPath,
+    asset.local_path,
+    asset.sourceUrl,
+    asset.source_url,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+export function matchMessageMediaAsset(message, reference = {}, index = 0) {
+  const kind = String(reference?.type || reference?.kind || "").trim();
+  const assets = messageMediaAssetsByKind(message, kind);
+  if (!assets.length) return null;
+  const needles = [
+    reference?.id,
+    reference?.assetId,
+    reference?.asset_id,
+    reference?.assetUri,
+    reference?.asset_uri,
+    reference?.url,
+    reference?.localPath,
+    reference?.local_path,
+    reference?.displayUrl,
+    reference?.display_url,
+    reference?.sourceUrl,
+    reference?.source_url,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter((value) => value && !isInlineMediaUrl(value));
+  const matched = assets.find((asset) => {
+    const candidates = mediaAssetLocatorCandidates(asset);
+    return needles.some((needle) => candidates.includes(needle));
+  });
+  if (matched) return matched;
+  if (assets.length === 1) return assets[0];
+  return index >= 0 ? assets[index] || null : null;
+}
+
+export function enrichContextReferenceWithMediaAsset(
+  reference = {},
+  message = null,
+  index = 0,
+) {
+  const item = normalizeContextReference(reference, index);
+  if (!item) return null;
+  if (!["image", "video", "audio", "file"].includes(item.type)) {
+    return item;
+  }
+  const asset = matchMessageMediaAsset(
+    message,
+    { ...item, ...reference, type: item.type },
+    index,
+  );
+  const localPath = compactContextReferenceMediaUrl(
+    asset?.localPath || asset?.local_path || item.localPath,
+  );
+  const assetUri = compactContextReferenceMediaUrl(
+    asset?.assetUri ||
+      asset?.asset_uri ||
+      asset?.displayUrl ||
+      asset?.display_url ||
+      item.assetUri,
+  );
+  const url = compactContextReferenceMediaUrl(
+    assetUri ||
+      localPath ||
+      item.url ||
+      asset?.sourceUrl ||
+      asset?.source_url,
+  );
+  const persistentId = compactPersistentAssetId(
+    asset?.assetId,
+    asset?.asset_id,
+    reference?.assetId,
+    reference?.asset_id,
+    reference?.id,
+    localPath,
+    assetUri,
+    url,
+  );
+  if (!persistentId) return null;
+  return {
+    ...item,
+    id: persistentId,
+    url,
+    assetUri: assetUri || url,
+    localPath,
+    mimeType: String(
+      item.mimeType || asset?.mimeType || asset?.mime_type || "",
+    ).trim(),
+  };
+}
+
+function compactHistoryFallbackMediaUrl(value) {
+  const url = compactContextReferenceMediaUrl(value);
+  if (!url || isLocalAssetUrl(url)) return "";
+  return url;
+}
+
+export function compactHistoryMediaReferences(message, kind = "image") {
+  const assets = messageMediaAssetsByKind(message, kind);
+  if (assets.length) {
+    return assets
+      .map((asset) =>
+        compactContextReferenceMediaUrl(
+          asset.assetId ||
+            asset.asset_id ||
+            asset.localPath ||
+            asset.local_path ||
+            "",
+        ),
+      )
+      .filter(Boolean);
+  }
+  const values =
+    kind === "video"
+      ? extractVideos(message)
+      : kind === "audio"
+        ? extractAudios(message)
+        : extractImages(message);
+  return values.map(compactHistoryFallbackMediaUrl).filter(Boolean);
 }
 
 function normalizeContextReferenceLabel(value, type, index) {
@@ -39,10 +250,18 @@ export function normalizeContextReference(input = {}, index = 0) {
     ? String(input.type).trim().toLowerCase()
     : "message";
   const messageId = String(input?.messageId || input?.message_id || "").trim();
-  const url = String(input?.url || "").trim();
-  const assetUri = String(input?.assetUri || input?.asset_uri || "").trim();
-  const localPath = String(input?.localPath || input?.local_path || "").trim();
-  const content = compactText(input?.content);
+  const url = compactContextReferenceMediaUrl(input?.url);
+  const assetUri = compactContextReferenceMediaUrl(
+    input?.assetUri || input?.asset_uri,
+  );
+  const localPath = compactContextReferenceMediaUrl(
+    input?.localPath || input?.local_path,
+  );
+  const dataUrl = compactContextReferenceDataUrl(
+    input?.dataUrl || input?.data_url || input?.url,
+    type,
+  );
+  const content = compactText(stripInlineMediaDataUrls(input?.content));
   const label = normalizeContextReferenceLabel(
     input?.label ||
       (type === "text"
@@ -53,15 +272,18 @@ export function normalizeContextReference(input = {}, index = 0) {
     type,
     index,
   );
-  const identity = [type, messageId, url, content].join("|");
-  if (!url && !content && !label) return null;
+  const identity = [type, messageId, url || localPath || assetUri, content].join("|");
+  if (!url && !localPath && !assetUri && !dataUrl && !content && !label) return null;
   return {
-    id: String(input?.id || "").trim() || `context-ref-${index}-${identity}`,
+    id:
+      compactContextReferenceId(input?.id) ||
+      `context-ref-${index}-${identity}`,
     type,
     messageId,
     url,
     assetUri,
     localPath,
+    dataUrl,
     label,
     content,
     mimeType: String(input?.mimeType || input?.mime_type || "").trim(),
@@ -93,7 +315,14 @@ export function mergeContextReferences(current = [], additions = []) {
   for (const [index, raw] of [...current, ...additions].entries()) {
     const item = normalizeContextReference(raw, index);
     if (!item) continue;
-    const key = [item.type, item.messageId, item.url, item.content].join("|");
+    const key = [
+      item.type,
+      item.messageId,
+      item.url,
+      item.localPath,
+      item.assetUri,
+      item.content,
+    ].join("|");
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(item);
@@ -113,19 +342,31 @@ export function buildImplicitRecentImageReferences(messages = [], userText = "")
   for (let messageIndex = rows.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = rows[messageIndex];
     const imageUrls = extractImages(message);
-    if (!imageUrls.length) continue;
-    const imageIndex = imageUrls.length - 1;
-    return [
-      normalizeContextReference({
+    const imageAssets = messageMediaAssetsByKind(message, "image");
+    const lastAsset = imageAssets[imageAssets.length - 1];
+    const lastUrl = imageUrls[imageUrls.length - 1];
+    if (!lastUrl && !lastAsset) continue;
+    const enriched = enrichContextReferenceWithMediaAsset(
+      {
         type: "image",
         messageId: String(message?.id || "").trim(),
-        url: imageUrls[imageIndex],
+        id: lastAsset?.assetId || lastAsset?.asset_id,
+        url:
+          lastAsset?.assetUri ||
+          lastAsset?.displayUrl ||
+          lastAsset?.localPath ||
+          lastUrl,
+        assetUri: lastAsset?.assetUri || lastAsset?.displayUrl,
+        localPath: lastAsset?.localPath,
         label: "最近一张图片",
-        mimeType: "image/*",
+        mimeType: String(lastAsset?.mimeType || lastAsset?.mime_type || "image/*").trim() || "image/*",
         implicit: true,
         visibility: "model_context",
-      }),
-    ].filter(Boolean);
+      },
+      message,
+      imageAssets.length ? imageAssets.length - 1 : imageUrls.length - 1,
+    );
+    return enriched ? [enriched] : [];
   }
   return [];
 }
@@ -136,10 +377,15 @@ export function buildContextReferencesPrompt(references = []) {
   const blocks = items.map((item, index) => {
     const lines = [
       `${index + 1}. ${contextReferenceTypeLabel(item.type)}：${item.label}`,
-      `   资产 ID：${item.id}`,
     ];
+    const assetId = contextReferencePersistentId(item);
+    if (assetId) {
+      lines.push(`   资产 ID：${assetId}`);
+    }
     if (item.content) lines.push(`   内容：${item.content}`);
-    if (item.url) lines.push(`   资源地址：${item.url}`);
+    if (item.url && !isInlineMediaUrl(item.url)) {
+      lines.push(`   资源地址：${item.url}`);
+    }
     return lines.join("\n");
   });
   return [
@@ -152,30 +398,43 @@ export function buildContextReferencesPrompt(references = []) {
 export function buildContextReferenceAttachments(references = []) {
   return mergeContextReferences([], references)
     .filter((item) => ["image", "video", "audio", "file"].includes(item.type))
-    .map((item, index) => ({
-      attachmentId: item.id || `context-ref-attachment-${index}`,
-      name: item.label || `${contextReferenceTypeLabel(item.type)} ${index + 1}`,
-      mimeType:
-        item.mimeType ||
-        (item.type === "image"
-          ? "image/*"
-          : item.type === "video"
-            ? "video/*"
-            : item.type === "audio"
-              ? "audio/*"
-              : "application/octet-stream"),
-      size: 0,
-      kind: item.type,
-      source: item.source || "conversation_reference",
-      inputIntent: item.inputIntent || "context",
-      remoteUrl: item.remoteUrl || item.url || "",
-      assetUri: item.assetUri || item.url || "",
-      localPath: item.localPath || "",
-      providerFileId: "",
-      routingMode: "inline_content",
-      extractionStatus: item.url ? "conversation_reference" : "metadata_only",
-      dataUrl: item.dataUrl || "",
-      extractedText: item.content,
-      error: "",
-    }));
+    .map((item, index) => {
+      const localPath = compactContextReferenceMediaUrl(item.localPath);
+      return {
+        attachmentId:
+          contextReferencePersistentId(item) ||
+          `context-ref-attachment-${index}`,
+        name: item.label || `${contextReferenceTypeLabel(item.type)} ${index + 1}`,
+        mimeType:
+          item.mimeType ||
+          (item.type === "image"
+            ? "image/*"
+            : item.type === "video"
+              ? "video/*"
+              : item.type === "audio"
+                ? "audio/*"
+                : "application/octet-stream"),
+        size: 0,
+        kind: item.type,
+        source: item.source || "conversation_reference",
+        inputIntent: item.inputIntent || "context",
+        remoteUrl: compactContextReferenceMediaUrl(item.remoteUrl || item.url),
+        assetUri: compactContextReferenceMediaUrl(item.assetUri || item.url),
+        localPath,
+        providerFileId: "",
+        routingMode: "inline_content",
+        extractionStatus:
+          item.url || localPath || item.assetUri
+            ? "conversation_reference"
+            : "metadata_only",
+        dataUrl: localPath
+          ? ""
+          : compactContextReferenceDataUrl(
+              item.dataUrl || item.url,
+              item.type,
+            ),
+        extractedText: item.content,
+        error: "",
+      };
+    });
 }
