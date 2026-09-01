@@ -328,6 +328,18 @@ fn ensure_canonical_sqlite_schema(connection: &Connection) -> Result<(), String>
                  updated_at TEXT NOT NULL DEFAULT '',
                  PRIMARY KEY (username, project_id, chat_session_id)
              );
+             CREATE TABLE IF NOT EXISTS desktop_agent_supervision_answers (
+                 username TEXT NOT NULL,
+                 project_id TEXT NOT NULL,
+                 chat_session_id TEXT NOT NULL,
+                 answer_id TEXT NOT NULL,
+                 assistant_message_id TEXT NOT NULL,
+                 detail_json TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT '',
+                 PRIMARY KEY (username, project_id, answer_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_desktop_agent_supervision_answers_lookup
+                 ON desktop_agent_supervision_answers(username, project_id, assistant_message_id);
              CREATE TABLE IF NOT EXISTS desktop_project_chat_metadata (
                  key TEXT PRIMARY KEY,
                  value TEXT NOT NULL
@@ -1632,6 +1644,88 @@ fn build_supervision_details(
     Ok(details)
 }
 
+fn upsert_supervision_answer_snapshots(
+    connection: &Connection,
+    username: &str,
+    project_id: &str,
+    chat_session_id: &str,
+    runtime: &Value,
+    updated_at: &str,
+) -> Result<(), String> {
+    for detail in build_supervision_details(chat_session_id, runtime, updated_at)? {
+        let answer = detail.get("answer").cloned().unwrap_or_else(|| json!({}));
+        let answer_id = value_text(&answer, &["answer_id"]);
+        let assistant_message_id = value_text(&answer, &["assistant_message_id"]);
+        if answer_id.is_empty() || assistant_message_id.is_empty() {
+            continue;
+        }
+        let mut archived_detail = detail.clone();
+        if let Some(answer_object) = archived_detail
+            .get_mut("answer")
+            .and_then(Value::as_object_mut)
+        {
+            answer_object.insert(
+                "project_id".to_string(),
+                Value::String(project_id.to_string()),
+            );
+        }
+        let detail_json =
+            serde_json::to_string(&archived_detail).map_err(|err| err.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO desktop_agent_supervision_answers
+                     (username, project_id, chat_session_id, answer_id, assistant_message_id, detail_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(username, project_id, answer_id) DO UPDATE SET
+                     chat_session_id = excluded.chat_session_id,
+                     assistant_message_id = excluded.assistant_message_id,
+                     detail_json = excluded.detail_json,
+                     updated_at = excluded.updated_at",
+                params![
+                    username,
+                    project_id,
+                    chat_session_id,
+                    answer_id,
+                    assistant_message_id,
+                    detail_json,
+                    updated_at,
+                ],
+            )
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+fn archived_supervision_answer(
+    connection: &Connection,
+    username: &str,
+    project_id: Option<&str>,
+    answer_id: &str,
+) -> Result<Option<Value>, String> {
+    let alternate_answer_id = if answer_id.starts_with("ans_") {
+        answer_id.trim_start_matches("ans_").to_string()
+    } else {
+        format!("ans_{answer_id}")
+    };
+    let detail_json = connection
+        .query_row(
+            "SELECT detail_json FROM desktop_agent_supervision_answers
+             WHERE username = ?1
+               AND (?2 = '' OR project_id = ?2)
+               AND (answer_id = ?3 OR assistant_message_id = ?3
+                    OR answer_id = ?4 OR assistant_message_id = ?4)
+             ORDER BY updated_at DESC
+             LIMIT 1",
+            params![username, project_id.unwrap_or_default(), answer_id, alternate_answer_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+    detail_json
+        .map(|value| serde_json::from_str::<Value>(&value).map_err(|err| err.to_string()))
+        .transpose()
+}
+
 fn canonical_runtime_rows(
     app: &tauri::AppHandle,
     username: &str,
@@ -2021,6 +2115,14 @@ pub fn project_chat_write_runtime(
         &merged_payload,
         &activity_updated_at,
     )?;
+    upsert_supervision_answer_snapshots(
+        &connection,
+        &username,
+        &project_id,
+        &chat_session_id,
+        &merged_payload,
+        &activity_updated_at,
+    )?;
     upsert_canonical_session(
         &connection,
         &username,
@@ -2044,7 +2146,38 @@ pub fn agent_supervision_search_answers(
     let project_id = normalized(&project_id, "项目 ID")?;
     let query = query.trim().to_lowercase();
     let limit = limit.unwrap_or(50).clamp(1, 200);
+    let connection = open_canonical_database(&app)?;
     let mut answers = Vec::new();
+    let mut archived_statement = connection
+        .prepare(
+            "SELECT detail_json FROM desktop_agent_supervision_answers
+             WHERE username = ?1 AND project_id = ?2
+             ORDER BY updated_at DESC",
+        )
+        .map_err(|err| err.to_string())?;
+    let archived_rows = archived_statement
+        .query_map(params![username, project_id], |row| row.get::<_, String>(0))
+        .map_err(|err| err.to_string())?;
+    for row in archived_rows {
+        let detail = serde_json::from_str::<Value>(&row.map_err(|err| err.to_string())?)
+            .map_err(|err| err.to_string())?;
+        let answer = detail.get("answer").cloned().unwrap_or_else(|| json!({}));
+        let haystack = [
+            value_text(&answer, &["answer_id"]),
+            value_text(&answer, &["assistant_message_id"]),
+            value_text(&answer, &["question_preview"]),
+            value_text(&answer, &["answer_preview"]),
+        ]
+        .join("\n")
+        .to_lowercase();
+        if query.is_empty() || haystack.contains(&query) {
+            answers.push(answer);
+        }
+    }
+    if !answers.is_empty() {
+        answers.truncate(limit);
+        return Ok(answers);
+    }
     for (chat_session_id, runtime, updated_at) in
         canonical_runtime_rows(&app, &username, &project_id)?
     {
@@ -2085,6 +2218,15 @@ pub fn agent_supervision_get_answer(
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
     let answer_id = normalized(&answer_id, "回答 ID")?;
+    let connection = open_canonical_database(&app)?;
+    if let Some(detail) = archived_supervision_answer(
+        &connection,
+        &username,
+        Some(&project_id),
+        &answer_id,
+    )? {
+        return Ok(Some(detail));
+    }
     let alternate_answer_id = if answer_id.starts_with("ans_") {
         answer_id.trim_start_matches("ans_").to_string()
     } else {
@@ -2124,12 +2266,23 @@ pub fn agent_supervision_find_answer(
         .filter(|value| !value.is_empty())
         .unwrap_or_default()
         .to_string();
+    let connection = open_canonical_database(&app)?;
+    if let Some(detail) = archived_supervision_answer(
+        &connection,
+        &username,
+        if project_id.is_empty() { None } else { Some(&project_id) },
+        &answer_id,
+    )? {
+        return Ok(Some(json!({
+            "project_id": value_text(&detail["answer"], &["project_id"]),
+            "detail": detail,
+        })));
+    }
     let alternate_answer_id = if answer_id.starts_with("ans_") {
         answer_id.trim_start_matches("ans_").to_string()
     } else {
         format!("ans_{answer_id}")
     };
-    let connection = open_canonical_database(&app)?;
     let mut statement = connection
         .prepare(
             "SELECT project_id, chat_session_id, runtime_json, updated_at
@@ -2188,6 +2341,7 @@ pub fn project_chat_delete_session(
     username: String,
     project_id: String,
     chat_session_id: String,
+    workspace_path: Option<String>,
 ) -> Result<bool, String> {
     let username = normalized(&username, "用户名")?;
     let project_id = normalized(&project_id, "项目 ID")?;
@@ -2208,7 +2362,26 @@ pub fn project_chat_delete_session(
             params![username, project_id, chat_session_id],
         )
         .map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM desktop_project_chat_message_snapshots
+             WHERE username = ?1 AND project_id = ?2 AND chat_session_id = ?3",
+            params![username, project_id, chat_session_id],
+        )
+        .map_err(|err| err.to_string())?;
     transaction.commit().map_err(|err| err.to_string())?;
+    if let Some(workspace_path) = workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        crate::liuagent_core::delete_local_chat_session_artifacts(
+            Path::new(workspace_path),
+            &project_id,
+            &chat_session_id,
+        )
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    }
     Ok(true)
 }
 

@@ -1472,6 +1472,50 @@ fn runtime_artifact_paths(
     }
 }
 
+pub fn delete_local_chat_session_artifacts(
+    workspace_root: &Path,
+    project_id: &str,
+    chat_session_id: &str,
+) -> Result<usize, ToolError> {
+    let paths = runtime_artifact_paths(workspace_root, project_id, chat_session_id);
+    let session_cache = offline_session_cache_path(workspace_root, project_id, chat_session_id);
+    let requirement = workspace_root
+        .join(".ai-employee")
+        .join("requirements")
+        .join(sanitize_path_segment(project_id))
+        .join(format!("{}.json", sanitize_path_segment(chat_session_id)));
+    let mut deleted = 0;
+    let session_dir = paths
+        .conversation_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    if session_dir.exists() {
+        fs::remove_dir_all(&session_dir)
+            .map_err(|err| ToolError::new("chat.session_delete_failed", err.to_string()))?;
+        deleted += 1;
+    }
+    for path in [
+        paths.active_session_path,
+        paths.session_history_path,
+        paths.outbox_path,
+        session_cache,
+        requirement,
+    ] {
+        match fs::remove_file(path) {
+            Ok(()) => deleted += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(ToolError::new(
+                    "chat.session_delete_failed",
+                    error.to_string(),
+                ));
+            }
+        }
+    }
+    Ok(deleted)
+}
+
 fn is_conversation_message(message: &LocalChatMessage) -> bool {
     matches!(message.role.trim(), "user" | "assistant" | "system")
         && (!message.content.trim().is_empty()

@@ -178,7 +178,7 @@ export async function writeLocalChatSessions(projectId, sessions) {
   );
 }
 
-export function deleteLocalChatSession(projectId, chatSessionId) {
+export function deleteLocalChatSession(projectId, chatSessionId, workspacePath = "") {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId || !normalizedChatSessionId) {
@@ -193,6 +193,7 @@ export function deleteLocalChatSession(projectId, chatSessionId) {
           normalizedProjectId,
           normalizedChatSessionId,
           resolveCurrentUsername(),
+          workspacePath,
         );
         if (deleted !== true) {
           throw new Error("桌面端会话删除命令不可用，请重启桌面端");

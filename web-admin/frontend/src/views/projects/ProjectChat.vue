@@ -13924,6 +13924,7 @@ async function clearPersistedChatRuntime(projectId, chatSessionId = "") {
   const cleared = await clearLocalPersistedChatRuntime(
     normalizedProjectId,
     normalizedChatSessionId,
+    localLiuAgentWorkspacePath(),
   );
   if (cleared) {
     forgetCachedChatRuntime(normalizedProjectId, normalizedChatSessionId);
@@ -14845,9 +14846,28 @@ function persistCurrentChatRuntimeNow(
               ) {
                 metadataRows = fullRows;
               }
+              if (options.verifyDeletedMessageIds === true) {
+                const persistedMessageIds = new Set(
+                  (Array.isArray(persistedPayload.messages)
+                    ? persistedPayload.messages
+                    : []
+                  )
+                    .map((message) => String(message?.id || "").trim())
+                    .filter(Boolean),
+                );
+                const missingDeletedIds = deletedMessageIds.filter(
+                  (id) => persistedMessageIds.has(String(id || "").trim()),
+                );
+                if (missingDeletedIds.length) {
+                  throw new Error(
+                    `删除消息仍存在于本机数据库：${missingDeletedIds.join(", ")}`,
+                  );
+                }
+              }
             }
           })
           .catch((error) => {
+            if (options.verifyDeletedMessageIds === true) throw error;
             console.warn(
               "read persisted chat runtime after mutation failed",
               error,
@@ -25417,13 +25437,6 @@ function messageAnswerId(item) {
   const messageId = String(item?.id || "").trim();
   const content = String(item?.content || "").trim();
   if (!messageId || !content) return "";
-  const isActiveLocalRun = Array.from(localLiuAgentActiveRuns.values()).some(
-    (run) => String(run?.assistantMessageId || "").trim() === messageId,
-  );
-  const isStreamingLastMessage =
-    chatLoading.value === true &&
-    messages.value[messages.value.length - 1] === item;
-  if (isActiveLocalRun || isStreamingLastMessage) return "";
   return messageId.startsWith("ans_") ? messageId : `ans_${messageId}`;
 }
 
@@ -26127,7 +26140,7 @@ async function deleteMessageAt(messageIndex) {
       includeMessages: true,
       rows: messages.value,
       deletedMessageIds,
-      skipReadback: true,
+      verifyDeletedMessageIds: true,
     });
     if (saved !== true) {
       throw new Error("删除消息持久化返回失败");
@@ -27454,6 +27467,9 @@ async function persistLocalLiuAgentChatMessage({
     typeof message !== "object"
   ) {
     return null;
+  }
+  if (String(message?.role || "").trim() === "assistant") {
+    ensureMessageAnswerId(message);
   }
   void workspacePath;
   void sourceContext;
@@ -31954,7 +31970,6 @@ function syncLocalChatSessionMetadata(projectId, chatSessionId, rows) {
   const current = (sourceSessions || []).find(
     (item) => String(item?.id || "").trim() === normalizedSessionId,
   );
-  if (!current) return;
   const messageRows = Array.isArray(rows) ? rows : [];
   const lastMessage = [...messageRows]
     .reverse()
@@ -31974,15 +31989,20 @@ function syncLocalChatSessionMetadata(projectId, chatSessionId, rows) {
       Number(current?.message_count || 0) < messageRows.length;
   const now = messageActivityChanged ? new Date().toISOString() : "";
   const nextSession = normalizeChatSession({
-    ...current,
+    ...(current || {}),
+    id: normalizedSessionId,
+    project_id: normalizedProjectId,
+    title: String(current?.title || "新对话").trim() || "新对话",
+    source: current?.source || "database",
+    created_at: current?.created_at || new Date().toISOString(),
     message_count: messageRows.length,
     preview: nextPreview,
     last_message_id: nextLastMessageId,
-    updated_at: messageActivityChanged ? now : current.updated_at || "",
+    updated_at: messageActivityChanged ? now : current?.updated_at || "",
     last_message_at:
       messageActivityChanged && lastMessage
         ? now
-        : current.last_message_at || "",
+        : current?.last_message_at || "",
   });
   const nextSessions = sortChatSessionsByStablePosition([
     nextSession,
@@ -32730,6 +32750,7 @@ async function createChatSession(options = {}) {
       ...chatSessions.value.filter((item) => item.id !== session.id),
     ];
     setProjectChatSessionsCache(projectId, chatSessions.value);
+    await writeLocalChatSessions(projectId, chatSessions.value);
     if (options.switchTo !== false) {
       rememberCurrentChatSessionMessages();
       rememberCurrentChatSessionComposerState();
@@ -35402,6 +35423,15 @@ async function sendLocalLiuAgentChatRequest({
   modelName: requestedModelName = "",
   interactionMode = "",
 }) {
+  const currentSessionIdAtRequestStart = String(
+    currentChatSessionId.value || "",
+  ).trim();
+  if (
+    currentSessionIdAtRequestStart &&
+    currentSessionIdAtRequestStart !== String(activeChatSessionId || "").trim()
+  ) {
+    throw new Error("当前会话已切换，请在新会话中重新发送");
+  }
   const workspacePath = String(
     requestedWorkspacePath || localLiuAgentWorkspacePath(),
   ).trim();
@@ -37087,6 +37117,13 @@ async function doSend(options = {}) {
         ...operationToolNames,
       ])
     : [];
+
+  const currentSessionAfterPreparation = String(
+    currentChatSessionId.value || "",
+  ).trim();
+  if (currentSessionAfterPreparation !== activeChatSessionId) {
+    activeChatSessionId = currentSessionAfterPreparation;
+  }
   const referencedOriginalContent = activeContextRefs
     .filter((item) => ["message", "text"].includes(item?.type))
     .map((item) => String(item?.content || "").trim())

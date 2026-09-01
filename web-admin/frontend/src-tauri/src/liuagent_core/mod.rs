@@ -53,6 +53,7 @@ pub use runtime::{
     list_local_runtime_events, list_local_runtime_outbox, load_local_offline_cache,
     recover_local_runtime_state, refresh_local_runtime_job, save_local_offline_cache,
 };
+pub use state::delete_local_chat_session_artifacts;
 pub use runtime::{
     finish_local_chat_run, prepare_local_chat_run, request_local_chat_pause,
     start_local_chat_with_event_sink, try_begin_local_chat_run, upload_provider_file,

@@ -295,12 +295,14 @@ export async function deleteNativeProjectChatSession(
   projectId,
   chatSessionId,
   username,
+  workspacePath = "",
 ) {
   requireNativeProjectChatStore();
   return invokeNativeDesktopBridge("projectChatDeleteSession", {
     projectId: String(projectId || "").trim(),
     chatSessionId: String(chatSessionId || "").trim(),
     username: String(username || "").trim(),
+    workspacePath: String(workspacePath || "").trim(),
   });
 }
 

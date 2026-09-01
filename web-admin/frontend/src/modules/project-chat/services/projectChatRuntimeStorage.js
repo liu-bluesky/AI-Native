@@ -87,12 +87,17 @@ export async function writePersistedChatRuntime(
   );
 }
 
-export async function clearPersistedChatRuntime(projectId, chatSessionId = "") {
+export async function clearPersistedChatRuntime(
+  projectId,
+  chatSessionId = "",
+  workspacePath = "",
+) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedProjectId || !normalizedChatSessionId) return false;
   return deleteLocalChatSession(
     normalizedProjectId,
     normalizedChatSessionId,
+    workspacePath,
   );
 }
