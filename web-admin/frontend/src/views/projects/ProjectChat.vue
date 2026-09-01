@@ -12973,7 +12973,19 @@ function setModelRoleSelection(payload = {}) {
 }
 
 function setManualModelOptionValue(value) {
-  manualModelOptionValue.value = String(value || "").trim();
+  const normalized = String(value || "").trim();
+  manualModelOptionValue.value = normalized;
+  // 解析 providerId::modelName 格式并更新实际的模型选择
+  if (!normalized) {
+    selectedProviderId.value = "";
+    selectedModelName.value = "";
+    return;
+  }
+  const separatorIndex = normalized.indexOf("::");
+  if (separatorIndex > 0) {
+    selectedProviderId.value = normalized.slice(0, separatorIndex);
+    selectedModelName.value = normalized.slice(separatorIndex + 2);
+  }
 }
 
 const selectedModelOptionValue = computed({
