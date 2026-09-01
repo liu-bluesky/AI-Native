@@ -25466,10 +25466,17 @@ async function copyMessageAnswerId(item) {
   }
 }
 
-function openMessageSupervision(item) {
+async function openMessageSupervision(item) {
   const answerId = messageAnswerId(item);
   const projectId = String(selectedProjectId.value || "").trim();
   if (!answerId || !projectId) return;
+  // 执行监管数据由 native 端在本机运行时快照落盘时生成，
+  // 打开前先强制刷一次待写入的快照，避免刚结束的回答提示「回答 ID 不存在」。
+  await persistCurrentChatRuntimeNow(
+    projectId,
+    String(currentChatSessionId.value || "").trim(),
+    { onlyIfDirty: true, skipReadback: true },
+  ).catch(() => false);
   void openRouteInDesktop(
     router,
     {

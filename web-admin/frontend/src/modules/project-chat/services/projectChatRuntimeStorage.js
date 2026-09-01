@@ -5,6 +5,7 @@ import {
 } from "@/utils/native-desktop-bridge.js";
 import {
   deleteLocalChatSession,
+  enqueueChatSessionStorageOperation,
   isChatSessionDeleted,
   resolveCurrentUsername,
 } from "@/modules/project-chat/services/projectChatStorage.js";

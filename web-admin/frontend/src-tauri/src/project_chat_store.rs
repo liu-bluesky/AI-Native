@@ -2370,17 +2370,23 @@ pub fn project_chat_delete_session(
         )
         .map_err(|err| err.to_string())?;
     transaction.commit().map_err(|err| err.to_string())?;
+    // 本机数据库记录已经删除成功，工作区遗留文件只是附属产物。
+    // 清理失败时不能整体报错，否则前端会把已经删掉的会话回滚显示出来。
     if let Some(workspace_path) = workspace_path
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        crate::liuagent_core::delete_local_chat_session_artifacts(
+        if let Err(error) = crate::liuagent_core::delete_local_chat_session_artifacts(
             Path::new(workspace_path),
             &project_id,
             &chat_session_id,
-        )
-        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        ) {
+            eprintln!(
+                "cleanup chat session artifacts failed (project={project_id}, session={chat_session_id}): {}: {}",
+                error.code, error.message
+            );
+        }
     }
     Ok(true)
 }
