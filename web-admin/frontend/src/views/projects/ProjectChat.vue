@@ -14159,6 +14159,7 @@ function listNativeExternalAgentRuntimeSnapshotsForCurrentProject() {
 
 function buildPersistedChatRuntimePayload(options = {}) {
   const replaceMessages = options?.replaceMessages === true;
+  const includeMessages = options?.includeMessages !== false;
   const runtimeRows = Array.isArray(options?.rows)
     ? options.rows
     : messages.value || [];
@@ -14188,7 +14189,13 @@ function buildPersistedChatRuntimePayload(options = {}) {
     ...(deletedMessageIds.length
       ? { deleted_message_ids: deletedMessageIds }
       : {}),
-    messages: runtimeRows.map(normalizeRuntimeMessageSnapshot).filter(Boolean),
+    ...(includeMessages
+      ? {
+          messages: runtimeRows
+            .map(normalizeRuntimeMessageSnapshot)
+            .filter(Boolean),
+        }
+      : {}),
     composer_plan: composerPlanState.plan,
     composer_plan_owner_id: composerPlanState.ownerId,
     terminal: {
@@ -14716,7 +14723,7 @@ function schedulePersistChatRuntime() {
     ) {
       return;
     }
-    persistCurrentChatRuntimeNow(projectId, chatSessionId, {
+    void persistCurrentChatRuntimeNow(projectId, chatSessionId, {
       onlyIfDirty: true,
     });
   }, 300);
@@ -14734,12 +14741,26 @@ function persistCurrentChatRuntimeNow(
     chatSessionId || currentChatSessionId.value || "",
   ).trim();
   if (!normalizedProjectId || !normalizedChatSessionId) {
+    console.error("persist chat runtime skipped: missing identity", {
+      projectId: normalizedProjectId,
+      chatSessionId: normalizedChatSessionId,
+    });
     return Promise.resolve(false);
   }
   if (isChatSessionDeleted(normalizedProjectId, normalizedChatSessionId)) {
+    console.error("persist chat runtime skipped: session marked deleted", {
+      projectId: normalizedProjectId,
+      chatSessionId: normalizedChatSessionId,
+    });
     return Promise.resolve(false);
   }
   if (!isCurrentChatSession(normalizedProjectId, normalizedChatSessionId)) {
+    console.error("persist chat runtime skipped: session is not current", {
+      projectId: normalizedProjectId,
+      chatSessionId: normalizedChatSessionId,
+      selectedProjectId: String(selectedProjectId.value || "").trim(),
+      currentChatSessionId: String(currentChatSessionId.value || "").trim(),
+    });
     return Promise.resolve(false);
   }
   if (
@@ -14754,6 +14775,7 @@ function persistCurrentChatRuntimeNow(
   }
   const payload = buildPersistedChatRuntimePayload({
     replaceMessages: options.replaceMessages === true,
+    includeMessages: options.includeMessages !== false,
     rows: options.rows,
     deletedMessageIds: options.deletedMessageIds,
   });
@@ -14832,6 +14854,14 @@ function persistCurrentChatRuntimeNow(
       console.error("persist current chat runtime failed", error);
       return false;
     });
+}
+
+function persistCurrentChatRuntimeBeforeSessionSwitch() {
+  return persistCurrentChatRuntimeNow(
+    selectedProjectId.value,
+    currentChatSessionId.value,
+    { onlyIfDirty: true },
+  );
 }
 
 const chatHistoryHasMore = computed(() => {
@@ -26058,34 +26088,42 @@ async function deleteMessageAt(messageIndex) {
       .map((item) => String(item?.id || "").trim())
       .filter((id) => id && !remainingMessageIds.has(id));
     rememberCurrentChatSessionMessages();
-    ElMessage.success(buildDeleteSuccessText(item));
-    void persistCurrentChatRuntimeNow(projectId, chatSessionId, {
-      // 普通删除只记录被删消息的 ID，不能把当前分页结果当成全量快照，
-      // 否则未加载的历史消息也会被 native merge 当成“已删除”。
+    const saved = await persistCurrentChatRuntimeNow(projectId, chatSessionId, {
+      // 删除消息时需要同时保存当前消息列表和删除标记，
+      // native 端会合并 deleted_message_ids 到已有快照。
       replaceMessages: false,
-      deletedMessageIds,
+      includeMessages: true,
       rows: messages.value,
+      deletedMessageIds,
       skipReadback: true,
-    }).then((saved) => {
-      if (saved === true) {
-        scheduleChatSessionListMetadataRefresh(projectId);
-        return;
-      }
-      if (
-        deleteEpoch !== messageMutationEpoch ||
-        !isCurrentChatSession(projectId, chatSessionId)
-      ) {
-        return;
-      }
-      messages.value = previousMessages;
-      chatHistoryLoadedCount.value = previousLoadedCount;
-      rememberCurrentChatSessionMessages();
-      ElMessage.error("删除消息未能保存，已恢复原内容");
-    }).catch((error) => {
-      console.error("delete chat message failed", error);
     });
+    if (saved !== true) {
+      throw new Error("删除消息持久化返回失败");
+    }
+    ElMessage.success(buildDeleteSuccessText(item));
+    scheduleChatSessionListMetadataRefresh(projectId);
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || buildDeleteErrorText(item));
+    console.error("delete chat message failed", {
+      error: err,
+      projectId,
+      chatSessionId,
+      deletedMessageIds: target?.messageIds || [],
+    });
+    if (
+      deleteEpoch !== messageMutationEpoch ||
+      !isCurrentChatSession(projectId, chatSessionId)
+    ) {
+      return;
+    }
+    messages.value = previousMessages;
+    chatHistoryLoadedCount.value = previousLoadedCount;
+    rememberCurrentChatSessionMessages();
+    const detail = String(err?.detail || err?.message || "").trim();
+    ElMessage.error(
+      detail
+        ? `删除消息未能保存，已恢复原内容：${detail}`
+        : "删除消息未能保存，已恢复原内容",
+    );
   }
 }
 
@@ -32260,6 +32298,7 @@ async function fetchChatHistory(
         projectId,
         normalizedSessionId,
       );
+  const useConversationProjection = hasNativeDesktopBridge();
   const cachedRuntimePayload = append
     ? null
     : getCachedChatRuntime(projectId, normalizedSessionId);
@@ -32269,16 +32308,18 @@ async function fetchChatHistory(
   const cachedRuntimeRows = Array.isArray(cachedRuntimePayload?.messages)
     ? cachedRuntimePayload.messages
     : null;
-  const immediateRows = conversationRows.length
+  const immediateRows = useConversationProjection
     ? conversationRows
-    : Array.isArray(rememberedRows)
-    ? rememberedRows
-    : Array.isArray(cachedRuntimeRows)
-      ? applyPersistedChatRuntimeRows(
-          cachedRuntimeRows.slice(-CHAT_HISTORY_PAGE_SIZE),
-          cachedRuntimePayload,
-        )
-      : null;
+    : conversationRows.length
+      ? conversationRows
+      : Array.isArray(rememberedRows)
+        ? rememberedRows
+        : Array.isArray(cachedRuntimeRows)
+          ? applyPersistedChatRuntimeRows(
+              cachedRuntimeRows.slice(-CHAT_HISTORY_PAGE_SIZE),
+              cachedRuntimePayload,
+            )
+          : null;
   const hasImmediateRows =
     Array.isArray(immediateRows) && immediateRows.length > 0;
   if (!append) {
@@ -32328,7 +32369,7 @@ async function fetchChatHistory(
     });
     const [remoteHistoryResult, messageSnapshot] = await Promise.all([
       Promise.resolve({ ok: false, data: null }),
-      append || hasImmediateRows
+      append || hasImmediateRows || useConversationProjection
         ? Promise.resolve([])
         : readPersistedChatMessageSnapshot(projectId, normalizedSessionId),
     ]);
@@ -32354,7 +32395,11 @@ async function fetchChatHistory(
           .map(normalizeRuntimeMessageSnapshot)
           .filter(Boolean),
       );
-      const nextRows = hasImmediateRows ? immediateRows : snapshotRows;
+      const nextRows = useConversationProjection
+        ? conversationRows
+        : hasImmediateRows
+          ? immediateRows
+          : snapshotRows;
       if (!chatMessageRowsEquivalent(messages.value, nextRows)) {
         await applyChatMessagesWithoutPersisting(nextRows);
       }
@@ -32400,13 +32445,18 @@ async function fetchChatHistory(
             ) {
               return;
             }
-            const mergedRows = applyPersistedChatRuntimeRows(
-              messages.value,
+            const deletedMessageIds = persistedRuntimeDeletedMessageIds(
               runtimePayload,
             );
+            const mergedRows = useConversationProjection
+              ? filterDeletedPersistedRows(conversationRows, deletedMessageIds)
+              : applyPersistedChatRuntimeRows(
+                  messages.value,
+                  runtimePayload,
+                );
             if (
               !chatMessageRowsEquivalent(messages.value, mergedRows) &&
-              !hasImmediateRows
+              (!useConversationProjection || !hasImmediateRows)
             ) {
               await applyChatMessagesWithoutPersisting(mergedRows);
               if (
@@ -32462,7 +32512,9 @@ async function fetchChatHistory(
       normalizedSessionId,
     );
     // 本地持久化历史已按 offset/limit 截取，不能再次重复截切。
-    const localRows = applyPersistedChatRuntimeRows([], runtimePayload);
+    const localRows = useConversationProjection
+      ? conversationRows
+      : applyPersistedChatRuntimeRows([], runtimePayload);
     const historyRows = remoteHistoryResult.ok
       ? remoteRows
       : localRows.slice(
@@ -32483,7 +32535,9 @@ async function fetchChatHistory(
         Boolean(localLiuAgentActiveRunForChatSession(normalizedSessionId))
           ? getRememberedChatSessionMessages(projectId, normalizedSessionId)
           : null;
-      const nextRows =
+      const nextRows = useConversationProjection
+        ? conversationRows
+        :
         Array.isArray(liveRows) && liveRows.length
           ? liveRows
           : hasImmediateRows && immediateRows.length && !historyRows.length
@@ -32822,6 +32876,7 @@ async function selectChatSession(payload) {
     String(selectedProjectId.value || "").trim();
   const normalizedSessionId = String(rawSessionId || "").trim();
   if (!projectId || !normalizedSessionId) return;
+  await persistCurrentChatRuntimeBeforeSessionSwitch();
   const selectionEpoch = ++chatSessionSelectionEpoch;
   if (projectId !== String(selectedProjectId.value || "").trim()) {
     handleProjectCommand(projectId, { preserveChatSessionId: true });
