@@ -32,7 +32,7 @@ rows: messages.value,
 
 ---
 
-### 2. 模型选择下拉框不生效问题 ✅
+### 2. 模型选择下拉框不生效问题（第一次修复）✅
 
 **症状：**
 - 在聊天界面下拉框中选择模型后
@@ -73,6 +73,41 @@ function setManualModelOptionValue(value) {
 
 ---
 
+### 3. 模型选择下拉框不生效问题（第二次修复，完整解决）✅
+
+**症状：**
+- 对话模型配置弹框可以正常工作
+- 但下拉框选择模型仍然不生效
+
+**根本原因：**
+ChatComposer 组件同时定义了两个 props：
+- `manualModelOptionValue` - 用于对话框（弹框）
+- `selectedModelOptionValue` - 用于下拉框
+
+下拉框绑定的是 `selectedModelOptionValue`，但 ProjectChat.vue 只传递了 `manualModelOptionValue`，导致下拉框的更新没有生效。
+
+**修复方案：**
+1. 添加 `selected-model-option-value` prop 绑定
+2. 添加 `@update:selected-model-option-value` 事件监听
+3. 实现处理函数使用 `selectedModelOptionValue` 的 setter
+
+```vue
+<!-- 添加绑定 -->
+:selected-model-option-value="selectedModelOptionValue"
+@update:selected-model-option-value="handleSelectedModelOptionValueUpdate"
+```
+
+```javascript
+// 添加处理函数
+function handleSelectedModelOptionValueUpdate(value) {
+  selectedModelOptionValue.value = value;
+}
+```
+
+**Commit:** `0a44a13f` - fix(project-chat): 修复模型选择下拉框不生效的问题
+
+---
+
 ## 测试方案
 
 ### 测试问题 1：聊天记录持久化
@@ -82,9 +117,16 @@ function setManualModelOptionValue(value) {
 4. 切换回来
 5. ✅ 期望：消息应该正常显示（除了被删除的那条）
 
-### 测试问题 2：模型选择
+### 测试问题 2：模型选择（弹框）
 1. 打开项目聊天界面
-2. 点击模型选择下拉框
+2. 点击设置图标打开"对话模型配置"弹框
+3. 在弹框中选择一个不同的模型
+4. 发送消息
+5. ✅ 期望：使用新选择的模型回复
+
+### 测试问题 3：模型选择（下拉框）
+1. 打开项目聊天界面
+2. 直接点击模型选择下拉框（不是设置按钮）
 3. 选择一个不同的模型（例如从 GPT-4 切换到 Claude）
 4. 发送一条消息
 5. ✅ 期望：使用新选择的模型回复，可以在消息元数据或调试日志中确认
