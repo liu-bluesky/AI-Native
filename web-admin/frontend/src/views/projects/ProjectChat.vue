@@ -1652,6 +1652,7 @@
             :model-routing-mode="modelRoutingMode"
             :model-routing-roles="modelRoutingRoles"
             :manual-model-option-value="manualModelOptionValue"
+            :selected-model-option-value="selectedModelOptionValue"
             :active-model-summary="activeModelSummary"
             :show-agent-workflow-status-strip="showAgentWorkflowStatusStrip"
             :show-local-agent-auth-level="nativeDesktopBridgeAvailable"
@@ -1697,6 +1698,7 @@
             @update:model-routing-mode="setModelRoutingMode"
             @update:model-role-selection="setModelRoleSelection"
             @update:manual-model-option-value="setManualModelOptionValue"
+            @update:selected-model-option-value="handleSelectedModelOptionValueUpdate"
             @refresh-model-providers="refreshModelProviders"
             @stop-generation="stopGeneration"
             @send="doSend"
@@ -12986,6 +12988,11 @@ function setManualModelOptionValue(value) {
     selectedProviderId.value = normalized.slice(0, separatorIndex);
     selectedModelName.value = normalized.slice(separatorIndex + 2);
   }
+}
+
+function handleSelectedModelOptionValueUpdate(value) {
+  // 下拉框的更新处理，直接使用 selectedModelOptionValue 的 setter
+  selectedModelOptionValue.value = value;
 }
 
 const selectedModelOptionValue = computed({
