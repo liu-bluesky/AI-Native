@@ -878,19 +878,41 @@
   transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
 }
 
-.send-message-button:not(.is-blocked):hover {
+.send-message-button:not(.is-blocked):not(.is-stop):hover {
   transform: translateY(-1px);
   background: var(--el-color-primary-dark-2) !important;
   box-shadow: none !important;
 }
 
 .send-message-button.is-stop {
-  background: var(--el-color-warning) !important;
+  --el-button-bg-color: #4b5563;
+  --el-button-hover-bg-color: #374151;
+  --el-button-active-bg-color: #1f2937;
+  --el-button-text-color: #fff;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-text-color: #fff;
+  --el-button-border-color: #4b5563;
+  --el-button-hover-border-color: #374151;
+  --el-button-active-border-color: #1f2937;
+  background: #4b5563 !important;
+  border-color: #4b5563 !important;
+  color: #fff !important;
   box-shadow: none !important;
 }
 
-.send-message-button.is-stop:hover {
-  background: var(--el-color-warning-dark-2) !important;
+.send-message-button.is-stop:hover,
+.send-message-button.is-stop:focus,
+.send-message-button.is-stop:focus-visible,
+.send-message-button.is-stop:active {
+  background: #374151 !important;
+  border-color: #374151 !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+
+.send-message-button.is-stop:active {
+  background: #1f2937 !important;
+  border-color: #1f2937 !important;
 }
 
 .send-message-button.is-blocked {

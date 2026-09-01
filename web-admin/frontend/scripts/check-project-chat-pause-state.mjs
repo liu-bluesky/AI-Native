@@ -33,7 +33,29 @@ const applyLocalLiuAgentModelStepFailureSource =
 const pendingRequestsSource = readFileSync(pendingRequestsComposablePath, "utf8");
 const terminalSource = readFileSync(terminalComposablePath, "utf8");
 const composerSource = readFileSync(composerComponentPath, "utf8");
+const composerCssPath = resolve(
+  scriptDir,
+  "../src/modules/project-chat/components/composer/ChatComposer.css",
+);
+const composerCss = readFileSync(composerCssPath, "utf8");
 const tauriSource = readFileSync(tauriMainPath, "utf8");
+const sendLocalLiuAgentChatRequestSource =
+  source.match(
+    /async function sendLocalLiuAgentChatRequest[\s\S]*?\nasync function buildLocalLiuAgentModelRuntime/,
+  )?.[0] || "";
+const isChatSessionBusySource =
+  source.match(
+    /function isChatSessionBusy\([\s\S]*?\n\}\n\nfunction isChatSessionInRunningTaskPhase/,
+  )?.[0] || "";
+
+assert.ok(
+  sendLocalLiuAgentChatRequestSource.includes("async function sendLocalLiuAgentChatRequest"),
+  "sendLocalLiuAgentChatRequest source must be extracted for pause-state checks",
+);
+assert.ok(
+  isChatSessionBusySource.includes("function isChatSessionBusy"),
+  "isChatSessionBusy source must be extracted for pause-state checks",
+);
 
 assert.match(
   source,
@@ -49,8 +71,8 @@ assert.match(
 
 assert.match(
   source,
-  /async function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?await pauseNativeLiuAgentLocalChat\(\{[\s\S]*?projectId:[\s\S]*?chatSessionId,[\s\S]*?workspacePath:[\s\S]*?reason: "manual_pause"[\s\S]*?pauseOpenMessageOperations\(row\);[\s\S]*?summary: "任务已暂停，可以继续执行"[\s\S]*?phase: "blocked"[\s\S]*?local_liuagent_recoverable: "true"[\s\S]*?local_liuagent_resuming: "false"/,
-  "pausing a local task must synchronously checkpoint and expose recovery without a safe-boundary wait",
+  /async function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?await pauseNativeLiuAgentLocalChat\(\{[\s\S]*?projectId:[\s\S]*?chatSessionId,[\s\S]*?workspacePath:[\s\S]*?reason: "manual_pause"[\s\S]*?summary: "正在停止当前操作"[\s\S]*?pausing: true/,
+  "pausing an active local run must request a native checkpoint and stay in the running phase until runtime exit",
 );
 
 assert.doesNotMatch(
@@ -79,8 +101,14 @@ assert.match(
 
 assert.match(
   source,
-  /function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?status: "paused",[\s\S]*?rootGoal:[\s\S]*?String\(run\.rootGoal \|\| ""\)\.trim\(\)/,
-  "pausing a local task must preserve its original goal and write paused status",
+  /async function cancelActiveLocalLiuAgentRun\([^)]*\)[\s\S]*?root_goal: String\(run\.rootGoal \|\| ""\)\.trim\(\)[\s\S]*?status: "pausing"/,
+  "pausing a local task must preserve its original goal and stay in pausing until runtime exit",
+);
+
+assert.match(
+  source,
+  /if \(activeRun\.cancelled\) \{[\s\S]*?summary: "任务已暂停，可以继续执行"[\s\S]*?status: "paused",[\s\S]*?rootGoal: displayUserMessageContent \|\| finalUserPrompt/,
+  "when the paused worker returns it must write paused status without replacing the original goal",
 );
 
 assert.doesNotMatch(
@@ -193,13 +221,13 @@ assert.match(
 
 assert.match(
   source,
-  /if \(!assistantMessage\.content && !ok && !shouldAutoResume\) \{[\s\S]*?assistantMessage\.content = `执行失败：\$\{String\(result\?\.error/,
+  /if \(!assistantMessage\.content && !ok && !shouldAutoResume\) \{[\s\S]*?本轮执行已结束，AI 未返回可展示的最终说明/,
   "retry exhaustion must render a final visible failure answer",
 );
 
-assert.match(
-  source,
-  /if \(!ok && !shouldAutoResume\) \{[\s\S]*?showManualCloseErrorDialog/,
+assert.doesNotMatch(
+  sendLocalLiuAgentChatRequestSource,
+  /showManualCloseErrorDialog/,
   "temporary interruptions must not open a terminal failure dialog before automatic recovery is exhausted",
 );
 
@@ -211,19 +239,19 @@ assert.match(
 
 assert.match(
   source,
-  /status: ok \? "done" : shouldAutoResume \? "in_progress" : "blocked"/,
+  /ok\s*\? "done"\s*: shouldAutoResume\s*\? "in_progress"\s*: "blocked"/,
   "requirements and offline state must remain in progress while automatic recovery is pending",
 );
 
 assert.match(
   source,
-  /if \(!resumeFromCheckpoint\) \{[\s\S]*?"本轮目标"[\s\S]*?桌面端本地智能体/,
+  /if \(!resumeFromCheckpoint\) \{[\s\S]*?appendMessageProcessLog\(assistantMessage, \{[\s\S]*?text: `目标：\$\{displayUserMessageContent \|\| finalUserPrompt\}`/,
   "checkpoint resume must not append the original task header again",
 );
 
 assert.match(
   source,
-  /resumeFromCheckpoint[\s\S]*?"已恢复 checkpoint，正在继续当前任务"[\s\S]*?"继续执行\\n  - 已读取本地 checkpoint\\n  - 正在从暂停节点继续推理\\n  - 已有执行详情保持不变"/,
+  /resumeFromCheckpoint[\s\S]*?"已恢复 checkpoint，正在继续当前任务"[\s\S]*?"已有执行详情保持不变；Runtime 会从暂停节点继续追加新的模型和工具事件。"/,
   "checkpoint resume must use recovery-specific progress instead of new-task startup copy",
 );
 
@@ -367,7 +395,7 @@ assert.doesNotMatch(
 
 assert.match(
   composerSource,
-  /content="暂停当前回答"[\s\S]*?class="pause-generation-button"[\s\S]*?\$emit\('stop-generation'\)[\s\S]*?<span>暂停<\/span>/,
+  /:content="showPauseGenerationButton \? '暂停当前回答' : '发送消息'"[\s\S]*?class="send-message-button"[\s\S]*?\$emit\('stop-generation'\)[\s\S]*?<VideoPause v-if="showPauseGenerationButton" \/>/,
   "composer pause button must remain the single visible pause entry",
 );
 
@@ -375,6 +403,66 @@ assert.match(
   source,
   /@stop-generation="stopGeneration"/,
   "ProjectChat must bind the composer pause event to stopGeneration",
+);
+
+assert.match(
+  source,
+  /function isChatSessionBusy\([\s\S]*hasLocalLiuAgentAutoResumePending\(normalizedSessionId\)[\s\S]*hasLocalLiuAgentResumeInFlight\(normalizedSessionId\)/,
+  "auto-resume wait and resume in-flight must stay in the same running task phase instead of clearing the pause button",
+);
+
+assert.match(
+  source,
+  /function isChatSessionInRunningTaskPhase\([\s\S]*localLiuAgentPendingPermissionsForChatSession\(normalizedSessionId\)[\s\S]*localLiuAgentPendingUserQuestionsForChatSession\(normalizedSessionId\)/,
+  "composer pause must stay visible while waiting for authorization or user questions",
+);
+
+assert.match(
+  source,
+  /const showPauseGenerationButton = computed\(\(\) =>\s*isChatSessionInRunningTaskPhase\(\)/,
+  "composer pause button must follow the running task phase instead of instantaneous loading",
+);
+
+assert.match(
+  source,
+  /async function stopGeneration\(\)[\s\S]*cancelLocalLiuAgentAutomaticResumeForChatSession/,
+  "pause during auto-resume wait must cancel the scheduled retry instead of flipping back to send",
+);
+
+assert.match(
+  source,
+  /async function cancelLocalLiuAgentAutomaticResumeForChatSession[\s\S]*hasLocalLiuAgentResumeInFlight\(normalizedChatSessionId\)[\s\S]*requestLocalLiuAgentResumeCancel\(normalizedChatSessionId\)/,
+  "pause during checkpoint restore must cancel the in-flight retry instead of leaving a send/pause flicker",
+);
+
+assert.match(
+  source,
+  /:deep\(\.send-message-button\.is-stop\) \{[\s\S]*background: #4b5563 !important;/,
+  "pause button must use a conventional gray stop style instead of warning orange",
+);
+
+assert.match(
+  composerCss,
+  /\.send-message-button\.is-stop \{[\s\S]*background: #4b5563 !important;/,
+  "composer pause button stylesheet must use a conventional gray stop style instead of warning orange",
+);
+
+assert.doesNotMatch(
+  isChatSessionBusySource,
+  /localLiuAgentPendingPermissionsForChatSession|localLiuAgentPendingUserQuestionsForChatSession/,
+  "authorization and user-question waits must not count as global chat loading",
+);
+
+assert.match(
+  source,
+  /async function submitLocalLiuAgentResume\(operation, options = \{\}\)[\s\S]*options\?\.userInitiated === true[\s\S]*localLiuAgentResumeCancelRequested\.delete\(chatSessionId\)/,
+  "user-initiated resume must clear a previous pause request so continue execution can start",
+);
+
+assert.match(
+  sendLocalLiuAgentChatRequestSource,
+  /resumeFromCheckpoint &&\s*consumeLocalLiuAgentResumeCancel\(activeChatSessionId\)[\s\S]*const activeRun = \{/,
+  "checkpoint resume must abort a cancelled retry before registering a new running task",
 );
 
 assert.doesNotMatch(

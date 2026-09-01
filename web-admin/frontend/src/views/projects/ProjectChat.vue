@@ -4230,6 +4230,10 @@ const localLiuAgentAuthLevel = ref(readLocalLiuAgentAuthLevel());
 const localLiuAgentActiveRuns = new Map();
 const localLiuAgentSeenRuntimeEventIds = new Set();
 const localLiuAgentAutoResumeTimers = new Map();
+const localLiuAgentAutoResumePendingVersion = ref(0);
+const localLiuAgentResumeInFlightSessions = new Set();
+const localLiuAgentResumeInFlightVersion = ref(0);
+const localLiuAgentResumeCancelRequested = new Set();
 const localLiuAgentActiveRunVersion = ref(0);
 let nativeLiuAgentRuntimeEventUnlisten = null;
 let localLiuAgentRuntimeEventPollTimer = null;
@@ -12286,12 +12290,8 @@ function focusAgentWorkflowOperation() {
   return false;
 }
 
-const showPauseGenerationButton = computed(
-  () =>
-    chatLoading.value ||
-    Boolean(getActiveRequestId()) ||
-    currentChatSessionLocalLiuAgentRunning.value ||
-    currentChatSessionNativeExternalAgentRunning.value,
+const showPauseGenerationButton = computed(() =>
+  isChatSessionInRunningTaskPhase(),
 );
 
 const backgroundTerminalCount = computed(() => {
@@ -13802,8 +13802,28 @@ function isChatSessionBusy(chatSessionId = currentChatSessionId.value) {
   return (
     hasPendingRequestForChatSession(normalizedSessionId) ||
     Boolean(localLiuAgentActiveRunForChatSession(normalizedSessionId)) ||
+    hasLocalLiuAgentAutoResumePending(normalizedSessionId) ||
+    hasLocalLiuAgentResumeInFlight(normalizedSessionId) ||
     (isExternalAgentMode.value &&
       isNativeExternalAgentRunningForChatSession(normalizedSessionId))
+  );
+}
+
+function isChatSessionInRunningTaskPhase(
+  chatSessionId = currentChatSessionId.value,
+) {
+  const normalizedSessionId = String(chatSessionId || "").trim();
+  if (!normalizedSessionId) {
+    return Boolean(getActiveRequestId());
+  }
+  return (
+    isChatSessionBusy(normalizedSessionId) ||
+    hasLocalLiuAgentResumeInFlight(normalizedSessionId) ||
+    localLiuAgentPendingPermissionsForChatSession(normalizedSessionId).length >
+      0 ||
+    localLiuAgentPendingUserQuestionsForChatSession(normalizedSessionId)
+      .length > 0 ||
+    isNativeExternalAgentRunningForChatSession(normalizedSessionId)
   );
 }
 
@@ -23447,7 +23467,7 @@ async function handleOperationAction(operation, actionKey) {
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   if (normalizedActionKey === "local_liuagent_resume") {
-    await submitLocalLiuAgentResume(operation);
+    await submitLocalLiuAgentResume(operation, { userInitiated: true });
     return;
   }
   if (
@@ -23965,11 +23985,85 @@ function clearLocalLiuAgentRecoveryPlaceholderContent(row) {
 
 function clearLocalLiuAgentAutoResumeTimer(chatSessionId) {
   const normalized = String(chatSessionId || "").trim();
+  if (!normalized) return false;
   const timer = localLiuAgentAutoResumeTimers.get(normalized);
-  if (timer) {
-    window.clearTimeout(timer);
-    localLiuAgentAutoResumeTimers.delete(normalized);
+  if (!timer) return false;
+  window.clearTimeout(timer);
+  localLiuAgentAutoResumeTimers.delete(normalized);
+  localLiuAgentAutoResumePendingVersion.value += 1;
+  return true;
+}
+
+function hasLocalLiuAgentAutoResumePending(chatSessionId = "") {
+  localLiuAgentAutoResumePendingVersion.value;
+  const normalized = String(chatSessionId || "").trim();
+  return Boolean(normalized && localLiuAgentAutoResumeTimers.has(normalized));
+}
+
+function hasLocalLiuAgentResumeInFlight(chatSessionId = "") {
+  localLiuAgentResumeInFlightVersion.value;
+  const normalized = String(chatSessionId || "").trim();
+  return Boolean(
+    normalized && localLiuAgentResumeInFlightSessions.has(normalized),
+  );
+}
+
+function markLocalLiuAgentResumeInFlight(chatSessionId = "", inFlight = false) {
+  const normalized = String(chatSessionId || "").trim();
+  if (!normalized) return;
+  if (inFlight) {
+    localLiuAgentResumeInFlightSessions.add(normalized);
+  } else {
+    localLiuAgentResumeInFlightSessions.delete(normalized);
   }
+  localLiuAgentResumeInFlightVersion.value += 1;
+}
+
+function consumeLocalLiuAgentResumeCancel(chatSessionId = "") {
+  const normalized = String(chatSessionId || "").trim();
+  if (!normalized) return false;
+  if (!localLiuAgentResumeCancelRequested.has(normalized)) return false;
+  localLiuAgentResumeCancelRequested.delete(normalized);
+  return true;
+}
+
+function requestLocalLiuAgentResumeCancel(chatSessionId = "") {
+  const normalized = String(chatSessionId || "").trim();
+  if (!normalized) return;
+  localLiuAgentResumeCancelRequested.add(normalized);
+  markLocalLiuAgentResumeInFlight(normalized, false);
+  clearLocalLiuAgentAutoResumeTimer(normalized);
+}
+
+function findLocalLiuAgentAutoResumePendingMatch(chatSessionId = "") {
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedChatSessionId) return null;
+  const projectId = String(selectedProjectId.value || "").trim();
+  const rows = isCurrentChatSession(projectId, normalizedChatSessionId)
+    ? messages.value
+    : getRememberedChatSessionMessages(projectId, normalizedChatSessionId);
+  if (!Array.isArray(rows) || !rows.length) return null;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    const operation = messageOperations(row).find((item) => {
+      const meta =
+        item?.meta && typeof item.meta === "object" ? item.meta : {};
+      const autoResumePending =
+        String(meta.local_liuagent_auto_resume_pending || "").trim() === "true";
+      const resuming =
+        String(meta.local_liuagent_resuming || "").trim() === "true";
+      if (!autoResumePending && !resuming) {
+        return false;
+      }
+      const operationChatSessionId = String(meta.chat_session_id || "").trim();
+      return (
+        !operationChatSessionId ||
+        operationChatSessionId === normalizedChatSessionId
+      );
+    });
+    if (operation) return { row, operation };
+  }
+  return null;
 }
 
 function localLiuAgentAutoResumeDelayMs(result = {}, retryNumber = 1) {
@@ -23998,19 +24092,125 @@ function scheduleLocalLiuAgentAutomaticResume({
   if (!row || !operation || !normalizedChatSessionId) return false;
   clearLocalLiuAgentAutoResumeTimer(normalizedChatSessionId);
   const timer = window.setTimeout(() => {
-    localLiuAgentAutoResumeTimers.delete(normalizedChatSessionId);
+    clearLocalLiuAgentAutoResumeTimer(normalizedChatSessionId);
     if (
       String(currentChatSessionId.value || "").trim() !==
         normalizedChatSessionId ||
       localLiuAgentActiveRunForChatSession(normalizedChatSessionId)
     ) {
+      syncChatLoadingWithCurrentSession();
       return;
     }
+    if (localLiuAgentResumeCancelRequested.has(normalizedChatSessionId)) {
+      syncChatLoadingWithCurrentSession();
+      return;
+    }
+    markLocalLiuAgentResumeInFlight(normalizedChatSessionId, true);
+    syncChatLoadingWithCurrentSession();
     void submitLocalLiuAgentResume(operation, {
       autoResumeRetryNumber: retryNumber,
     });
   }, delayMs);
   localLiuAgentAutoResumeTimers.set(normalizedChatSessionId, timer);
+  localLiuAgentAutoResumePendingVersion.value += 1;
+  syncChatLoadingWithCurrentSession();
+  return true;
+}
+
+async function cancelLocalLiuAgentAutomaticResumeForChatSession(
+  chatSessionId = currentChatSessionId.value,
+) {
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedChatSessionId) return false;
+  if (
+    !hasLocalLiuAgentAutoResumePending(normalizedChatSessionId) &&
+    !hasLocalLiuAgentResumeInFlight(normalizedChatSessionId)
+  ) {
+    return false;
+  }
+  const matched = findLocalLiuAgentAutoResumePendingMatch(
+    normalizedChatSessionId,
+  );
+  const workspacePath = String(
+    matched?.operation?.meta?.cwd || localLiuAgentWorkspacePath() || "",
+  ).trim();
+  requestLocalLiuAgentResumeCancel(normalizedChatSessionId);
+  if (workspacePath) {
+    try {
+      await pauseNativeLiuAgentLocalChat({
+        projectId: selectedProjectId.value,
+        chatSessionId: normalizedChatSessionId,
+        workspacePath,
+        reason: "manual_pause",
+      });
+    } catch (error) {
+      console.warn("pause local liuAgent during auto-resume cancel failed", error);
+    }
+  }
+  if (matched?.row) {
+    const currentOperation = matched.operation || {};
+    const meta =
+      currentOperation.meta && typeof currentOperation.meta === "object"
+        ? currentOperation.meta
+        : {};
+    pauseOpenMessageOperations(matched.row);
+    upsertMessageOperation(matched.row, {
+      ...currentOperation,
+      summary: "任务已暂停，可以继续执行",
+      detail: "已取消自动重试；当前工作节点和 checkpoint 已保留。",
+      phase: "blocked",
+      actionType: "none",
+      meta: {
+        ...meta,
+        local_liuagent_auto_resume_pending: "false",
+        local_liuagent_recoverable: "true",
+        local_liuagent_resuming: "false",
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
+        recovery_reason: "manual_pause",
+      },
+    });
+    appendMessageProcessLog(matched.row, {
+      level: "warning",
+      text: "已停止自动重试，任务已暂停，可继续执行",
+      autoExpand: true,
+    });
+    matched.row.processExpanded = true;
+    const projectId = String(
+      meta.project_id || selectedProjectId.value || "",
+    ).trim();
+    await persistLocalLiuAgentAssistantState({
+      projectId,
+      chatSessionId: normalizedChatSessionId,
+      assistantMessage: matched.row,
+      fallbackContent: LOCAL_LIUAGENT_PAUSE_SUMMARY,
+      preserveVisibleContent: true,
+      workspacePath,
+      sourceContext: {
+        runtime: "tauri",
+        workspace_path: workspacePath,
+        paused: true,
+        checkpoint_ready: true,
+        recoverable: true,
+        recovery_reason: "manual_pause",
+      },
+    });
+    const assistantMessageId = String(matched.row.id || "").trim();
+    if (assistantMessageId) {
+      updateLocalAiTask(
+        `local-ai:${projectId || "global"}:${normalizedChatSessionId}:${assistantMessageId}`,
+        {
+          status: "interrupted",
+          currentStep: "已暂停，等待继续执行",
+          lastOutput: LOCAL_LIUAGENT_PAUSE_SUMMARY,
+          recoverable: true,
+        },
+      );
+    }
+  }
+  syncChatLoadingWithCurrentSession();
+  scrollToBottom();
   return true;
 }
 
@@ -24133,11 +24333,19 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
     ElMessage.warning("桌面智能体仍在运行，请等待当前步骤结束");
     return;
   }
+  if (options?.userInitiated === true) {
+    localLiuAgentResumeCancelRequested.delete(chatSessionId);
+  } else if (consumeLocalLiuAgentResumeCancel(chatSessionId)) {
+    return;
+  }
+  markLocalLiuAgentResumeInFlight(chatSessionId, true);
   clearLocalLiuAgentAutoResumeTimer(chatSessionId);
-  const autoResumeRetryNumber = Math.max(
-    0,
-    Number(options?.autoResumeRetryNumber || 0) || 0,
-  );
+  syncChatLoadingWithCurrentSession();
+  try {
+    const autoResumeRetryNumber = Math.max(
+      0,
+      Number(options?.autoResumeRetryNumber || 0) || 0,
+    );
   const previousVisibleContent = isLocalLiuAgentRecoveryPlaceholderContent(
     row.content,
   )
@@ -24166,6 +24374,9 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
     });
   } catch (error) {
     console.warn("recover local liuAgent state before resume failed", error);
+  }
+  if (consumeLocalLiuAgentResumeCancel(chatSessionId)) {
+    return;
   }
   const userMessageId = String(meta.user_message_id || "").trim();
   const originalUserMessage = messages.value.find(
@@ -24229,6 +24440,9 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
     ElMessage.warning("当前任务仍在运行或等待授权，请先等待当前状态结束");
     return;
   }
+  if (consumeLocalLiuAgentResumeCancel(chatSessionId)) {
+    return;
+  }
   settlePausedLocalLiuAgentOperations(row);
   const recoveredResumeContext =
     recovery?.state?.resume_context &&
@@ -24253,6 +24467,9 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
     `上次有效结果：${previousVisibleContent || "无"}`,
     `恢复快照：\n${recoverySnapshot}`,
   ].join("\n\n");
+  if (consumeLocalLiuAgentResumeCancel(chatSessionId)) {
+    return;
+  }
   try {
     const result = await sendLocalLiuAgentChatRequest({
       projectId,
@@ -24301,6 +24518,10 @@ async function submitLocalLiuAgentResume(operation, options = {}) {
       },
     });
     ElMessage.error(err?.detail || err?.message || "桌面继续执行失败");
+  }
+  } finally {
+    markLocalLiuAgentResumeInFlight(chatSessionId, false);
+    syncChatLoadingWithCurrentSession();
   }
 }
 
@@ -26660,7 +26881,7 @@ async function applyLocalRuntimeTaskRouteAction() {
     ElMessage.warning("未找到可恢复的本地 AI 任务，请在会话中检查当前状态");
     return;
   }
-  await submitLocalLiuAgentResume(operation);
+  await submitLocalLiuAgentResume(operation, { userInitiated: true });
 }
 
 async function focusChatComposerTextarea() {
@@ -35449,6 +35670,12 @@ async function sendLocalLiuAgentChatRequest({
     throw new Error("请先配置本机工作区");
   }
   clearLocalLiuAgentAutoResumeTimer(activeChatSessionId);
+  if (
+    resumeFromCheckpoint &&
+    consumeLocalLiuAgentResumeCancel(activeChatSessionId)
+  ) {
+    return { cancelled: true };
+  }
   if (resumeFromCheckpoint) {
     clearLocalLiuAgentRecoveryPlaceholderContent(assistantMessage);
   }
@@ -35588,6 +35815,12 @@ async function sendLocalLiuAgentChatRequest({
     rootGoal: displayUserMessageContent || finalUserPrompt,
     modelRuntime,
   });
+  if (
+    resumeFromCheckpoint &&
+    consumeLocalLiuAgentResumeCancel(activeChatSessionId)
+  ) {
+    return { cancelled: true };
+  }
   const activeRun = {
     chatSessionId: activeChatSessionId,
     projectId,
@@ -36574,6 +36807,10 @@ function closeIdleChatWsAfterFastCancel() {
 async function stopGeneration() {
   if (await cancelActiveLocalLiuAgentRun()) {
     ElMessage.info("正在停止本地智能体，完成后才可继续");
+    return;
+  }
+  if (await cancelLocalLiuAgentAutomaticResumeForChatSession()) {
+    ElMessage.info("已停止自动重试，任务已暂停");
     return;
   }
   if (await pauseLocalLiuAgentPendingPermissionsForChatSession()) {
@@ -39781,17 +40018,31 @@ onUnmounted(() => {
   box-shadow: none !important;
 }
 
-.chat-layout :deep(.send-message-button:hover) {
+.chat-layout :deep(.send-message-button:not(.is-stop):hover) {
   background: var(--el-color-primary-dark-2) !important;
 }
 
 .chat-layout :deep(.send-message-button.is-stop) {
-  background: var(--el-color-warning) !important;
+  --el-button-bg-color: #4b5563;
+  --el-button-hover-bg-color: #374151;
+  --el-button-active-bg-color: #1f2937;
+  --el-button-text-color: #fff;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-text-color: #fff;
+  background: #4b5563 !important;
+  border-color: #4b5563 !important;
+  color: #fff !important;
   box-shadow: none !important;
 }
 
-.chat-layout :deep(.send-message-button.is-stop:hover) {
-  background: var(--el-color-warning-dark-2) !important;
+.chat-layout :deep(.send-message-button.is-stop:hover),
+.chat-layout :deep(.send-message-button.is-stop:focus),
+.chat-layout :deep(.send-message-button.is-stop:focus-visible),
+.chat-layout :deep(.send-message-button.is-stop:active) {
+  background: #374151 !important;
+  border-color: #374151 !important;
+  color: #fff !important;
+  box-shadow: none !important;
 }
 
 .chat-layout .chat-messages:has(.chat-empty-state) {
